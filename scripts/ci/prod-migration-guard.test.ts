@@ -131,8 +131,9 @@ describe("prod-migration-guard.sh detect", () => {
       PROD_VERSION: "1.0.0",
     });
     expect(auto.code).toBe(0);
-    expect(auto.out).toBe("hold=true\nguarded=false\n");
+    expect(auto.out).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
     expect(auto.stdout).toContain("::warning title=Prod deploy held::");
+    expect(auto.out).toContain("reason=v1.1.0 adds a non-additive migration");
     expect(auto.summary).toContain("0002_rebuild.sql");
     const manual = r.run("detect", {
       TAG: "v1.1.0",
@@ -173,7 +174,7 @@ describe("prod-migration-guard.sh detect", () => {
       EVENT: "push",
       PROD_VERSION: "0.71.0",
     });
-    expect(d.out).toBe("hold=true\nguarded=false\n");
+    expect(d.out).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
     expect(d.summary).toContain("0017_image_format.sql");
     // Its guarded dispatch deploys it guarded.
     expect(
@@ -188,7 +189,7 @@ describe("prod-migration-guard.sh detect", () => {
     const detect = (r: ReturnType<typeof repo>, event = "push") =>
       r.run("detect", { TAG: "v1.1.0", EVENT: event, PROD_VERSION: "1.0.0" });
     const held = (d: ReturnType<ReturnType<typeof repo>["run"]>) => {
-      expect(d.out).toBe("hold=true\nguarded=false\n");
+      expect(d.out).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
       expect(d.summary).toContain("0001_init.sql");
     };
     it("a modified migration holds, even for a manual run", () => {
@@ -224,7 +225,7 @@ describe("prod-migration-guard.sh detect", () => {
       );
       r.release("v1.1.0", {});
       const d = detect(r);
-      expect(d.out).toBe("hold=true\nguarded=false\n");
+      expect(d.out).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
       expect(d.summary).toContain("0001_renamed.sql");
     });
     it("an added additive migration alone does not hold", () => {
@@ -242,12 +243,14 @@ describe("prod-migration-guard.sh detect", () => {
     });
     for (const PROD_VERSION of ["", "1.0", "1.0.0-rc.1", "9.9.9", "<html>"]) {
       const d = r.run("detect", { TAG: "v1.1.0", EVENT: "push", PROD_VERSION });
-      expect(d.out, PROD_VERSION).toBe("hold=true\nguarded=false\n");
+      expect(d.out, PROD_VERSION).toMatch(
+        /^hold=true\nguarded=false\nreason=[^\n]+\n$/,
+      );
     }
     expect(
       r.run("detect", { TAG: "v9.9.9", EVENT: "push", PROD_VERSION: "1.0.0" })
         .out,
-    ).toBe("hold=true\nguarded=false\n");
+    ).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
   });
 });
 

@@ -64,9 +64,18 @@ import {
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
 import { numbering, pinChanged, pinNumbering } from "./model";
+import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
 import { type CommentsApi, useCommentsApi } from "./useComments";
+import {
+  fieldCap,
+  keyboardInset,
+  onViewport,
+  onViewportResize,
+  trackViewportVar,
+  viewBottom,
+} from "./viewport";
 
 const touch = () =>
   typeof window !== "undefined" &&
@@ -227,7 +236,7 @@ function QuoteBar({
  * time up to ~10 lines (240px; ~6 on a phone) and scrolls inside its own edge.
  */
 export const FIELD =
-  "min-h-[42px] max-h-[min(9rem,40svh)] md:max-h-[min(15rem,40svh)] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
+  "min-h-[42px] max-h-[min(9rem,calc(var(--oa-vvh,1svh)*40))] md:max-h-[min(15rem,calc(var(--oa-vvh,1svh)*40))] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
 export const FIELD_MAX = 240;
 export const FIELD_MAX_PHONE = 144;
 
@@ -237,10 +246,8 @@ export function growField(el: HTMLTextAreaElement | null) {
   if (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))
     return;
   const phone = !!window.matchMedia?.("(max-width: 767px)").matches;
-  const max = Math.min(
-    phone ? FIELD_MAX_PHONE : FIELD_MAX,
-    window.innerHeight * 0.4 || Number.POSITIVE_INFINITY,
-  );
+  // #2239: 40% of what is visible, so the iOS keyboard counts.
+  const max = fieldCap(phone ? FIELD_MAX_PHONE : FIELD_MAX);
   // Measuring with height:auto shortens the list and clamps the scroller:
   // put its scrollTop back.
   const box = scrollerOf(el);
@@ -258,20 +265,64 @@ export function growField(el: HTMLTextAreaElement | null) {
 export function focusField(el: HTMLElement | null) {
   if (!el) return;
   el.focus({ preventScroll: true });
+  const adjust = () => {
+    if (document.activeElement !== el) return;
+    const box = scrollerOf(el);
+    if (!box || !el.isConnected) return;
+    const head =
+      box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ??
+      0;
+    const foot =
+      box.querySelector<HTMLElement>("[data-oa-action-outlet]")?.offsetHeight ??
+      0;
+    const b = box.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const top = b.top + head;
+    // Above the action row, and above the keyboard where there is one.
+    const bottom = Math.min(b.bottom - foot, viewBottom());
+    if (r.top < top) box.scrollTop -= top - r.top;
+    else if (r.bottom > bottom)
+      box.scrollTop += Math.min(r.bottom - bottom, r.top - top);
+  };
+  adjust();
+  // #2239: the row's height is 0 until the layout settles (the pin sheet
+  // claims the outlet after focus), and the keyboard arrives later still:
+  // look again as they change, for a moment.
   const box = scrollerOf(el);
-  if (!box) return;
+  const outlet = box?.querySelector<HTMLElement>("[data-oa-action-outlet]");
+  const ro =
+    outlet && typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(adjust)
+      : null;
+  if (outlet) ro?.observe(outlet);
+  const off = onViewport(adjust);
+  const frame = requestAnimationFrame(adjust);
+  setTimeout(() => {
+    ro?.disconnect();
+    off();
+    // The page (or a test's jsdom) may be gone by now.
+    globalThis.cancelAnimationFrame?.(frame);
+  }, 1000);
+}
+
+/**
+ * #2239: with the keyboard open, keep the whole card (its Reply and Resolve
+ * row too) above the keyboard while its field grows, never pushing the field
+ * itself under the header.
+ */
+export function keepCardClear(el: HTMLElement | null) {
+  if (!el || keyboardInset() === 0 || document.activeElement !== el) return;
+  const box = scrollerOf(el);
+  const card = el.closest<HTMLElement>("[data-thread]");
+  if (!box || !card) return;
   const head =
     box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ?? 0;
-  const foot =
-    box.querySelector<HTMLElement>("[data-oa-action-outlet]")?.offsetHeight ??
-    0;
-  const b = box.getBoundingClientRect();
-  const r = el.getBoundingClientRect();
-  const top = b.top + head;
-  const bottom = b.bottom - foot;
-  if (r.top < top) box.scrollTop -= top - r.top;
-  else if (r.bottom > bottom)
-    box.scrollTop += Math.min(r.bottom - bottom, r.top - top);
+  const bottom = Math.min(box.getBoundingClientRect().bottom, viewBottom());
+  const over = card.getBoundingClientRect().bottom - bottom;
+  if (over <= 0) return;
+  const room =
+    el.getBoundingClientRect().top - (box.getBoundingClientRect().top + head);
+  box.scrollTop += Math.max(0, Math.min(over, room));
 }
 
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
@@ -393,7 +444,7 @@ function Composer({
   useEffect(() => {
     if (autoFocus) focusField(ref.current);
   }, [autoFocus]);
-  // Width changes (panel resize, rotation, late fonts, a restored hidden draft)
+  // Width changes (panel resize, rotation, a restored hidden draft)
   // change how many lines the text takes.
   useEffect(() => {
     const el = ref.current;
@@ -407,8 +458,28 @@ function Composer({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // A late font swap changes the line count without changing the width.
+  useEffect(() => {
+    let live = true;
+    document.fonts?.ready.then(() => live && growField(ref.current));
+    return () => {
+      live = false;
+    };
+  }, []);
+  // #2239: the keyboard changes the cap (40% of what is visible).
+  useEffect(() => {
+    const off = onViewportResize(() => growField(ref.current));
+    const untrack = trackViewportVar();
+    return () => {
+      off();
+      untrack();
+    };
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: text is what changes the height.
-  useLayoutEffect(() => growField(ref.current), [text]);
+  useLayoutEffect(() => {
+    growField(ref.current);
+    keepCardClear(ref.current);
+  }, [text]);
   const body = text.trim();
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
@@ -615,15 +686,37 @@ function Composer({
 
 export { initials };
 
+/** #2247: how much wider the header must get before a step is taken back (px). */
+export const GIVE_BACK = 24;
+
+/**
+ * The stage a header of `width` can go back down to. `gave[s]` is the width at
+ * which stage s was needed; a stage is given back only once the header is
+ * GIVE_BACK wider than that, so a drag that jitters around a boundary does
+ * not flicker between two stages.
+ */
+export function stageFor(
+  stage: number,
+  gave: readonly number[],
+  width: number,
+) {
+  let s = stage;
+  while (s > 0 && width >= (gave[s] ?? 0) + GIVE_BACK) s--;
+  return s;
+}
+
 /**
  * #2229: a header that is too tight for the faces gives way in order: the time
  * first (it stays in the name's tooltip), then the faces down to the summary
- * mark and its count, and only then the name truncates. Measured: while the
- * name is cut off, step once more; a new width starts over.
+ * mark and its count, and only then the name truncates. While the name is cut
+ * off, step once more, noting the width. #2247: it steps back down only when
+ * the width has grown past that note by GIVE_BACK, however the width moves.
  */
 function useTightHeader(active: boolean) {
   const ref = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState(0);
+  const [, tick] = useState(0);
+  const gave = useRef<number[]>([]);
   const width = useRef(0);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -631,16 +724,27 @@ function useTightHeader(active: boolean) {
     const ro = new ResizeObserver(() => {
       if (el.clientWidth === width.current) return;
       width.current = el.clientWidth;
-      setStage(0);
+      // Down if there is room; either way a render re-checks the name below.
+      setStage((s) => stageFor(s, gave.current, width.current));
+      tick((n) => n + 1);
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, [active]);
   // Runs after every render: one step per cut-off name, until it fits or nothing is left to give.
   useLayoutEffect(() => {
-    const name = ref.current?.querySelector<HTMLElement>("[data-author-name]");
-    if (active && name && name.scrollWidth > name.clientWidth && stage < 2)
+    const el = ref.current;
+    const name = el?.querySelector<HTMLElement>("[data-author-name]");
+    if (
+      active &&
+      el &&
+      name &&
+      name.scrollWidth > name.clientWidth &&
+      stage < 2
+    ) {
+      gave.current[stage + 1] = el.clientWidth;
       setStage(stage + 1);
+    }
   });
   return { ref, stage: active ? stage : 0 };
 }
@@ -720,7 +824,16 @@ function CommentRow({
   // #2229: marks sit on people's comments, for members (#2004: not guests, nor the capped); an agent's own reply has none.
   const marks = !api.guest && !api.capped && c.author.kind !== "agent";
   const problems = allProblems.get(c.id);
-  const tight = useTightHeader(marks && !!c.notified?.length);
+  // The mentions (each with its delivery) and the thread agents told by a reply, together.
+  const mentioned = (c.mentions ?? []).filter(
+    (m): m is typeof m & { delivery: NonNullable<typeof m.delivery> } =>
+      !!m.delivery,
+  );
+  const told = c.notified ?? [];
+  const tight = useTightHeader(
+    marks && (mentioned.length > 0 || told.length > 0),
+  );
+  const roving = useRoving<HTMLParagraphElement>();
   return (
     <li
       className="flex flex-col gap-1"
@@ -739,8 +852,13 @@ function CommentRow({
           hideTime={tight.stage >= 1}
         />
         <div className="flex shrink-0 items-center gap-1">
-          {marks && c.notified?.length ? (
-            <DeliveryFaces told={c.notified} compact={tight.stage >= 2} />
+          {marks && (mentioned.length > 0 || told.length > 0) ? (
+            <DeliveryFaces
+              mentions={mentioned}
+              told={told}
+              createdAt={c.createdAt}
+              compact={tight.stage >= 2}
+            />
           ) : null}
           {any && mode === "view" && (
             <Button
@@ -816,12 +934,13 @@ function CommentRow({
             guest={api.guest}
           />
         ) : (
-          <p className={`whitespace-pre-wrap break-words ${CTXT}`}>
+          <p className={`whitespace-pre-wrap break-words ${CTXT}`} {...roving}>
             <MentionedText
               body={c.body}
               mentions={c.mentions}
               guest={api.guest}
               marks={marks}
+              createdAt={c.createdAt}
             />
           </p>
         )}

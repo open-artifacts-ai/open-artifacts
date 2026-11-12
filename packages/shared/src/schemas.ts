@@ -754,6 +754,8 @@ export const MeSchema = z.object({
   suggestedName: z.string().nullable(),
   /** No chosen name and no usable IdP name: ask the user for one. */
   needsDisplayName: z.boolean(),
+  /** #2277: what others see instead of the user's name when it reads as an agent's; null when they see it. Optional: older servers omit it (null). */
+  nameHiddenAs: z.enum(["sso", "email"]).nullable().optional(),
   /** Email me about comments (#1467); on unless turned off (PATCH R.me, or the unsubscribe link in a comment email). Optional: older servers omit it (on). */
   commentEmail: z.boolean().optional(),
   /** Hosted M1: how this request authenticated. */

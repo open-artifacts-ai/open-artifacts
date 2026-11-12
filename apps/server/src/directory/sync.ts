@@ -57,7 +57,7 @@ import {
   readInitial,
   readRetire,
 } from "./store.js";
-import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
+import { markThaw, type PendingRevokes, thawFrozenEdits } from "./thaw.js";
 import { type DirectoryClient, TransportError } from "./transport.js";
 
 // `false` in release builds (build-flags.d.ts): no reference to test-hooks/.
@@ -1604,6 +1604,12 @@ export class SyncEngine {
         };
       }
       case "thaw": {
+        // The thaw's start marker, once per run (#2150).
+        if (this.get<number>("thaw.marked") !== run.startedAt) {
+          this.guard();
+          await markThaw(this.env, run.startedAt);
+          this.put("thaw.marked", run.startedAt);
+        }
         const more = await thawFrozenEdits(this.env, {
           guard: () => this.guard(),
           now,

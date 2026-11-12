@@ -57,6 +57,7 @@ import {
 import {
   CODEX_REFUSALS,
   type CodexAttestDeps,
+  type CodexRestore,
   codexAttestor,
   codexHome,
   codexProxyNamespaces,
@@ -236,6 +237,8 @@ export type DaemonDeps = {
   revokedFile?: string;
   /** How long status waits for each namespace's roster from the hub. */
   statusRosterMs?: number;
+  /** #2297: base delay for retrying a Codex restore after an unknown ps read; default 1 s, doubling, 5 tries. */
+  restoreRetryMs?: number;
   /** Retry delay for a rate-limited agent_up; default 5 min. */
   limitedRetryMs?: number;
   /** Test seams. */
@@ -2127,6 +2130,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** #1748: each live attested Codex thread, kept so a restart can take it back. */
   const codexAgentsFile = cx.agentsFile ?? join(home(), "codex-agents.json");
   let codexSaved: string | undefined;
+  /** #2297: rows whose restore awaits a ps answer; kept in the file until they restore or drop. */
+  const restorePending = new Map<string, CodexAgent>();
   const persistCodex = () => {
     const rows: CodexAgent[] = [];
     for (const a of agents.all()) {
@@ -2142,6 +2147,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         busName: a.busName,
       });
     }
+    for (const [ref, r] of restorePending)
+      if (!rows.some((x) => x.ref === ref)) rows.push(r);
     const text = JSON.stringify(rows);
     // Never touches the home until a thread has been attested.
     if (codexSaved === undefined ? rows.length === 0 : text === codexSaved)
@@ -2160,44 +2167,104 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * each only if its process is still the one pinned and still holds the
    * thread's lock. The next `agent_up` (hub open) announces them by name.
    */
+  const restoreTimers = new Set<ReturnType<typeof setTimeout>>();
+  const RESTORE_TRIES = 5;
   const restoreCodex = () => {
     if (deps.attest) return;
-    for (const r of readCodexAgents(codexAgentsFile)) {
-      if (agents.byRef(r.ref)) continue;
-      let proven: { cwd: string } | undefined;
-      try {
-        proven = codexCheck.restore({
-          thread: r.ref,
+    const attempt = (rows: CodexAgent[], tries: number) => {
+      const again: CodexAgent[] = [];
+      for (const r of rows) {
+        if (agents.byRef(r.ref)) {
+          restorePending.delete(r.ref);
+          continue;
+        }
+        const drop = (reason: string) =>
+          ev("codex_restore_dropped", { thread: r.ref, pid: r.pid, reason });
+        let res: CodexRestore | undefined;
+        try {
+          res = codexCheck.restore({
+            thread: r.ref,
+            pid: r.pid,
+            start: r.procStart,
+          });
+        } catch {}
+        if (!res) {
+          drop("error");
+          continue;
+        }
+        if ("unknown" in res) {
+          // ps gave no answer: not gone, not admitted. Try again later.
+          if (tries + 1 < RESTORE_TRIES) {
+            again.push(r);
+            restorePending.set(r.ref, r);
+          } else {
+            restorePending.delete(r.ref);
+            drop("ps_unknown");
+          }
+          continue;
+        }
+        restorePending.delete(r.ref);
+        if ("dropped" in res) {
+          drop(res.dropped);
+          continue;
+        }
+        const proven = res;
+        // Scope comes from the proven cwd and today's config, as at a hello.
+        let ns: Namespace;
+        try {
+          ns = resolveNs(proven.cwd, true);
+        } catch {
+          drop("no_namespace");
+          continue;
+        }
+        if (!WireNamespaceSchema.safeParse(ns.namespace).success) {
+          drop("no_namespace");
+          continue;
+        }
+        agents.up({
+          ref: r.ref,
+          kind: "codex",
+          proposedName: r.proposedName,
+          busName: r.busName,
+          namespace: ns.namespace,
+          namespaceSource: ns.source,
+          global: ns.global,
           pid: r.pid,
-          start: r.procStart,
+          procStart: r.procStart,
+          cwd: proven.cwd,
+          live: true,
+          ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
         });
-      } catch {}
-      if (!proven) continue;
-      // Scope comes from the proven cwd and today's config, as at a hello.
-      let ns: Namespace;
-      try {
-        ns = resolveNs(proven.cwd, true);
-      } catch {
-        continue;
+        seenAt.set(r.ref, ++seenSeq);
+        ev("codex_restored", { thread: r.ref, pid: r.pid });
+        // A retry that lands after the hub opened is announced here; at start,
+        // the hub's onOpen announces every live record.
+        const rec = agents.byRef(r.ref);
+        if (tries > 0 && rec?.live && hub.open) {
+          announceUp(rec);
+          tellOwed(r.ref);
+        }
+        if (debug)
+          log(`restored codex thread ${r.ref.slice(0, 8)} pid ${r.pid}`);
       }
-      if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
-      agents.up({
-        ref: r.ref,
-        kind: "codex",
-        proposedName: r.proposedName,
-        busName: r.busName,
-        namespace: ns.namespace,
-        namespaceSource: ns.source,
-        global: ns.global,
-        pid: r.pid,
-        procStart: r.procStart,
-        cwd: proven.cwd,
-        live: true,
-        ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
-      });
-      seenAt.set(r.ref, ++seenSeq);
-      if (debug) log(`restored codex thread ${r.ref.slice(0, 8)} pid ${r.pid}`);
-    }
+      if (again.length === 0) return;
+      for (const r of again)
+        if (tries === 0)
+          ev("codex_restore_retry", {
+            thread: r.ref,
+            pid: r.pid,
+            reason: "ps_unknown",
+          });
+      // Bounded backoff: 1x, 2x, 4x, 8x the base delay.
+      const delay = (deps.restoreRetryMs ?? 1000) * 2 ** tries;
+      const t = setTimeout(() => {
+        restoreTimers.delete(t);
+        attempt(again, tries + 1);
+      }, delay);
+      t.unref();
+      restoreTimers.add(t);
+    };
+    attempt(readCodexAgents(codexAgentsFile), 0);
   };
 
   /** #2029: each Codex thread proved here, kept so mail held for it can wake it. */
@@ -2541,6 +2608,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       outbox.stop();
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);
+      for (const t of restoreTimers) clearTimeout(t);
       hub.stop();
       // A send waiting for delivered is queued at the hub: it answers so, not as an error.
       receipts.release();

@@ -13,8 +13,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createPat } from "../../src/auth/pat.js";
 import {
   type BusHubRpc,
-  LINK_LOOKUP_MS,
   linkRequest,
+  PROOF_LOOKUP_MS,
 } from "../../src/services/bus.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { E, MCP_URL } from "../mcp-helpers.js";
@@ -155,7 +155,7 @@ describe("linkRequest (#1822)", () => {
     const t0 = Date.now();
     const s = await linkRequest(slow.ev, a.userId, req());
     expect(Object.keys(s)).toEqual(["req"]);
-    expect(Date.now() - t0).toBeLessThan(LINK_LOOKUP_MS + 1500);
+    expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
   });
 
   it("a slow machine read (D1) is bound by the same limit and leaves the request unlinked", async () => {
@@ -172,7 +172,7 @@ describe("linkRequest (#1822)", () => {
     );
     expect(Object.keys(r)).toEqual(["req"]);
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
-    expect(Date.now() - t0).toBeLessThan(LINK_LOOKUP_MS + 1500);
+    expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
     expect(asked).toEqual([]);
   });
 
@@ -204,6 +204,80 @@ describe("linkRequest (#1822)", () => {
         expect(l).not.toContain(proof);
         expect(l).not.toContain(hash);
       }
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("#2110: a lookup that never answers waits PROOF_LOOKUP_MS (1.5 s) and logs reason timeout", async () => {
+    expect(PROOF_LOOKUP_MS).toBe(1500);
+    const proof = proofOf();
+    const a = await bound(proof);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const t0 = Date.now();
+      const r = await linkRequest(
+        spyHubs({ agentByProof: () => new Promise(() => {}) }).ev,
+        a.userId,
+        mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
+      );
+      expect(Object.keys(r)).toEqual(["req"]);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(PROOF_LOOKUP_MS - 5);
+      const none = log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("bus_link_lookup_none"))
+        .map((l) => JSON.parse(l));
+      expect(none).toHaveLength(1);
+      expect(none[0].reason).toBe("timeout");
+      expect(none[0].ms).toBeGreaterThanOrEqual(PROOF_LOOKUP_MS - 5);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("#2110: a slow success links and logs bus_link_lookup_ok {ms}; a fast one under 150 ms logs nothing", async () => {
+    const proof = proofOf();
+    const a = await bound(proof);
+    const hash = await sha256Hex(proof);
+    const who = {
+      identityId: "f".repeat(32),
+      namespace: "n",
+      name: "Lead",
+      kind: "claude-code",
+    } as never;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const ok = () =>
+      log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("bus_link_lookup_ok"));
+    try {
+      const slow = await linkRequest(
+        spyHubs({
+          agentByProof: () =>
+            new Promise((res) => setTimeout(() => res(who), 400)),
+        }).ev,
+        a.userId,
+        mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
+      );
+      expect(slow.identity).toEqual(who);
+      expect(ok()).toHaveLength(1);
+      const line = ok()[0] as string;
+      expect(Object.keys(JSON.parse(line)).sort()).toEqual(
+        expect.arrayContaining(["ms"]),
+      );
+      expect(JSON.parse(line).ms).toBeGreaterThanOrEqual(400);
+      expect(line).not.toContain(proof);
+      expect(line).not.toContain(hash);
+      // Fast answers: any ok line they add is at least 150 ms (a loaded
+      // runner can be that slow), never a line for every request.
+      for (let i = 0; i < 3; i++)
+        await linkRequest(
+          spyHubs({ agentByProof: async () => who }).ev,
+          a.userId,
+          mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
+        );
+      for (const l of ok())
+        expect(JSON.parse(l).ms).toBeGreaterThanOrEqual(150);
     } finally {
       log.mockRestore();
     }

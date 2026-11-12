@@ -27,7 +27,7 @@ If you're unsure which kind a turn is: when your user didn't type the last messa
 - Each option says in a few words what it means, never just "A or B", and links the page that shows it.
 - Every ask has **your recommendation** and a one-line why. For shares, deletes, visibility or permission changes, say what will change and leave the call to your user.
 - When your user asks you something in a comment, put the whole answer in that thread, and any later correction too. Don't answer only in chat: they may not read it.
-- When your user picks an option on an ask you posted (in the web app, not through a token), that's their answer. Act on it.
+- When your user picks an option on an ask you posted (in the web app, not through a token), that's their answer. Act on it. Never comment, pick or approve through your user's signed-in browser, even to test: use your own Open Artifacts tools.
 
 ## Accuracy
 

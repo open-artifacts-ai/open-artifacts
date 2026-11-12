@@ -262,4 +262,46 @@ describe("MCP list_comments", () => {
     expect(all.length).toBeGreaterThanOrEqual(3);
     for (const a of all) for (const k of FACE) expect(a).not.toHaveProperty(k);
   });
+
+  // #2247 (from #2243's review): REST drops a mention's delivery for the
+  // capped; the MCP list is the other path, and had no test.
+  const mentionsOf = (l: CommentList) =>
+    l.threads.flatMap((t) => t.comments.flatMap((c) => c.mentions ?? []));
+
+  it("a member's mention keeps its delivery state over MCP", async () => {
+    const { token } = await createPat(env, memberV.userId, "ofd");
+    const client = await connect(token);
+    clients.push(client);
+    const r = await tool(client, "list_comments", { id });
+    expect(r.isError, textOf(r)).toBeFalsy();
+    const ms = mentionsOf(r.structuredContent as CommentList);
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m.delivery).toBeDefined();
+  });
+
+  it("a client capped after it connected gets mentions without delivery", async () => {
+    const u = await mk("of-late-d");
+    const { token } = await createPat(env, u.userId, "late-d");
+    const client = await connect(token);
+    clients.push(client);
+    const before = await tool(client, "list_comments", { id });
+    expect(before.isError, textOf(before)).toBeFalsy();
+    for (const m of mentionsOf(before.structuredContent as CommentList))
+      expect(m.delivery).toBeDefined();
+    await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(u.userId)
+      .run();
+    const capped = await tool(client, "list_comments", { id }).catch(
+      (e: unknown) => e,
+    );
+    if (capped instanceof Error) {
+      expect(capped.message).toContain("Only members can connect agents");
+      return;
+    }
+    const r = capped as Awaited<ReturnType<typeof tool>>;
+    expect(r.isError, textOf(r)).toBeFalsy();
+    const ms = mentionsOf(r.structuredContent as CommentList);
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m).not.toHaveProperty("delivery");
+  });
 });

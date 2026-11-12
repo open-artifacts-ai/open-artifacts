@@ -195,6 +195,25 @@ async function startMocks() {
       }),
     );
   }
+  // ?mock=agent-name (#2277): a stored name that reads as an agent's, so others see the email; after a PATCH the shared mock answers.
+  if (params.get("mock") === "agent-name") {
+    let saved = false;
+    extra.push(
+      http.get("*/api/v1/me", () =>
+        saved
+          ? undefined
+          : HttpResponse.json({
+              ...fixtures.me,
+              displayName: "Ada's agent",
+              nameHiddenAs: "email",
+            }),
+      ),
+      http.patch("*/api/v1/me", () => {
+        saved = true;
+        return undefined;
+      }),
+    );
+  }
   // ?mock=email: the instance sends invite/share emails; ?mock=email-fail: it
   // does, but every send fails (the shared mocks always answer emailed:false).
   const mail = params.get("mock");

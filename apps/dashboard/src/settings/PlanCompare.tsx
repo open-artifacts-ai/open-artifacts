@@ -24,6 +24,7 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
+import { THAW_COPY } from "../layout/thawCopy";
 import { muted } from "./ui";
 
 export type Column = "solo" | "team" | "business";
@@ -323,6 +324,7 @@ export function PlanCompare({
   trial = false,
   seatsDefault,
   yearly: yearlyOn = false,
+  pendingReverts = 0,
 }: {
   /** The current plan's column (the invite trial is Team, #2113). */
   column: Column;
@@ -339,15 +341,29 @@ export function PlanCompare({
   seatsDefault?: number;
   /** Billing says yearly Team and Business prices exist (billing.yearlyTeamBusiness); off: Solo only. */
   yearly?: boolean;
+  /** Synced people whose changed roles go back to their group's on Business (#2150); above 0, Upgrade to Business confirms first. */
+  pendingReverts?: number;
 }) {
   const [interval, setInterval] = useState<Interval>("year");
   const [asking, setAsking] = useState<"team" | "business" | null>(null);
+  const [thawAsk, setThawAsk] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
   // A plan change (a billing refetch made this Team) or a lost buy path ends the
   // step; reopening starts again from the default.
   const canBuy = upgrade !== undefined && seatsDefault !== undefined;
   // biome-ignore lint/correctness/useExhaustiveDependencies: these are the triggers
-  useEffect(() => setAsking(null), [column, trial, canBuy]);
+  useEffect(() => {
+    setAsking(null);
+    setThawAsk(false);
+  }, [column, trial, canBuy]);
+  const start = (c: "team" | "business") => {
+    if (yearlyOn && interval === "year" && seatsDefault !== undefined) {
+      setAsking(c);
+      return;
+    }
+    // Monthly sends the tier alone: the server adds the creator count.
+    upgrade?.(c);
+  };
   // Buttons rank from what is paid for: a trial has paid for nothing yet.
   const rank = trial ? 0 : ORDER.indexOf(column);
   return (
@@ -427,17 +443,12 @@ export function PlanCompare({
                     variant={c === "team" ? "default" : "outline"}
                     disabled={busy}
                     onClick={(e) => {
-                      if (
-                        yearlyOn &&
-                        interval === "year" &&
-                        seatsDefault !== undefined
-                      ) {
-                        opener.current = e.currentTarget;
-                        setAsking(c);
+                      opener.current = e.currentTarget;
+                      if (c === "business" && pendingReverts > 0) {
+                        setThawAsk(true);
                         return;
                       }
-                      // Monthly sends the tier alone: the server adds the creator count.
-                      upgrade(c);
+                      start(c);
                     }}
                   >
                     Upgrade to {NAMES[c]}
@@ -460,6 +471,42 @@ export function PlanCompare({
           );
         })}
       </div>
+      {thawAsk && upgrade && (
+        <Dialog open onOpenChange={(o) => !o && setThawAsk(false)}>
+          <DialogContent
+            onCloseAutoFocus={(e) => {
+              e.preventDefault();
+              opener.current?.focus();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{THAW_COPY.confirmTitle}</DialogTitle>
+              <DialogDescription>
+                {THAW_COPY.confirmBody(pendingReverts)}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setThawAsk(false)}
+              >
+                {THAW_COPY.confirmNo}
+              </Button>
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setThawAsk(false);
+                  start("business");
+                }}
+              >
+                {THAW_COPY.confirmYes}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
       {asking && upgrade && (
         <SeatStep
           tier={asking}

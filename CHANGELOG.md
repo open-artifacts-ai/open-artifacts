@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.162.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.0...v0.162.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **bus:** a Codex restore is logged and survives a slow ps ([#2202](https://github.com/open-artifacts-ai/open-artifacts/issues/2202), [#2297](https://github.com/open-artifacts-ai/open-artifacts/issues/2297)) ([#2301](https://github.com/open-artifacts-ai/open-artifacts/issues/2301)) ([3ecbccc](https://github.com/open-artifacts-ai/open-artifacts/commit/3ecbcccd61d3942ac390e8c92b87102e7379fa71))
+* **bus:** a linked session stays linked through a reconnect and a slow lookup ([#2110](https://github.com/open-artifacts-ai/open-artifacts/issues/2110)) ([#2289](https://github.com/open-artifacts-ai/open-artifacts/issues/2289)) ([14a3994](https://github.com/open-artifacts-ai/open-artifacts/commit/14a3994b47fb86b270da227eec07797488bcfa99))
+* **bus:** a notice addressed to an identity reaches only that identity ([#2238](https://github.com/open-artifacts-ai/open-artifacts/issues/2238)) ([#2293](https://github.com/open-artifacts-ai/open-artifacts/issues/2293)) ([63824c1](https://github.com/open-artifacts-ai/open-artifacts/commit/63824c19e5eb2c278d2463d9c4fd4bfedc6c6ab6))
+* **bus:** a slow process read is retried, never read as not Codex ([#2288](https://github.com/open-artifacts-ai/open-artifacts/issues/2288)) ([#2291](https://github.com/open-artifacts-ai/open-artifacts/issues/2291)) ([b993f4e](https://github.com/open-artifacts-ai/open-artifacts/commit/b993f4ea0b176a00a1769d2124124685e28307c8))
+* **bus:** the event log never follows a swapped or linked logs path ([#2159](https://github.com/open-artifacts-ai/open-artifacts/issues/2159), [#2160](https://github.com/open-artifacts-ai/open-artifacts/issues/2160)) ([#2303](https://github.com/open-artifacts-ai/open-artifacts/issues/2303)) ([69e29e0](https://github.com/open-artifacts-ai/open-artifacts/commit/69e29e02c46b7255709f56cfe28fdb4a937b3d4b))
+* **comments:** focusField's cleanup survives a torn-down page ([#2300](https://github.com/open-artifacts-ai/open-artifacts/issues/2300)) ([a5b64d9](https://github.com/open-artifacts-ai/open-artifacts/commit/a5b64d95111449266b47e3a87b9fe7198fbb8bcc))
+* **release:** a held prod deploy fails the release run ([#2257](https://github.com/open-artifacts-ai/open-artifacts/issues/2257)) ([#2296](https://github.com/open-artifacts-ai/open-artifacts/issues/2296)) ([4257adb](https://github.com/open-artifacts-ai/open-artifacts/commit/4257adb3bd7fa82ac4858ff5a8d3986af008e319))
+
+## [0.162.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.161.1...v0.162.0) (2026-11-12)
+
+
+### Features
+
+* **directory:** tell admins which roles group sync puts back after Team → Business ([#2150](https://github.com/open-artifacts-ai/open-artifacts/issues/2150)) ([#2268](https://github.com/open-artifacts-ai/open-artifacts/issues/2268)) ([b8de368](https://github.com/open-artifacts-ai/open-artifacts/commit/b8de3681042dfd3636c96dbd8546bfc091c27cb4))
+
+
+### Bug Fixes
+
+* **comments:** a reply notice the hub drops gives back its spend ([#2197](https://github.com/open-artifacts-ai/open-artifacts/issues/2197)) ([#2270](https://github.com/open-artifacts-ai/open-artifacts/issues/2270)) ([2b4acce](https://github.com/open-artifacts-ai/open-artifacts/commit/2b4acce6ebb18a1e7e512ea783caf449e532297e))
+* **comments:** one face stack, mark a11y and give-way ([#2247](https://github.com/open-artifacts-ai/open-artifacts/issues/2247)) ([#2266](https://github.com/open-artifacts-ai/open-artifacts/issues/2266)) ([8602a05](https://github.com/open-artifacts-ai/open-artifacts/commit/8602a059659a233ee75e4f2237002ed22bae9cb3))
+* **comments:** pill and composer respect the action row and iOS keyboard ([#2239](https://github.com/open-artifacts-ai/open-artifacts/issues/2239)) ([#2265](https://github.com/open-artifacts-ai/open-artifacts/issues/2265)) ([30f723f](https://github.com/open-artifacts-ai/open-artifacts/commit/30f723fa657d57f638a1221cbbde0dd3b5ef65aa))
+* **comments:** viewport follow-ups from [#2265](https://github.com/open-artifacts-ai/open-artifacts/issues/2265) review ([#2267](https://github.com/open-artifacts-ai/open-artifacts/issues/2267)) ([#2273](https://github.com/open-artifacts-ai/open-artifacts/issues/2273)) ([80e7061](https://github.com/open-artifacts-ai/open-artifacts/commit/80e7061da1d6804b4a9202e3fafb61bf37367535))
+* **names:** broader phrasings that read as an agent ([#1894](https://github.com/open-artifacts-ai/open-artifacts/issues/1894)) ([#2274](https://github.com/open-artifacts-ai/open-artifacts/issues/2274)) ([11daa0b](https://github.com/open-artifacts-ai/open-artifacts/commit/11daa0ba016efbc75b06c369f68fbd2cbad762a0))
+
 ## [0.161.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.161.0...v0.161.1) (2026-11-12)
 
 

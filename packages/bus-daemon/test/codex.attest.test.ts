@@ -224,6 +224,23 @@ describe("codex attestation (C26c)", () => {
     });
   });
 
+  it("a ps that cannot answer is a retryable refusal, never notCodex or admitted", async () => {
+    const { home } = codexHome();
+    const base = fakeProcs();
+    let down = true;
+    const check = codexAttestor({
+      home,
+      ...base,
+      procs: (pids) => (down ? undefined : base.procs?.(pids)),
+    });
+    expect(check.attestNow(codexHello())).toEqual({
+      ok: false,
+      reason: CODEX_REFUSALS.procUnknown,
+    });
+    down = false;
+    expect(check.attestNow(codexHello()).ok).toBe(true);
+  });
+
   it("refuses a parent whose start time moved since it was pinned", async () => {
     const { home, rollout } = codexHome();
     let start = START;
