@@ -173,3 +173,33 @@ describe("default-named away agents (#2311)", () => {
     expect(left).toBe(0);
   });
 });
+
+describe("unnamed flag and renames (#2311)", () => {
+  it("a chosen rename is never expired, and the list marks only unnamed agents", async () => {
+    const h = fresh();
+    const t0 = Date.now();
+    const a = await seed(h, "open-artifacts-3fa1", 0, t0);
+    const b = await seed(h, "claude-77", 0, t0);
+    // `a` was renamed by the user to a name that reads like a default.
+    await inHub(h, (_, s) =>
+      s.storage.sql.exec("update agents set name_chosen = 1 where id = ?", a),
+    );
+    await inHub(h, (_, s) =>
+      s.storage.sql.exec(
+        "insert into minted_names (org_id, lname, name, agent_id, lbase, created_at) values (?, 'open-artifacts-3fa1', 'open-artifacts-3fa1', ?, 'open-artifacts', ?)",
+        OWNER_ORG_ID,
+        a,
+        t0,
+      ),
+    );
+    const list = (await inHub(h, (i) => i.snapshot({ away: true }))) as {
+      agents: { id: string; unnamed?: boolean }[];
+    };
+    expect(list.agents.find((x) => x.id === a)?.unnamed).toBeUndefined();
+    expect(list.agents.find((x) => x.id === b)?.unnamed).toBe(true);
+    await clock(h, t0 + 2 * DEFAULT_NAME_AWAY_MS);
+    await alarms(h, 3);
+    expect(await exists(h, a)).toBe(true);
+    expect(await exists(h, b)).toBe(false);
+  });
+});

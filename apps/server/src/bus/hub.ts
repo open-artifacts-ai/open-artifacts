@@ -2460,7 +2460,9 @@ function byNamespaceName(
 const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.kind,
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
-  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince`;
+  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
+  a.name_chosen as nameChosen,
+  exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -5807,9 +5809,10 @@ export class BusHub extends DurableObject<Env> {
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
       this.#arm(t);
     sql.exec(
-      "update agents set name = ?, updated_at = ? where id = ?",
+      "update agents set name = ?, updated_at = ?, name_chosen = ? where id = ?",
       name,
       now,
+      f.name_kind === "default" ? 0 : 1,
       agent.id,
     );
     commitName(sql, agent.id, assigned, at, now);
@@ -6680,10 +6683,11 @@ export class BusHub extends DurableObject<Env> {
       name: string;
       kind: string;
       minted: number;
+      chosen: number;
       idle: number;
     }>(
       sql,
-      `select a.rowid as rid, a.id as id, a.updated_at as u, a.name as name, a.kind as kind,
+      `select a.rowid as rid, a.id as id, a.updated_at as u, a.name as name, a.kind as kind, a.name_chosen as chosen,
           exists (select 1 from minted_names m where m.agent_id = a.id and m.lname = lower(a.name)) as minted,
           (${IDLE_INBOX_SQL} and ${IDLE_OUTBOX_SQL}) as idle
          from agents a indexed by agents_closed
@@ -6698,7 +6702,10 @@ export class BusHub extends DurableObject<Env> {
       BATCH,
     );
     const gone = rows.filter(
-      (x) => x.idle === 1 && isDefaultAgentName(x.name, x.kind, x.minted === 1),
+      (x) =>
+        x.idle === 1 &&
+        x.chosen === 0 &&
+        isDefaultAgentName(x.name, x.kind, x.minted === 1),
     );
     if (gone.length > 0) {
       const ids = JSON.stringify(gone.map((x) => x.id));
