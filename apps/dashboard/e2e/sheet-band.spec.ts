@@ -156,3 +156,22 @@ test("390: a draft left focused when the keyboard closes silently heals", async 
     .toBe("0px");
   await expectFlush(page, "draft stuck");
 });
+
+test("390: a field focused with a toolbar gap and no keyboard does not lift", async ({
+  page,
+}) => {
+  // The page already has the toolbar gap when the sheet (and a draft's
+  // autofocused field) opens: iOS focuses it with no keyboard.
+  await page.goto(`/a/${ID}?mock=agents`);
+  await keyboard(page, 190);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await expect(page.locator("[data-sheet-height]")).toBeVisible();
+  await field(page).focus();
+  await page.waitForTimeout(400);
+  expect((await gap(page)).kb).toBe("0px");
+  await expectFlush(page, "focused, toolbar gap");
+  await shot(page, "focused-toolbar-gap");
+  // A real keyboard on top of the chrome still lifts.
+  await keyboard(page, 190 + 320);
+  await expect.poll(async () => (await gap(page)).kb).toBe("320px");
+});

@@ -43,12 +43,28 @@ function fieldFocused(): boolean {
  */
 export function sheetLift(): number {
   const vv = window.visualViewport;
-  // Only a focused field has a keyboard. Without one, a gap between the
-  // layout and visual viewports is browser chrome (iOS toolbars, a lagging
-  // resize) and must not lift the sheet off the bottom edge.
-  if (!vv || !fieldFocused() || keyboardInset() === 0) return 0;
-  return Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
+  if (!vv) return 0;
+  const gap = window.innerHeight - vv.height * (vv.scale || 1);
+  if (!fieldFocused()) {
+    // Nothing editable has focus, so no keyboard: the gap is browser chrome
+    // (iOS toolbars). Remember it. Just after a blur the keyboard may still
+    // be leaving, so that gap is not taken as chrome.
+    if (Date.now() - lastBlur > 800) baseline = Math.max(0, gap);
+    return 0;
+  }
+  // A focused field is not a keyboard (iOS leaves a programmatically focused
+  // field, such as a new draft's, focused with none up): only what the gap
+  // exceeds the chrome by counts, and only a keyboard-sized amount.
+  if (gap - baseline <= 120) return 0;
+  return Math.max(
+    0,
+    window.innerHeight - (vv.offsetTop + vv.height) - baseline,
+  );
 }
+
+/** The viewport gap while no field was focused: browser chrome, not a keyboard. */
+let baseline = 0;
+let lastBlur = 0;
 
 /** The composer's cap in px: its own cap, or 40% of what is visible. */
 export function fieldCap(own: number): number {
@@ -112,20 +128,31 @@ export function trackViewportVar(): () => void {
     }
   };
   if (users++ === 0) {
+    // The sheet opens with no keyboard up, even if its field is focused
+    // already: the gap now is the browser's chrome.
+    const vv = window.visualViewport;
+    if (vv)
+      baseline = Math.max(0, window.innerHeight - vv.height * (vv.scale || 1));
     set();
     const off = onViewport(set);
     // The keyboard goes with the field's focus, and the layout viewport may
     // settle after the visual one: look again on both.
     document.addEventListener("focusin", set);
-    document.addEventListener("focusout", set);
+    const blurred = () => {
+      lastBlur = Date.now();
+      set();
+    };
+    document.addEventListener("focusout", blurred);
     window.addEventListener("resize", set);
+    window.addEventListener("orientationchange", set);
     stop = () => {
       if (poll !== null) clearInterval(poll);
       poll = null;
       off();
       document.removeEventListener("focusin", set);
-      document.removeEventListener("focusout", set);
+      document.removeEventListener("focusout", blurred);
       window.removeEventListener("resize", set);
+      window.removeEventListener("orientationchange", set);
     };
   }
   return () => {
