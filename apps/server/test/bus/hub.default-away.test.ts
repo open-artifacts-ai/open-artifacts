@@ -203,3 +203,41 @@ describe("unnamed flag and renames (#2311)", () => {
     expect(await exists(h, b)).toBe(false);
   });
 });
+
+describe("role holders and named-by-words (#2311)", () => {
+  it("isDefaultAgentName: digits-only suffixes, not words", () => {
+    for (const n of ["claude-1", "pi", "pi-2", "agent-3", "codex-4-5"])
+      expect(isDefaultAgentName(n, "claude-code", false)).toBe(true);
+    expect(isDefaultAgentName("hermes-4", "hermes", false)).toBe(true);
+    for (const n of ["pi-docs", "codex-reviewer", "hermes-myrepo", "agent-x"])
+      expect(isDefaultAgentName(n, n.split("-")[0] ?? "", false)).toBe(false);
+  });
+
+  it("a role holder and a pi-docs agent are kept and a role holder is not marked unnamed", async () => {
+    const h = fresh();
+    const t0 = Date.now();
+    const holder = await seed(h, "claude-88", 0, t0);
+    const docs = await seed(h, "pi-docs", 0, t0, "pi");
+    const plain = await seed(h, "claude-89", 0, t0);
+    await inHub(h, (_, s) =>
+      s.storage.sql.exec(
+        "insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) values (?, ?, 'ns', 'OA Lead', 'oa lead', ?, ?)",
+        newId(),
+        OWNER_ORG_ID,
+        holder,
+        t0,
+      ),
+    );
+    const list = (await inHub(h, (i) => i.snapshot({ away: true }))) as {
+      agents: { id: string; unnamed?: boolean }[];
+    };
+    expect(list.agents.find((x) => x.id === holder)?.unnamed).toBeUndefined();
+    expect(list.agents.find((x) => x.id === docs)?.unnamed).toBeUndefined();
+    expect(list.agents.find((x) => x.id === plain)?.unnamed).toBe(true);
+    await clock(h, t0 + 2 * DEFAULT_NAME_AWAY_MS);
+    await alarms(h, 3);
+    expect(await exists(h, holder)).toBe(true);
+    expect(await exists(h, docs)).toBe(true);
+    expect(await exists(h, plain)).toBe(false);
+  });
+});
