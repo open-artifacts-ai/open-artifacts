@@ -473,6 +473,26 @@ describe("Settings › Security: passkeys", () => {
     expect(screen.queryByRole("button", { name: "Add passkey" })).toBeNull();
   });
 
+  it("a device that already has one (InvalidStateError on create) clears the approval and says so", async () => {
+    use("usable");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    const next = await screen.findByRole("button", { name: "Add passkey" });
+    create.mockRejectedValueOnce(new DOMException("dup", "InvalidStateError"));
+    fireEvent.click(next);
+    expect(
+      await screen.findByText(
+        "This device already has a passkey for this account. Nothing was added.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Add passkey" })).toBeNull();
+    // The header button is back: not aria-disabled, primary again.
+    const header = screen.getByRole("button", { name: "Add a passkey" });
+    expect(header).not.toHaveAttribute("aria-disabled");
+    expect(header.className).toMatch(/bg-primary/);
+  });
+
   it("a cancelled approval adds nothing: no begin, no create", async () => {
     use("usable");
     get.mockRejectedValue(new DOMException("no", "NotAllowedError"));

@@ -304,9 +304,11 @@ function PasskeyList({
     )
       return;
     // The options are single use and short lived: after these, start over.
+    // A device that already holds one can't create another: start over too.
     if (
-      e instanceof ApiClientError &&
-      (e.code === "challenge_expired" || e.code === "passkey_failed")
+      (e instanceof ApiClientError &&
+        (e.code === "challenge_expired" || e.code === "passkey_failed")) ||
+      (e instanceof DOMException && e.name === "InvalidStateError")
     )
       setApproved(null);
     setNote({ id: null, text: failureLine(e, "added") });
