@@ -1745,12 +1745,17 @@ async function withdrawHeldFor(
       stub(env, artifactId).commentsHeldTargets({ threadId, key: p.key }),
     );
     // #2240: asks the removed agent authored, so the hub also drops their held ask_answered notices.
-    const asks = await call(() =>
+    // A failed read costs only the ask ids: the held targets still go.
+    const own = await call(() =>
       stub(env, artifactId).commentsAskAuthors({ threadId }),
-    );
-    const own = asks
-      .filter((a) => isAuthoredBy(a.author, p))
-      .map((a) => a.commentId);
+    )
+      .then((asks) =>
+        asks.filter((a) => isAuthoredBy(a.author, p)).map((a) => a.commentId),
+      )
+      .catch((e) => {
+        logError("comment_withdraw_asks_read_failed", e);
+        return [] as string[];
+      });
     // Called even with no tracked targets: the hub also drops the thread's
     // held thread_reply rows by threadId (older ones carry no target).
     const req = {

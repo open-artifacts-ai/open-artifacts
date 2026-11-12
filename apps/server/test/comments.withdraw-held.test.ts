@@ -584,6 +584,34 @@ describe("removing an agent: its asks and one retry (#2240)", () => {
     expect(await answeredRows(hub, s.id, "ask-mine")).toBe(0);
   });
 
+  it("a failed read of the asks still withdraws the held mention", async () => {
+    const { s, t } = await threadOnly();
+    const root = t.comments[0] as Comment;
+    const hub = await hold("mention", s.claude, s.id, root.id);
+    const ns = E.ARTIFACT_RUNTIME as unknown as DurableObjectNamespace;
+    const broken = {
+      idFromName: (n: string) => ns.idFromName(n),
+      get: (id: DurableObjectId) =>
+        new Proxy(ns.get(id) as unknown as Record<string, unknown>, {
+          get: (tg, k) =>
+            k === "commentsAskAuthors"
+              ? () => {
+                  throw new Error("read failed");
+                }
+              : tg[k as string],
+        }),
+    };
+    await setThreadAgent(
+      { ...E, ARTIFACT_RUNTIME: broken } as unknown as Env,
+      s.id,
+      t.id,
+      s.claude,
+      { userId: owner.userId, short: null, owner: true },
+      true,
+    );
+    expect(await heldRows(hub, root.id)).toBe(0);
+  });
+
   it("an ask by another agent keeps its answered notice", async () => {
     const { s, t } = await threadOnly();
     await seedAsk(s.id, t.id, "ask-theirs", "Other");
