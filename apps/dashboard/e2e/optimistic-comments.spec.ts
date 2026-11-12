@@ -159,6 +159,11 @@ for (const [w, h] of [
     );
     await expect(ask.locator("[data-option]").nth(1)).toBeDisabled();
     await expect(ask.getByText(/You picked/)).toHaveCount(0);
+    // Still "needs you": the card's border and the header count stay until confirmed.
+    await expect(ask).toHaveAttribute("data-needs-you", "");
+    await expect(
+      page.getByRole("button", { name: /^\d+ asks? for you/ }).first(),
+    ).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/ask-sending-${w}.png` });
     await expect(ask.getByText(/You picked/)).toHaveCount(1, { timeout: 5000 });
     await expect(ask.locator("[data-sending]")).toHaveCount(0);
@@ -189,3 +194,47 @@ test("a 409 settles to the answer the server has", async ({ page }) => {
   await expect(ask.getByText(/You picked A/)).toBeVisible();
   await expect(ask.getByText(/You picked B/)).toHaveCount(0);
 });
+
+for (const [w, h] of [
+  [1280, 800],
+  [390, 844],
+] as const)
+  test(`${w}px: a reply that fails while its thread is not open shows a Restore line`, async ({
+    page,
+  }) => {
+    await slowOrBroken(page, { delay: 900, fail: 429 });
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto(`/a/${ID}?mock=agents`);
+    await page.getByRole("button", { name: /^Comments/ }).click();
+    const cards = page.locator("[data-thread]");
+    await expect(cards.first()).toBeVisible();
+    const first = cards.first();
+    const firstId = await first.getAttribute("data-thread");
+    await first.getByRole("button", { name: "Reply" }).first().click();
+    await page
+      .locator(`[data-thread="${firstId}"]`)
+      .getByRole("textbox", { name: "Reply" })
+      .fill("Keep this reply");
+    await page
+      .locator(`[data-thread="${firstId}"]`)
+      .getByRole("button", { name: "Reply", exact: true })
+      .last()
+      .click();
+    // Open another thread before the error lands: the first one's box closes.
+    await cards.nth(1).getByRole("button").first().click();
+    const line = page
+      .locator(`[data-thread="${firstId}"]`)
+      .getByText(/Your reply wasn.t posted/);
+    await expect(line).toBeVisible({ timeout: 4000 });
+    await line.scrollIntoViewIfNeeded();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/restore-${w}.png` });
+    await page
+      .locator(`[data-thread="${firstId}"]`)
+      .getByRole("button", { name: "Restore" })
+      .click();
+    await expect(
+      page
+        .locator(`[data-thread="${firstId}"]`)
+        .getByRole("textbox", { name: "Reply" }),
+    ).toHaveValue("Keep this reply");
+  });

@@ -505,7 +505,10 @@ export const useAnswerAsk = (id: string) =>
                     at: new Date().toISOString(),
                     typed: true,
                     yes: false,
-                  },
+                    // Not answered until the server confirms: the card keeps its
+                    // "needs you" border and the header keeps counting it.
+                    sending: true,
+                  } as NonNullable<typeof c.ask.answer>,
                 },
               },
         ),

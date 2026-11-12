@@ -31,13 +31,20 @@ export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
 });
 
+/** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
+export const isSendingAnswer = (a: object | undefined) =>
+  !!a && (a as { sending?: boolean }).sending === true;
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
     .filter((t) =>
       t.comments.some(
-        (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+        (c) =>
+          c.ask &&
+          (!c.ask.answer || isSendingAnswer(c.ask.answer)) &&
+          c.ask.to.some((a) => a.me),
       ),
     )
     .map((t) => t.id);
@@ -535,6 +542,7 @@ export function AskBlock({
     (o) => o.id === ask.recommended?.optionId,
   );
   const letters = showLetters(ask.options);
+  const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -578,10 +586,14 @@ export function AskBlock({
         <div
           // Amber only while it needs this reader: an ask for you with no pick yet.
           className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
-            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+            canAnswer && (!pickedOpt || sendingPick)
+              ? "ring-[var(--oa-warning)]"
+              : "ring-border"
           }`}
           data-ask=""
-          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
+          data-needs-you={
+            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
+          }
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
             {c.author.name}
@@ -674,27 +686,30 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer && pickedOpt && !answer.isPending && (
-            <p className={`${TXT} font-medium`} data-ask-answer="">
-              {actor(ask.answer.by, "You")} picked{" "}
-              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-              {versionDate(ask.answer.at)}
-              {ask.closed ? " · closed" : ""}
-              {canAnswer && locked && (
-                <>
-                  {" · "}
-                  <Button
-                    size="xs"
-                    variant="link"
-                    className="h-auto p-0"
-                    onClick={() => setChanging(true)}
-                  >
-                    Change
-                  </Button>
-                </>
-              )}
-            </p>
-          )}
+          {ask.answer &&
+            pickedOpt &&
+            !isSendingAnswer(ask.answer) &&
+            !answer.isPending && (
+              <p className={`${TXT} font-medium`} data-ask-answer="">
+                {actor(ask.answer.by, "You")} picked{" "}
+                {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                {versionDate(ask.answer.at)}
+                {ask.closed ? " · closed" : ""}
+                {canAnswer && locked && (
+                  <>
+                    {" · "}
+                    <Button
+                      size="xs"
+                      variant="link"
+                      className="h-auto p-0"
+                      onClick={() => setChanging(true)}
+                    >
+                      Change
+                    </Button>
+                  </>
+                )}
+              </p>
+            )}
           {asked.length > 0 && (
             <p
               data-ask-to=""
