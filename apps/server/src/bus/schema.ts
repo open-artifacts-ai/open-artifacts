@@ -580,6 +580,13 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   // the latest. Add-only.
   if (!agentCols.has("away_since"))
     sql.exec("alter table agents add column away_since integer");
+  // #2311: 1 once the name was set by a `rename` of kind chosen (a user or a
+  // session's own title), never a harness default; such an agent is never
+  // expired or hidden as unnamed. Add-only.
+  if (!agentCols.has("name_chosen"))
+    sql.exec(
+      "alter table agents add column name_chosen integer not null default 0",
+    );
   // #2110 (after away_since exists): the first trigger dropped proofs on every live = 0; replaced on
   // existing hubs (drop if exists is a no-op once it has gone).
   sql.exec("drop trigger if exists agent_proofs_close");
