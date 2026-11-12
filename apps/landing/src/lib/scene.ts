@@ -9,6 +9,14 @@
 /** How many steps the whole story has: four moments here, five chapters below. */
 export const STORY_STEPS = 9;
 
+/** Progress marks for step n of the story: one segment per step, no text. */
+export function marksHtml(n: number): string {
+  return `<span class="pm" aria-hidden="true">${Array.from(
+    { length: STORY_STEPS },
+    (_, i) => (i < n ? "<i class=on></i>" : "<i></i>"),
+  ).join("")}</span>`;
+}
+
 /** [first moment it appears, class, html]. The moment is step * 10 + progress. */
 export const SCENE_LINES: [number, string, string][] = [
   [10, "u", "&gt; plan our Q4 launch"],

@@ -2,9 +2,9 @@
 // the turn, and back again. It only pins on a wide screen with motion allowed;
 // otherwise the four moments stay stacked as cards, as the page renders them.
 import {
+  marksHtml,
   SCENE_CAPTIONS,
   SCENE_STATES,
-  STORY_STEPS,
   sceneHtml,
 } from "../../lib/scene";
 
@@ -89,12 +89,10 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
     if (s !== capS) {
       capS = s;
       const p = document.createElement("p");
-      const n = document.createElement("span");
-      n.className = "sc-n";
-      n.textContent = `${s} of ${STORY_STEPS}`;
       const b = document.createElement("b");
       b.textContent = SCENE_CAPTIONS[s][0];
-      p.append(n, b, SCENE_CAPTIONS[s][1]);
+      p.append(b, SCENE_CAPTIONS[s][1]);
+      p.insertAdjacentHTML("afterbegin", marksHtml(s));
       caps.replaceChildren(p);
     }
   }

@@ -2869,11 +2869,28 @@ centred */
     min-height: 62px;
     grid-template-columns: minmax(0, 1fr);
   }
-  .sc-n {
-    display: block;
-    font: 500 13px var(--oa-font-mono);
-    color: var(--oa-accent-fg);
-    margin-bottom: 4px;
+  .pm {
+    display: flex;
+    gap: 4px;
+    width: 100%;
+    max-width: 220px;
+  }
+  .pm i {
+    flex: 1;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--oa-divider);
+    transition: background 0.25s;
+  }
+  .pm i.on {
+    background: var(--oa-accent);
+  }
+  .ch .n .pm {
+    margin-bottom: 2px;
+  }
+  .sc-caps .pm,
+  .sc-cards .pm {
+    margin-bottom: 8px;
   }
   .sc-steps i:last-child {
     height: 46vh;

@@ -99,7 +99,9 @@ describe("landing sections", () => {
     );
     const cards = index.match(/<ol class="sc-cards"[\s\S]*?<\/ol>/)?.[0] ?? "";
     expect(cards.match(/<li>\s*<span class="n">/g)).toHaveLength(4);
-    for (const n of [1, 2, 3, 4]) expect(cards).toContain(`${n} of 9`);
+    for (const n of [1, 2, 3, 4])
+      expect(cards.match(/<i class=on>/g)?.length).toBeGreaterThanOrEqual(n);
+    expect(cards).not.toMatch(/\d of 9/);
     for (const moment of [
       "You ask a question.",
       "The agent works.",
@@ -142,7 +144,12 @@ describe("landing sections", () => {
   it("the story is chapters 5 to 9 of 9, without weekdays, in order, with a rail of real buttons", () => {
     const chapters = index.match(/<section class="ch">/g) ?? [];
     expect(chapters).toHaveLength(5);
-    for (const n of [5, 6, 7, 8, 9]) expect(text).toContain(`${n} of 9`);
+    expect(text).not.toMatch(/\d of 9/);
+    const marks =
+      index.match(/<section class="ch">[\s\S]*?<\/span><\/span>/g) ?? [];
+    expect(marks.map((m) => m.match(/<i class=on>/g)?.length)).toEqual([
+      5, 6, 7, 8, 9,
+    ]);
     expect(index).not.toMatch(
       /<span class="n">(Monday|Tuesday|Wednesday|Thursday|Friday|Launch day|After that)<\/span>/,
     );

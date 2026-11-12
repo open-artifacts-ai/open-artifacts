@@ -2,13 +2,13 @@
 // The hero demo: one piece of work in four moments, a transcript beside an
 // artifact, then a turn where the transcript leaves. With scripts the section
 // pins and steps as you scroll; without them, on a phone and with reduced
-// motion, the four moments stack as cards ("1 of 9" to "4 of 9") with the turn
+// motion, the four moments stack as cards (with progress marks) with the turn
 // as a small card of its own.
 import {
+  marksHtml,
   SCENE_CAPTIONS,
   SCENE_NOTE,
   SCENE_TURN,
-  STORY_STEPS,
   sceneHtml,
 } from "../../lib/scene";
 ---
@@ -25,7 +25,7 @@ import {
     {[1, 2, 3, 4].map((s) => (
       <>
         <li>
-          <span class="n">{s} of {STORY_STEPS}</span>
+          <span class="n"><Fragment set:html={marksHtml(s)} /></span>
           <h3>{SCENE_CAPTIONS[s][0]}</h3>
           <p class="cp">{SCENE_CAPTIONS[s][1]}</p>
           <Fragment set:html={sceneHtml(s * 10 + 9)} />
