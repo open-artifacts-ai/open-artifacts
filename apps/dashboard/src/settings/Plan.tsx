@@ -27,6 +27,10 @@ import { muted, SettingsCard, STACK } from "./ui";
 /** The public docs page on leaving hosted (#2108). */
 const LEAVE_HOSTED_URL = "https://open-artifacts.com/docs/hosted/";
 
+/** Shown instead of Pay and the plan cards until live Stripe is set up (#2326). */
+const PAID_SOON =
+  "Paid plans open soon. We'll email you before anything changes.";
+
 type Buy = Pick<BillingCheckoutInput, "tier" | "interval" | "seats">;
 
 const NAME: Record<BillingTier, string> = {
@@ -144,10 +148,14 @@ export function Plan() {
   const billing =
     state.status === "authed" ? state.me.instance.billing : undefined;
   if (!billing) {
+    // A hosted install with no billing answer has no way to pay yet (#2326).
     // Self-hosted installs have no plan; there is nothing to show.
+    const hosted = state.status === "authed" && state.me.instance.hosted;
     return (
       <div className={STACK}>
-        <p className={muted}>This install has no plan to manage.</p>
+        <p className={muted}>
+          {hosted ? PAID_SOON : "This install has no plan to manage."}
+        </p>
       </div>
     );
   }
@@ -164,6 +172,8 @@ export function Plan() {
   // canceled subscription.
   const lapsedPaid = paid && billing.status === "lapsed";
   const busy = go.isPending;
+  // Billing says live Stripe is not set up: no Pay, no portal, no plan cards.
+  const payOff = billing.checkout === false;
   // The portal needs a Stripe customer. A provisioned or comped plan has
   // none (hasCustomer false): no Manage billing, since billing would refuse.
   // Absent means billing's answer predates the field: keep the button.
@@ -205,7 +215,7 @@ export function Plan() {
               <dd className="m-0">{billing.creatorsThisMonth}</dd>
             </>
           )}
-          {!ended && !operatorPlan && (
+          {!ended && !operatorPlan && !payOff && (
             <>
               <dt className={muted}>Price</dt>
               <dd className="m-0">{PRICE[billing.tier]}</dd>
@@ -213,7 +223,9 @@ export function Plan() {
           )}
         </dl>
         <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
-          {operatorPlan ? (
+          {payOff ? (
+            <span className={muted}>{PAID_SOON}</span>
+          ) : operatorPlan ? (
             <span className={muted}>
               Open Artifacts set up this plan for you, so there&apos;s nothing
               to pay or manage here.
@@ -265,7 +277,7 @@ export function Plan() {
               )}
             </>
           )}
-          {paid && !lapsedPaid && !operatorPlan && (
+          {paid && !lapsedPaid && !operatorPlan && !payOff && (
             <span className={muted}>
               Invoices and card are in the billing portal.
             </span>
@@ -283,32 +295,34 @@ export function Plan() {
           </a>
         </p>
       </SettingsCard>
-      <PlanCompare
-        column={column}
-        trial={billing.tier === "trial"}
-        busy={busy}
-        yearly={billing.yearlyTeamBusiness === true}
-        pendingReverts={pendingReverts}
-        upgrade={
-          operatorPlan || lapsedPaid
-            ? undefined
-            : // A paid plan changes in the billing portal, never a second checkout.
-              portal
-              ? () => go.mutate("portal")
-              : // Seats come only from the yearly step; the schema needs them with year.
-                (tier, seats) =>
-                  go.mutate(
-                    seats === undefined
-                      ? { tier }
-                      : { tier, interval: "year", seats },
-                  )
-        }
-        seatsDefault={
-          operatorPlan || lapsedPaid || portal
-            ? undefined
-            : Math.max(1, billing.creatorsThisMonth ?? 1)
-        }
-      />
+      {!payOff && (
+        <PlanCompare
+          column={column}
+          trial={billing.tier === "trial"}
+          busy={busy}
+          yearly={billing.yearlyTeamBusiness === true}
+          pendingReverts={pendingReverts}
+          upgrade={
+            operatorPlan || lapsedPaid
+              ? undefined
+              : // A paid plan changes in the billing portal, never a second checkout.
+                portal
+                ? () => go.mutate("portal")
+                : // Seats come only from the yearly step; the schema needs them with year.
+                  (tier, seats) =>
+                    go.mutate(
+                      seats === undefined
+                        ? { tier }
+                        : { tier, interval: "year", seats },
+                    )
+          }
+          seatsDefault={
+            operatorPlan || lapsedPaid || portal
+              ? undefined
+              : Math.max(1, billing.creatorsThisMonth ?? 1)
+          }
+        />
+      )}
     </div>
   );
 }

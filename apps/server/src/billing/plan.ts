@@ -80,6 +80,8 @@ export const TierAnswerSchema = z.object({
   hasCustomer: z.boolean().optional(),
   /** Yearly Team and Business prices are configured. Absent from an answer that predates it (off). */
   yearlyTeamBusiness: z.boolean().optional(),
+  /** Live Stripe is set up (false hides Pay and plan cards). Absent from an answer that predates it (shown). */
+  checkout: z.boolean().optional(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -140,6 +142,7 @@ export type EffectivePlan = {
   hasCustomer?: boolean;
   /** Absent when billing's answer carried none (off). */
   yearlyTeamBusiness?: boolean;
+  checkout?: boolean;
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -188,6 +191,9 @@ export function effectivePlan(
       : {}),
     ...("yearlyTeamBusiness" in base && base.yearlyTeamBusiness !== undefined
       ? { yearlyTeamBusiness: base.yearlyTeamBusiness }
+      : {}),
+    ...("checkout" in base && base.checkout !== undefined
+      ? { checkout: base.checkout }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",
