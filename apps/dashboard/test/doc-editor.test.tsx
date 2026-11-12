@@ -577,7 +577,9 @@ describe("DocEditor", () => {
     render(<DocEditor {...base} canEdit fresh makeProvider={p.make} />);
     await screen.findByRole("toolbar");
     act(() => p.made.last?.connect());
-    const title = screen.getByRole("textbox", { name: "Title" });
+    const title = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Title",
+    });
     await waitFor(() => expect(title).toHaveFocus());
     expect([title.selectionStart, title.selectionEnd]).toEqual([
       0,
