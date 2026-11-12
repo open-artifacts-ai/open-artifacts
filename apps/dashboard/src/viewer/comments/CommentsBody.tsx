@@ -472,7 +472,7 @@ function Composer({
     const at = pickedAt.current;
     if (at === null) return;
     pickedAt.current = null;
-    ref.current?.focus();
+    ref.current?.focus({ preventScroll: true });
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {

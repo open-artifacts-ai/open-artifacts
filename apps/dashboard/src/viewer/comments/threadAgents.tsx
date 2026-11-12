@@ -202,7 +202,7 @@ export function RemovalNotices({
   const prev = useRef<{ key: string; scope: Element | Document } | null>(null);
   useEffect(() => {
     if (key) {
-      undo.current?.focus();
+      undo.current?.focus({ preventScroll: true });
       prev.current = {
         key,
         scope: undo.current?.closest("[data-thread]") ?? document,

@@ -47,7 +47,7 @@ export function useRoving<T extends HTMLElement>() {
                 : -1;
       if (to < 0) return;
       e.preventDefault();
-      all[to]?.focus();
+      all[to]?.focus({ preventScroll: true });
     },
   };
 }
