@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.167.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.166.0...v0.167.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** a Solo that paid in its free days sees Manage billing, not Pay ([#2138](https://github.com/open-artifacts-ai/open-artifacts/issues/2138)) ([#2346](https://github.com/open-artifacts-ai/open-artifacts/issues/2346)) ([1603c43](https://github.com/open-artifacts-ai/open-artifacts/commit/1603c435bf8e936311aaf5ce59b15030baf74f67))
+
 ## [0.166.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.165.0...v0.166.0) (2026-11-12)
 
 
