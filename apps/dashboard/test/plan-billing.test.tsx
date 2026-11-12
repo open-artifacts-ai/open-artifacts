@@ -1080,49 +1080,32 @@ describe("yearly Team and Business seat step", () => {
   });
 });
 
-// #2326: until live Stripe is set up, Plan shows the line and no way to pay.
-describe("checkout gate", () => {
+// #2326: a hosted install with no billing answer cannot pay yet.
+describe("hosted install with no billing answer", () => {
   const LINE = "Paid plans open soon. We'll email you before anything changes.";
-  const noPayUi = () => {
-    expect(screen.queryByRole("button", { name: /^Pay / })).toBeNull();
-    expect(screen.queryByTestId("plan-card-team")).toBeNull();
-    expect(screen.queryByTestId("plan-card-business")).toBeNull();
-    expect(screen.queryByTestId("plan-card-solo")).toBeNull();
-    expect(screen.queryByRole("button", { name: /billing/i })).toBeNull();
-  };
 
-  it("checkout false: the trial, the line, no Pay buttons and no plan cards", async () => {
-    mountHosted("/settings/plan", { billing: { ...TRIAL, checkout: false } });
-    expect(await screen.findByText(LINE)).toBeVisible();
-    expect(screen.getByText("Free month")).toBeVisible();
-    noPayUi();
-  });
-
-  it("a hosted install with no billing answer shows the same line", async () => {
+  it("hosted without billing: the line, no buttons", async () => {
     mountHosted("/settings/plan", true, (m) => {
       const { billing: _, ...instance } = m.instance;
       return { ...m, instance };
     });
     expect(await screen.findByText(LINE)).toBeVisible();
-    noPayUi();
+    expect(screen.queryByRole("button", { name: /^Pay / })).toBeNull();
+    expect(screen.queryByTestId("plan-card-team")).toBeNull();
   });
 
-  it.each([
-    ["checkout true", { checkout: true }],
-    ["checkout absent", {}],
-  ])("%s: Pay and the plan cards stay", async (_n, extra) => {
-    mountHosted("/settings/plan", { billing: { ...TRIAL, ...extra } });
-    expect(
-      await screen.findByRole("button", { name: "Pay $1/month" }),
-    ).toBeVisible();
-    expect(screen.getByTestId("plan-card-team")).toBeVisible();
-    expect(screen.queryByText(LINE)).toBeNull();
-  });
-
-  it("a self-hosted install keeps its own line", async () => {
+  it("self-hosted keeps its own line", async () => {
     mountHosted("/settings/plan", { selfHosted: true });
     expect(
       await screen.findByText("This install has no plan to manage."),
+    ).toBeVisible();
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it("hosted with billing is unchanged", async () => {
+    mountHosted("/settings/plan", { billing: { ...TRIAL } });
+    expect(
+      await screen.findByRole("button", { name: "Pay $1/month" }),
     ).toBeVisible();
     expect(screen.queryByText(LINE)).toBeNull();
   });

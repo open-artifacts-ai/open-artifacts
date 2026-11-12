@@ -87,12 +87,6 @@ export const PlanViewSchema = z.object({
    * Owner and admins only.
    */
   yearlyTeamBusiness: z.boolean().optional(),
-  /**
-   * Billing sets this false while live Stripe is not set up in this
-   * environment (no key or no prices): Plan then shows no Pay buttons and no
-   * plan cards. Absent or true keeps them. Owner and admins only.
-   */
-  checkout: z.boolean().optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

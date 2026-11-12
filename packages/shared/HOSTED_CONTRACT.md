@@ -408,12 +408,6 @@ billing's answer predates it (unknown: the dashboard keeps Manage billing).
 and Business prices are configured in this environment; absent or false hides
 yearly Team and Business in the dashboard. Owner and admins only, like
 `hasCustomer`; billing's `GET /tier` answer carries it and the server passes it on.
-`checkout` (boolean, optional): billing sets it true only when its Stripe secret
-key and the Solo monthly, Team and Business prices are all set; false hides Pay
-and the plan cards in Settings > Plan (the page says "Paid plans open soon.
-We'll email you before anything changes."). Absent means shown (an answer that
-predates it). Owner and admins only. A hosted install with no billing gate has
-no `instance.billing` at all and shows the same line.
 
 | State | What it does | `reason` |
 |---|---|---|
