@@ -365,7 +365,7 @@ function Composer({
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
   /** Called when the box gains or loses text the reader typed. */
-  onDirty?: (dirty: boolean) => void;
+  onDirty?: (dirty: boolean, unmounting?: boolean) => void;
   placeholder: string;
   /** The placeholder for someone who can mention agents here. */
   mentionPlaceholder?: string;
@@ -485,7 +485,7 @@ function Composer({
   const composing = body !== "" || initial !== "";
   useEffect(() => {
     onDirty?.(body !== "");
-    return () => onDirty?.(false);
+    return () => onDirty?.(false, true);
   }, [body, onDirty]);
   const go = async () => {
     if (!body || once.current) return;

@@ -42,12 +42,14 @@ type Opts = {
   onCommentPositions: (p: unknown[]) => void;
   onCommentOpen: (id: string) => void;
   onCommentSelection: (has: boolean, bottom: number) => void;
+  onCommentAway: () => void;
 };
 const opts: Opts[] = [];
 const setMode = vi.fn();
 const setComments = vi.fn();
 const focus = vi.fn();
 const commentOnSelection = vi.fn();
+const clearSelection = vi.fn();
 // Like the real bridge, the mock loads the frame (Shell ignores earlier loads).
 vi.mock("../src/viewer/bridge", async () => {
   const { loadArtifactFrame } = await import("../src/viewer/frame");
@@ -65,6 +67,7 @@ vi.mock("../src/viewer/bridge", async () => {
         setComments,
         focusComment: focus,
         commentOnSelection,
+        clearSelection,
       };
     },
   };
@@ -2804,5 +2807,110 @@ describe("comment on selection (#1732)", () => {
     expect(
       screen.queryByRole("button", { name: "Comment on selection" }),
     ).toBeNull();
+  });
+});
+
+describe("clicking away from an unsent selection (Google Docs)", () => {
+  const select = (exact: string) =>
+    act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact,
+        prefix: "",
+        suffix: "",
+      }),
+    );
+  const draftBox = () =>
+    screen.findByRole("textbox", { name: "Add a comment" });
+  const down = (el: Element) =>
+    act(() => {
+      el.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
+
+  beforeEach(() => clearSelection.mockClear());
+
+  it("the frame's pointerdown drops an empty draft and its highlight", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-away");
+    await draftBox();
+    await act(async () => opts.at(-1)?.onCommentAway());
+    await waitFor(() => expect(screen.queryByText("quote-away")).toBeNull());
+    await waitFor(() => expect(setComments.mock.lastCall?.[2]).toBeUndefined());
+  });
+
+  it("a pointerdown in the shell drops it and clears the frame's selection", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-shell");
+    await draftBox();
+    await down(document.body);
+    await waitFor(() => expect(screen.queryByText("quote-shell")).toBeNull());
+    expect(clearSelection).toHaveBeenCalled();
+  });
+
+  it("a typed draft stays on a click away; only the live selection clears", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-typed");
+    fireEvent.change(await draftBox(), { target: { value: "half a thought" } });
+    await down(document.body);
+    await act(async () => opts.at(-1)?.onCommentAway());
+    expect(screen.getByText("quote-typed")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("half a thought")).toBeInTheDocument();
+    expect(clearSelection).toHaveBeenCalled();
+  });
+
+  it("a pointerdown inside the comments column changes nothing", async () => {
+    mount(viewerPath(OWNED));
+    const aside = await col();
+    await select("quote-inside");
+    const box = await draftBox();
+    await down(box);
+    await down(aside);
+    expect(screen.getByText("quote-inside")).toBeInTheDocument();
+    expect(clearSelection).not.toHaveBeenCalled();
+  });
+
+  it("selecting different text starts a new draft", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("first-quote");
+    await down(document.body);
+    await waitFor(() => expect(screen.queryByText("first-quote")).toBeNull());
+    await select("second-quote");
+    expect(await screen.findByText("second-quote")).toBeInTheDocument();
+  });
+
+  it("closing the list drops an empty draft", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-close");
+    await draftBox();
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await screen.findByRole("complementary", { name: "Comments" });
+    expect(screen.queryByText("quote-close")).toBeNull();
+  });
+
+  it("closing the list keeps a draft the reader typed in", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-keep");
+    fireEvent.change(await draftBox(), { target: { value: "typed" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    // The composer remounts with the column; the draft itself (its quote) is kept.
+    expect(await screen.findByText("quote-keep")).toBeInTheDocument();
   });
 });

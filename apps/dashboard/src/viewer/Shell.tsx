@@ -301,6 +301,14 @@ function Viewer({
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
     else setColOpen(true);
   };
+  // Closing the list drops an unsent, empty draft with its selection; a typed
+  // one stays (hidden), as before.
+  const wasShown = useRef(false);
+  const { dropDraft } = cmt;
+  useEffect(() => {
+    if (wasShown.current && !listShown) dropDraft(true, true);
+    wasShown.current = listShown;
+  }, [listShown, dropDraft]);
   // Latest values for the effect: the parent's key remounts this on id/version change.
   const vformat = versionInfo?.format;
   const formatRef = useRef(vformat);
@@ -476,6 +484,7 @@ function Viewer({
       onCommentPin: (p) => cmtRef.current.onPin(p),
       onCommentEscape: () => cmtRef.current.onEscape(),
       onCommentSelection: (has) => cmtRef.current.onSelection(has),
+      onCommentAway: () => cmtRef.current.onAway(),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
