@@ -1,5 +1,6 @@
 import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { MessageSquare } from "lucide-react";
 import {
@@ -12,7 +13,12 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
-import { useArtifact, usePatchArtifact, useVersionInfo } from "../api/queries";
+import {
+  qk,
+  useArtifact,
+  usePatchArtifact,
+  useVersionInfo,
+} from "../api/queries";
 import { useCan } from "../auth/permissions";
 import { useLoginRedirect } from "../auth/redirect";
 import { useMe } from "../auth/useMe";
@@ -39,7 +45,11 @@ import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
 import { DocEditor, STATUS_TEXT } from "./doc/DocEditor";
 import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
 import { isFresh } from "./doc/fresh";
-import type { DocStatus } from "./doc/useDocRoom";
+import {
+  type DocStatus,
+  versionNote as docVersionNote,
+  type VersionEvent,
+} from "./doc/useDocRoom";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FsTip, FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
@@ -392,6 +402,23 @@ function Viewer({
   const isDoc = isDocArtifact(artifact);
   const [docStatus, setDocStatus] = useState<DocStatus | null>(null);
   const renameDoc = usePatchArtifact(artifact.id);
+  // The room broadcasts saved and restored versions: refresh the version
+  // list and say so in the title bar for a few seconds (no polling).
+  const qc = useQueryClient();
+  const [versionNote, setVersionNote] = useState<string | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  useEffect(() => () => clearTimeout(noteTimer.current), []);
+  const onDocVersion = useCallback(
+    (e: VersionEvent) => {
+      void qc.invalidateQueries({ queryKey: qk.artifact(artifact.id) });
+      setVersionNote(docVersionNote(e));
+      clearTimeout(noteTimer.current);
+      noteTimer.current = setTimeout(() => setVersionNote(null), 4000);
+    },
+    [qc, artifact.id],
+  );
   const docSpace = useUploadSpace(artifact.space?.id);
   // The Library's gate: docs are on, and this caller may create.
   const meState = useMe();
@@ -657,7 +684,7 @@ function Viewer({
                       aria-live="polite"
                       data-state={docStatus}
                     >
-                      {STATUS_TEXT[docStatus]}
+                      {versionNote ?? STATUS_TEXT[docStatus]}
                     </span>
                   )}
                 </>
@@ -747,6 +774,7 @@ function Viewer({
                 viewer={viewer}
                 outsider={!authed || role === "guest"}
                 onStatus={setDocStatus}
+                onVersion={onDocVersion}
                 fullActions={
                   <>
                     {/* Only where the Library would offer New doc. */}

@@ -924,6 +924,35 @@ describe("DocEditor", () => {
       );
     });
 
+    it("passes the room's saved and restored events to onVersion", async () => {
+      const onVersion = vi.fn();
+      const p = fakeProviders();
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          onVersion={onVersion}
+        />,
+      );
+      await screen.findByRole("toolbar");
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      act(() => f.connect());
+      act(() =>
+        f.frame(JSON.stringify({ type: "saved", version: 5, auto: true })),
+      );
+      act(() =>
+        f.frame(JSON.stringify({ type: "restored", from: 2, version: 6 })),
+      );
+      expect(onVersion.mock.calls.map((c) => c[0])).toEqual([
+        { kind: "saved", version: 5, auto: true },
+        { kind: "restored", from: 2, version: 6 },
+      ]);
+      // The doc stays editable and shows no alert.
+      expect(screen.getByRole("toolbar")).toBeVisible();
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
     it("4401 and 1013 show nothing", async () => {
       const { f } = await open();
       act(() => f.close(4401));

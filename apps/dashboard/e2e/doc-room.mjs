@@ -13,7 +13,8 @@
 // Wire spec frames (artifact UkN5r8hpoXu9DYxG): --hello role[:reason[:bytes]]
 // sends the hello frame first (read:room_full, read:access:1950000, edit);
 // --close <code> closes every connection with that code, --close-first <code>
-// only the first (4401 4403 4404 1007 1013). Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+// only the first (4401 4403 4404 1007 1013). --saved n[:name[:auto]] and
+// --restored from:version send the version broadcasts. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -49,6 +50,8 @@ export function startDocRoom({
   hello = null,
   close = null,
   closeFirst = null,
+  saved = null,
+  restored = null,
 }) {
   let connections = 0;
   const ydoc = new Y.Doc();
@@ -105,6 +108,37 @@ export function startDocRoom({
           cap: 2097152,
           version: 1,
         }),
+      );
+    }
+    // --saved n[:name[:auto]] and --restored from:version: the room's version
+    // broadcasts, 1.2 s after a client connects (the page has loaded by then).
+    if (saved) {
+      const [n, name, auto] = saved.split(":");
+      setTimeout(
+        () =>
+          ws.send(
+            JSON.stringify({
+              type: "saved",
+              version: Number(n),
+              ...(name ? { name } : {}),
+              auto: auto === "auto",
+            }),
+          ),
+        1200,
+      );
+    }
+    if (restored) {
+      const [from, version] = restored.split(":");
+      setTimeout(
+        () =>
+          ws.send(
+            JSON.stringify({
+              type: "restored",
+              from: Number(from),
+              version: Number(version),
+            }),
+          ),
+        1200,
       );
     }
     // --close <code>: every connection is closed with that code (4403, 4404,
@@ -256,6 +290,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     hello: arg("--hello"),
     close: arg("--close"),
     closeFirst: arg("--close-first"),
+    saved: arg("--saved"),
+    restored: arg("--restored"),
   });
   const stop = () => room.close().then(() => process.exit(0));
   process.on("SIGTERM", stop);

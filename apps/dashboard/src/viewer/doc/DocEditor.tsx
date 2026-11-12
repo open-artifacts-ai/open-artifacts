@@ -21,6 +21,7 @@ import {
   type RoomProvider,
   roomNotice,
   useDocRoom,
+  type VersionEvent,
 } from "./useDocRoom";
 
 export const STATUS_TEXT: Record<DocStatus, string> = {
@@ -41,6 +42,8 @@ export interface DocEditorProps {
   outsider: boolean;
   /** Reports the saved/saving text for the title bar; null on unmount. */
   onStatus?: (status: DocStatus | null) => void;
+  /** A version was saved or restored (the room says so; no polling). */
+  onVersion?: (e: VersionEvent) => void;
   /** Saves a new title as the artifact's title (the rename path). */
   onRename?: (title: string) => void;
   /** Buttons beside the "doc is full" message (New doc, Version history). */
@@ -58,6 +61,11 @@ export function DocEditor(props: DocEditorProps) {
   );
   const { onStatus } = props;
   const { status } = snap;
+  const { onVersion } = props;
+  useEffect(
+    () => (room && onVersion ? room.onVersion(onVersion) : undefined),
+    [room, onVersion],
+  );
   useEffect(() => {
     // The state belongs to editing: a read-only viewer has nothing to save.
     onStatus?.(room && props.canEdit ? status : null);

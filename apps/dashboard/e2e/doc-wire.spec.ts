@@ -106,3 +106,47 @@ test("close 1013 once: backs off and comes back", async ({ page }, info) => {
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(prose(page)).toHaveAttribute("contenteditable", "true");
 });
+
+test("saved: the title bar says Saved as v5 for a moment and the version data refetches", async ({
+  page,
+}, info) => {
+  let artifactGets = 0;
+  page.on("request", (r) => {
+    if (
+      r.method() === "GET" &&
+      r.url().endsWith(`/api/v1/artifacts/${LANDING}`)
+    )
+      artifactGets++;
+  });
+  await open(page, info, ["--saved", "5"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved" }),
+  ).toBeVisible();
+  const before = artifactGets;
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved as v5" }),
+  ).toBeVisible();
+  await expect.poll(() => artifactGets).toBeGreaterThan(before);
+  // And it goes back to plain Saved.
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible({ timeout: 8000 });
+});
+
+test("restored by someone else: says so, refetches, the doc stays editable", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--restored", "3:7"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Restored v3 as v7" }),
+  ).toBeVisible();
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a named save shows its name", async ({ page }, info) => {
+  await open(page, info, ["--saved", "6:Before launch"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved as v6 (Before launch)" }),
+  ).toBeVisible();
+});

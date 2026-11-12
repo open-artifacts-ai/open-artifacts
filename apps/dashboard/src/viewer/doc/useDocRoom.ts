@@ -50,6 +50,22 @@ export const NEAR_CAP_SHARE = 0.9;
 export const nearCap = (bytes: number) =>
   `This doc is almost full: ${(bytes / 1048576).toFixed(1)} MB of 2 MB.`;
 
+/** A version was saved or restored (wire spec: broadcast, so no polling). */
+export type VersionEvent =
+  | { kind: "saved"; version: number; name?: string; auto: boolean }
+  | { kind: "restored"; from: number; version: number };
+
+/**
+ * The title-bar words for a version event. Spec: "Saved as v5". PLACEHOLDER:
+ * the named form and the restore form.
+ */
+export function versionNote(e: VersionEvent): string {
+  if (e.kind === "restored") return `Restored v${e.from} as v${e.version}`;
+  return e.name
+    ? `Saved as v${e.version} (${e.name})`
+    : `Saved as v${e.version}`;
+}
+
 /** Why the socket stopped for good (the client does not retry). */
 export type RoomEnd = "access_removed" | "not_found" | "bad_frame";
 
@@ -116,6 +132,12 @@ export interface DocRoom {
   provider: RoomProvider;
   subscribe(cb: () => void): () => void;
   getSnapshot(): DocSnapshot;
+  /**
+   * Version events from the room. A restore by someone else arrives as an
+   * ordinary doc update (the room applies it as one edit), so the text needs
+   * no reload; the events are for the version list and the title bar.
+   */
+  onVersion(cb: (e: VersionEvent) => void): () => void;
   /** Close and reopen the socket (the "Try again" beside a full room). */
   reconnect(): void;
   /** discard: drop unsent edits instead of sending them (a resync). */
@@ -184,6 +206,7 @@ export function createDocRoom(
   let cap: number | null = null;
   let ended: RoomEnd | null = null;
   let badFrames = 0;
+  const versionListeners = new Set<(e: VersionEvent) => void>();
 
   let connected = !!provider.wsconnected;
   let sawDisconnect = false;
@@ -336,6 +359,8 @@ export function createDocRoom(
           reason?: unknown;
           bytes?: unknown;
           cap?: unknown;
+          version?: unknown;
+          from?: unknown;
         };
         if (frame.type === "hello") {
           // The first frame: the role comes from the server only.
@@ -348,6 +373,27 @@ export function createDocRoom(
           cap = typeof frame.cap === "number" ? frame.cap : null;
           publish();
         }
+        if (frame.type === "saved" && typeof frame.version === "number") {
+          const f = frame as {
+            version: number;
+            name?: unknown;
+            auto?: unknown;
+          };
+          for (const l of [...versionListeners])
+            l({
+              kind: "saved",
+              version: f.version,
+              ...(typeof f.name === "string" && f.name ? { name: f.name } : {}),
+              auto: f.auto === true,
+            });
+        }
+        if (
+          frame.type === "restored" &&
+          typeof frame.version === "number" &&
+          typeof frame.from === "number"
+        )
+          for (const l of [...versionListeners])
+            l({ kind: "restored", from: frame.from, version: frame.version });
         if (frame.type === "error") {
           error = typeof frame.code === "string" ? frame.code : "error";
           publish();
@@ -396,6 +442,10 @@ export function createDocRoom(
       return () => listeners.delete(cb);
     },
     getSnapshot: () => snapshot,
+    onVersion(cb) {
+      versionListeners.add(cb);
+      return () => versionListeners.delete(cb);
+    },
     reconnect() {
       if (destroyed) return;
       ended = null;
@@ -421,6 +471,7 @@ export function createDocRoom(
       provider.off("status", onStatus);
       provider.off("sync", onSync);
       listeners.clear();
+      versionListeners.clear();
       provider.destroy();
       ydoc.destroy();
     },

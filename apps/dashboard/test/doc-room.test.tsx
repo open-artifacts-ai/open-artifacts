@@ -13,6 +13,7 @@ import {
   ROOM_FULL_RETRY,
   roomNotice,
   UPDATE_BATCH_MS,
+  versionNote,
 } from "../src/viewer/doc/useDocRoom";
 import { FakeProvider } from "./doc-fake-provider";
 
@@ -343,6 +344,61 @@ describe("the wire spec: hello and close codes", () => {
     expect(s.status).toBe("offline");
     // Not stopped by the room.
     expect(fake.disconnects).toBe(0);
+    room.destroy();
+  });
+});
+
+describe("the wire spec: saved and restored", () => {
+  const events = () => {
+    const room = open();
+    fake.connect();
+    const seen: unknown[] = [];
+    room.onVersion((e) => seen.push(e));
+    return { room, seen };
+  };
+
+  it("a saved frame becomes a version event, named or not, auto or not", () => {
+    const { room, seen } = events();
+    fake.frame(JSON.stringify({ type: "saved", version: 5, auto: true }));
+    fake.frame(
+      JSON.stringify({
+        type: "saved",
+        version: 6,
+        name: "Before launch",
+        auto: false,
+      }),
+    );
+    expect(seen).toEqual([
+      { kind: "saved", version: 5, auto: true },
+      { kind: "saved", version: 6, name: "Before launch", auto: false },
+    ]);
+    expect(versionNote(seen[0] as never)).toBe("Saved as v5");
+    expect(versionNote(seen[1] as never)).toBe("Saved as v6 (Before launch)");
+    room.destroy();
+  });
+
+  it("a restored frame becomes an event; the text arrives as a doc update, so nothing reloads", () => {
+    const { room, seen } = events();
+    fake.frame(JSON.stringify({ type: "restored", from: 3, version: 7 }));
+    expect(seen).toEqual([{ kind: "restored", from: 3, version: 7 }]);
+    expect(versionNote(seen[0] as never)).toBe("Restored v3 as v7");
+    // Not an error, and the room is untouched.
+    expect(room.getSnapshot().error).toBeNull();
+    expect(fake.connects).toBe(1);
+    room.destroy();
+  });
+
+  it("ignores malformed version frames and stops after unsubscribe", () => {
+    const room = open();
+    fake.connect();
+    const seen: unknown[] = [];
+    const off = room.onVersion((e) => seen.push(e));
+    fake.frame(JSON.stringify({ type: "saved" }));
+    fake.frame(JSON.stringify({ type: "restored", version: 2 }));
+    expect(seen).toEqual([]);
+    off();
+    fake.frame(JSON.stringify({ type: "saved", version: 9, auto: false }));
+    expect(seen).toEqual([]);
     room.destroy();
   });
 });
