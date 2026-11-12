@@ -474,9 +474,11 @@ describe("asks on the comments column", () => {
     await waitFor(() => expect(sent).toEqual({ optionId: "a" }));
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
     // The new answer ends Change mode: the others lock again.
-    expect(
-      within(c).getByRole("button", { name: /Side by side/ }),
-    ).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        within(c).getByRole("button", { name: /Side by side/ }),
+      ).toBeDisabled(),
+    );
     expect(
       within(c).getByRole("button", { name: "Change" }),
     ).toBeInTheDocument();

@@ -159,13 +159,18 @@ export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
     if (!listed) dropped.current = true;
     else if (dropped.current) setGone(null);
   }, [listed, gone]);
+  // Optimistic: the chip goes (and Undo shows) at once; a refusal puts it back
+  // and shows the error line.
   const run = (a: ThreadAgent, removed: boolean) => {
     setErr(null);
+    setGone(removed ? a : null);
     set.mutate(
       { thread: t.id, key: a.key, removed },
       {
-        onSuccess: () => setGone(removed ? a : null),
-        onError: setErr,
+        onError: (e) => {
+          setGone(removed ? null : a);
+          setErr(e);
+        },
       },
     );
   };
@@ -197,7 +202,7 @@ export function RemovalNotices({
   const prev = useRef<{ key: string; scope: Element | Document } | null>(null);
   useEffect(() => {
     if (key) {
-      undo.current?.focus();
+      undo.current?.focus({ preventScroll: true });
       prev.current = {
         key,
         scope: undo.current?.closest("[data-thread]") ?? document,
@@ -224,6 +229,8 @@ export function RemovalNotices({
             ref={undo}
             type="button"
             className="cursor-pointer border-0 bg-transparent p-0 text-[var(--oa-accent-fg)] underline"
+            // aria-disabled, not disabled: a disabled button cannot hold focus,
+            // and Undo takes it while the removal is on its way.
             aria-disabled={set.isPending || undefined}
             onClick={() => {
               if (!set.isPending) run(gone, false);
@@ -292,9 +299,13 @@ export function ThreadAgents({
                     aria-label={`Stop notifying ${a.name}`}
                     className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
                     data-agent-x={a.key}
-                    aria-disabled={set.isPending || undefined}
+                    aria-disabled={
+                      (set.isPending && set.variables?.key === a.key) ||
+                      undefined
+                    }
                     onClick={() => {
-                      if (!set.isPending) run(a, true);
+                      if (!(set.isPending && set.variables?.key === a.key))
+                        run(a, true);
                     }}
                   >
                     ×

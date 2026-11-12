@@ -31,13 +31,20 @@ export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
 });
 
+/** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
+export const isSendingAnswer = (a: object | undefined) =>
+  !!a && (a as { sending?: boolean }).sending === true;
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
     .filter((t) =>
       t.comments.some(
-        (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+        (c) =>
+          c.ask &&
+          (!c.ask.answer || isSendingAnswer(c.ask.answer)) &&
+          c.ask.to.some((a) => a.me),
       ),
     )
     .map((t) => t.id);
@@ -499,9 +506,25 @@ export function AskBlock({
   const [changing, setChanging] = useState(false);
   const qid = useId();
   const picked = ask?.answer?.optionId;
+  const opts = useRef<HTMLUListElement>(null);
+  const [refocus, setRefocus] = useState<string | null>(null);
+  // Once the failed pick is rolled back and its option is enabled again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` changes when the rollback lands
+  useEffect(() => {
+    if (!refocus || answer.isPending) return;
+    const el = opts.current?.querySelector<HTMLButtonElement>(
+      `[data-option="${CSS.escape(refocus)}"]`,
+    );
+    if (!el || el.disabled) return;
+    el.focus({ preventScroll: true });
+    setRefocus(null);
+  }, [refocus, answer.isPending, picked]);
   // A later answer, even one made elsewhere, ends the old failure and the Change mode.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` is the trigger.
   useEffect(() => {
+    // The rollback after a failed pick (or a 409's refetch) sets it back to
+    // unanswered: that failure stays. A new answer ends the old one.
+    if (picked === undefined) return;
     setErr(null);
     setChanging(false);
   }, [picked]);
@@ -519,6 +542,7 @@ export function AskBlock({
     (o) => o.id === ask.recommended?.optionId,
   );
   const letters = showLetters(ask.options);
+  const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -562,10 +586,14 @@ export function AskBlock({
         <div
           // Amber only while it needs this reader: an ask for you with no pick yet.
           className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
-            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+            canAnswer && (!pickedOpt || sendingPick)
+              ? "ring-[var(--oa-warning)]"
+              : "ring-border"
           }`}
           data-ask=""
-          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
+          data-needs-you={
+            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
+          }
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
             {c.author.name}
@@ -586,7 +614,10 @@ export function AskBlock({
             {linked(ask.question, 0)}
           </p>
           <ul
+            ref={opts}
             aria-labelledby={qid}
+            aria-busy={answer.isPending || undefined}
+            data-sending={answer.isPending ? "" : undefined}
             className="m-0 flex list-none flex-col gap-1 p-0"
           >
             {ask.options.map((o, i) => {
@@ -599,7 +630,7 @@ export function AskBlock({
                     size="sm"
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
-                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
+                        ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                         : ""
                     }`}
                     disabled={
@@ -611,7 +642,13 @@ export function AskBlock({
                       setErr(null);
                       answer.mutate(
                         { thread: thread.id, comment: c.id, optionId: o.id },
-                        { onError: setErr },
+                        {
+                          onError: (e) => {
+                            setErr(e);
+                            // Back to unanswered: focus returns to the option.
+                            setRefocus(o.id);
+                          },
+                        },
                       );
                     }}
                   >
@@ -649,27 +686,30 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer && pickedOpt && (
-            <p className={`${TXT} font-medium`} data-ask-answer="">
-              {actor(ask.answer.by, "You")} picked{" "}
-              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-              {versionDate(ask.answer.at)}
-              {ask.closed ? " · closed" : ""}
-              {canAnswer && locked && (
-                <>
-                  {" · "}
-                  <Button
-                    size="xs"
-                    variant="link"
-                    className="h-auto p-0"
-                    onClick={() => setChanging(true)}
-                  >
-                    Change
-                  </Button>
-                </>
-              )}
-            </p>
-          )}
+          {ask.answer &&
+            pickedOpt &&
+            !isSendingAnswer(ask.answer) &&
+            !answer.isPending && (
+              <p className={`${TXT} font-medium`} data-ask-answer="">
+                {actor(ask.answer.by, "You")} picked{" "}
+                {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                {versionDate(ask.answer.at)}
+                {ask.closed ? " · closed" : ""}
+                {canAnswer && locked && (
+                  <>
+                    {" · "}
+                    <Button
+                      size="xs"
+                      variant="link"
+                      className="h-auto p-0"
+                      onClick={() => setChanging(true)}
+                    >
+                      Change
+                    </Button>
+                  </>
+                )}
+              </p>
+            )}
           {asked.length > 0 && (
             <p
               data-ask-to=""

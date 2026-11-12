@@ -2463,11 +2463,17 @@ describe("comments: the quote stays highlighted while writing (#1834)", () => {
     fireEvent.change(box, { target: { value: "Tighten this" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts).toHaveLength(1));
-    // Held for a moment (the list is still empty)...
-    expect(sentQuote()).toMatchObject({ exact: "Landing" });
-    // ...and gone once the hold expires.
+    // Painted at once as the posted thread (optimistic), though the list
+    // never carries it...
+    const painted = (c: unknown[]) =>
+      c[2] !== undefined ||
+      (c[0] as { anchor: { exact?: string } }[] | undefined)?.some(
+        (t) => t.anchor.exact === "Landing",
+      ) === true;
+    expect(setComments.mock.calls.some(painted)).toBe(true);
+    // ...and gone once the list answers without it and the hold expires.
     await wait(1700);
-    expect(sentQuote()).toBeUndefined();
+    expect(painted(setComments.mock.calls.at(-1) ?? [])).toBe(false);
   });
 });
 
