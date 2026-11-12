@@ -2466,7 +2466,8 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
   a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
   a.name_chosen as nameChosen,
-  exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted`;
+  exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
+  exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -6688,10 +6689,12 @@ export class BusHub extends DurableObject<Env> {
       kind: string;
       minted: number;
       chosen: number;
+      role: number;
       idle: number;
     }>(
       sql,
       `select a.rowid as rid, a.id as id, a.updated_at as u, a.name as name, a.kind as kind, a.name_chosen as chosen,
+          exists (select 1 from roles r where r.org_id = a.org_id and r.agent_id = a.id) as role,
           exists (select 1 from minted_names m where m.agent_id = a.id and m.lname = lower(a.name)) as minted,
           (${IDLE_INBOX_SQL} and ${IDLE_OUTBOX_SQL}) as idle
          from agents a indexed by agents_closed
@@ -6709,6 +6712,7 @@ export class BusHub extends DurableObject<Env> {
       (x) =>
         x.idle === 1 &&
         x.chosen === 0 &&
+        x.role === 0 &&
         isDefaultAgentName(x.name, x.kind, x.minted === 1),
     );
     if (gone.length > 0) {
@@ -6757,9 +6761,17 @@ export class BusHub extends DurableObject<Env> {
    */
   #defaultPurgeDeadline(): number | null {
     const sql = this.ctx.storage.sql;
+    // Rows the sweep can take: not chosen, not a role holder, and a name that
+    // may be a default (a prefilter of isDefaultAgentName).
     const oldest = one<{ t: number | null }>(
       sql,
-      "select min(updated_at) as t from agents indexed by agents_closed where live = 0",
+      `select min(a.updated_at) as t from agents a indexed by agents_closed
+        where a.live = 0 and a.name_chosen = 0
+          and not exists (select 1 from roles r where r.org_id = a.org_id and r.agent_id = a.id)
+          and (lower(a.name) = lower(a.kind) or lower(a.name) glob 'claude-[0-9]*'
+            or lower(a.name) glob 'agent*' or lower(a.name) glob 'pi*' or lower(a.name) glob 'omp*'
+            or lower(a.name) glob 'codex*' or lower(a.name) like lower(a.kind) || '-%'
+            or exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)))`,
     )?.t;
     if (oldest === null || oldest === undefined) return null;
     const meta = (k: string) =>

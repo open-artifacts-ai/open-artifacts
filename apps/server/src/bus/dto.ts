@@ -26,6 +26,8 @@ export type AgentWithMachine = Omit<AgentRow, "sessionStartRowid"> & {
   nameChosen?: number;
   /** #2311: the current name is one the hub minted for this agent. */
   minted?: number;
+  /** #2311: a role names this agent. */
+  roleHolder?: number;
 };
 
 /**
@@ -53,7 +55,9 @@ export const agentDto = (
       : null,
   updatedAt: iso(a.updatedAt),
   // #2311: still on a harness default name (never renamed by a user or session).
-  ...(a.nameChosen === 0 && isDefaultAgentName(a.name, a.kind, a.minted === 1)
+  ...(a.nameChosen === 0 &&
+  a.roleHolder === 0 &&
+  isDefaultAgentName(a.name, a.kind, a.minted === 1)
     ? { unnamed: true }
     : {}),
   ...statusFields(a),

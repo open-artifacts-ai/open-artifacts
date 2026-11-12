@@ -263,7 +263,11 @@ describe("agent_up name_chosen (#2311)", () => {
       namespace: "ns",
       global: false,
     });
-    for (let i = 0; i < 100 && types.filter((t) => t === "agent_ok").length < 2; i++)
+    for (
+      let i = 0;
+      i < 100 && types.filter((t) => t === "agent_ok").length < 2;
+      i++
+    )
       await new Promise((r) => setTimeout(r, 20));
     const flags = await inHub(h, (_, s) =>
       s.storage.sql
@@ -276,5 +280,43 @@ describe("agent_up name_chosen (#2311)", () => {
       { n: "ref_c", c: 1 },
       { n: "ref_d", c: 0 },
     ]);
+  });
+});
+
+describe("role holders and named-by-words (#2311)", () => {
+  it("isDefaultAgentName: digits-only suffixes, not words", () => {
+    for (const n of ["claude-1", "pi", "pi-2", "agent-3", "codex-4-5"])
+      expect(isDefaultAgentName(n, "claude-code", false)).toBe(true);
+    expect(isDefaultAgentName("hermes-4", "hermes", false)).toBe(true);
+    for (const n of ["pi-docs", "codex-reviewer", "hermes-myrepo", "agent-x"])
+      expect(isDefaultAgentName(n, n.split("-")[0] ?? "", false)).toBe(false);
+  });
+
+  it("a role holder and a pi-docs agent are kept and a role holder is not marked unnamed", async () => {
+    const h = fresh();
+    const t0 = Date.now();
+    const holder = await seed(h, "claude-88", 0, t0);
+    const docs = await seed(h, "pi-docs", 0, t0, "pi");
+    const plain = await seed(h, "claude-89", 0, t0);
+    await inHub(h, (_, s) =>
+      s.storage.sql.exec(
+        "insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) values (?, ?, 'ns', 'OA Lead', 'oa lead', ?, ?)",
+        newId(),
+        OWNER_ORG_ID,
+        holder,
+        t0,
+      ),
+    );
+    const list = (await inHub(h, (i) => i.snapshot({ away: true }))) as {
+      agents: { id: string; unnamed?: boolean }[];
+    };
+    expect(list.agents.find((x) => x.id === holder)?.unnamed).toBeUndefined();
+    expect(list.agents.find((x) => x.id === docs)?.unnamed).toBeUndefined();
+    expect(list.agents.find((x) => x.id === plain)?.unnamed).toBe(true);
+    await clock(h, t0 + 2 * DEFAULT_NAME_AWAY_MS);
+    await alarms(h, 3);
+    expect(await exists(h, holder)).toBe(true);
+    expect(await exists(h, docs)).toBe(true);
+    expect(await exists(h, plain)).toBe(false);
   });
 });
