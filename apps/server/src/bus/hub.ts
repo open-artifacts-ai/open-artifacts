@@ -6685,12 +6685,12 @@ export class BusHub extends DurableObject<Env> {
       kind: string;
       minted: number;
       chosen: number;
-      role: number;
+      holdsBusRole: number;
       idle: number;
     }>(
       sql,
       `select a.rowid as rid, a.id as id, a.updated_at as u, a.name as name, a.kind as kind, a.name_chosen as chosen,
-          exists (select 1 from roles r where r.org_id = a.org_id and r.agent_id = a.id) as role,
+          exists (select 1 from roles r where r.org_id = a.org_id and r.agent_id = a.id) as holdsBusRole,
           exists (select 1 from minted_names m where m.agent_id = a.id and m.lname = lower(a.name)) as minted,
           (${IDLE_INBOX_SQL} and ${IDLE_OUTBOX_SQL}) as idle
          from agents a indexed by agents_closed
@@ -6708,7 +6708,7 @@ export class BusHub extends DurableObject<Env> {
       (x) =>
         x.idle === 1 &&
         x.chosen === 0 &&
-        x.role === 0 &&
+        x.holdsBusRole === 0 &&
         isDefaultAgentName(x.name, x.kind, x.minted === 1),
     );
     if (gone.length > 0) {
