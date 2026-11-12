@@ -968,6 +968,8 @@ export const BusAgentSchema = z.strictObject({
   status: z.enum(BUS_STATUS_STATES).optional(),
   statusLabel: z.string().optional(),
   statusAt: z.string().optional(),
+  /** #2311: still on a harness default name (never renamed); present only when true. */
+  unnamed: z.boolean().optional(),
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 

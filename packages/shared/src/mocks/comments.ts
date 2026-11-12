@@ -173,7 +173,14 @@ export function createCommentMock({
     const a = comment("Can we tighten this headline?", other, m);
     const b = comment("Agreed, shorter is better.", mine());
     const c = comment("Looks good overall.", other, m);
-    const d = comment("Which layout do we ship?", other, m);
+    // #2344: the steps an agent puts in the body, shown above the question.
+    const d = comment(
+      seedAsk
+        ? "Steps to compare:\n1. Open the Landing page\n2. Resize to 390 px wide\n3. Check the hero in both layouts"
+        : "Which layout do we ship?",
+      other,
+      m,
+    );
     d.ask = {
       question: "Which layout do we ship?",
       options: [

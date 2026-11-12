@@ -16,8 +16,14 @@ import { type QueueRead, readQueue } from "../codex-queue-store.ts";
 import { NOTICE_WATCH_MS, type TakenWatch } from "../codex-taken.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
-/** How long `codex queue` may run; it writes one sqlite row. */
-export const CODEX_QUEUE_TIMEOUT_MS = 10_000;
+/**
+ * How long `codex queue` may run; it writes one sqlite row, but under heavy
+ * laptop load (#2181) it took longer than 10 s. Bound: the hub only parks an
+ * unacked held body after LIMITS.ackTimeoutMs (10 s; still pending, redelivered
+ * on the next flush) and expires mail after LIMITS.mailTtlSec (1 h), so 30 s
+ * costs latency, never an expiry.
+ */
+export const CODEX_QUEUE_TIMEOUT_MS = 30_000;
 /**
  * The most text one `codex queue` carries, in UTF-8 bytes. Inline bodies are
  * at most 32 KB, so only a bug reaches it; over it, the fetch notice goes.

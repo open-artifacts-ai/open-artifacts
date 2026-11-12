@@ -196,6 +196,38 @@ const pointer = (coarse: boolean) =>
 const wait100 = () => new Promise((r) => setTimeout(r, 130));
 const sels = () => msgs().filter((m) => m.type === "comment.selection");
 
+describe("clicking away (Google Docs)", () => {
+  const down = (el: Element) =>
+    el.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  it("tells the shell a pointer went down on the page, in any mode but off", async () => {
+    await start("select");
+    down(document.body);
+    await flush();
+    expect(last("comment.away")).toMatchObject({ type: "comment.away" });
+  });
+
+  it("says nothing with comments off", async () => {
+    await start();
+    down(document.body);
+    await flush();
+    expect(last("comment.away")).toBeUndefined();
+  });
+
+  it("comments.clear collapses the live selection and reports it gone", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: true });
+    await send({ type: "comments.clear" });
+    expect(getSelection()?.isCollapsed).toBe(true);
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: false });
+    // and the stale quote is gone: the shell command finds nothing to comment on
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toBeUndefined();
+  });
+});
+
 describe("selection state for the shell (#1732)", () => {
   it("posts has and the last rect bottom, debounced, once per change", async () => {
     await start("select");
@@ -1322,6 +1354,7 @@ describe("what the frame sends", () => {
       "comment.open": ["id", "oa", "type"],
       "comment.pin": ["oa", "pin", "type"],
       "comment.escape": ["oa", "type"],
+      "comment.away": ["oa", "type"],
     };
     const seen = msgs();
     expect(seen.map((m) => m.type).sort()).toEqual([

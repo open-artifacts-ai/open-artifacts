@@ -103,6 +103,7 @@ export function SidePanel({
   }, []);
   return (
     <aside
+      data-oa-keep-selection=""
       ref={ref}
       tabIndex={-1}
       // Below 960px the panel covers the frame.

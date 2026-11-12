@@ -55,6 +55,7 @@ export const HUB_HELLO_CAPS = [
   BUS_CAPS.waiting,
   BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
+  BUS_CAPS.ackConfirm,
 ] as const;
 
 export class HubConnection {
@@ -114,6 +115,11 @@ export class HubConnection {
   /** Drops a frame still queued: its request was given up on. */
   cancel(id: string): boolean {
     return this.#pacer.remove(id);
+  }
+
+  /** Frames bulk work may still queue; see FramePacer.headroom. */
+  get headroom(): number {
+    return this.#pacer.headroom;
   }
 
   get open(): boolean {
