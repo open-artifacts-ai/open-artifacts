@@ -159,10 +159,11 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
       return HttpResponse.json(settings());
     }),
     http.post(`*${R.passkeyRegisterChallenge}`, () => {
-      // A usable passkey that is not leaving approves the new one.
-      if (!keys.some((k) => k.usable && !k.removesAt))
+      // Any passkey row (even one pending removal) means a usable one must
+      // approve: none yet is 409 passkey_cooling; no rows is 409 conflict.
+      if (keys.length === 0)
         return d.err("conflict", "No passkey needs to approve this.");
-      return HttpResponse.json(assertOptions());
+      return refuse() ?? HttpResponse.json(assertOptions());
     }),
     http.post(`*${R.passkeyRegisterBegin}`, async ({ request }) => {
       if (keys.length >= MAX)
@@ -170,11 +171,13 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
       const sent = (await request.json().catch(() => undefined)) as
         | { assertion?: unknown }
         | undefined;
-      // Passkeys exist but none works yet: nothing can approve another.
-      const cooling = keys.length > 0 && !keys.some((k) => k.usable);
-      if (cooling) return refuse() ?? d.err("no_passkey", "Add a passkey");
-      if (keys.some((k) => k.usable && !k.removesAt) && !sent?.assertion)
-        return d.err("passkey_required", "Approve with a passkey you have.");
+      if (keys.length > 0) {
+        // Passkeys exist but none works yet: nothing can approve another.
+        const no = refuse();
+        if (no) return no;
+        if (!sent?.assertion)
+          return d.err("passkey_required", "Approve with a passkey you have.");
+      }
       return HttpResponse.json({
         options: {
           challenge: b64url(32),

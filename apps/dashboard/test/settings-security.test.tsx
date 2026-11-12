@@ -377,23 +377,93 @@ describe("Settings › Security: passkeys", () => {
     ).toBeUndefined();
   });
 
-  it("with a working passkey, an existing one approves: challenge, prompt, begin with the assertion, create, finish", async () => {
+  it("a second passkey takes two clicks: approve (challenge, prompt, begin), then Create passkey (create, finish)", async () => {
     use("usable");
     const posts = calls("POST");
     mount("/settings/security");
     await screen.findByText("MacBook");
     fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
-    expect(await screen.findByText("Passkey")).toBeVisible();
+    const next = await screen.findByRole("button", { name: "Create passkey" });
+    expect(
+      screen.getByText("Approved. Now create your new passkey."),
+    ).toBeVisible();
+    expect(next).toHaveFocus();
     const paths = posts.map((c) => c.path);
     expect(paths.indexOf(R.passkeyRegisterChallenge)).toBeGreaterThanOrEqual(0);
     expect(paths.indexOf(R.passkeyRegisterChallenge)).toBeLessThan(
       paths.indexOf(R.passkeyRegisterBegin),
     );
-    expect(get).toHaveBeenCalledTimes(1);
     expect(posts.find((c) => c.path === R.passkeyRegisterBegin)?.body).toEqual({
       assertion: ASSERTION,
     });
+    // One prompt per click: nothing is created until the second click.
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
+    expect(posts.some((c) => c.path === R.passkeyRegisterFinish)).toBe(false);
+
+    fireEvent.click(next);
+    expect(await screen.findByText("Passkey")).toBeVisible();
     expect(create).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(posts.find((c) => c.path === R.passkeyRegisterFinish)?.body).toEqual(
+      { credential: CREDENTIAL },
+    );
+    expect(screen.queryByRole("button", { name: "Create passkey" })).toBeNull();
+  });
+
+  it("an only usable passkey that is pending removal still approves adding one", async () => {
+    use("usable");
+    server.use(
+      http.get(`*${R.passkeys}`, () =>
+        HttpResponse.json([
+          {
+            id: "pk_a",
+            label: "MacBook",
+            createdAt: new Date(Date.now() - 3 * 86400_000).toISOString(),
+            lastUsedAt: null,
+            usableAt: new Date(Date.now() - 2 * 86400_000).toISOString(),
+            usable: true,
+            removesAt: new Date(Date.now() + 5 * 3600_000).toISOString(),
+          },
+        ]),
+      ),
+    );
+    const posts = calls("POST");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    await screen.findByRole("button", { name: "Create passkey" });
+    expect(posts.some((c) => c.path === R.passkeyRegisterChallenge)).toBe(true);
+    expect(posts.find((c) => c.path === R.passkeyRegisterBegin)?.body).toEqual({
+      assertion: ASSERTION,
+    });
+  });
+
+  it("a cancelled create keeps Create passkey; an expired one (410) starts over", async () => {
+    use("usable");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    const next = await screen.findByRole("button", { name: "Create passkey" });
+    create.mockRejectedValueOnce(new DOMException("no", "NotAllowedError"));
+    fireEvent.click(next);
+    expect(await screen.findByText("Nothing was added.")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Create passkey" }),
+    ).toBeVisible();
+
+    server.use(
+      http.post(`*${R.passkeyRegisterFinish}`, () =>
+        err("challenge_expired", 410),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create passkey" }));
+    expect(
+      await screen.findByText(
+        "That took too long. Try again. Nothing was added.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Create passkey" })).toBeNull();
   });
 
   it("a cancelled approval adds nothing: no begin, no create", async () => {
@@ -427,7 +497,8 @@ describe("Settings › Security: passkeys", () => {
           },
         ]);
       }),
-      http.post(`*${R.passkeyRegisterBegin}`, () =>
+      // The server answers at the challenge (any passkey row means approval).
+      http.post(`*${R.passkeyRegisterChallenge}`, () =>
         err("passkey_cooling", 409, { usableAt }),
       ),
     );
@@ -438,10 +509,8 @@ describe("Settings › Security: passkeys", () => {
       /^Your new passkey can approve from .+\. Nothing was added\.$/,
     );
     expect(line).toHaveTextContent(webauthn.coolingTime(usableAt));
-    // None can approve, so no approval was asked for and nothing was created.
-    expect(posts.some((c) => c.path === R.passkeyRegisterChallenge)).toBe(
-      false,
-    );
+    // No prompt was shown, nothing began, nothing was created.
+    expect(posts.some((c) => c.path === R.passkeyRegisterBegin)).toBe(false);
     expect(get).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
   });

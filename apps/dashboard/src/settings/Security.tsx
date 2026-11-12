@@ -60,6 +60,9 @@ export const ADD_REAUTH_NOTE =
   "Adding a passkey asks you to sign in again first.";
 export const ADD_RETURN_LINE =
   "You're signed in again. Add your passkey within 10 minutes.";
+// Placeholders (Product): the step between approving and creating.
+export const APPROVED_LINE = "Approved. Now create your new passkey.";
+export const CREATE_BUTTON = "Create passkey";
 export const ALREADY_HERE =
   "This device already has a passkey for this account.";
 export const REMOVAL_STARTS =
@@ -181,6 +184,16 @@ function PasskeyList({
   const addRef = useRef<HTMLButtonElement>(null);
   const [returned, setReturned] = useState(false);
   const [headingTick, setHeadingTick] = useState(0);
+  // A second passkey is approved by an existing one first; its creation
+  // options wait here for a separate click (one passkey prompt per click).
+  const [approved, setApproved] = useState<Record<string, unknown> | null>(
+    null,
+  );
+  const [creating, setCreating] = useState(false);
+  const createRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (approved) createRef.current?.focus({ preventScroll: true });
+  }, [approved]);
 
   // Back from the sign-in that Add asked for: say so and focus Add. Never call
   // create() here: Safari wants a user click for it.
@@ -227,12 +240,13 @@ function PasskeyList({
     setAdding(true);
     setNote(null);
     setReturned(false);
+    setApproved(null);
     try {
-      // With a passkey that already works, an existing one approves the new
-      // one: challenge (the re-auth check comes first), prompt, then begin
-      // with the assertion. The first passkey needs neither.
+      // With any passkey already there, an existing one approves the new one:
+      // challenge (the re-auth check comes first), prompt, then begin with the
+      // assertion. The first passkey needs neither.
       let assertion: unknown;
-      if (keys?.some((k) => k.usable && !k.removesAt)) {
+      if ((keys?.length ?? 0) > 0) {
         try {
           const ch = await api.send(
             "POST",
@@ -253,25 +267,59 @@ function PasskeyList({
         assertion === undefined ? undefined : { assertion },
         ChallengeSchema,
       );
-      const credential = await createCredential(begin.options);
-      await api.send(
-        "POST",
-        R.passkeyRegisterFinish,
-        { credential },
-        PasskeySchema,
-      );
-      await refresh();
-      toast({ title: "Passkey added.", tone: "success" });
-    } catch (e) {
-      if (
-        followReauth(e, () =>
-          sessionStorage.setItem(ADD_AFTER_REAUTH_KEY, String(Date.now())),
-        )
-      )
+      if (assertion !== undefined) {
+        // Safari allows one passkey prompt per click: stop here, and create
+        // on the next click.
+        setApproved(begin.options);
         return;
-      setNote({ id: null, text: failureLine(e, "added") });
+      }
+      await createAndFinish(begin.options);
+    } catch (e) {
+      failAdd(e);
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function createAndFinish(options: Record<string, unknown>) {
+    const credential = await createCredential(options);
+    await api.send(
+      "POST",
+      R.passkeyRegisterFinish,
+      { credential },
+      PasskeySchema,
+    );
+    setApproved(null);
+    await refresh();
+    toast({ title: "Passkey added.", tone: "success" });
+  }
+
+  function failAdd(e: unknown) {
+    if (
+      followReauth(e, () =>
+        sessionStorage.setItem(ADD_AFTER_REAUTH_KEY, String(Date.now())),
+      )
+    )
+      return;
+    // The options are single use and short lived: after these, start over.
+    if (
+      e instanceof ApiClientError &&
+      (e.code === "challenge_expired" || e.code === "passkey_failed")
+    )
+      setApproved(null);
+    setNote({ id: null, text: failureLine(e, "added") });
+  }
+
+  async function create() {
+    if (!approved || creating) return; // aria-disabled keeps focus on the button
+    setCreating(true);
+    setNote(null);
+    try {
+      await createAndFinish(approved);
+    } catch (e) {
+      failAdd(e);
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -340,6 +388,26 @@ function PasskeyList({
         >
           {ADD_RETURN_LINE}
         </p>
+      )}
+      {approved && (
+        <div className="flex flex-wrap items-center justify-between gap-[var(--oa-space-3)]">
+          <p
+            role="status"
+            className="m-0 text-[length:var(--oa-text-sm)] font-medium text-[var(--oa-success)]"
+          >
+            {APPROVED_LINE}
+          </p>
+          <Button
+            ref={createRef}
+            size="sm"
+            onClick={create}
+            aria-disabled={creating || undefined}
+            aria-busy={creating || undefined}
+            className="aria-disabled:opacity-50"
+          >
+            {creating ? "Creating…" : CREATE_BUTTON}
+          </Button>
+        </div>
       )}
       {!returned && <p className={`m-0 ${muted}`}>{ADD_REAUTH_NOTE}</p>}
       {failed && <p className={errorText}>Couldn't load your passkeys.</p>}
