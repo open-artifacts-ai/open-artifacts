@@ -722,9 +722,7 @@ describe("the away grace (#2110)", () => {
 
   it("a revoked machine's away session never links", async () => {
     const s = await away();
-    expect(await (await hubOf(s.m.userId)).revokeMachine(s.mach.id)).toBe(
-      true,
-    );
+    expect(await (await hubOf(s.m.userId)).revokeMachine(s.mach.id)).toBe(true);
     expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
     expect(await count(s.m.userId)).toEqual([{ n: 0 }]);
     // Even a proof row left behind never resolves on a revoked machine.
