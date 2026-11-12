@@ -43,10 +43,6 @@ for (const w of [1280, 390])
           name: "Stop notifying OA Product in this thread",
         })
         .click();
-      await expect(
-        list.getByText(/Remove OA Product from this thread\?/),
-      ).toBeVisible();
-      await list.getByRole("button", { name: "Remove", exact: true }).click();
       await expect(list.locator("[data-off]")).toContainText("Not notified");
       await expect(
         list.getByText(/won't get replies in this thread/),

@@ -105,9 +105,6 @@ for (const width of [1280, 390])
         await thread
           .getByRole("button", { name: `Stop notifying ${name}` })
           .click();
-        await thread
-          .getByRole("button", { name: "Remove", exact: true })
-          .click();
       }
       await thread.getByLabel("Reply", { exact: true }).fill("One more thing");
       await thread.getByRole("button", { name: "Reply", exact: true }).click();
