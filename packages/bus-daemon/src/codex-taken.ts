@@ -290,6 +290,28 @@ export class TakenWatch {
     return atEof ? "missing" : "pending";
   }
 
+  /**
+   * Ids of `taken` records still within their retention, newest first, at most
+   * `max`. A new hub link resends their acks whether or not `acked` is saved:
+   * `acked` only means the frame was queued locally, which proves nothing about
+   * the hub (a restart or a lost write can drop it). The hub's ack is idempotent.
+   */
+  takenIds(max = 500): string[] {
+    const now = this.#now();
+    const out: [string, number][] = [];
+    for (const [id, r] of this.#recs)
+      if (
+        r.state === "taken" &&
+        r.head !== undefined &&
+        now - r.at <= (r.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS)
+      )
+        out.push([id, r.at]);
+    return out
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, max)
+      .map(([id]) => id);
+  }
+
   /** Reads each watched record's new rollout lines; acks what a turn took. */
   check(): void {
     if (!this.#recs.size) return;

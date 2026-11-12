@@ -1453,6 +1453,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
+          // Every Codex ack still owed is sent again on each new link: a saved
+          // `acked` only meant queued locally (#2198). Paced, bounded, idempotent.
+          for (const id of codexTaken.takenIds()) delivery.delivered(id);
           return;
         // roster_changed has no local consumer yet (C6).
       }

@@ -1477,6 +1477,45 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
     ]);
   });
 
+  it("an ack queued locally that never reached the hub is sent after a restart and reconnect", async () => {
+    // The first daemon queued the ack (saved acked) and died before the frame was written.
+    const { w, takenFile, home } = await taken(() => true);
+    w.check();
+    expect(acked(takenFile)).toBe(true);
+    // The restarted daemon: the thread stays away, so no agent_up redelivers.
+    const w2 = new TakenWatch({ home, file: takenFile, onTaken: () => true });
+    const sends: string[] = [];
+    const d = createDeliver({
+      agents: new AgentTable(),
+      hub: {
+        send: (f) => {
+          sends.push((f as { msg_id: string }).msg_id);
+          return true;
+        },
+      },
+      transports: {},
+      onClosed: () => undefined,
+    });
+    // hello_ok of the new link.
+    for (const id of w2.takenIds()) d.delivered(id);
+    expect(sends).toEqual([ID]);
+  });
+
+  it("takenIds: only taken records within retention, newest first, bounded", async () => {
+    const { w, home, takenFile } = await taken(() => true);
+    w.check();
+    expect(w.takenIds()).toEqual([ID]);
+    expect(w.takenIds(0)).toEqual([]);
+    const late = new TakenWatch({
+      home,
+      file: takenFile,
+      onTaken: () => true,
+      ttlMs: 1,
+      now: () => Date.now() + 60_000,
+    });
+    expect(late.takenIds()).toEqual([]);
+  });
+
   it("the queue timeout is 30 s, under the hub's mail expiry", () => {
     expect(CODEX_QUEUE_TIMEOUT_MS).toBe(30_000);
     expect(CODEX_QUEUE_TIMEOUT_MS).toBeGreaterThan(LIMITS.ackTimeoutMs);
