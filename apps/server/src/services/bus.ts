@@ -544,12 +544,15 @@ export async function agentNamesOf(
   return out;
 }
 
+/** #1822: how long an identity or name lookup waits before it gives up. */
+export const LINK_LOOKUP_MS = 300;
+
 /**
- * #1822: the most /mcp waits for a proof lookup before the request goes on
- * unlinked. #2110: 300 ms cut off slow successes (a cold hub, a busy one);
- * a lookup that answers sooner still costs only its own time (within).
+ * #2110: the most /mcp waits for a proof lookup (lookupProof only) before the
+ * request goes on unlinked. 300 ms cut off slow successes (a cold hub, a busy
+ * one); a lookup that answers sooner still costs only its own time (within).
  */
-export const LINK_LOOKUP_MS = 1500;
+export const PROOF_LOOKUP_MS = 1500;
 
 /** #2110: a successful lookup at least this slow is logged (bus_link_lookup_ok). */
 export const LINK_LOOKUP_SLOW_MS = 150;
@@ -588,7 +591,7 @@ async function lookupProof(
           id: hub ? await hub.agentByProof(await sha256Hex(p.data)) : null,
         };
       })(),
-      LINK_LOOKUP_MS,
+      PROOF_LOOKUP_MS,
     );
     if (r === null) return none("timeout");
     if (r === "no_machine") return none("no_machine");

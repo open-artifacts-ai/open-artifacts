@@ -4853,7 +4853,7 @@ export class BusHub extends DurableObject<Env> {
     // #2110: an access change ends the away grace: a closed session's proofs
     // go now (a live one's stay, as before; it rebinds when it reconnects).
     this.ctx.storage.sql.exec(
-      "delete from agent_proofs where agent_id in (select id from agents where live = 0)",
+      "delete from agent_proofs where agent_id in (select p.agent_id from agent_proofs p cross join agents a on a.id = p.agent_id where a.live = 0)",
     );
     let n = 0;
     for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
@@ -4952,7 +4952,7 @@ export class BusHub extends DurableObject<Env> {
     ids.push(...releaseMachineNames(sql, id, ids, now));
     // #2110: every proof of the machine's agents, away ones included.
     sql.exec(
-      "delete from agent_proofs where agent_id in (select id from agents where machine_id = ?)",
+      "delete from agent_proofs where agent_id in (select p.agent_id from agent_proofs p cross join agents a on a.id = p.agent_id where a.machine_id = ?)",
       id,
     );
     sql.exec(
@@ -7552,7 +7552,7 @@ export class BusHub extends DurableObject<Env> {
     if (
       all(
         sql,
-        `delete from agent_proofs where rowid in (select p.rowid from agent_proofs p join agents a on a.id = p.agent_id
+        `delete from agent_proofs where rowid in (select p.rowid from agent_proofs p cross join agents a on a.id = p.agent_id
           where a.live = 0 and (a.away_since is null or a.away_since <= ?) limit ?) returning rowid`,
         now - PROOF_AWAY_GRACE_MS,
         BATCH,

@@ -13,8 +13,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createPat } from "../../src/auth/pat.js";
 import {
   type BusHubRpc,
-  LINK_LOOKUP_MS,
   linkRequest,
+  PROOF_LOOKUP_MS,
 } from "../../src/services/bus.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { E, MCP_URL } from "../mcp-helpers.js";
@@ -155,7 +155,7 @@ describe("linkRequest (#1822)", () => {
     const t0 = Date.now();
     const s = await linkRequest(slow.ev, a.userId, req());
     expect(Object.keys(s)).toEqual(["req"]);
-    expect(Date.now() - t0).toBeLessThan(LINK_LOOKUP_MS + 1500);
+    expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
   });
 
   it("a slow machine read (D1) is bound by the same limit and leaves the request unlinked", async () => {
@@ -172,7 +172,7 @@ describe("linkRequest (#1822)", () => {
     );
     expect(Object.keys(r)).toEqual(["req"]);
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
-    expect(Date.now() - t0).toBeLessThan(LINK_LOOKUP_MS + 1500);
+    expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
     expect(asked).toEqual([]);
   });
 
@@ -209,8 +209,8 @@ describe("linkRequest (#1822)", () => {
     }
   });
 
-  it("#2110: a lookup that never answers waits LINK_LOOKUP_MS (1.5 s) and logs reason timeout", async () => {
-    expect(LINK_LOOKUP_MS).toBe(1500);
+  it("#2110: a lookup that never answers waits PROOF_LOOKUP_MS (1.5 s) and logs reason timeout", async () => {
+    expect(PROOF_LOOKUP_MS).toBe(1500);
     const proof = proofOf();
     const a = await bound(proof);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -222,14 +222,14 @@ describe("linkRequest (#1822)", () => {
         mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
       );
       expect(Object.keys(r)).toEqual(["req"]);
-      expect(Date.now() - t0).toBeGreaterThanOrEqual(LINK_LOOKUP_MS - 5);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(PROOF_LOOKUP_MS - 5);
       const none = log.mock.calls
         .map((c) => String(c[0]))
         .filter((l) => l.includes("bus_link_lookup_none"))
         .map((l) => JSON.parse(l));
       expect(none).toHaveLength(1);
       expect(none[0].reason).toBe("timeout");
-      expect(none[0].ms).toBeGreaterThanOrEqual(LINK_LOOKUP_MS - 5);
+      expect(none[0].ms).toBeGreaterThanOrEqual(PROOF_LOOKUP_MS - 5);
     } finally {
       log.mockRestore();
     }
