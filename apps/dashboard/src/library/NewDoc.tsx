@@ -4,8 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { api } from "../api/client";
-import { markFresh, NEW_DOC_TOAST } from "../viewer/doc/fresh";
 import { toast } from "../layout/toast";
+import { markFresh, NEW_DOC_TOAST } from "../viewer/doc/fresh";
 
 /** Where "See hosted plans" goes. */
 const HOSTED_URL = "https://open-artifacts.com";

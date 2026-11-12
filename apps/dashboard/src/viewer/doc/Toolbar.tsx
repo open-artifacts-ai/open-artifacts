@@ -179,7 +179,8 @@ function ToolButton({
           <Icon aria-hidden="true" />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>
+      {/* Below the button: above, it covers the title and the Comments button. */}
+      <TooltipContent side="bottom" sideOffset={4} collisionPadding={8}>
         <Hint label={item.label} keys={item.keys} />
       </TooltipContent>
     </Tooltip>
@@ -252,7 +253,7 @@ function LinkButton({ editor, on }: { editor: Editor; on: boolean }) {
             </Button>
           </PopoverAnchor>
         </TooltipTrigger>
-        <TooltipContent>
+        <TooltipContent side="bottom" sideOffset={4} collisionPadding={8}>
           <Hint label="Link" keys={LINK_KEYS} />
         </TooltipContent>
       </Tooltip>

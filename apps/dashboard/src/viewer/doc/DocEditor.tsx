@@ -1,16 +1,16 @@
 import { EditorContent, useEditor } from "@tiptap/react";
 import { useEffect, useMemo, useRef } from "react";
 import type * as Y from "yjs";
+import { dismissToast } from "../../layout/toast";
 import { colorFor } from "./cursors";
 import {
   collabExtensions,
   contentExtensions,
   type DocUser,
 } from "./extensions";
-import { dismissToast } from "../../layout/toast";
 import { clearFresh, NEW_DOC_TOAST } from "./fresh";
-import { Toolbar } from "./Toolbar";
 import { TitleField } from "./TitleField";
+import { Toolbar } from "./Toolbar";
 import {
   DOC_TOO_LARGE_CODE,
   type DocStatus,

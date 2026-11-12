@@ -16,17 +16,17 @@ import { Editor, getSchema } from "@tiptap/core";
 import Collaboration from "@tiptap/extension-collaboration";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
+import { Toaster, toast } from "../src/layout/toast";
 import { CaretActivity, FLAG_MS, renderCaret } from "../src/viewer/doc/cursors";
-import { toast, Toaster } from "../src/layout/toast";
 import { DocEditor } from "../src/viewer/doc/DocEditor";
-import { isFresh, markFresh, NEW_DOC_TOAST } from "../src/viewer/doc/fresh";
-import { TITLE_SAVE_MS, TitleField } from "../src/viewer/doc/TitleField";
 import { isDocArtifact, setMockDoc } from "../src/viewer/doc/docMock";
 import {
   contentExtensions,
   LINK_REFUSED,
   toAllowedHref,
 } from "../src/viewer/doc/extensions";
+import { isFresh, markFresh, NEW_DOC_TOAST } from "../src/viewer/doc/fresh";
+import { TITLE_SAVE_MS, TitleField } from "../src/viewer/doc/TitleField";
 import { ariaShortcut, shortcutText, Toolbar } from "../src/viewer/doc/Toolbar";
 import { fakeProviders } from "./doc-fake-provider";
 
@@ -176,6 +176,11 @@ describe("toolbar", () => {
       });
       const tip = await screen.findByRole("tooltip");
       expect(tip.textContent, name).toBe(`${name} ${text}`);
+      // Opens below the button, not over the title bar.
+      expect(
+        document.querySelector('[data-slot="tooltip-content"]'),
+        name,
+      ).toHaveAttribute("data-side", "bottom");
       act(() => {
         fireEvent.blur(button);
       });

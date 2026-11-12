@@ -158,6 +158,15 @@ for (const [scheme, width] of COMBOS) {
       await expect(page.getByRole("tooltip")).toHaveText(
         /Heading 1\s*(Ctrl|⌘)/,
       );
+      // Below the button, so it never covers the title or the Comments button.
+      const button = await page
+        .getByRole("button", { name: "Heading 1" })
+        .boundingBox();
+      const tip = await page
+        .locator('[data-slot="tooltip-content"]')
+        .boundingBox();
+      if (!button || !tip) throw new Error("no boxes");
+      expect(tip.y).toBeGreaterThanOrEqual(button.y + button.height - 1);
       await shot(page, info, `doc-editor-tooltip-${scheme}-${width}.png`);
     });
 
@@ -226,7 +235,14 @@ for (const [scheme, width] of COMBOS) {
               (n) => Math.round(n * 10) / 10,
             );
           };
-          return ["h1", "p", "h2", "li", "code"].map((t) => {
+          return [
+            "h1",
+            "p",
+            "h2",
+            "li",
+            "code",
+            ":scope > p:nth-of-type(2)",
+          ].map((t) => {
             const e = r?.querySelector(t);
             return e ? rect(e) : null;
           });
@@ -235,9 +251,6 @@ for (const [scheme, width] of COMBOS) {
       const b = await rects("#md-ref");
       console.log("editor", JSON.stringify(a), "\nrender", JSON.stringify(b));
       a.forEach((x, i) => {
-        // Inline code can break at a different space on a phone (the editor
-        // is pre-wrap): its lines, not its place, differ. Known, not hidden.
-        if (i === 4 && width < 600) return;
         const y = b[i];
         expect(x && y, `block ${i}`).toBeTruthy();
         if (!x || !y) return;

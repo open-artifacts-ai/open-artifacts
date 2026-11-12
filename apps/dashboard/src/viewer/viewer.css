@@ -635,6 +635,15 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
+/* ProseMirror turns ligatures off; the render keeps them, and "ff"/"fi" change
+   the advance, so a line can wrap one word earlier. Same shaping as the render. */
+.oa-doc-prose.ProseMirror {
+  font-variant-ligatures: normal;
+  font-feature-settings: normal;
+  /* break-spaces counts a space at a line's end toward its width, so a word
+     wraps early; pre-wrap lets it hang, as the render's wrapping does. */
+  white-space: pre-wrap;
+}
 .oa-doc-prose {
   outline: none;
   color: var(--oa-text);
