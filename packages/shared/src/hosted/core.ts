@@ -187,7 +187,7 @@ export const InstanceDirectorySchema = z.object({
   state: SyncStateSchema.nullable(),
   /** lastSuccessAt + 7 days once that has passed, else null. Informational: access is unchanged when stale. Org owner and admins only; null for others. */
   staleAt: z.string().nullable(),
-  /** A live Google binding exists (#2149). Owners and admins only; absent for others and when mode is off. */
+  /** A Google directory is connected, live or pending (#2149). Owners and admins only; absent for others and when mode is off. */
   bound: z.boolean().optional(),
   /** Held sweeps waiting for the owner, snoozed ones not counted (#412). 0 for non-admins. */
   heldSweeps: z.number().int(),

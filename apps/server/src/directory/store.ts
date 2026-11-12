@@ -47,6 +47,15 @@ export const K = {
   retired: "tenant.retired",
 } as const;
 
+/** Every key that means a directory is connected or mid-connect (a disconnect acts on these). */
+export const CONNECTED_KEYS = [
+  K.binding,
+  K.refresh,
+  K.pendingBinding,
+  K.pendingRefresh,
+  K.confirm,
+];
+
 export const UPSERT = `insert into directory_state (key, value) values (?, ?)
   on conflict (key) do update set value = excluded.value`;
 

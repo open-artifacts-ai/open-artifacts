@@ -44,6 +44,7 @@ import {
 import {
   CONFIRM_TTL_MS,
   CONFIRM_WON,
+  CONNECTED_KEYS,
   dropPending,
   expirePending,
   K,
@@ -548,13 +549,6 @@ type RevokeOutcome = "revoked" | "revoke_failed" | "none";
 
 /** Any connection state: a live binding or token, or a pending consent. */
 const CONNECTED = `exists (select 1 from directory_state where key in (?, ?, ?, ?, ?))`;
-const CONNECTED_KEYS = [
-  K.binding,
-  K.refresh,
-  K.pendingBinding,
-  K.pendingRefresh,
-  K.confirm,
-];
 
 /**
  * True while every live and pending token row is one of `seen` (the values

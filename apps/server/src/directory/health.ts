@@ -6,7 +6,7 @@ import type {
 } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { K, UPSERT } from "./store.js";
+import { CONNECTED_KEYS, UPSERT } from "./store.js";
 
 // Directory sync health at rest (P3 T13), in directory_state next to T12's
 // binding rows, so every reader (R.directory, Me.instance.directory, and
@@ -142,7 +142,7 @@ function parseHealth(raw: string | null): { h: Health; raw: string | null } {
 }
 
 /**
- * Health and whether a live binding exists, in the one D1 statement /me
+ * Health and whether a directory is connected (any CONNECTED key), in the one D1 statement /me
  * already spends on health (both are directory_state rows): no extra read.
  */
 export async function readHealthBound(
@@ -150,9 +150,9 @@ export async function readHealthBound(
 ): Promise<{ h: Health; bound: boolean }> {
   const { results } = await stmt(
     env.DB,
-    "select key, value from directory_state where key in (?, ?)",
+    `select key, value from directory_state where key in (?, ${CONNECTED_KEYS.map(() => "?").join(", ")})`,
   )
-    .bind(HK.health, K.binding)
+    .bind(HK.health, ...CONNECTED_KEYS)
     .all<{ key: string; value: string }>();
   let health: string | null = null;
   let bound = false;
@@ -270,7 +270,7 @@ export function instanceDirectory(
   h: Health,
   admin: boolean,
   now = Date.now(),
-  /** A live binding exists; set for owners and admins only. */
+  /** A directory is connected (live or pending); set for owners and admins only. */
   bound?: boolean,
 ): InstanceDirectory {
   if (mode === "off" || !admin)
