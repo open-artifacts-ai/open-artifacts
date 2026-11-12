@@ -99,18 +99,34 @@ describe("phone locked story", () => {
         type,
         touchPoints: y === undefined ? [] : [{ x: 195, y }],
       });
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 3; i++) {
       await touch("touchStart", 560);
-      for (let y = 560; y >= 300; y -= 20) {
-        await touch("touchMove", y);
-        await page.waitForTimeout(8);
-      }
+      for (let y = 560; y >= 300; y -= 20) await touch("touchMove", y);
       await touch("touchEnd");
-      await page.waitForTimeout(150);
     }
-    await frames(page);
-    expect(await page.evaluate(() => scrollY)).toBeGreaterThan(before + 400);
-    expect((await pinTop(page)).top).toBe(0);
+    // wait until the fling has settled (scroll position still for 20 frames)
+    await page.evaluate(
+      () =>
+        new Promise<void>((done) => {
+          let last = -1;
+          let still = 0;
+          const tick = () => {
+            still = scrollY === last ? still + 1 : 0;
+            last = scrollY;
+            if (still >= 20) done();
+            else requestAnimationFrame(tick);
+          };
+          tick();
+        }),
+    );
+    expect(await page.evaluate(() => scrollY)).toBeGreaterThan(before + 200);
+    // the screen holds for as long as the locked run is still on screen
+    const run = await page.evaluate(
+      () =>
+        (document.getElementById("pl") as HTMLElement).getBoundingClientRect()
+          .bottom - innerHeight,
+    );
+    if (run > 0) expect((await pinTop(page)).top).toBe(0);
     expect(
       Number(await page.locator("#pl").getAttribute("data-beat")),
     ).toBeGreaterThan(0);

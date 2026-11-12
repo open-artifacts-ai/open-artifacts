@@ -73,9 +73,26 @@ describe("phone versions card at 390px", () => {
     // restore from v2: a new top, v6, current, and no second v4
     await card.locator('button[data-v="2"]').click();
     try {
-      await card
-        .locator("[data-restore]")
-        .waitFor({ state: "visible", timeout: 5000 });
+      // the banner has finished opening (its box holds the whole button) and
+      // the screen is still on the versions beat, so the click needs no scroll
+      await page.waitForFunction(
+        () => {
+          const ban = document.querySelector(
+            '.mp[data-mp="ver"] [data-ban]',
+          ) as HTMLElement;
+          const btn = ban.querySelector("[data-restore]") as HTMLElement;
+          const bb = ban.getBoundingClientRect();
+          const rb = btn.getBoundingClientRect();
+          return (
+            document.getElementById("pl")?.dataset.beat === "8" &&
+            rb.height > 0 &&
+            rb.top >= bb.top &&
+            rb.bottom <= bb.bottom
+          );
+        },
+        undefined,
+        { timeout: 5000 },
+      );
     } catch (e) {
       const state = await page.evaluate(() => {
         const r = (s: string) => {
