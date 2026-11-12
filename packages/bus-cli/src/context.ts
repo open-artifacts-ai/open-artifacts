@@ -398,7 +398,6 @@ export const configFileLines = (
 
 /**
  * True when HOME or the bus home is not the account's, so no account-wide
- * service may be touched (#2099's `service.isolated`, read without needing its type).
+ * service may be touched (#2099's `service.isolated`).
  */
-export const isolated = (ctx: Ctx): boolean =>
-  Boolean((ctx.service as { isolated?: unknown }).isolated);
+export const isolated = (ctx: Ctx): boolean => Boolean(ctx.service.isolated);
