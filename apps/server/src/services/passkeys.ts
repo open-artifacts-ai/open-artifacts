@@ -8,7 +8,7 @@ import {
   type Passkey,
   type PasskeyChallenge,
   type PasskeySettings,
-  type PasskeySettingsPut,
+  type PasskeySettingsPatch,
 } from "@oa/shared";
 import { counterBucket } from "../auth/codes.js";
 import {
@@ -566,7 +566,7 @@ const SETTINGS_SCOPE = "settings";
 
 const LOCKED_MESSAGE = "Always on: this runs code on your computer.";
 
-const wanted = (b: PasskeySettingsPut): Switches => {
+const wanted = (b: PasskeySettingsPatch): Switches => {
   if (!b.actions.command)
     throw new ApiError("bad_request", LOCKED_MESSAGE, { locked: "command" });
   return { actions: { ...b.actions }, everyPick: b.everyPick };
@@ -580,7 +580,7 @@ const turnsOff = (from: Switches, to: Switches): string[] => [
 export async function settingsChallenge(
   env: Env,
   userId: string,
-  body: PasskeySettingsPut,
+  body: PasskeySettingsPatch,
   now = Date.now(),
 ): Promise<PasskeyChallenge> {
   const to = wanted(body);
@@ -597,7 +597,7 @@ export async function settingsChallenge(
 export async function putPasskeySettings(
   env: Env,
   userId: string,
-  body: PasskeySettingsPut,
+  body: PasskeySettingsPatch,
   now = Date.now(),
 ): Promise<PasskeySettings> {
   const to = wanted(body);
