@@ -94,10 +94,7 @@ describe("phone locked story", () => {
     const before = await page.evaluate(() => scrollY);
     // a finger drag: touchStart, many small touchMoves, touchEnd (the browser
     // turns it into a scroll the way it does on a phone)
-    const touch = (
-      type: "touchStart" | "touchMove" | "touchEnd",
-      y?: number,
-    ) =>
+    const touch = (type: "touchStart" | "touchMove" | "touchEnd", y?: number) =>
       cdp.send("Input.dispatchTouchEvent", {
         type,
         touchPoints: y === undefined ? [] : [{ x: 195, y }],
