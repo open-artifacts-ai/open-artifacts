@@ -13,10 +13,11 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../../api/client";
-import { useThreads } from "../../api/comments";
+import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
+import { lostKey, putLost } from "./lostPosts";
 import {
   arrange,
   createGate,
@@ -26,6 +27,9 @@ import {
 } from "./model";
 
 type Bridge = ReturnType<typeof createBridge>;
+
+/** A post that failed after its box had closed: the text to put back and why. `clear` drops it once a box has taken it. */
+export type Lost = { text: string; error: unknown; clear?: () => void };
 
 export type PinPoint = { x: number; y: number; page?: number };
 /** A comment being started: on selected text, or on a placed pin (the server stamps the pin's contentHash). */
@@ -83,8 +87,14 @@ export type CommentsApi = {
   draft: Draft;
   /** Close the draft. `posted`: keep its quote painted until the list carries the new thread (#1834). */
   cancelDraft: (posted?: boolean) => void;
+  /** A new comment that failed after its box closed: the draft opens again with its text and the error. */
+  draftSeed: Lost | null;
+  reopenDraft: (d: NonNullable<Draft>, lost: Lost) => void;
   /** The draft's composer has (or no longer has) text the reader typed. */
-  setDraftDirty: (dirty: boolean) => void;
+  setDraftDirty: (dirty: boolean, unmounting?: boolean) => void;
+  /** What the reader typed in the draft's box, kept while the list is closed. */
+  draftText: { current: string };
+  setDraftText: (text: string) => void;
   showResolved: boolean;
   setShowResolved: (v: boolean) => void;
   guestName: string;
@@ -104,6 +114,13 @@ export type CommentsApi = {
   onSelection: (has: boolean) => void;
   /** Tap on "Comment on selection": the frame runs its own Comment path. */
   commentOnSelection: () => void;
+  /**
+   * The reader clicked away (or closed the list): an empty draft goes with its
+   * highlight; a typed one stays, only the live text selection clears.
+   */
+  dropDraft: (clearFrame?: boolean) => void;
+  /** The frame saw a pointer go down on the page. */
+  onAway: () => void;
   /** The frame said hello: send it the mode and threads again. */
   resync: () => void;
 };
@@ -197,6 +214,7 @@ export function useCommentsController({
   const [positions, setPositions] = useState<Positions>(new Map());
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
+  const [draftSeed, setDraftSeed] = useState<Lost | null>(null);
   // #1834: a draft that was just posted stays painted until the refetched list
   // carries its thread, so posting turns the draft highlight into the thread's
   // without a frame in between. Cancel drops it at once.
@@ -283,6 +301,8 @@ export function useCommentsController({
     if (!heldQuote) return;
     const there = (all ?? []).some(
       (t) =>
+        // A thread still sending is not painted (the frame knows only real ids).
+        !isSending(t.id) &&
         t.anchor.kind === "text" &&
         t.anchor.exact === heldQuote.exact &&
         t.anchor.prefix === heldQuote.prefix &&
@@ -303,8 +323,15 @@ export function useCommentsController({
     positions: createGate(20, 1000),
     open: createGate(5, 1000),
     pin: createGate(5, 1000),
+    away: createGate(20, 1000),
   });
   const dirty = useRef(false);
+  // Typed text outlives the composer's unmount (the list closing): closing keeps such a draft.
+  const typed = useRef(false);
+  const draftText = useRef("");
+  const setDraftText = useCallback((t: string) => {
+    draftText.current = t;
+  }, []);
   const mayRef = useRef(mayComment);
   mayRef.current = mayComment;
   const draftRef = useRef<Draft>(null);
@@ -335,9 +362,14 @@ export function useCommentsController({
     if (!gates.current.select()) return;
     // A reader who can't comment is in the runtime's "view" mode and sends none; page code could still forge one.
     if (!mayRef.current) return;
-    // Never swap the quote under words the reader is typing.
-    if (draftRef.current && dirty.current) return;
+    if (draftRef.current && (dirty.current || typed.current)) {
+      // Never swap the draft under typed words: show it, so it can be sent or discarded.
+      surface.current();
+      return;
+    }
     dirty.current = false;
+    typed.current = false;
+    draftText.current = "";
     setDraft({ anchor });
     surface.current();
   }, []);
@@ -346,14 +378,58 @@ export function useCommentsController({
     // only for a viewer who can comment.
     if (modeRef.current !== "pin" || !mayRef.current) return;
     if (!gates.current.pin()) return;
-    if (draftRef.current && dirty.current) return;
+    if (draftRef.current && (dirty.current || typed.current)) {
+      // Never swap the draft under typed words: show it, so it can be sent or discarded.
+      surface.current();
+      return;
+    }
     dirty.current = false;
+    typed.current = false;
+    draftText.current = "";
     setDraft({ pin });
     // #1698: a chosen pin mode holds for the view, so the next pin is one
     // click away; the default an image opens in falls back to Select.
     if (!chosenRef.current) setWantPin(false);
     surface.current();
   }, []);
+  const selectedRef = useRef(false);
+  selectedRef.current = selected;
+  const dropDraft = useCallback(
+    (clearFrame = true) => {
+      const had = draftRef.current !== null;
+      if (had && !typed.current && !dirty.current) {
+        typed.current = false;
+        draftText.current = "";
+        setDraft(null);
+      }
+      // A typed draft keeps its anchor highlight (the shell paints it); only the live selection goes.
+      if (clearFrame && (had || selectedRef.current)) {
+        getBridge()?.clearSelection?.();
+        setSelected(false);
+      }
+    },
+    [getBridge],
+  );
+  const onAway = useCallback(() => {
+    if (gates.current.away()) dropDraft(false);
+  }, [dropDraft]);
+  // A pointer down in the shell, outside the comments surface and the offers
+  // to comment, ends the selection (the frame sees its own).
+  useEffect(() => {
+    const down = (e: PointerEvent) => {
+      const t = e.target;
+      if (
+        t instanceof Element &&
+        t.closest(
+          "[data-oa-keep-selection],[role='menu'],[role='dialog'],[role='alertdialog']",
+        )
+      )
+        return;
+      dropDraft();
+    };
+    document.addEventListener("pointerdown", down, true);
+    return () => document.removeEventListener("pointerdown", down, true);
+  }, [dropDraft]);
   const onEscape = useCallback(() => {
     // Same rule as the shell's own Esc: only a chosen pin mode is left.
     if (chosenRef.current) setWantPin(false);
@@ -438,11 +514,30 @@ export function useCommentsController({
       draft,
       cancelDraft: (posted = false) => {
         dirty.current = false;
+        typed.current = false;
+        draftText.current = "";
         if (posted && draft && "anchor" in draft) setHeldQuote(draft.anchor);
         setDraft(null);
+        setDraftSeed(null);
       },
-      setDraftDirty: (d) => {
+      draftSeed,
+      reopenDraft: (d, lost) => {
+        // A draft the reader has since started keeps its place: the failed one
+        // waits behind a "Restore" line (lostPosts), text and error kept.
+        if (draftRef.current) {
+          putLost(lostKey.draft(id, d), { ...lost, draft: d });
+          return;
+        }
+        setHeldQuote(null);
+        setDraftSeed(lost);
+        setDraft(d);
+        surface.current();
+      },
+      draftText,
+      setDraftText,
+      setDraftDirty: (d, unmounting = false) => {
         dirty.current = d;
+        if (!unmounting) typed.current = d;
       },
       showResolved,
       setShowResolved,
@@ -456,6 +551,8 @@ export function useCommentsController({
       hasSelection: selected,
       onSelection,
       commentOnSelection,
+      dropDraft,
+      onAway,
       resync: () => {
         setSelected(false);
         setHello((n) => n + 1);
@@ -485,6 +582,7 @@ export function useCommentsController({
       reveal,
       revealed,
       draft,
+      draftSeed,
       showResolved,
       guestName,
       pinFormat,
@@ -499,6 +597,9 @@ export function useCommentsController({
       selected,
       onSelection,
       commentOnSelection,
+      dropDraft,
+      onAway,
+      setDraftText,
     ],
   );
 }

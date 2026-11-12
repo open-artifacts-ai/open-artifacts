@@ -730,6 +730,14 @@ export function createComments(
     bridge.send({ oa: 1, type: "comment.escape" });
   }
 
+  // A pointer down anywhere in the page but our own overlay: the shell drops
+  // an unsent draft (the browser collapses the selection itself).
+  function onPointerDown(e: PointerEvent) {
+    if (mode === "off") return;
+    if (host && e.composedPath().includes(host)) return;
+    bridge.send({ oa: 1, type: "comment.away" });
+  }
+
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
@@ -765,6 +773,13 @@ export function createComments(
       draftCache = null;
       slots = null;
       report(true);
+    } else if (m.type === "comments.clear") {
+      // The reader clicked elsewhere in the shell: a live selection ends here.
+      getSelection()?.removeAllRanges();
+      kept = null;
+      clearTimeout(selTimer);
+      reportSelection();
+      hideButton();
     } else if (m.type === "comments.comment") {
       if (mode === "select") onCommentClick();
     } else if (m.type === "comments.focus") {
@@ -840,6 +855,7 @@ export function createComments(
   sizer?.observe(document.documentElement);
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("click", onClick, true);
+  document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("keydown", onKey, true);
   addEventListener("resize", onResize, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
@@ -854,6 +870,7 @@ export function createComments(
     sizer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
+    document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("keydown", onKey, true);
     removeEventListener("resize", onResize);
     removeEventListener("scroll", onScroll);

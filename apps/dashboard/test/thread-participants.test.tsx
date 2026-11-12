@@ -148,7 +148,6 @@ describe("ThreadParticipants", () => {
       key: "k-OA Billing",
       removed: true,
     });
-    act(() => call?.[1].onSuccess());
     expect(document.querySelector("[data-off]")?.textContent).toContain(
       "Not notified",
     );
@@ -161,7 +160,28 @@ describe("ThreadParticipants", () => {
       key: "k-OA Billing",
       removed: false,
     });
-    act(() => mutate.mock.calls[1]?.[1].onSuccess());
+    expect(document.querySelector("[data-off]")).toBeNull();
+  });
+
+  it("a refused × puts the row back and shows the error (optimistic rollback)", () => {
+    render(
+      <ThreadParticipants
+        t={thread([agent("OA Billing", true)])}
+        api={api()}
+      />,
+    );
+    fireEvent.focus(trigger());
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Stop notifying OA Billing in this thread",
+      }),
+    );
+    // At once, before any answer.
+    expect(list()?.textContent).toContain(
+      "OA Billing won't get replies in this thread.",
+    );
+    act(() => mutate.mock.calls[0]?.[1].onError(new Error("x")));
+    expect(list()?.textContent).not.toContain("won't get replies");
     expect(document.querySelector("[data-off]")).toBeNull();
   });
 
@@ -178,9 +198,7 @@ describe("ThreadParticipants", () => {
         name: "Stop notifying OA Billing in this thread",
       }),
     );
-    act(() => mutate.mock.calls[0]?.[1].onSuccess());
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    act(() => mutate.mock.calls[1]?.[1].onSuccess());
     expect(list()).not.toBeNull();
     expect(document.activeElement).toBe(
       screen.getByRole("button", {
