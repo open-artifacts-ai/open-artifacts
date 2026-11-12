@@ -157,8 +157,10 @@ describe("--uninstall --check", () => {
     expect(out).toContain("apps/server/wrangler.jsonc");
     expect(out).toContain("Open Artifacts – everyone");
     expect(out).toContain(
-      "d1 export acme --remote --no-schema --table <t1> --table <t2> --output backup.sql",
+      "d1 export acme --remote --no-schema --table <t> --output <t>.sql",
     );
+    expect(out).not.toContain("--table <t1>");
+    expect(out).toContain("SELECT COUNT(*) FROM <t>");
     expect(out).toContain("NOT GLOB 'artifact_search*'");
     expect(out).toContain("NOT GLOB 'sqlite_*'");
     expect(out).toContain("NOT GLOB '_cf_*'");
@@ -166,7 +168,7 @@ describe("--uninstall --check", () => {
     expect(out).not.toContain("LIKE");
     expect(out).not.toContain("rebuilt");
     expect(out).toContain(
-      "If an export fails, stop and do not delete anything",
+      "If an export fails, or a count does not match, stop and do not delete anything",
     );
     expect(out).toContain("Restore is not supported yet");
     expect(out).toContain("r2 object get acme/<key> --remote");
