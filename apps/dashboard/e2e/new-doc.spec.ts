@@ -1,33 +1,20 @@
 // #1100: New doc in the Library (Design's docs mockup, step 1 and the
 // self-hosted free-plan step). The created doc opens in the editor, served by a
 // local doc room (e2e/doc-room.mjs). Writes PNGs to SHOTS_DIR when set.
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
+import { startRoom, stopRoom } from "./room";
 
-const PORT = Number(process.env.OA_DOC_PORT) || 1235;
 const DIR = process.env.SHOTS_DIR;
 
 test.describe.configure({ mode: "serial" });
 
-let room: ChildProcess;
-test.beforeEach(async () => {
-  room = spawn(process.execPath, ["e2e/doc-room.mjs", "--blank"], {
-    env: { ...process.env, OA_DOC_PORT: String(PORT) },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  await new Promise<void>((resolve, reject) => {
-    room.once("error", reject);
-    room.once("exit", (code) => reject(new Error(`doc room exited ${code}`)));
-    room.stdout?.on("data", (d) => {
-      if (String(d).includes("ready")) resolve();
-    });
-  });
+let room: ChildProcess | undefined;
+test.beforeEach(async ({ page }, info) => {
+  room = await startRoom(info, page, ["--blank"]);
 });
 test.afterEach(async () => {
-  room.removeAllListeners("exit");
-  const closed = new Promise((r) => room.once("close", r));
-  room.kill("SIGTERM");
-  await closed;
+  await stopRoom(room);
 });
 
 const shot = async (page: Page, name: string) => {

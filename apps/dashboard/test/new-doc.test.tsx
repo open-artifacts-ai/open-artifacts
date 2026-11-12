@@ -19,7 +19,7 @@ describe("New doc (#1100)", () => {
     expect(screen.queryByText(AGENT_LINE)).toBeNull();
   });
 
-  it("is not offered to a guest, or on a capped or paused account", async () => {
+  it("is not offered to a guest", async () => {
     useDocs("on");
     server.use(
       http.get("*/api/v1/me", () =>

@@ -32,6 +32,22 @@ async function startMocks() {
     const { setMockDoc } = await import("./viewer/doc/docMock");
     setMockDoc(fixtures.artifacts[0]?.id ?? null, docMock === "doc-readonly");
   }
+  // ?cap=plan: a capped (read-only) member, as a plan lock reports it.
+  if (params.get("cap") === "plan")
+    extra.push(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json({
+          ...fixtures.me,
+          instance: { ...fixtures.me.instance, docs: "on" },
+          auth: {
+            method: "google",
+            readOnly: true,
+            cap: "plan",
+            expiresAt: null,
+          },
+        }),
+      ),
+    );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   if (role === "admin" || role === "member" || role === "guest")
@@ -474,11 +490,13 @@ async function startMocks() {
       plan: params.get("mock")?.startsWith("paid") ? "paid" : "free",
       // ?mock=newdoc (#1100): docs are on (New doc); ?mock=newdoc-gate: a free self-host.
       docs:
-        params.get("mock") === "newdoc" || params.get("mock") === "doc"
-          ? "on"
-          : params.get("mock") === "newdoc-gate"
-            ? "needs_paid"
-            : undefined,
+        params.get("docs") === "needs_paid"
+          ? "needs_paid"
+          : params.get("mock") === "newdoc" || params.get("mock") === "doc"
+            ? "on"
+            : params.get("mock") === "newdoc-gate"
+              ? "needs_paid"
+              : undefined,
       update,
       // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
       hosted: parseHostedParam(params.get("hosted")),

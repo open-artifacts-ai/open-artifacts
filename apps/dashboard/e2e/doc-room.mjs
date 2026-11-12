@@ -8,7 +8,8 @@
 // collaborators with fixed cursors, for screenshots. Prints "ready <port>"
 // once listening. --too-large answers every client edit with the error frame
 // {"type":"error","code":"doc_too_large"} instead of applying it. --blank starts
-// with an empty doc (a New doc). Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+// with an empty doc (a New doc). --full sends the same error frame to every
+// client as it connects (a doc already at its limit). Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -40,6 +41,7 @@ export function startDocRoom({
   fakes = false,
   tooLarge = false,
   blank = false,
+  full = false,
 }) {
   const ydoc = new Y.Doc();
   if (!blank) {
@@ -114,6 +116,12 @@ export function startDocRoom({
       if (owned?.size)
         awarenessProtocol.removeAwarenessStates(awareness, [...owned], null);
     });
+    // --full: this doc is at its limit; say so as soon as a client is here.
+    if (full)
+      setTimeout(
+        () => ws.send(JSON.stringify({ type: "error", code: "doc_too_large" })),
+        150,
+      );
     // Hello: our sync step 1 (so the client sends what we lack), then the
     // current awareness states.
     const enc = encoding.createEncoder();
@@ -205,7 +213,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.argv.includes("--fakes") || process.env.OA_DOC_FAKES === "1";
   const tooLarge = process.argv.includes("--too-large");
   const blank = process.argv.includes("--blank");
-  const room = startDocRoom({ port, fakes, tooLarge, blank });
+  const full = process.argv.includes("--full");
+  const room = startDocRoom({ port, fakes, tooLarge, blank, full });
   const stop = () => room.close().then(() => process.exit(0));
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

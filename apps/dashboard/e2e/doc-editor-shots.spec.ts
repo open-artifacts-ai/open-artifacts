@@ -1,37 +1,25 @@
 // #1100: the collaborative doc editor, against a local doc room
 // (e2e/doc-room.mjs) with two people and an agent as remote collaborators.
 // Writes PNGs to SHOTS_DIR (default: the test output folder).
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
+import { startRoom, stopRoom } from "./room";
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
-const PORT = Number(process.env.OA_DOC_PORT) || 1235;
 const DIR = process.env.SHOTS_DIR;
 
-// One worker: each test gets a fresh room (and so a fresh doc) below.
+// Each test gets a fresh room (and so a fresh doc) on its worker's own port.
 test.describe.configure({ mode: "serial" });
 
-let room: ChildProcess;
-let roomArgs = ["--fakes"];
-test.beforeEach(async ({ browserName: _b }, info) => {
-  roomArgs = info.title.includes("size limit") ? ["--too-large"] : ["--fakes"];
-  room = spawn(process.execPath, ["e2e/doc-room.mjs", ...roomArgs], {
-    env: { ...process.env, OA_DOC_PORT: String(PORT) },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  await new Promise<void>((resolve, reject) => {
-    room.once("error", reject);
-    room.once("exit", (code) => reject(new Error(`doc room exited ${code}`)));
-    room.stdout?.on("data", (d) => {
-      if (String(d).includes("ready")) resolve();
-    });
-  });
+let room: ChildProcess | undefined;
+test.beforeEach(async ({ page }, info) => {
+  const args = info.title.includes("size limit")
+    ? ["--too-large"]
+    : ["--fakes"];
+  room = await startRoom(info, page, args);
 });
 test.afterEach(async () => {
-  room.removeAllListeners("exit");
-  const closed = new Promise((r) => room.once("close", r));
-  room.kill("SIGTERM");
-  await closed;
+  await stopRoom(room);
 });
 
 const settle = (page: Page) =>

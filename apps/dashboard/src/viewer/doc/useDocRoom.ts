@@ -74,7 +74,12 @@ export interface DocRoom {
  */
 export function roomServerUrl(): string {
   if (import.meta.env.VITE_MOCK === "1")
-    return import.meta.env.VITE_DOC_WS || "ws://localhost:1235";
+    // e2e: each worker's room port arrives as window.__OA_DOC_WS.
+    return (
+      (window as unknown as { __OA_DOC_WS?: string }).__OA_DOC_WS ||
+      import.meta.env.VITE_DOC_WS ||
+      "ws://localhost:1235"
+    );
   const proto = location.protocol === "https:" ? "wss" : "ws";
   return `${proto}://${location.host}/api/v1/artifacts`;
 }
