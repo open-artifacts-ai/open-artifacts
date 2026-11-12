@@ -319,6 +319,26 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
     mountHosted("/settings/plan", { billing: unknown });
     await payShown();
   });
+  it("past_due Solo with no customer: Pay buttons, never the operator line (#2137)", async () => {
+    mountHosted("/settings/plan", {
+      billing: {
+        ...PAUSED,
+        status: "past_due",
+        readOnly: true,
+        hasCustomer: false,
+      },
+    });
+    await payShown();
+    expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
+  });
+  it("paused Solo (solo_unpaid, no customer): Pay buttons, the way the banner points (#2137)", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...PAUSED, hasCustomer: false },
+    });
+    await payShown();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
+  });
   it("tier free with a customer keeps the Pay buttons", async () => {
     mountHosted("/settings/plan", { billing: { ...PAID, tier: "free" } });
     await payShown();

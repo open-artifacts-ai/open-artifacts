@@ -35,8 +35,17 @@ for (const w of [1280, 390]) {
       const note = page.getByRole("textbox", {
         name: "Comment on the whole page",
       });
+      await shot(page, `${w}-${theme}-composer-empty`);
       await note.fill("Looks good to me");
       await shot(page, `${w}-${theme}-composer`);
+      const one = (await note.boundingBox())?.height ?? 0;
+      await note.fill(
+        Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n"),
+      );
+      const grown = (await note.boundingBox())?.height ?? 0;
+      expect(grown).toBeGreaterThan(one);
+      expect(grown).toBeLessThanOrEqual(241);
+      await shot(page, `${w}-${theme}-composer-max`);
       await note.fill("");
       // The frame's runtime says "comment.select" for a selection: replay it
       // from the frame with the nonce in its src.
@@ -78,5 +87,46 @@ for (const w of [1280, 390]) {
     ).toBeVisible();
     await expect(page.getByText(/^\d+ open$/)).toHaveCount(0);
     await shot(page, `${w}-light-zero`);
+  });
+}
+
+// #2234: touch screens get a 16px field (no iOS focus zoom) and no key hint.
+test.describe("touch", () => {
+  test.use({ hasTouch: true, isMobile: true });
+  test("390: field is at least 16px and the send hint is hidden", async ({
+    page,
+  }) => {
+    await open(page, 390, "light");
+    const note = page.getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    const px = await note.evaluate((e) =>
+      Number.parseFloat(getComputedStyle(e).fontSize),
+    );
+    expect(px).toBeGreaterThanOrEqual(16);
+    await expect(page.locator("[data-send-hint]")).toHaveCount(0);
+  });
+});
+test("1280: a fine pointer shows the send hint", async ({ page }) => {
+  await open(page, 1280, "light");
+  await expect(page.locator("[data-send-hint]").first()).toBeVisible();
+});
+
+// #2234: the reply composer inside a thread card.
+for (const theme of ["light", "dark"]) {
+  test(`1280 ${theme}: reply in card`, async ({ page }) => {
+    await open(page, 1280, theme);
+    const card = page.locator("[data-thread]").first();
+    await card.getByRole("button", { name: "Reply" }).first().click();
+    const box = card.getByRole("textbox", { name: "Reply" });
+    await box.fill(
+      "Thanks, I will check the footer link and the pricing copy.",
+    );
+    await expect(box).toBeVisible();
+    if (OUT) {
+      mkdirSync(OUT, { recursive: true });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: `${OUT}/1280-${theme}-reply.png` });
+    }
   });
 }
