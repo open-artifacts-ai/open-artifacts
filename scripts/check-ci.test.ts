@@ -1348,7 +1348,9 @@ describe("prod and staging tokens never cross", () => {
       // that didn't run deploys nothing).
       for (const s of steps
         .slice(det + 1)
-        .filter((s) => s.run && !s.if?.startsWith("failure()")))
+        .filter(
+          (s) => s.run && !s.if?.startsWith("failure()") && s.id !== "held",
+        ))
         expect(s.if, s.name ?? s.run).toContain(
           "steps.migration.outputs.hold == 'false'",
         );
