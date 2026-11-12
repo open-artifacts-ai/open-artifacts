@@ -12,10 +12,15 @@ export const THAW_COPY = {
     `Directory sync turns back on. ${people(n)} People you removed stay removed, and people you added stay.`,
   confirmYes: "Upgrade",
   confirmNo: "Cancel",
-  /** One-time banner after the thaw reverted anything. */
-  banner: (n: number) =>
-    n === 1
-      ? "Directory sync is back on: 1 role change you made on Team was replaced by your groups."
-      : `Directory sync is back on: ${n} role changes you made on Team were replaced by your groups.`,
-  link: "See what changed",
+  /** One-time banner after the thaw reverted anything: at most 2 names, then "and N other(s)". */
+  banner: (names: string[], total: number) => {
+    const shown = names.slice(0, 2);
+    const rest = total - shown.length;
+    const who =
+      rest > 0
+        ? `${shown.join(", ")} and ${rest} ${rest === 1 ? "other" : "others"}`
+        : shown.join(" and ");
+    const verb = total === 1 ? "is" : "are";
+    return `Directory sync is back on. ${who} ${verb} back on the role their group gives them.`;
+  },
 } as const;

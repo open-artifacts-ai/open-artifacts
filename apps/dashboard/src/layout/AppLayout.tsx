@@ -233,7 +233,6 @@ function Layout() {
             {!/^\/settings\/directory\/?$/i.test(path) && (
               <SyncBanner
                 me={me}
-                members={/^\/settings\/members\/?$/i.test(path)}
                 className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
               />
             )}

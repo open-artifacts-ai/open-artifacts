@@ -270,8 +270,8 @@ const THAW_REVERTS =
 
 /**
  * For owners and admins (#2150), one cheap read each:
- * - frozen: pendingReverts, the frozen edits the thaw would revert (kind
- *   override on a user who isn't removed; removals and manual adds stay);
+ * - frozen: pendingReverts, the people the thaw would revert (a frozen edit of
+ *   kind override on a user who isn't removed; removals and manual adds stay);
  * - google: lastThaw, from the thaw's own audit rows (actor sync, detail
  *   thaw true, the role, remove and add outcomes) in the last 3 days. A thaw
  *   writes a chunk per alarm, so its id is the time of its first such row
@@ -285,25 +285,34 @@ export async function readThawNotice(
   if (mode === "frozen") {
     const r = await stmt(
       env.DB,
-      `select count(*) as n from frozen_edits f join users u on u.id = f.user_id
+      `select count(distinct f.user_id) as n from frozen_edits f join users u on u.id = f.user_id
         where f.kind = 'override' and u.status <> 'removed'`,
     ).first<{ n: number }>();
     return { pendingReverts: r?.n ?? 0 };
   }
   if (mode !== "google") return {};
+  const since = now - THAW_NOTICE_MS;
+  const where = `from audit_events a join users u on u.id = a.target_id
+    where a.at >= ?1 and a.actor_kind = 'sync' and a.action in ${THAW_REVERTS}
+      and json_extract(a.detail, '$.thaw') = 1`;
   const r = await stmt(
     env.DB,
-    `select count(*) as n, min(at) as first, max(at) as last from audit_events
-      where at >= ?1 and actor_kind = 'sync' and action in ${THAW_REVERTS}
-        and json_extract(detail, '$.thaw') = 1`,
+    `select count(distinct a.target_id) as n, min(a.at) as first, max(a.at) as last ${where}`,
   )
-    .bind(now - THAW_NOTICE_MS)
+    .bind(since)
     .first<{ n: number; first: number | null; last: number | null }>();
   if (!r?.n || r.first === null || r.last === null) return {};
+  const { results } = await stmt(
+    env.DB,
+    `select u.name, u.email ${where} group by a.target_id order by min(a.at), a.target_id limit 2`,
+  )
+    .bind(since)
+    .all<{ name: string; email: string }>();
   return {
     lastThaw: {
       id: String(r.first),
       reverted: r.n,
+      names: results.map((x) => x.name.trim() || x.email),
       at: new Date(r.last).toISOString(),
     },
   };

@@ -3,7 +3,6 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { InstanceDirectory, SyncState } from "../api/contract";
 import { AppLink } from "../library/AppLink";
 import { Notice } from "./Notice";
-import { THAW_COPY } from "./thawCopy";
 
 const DISMISSED_KEY = "oa.syncBanner.dismissed";
 const DAY_MS = 24 * 3600_000;
@@ -84,7 +83,7 @@ const copy = (state: Failing, since: string | null, owner: boolean) => {
  * (`directory.banner`). Dismissing hides the current state and stage in this
  * browser; the owner can't dismiss the danger stage.
  */
-function SyncHealthBanner({
+export function SyncBanner({
   me,
   className = "",
 }: {
@@ -167,75 +166,6 @@ function SyncHealthBanner({
         )}
       </Notice>
     </div>
-  );
-}
-
-const THAW_KEY = "oa.thawNotice.dismissed";
-const readThaw = () => {
-  try {
-    return localStorage.getItem(THAW_KEY);
-  } catch {
-    return null;
-  }
-};
-
-/**
- * #2150: once after a Team to Business thaw put roles back, for owners and
- * admins. Dismissal is kept per thaw (the server's lastThaw.id) in this
- * browser, like the health banner's: no server state or migration, and a new
- * thaw has a new id, so it shows again.
- */
-function ThawBanner({ me, className }: { me: Me | null; className: string }) {
-  const [dismissed, setDismissed] = useState(readThaw);
-  const role = me?.user.role;
-  const t = me?.instance.directory?.lastThaw;
-  if (
-    !t ||
-    t.reverted < 1 ||
-    (role !== "owner" && role !== "admin") ||
-    shownDirectoryMode(me) !== "google" ||
-    dismissed === t.id
-  )
-    return null;
-  const dismiss = () => {
-    try {
-      localStorage.setItem(THAW_KEY, t.id);
-    } catch {}
-    setDismissed(t.id);
-  };
-  return (
-    <div className={`oa-sync-banner ${className}`}>
-      <Notice tone="info" onDismiss={dismiss}>
-        <p>
-          {THAW_COPY.banner(t.reverted)}{" "}
-          {/* The audit log has no sync filter or page yet: the closest link is the log itself, with the filter reserved. */}
-          <a
-            className="underline underline-offset-2"
-            href={`${R.audit}?actor=sync`}
-          >
-            {THAW_COPY.link}
-          </a>
-        </p>
-      </Notice>
-    </div>
-  );
-}
-
-/** The sync notices: the thaw's one-time banner, then the health banner. */
-export function SyncBanner(props: {
-  me: Me | null;
-  className?: string;
-  /** The thaw notice shows on Members only (Product's copy on #2150). */
-  members?: boolean;
-}) {
-  const { members, ...rest } = props;
-  return (
-    <>
-      {members && (
-        <ThawBanner me={props.me} className={props.className ?? ""} />
-      )}
-      <SyncHealthBanner {...rest} />
-    </>
   );
 }
 

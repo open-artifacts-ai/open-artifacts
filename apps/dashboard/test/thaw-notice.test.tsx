@@ -12,7 +12,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { THAW_COPY } from "../src/layout/thawCopy";
 import { PlanCompare } from "../src/settings/PlanCompare";
-import { installHarness, mountHosted } from "./harness";
+import { calls, installHarness, mountHosted } from "./harness";
 
 installHarness();
 globalThis.ResizeObserver ??= class {
@@ -116,85 +116,115 @@ describe("Upgrade to Business confirm", () => {
   });
 });
 
-describe("thaw banner", () => {
-  const T = { id: "1000", reverted: 3, at: "2026-11-12T00:00:00.000Z" };
-  const text =
-    "Directory sync is back on: 3 role changes you made on Team were replaced by your groups.";
-
-  it("shows once with the audit link and stays dismissed for that thaw", async () => {
+describe("yearly path", () => {
+  it("the confirm's Upgrade opens the seat step with focus, and checkout carries seats", async () => {
+    const posts = calls("POST");
     mountHosted(
-      "/settings/members",
-      { billing: BUSINESS },
-      dir({ lastThaw: T }, "business"),
+      "/settings/plan",
+      {
+        billing: {
+          tier: "trial",
+          status: "active",
+          trialEndsAt: null,
+          graceUntil: null,
+          creatorsThisMonth: 4,
+          readOnly: false,
+          yearlyTeamBusiness: true,
+        },
+      },
+      dir({ mode: "frozen", bound: true, pendingReverts: 3 }),
     );
-    const note = await screen.findByText(
-      (_, el) =>
-        el?.tagName === "P" && el.textContent?.startsWith(text) === true,
+    const card = await screen.findByTestId("plan-card-business");
+    fireEvent.click(
+      within(card).getByRole("button", { name: "Upgrade to Business" }),
     );
-    expect(
-      within(note).getByRole("link", { name: THAW_COPY.link }),
-    ).toHaveAttribute("href", expect.stringContaining("/audit?actor=sync"));
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    const confirm = await screen.findByRole("dialog", {
+      name: "Upgrade to Business",
+    });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Upgrade" }));
+    const input = (await screen.findByLabelText(
+      "Creators",
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() =>
-      expect(screen.queryByText(text, { exact: false })).toBeNull(),
+      expect(
+        posts.find((c) => c.path.endsWith("/billing/checkout"))?.body,
+      ).toEqual({ tier: "business", interval: "year", seats: 4 }),
     );
+  });
+});
+
+describe("thaw banner (Members)", () => {
+  const T = {
+    id: "1000",
+    reverted: 3,
+    names: ["Alex Kim", "Sam Lee"],
+    at: "2026-11-12T00:00:00.000Z",
+  };
+  const MEMBERS = "/settings/members";
+  const mount = (t: typeof T | undefined, path = MEMBERS) =>
+    mountHosted(
+      path,
+      { billing: BUSINESS },
+      dir(t ? { lastThaw: t } : {}, "business"),
+    );
+  const note = (s: string) => screen.queryByText(s, { exact: false });
+
+  it.each([
+    [
+      ["Alex Kim"],
+      1,
+      "Directory sync is back on. Alex Kim is back on the role their group gives them.",
+    ],
+    [
+      ["Alex Kim", "Sam Lee"],
+      2,
+      "Directory sync is back on. Alex Kim and Sam Lee are back on the role their group gives them.",
+    ],
+    [
+      ["Alex Kim", "Sam Lee"],
+      3,
+      "Directory sync is back on. Alex Kim, Sam Lee and 1 other are back on the role their group gives them.",
+    ],
+    [
+      ["Alex Kim", "Sam Lee"],
+      4,
+      "Directory sync is back on. Alex Kim, Sam Lee and 2 others are back on the role their group gives them.",
+    ],
+  ])("names %j for %i people", async (names, reverted, text) => {
+    mount({ ...T, names, reverted });
+    expect(await screen.findByText(text)).toBeVisible();
+    expect(screen.queryByRole("link", { name: "See what changed" })).toBeNull();
+  });
+
+  it("dismisses once per thaw and stays dismissed", async () => {
+    mount(T);
+    await screen.findByText("Directory sync is back on.", { exact: false });
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(note("Directory sync is back on")).toBeNull());
     expect(localStorage.getItem("oa.thawNotice.dismissed")).toBe("1000");
   });
 
   it("stays hidden after a reload for the same thaw, shows for a new one", async () => {
     localStorage.setItem("oa.thawNotice.dismissed", "1000");
-    mountHosted(
-      "/settings/members",
-      { billing: BUSINESS },
-      dir({ lastThaw: T }, "business"),
-    );
+    mount(T);
     await screen.findByRole("main");
-    expect(screen.queryByText(text, { exact: false })).toBeNull();
+    expect(note("Directory sync is back on")).toBeNull();
     cleanup();
-    mountHosted(
-      "/settings/members",
-      { billing: BUSINESS },
-      dir({ lastThaw: { ...T, id: "2000" } }, "business"),
-    );
-    expect(await screen.findByText(text, { exact: false })).toBeVisible();
-  });
-
-  it("says 1 role change for one", async () => {
-    mountHosted(
-      "/settings/members",
-      { billing: BUSINESS },
-      dir({ lastThaw: { ...T, reverted: 1 } }, "business"),
-    );
+    mount({ ...T, id: "2000" });
     expect(
-      await screen.findByText(
-        "Directory sync is back on: 1 role change you made on Team was replaced by your groups.",
-        { exact: false },
-      ),
+      await screen.findByText("Directory sync is back on.", { exact: false }),
     ).toBeVisible();
   });
 
-  it("no thaw, no banner", async () => {
-    mountHosted("/", { billing: BUSINESS }, dir({}, "business"));
+  it("no thaw, no banner; and not off Members", async () => {
+    mount(undefined);
     await screen.findByRole("main");
-    expect(
-      screen.queryByText("Directory sync is back on", { exact: false }),
-    ).toBeNull();
+    expect(note("Directory sync is back on")).toBeNull();
+    cleanup();
+    mount(T, "/");
+    await screen.findByRole("main");
+    expect(note("Directory sync is back on")).toBeNull();
   });
-});
-
-it("the thaw banner is on Members only", async () => {
-  mountHosted(
-    "/",
-    { billing: BUSINESS },
-    dir(
-      {
-        lastThaw: { id: "1", reverted: 2, at: "2026-11-12T00:00:00.000Z" },
-      },
-      "business",
-    ),
-  );
-  await screen.findByRole("main");
-  expect(
-    screen.queryByText("Directory sync is back on", { exact: false }),
-  ).toBeNull();
 });
