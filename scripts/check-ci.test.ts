@@ -129,6 +129,14 @@ describe("ci.yml", () => {
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
   });
+  it("released-migrations-frozen runs the script on a full-history checkout", () => {
+    const job = w.jobs["released-migrations-frozen"];
+    expect(job.if).toBeUndefined();
+    expect(job.steps[0].with["fetch-depth"]).toBe(0);
+    expect(JSON.stringify(job.steps)).toContain(
+      "scripts/ci/released-migrations-frozen.sh",
+    );
+  });
   it("defines at least the five required jobs", () => {
     expect(Object.keys(w.jobs)).toEqual(
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
