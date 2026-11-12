@@ -39,6 +39,7 @@ import {
   useRevokeOnly,
 } from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { GoogleWorkspaceRow } from "./GoogleWorkspaceRow";
 import { saveTokenCommand, snippets, tokenFile } from "./snippets";
 import {
   Code,
@@ -512,6 +513,7 @@ export function Connections() {
           <Connect mcpUrl={mcpUrl} />
         </SettingsCard>
       )}
+      <GoogleWorkspaceRow />
       <OAuthClients />
       <Tokens />
     </div>

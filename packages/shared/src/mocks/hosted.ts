@@ -1050,7 +1050,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     me.instance.features = features();
     const unhealthy = sync.healthy === false;
     me.instance.directory = {
-      mode: directoryMode,
+      // The server derives the mode from the binding: a disconnected frozen one reads off.
+      mode: directoryMode === "frozen" && !sync.binding ? "off" : directoryMode,
       healthy: sync.healthy,
       unhealthySince: sync.unhealthySince,
       banner: unhealthy && isAdmin(),
