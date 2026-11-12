@@ -184,8 +184,10 @@ function PasskeyList({
     setRemoveBusy(true);
     setNote(null);
     try {
-      // The server lists only usable passkeys to assert with; with none
-      // usable, it asks for a fresh sign-in instead (401 reauth_required).
+      // Main path: a passkey assertion. REAUTH-ONLY BRANCH (no usable
+      // passkey: DELETE with no body, the server asks for a fresh sign-in via
+      // 401 reauth_required) is the `else` below plus followReauth; the server
+      // is moving it to a 24 h pending removal, so change it here only.
       let assertion: unknown;
       if (keys?.some((k) => k.usable)) {
         const ch = await api.send(
@@ -318,7 +320,7 @@ function Switches({
       let saved: PasskeySettings;
       if (next) {
         saved = await api.send(
-          "PUT",
+          "PATCH",
           R.passkeySettings,
           body,
           PasskeySettingsSchema,
@@ -333,7 +335,7 @@ function Switches({
         );
         const assertion = await getAssertion(ch.options);
         saved = await api.send(
-          "PUT",
+          "PATCH",
           R.passkeySettings,
           { ...body, assertion },
           PasskeySettingsSchema,

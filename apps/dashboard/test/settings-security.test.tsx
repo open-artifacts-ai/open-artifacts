@@ -17,13 +17,23 @@ const ASSERTION = {
   id: "cred",
   rawId: "cred",
   type: "public-key",
-  response: {},
+  response: {
+    clientDataJSON: "AAAA",
+    authenticatorData: "AAAA",
+    signature: "AAAA",
+  },
+};
+const CREDENTIAL = {
+  id: "new",
+  rawId: "new",
+  type: "public-key",
+  response: { clientDataJSON: "AAAA", attestationObject: "AAAA" },
 };
 const fake = (json: object) => ({ toJSON: () => json });
 
 beforeEach(() => {
   get.mockReset().mockResolvedValue(fake(ASSERTION));
-  create.mockReset().mockResolvedValue(fake({ ...ASSERTION, id: "new" }));
+  create.mockReset().mockResolvedValue(fake(CREDENTIAL));
   Object.defineProperty(navigator, "credentials", {
     value: { get, create },
     configurable: true,
@@ -69,7 +79,7 @@ function settingsServer(initial: PasskeySettings, put?: () => Response) {
         expiresAt: new Date().toISOString(),
       });
     }),
-    http.put(`*${R.passkeySettings}`, async ({ request }) => {
+    http.patch(`*${R.passkeySettings}`, async ({ request }) => {
       const b = (await request.json()) as {
         actions: PasskeySettings["actions"];
         everyPick: boolean;
@@ -297,7 +307,7 @@ describe("Settings › Security: passkeys", () => {
     expect(await screen.findByText("Passkey")).toBeVisible();
     expect(create).toHaveBeenCalledTimes(1);
     expect(posts.find((c) => c.path === R.passkeyRegisterFinish)?.body).toEqual(
-      { credential: { ...ASSERTION, id: "new" } },
+      { credential: CREDENTIAL },
     );
   });
 

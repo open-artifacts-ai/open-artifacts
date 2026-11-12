@@ -9,14 +9,14 @@
 import { type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
 import type { ErrorCode } from "../errors.js";
+import { PASSKEY_COOLING_MS } from "../passkeys.js";
+import { R } from "../routes.js";
 import {
-  PASSKEY_COOLING_MS,
   type Passkey,
   PasskeyRegisterBodySchema,
   type PasskeySettings,
-  PasskeySettingsPutSchema,
-} from "../passkeys.js";
-import { R } from "../routes.js";
+  PasskeySettingsPatchSchema,
+} from "../schemas.js";
 
 export type PasskeyMockState = "none" | "cooling" | "usable";
 
@@ -120,12 +120,12 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
     http.get(`*${R.passkeys}`, () => HttpResponse.json(keys)),
     http.get(`*${R.passkeySettings}`, () => HttpResponse.json(settings())),
     http.post(`*${R.passkeySettingsChallenge}`, async ({ request }) => {
-      const r = await d.body(request, PasskeySettingsPutSchema);
+      const r = await d.body(request, PasskeySettingsPatchSchema);
       if (r.error) return r.error;
       return refuse() ?? HttpResponse.json(assertOptions());
     }),
-    http.put(`*${R.passkeySettings}`, async ({ request }) => {
-      const r = await d.body(request, PasskeySettingsPutSchema);
+    http.patch(`*${R.passkeySettings}`, async ({ request }) => {
+      const r = await d.body(request, PasskeySettingsPatchSchema);
       if (r.error) return r.error;
       const next = r.data.actions as typeof actions;
       if (!next.command)
