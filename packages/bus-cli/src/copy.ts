@@ -735,6 +735,30 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         `Kept the Open Artifacts plugins on ${ref ?? "their default branch"}, as you set them.`,
       ),
     ],
+    pluginsRolledBack: (state: "all" | "some" | "none", why: string) => [
+      warn(
+        state === "all"
+          ? "Put the previous Open Artifacts plugin source back, so your plugins are as they were. Run the install again to retry the move."
+          : state === "some"
+            ? "Put the previous Open Artifacts plugin source back, but only some of the plugins came back. Run the install again to finish."
+            : `Couldn't put the previous plugin source back either (${why}), so the Open Artifacts plugins are not installed. Run the install again.`,
+      ),
+    ],
+    pluginsStyleCleared: () => [
+      warn(
+        "Turned the Artifacts Teammate output style off again, because its plugin is not installed. The install turns it back on.",
+      ),
+    ],
+    pluginsLostOptions: (mcpServer: string) => [
+      warn(
+        `The shortcuts' saved server name "${mcpServer}" was lost with the removed plugins. Run: claude plugin configure open-artifacts-shortcuts and enter it again.`,
+      ),
+    ],
+    pluginsAddUnknown: (why: string) => [
+      warn(
+        `Couldn't add the plugin source (${why}) and couldn't check what is installed, so nothing was changed back. Run the install again.`,
+      ),
+    ],
     pluginsBadInstance: () => [
       warn(
         "Couldn't read this instance's address, so the shortcuts don't know where your pages are yet.",
