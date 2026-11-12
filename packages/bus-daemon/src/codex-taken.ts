@@ -15,6 +15,9 @@ import { globRollout, readLines, threadRow } from "./codex-attest.ts";
 /** The hub keeps a notice record this long (#1752); a notice watch is dropped then. */
 export const NOTICE_WATCH_MS = 6 * 60 * 60 * 1000;
 
+/** How long confirmations wait to share one write. */
+const CONFIRM_SAVE_MS = 250;
+
 /** Most bytes of one rollout one record reads per pass; the rest waits for the next tick. */
 export const TAKEN_SCAN_BUDGET = 2 * 1024 * 1024;
 
@@ -177,6 +180,8 @@ export class TakenWatch {
   /** Ids (or `maybe:<id>`) an earlier build's marker file lists. */
   readonly #legacy = new Set<string>();
   readonly #now: () => number;
+  /** A confirmation save waiting for its tick. */
+  #pending?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly opts: TakenOptions) {
     this.#now = opts.now ?? Date.now;
@@ -343,6 +348,18 @@ export class TakenWatch {
     if (!r || r.state !== "taken" || r.confirmed) return;
     r.confirmed = true;
     r.acked = true;
+    // Coalesced: one write per tick however many confirmations arrive. A
+    // crash before it only means an idempotent replay.
+    if (this.#pending) return;
+    this.#pending = setTimeout(() => this.flush(), CONFIRM_SAVE_MS);
+    this.#pending.unref();
+  }
+
+  /** Writes the coalesced confirmations now (a stop calls it). */
+  flush(): void {
+    if (!this.#pending) return;
+    clearTimeout(this.#pending);
+    this.#pending = undefined;
     this.#save();
   }
 

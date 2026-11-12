@@ -80,6 +80,23 @@ describe("a taken Codex record and the hub's confirmation (#2198)", () => {
     expect(acks()).toHaveLength(sent);
   });
 
+  it("an `acked` that echoes no ack of this link, or a wrong msg_id, confirms nothing", async () => {
+    const { h, acks, record, helloOk } = await world();
+    await helloOk([BUS_CAPS.ackConfirm]);
+    await vi.waitFor(
+      () => expect(acks().length).toBeGreaterThanOrEqual(1),
+      WAIT,
+    );
+    h.toDaemon({ id: "unknownframeid01", type: "acked", msg_id: ID });
+    h.toDaemon({
+      id: acks()[0]?.id,
+      type: "acked",
+      msg_id: "nnnnnnnnnnnnnnnn",
+    });
+    await helloOk([BUS_CAPS.ackConfirm]); // both handled before this sentinel
+    expect(record().confirmed).toBeUndefined();
+  });
+
   it("not confirmed: the next link sends the ack again", async () => {
     const { acks, record, helloOk, reconnect } = await world();
     await helloOk([BUS_CAPS.ackConfirm]);

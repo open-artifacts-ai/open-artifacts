@@ -693,11 +693,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   });
   /** Where Codex keeps its thread names (#1748). */
   const codexIndexHome = cx.home ?? codexHome();
+  /** Codex acks queued on the current link: ack frame id to msg_id. Only an `acked` echoing one of these confirms (#2198). */
+  const codexAckIds = new Map<string, string>();
+  const sendCodexAck = (id: string, unsent?: () => void): boolean =>
+    delivery.delivered(id, unsent, (fid) => codexAckIds.set(fid, id));
   /** Queued Codex mail a turn has not taken yet (#2029): acked late, once it has. */
   const codexTaken = new TakenWatch({
     home: codexIndexHome,
     file: cx.takenFile ?? join(home(), "codex-pending.json"),
-    onTaken: (id, unsent) => delivery.delivered(id, unsent),
+    onTaken: (id, unsent) => sendCodexAck(id, unsent),
     log,
   });
   const codex = new CodexTransport({
@@ -1434,9 +1438,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
-        case "acked":
-          codexTaken.confirm(frame.msg_id);
+        case "acked": {
+          // Only the answer to an ack sent on this link, from a hub that
+          // negotiated the cap; anything else is ignored.
+          const sent = codexAckIds.get(frame.id);
+          if (hubAckConfirm && sent === frame.msg_id) {
+            codexAckIds.delete(frame.id);
+            codexTaken.confirm(sent);
+          }
           return;
+        }
         case "waiting_counts":
           waitingAsks.get(frame.id)?.(frame.counts);
           return;
@@ -1471,7 +1482,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             const link = ++codexReplayLink;
             replayAcks(
               codexTaken.unconfirmedIds(),
-              (id) => void delivery.delivered(id),
+              (id) => void sendCodexAck(id),
               () => hubHelloed && link === codexReplayLink,
               () => hub.headroom,
             );
@@ -1534,6 +1545,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubLink = false;
       hubLinkArg = false;
       hubAckConfirm = false;
+      codexAckIds.clear();
       hubWaitingQuery = false;
       hubHelloed = false;
       statusRelay.dropped();
@@ -2631,6 +2643,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       for (const t of limited.values()) clearTimeout(t);
       for (const t of restoreTimers) clearTimeout(t);
       hub.stop();
+      codexTaken.flush();
       // A send waiting for delivered is queued at the hub: it answers so, not as an error.
       receipts.release();
       await new Promise((r) => setImmediate(r));

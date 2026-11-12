@@ -1507,6 +1507,7 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
     expect(sends).toEqual([ID]);
     // The hub answers `acked`: done, across another restart too.
     w2.confirm(ID);
+    w2.flush(); // else one write after the tick
     expect(w2.unconfirmedIds()).toEqual([]);
     expect(
       new TakenWatch({

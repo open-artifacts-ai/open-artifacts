@@ -125,3 +125,54 @@ describe("confirmed mail acks (#2198)", () => {
     expect((await waitFor(d, "hello_ok")).caps).toContain(BUS_CAPS.ackConfirm);
   });
 });
+
+describe("a reopened session and a confirmed ack (#2198)", () => {
+  const caps = [BUS_CAPS.ackConfirm];
+  async function reopen(newSession: boolean) {
+    const { s, t, tm, n, msgId } = await mailTo(caps);
+    t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "rref" });
+    await barrier(t, caps);
+    if (newSession)
+      // The away reservation is gone: the next agent_up is a new session.
+      await inOwnerHub((st) =>
+        st.storage.sql.exec(
+          "delete from former_names where kind = 'away' and agent_id in (select id from agents where machine_id = ? and native_ref = 'rref')",
+          tm.id,
+        ),
+      );
+    t.send(up("u2", "rref", "ignored", n));
+    await waitFor(t, "agent_ok");
+    return { s, t, msgId };
+  }
+
+  it("an ordinary reopen keeps the boundary: the old receipt settles and is acked", async () => {
+    const { s, t, msgId } = await reopen(false);
+    const redelivered = await waitFor(t, "deliver");
+    expect(redelivered.msg_id).toBe(msgId);
+    t.send({ v: 1, id: "a1", type: "ack", msg_id: msgId });
+    expect(await waitFor(t, "acked")).toMatchObject({
+      id: "a1",
+      msg_id: msgId,
+    });
+    expect(await stateOf(msgId)).toBe("delivered");
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: msgId,
+      state: "delivered",
+    });
+  });
+
+  it("a genuinely new session gets the same opaque frame, and the old receipt stays pending", async () => {
+    const { s, t, msgId } = await reopen(true);
+    t.send({ v: 1, id: "a1", type: "ack", msg_id: msgId });
+    expect(await waitFor(t, "acked")).toMatchObject({
+      id: "a1",
+      msg_id: msgId,
+    });
+    expect(await stateOf(msgId)).toBe("pending");
+    expect(
+      framesSeen(s).filter(
+        (f) => f.type === "receipt_update" && f.state === "delivered",
+      ),
+    ).toHaveLength(0);
+  });
+});
