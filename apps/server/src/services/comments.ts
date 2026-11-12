@@ -1354,8 +1354,10 @@ export async function addThread(
  * #2224: the bus address of the agent that posted the ask at the thread's root
  * (`author`), or null: a person's ask, or an agent with no verified bus
  * identity (a notice then reaches nobody). It is the thread participant the
- * author recorded at write time (same verified identity), under its current
- * bus name when it was renamed. Never a follower or the member's other agents.
+ * author recorded at write time (same verified identity), at the address its
+ * owner's hub reports for that identity now (fresh read, never the names
+ * cache). Anything less than that answer gives null. Never a follower or the
+ * member's other agents.
  */
 async function askingAddress(
   env: Env,
@@ -1374,15 +1376,22 @@ async function askingAddress(
       (p) => p.owner === author.ref && p.identity?.identityId === id.identityId,
     );
   if (!row) return null;
-  const names = await currentNames(env, {
-    comments: [],
-    agents: [{ owner: row.owner, identity: row.identity }],
-  });
-  const address = {
-    namespace: row.namespace,
-    name: names.get(id.identityId) ?? row.name,
+  // Fail closed: a fresh, uncached read of the owner's own hub must give the
+  // identity's current name, and that name must still be this identity's. A
+  // miss, a timeout, an error or another agent holding the name sends nothing.
+  const none = (reason: string): null => {
+    logInfo("ask_asker_unresolved", { artifactId, threadId, reason });
+    return null;
   };
-  return BusAddressSchema.safeParse(address).success ? address : null;
+  const current = (await agentNamesOf(env, row.owner, [id.identityId])).get(
+    id.identityId,
+  );
+  if (!current) return none("no_current_name");
+  const address = { namespace: row.namespace, name: current };
+  if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
+  const at = await agentIdentityOf(env, row.owner, address);
+  if (at?.identityId !== id.identityId) return none("name_not_theirs");
+  return address;
 }
 
 /**

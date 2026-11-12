@@ -425,8 +425,8 @@ export const ANSWER_WINDOW_MS = 10_000;
  * option did not change (a retry). The fan-out stops at FANOUT_BUDGET_MS:
  * the agents not reached hear nothing this time, and it is logged. Rate: the
  * answer itself already counts against the caller's comment limit
- * (commentsAnswer), and the send reads at most FANOUT_MAX follow rows of one
- * member. Text is fixed, with no question, option or name. Never throws.
+ * (commentsAnswer), and the send goes to one address, so it reads no follow
+ * rows. Text is fixed, with no question, option or name. Never throws.
  */
 export async function notifyAnswered(
   env: Env,
