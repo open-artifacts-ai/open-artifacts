@@ -573,3 +573,22 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
 .oa-vbody > .oa-edge > .oa-panel {
   margin-block: auto;
 }
+
+/* #2179: a reply that arrived live is tinted for a moment, then it fades to
+   nothing. With reduced motion the tint stays still until the attribute goes. */
+[data-comment][data-live] {
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--oa-accent) 16%, transparent);
+  /* The duration is LIVE_TINT_MS, set on the panel as --oa-live-tint-ms. */
+  animation: oa-live-tint var(--oa-live-tint-ms, 2.5s) ease-out forwards;
+}
+@keyframes oa-live-tint {
+  to {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-comment][data-live] {
+    animation: none;
+  }
+}
