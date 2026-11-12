@@ -1735,7 +1735,7 @@ describe("Me.instance.billing and the billing routes", () => {
     );
   });
 
-  it("yearlyTeamBusiness follows every fresh answer; the version guard still holds for everything else", async () => {
+  it("yearlyTeamBusiness rides the version rule: a later asOf at the same version updates it; an earlier or equal asOf or a lower version changes nothing; absent reads as off", async () => {
     const stored = async () =>
       JSON.parse(
         (
@@ -1744,28 +1744,34 @@ describe("Me.instance.billing and the billing routes", () => {
             .first<{ value: string }>()
         )?.value ?? "null",
       );
-    const read = async (r: Partial<Row>) => {
-      row = { ...row, ...r };
-      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
-    };
-    await read({ tier: "business", version: 5, yearlyTeamBusiness: false });
-    // Same version, yearly flips: only that field changes.
-    const before = await stored();
-    await read({ version: 5, tier: "team", yearlyTeamBusiness: true });
-    expect(await stored()).toEqual({ ...before, yearlyTeamBusiness: true });
-    // Lower version: the field still follows (billing's environment, not a
-    // versioned fact); tier and the rest keep the newer answer.
-    await read({ version: 4, tier: "solo", yearlyTeamBusiness: false });
-    expect(await stored()).toEqual({ ...before, yearlyTeamBusiness: false });
-    await read({ version: 3, tier: "solo", yearlyTeamBusiness: true });
-    expect(await stored()).toEqual({ ...before, yearlyTeamBusiness: true });
-    expect((await getMe(owner.cookie)).instance.billing).toMatchObject({
-      tier: "business",
+    const t = Date.now();
+    await cache({ tier: "business", version: 5, yearlyTeamBusiness: false }, t);
+    // (a) same version, later asOf: the flag updates.
+    await cache({ version: 5, yearlyTeamBusiness: true }, t + 1000);
+    expect(await stored()).toMatchObject({
+      version: 5,
       yearlyTeamBusiness: true,
     });
-    // A higher version replaces everything.
-    await read({ version: 6, tier: "team", yearlyTeamBusiness: true });
-    expect(await stored()).toMatchObject({ tier: "team", version: 6 });
+    // (b) same version, earlier or equal asOf: nothing changes.
+    await cache({ version: 5, yearlyTeamBusiness: false }, t + 500);
+    await cache({ version: 5, yearlyTeamBusiness: false }, t + 1000);
+    expect(await stored()).toMatchObject({ yearlyTeamBusiness: true });
+    // (c) a lower version: nothing changes, tier included.
+    await cache(
+      { version: 4, tier: "team", yearlyTeamBusiness: false },
+      t + 5000,
+    );
+    expect(await stored()).toMatchObject({
+      tier: "business",
+      version: 5,
+      yearlyTeamBusiness: true,
+    });
+    // (d) a later asOf with the field absent: the field is gone (reads as off).
+    const { yearlyTeamBusiness: _, ...without } = row;
+    await storePlan(H, { ...without, version: 5, asOf: t + 2000 }, t + 2000);
+    const gone = await stored();
+    expect(gone).not.toHaveProperty("yearlyTeamBusiness");
+    expect(gone).toMatchObject({ tier: "business", version: 5 });
   });
 
   it("hasCustomer follows the same-version, later-read rule", async () => {
