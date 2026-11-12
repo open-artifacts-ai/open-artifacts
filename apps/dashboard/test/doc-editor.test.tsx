@@ -494,8 +494,44 @@ describe("DocEditor", () => {
       );
     });
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "This doc is at its size limit for your plan.",
+      "This doc is full (2 MB).",
     );
+  });
+
+  it("the full message says it is full, names no plan, and offers the two next steps", async () => {
+    const p = fakeProviders();
+    render(
+      <DocEditor
+        {...base}
+        canEdit
+        makeProvider={p.make}
+        fullActions={
+          <>
+            <button type="button">New doc</button>
+            <button type="button">Version history</button>
+          </>
+        }
+      />,
+    );
+    await screen.findByRole("toolbar");
+    // Not full: no message, no buttons.
+    expect(
+      screen.queryByRole("button", { name: "Version history" }),
+    ).toBeNull();
+    act(() => p.made.last?.connect());
+    act(() =>
+      p.made.last?.frame(
+        JSON.stringify({ type: "error", code: "doc_too_large" }),
+      ),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /^This doc is full \(2 MB\)\.$/,
+    );
+    expect(screen.getByRole("alert").textContent).not.toMatch(/plan|upgrade/i);
+    expect(screen.getByRole("button", { name: "New doc" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Version history" }),
+    ).toBeVisible();
   });
 
   it("on doc_too_large goes read-only, then resyncs into a fresh Y.Doc without the rejected text", async () => {
@@ -520,7 +556,7 @@ describe("DocEditor", () => {
     const frame = JSON.stringify({ type: "error", code: "doc_too_large" });
     act(() => first.frame(frame));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "This doc is at its size limit for your plan.",
+      "This doc is full (2 MB).",
     );
     // A new provider on a new Y.Doc; the old room is gone.
     await waitFor(() => expect(p.made.last).not.toBe(first));

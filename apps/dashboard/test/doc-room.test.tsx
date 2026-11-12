@@ -140,7 +140,7 @@ describe("doc room error frames", () => {
     fake.frame(JSON.stringify({ type: "error", code: "doc_too_large" }));
     expect(room.getSnapshot().error).toBe("doc_too_large");
     expect(errorCopy("doc_too_large")).toBe(DOC_TOO_LARGE);
-    expect(DOC_TOO_LARGE).toBe("This doc is at its size limit for your plan.");
+    expect(DOC_TOO_LARGE).toBe("This doc is full (2 MB).");
     room.destroy();
   });
 

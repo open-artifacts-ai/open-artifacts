@@ -62,6 +62,8 @@ import { type FrameState, type Gone, useLiveVersions } from "./useLiveVersions";
 import { useTheme } from "./useTheme";
 import "./viewer.css";
 import { toast } from "../layout/toast";
+import { NewDocButton } from "../library/NewDoc";
+import { useUploadSpace } from "../spaces/SpacePicker";
 import { fullPath } from "./paths";
 
 type Bridge = ReturnType<typeof createBridge>;
@@ -390,6 +392,7 @@ function Viewer({
   const isDoc = isDocArtifact(artifact);
   const [docStatus, setDocStatus] = useState<DocStatus | null>(null);
   const renameDoc = usePatchArtifact(artifact.id);
+  const docSpace = useUploadSpace(artifact.space?.id);
   useEffect(() => {
     // No frame to wait for: the layer is ready at once.
     if (isDoc) cbs.current.onReady?.();
@@ -738,6 +741,24 @@ function Viewer({
                 viewer={viewer}
                 outsider={!authed || role === "guest"}
                 onStatus={setDocStatus}
+                fullActions={
+                  <>
+                    <NewDocButton
+                      docs="on"
+                      size="sm"
+                      variant="outline"
+                      spaceId={docSpace}
+                      onGate={() => {}}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPanel(true, "versions")}
+                    >
+                      Version history
+                    </Button>
+                  </>
+                }
                 fresh={isFresh(artifact.id)}
                 onRename={(title) =>
                   renameDoc.mutate(

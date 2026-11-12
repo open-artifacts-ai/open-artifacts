@@ -40,10 +40,14 @@ export function NewDocButton({
   docs,
   spaceId,
   onGate,
+  size,
+  variant,
 }: {
   docs: "on" | "needs_paid";
   spaceId?: string;
   onGate: () => void;
+  size?: "sm";
+  variant?: "outline";
 }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -90,6 +94,8 @@ export function NewDocButton({
   };
   return (
     <Button
+      size={size}
+      variant={variant}
       disabled={busy}
       // Off, but still pressable: it brings the note into view.
       aria-disabled={docs === "needs_paid" ? true : undefined}

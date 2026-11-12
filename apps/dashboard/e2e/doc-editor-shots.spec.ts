@@ -177,14 +177,24 @@ for (const [scheme, width] of COMBOS) {
       await page.keyboard.press("End");
       await page.keyboard.type(" More text.");
       await expect(page.getByRole("alert")).toHaveText(
-        "This doc is at its size limit for your plan.",
+        "This doc is full (2 MB).",
       );
       await expect(page.locator(".ProseMirror")).toHaveAttribute(
         "contenteditable",
         "false",
       );
       await expect(page.getByRole("toolbar")).toHaveCount(0);
+      // The next steps: New doc, and the versions panel.
+      await expect(page.getByRole("button", { name: "New doc" })).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Version history" }),
+      ).toBeVisible();
       await shot(page, info, `doc-editor-size-limit-${scheme}-${width}.png`);
+      await page.getByRole("button", { name: "Version history" }).click();
+      await expect(page.getByRole("tab", { name: "Versions" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
     });
   });
 }

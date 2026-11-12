@@ -604,12 +604,24 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   color: var(--oa-danger, #b42318);
 }
 .oa-doc-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
   margin: 0;
   padding: 8px 16px;
   font-size: var(--oa-text-sm);
   border-bottom: 1px solid var(--oa-border);
   background: var(--oa-accent-soft);
   color: var(--oa-text);
+}
+.oa-doc-error p {
+  margin: 0;
+}
+.oa-doc-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .oa-doc-scroll {
   flex: 1;

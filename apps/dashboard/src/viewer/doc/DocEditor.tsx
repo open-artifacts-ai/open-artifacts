@@ -40,6 +40,8 @@ export interface DocEditorProps {
   onStatus?: (status: DocStatus | null) => void;
   /** Saves a new title as the artifact's title (the rename path). */
   onRename?: (title: string) => void;
+  /** Buttons beside the "doc is full" message (New doc, Version history). */
+  fullActions?: React.ReactNode;
   /** Made by New doc a moment ago: open with the title selected. */
   fresh?: boolean;
   /** A test seam: the provider for a room. */
@@ -71,6 +73,7 @@ function Loaded({
   viewer,
   outsider,
   onRename,
+  fullActions,
   fresh = false,
 }: DocEditorProps & {
   room: NonNullable<ReturnType<typeof useDocRoom>["room"]>;
@@ -145,9 +148,12 @@ function Loaded({
     <div className="oa-doc" data-editable={editable ? "" : undefined}>
       {editable && editor && <Toolbar editor={editor} />}
       {message && (
-        <p role="alert" className="oa-doc-error">
-          {message}
-        </p>
+        <div className="oa-doc-error">
+          <p role="alert">{message}</p>
+          {tooLarge && fullActions && (
+            <div className="oa-doc-error-actions">{fullActions}</div>
+          )}
+        </div>
       )}
       <div className="oa-doc-scroll">
         <div ref={page} className="oa-doc-page">

@@ -11,7 +11,15 @@ const DRAIN_POLL_MS = 50;
 
 export type DocStatus = "connecting" | "saving" | "saved" | "offline";
 
-export const DOC_TOO_LARGE = "This doc is at its size limit for your plan.";
+/**
+ * The doc is at its limit: 2 MB on every plan, so no plan or upgrade wording.
+ * Product's longer text adds "Remove something, such as an image, to keep
+ * editing, or start a new doc." Left out: the editor is read-only here, and
+ * nothing in this repo shows the room accepts an edit that only shrinks the
+ * doc once it is over the limit (doc-ops refuses every edit then). Add it back
+ * when the room is known to take deletes, and make deletes possible.
+ */
+export const DOC_TOO_LARGE = "This doc is full (2 MB).";
 /** The server's code for a rejected write that would grow the doc past its limit. */
 export const DOC_TOO_LARGE_CODE = "doc_too_large";
 const GENERIC_ERROR = "This doc can't save changes right now.";
