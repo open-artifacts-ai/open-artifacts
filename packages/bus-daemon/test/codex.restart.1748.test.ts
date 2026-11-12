@@ -21,6 +21,7 @@ import {
   writeCodexAgents,
 } from "../src/codex-agents.ts";
 import type { Proc } from "../src/codex-attest.ts";
+import { createEventLog } from "../src/event-log.ts";
 import { execCodex } from "../src/transports/codex.ts";
 import { daemonHarness, deliverFrame, hello, stopAll } from "./helpers.ts";
 
@@ -437,5 +438,108 @@ describe("a Codex session survives a daemon restart (#1748)", () => {
     expect(readCodexAgents(f)).toEqual([good]);
     writeCodexAgents(f, [good]);
     expect(readCodexAgents(f)).toEqual([good]);
+  });
+});
+
+describe("a Codex restore is logged and survives a slow ps (#2202, #2297)", () => {
+  const evLog = () => {
+    const file = join(tmp("ob-r2202-"), "events.log");
+    return { file, events: createEventLog(file) };
+  };
+  const restartedWith = (
+    w: ReturnType<typeof world>,
+    events: ReturnType<typeof createEventLog>,
+    codex = {},
+    extra = {},
+  ) =>
+    daemonHarness({
+      attest: undefined,
+      events,
+      codex: { ...w.codex, ...codex },
+      ...extra,
+    });
+
+  it("logs codex_restored for a restored thread", async () => {
+    const w = world();
+    await attestedThenStopped(w);
+    const { file, events } = evLog();
+    await restartedWith(w, events);
+    await events.flush();
+    expect(readFileSync(file, "utf8")).toMatch(
+      new RegExp(` codex_restored thread=${THREAD} pid=${P}\\n`),
+    );
+  });
+
+  it("logs codex_restore_dropped with the reason for a stale entry", async () => {
+    const w = world();
+    await attestedThenStopped(w);
+    w.state.alive = false;
+    const { file, events } = evLog();
+    const two = await restartedWith(w, events);
+    await events.flush();
+    expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
+    expect(readFileSync(file, "utf8")).toMatch(
+      new RegExp(
+        ` codex_restore_dropped thread=${THREAD} pid=${P} reason=other_process\\n`,
+      ),
+    );
+    w.state.alive = true;
+    w.state.holder = undefined;
+    const again = evLog();
+    await restartedWith(w, again.events);
+    await again.events.flush();
+    expect(readFileSync(again.file, "utf8")).toMatch(/reason=no_lock/);
+  });
+
+  it("a ps that gives no answer is not a drop: retried, restored when ps answers", async () => {
+    const w = world();
+    await attestedThenStopped(w);
+    let answering = false;
+    const calls = { n: 0 };
+    const procs = (pids: number[]) => {
+      calls.n++;
+      return answering ? w.codex.procs(pids) : undefined;
+    };
+    const { file, events } = evLog();
+    const two = await restartedWith(
+      w,
+      events,
+      { procs },
+      { restoreRetryMs: 10 },
+    );
+    // Unknown: not admitted, not dropped.
+    expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
+    await vi.waitFor(() => expect(calls.n).toBeGreaterThan(1));
+    expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
+    answering = true;
+    await vi.waitFor(() =>
+      expect(two.daemon.agents.byRef(THREAD)).toMatchObject({ live: true }),
+    );
+    await events.flush();
+    const text = readFileSync(file, "utf8");
+    expect(text).toMatch(
+      / codex_restore_retry thread=\S+ pid=100 reason=ps_unknown/,
+    );
+    expect(text).toMatch(/ codex_restored /);
+    expect(text).not.toMatch(/codex_restore_dropped/);
+  });
+
+  it("gives up after a few unknown reads and logs it", async () => {
+    const w = world();
+    await attestedThenStopped(w);
+    const { file, events } = evLog();
+    const two = await restartedWith(
+      w,
+      events,
+      { procs: () => undefined },
+      { restoreRetryMs: 1 },
+    );
+    await vi.waitFor(async () => {
+      await events.flush();
+      expect(readFileSync(file, "utf8")).toMatch(
+        /codex_restore_dropped .* reason=ps_unknown/,
+      );
+    });
+    expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
   });
 });
