@@ -9,6 +9,7 @@ import {
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Clock } from "lucide-react";
 import { useState } from "react";
 import { z } from "zod";
 import { ApiClientError, api } from "../api/client";
@@ -48,6 +49,7 @@ export const SWITCH_LABELS: Record<AskAction | "everyPick", string> = {
 export const NO_PASSKEY_LINE = "Add a passkey to use these.";
 export const COMMAND_LOCKED_LINE =
   "Always on: this runs code on your computer.";
+export const EVERY_PICK_LINE = "Any answer to an ask, not just risky ones.";
 export const WAITING = "Waiting for your passkey…";
 
 type Doing = "added" | "changed" | "removed";
@@ -69,8 +71,9 @@ function failureLine(e: unknown, doing: Doing): string {
     if (e.code === "passkey_required")
       return `Your passkey is needed for this. ${nothing}`;
     if (e.code === "passkey_failed")
-      return `That passkey didn't check out. ${nothing}`;
-    if (e.code === "challenge_expired") return `That took too long. ${nothing}`;
+      return `That passkey wasn't accepted. ${nothing}`;
+    if (e.code === "challenge_expired")
+      return `That took too long. Try again. ${nothing}`;
     if (e.code === "rate_limited")
       return `Too many tries. Wait a few minutes. ${nothing}`;
     return `${e.message} ${nothing}`;
@@ -147,7 +150,10 @@ function PasskeyList({
   refresh: () => Promise<unknown>;
 }) {
   const [adding, setAdding] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
+  // A failure sits under the row that caused it (`id`), or under the list (add).
+  const [note, setNote] = useState<{ id: string | null; text: string } | null>(
+    null,
+  );
   const [removing, setRemoving] = useState<Passkey | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const full = (keys?.length ?? 0) >= MAX_PASSKEYS;
@@ -174,7 +180,7 @@ function PasskeyList({
       toast({ title: "Passkey added.", tone: "success" });
     } catch (e) {
       if (followReauth(e)) return;
-      setNote(failureLine(e, "added"));
+      setNote({ id: null, text: failureLine(e, "added") });
     } finally {
       setAdding(false);
     }
@@ -207,7 +213,7 @@ function PasskeyList({
       toast({ title: "Passkey removed.", tone: "success" });
     } catch (e) {
       if (followReauth(e)) return;
-      setNote(failureLine(e, "removed"));
+      setNote({ id: p.id, text: failureLine(e, "removed") });
     } finally {
       setRemoveBusy(false);
       setRemoving(null);
@@ -218,7 +224,7 @@ function PasskeyList({
     <SettingsCard
       id="oa-passkeys"
       title="Passkeys"
-      subtitle="Approve risky picks with your fingerprint, face or device PIN."
+      subtitle="Approve risky actions with your fingerprint, face, device PIN or a security key."
       action={
         <Button
           size="sm"
@@ -235,35 +241,48 @@ function PasskeyList({
       {keys && keys.length > 0 && (
         <ul className="m-0 grid list-none gap-[var(--oa-space-3)] p-0">
           {keys.map((p) => (
-            <li
-              key={p.id}
-              className="flex items-start justify-between gap-[var(--oa-space-3)]"
-            >
-              <div className="min-w-0">
-                <b className="block text-[length:var(--oa-text-sm)] font-medium [overflow-wrap:anywhere]">
-                  {p.label}
-                </b>
-                <small className={`block ${muted}`}>
-                  Added {day(p.createdAt)}
-                  {" · "}
-                  {p.lastUsedAt
-                    ? `Last used ${day(p.lastUsedAt)}`
-                    : "Never used"}
-                </small>
-                {!p.usable && (
+            <li key={p.id} className="grid gap-[var(--oa-space-2)]">
+              <div className="flex items-start justify-between gap-[var(--oa-space-3)]">
+                <div className="min-w-0">
+                  <b className="block text-[length:var(--oa-text-sm)] font-medium [overflow-wrap:anywhere]">
+                    {p.label}
+                  </b>
                   <small className={`block ${muted}`}>
-                    Can approve from {coolingTime(p.usableAt)}
+                    Added {day(p.createdAt)}
+                    {" · "}
+                    {p.lastUsedAt
+                      ? `Last used ${day(p.lastUsedAt)}`
+                      : "Never used"}
                   </small>
-                )}
+                  {!p.usable && (
+                    <small
+                      className={`mt-[2px] flex items-start gap-[6px] text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]`}
+                    >
+                      <Clock
+                        aria-hidden="true"
+                        className="mt-[1px] size-3.5 flex-none"
+                      />
+                      <span>
+                        Can approve from {coolingTime(p.usableAt)}. New passkeys
+                        wait 24 hours, in case someone else added one.
+                      </span>
+                    </small>
+                  )}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Remove ${p.label}`}
+                  onClick={() => setRemoving(p)}
+                >
+                  Remove
+                </Button>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-label={`Remove ${p.label}`}
-                onClick={() => setRemoving(p)}
-              >
-                Remove
-              </Button>
+              {note?.id === p.id && (
+                <p role="alert" className={`m-0 ${errorText}`}>
+                  {note.text}
+                </p>
+              )}
             </li>
           ))}
         </ul>
@@ -273,14 +292,26 @@ function PasskeyList({
           You have {MAX_PASSKEYS} passkeys, the most you can add.
         </p>
       )}
-      <p role="status" className={note ? errorText : "sr-only"}>
-        {note}
-      </p>
+      {note?.id === null && (
+        <p role="alert" className={`m-0 ${errorText}`}>
+          {note.text}
+        </p>
+      )}
       <ConfirmDialog
         open={removing !== null}
         onClose={() => !removeBusy && setRemoving(null)}
         title={`Remove "${removing?.label ?? ""}"?`}
-        body={<p>You won't be able to approve picks with it.</p>}
+        body={
+          <>
+            <p>You won't be able to approve picks with it.</p>
+            {keys?.length === 1 && (
+              <p>
+                It's your only passkey. Without one, approve risky actions in
+                your agent's terminal.
+              </p>
+            )}
+          </>
+        }
         confirm="Remove"
         pending="Removing…"
         danger
@@ -300,9 +331,12 @@ function Switches({
 }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<{ text: string; error: boolean } | null>(
-    null,
-  );
+  // Shown directly under the row (`key`) that caused it.
+  const [note, setNote] = useState<{
+    key: string;
+    text: string;
+    error: boolean;
+  } | null>(null);
   const none = settings ? !settings.hasPasskey : true;
 
   async function change(key: AskAction | "everyPick", next: boolean) {
@@ -326,7 +360,7 @@ function Switches({
           PasskeySettingsSchema,
         );
       } else {
-        setNote({ text: WAITING, error: false });
+        setNote({ key, text: WAITING, error: false });
         const ch = await api.send(
           "POST",
           R.passkeySettingsChallenge,
@@ -344,7 +378,7 @@ function Switches({
       qc.setQueryData(qkSettings, saved);
       setNote(null);
     } catch (e) {
-      setNote({ text: failureLine(e, "changed"), error: true });
+      setNote({ key, text: failureLine(e, "changed"), error: true });
       void qc.invalidateQueries({ queryKey: qkSettings });
     } finally {
       setBusy(null);
@@ -359,7 +393,7 @@ function Switches({
     <SettingsCard
       id="oa-passkey-asks"
       title="Ask for a passkey to approve"
-      subtitle="Picks that do these things need your passkey."
+      subtitle="Approving these needs your passkey. Turning one off needs it too."
     >
       {failed && <p className={errorText}>Couldn't load these settings.</p>}
       {none && settings && (
@@ -379,36 +413,47 @@ function Switches({
           ? "oa-passkey-locked"
           : none
             ? "oa-passkey-none"
-            : undefined;
+            : key === "everyPick"
+              ? "oa-passkey-every"
+              : undefined;
         return (
-          <div
-            key={key}
-            className="flex items-center justify-between gap-[var(--oa-space-3)]"
-          >
-            <div>
-              <b className="block text-[length:var(--oa-text-sm)] font-medium">
-                {SWITCH_LABELS[key]}
-              </b>
-              {locked && (
-                <small id="oa-passkey-locked" className={`block ${muted}`}>
-                  {COMMAND_LOCKED_LINE}
-                </small>
-              )}
+          <div key={key} className="grid gap-[var(--oa-space-2)]">
+            <div className="flex items-center justify-between gap-[var(--oa-space-3)]">
+              <div>
+                <b className="block text-[length:var(--oa-text-sm)] font-medium">
+                  {SWITCH_LABELS[key]}
+                </b>
+                {locked && (
+                  <small id="oa-passkey-locked" className={`block ${muted}`}>
+                    {COMMAND_LOCKED_LINE}
+                  </small>
+                )}
+                {key === "everyPick" && (
+                  <small id="oa-passkey-every" className={`block ${muted}`}>
+                    {EVERY_PICK_LINE}
+                  </small>
+                )}
+              </div>
+              <Switch
+                id={`oa-passkey-switch-${key}`}
+                label={SWITCH_LABELS[key]}
+                describedBy={hint}
+                checked={locked ? true : on}
+                disabled={!settings || none || locked}
+                onChange={(next) => void change(key, next)}
+              />
             </div>
-            <Switch
-              id={`oa-passkey-switch-${key}`}
-              label={SWITCH_LABELS[key]}
-              describedBy={hint}
-              checked={locked ? true : on}
-              disabled={!settings || none || locked}
-              onChange={(next) => void change(key, next)}
-            />
+            {note?.key === key && (
+              <p
+                role={note.error ? "alert" : "status"}
+                className={`m-0 ${note.error ? errorText : muted}`}
+              >
+                {note.text}
+              </p>
+            )}
           </div>
         );
       })}
-      <p role="status" className={note?.error ? errorText : muted}>
-        {note?.text}
-      </p>
     </SettingsCard>
   );
 }

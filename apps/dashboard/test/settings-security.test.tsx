@@ -180,7 +180,10 @@ describe("Settings › Security: passkey switches", () => {
     get.mockReturnValue(new Promise(() => {}));
     mount("/settings/security");
     fireEvent.click(await live("Share"));
-    expect(await screen.findByText("Waiting for your passkey…")).toBeVisible();
+    const line = await screen.findByText("Waiting for your passkey…");
+    expect(line).toBeVisible();
+    // Directly under the switch that caused it.
+    expect(line.parentElement).toContainElement(await sw("Share"));
     expect(await sw("Share")).toHaveAttribute("aria-checked", "true");
   });
 
@@ -234,7 +237,47 @@ describe("Settings › Security: passkeys", () => {
     mount("/settings/security");
     const row = (await screen.findByText("This laptop")).closest("li");
     expect(row).toHaveTextContent("Never used");
-    expect(row).toHaveTextContent(/Can approve from /);
+    expect(row).toHaveTextContent(
+      /Can approve from .+\. New passkeys wait 24 hours, in case someone else added one\./,
+    );
+  });
+
+  it("the remove dialog warns only when it is the only passkey", async () => {
+    use("cooling");
+    mount("/settings/security");
+    await screen.findByText("This laptop");
+    fireEvent.click(screen.getByRole("button", { name: "Remove This laptop" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      "It's your only passkey. Without one, approve risky actions in your agent's terminal.",
+    );
+  });
+
+  it("the remove dialog says nothing of it with two passkeys", async () => {
+    use("usable");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Remove MacBook" }));
+    expect(await screen.findByRole("alertdialog")).not.toHaveTextContent(
+      "only passkey",
+    );
+  });
+
+  it("a failed remove shows its line under that passkey", async () => {
+    use("usable");
+    get.mockRejectedValue(new DOMException("no", "NotAllowedError"));
+    mount("/settings/security");
+    await screen.findByText("Phone");
+    fireEvent.click(screen.getByRole("button", { name: "Remove Phone" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Remove",
+      }),
+    );
+    const line = await screen.findByText("Nothing was removed.");
+    expect(line.closest("li")).toHaveTextContent("Phone");
+    expect(screen.getByText("MacBook").closest("li")).not.toContainElement(
+      line,
+    );
   });
 
   it("removes a passkey: confirm, challenge, passkey, DELETE with the assertion", async () => {

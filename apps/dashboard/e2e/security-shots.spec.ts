@@ -101,4 +101,55 @@ for (const scheme of ["light", "dark"] as const)
           .click();
         await expect(page.getByText("MacBook", { exact: true })).toBeHidden();
       });
+
+      if (width === 390) {
+        // The prompt never answers, or is dismissed (a stand-in for the device).
+        const stub = (page: Page, how: "hang" | "cancel") =>
+          page.addInitScript((h) => {
+            navigator.credentials.get = () =>
+              h === "hang"
+                ? new Promise(() => {})
+                : Promise.reject(new DOMException("no", "NotAllowedError"));
+          }, how);
+
+        test("switch verifying: the line sits under the switch", async ({
+          page,
+        }) => {
+          await stub(page, "hang");
+          await page.goto("/settings/security?mock=passkey-usable");
+          const deploy = page.getByRole("switch", { name: "Deploy" });
+          await expect(deploy).toBeEnabled();
+          await deploy.click();
+          await expect(
+            page.getByText("Waiting for your passkey…"),
+          ).toBeVisible();
+          await shot(page, `switch-verifying-${scheme}-390`);
+        });
+
+        test("switch error: the line sits under the switch", async ({
+          page,
+        }) => {
+          await stub(page, "cancel");
+          await page.goto("/settings/security?mock=passkey-usable");
+          const deploy = page.getByRole("switch", { name: "Deploy" });
+          await expect(deploy).toBeEnabled();
+          await deploy.click();
+          await expect(page.getByText("Nothing was changed.")).toBeVisible();
+          await shot(page, `switch-error-${scheme}-390`);
+        });
+
+        test("remove error: the line sits under the passkey", async ({
+          page,
+        }) => {
+          await stub(page, "cancel");
+          await page.goto("/settings/security?mock=passkey-usable");
+          await page.getByRole("button", { name: "Remove MacBook" }).click();
+          await page
+            .getByRole("alertdialog")
+            .getByRole("button", { name: "Remove" })
+            .click();
+          await expect(page.getByText("Nothing was removed.")).toBeVisible();
+          await shot(page, `remove-error-${scheme}-390`);
+        });
+      }
     });
