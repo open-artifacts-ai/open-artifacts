@@ -6,7 +6,9 @@ import { Button } from "@oa/ui/shadcn";
 import { useState } from "react";
 import { useDisconnectDirectory } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { PLAN_PAGE } from "../layout/PlanBanner";
 import { groupSyncHidden } from "../layout/SyncBanner";
+import { AppLink } from "../library/AppLink";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { muted, SettingsCard } from "./ui";
 
@@ -31,8 +33,12 @@ export function GoogleWorkspaceRow() {
   return (
     <SettingsCard id="oa-google-workspace-h" title="Google Workspace">
       <p className={`m-0 ${muted}`}>
-        Open Artifacts is still connected to your Google Workspace directory.
-        Group sync is off on your plan.
+        Open Artifacts is still connected to your Google Workspace directory,
+        but group sync is on the Business plan. Disconnect it, or move to{" "}
+        <AppLink href={PLAN_PAGE} className="underline">
+          Business
+        </AppLink>{" "}
+        to sync again.
       </p>
       <div>
         <Button

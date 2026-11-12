@@ -513,9 +513,10 @@ export function Connections() {
           <Connect mcpUrl={mcpUrl} />
         </SettingsCard>
       )}
-      <GoogleWorkspaceRow />
       <OAuthClients />
       <Tokens />
+      {/* A rare leftover: last, after what people come here for (Design). */}
+      <GoogleWorkspaceRow />
     </div>
   );
 }

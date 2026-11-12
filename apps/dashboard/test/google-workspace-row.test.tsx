@@ -33,6 +33,11 @@ it("frozen Team owner: the row shows with the button", async () => {
     await screen.findByRole("heading", { name: "Google Workspace" }),
   ).toBeVisible();
   expect(screen.getByRole("button", BUTTON)).toBeVisible();
+  // Product's copy: "Business" links to the Plan page.
+  expect(screen.getByRole("link", { name: "Business" })).toHaveAttribute(
+    "href",
+    "/settings/plan",
+  );
 });
 
 it("a member does not see it", async () => {
