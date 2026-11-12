@@ -1,15 +1,24 @@
 // #2311: an away agent that still has a harness default name is purged an hour
 // after it closed; renamed, live and busy ones keep today's rules.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { newId } from "@oa/bus-protocol";
+import {
+  type ClientFrame,
+  decodeServerFrame,
+  encodeFrame,
+  newId,
+} from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
 import { isDefaultAgentName } from "../../src/bus/default-names.js";
 import {
+  AUTHZ_AT_HEADER,
   BusHub,
+  CONNECT_DO_PATH,
   DEFAULT_NAME_AWAY_MS,
+  MACHINE_ID_HEADER,
+  MACHINE_LABEL_HEADER,
   OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
-import { e } from "./helpers.js";
+import { e, trackSocket } from "./helpers.js";
 
 type Stub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -201,5 +210,71 @@ describe("unnamed flag and renames (#2311)", () => {
     await alarms(h, 3);
     expect(await exists(h, a)).toBe(true);
     expect(await exists(h, b)).toBe(false);
+  });
+});
+
+describe("agent_up name_chosen (#2311)", () => {
+  it("marks the agent chosen, so a default-looking name is not expired", async () => {
+    const h = fresh();
+    const mid = newId();
+    await inHub(h, (_, s) =>
+      s.storage.sql.exec(
+        "insert into machines (id, org_id, label, created_at) values (?, ?, 'Mac', ?)",
+        mid,
+        OWNER_ORG_ID,
+        Date.now(),
+      ),
+    );
+    const res = await h.fetch(`https://hub.internal${CONNECT_DO_PATH}`, {
+      headers: {
+        Upgrade: "websocket",
+        [MACHINE_ID_HEADER]: mid,
+        [MACHINE_LABEL_HEADER]: "Mac",
+        [AUTHZ_AT_HEADER]: String(Date.now()),
+      },
+    });
+    const ws = res.webSocket as WebSocket;
+    ws.accept();
+    trackSocket(ws);
+    const types: string[] = [];
+    ws.addEventListener("message", (ev) => {
+      const r = decodeServerFrame(String(ev.data));
+      if (r.ok) types.push(r.frame.type);
+    });
+    const send = (f: ClientFrame) => ws.send(encodeFrame(f));
+    send({
+      v: 1,
+      id: "u1",
+      type: "agent_up",
+      agent_ref: "ref_c",
+      kind: "pi",
+      proposed_name: "pi-2",
+      namespace: "ns",
+      global: false,
+      name_chosen: true,
+    });
+    send({
+      v: 1,
+      id: "u2",
+      type: "agent_up",
+      agent_ref: "ref_d",
+      kind: "pi",
+      proposed_name: "pi-3",
+      namespace: "ns",
+      global: false,
+    });
+    for (let i = 0; i < 100 && types.filter((t) => t === "agent_ok").length < 2; i++)
+      await new Promise((r) => setTimeout(r, 20));
+    const flags = await inHub(h, (_, s) =>
+      s.storage.sql
+        .exec<{ n: string; c: number }>(
+          "select native_ref as n, name_chosen as c from agents order by native_ref",
+        )
+        .toArray(),
+    );
+    expect(flags).toEqual([
+      { n: "ref_c", c: 1 },
+      { n: "ref_d", c: 0 },
+    ]);
   });
 });

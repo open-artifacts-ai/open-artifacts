@@ -345,6 +345,7 @@ const HUB_CAPS = [
   BUS_CAPS.waiting,
   BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
+  BUS_CAPS.nameChosen,
 ];
 
 /**
@@ -1992,6 +1993,9 @@ function agentUp(
       f.global ? 1 : 0,
       now,
     );
+  // #2311: the harness says a user or a peer named this session. Never undone here.
+  if (f.name_chosen === true)
+    sql.exec("update agents set name_chosen = 1 where id = ?", id);
   if (existing && existing.live !== 1)
     sql.exec(
       "update agents set proof_hash = (select hash from agent_proofs where agent_id = agents.id order by seq desc limit 1) where id = ?",
