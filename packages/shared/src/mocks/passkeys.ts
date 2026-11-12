@@ -2,6 +2,7 @@
  * Passkey mocks (#2263), opt-in via createHandlers({ passkeys }):
  * - "none": no passkey; the switches show but can't be used.
  * - "cooling": one passkey added an hour ago (usable in 23 hours).
+ * - "pending": usable, and one passkey whose removal is scheduled (20 h out).
  * - "usable": one passkey added three days ago, and one used yesterday.
  * Stateful: add and remove change the list; the mock accepts any assertion or
  * credential (no cryptography), so a virtual authenticator is enough.
@@ -18,7 +19,7 @@ import {
   PasskeySettingsPatchSchema,
 } from "../schemas.js";
 
-export type PasskeyMockState = "none" | "cooling" | "usable";
+export type PasskeyMockState = "none" | "cooling" | "usable" | "pending";
 
 type Deps = {
   err: (code: ErrorCode, message: string, details?: unknown) => Response;
@@ -69,10 +70,18 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
       ? []
       : state === "cooling"
         ? [row("pk_cool", "This laptop", HOUR, null)]
-        : [
-            row("pk_a", "MacBook", 3 * 24 * HOUR, 24 * HOUR),
-            row("pk_b", "Phone", 3 * 24 * HOUR, null),
-          ];
+        : state === "pending"
+          ? [
+              row("pk_a", "MacBook", 3 * 24 * HOUR, 24 * HOUR),
+              {
+                ...row("pk_b", "Phone", 3 * 24 * HOUR, null),
+                removesAt: new Date(Date.now() + 20 * HOUR).toISOString(),
+              },
+            ]
+          : [
+              row("pk_a", "MacBook", 3 * 24 * HOUR, 24 * HOUR),
+              row("pk_b", "Phone", 3 * 24 * HOUR, null),
+            ];
   let actions = {
     merge: true,
     deploy: true,
@@ -106,12 +115,12 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
     if (!keys.length) return d.err("no_passkey", "Add a passkey first.");
     const usable = keys.filter((k) => k.usable);
     if (!usable.length) {
-      const until = keys
+      const usableAt = keys
         .map((k) => k.usableAt)
         .sort()
         .at(0);
       return d.err("passkey_cooling", "Your new passkey is not ready yet.", {
-        until,
+        usableAt,
       });
     }
     return null;
@@ -188,10 +197,26 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
       if (!k) return d.err("not_found", "Not found");
       return HttpResponse.json(assertOptions());
     }),
-    http.delete(`*/api/v1/passkeys/:id`, ({ params }) => {
+    http.delete(`*/api/v1/passkeys/:id`, async ({ params, request }) => {
       if (!keys.some((x) => x.id === params.id))
         return d.err("not_found", "Not found");
+      const sent = (await request.json().catch(() => undefined)) as
+        | { assertion?: unknown }
+        | undefined;
+      if (!sent?.assertion) {
+        // Fresh re-auth alone: the removal is scheduled 24 h out.
+        const removesAt = new Date(Date.now() + 24 * HOUR).toISOString();
+        keys = keys.map((x) => (x.id === params.id ? { ...x, removesAt } : x));
+        return HttpResponse.json({ removesAt }, { status: 202 });
+      }
       keys = keys.filter((x) => x.id !== params.id);
+      return new HttpResponse(null, { status: 204 });
+    }),
+    http.post(`*/api/v1/passkeys/:id/cancel-removal`, ({ params }) => {
+      const k = keys.find((x) => x.id === params.id);
+      if (!k?.removesAt)
+        return d.err("conflict", "No removal is pending for that passkey");
+      keys = keys.map((x) => (x === k ? { ...x, removesAt: null } : x));
       return new HttpResponse(null, { status: 204 });
     }),
   ];

@@ -41,7 +41,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-const use = (state: "none" | "cooling" | "usable") =>
+const use = (state: "none" | "cooling" | "usable" | "pending") =>
   server.use(...createHandlers({ passkeys: state }));
 
 const err = (code: string, status: number, details?: unknown) =>
@@ -204,7 +204,7 @@ describe("Settings › Security: passkey switches", () => {
     const until = new Date(Date.now() + 5 * 3600_000).toISOString();
     server.use(
       http.post(`*${R.passkeySettingsChallenge}`, () =>
-        err("passkey_cooling", 409, { until }),
+        err("passkey_cooling", 409, { usableAt: until }),
       ),
     );
     mount("/settings/security");
@@ -399,6 +399,166 @@ describe("Settings › Security: passkeys", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
     expect(await screen.findByText(/Nothing was added\.$/)).toBeVisible();
     expect(redirect).not.toHaveBeenCalled();
+  });
+});
+
+describe("Settings › Security: stale state, return from sign-in, pending removal", () => {
+  afterEach(() => sessionStorage.clear());
+
+  it("builds a switch change from the server's state, not the cached one", async () => {
+    const s = settingsServer(base);
+    mount("/settings/security");
+    const merge = await live("Merge");
+    // Another tab turned Share off... and back: the server now differs from the cache.
+    server.use(
+      http.get(`*${R.passkeySettings}`, () =>
+        HttpResponse.json({
+          ...base,
+          actions: { ...base.actions, share: false },
+        }),
+      ),
+    );
+    fireEvent.click(merge);
+    await waitFor(() => expect(s.puts.length).toBe(1));
+    expect(s.challenges).toEqual([
+      {
+        actions: { ...base.actions, share: false, merge: false },
+        everyPick: false,
+      },
+    ]);
+  });
+
+  it("says the device already has a passkey (InvalidStateError)", async () => {
+    use("none");
+    create.mockRejectedValue(new DOMException("dup", "InvalidStateError"));
+    mount("/settings/security");
+    await screen.findByText("No passkeys yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    expect(
+      await screen.findByText(
+        "This device already has a passkey here. Nothing was added.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("always says Add asks you to sign in again", async () => {
+    use("none");
+    mount("/settings/security");
+    expect(
+      await screen.findByText(
+        "Adding a passkey asks you to sign in again first.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("marks the return before following the sign-in, only when it follows", async () => {
+    use("none");
+    const redirect = vi.spyOn(webauthn, "redirectTo").mockImplementation(() => {
+      expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBe("1");
+    });
+    server.use(
+      http.post(`*${R.passkeyRegisterBegin}`, () =>
+        err("reauth_required", 401, {
+          reauthUrl: "/sign-in?next=/settings/security",
+        }),
+      ),
+    );
+    mount("/settings/security");
+    await screen.findByText("No passkeys yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    await waitFor(() => expect(redirect).toHaveBeenCalledTimes(1));
+  });
+
+  it("back from the sign-in: clears the mark, focuses Add, says so, does not call create", async () => {
+    use("none");
+    sessionStorage.setItem("oa.passkey.addAfterReauth", "1");
+    mount("/settings/security");
+    const add = await screen.findByRole("button", { name: "Add a passkey" });
+    expect(
+      await screen.findByText(
+        "You're signed in again. Add your passkey within 10 minutes.",
+      ),
+    ).toBeVisible();
+    expect(add).toHaveFocus();
+    expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("without the mark, no return line", async () => {
+    use("none");
+    mount("/settings/security");
+    await screen.findByText("No passkeys yet.");
+    expect(screen.queryByText(/signed in again/)).toBeNull();
+  });
+
+  it("Add keeps focus while adding", async () => {
+    use("none");
+    create.mockReturnValue(new Promise(() => {}));
+    mount("/settings/security");
+    await screen.findByText("No passkeys yet.");
+    const add = screen.getByRole("button", { name: "Add a passkey" });
+    add.focus();
+    fireEvent.click(add);
+    const busy = await screen.findByRole("button", { name: "Adding…" });
+    expect(busy).toHaveAttribute("aria-disabled", "true");
+    expect(busy).toHaveFocus();
+    fireEvent.click(busy);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a pending removal with Cancel; cancel puts Remove back", async () => {
+    use("pending");
+    const posts = calls("POST");
+    mount("/settings/security");
+    const row = (await screen.findByText("Phone")).closest("li");
+    expect(row).toHaveTextContent(/Removes /);
+    expect(
+      within(row as HTMLElement).queryByRole("button", { name: /^Remove / }),
+    ).toBeNull();
+    fireEvent.click(
+      within(row as HTMLElement).getByRole("button", {
+        name: "Cancel removal of Phone",
+      }),
+    );
+    await screen.findByRole("button", { name: "Remove Phone" });
+    expect(posts.some((c) => c.path === R.passkeyCancelRemoval("pk_b"))).toBe(
+      true,
+    );
+  });
+
+  it("a re-auth-only removal is scheduled (202): toast and Removes line", async () => {
+    use("cooling");
+    mount("/settings/security");
+    await screen.findByText("This laptop");
+    fireEvent.click(screen.getByRole("button", { name: "Remove This laptop" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Remove",
+      }),
+    );
+    expect(
+      await screen.findByText("Passkey removal starts in 24 hours."),
+    ).toBeVisible();
+    expect(
+      (await screen.findByText("This laptop")).closest("li"),
+    ).toHaveTextContent(/Removes /);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("after a removal, focus goes to the Passkeys heading", async () => {
+    use("usable");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Remove MacBook" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Remove",
+      }),
+    );
+    await waitFor(() => expect(screen.queryByText("MacBook")).toBeNull());
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Passkeys" })).toHaveFocus(),
+    );
   });
 });
 

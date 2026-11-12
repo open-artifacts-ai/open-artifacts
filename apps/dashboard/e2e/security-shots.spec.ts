@@ -34,6 +34,7 @@ const STATES = [
   { mock: "passkey-none", n: "no-passkey" },
   { mock: "passkey-cooling", n: "cooling" },
   { mock: "passkey-usable", n: "usable" },
+  { mock: "passkey-pending", n: "pending" },
 ] as const;
 
 for (const scheme of ["light", "dark"] as const)
@@ -64,8 +65,26 @@ for (const scheme of ["light", "dark"] as const)
           ).toBeVisible();
           if (s.n === "cooling")
             await expect(page.getByText(/Can approve from /)).toBeVisible();
+          if (s.n === "pending")
+            await expect(page.getByText(/Removes /)).toBeVisible();
           await shot(page, `${s.n}-${scheme}-${width}`);
         });
+
+      test("back from the sign-in Add asked for", async ({ page }) => {
+        await page.addInitScript(() =>
+          sessionStorage.setItem("oa.passkey.addAfterReauth", "1"),
+        );
+        await page.goto("/settings/security?mock=passkey-none");
+        await expect(
+          page.getByText(
+            "You're signed in again. Add your passkey within 10 minutes.",
+          ),
+        ).toBeVisible();
+        await expect(
+          page.getByRole("button", { name: "Add a passkey" }),
+        ).toBeFocused();
+        await shot(page, `reauth-return-${scheme}-${width}`);
+      });
 
       test("add a passkey, then turn a switch off with it", async ({
         page,

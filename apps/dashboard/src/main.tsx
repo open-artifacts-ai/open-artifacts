@@ -496,7 +496,9 @@ async function startMocks() {
           ? "cooling"
           : params.get("mock") === "passkey-usable"
             ? "usable"
-            : "none",
+            : params.get("mock") === "passkey-pending"
+              ? "pending"
+              : "none",
       // ?mock=agents (#1822): agent-authored comments, linked and not.
       commentAgents: params.get("mock") === "agents",
       // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.

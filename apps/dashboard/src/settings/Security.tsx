@@ -10,7 +10,7 @@ import {
 import { Button } from "@oa/ui/shadcn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { ApiClientError, api } from "../api/client";
 import { useMe } from "../auth/useMe";
@@ -52,15 +52,28 @@ export const COMMAND_LOCKED_LINE =
 export const EVERY_PICK_LINE = "Any answer to an ask, not just risky ones.";
 export const WAITING = "Waiting for your passkey…";
 
+// Adding a passkey needs a fresh sign-in: the server answers 401
+// reauth_required, and the sign-in returns to this page (next=).
+export const ADD_AFTER_REAUTH_KEY = "oa.passkey.addAfterReauth";
+export const ADD_REAUTH_NOTE =
+  "Adding a passkey asks you to sign in again first.";
+export const ADD_RETURN_LINE =
+  "You're signed in again. Add your passkey within 10 minutes.";
+export const ALREADY_HERE = "This device already has a passkey here."; // placeholder, Product to confirm
+export const REMOVAL_STARTS = "Passkey removal starts in 24 hours."; // placeholder
+const RemovalSchema = z.object({ removesAt: z.string().nullable() });
+
 type Doing = "added" | "changed" | "removed";
 
 /** Why a passkey step ended, in one line that says nothing happened. */
 function failureLine(e: unknown, doing: Doing): string {
   const nothing = `Nothing was ${doing}.`;
   if (e instanceof PasskeyCancelled) return nothing;
+  if (e instanceof DOMException && e.name === "InvalidStateError")
+    return `${ALREADY_HERE} ${nothing}`;
   if (e instanceof ApiClientError) {
     if (e.code === "passkey_cooling") {
-      const until = (e.details as { until?: unknown } | undefined)?.until;
+      const until = (e.details as { usableAt?: unknown } | undefined)?.usableAt;
       const when =
         typeof until === "string" && !Number.isNaN(Date.parse(until))
           ? ` from ${coolingTime(until)}`
@@ -82,13 +95,14 @@ function failureLine(e: unknown, doing: Doing): string {
 }
 
 /** A 401 reauth_required: follow its same-origin URL. True if we left. */
-function followReauth(e: unknown): boolean {
+function followReauth(e: unknown, beforeLeaving?: () => void): boolean {
   if (!(e instanceof ApiClientError) || e.code !== "reauth_required")
     return false;
   const url = sameOriginUrl(
     (e.details as { reauthUrl?: unknown } | undefined)?.reauthUrl,
   );
   if (!url) return false;
+  beforeLeaving?.();
   redirectTo(url);
   return true;
 }
@@ -157,11 +171,46 @@ function PasskeyList({
   const [removing, setRemoving] = useState<Passkey | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const full = (keys?.length ?? 0) >= MAX_PASSKEYS;
+  const addRef = useRef<HTMLButtonElement>(null);
+  const [returned, setReturned] = useState(false);
+  const [headingTick, setHeadingTick] = useState(0);
+
+  // Back from the sign-in that Add asked for: say so and focus Add. Never call
+  // create() here: Safari wants a user click for it.
+  useEffect(() => {
+    if (sessionStorage.getItem(ADD_AFTER_REAUTH_KEY) !== "1") return;
+    sessionStorage.removeItem(ADD_AFTER_REAUTH_KEY);
+    setReturned(true);
+    addRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  // After a removal the row (and its button) is gone: focus the card heading.
+  // A timeout so it lands after the dialog hands focus back.
+  useEffect(() => {
+    if (headingTick === 0) return;
+    const t = setTimeout(
+      () =>
+        document.getElementById("oa-passkeys")?.focus({ preventScroll: true }),
+      0,
+    );
+    return () => clearTimeout(t);
+  }, [headingTick]);
+
+  async function cancelRemoval(p: Passkey) {
+    setNote(null);
+    try {
+      await api.send("POST", R.passkeyCancelRemoval(p.id), undefined);
+      await refresh();
+    } catch (e) {
+      setNote({ id: p.id, text: failureLine(e, "changed") });
+    }
+  }
 
   async function add() {
-    if (adding) return;
+    if (adding || full || loading) return; // aria-disabled keeps focus on the button
     setAdding(true);
     setNote(null);
+    setReturned(false);
     try {
       const begin = await api.send(
         "POST",
@@ -179,7 +228,10 @@ function PasskeyList({
       await refresh();
       toast({ title: "Passkey added.", tone: "success" });
     } catch (e) {
-      if (followReauth(e)) return;
+      if (
+        followReauth(e, () => sessionStorage.setItem(ADD_AFTER_REAUTH_KEY, "1"))
+      )
+        return;
       setNote({ id: null, text: failureLine(e, "added") });
     } finally {
       setAdding(false);
@@ -190,10 +242,10 @@ function PasskeyList({
     setRemoveBusy(true);
     setNote(null);
     try {
-      // Main path: a passkey assertion. REAUTH-ONLY BRANCH (no usable
-      // passkey: DELETE with no body, the server asks for a fresh sign-in via
-      // 401 reauth_required) is the `else` below plus followReauth; the server
-      // is moving it to a 24 h pending removal, so change it here only.
+      // Main path: a passkey assertion, removed at once (204). REAUTH-ONLY
+      // BRANCH: with no usable passkey, DELETE with no body; the server wants
+      // a fresh sign-in (401 reauth_required, followReauth below), then only
+      // schedules the removal 24 h out (202 { removesAt }). Change it here.
       let assertion: unknown;
       if (keys?.some((k) => k.usable)) {
         const ch = await api.send(
@@ -204,13 +256,18 @@ function PasskeyList({
         );
         assertion = await getAssertion(ch.options);
       }
-      await api.send(
+      const out = await api.send(
         "DELETE",
         R.passkey(p.id),
         assertion === undefined ? undefined : { assertion },
+        RemovalSchema,
       );
       await refresh();
-      toast({ title: "Passkey removed.", tone: "success" });
+      toast({
+        title: out?.removesAt ? REMOVAL_STARTS : "Passkey removed.",
+        tone: "success",
+      });
+      if (!out?.removesAt) setHeadingTick((n) => n + 1);
     } catch (e) {
       if (followReauth(e)) return;
       setNote({ id: p.id, text: failureLine(e, "removed") });
@@ -225,15 +282,26 @@ function PasskeyList({
       id="oa-passkeys"
       title="Passkeys"
       subtitle="Approve risky actions with your fingerprint, face, device PIN or a security key."
+      focusable
       action={
-        <Button
-          size="sm"
-          onClick={add}
-          disabled={adding || full || loading}
-          aria-busy={adding || undefined}
-        >
-          {adding ? "Adding…" : "Add a passkey"}
-        </Button>
+        <div className="grid flex-none justify-items-end gap-[var(--oa-space-1)] text-right">
+          <Button
+            ref={addRef}
+            size="sm"
+            onClick={add}
+            aria-disabled={adding || full || loading || undefined}
+            aria-busy={adding || undefined}
+            className="aria-disabled:opacity-50"
+          >
+            {adding ? "Adding…" : "Add a passkey"}
+          </Button>
+          {returned && (
+            <small role="status" className={`max-w-[200px] ${muted}`}>
+              {ADD_RETURN_LINE}
+            </small>
+          )}
+          <small className={`max-w-[200px] ${muted}`}>{ADD_REAUTH_NOTE}</small>
+        </div>
       }
     >
       {failed && <p className={errorText}>Couldn't load your passkeys.</p>}
@@ -254,6 +322,11 @@ function PasskeyList({
                       ? `Last used ${day(p.lastUsedAt)}`
                       : "Never used"}
                   </small>
+                  {p.removesAt && (
+                    <small className={`block ${muted}`}>
+                      Removes {coolingTime(p.removesAt)}
+                    </small>
+                  )}
                   {!p.usable && (
                     <small
                       className={`mt-[2px] flex items-start gap-[6px] text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]`}
@@ -269,14 +342,25 @@ function PasskeyList({
                     </small>
                   )}
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Remove ${p.label}`}
-                  onClick={() => setRemoving(p)}
-                >
-                  Remove
-                </Button>
+                {p.removesAt ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Cancel removal of ${p.label}`}
+                    onClick={() => void cancelRemoval(p)}
+                  >
+                    Cancel
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Remove ${p.label}`}
+                    onClick={() => setRemoving(p)}
+                  >
+                    Remove
+                  </Button>
+                )}
               </div>
               {note?.id === p.id && (
                 <p role="alert" className={`m-0 ${errorText}`}>
@@ -341,16 +425,24 @@ function Switches({
 
   async function change(key: AskAction | "everyPick", next: boolean) {
     if (!settings || busy) return;
-    const body = {
-      actions: {
-        ...settings.actions,
-        ...(key === "everyPick" ? {} : { [key]: next }),
-      },
-      everyPick: key === "everyPick" ? next : settings.everyPick,
-    };
     setBusy(key);
     setNote(null);
     try {
+      // Build the change from the server's state now, so an assertion never
+      // binds switches the member did not see.
+      const current = await qc.fetchQuery({
+        queryKey: qkSettings,
+        queryFn: ({ signal }) =>
+          api.get(R.passkeySettings, PasskeySettingsSchema, signal),
+        staleTime: 0,
+      });
+      const body = {
+        actions: {
+          ...current.actions,
+          ...(key === "everyPick" ? {} : { [key]: next }),
+        },
+        everyPick: key === "everyPick" ? next : current.everyPick,
+      };
       let saved: PasskeySettings;
       if (next) {
         saved = await api.send(
