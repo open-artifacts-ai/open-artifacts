@@ -12,6 +12,7 @@ import {
   ROOM_FULL,
   ROOM_FULL_RETRY,
   roomNotice,
+  showsNote,
   UPDATE_BATCH_MS,
   versionNote,
 } from "../src/viewer/doc/useDocRoom";
@@ -388,6 +389,20 @@ describe("the wire spec: saved and restored", () => {
     expect(room.getSnapshot().error).toBeNull();
     expect(fake.connects).toBe(1);
     room.destroy();
+  });
+
+  it("only named saves and restores get a note; auto-saves are quiet", () => {
+    expect(showsNote({ kind: "saved", version: 5, auto: true })).toBe(false);
+    expect(showsNote({ kind: "saved", version: 5, auto: false })).toBe(true);
+    expect(
+      showsNote({
+        kind: "saved",
+        version: 6,
+        name: "Before launch",
+        auto: false,
+      }),
+    ).toBe(true);
+    expect(showsNote({ kind: "restored", from: 3, version: 7 })).toBe(true);
   });
 
   it("ignores malformed version frames and stops after unsubscribe", () => {

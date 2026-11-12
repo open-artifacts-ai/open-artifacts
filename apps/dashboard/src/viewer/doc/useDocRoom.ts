@@ -59,7 +59,9 @@ export type VersionEvent =
 
 /**
  * The title-bar words for a version event. Spec: "Saved as v5". PLACEHOLDER:
- * the named form and the restore form.
+ * the named form. Product's restore note, "Restored v3. Saved as v7.", pushes
+ * Share onto a third row at 390 (e2e/doc-wire.spec.ts checks it does not), so
+ * the short form stays. Auto-saves get no note (Design, showsNote).
  */
 export function versionNote(e: VersionEvent): string {
   if (e.kind === "restored") return `Restored v${e.from} as v${e.version}`;
@@ -67,6 +69,10 @@ export function versionNote(e: VersionEvent): string {
     ? `Saved as v${e.version} (${e.name})`
     : `Saved as v${e.version}`;
 }
+
+/** Design: an auto-save is quiet; named saves and restores say so. */
+export const showsNote = (e: VersionEvent): boolean =>
+  !(e.kind === "saved" && e.auto);
 
 /** Why the socket stopped for good (the client does not retry). */
 export type RoomEnd = "access_removed" | "not_found" | "bad_frame";

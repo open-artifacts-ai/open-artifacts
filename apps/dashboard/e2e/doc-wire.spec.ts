@@ -154,3 +154,67 @@ test("a named save shows its name", async ({ page }, info) => {
     page.getByRole("status").filter({ hasText: "Saved as v6 (Before launch)" }),
   ).toBeVisible();
 });
+
+test("an auto-save is quiet but the version pill still ticks", async ({
+  page,
+}, info) => {
+  let artifactGets = 0;
+  page.on("request", (r) => {
+    if (
+      r.method() === "GET" &&
+      r.url().endsWith(`/api/v1/artifacts/${LANDING}`)
+    )
+      artifactGets++;
+  });
+  room = await startRoom(info, page, ["--saved", "9::auto"]);
+  await page.goto(`/a/${LANDING}?mock=doc`);
+  await expect(prose(page)).toBeVisible();
+  // The pill shows the current version; the room's frame comes 1.2 s in.
+  const pill = page.getByRole("button", { name: /^Version: v2\b/ });
+  await expect(pill).toBeVisible();
+  const before = artifactGets;
+  await page.evaluate(() => {
+    (window as unknown as { __oaDocVersion: number }).__oaDocVersion = 9;
+  });
+  await expect.poll(() => artifactGets).toBeGreaterThan(before);
+  await expect(
+    page.getByRole("button", { name: /^Version: v9\b/ }),
+  ).toBeVisible();
+  // No note at all: the status line stays plain.
+  await expect(page.getByText(/Saved as v9/)).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+});
+
+test.describe("phone", () => {
+  test.use({ viewport: { width: 390, height: 800 } });
+  test("the restore note fits the title bar at 390", async ({ page }, info) => {
+    await open(page, info, ["--restored", "3:7"]);
+    // Where Share sits before the note: the note must not push it down a row.
+    const shareY = async () =>
+      (await page.getByRole("button", { name: "Share" }).boundingBox())?.y;
+    const before = await shareY();
+    const note = page
+      .getByRole("status")
+      .filter({ hasText: "Restored v3 as v7" });
+    await expect(note).toBeVisible();
+    expect(await shareY()).toBe(before);
+    const box = await note.boundingBox();
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    // The page does not scroll sideways, and the title bar's buttons stay in.
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    for (const name of [/Share/, /Comments/]) {
+      const b = await page.getByRole("button", { name }).first().boundingBox();
+      expect((b?.x ?? 0) + (b?.width ?? 0)).toBeLessThanOrEqual(390);
+    }
+    if (process.env.SHOTS_DIR)
+      await page.screenshot({
+        path: `${process.env.SHOTS_DIR}/doc-restore-note-390.png`,
+      });
+  });
+});

@@ -501,34 +501,51 @@ async function startMocks() {
     .addEventListener("connection", ({ client }) => {
       urls.push(client.url.href);
     });
+  const mainHandlers = createHandlers({
+    quotaExceeded,
+    emailEnabled,
+    plan: params.get("mock")?.startsWith("paid") ? "paid" : "free",
+    // ?mock=newdoc (#1100): docs are on (New doc); ?mock=newdoc-gate: a free self-host.
+    docs:
+      params.get("docs") === "needs_paid"
+        ? "needs_paid"
+        : params.get("mock") === "newdoc" || params.get("mock") === "doc"
+          ? "on"
+          : params.get("mock") === "newdoc-gate"
+            ? "needs_paid"
+            : undefined,
+    update,
+    // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
+    hosted: parseHostedParam(params.get("hosted")),
+    events,
+    // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
+    commentAsks: params.get("mock") === "asks",
+    // ?mock=agents (#1822): agent-authored comments, linked and not.
+    commentAgents: params.get("mock") === "agents",
+    // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
+    commentersSignedIn: params.get("mock") === "signed-out",
+    // ?mock=bus (#1293): the bus is on, with machines and agents.
+    bus: params.get("mock") === "bus",
+  });
+  // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
+  // currentVersion, so a test can watch the version pill tick after the room
+  // says a version was saved.
+  if (docMock === "doc" || docMock === "doc-readonly") {
+    const docId = fixtures.artifacts[0]?.id;
+    extra.push(
+      http.get(`*/api/v1/artifacts/${docId}`, async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res) return undefined;
+        const body = (await res.json()) as { currentVersion: number };
+        const v = (window as unknown as { __oaDocVersion?: number })
+          .__oaDocVersion;
+        return HttpResponse.json(v ? { ...body, currentVersion: v } : body);
+      }),
+    );
+  }
   await setupWorker(
     ...extra,
-    ...createHandlers({
-      quotaExceeded,
-      emailEnabled,
-      plan: params.get("mock")?.startsWith("paid") ? "paid" : "free",
-      // ?mock=newdoc (#1100): docs are on (New doc); ?mock=newdoc-gate: a free self-host.
-      docs:
-        params.get("docs") === "needs_paid"
-          ? "needs_paid"
-          : params.get("mock") === "newdoc" || params.get("mock") === "doc"
-            ? "on"
-            : params.get("mock") === "newdoc-gate"
-              ? "needs_paid"
-              : undefined,
-      update,
-      // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
-      hosted: parseHostedParam(params.get("hosted")),
-      events,
-      // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
-      commentAsks: params.get("mock") === "asks",
-      // ?mock=agents (#1822): agent-authored comments, linked and not.
-      commentAgents: params.get("mock") === "agents",
-      // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
-      commentersSignedIn: params.get("mock") === "signed-out",
-      // ?mock=bus (#1293): the bus is on, with machines and agents.
-      bus: params.get("mock") === "bus",
-    }),
+    ...mainHandlers,
     ...events.handlers,
     seenUrls,
   ).start({

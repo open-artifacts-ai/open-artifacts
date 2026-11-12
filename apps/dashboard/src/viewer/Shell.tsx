@@ -47,6 +47,7 @@ import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
 import { isFresh } from "./doc/fresh";
 import {
   type DocStatus,
+  showsNote as docShowsNote,
   versionNote as docVersionNote,
   type VersionEvent,
 } from "./doc/useDocRoom";
@@ -412,7 +413,10 @@ function Viewer({
   useEffect(() => () => clearTimeout(noteTimer.current), []);
   const onDocVersion = useCallback(
     (e: VersionEvent) => {
+      // Every version event refreshes the version pill and list ...
       void qc.invalidateQueries({ queryKey: qk.artifact(artifact.id) });
+      // ... but an auto-save says nothing.
+      if (!docShowsNote(e)) return;
       setVersionNote(docVersionNote(e));
       clearTimeout(noteTimer.current);
       noteTimer.current = setTimeout(() => setVersionNote(null), 4000);
@@ -997,7 +1001,12 @@ function ArtifactShell({
   if (q.error && !data) return <ErrorPanel onRetry={() => void q.refetch()} />;
   if (!data || me.status === "loading")
     return <div className="oa-viewer" aria-busy="true" />;
-  const version = v ?? live.shown ?? data.currentVersion;
+  // A doc has no frame to hold on an old version: it follows the latest, so
+  // the pill ticks when the room saves one (#1100).
+  const version =
+    v ??
+    (isDocArtifact(data) ? data.currentVersion : live.shown) ??
+    data.currentVersion;
   shownRef.current = version;
   const preload = live.preload?.version;
   const newer = live.latest > (v ?? preload ?? version);
