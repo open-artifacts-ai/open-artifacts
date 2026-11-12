@@ -109,7 +109,7 @@ export function MentionMirror({
               // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional
               key={n}
               data-oa-pill=""
-              className="rounded-[0.4em] bg-[var(--oa-accent-soft)] [box-decoration-break:clone]"
+              className="rounded-[0.4em] bg-[var(--oa-accent-soft)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--oa-accent-fg)_30%,transparent)] [box-decoration-break:clone]"
             >
               {s.text}
             </span>
