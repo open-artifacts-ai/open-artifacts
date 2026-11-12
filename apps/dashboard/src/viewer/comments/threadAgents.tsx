@@ -229,8 +229,12 @@ export function RemovalNotices({
             ref={undo}
             type="button"
             className="cursor-pointer border-0 bg-transparent p-0 text-[var(--oa-accent-fg)] underline"
-            disabled={set.isPending}
-            onClick={() => run(gone, false)}
+            // aria-disabled, not disabled: a disabled button cannot hold focus,
+            // and Undo takes it while the removal is on its way.
+            aria-disabled={set.isPending || undefined}
+            onClick={() => {
+              if (!set.isPending) run(gone, false);
+            }}
           >
             Undo
           </button>
@@ -295,8 +299,14 @@ export function ThreadAgents({
                     aria-label={`Stop notifying ${a.name}`}
                     className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
                     data-agent-x={a.key}
-                    disabled={set.isPending && set.variables?.key === a.key}
-                    onClick={() => run(a, true)}
+                    aria-disabled={
+                      (set.isPending && set.variables?.key === a.key) ||
+                      undefined
+                    }
+                    onClick={() => {
+                      if (!(set.isPending && set.variables?.key === a.key))
+                        run(a, true);
+                    }}
                   >
                     ×
                   </button>
