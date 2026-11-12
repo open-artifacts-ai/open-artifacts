@@ -478,6 +478,8 @@ describe("a live reply (#2179)", () => {
       mount(viewerPath(OWNED));
       const c = await col();
       c.style.overflowY = "auto";
+      // The card's own "nearest" scroll is not under test here.
+      c.scrollTo = () => {};
       await within(c).findByText("Fourth");
       layout(c);
       // Rows: c1 0, c4 50. The reader is on c4 (top -10); the thread's top is -60.
