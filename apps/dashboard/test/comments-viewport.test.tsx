@@ -42,6 +42,17 @@ describe("viewport helpers (#2239)", () => {
     expect(viewHeight()).toBe(window.innerHeight - 300);
     expect(keyboardInset()).toBe(300);
   });
+  it("panning with the keyboard open (offsetTop 300) is still a keyboard", () => {
+    vv(window.innerHeight - 300, 300);
+    expect(keyboardInset()).toBe(300);
+  });
+  it("pinch zoom (scale 2, no keyboard) is not a keyboard and keeps the full height", () => {
+    const t = vv(window.innerHeight / 2);
+    t.scale = 2;
+    expect(keyboardInset()).toBe(0);
+    expect(viewHeight()).toBe(window.innerHeight);
+    expect(fieldCap(1e6)).toBe(window.innerHeight * 0.4);
+  });
   it("browser chrome is not a keyboard", () => {
     vv(window.innerHeight - 60);
     expect(keyboardInset()).toBe(0);

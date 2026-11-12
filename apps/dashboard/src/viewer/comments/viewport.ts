@@ -5,7 +5,9 @@ import { useEffect, useState } from "react";
 
 /** The visible height: the visual viewport where it exists. */
 export function viewHeight(): number {
-  return window.visualViewport?.height || window.innerHeight;
+  const vv = window.visualViewport;
+  // Pinch zoom shrinks vv.height by the scale; the keyboard does not.
+  return vv?.height ? vv.height * (vv.scale || 1) : window.innerHeight;
 }
 
 /** The viewport's visible bottom edge, in layout-viewport coordinates. */
@@ -18,7 +20,9 @@ export function viewBottom(): number {
 export function keyboardInset(): number {
   const vv = window.visualViewport;
   if (!vv) return 0;
-  const inset = window.innerHeight - vv.height - vv.offsetTop;
+  // No offsetTop: iOS pans the page with the keyboard open, and that must
+  // not hide it. The scale undoes pinch zoom, which is not a keyboard.
+  const inset = window.innerHeight - vv.height * (vv.scale || 1);
   // Browser toolbars move by tens of pixels; a keyboard by hundreds.
   return inset > 120 ? inset : 0;
 }
