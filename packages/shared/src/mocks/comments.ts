@@ -522,7 +522,24 @@ export function createCommentMock({
       // The root plus MAX_REPLIES replies: the next one is a conflict.
       if (t.comments.length > MAX_REPLIES)
         return err("conflict", "This thread has too many replies");
-      const c = comment(j.body, mine());
+      // #2179: a test or shot can reply as someone else (x-mock-as: other |
+      // agent), so the page sees another person's or an agent's live reply.
+      const as = request.headers.get("x-mock-as");
+      const by: CommentAuthor =
+        as === "other"
+          ? other
+          : as === "agent"
+            ? {
+                kind: "agent",
+                name: "OA Product",
+                for: "Sam Rivera",
+                linked: true,
+                product: "Claude Code",
+                animal: { id: "fox", color: 2 },
+                me: false,
+              }
+            : mine();
+      const c = comment(j.body, by);
       const bad2 = decorate(c, j, String(params.id));
       if (bad2) return bad2;
       // #2035: a reply also tells the thread's agents; the mock varies the outcome.

@@ -144,6 +144,9 @@ async function identity(
         moderator,
         guest: isGuestRole(user.role),
         capped: capsReads(capOfCaller(callerOf(user))),
+        // #2224: a token is an agent, not the person: its `answer.yes` is for
+        // asks that same agent posted. Only a browser session reads as the person.
+        agent: interactiveSession(c) ? undefined : agentOf(c),
       },
       issued: null,
     };

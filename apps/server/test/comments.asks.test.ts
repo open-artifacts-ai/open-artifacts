@@ -20,6 +20,7 @@ import {
   vi,
 } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
@@ -37,17 +38,30 @@ import {
   addReply,
   addThread,
   answerAsk,
+  type CommentViewer,
   type CommentWho,
+  listComments,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
-import { api, errOf, login } from "./helpers.js";
+import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { api as baseApi, errOf, login } from "./helpers.js";
+
+/** The app called with this file's env (its stub bus hubs). */
+const api = (
+  app: Parameters<typeof baseApi>[0],
+  path: string,
+  auth: string | null,
+  init: Parameters<typeof baseApi>[3] = {},
+) => baseApi(app, path, auth, init, E);
 
 // #1535: asks and mentions, server side.
 
 const app = createApp();
-const E = env as unknown as Env;
+const hubs = new FakeHubs();
+/** The pool env; the ask_answered tests swap in the stub hubs (see below). */
+let E = env as unknown as Env;
 const tag = newId().slice(0, 6).toLowerCase();
 
 class FakeBus implements NoticeDelivery {
@@ -125,6 +139,18 @@ async function setup(extra: Record<string, unknown> = {}) {
     "create",
   );
   const id = a.id;
+  hubs.set({
+    owner: owner.userId,
+    identityId: "id-ns-owner-Claude",
+    namespace: "ns-owner",
+    name: "Claude",
+  });
+  hubs.set({
+    owner: editor.userId,
+    identityId: "id-ns-editor-Codex",
+    namespace: "ns-editor",
+    name: "Codex",
+  });
   for (const [u, role] of [
     [editor, "editor"],
     [viewer, "viewer"],
@@ -170,6 +196,30 @@ const answer = (
     headers: u ? {} : { "cf-connecting-ip": "198.51.100.8" },
   });
 const who = (u: U): CommentWho => ({ kind: "user", id: u.userId });
+/** An agent of `u` with a verified bus identity (#1822, #2224). */
+const agentOf = (
+  u: U,
+  name: string,
+  ns = `ns-${name.toLowerCase()}`,
+): CommentWho => {
+  const identity = {
+    identityId: `id-${ns}-${name}`,
+    namespace: ns,
+    name,
+    kind: "x",
+  };
+  hubs.set({ ...identity, owner: u.userId });
+  return {
+    kind: "user",
+    id: u.userId,
+    agent: {
+      name,
+      version: null,
+      via: { kind: "token", id: "tok1" },
+      identity,
+    },
+  };
+};
 const view = (u: U) => ({ userId: u.userId, short: null, moderator: true });
 
 /** An ask from the owner's agent to the viewer, through the service (MCP-only on the wire). */
@@ -666,6 +716,23 @@ describe("asks", () => {
 });
 
 describe("ask_answered notice (#1535)", () => {
+  // The asker's address is read fresh from its owner's hub (#2224): stub hubs
+  // and connected machines for this block only.
+  const real = E;
+  const rows: string[] = [];
+  beforeAll(async () => {
+    E = hubs.env();
+    for (const u of [owner, editor])
+      rows.push(await connectedMachine(E.DB, u.userId));
+  });
+  afterAll(async () => {
+    E = real;
+    for (const id of rows)
+      await real.DB.prepare("delete from bus_machines where id = ?")
+        .bind(id)
+        .run();
+  });
+  const ASKER = { namespace: "ns-owner", name: "Claude" };
   const answered = () =>
     bus.sent.filter((x) => x.notice.kind === "ask_answered");
   /** An ask from `u` (through the service, as MCP does) to the viewer. */
@@ -674,12 +741,16 @@ describe("ask_answered notice (#1535)", () => {
     id: string,
     extra: Record<string, unknown> = {},
     opts: { question?: string; options?: typeof OPTS } = {},
+    asker?: CommentWho,
   ) {
     const art = { id, format: "html", currentVersion: 1 } as never;
     const t = await addThread(
       E,
       art,
-      who(u),
+      asker ??
+        (u === editor
+          ? agentOf(u, "Codex", "ns-editor")
+          : agentOf(u, "Claude", "ns-owner")),
       view(u),
       {
         anchor: NOTE,
@@ -748,30 +819,249 @@ describe("ask_answered notice (#1535)", () => {
     const s = await setup();
     const { t, cid } = await askFrom(owner, s.id);
     bus.clear();
-    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, false, -1);
+    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, ASKER, false, -1);
     expect(answered()).toHaveLength(0);
     // Exactly at the boundary (clock frozen, budget 0) is still in time.
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     try {
-      await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, false, 0);
+      await notifyAnswered(
+        E,
+        s.id,
+        1,
+        t.id,
+        cid,
+        owner.userId,
+        ASKER,
+        false,
+        0,
+      );
     } finally {
       now.mockRestore();
     }
     expect(answered()).toHaveLength(1);
     bus.clear();
-    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId);
+    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, ASKER);
     expect(answered()).toHaveLength(1);
   });
 
-  it("a person-authored ask whose author has no following agent sends nothing", async () => {
+  it("a person-authored ask notifies no agent, even the person's followers (#2224)", async () => {
     const s = await setup();
-    const { t, cid } = await askFrom(owner, s.id);
-    await E.DB.prepare("delete from follows where user_id = ?")
-      .bind(owner.userId)
-      .run();
+    const { t, cid } = await askFrom(owner, s.id, {}, {}, who(owner));
     bus.clear();
     expect((await answer(s.id, t.id, cid, viewer, "wide")).status).toBe(200);
     expect(answered()).toHaveLength(0);
+  });
+
+  it("another agent of the asker's member, even following, hears nothing; the asking agent does (#2224)", async () => {
+    const s = await setup();
+    // A second Claude-like agent of the owner follows the page too.
+    await follow(
+      E,
+      owner.userId,
+      { namespace: "ns-owner", name: "Other" },
+      s.id,
+    );
+    const { t, cid } = await askFrom(owner, s.id);
+    bus.clear();
+    await answer(s.id, t.id, cid, viewer, "wide");
+    expect(answered().map((x) => x.notice.to)).toEqual([
+      { namespace: "ns-owner", name: "Claude" },
+    ]);
+  });
+
+  it("an asker with no bus identity (unlinked) notifies nobody (#2224)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(
+      owner,
+      s.id,
+      {},
+      {},
+      {
+        kind: "user",
+        id: owner.userId,
+        agent: { name: "Claude Code", version: null },
+      },
+    );
+    bus.clear();
+    await answer(s.id, t.id, cid, viewer, "wide");
+    expect(answered()).toHaveLength(0);
+  });
+
+  /** An ask by the owner's Runner (ns-rn), then answered by the viewer; returns the notices. */
+  async function runnerAnswered(
+    between: (runner: { identityId: string }) => void = () => {},
+  ) {
+    const s = await setup();
+    const runner = agentOf(owner, "Runner", "ns-rn");
+    const { t, cid } = await askFrom(owner, s.id, {}, {}, runner);
+    between({ identityId: "id-ns-rn-Runner" });
+    bus.clear();
+    await answer(s.id, t.id, cid, viewer, "wide");
+    return answered().map((x) => x.notice.to);
+  }
+
+  it("an asker renamed after asking still gets ask_answered, at its current name (#2224)", async () => {
+    const to = await runnerAnswered(() =>
+      hubs.set({
+        owner: owner.userId,
+        identityId: "id-ns-rn-Runner",
+        namespace: "ns-rn",
+        name: "Runner2",
+      }),
+    );
+    expect(to).toEqual([{ namespace: "ns-rn", name: "Runner2" }]);
+  });
+
+  it("another agent taking the asker's old name gets nothing; the asker is told at its new name (#2224)", async () => {
+    const to = await runnerAnswered(() => {
+      hubs.set({
+        owner: owner.userId,
+        identityId: "id-ns-rn-Runner",
+        namespace: "ns-rn",
+        name: "Runner2",
+      });
+      hubs.set({
+        owner: owner.userId,
+        identityId: "id-other-1",
+        namespace: "ns-rn",
+        name: "Runner",
+      });
+    });
+    expect(to).toEqual([{ namespace: "ns-rn", name: "Runner2" }]);
+  });
+
+  it("a hub that does not know the asker (a miss) sends nothing (#2224)", async () => {
+    const to = await runnerAnswered(() =>
+      hubs.agents.delete("id-ns-rn-Runner"),
+    );
+    expect(to).toEqual([]);
+  });
+
+  it("a slow hub sends nothing (#2224)", async () => {
+    try {
+      const to = await runnerAnswered(() => {
+        hubs.mode = "hang";
+      });
+      expect(to).toEqual([]);
+    } finally {
+      hubs.mode = "ok";
+    }
+  });
+
+  it("a failing hub sends nothing (#2224)", async () => {
+    try {
+      const to = await runnerAnswered(() => {
+        hubs.mode = "fail";
+      });
+      expect(to).toEqual([]);
+    } finally {
+      hubs.mode = "ok";
+    }
+  });
+
+  it("REST: a token is an agent; yes is true for the token that posted the ask, false for another token, true for the person's session (#2224)", async () => {
+    const s = await setup();
+    const a = await createPat(E, owner.userId, "askpat");
+    const b = await createPat(E, owner.userId, "otherpat");
+    // The ask carries the first token as its agent (as a PAT-written ask is stored).
+    const { t, cid } = await askFrom(
+      owner,
+      s.id,
+      { to: [{ key: owner.userId }] },
+      {},
+      {
+        kind: "user",
+        id: owner.userId,
+        agent: {
+          name: "askpat",
+          version: null,
+          via: { kind: "token", id: a.id },
+        },
+      },
+    );
+    expect((await answer(s.id, t.id, cid, owner, "wide")).status).toBe(200);
+    const yes = async (auth: string) => {
+      const list = (await (
+        await api(app, R.comments(s.id), auth)
+      ).json()) as CommentList;
+      return list.threads
+        .find((x) => x.id === t.id)
+        ?.comments.find((x) => x.id === cid)?.ask?.answer?.yes;
+    };
+    expect(await yes(a.token)).toBe(true);
+    expect(await yes(b.token)).toBe(false);
+    expect(await yes(owner.cookie)).toBe(true);
+  });
+
+  it("unlinked asker: yes needs the same name and the same via (#2224)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(
+      owner,
+      s.id,
+      { to: [{ key: owner.userId }] },
+      {},
+      {
+        kind: "user",
+        id: owner.userId,
+        agent: {
+          name: "Pi",
+          version: null,
+          via: { kind: "token", id: "tokA" },
+        },
+      },
+    );
+    await answer(s.id, t.id, cid, owner, "wide");
+    const yesFor = async (agent: CommentViewer["agent"]) => {
+      const l = await listComments(E, s.id, "all", {
+        userId: owner.userId,
+        short: null,
+        agent,
+      });
+      return l.threads
+        .find((x) => x.id === t.id)
+        ?.comments.find((x) => x.id === cid)?.ask?.answer?.yes;
+    };
+    const via = (id: string) => ({ kind: "token" as const, id });
+    expect(await yesFor({ name: "Pi", version: null, via: via("tokA") })).toBe(
+      true,
+    );
+    expect(await yesFor({ name: "Pi", version: null, via: via("tokB") })).toBe(
+      false,
+    );
+    expect(await yesFor({ name: "Pi", version: null })).toBe(false);
+    expect(
+      await yesFor({ name: "Other", version: null, via: via("tokA") }),
+    ).toBe(false);
+  });
+
+  it("answer.yes is true only for the agent that posted the ask (#2224)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(owner, s.id, {
+      to: [{ key: owner.userId }],
+    });
+    expect((await answer(s.id, t.id, cid, owner, "wide")).status).toBe(200);
+    const yesFor = async (v: CommentViewer) => {
+      const l = await listComments(E, s.id, "all", v);
+      const c = l.threads
+        .find((x) => x.id === t.id)
+        ?.comments.find((x) => x.id === cid);
+      return c?.ask?.answer?.yes;
+    };
+    const base = { userId: owner.userId, short: null };
+    const me = (agentWho: CommentWho) =>
+      (agentWho as { agent: NonNullable<CommentViewer["agent"]> }).agent;
+    expect(
+      await yesFor({
+        ...base,
+        agent: me(agentOf(owner, "Claude", "ns-owner")),
+      }),
+    ).toBe(true);
+    expect(
+      await yesFor({ ...base, agent: me(agentOf(owner, "Other", "ns-owner")) }),
+    ).toBe(false);
+    expect(await yesFor({ ...base, agent: null })).toBe(false);
+    // The person in the web app keeps their view.
+    expect(await yesFor(base)).toBe(true);
   });
 
   it("a follower who lost access hears nothing and its follow is cleaned", async () => {
@@ -838,13 +1128,26 @@ describe("ask_answered notice (#1535)", () => {
   it("a failing follow read never fails the answer (it runs in the background)", async () => {
     const s = await setup();
     const { t, cid } = await askFrom(owner, s.id);
-    // A D1 whose follows read throws: a bare await of the notice would reject the answer.
+    // A D1 whose member read throws: a bare await of the notice would reject the answer.
     const db = new Proxy(E.DB, {
       get(target, k) {
         if (k === "prepare")
           return (q: string) => {
-            if (/from follows/.test(q)) throw new Error("d1 down");
-            return target.prepare(q);
+            const st = target.prepare(q);
+            // The asker's member read (not the answerer's) fails.
+            if (/status = 'active'/.test(q))
+              return new Proxy(st, {
+                get(t2, k2) {
+                  if (k2 === "bind")
+                    return (...a: unknown[]) => {
+                      if (a[0] === owner.userId) throw new Error("d1 down");
+                      return t2.bind(...a);
+                    };
+                  const v2 = Reflect.get(t2, k2);
+                  return typeof v2 === "function" ? v2.bind(t2) : v2;
+                },
+              });
+            return st;
           };
         const v = Reflect.get(target, k);
         return typeof v === "function" ? v.bind(target) : v;
@@ -903,7 +1206,7 @@ describe("ask_answered notice (#1535)", () => {
       E,
       s.id,
       root.id,
-      who(owner),
+      agentOf(owner, "Claude", "ns-owner"),
       view(owner),
       "and a question",
       {
@@ -918,11 +1221,7 @@ describe("ask_answered notice (#1535)", () => {
     const viaAgent = await addThread(
       E,
       art,
-      {
-        kind: "user",
-        id: owner.userId,
-        agent: { name: "Claude Code" },
-      } as never,
+      agentOf(owner, "Claude", "ns-owner"),
       view(owner),
       {
         anchor: NOTE,

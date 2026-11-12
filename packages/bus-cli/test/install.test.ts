@@ -865,6 +865,9 @@ describe("install: steps and install.json", () => {
     expect(again.out().slice(2)).toEqual([
       "[[success]]✓[[/success]]  Machine approved",
       "[[success]]✓[[/success]]  Harnesses configured",
+      "   Claude Code: configured",
+      "   OpenCode: configured",
+      "   Pi: configured",
       "[[success]]✓[[/success]]  Daemon answering",
     ]);
   });

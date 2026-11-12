@@ -14,7 +14,8 @@ for (const width of [1280, 390])
       await page.goto(`/a/${ID}?mock=agents`);
       await page.getByRole("button", { name: /^Comments/ }).click();
       await page
-        .getByRole("button", { name: /\d+ replies/ })
+        // #2179: the fold is "Show N earlier replies".
+        .getByRole("button", { name: /Show \d+ earlier replies/ })
         .first()
         .click();
       const mention = page.locator("[data-mention-chip]").first();

@@ -5,6 +5,7 @@ import {
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
+  type BusAddress,
   BusAddressSchema,
   type Comment,
   type CommentAuthor,
@@ -128,6 +129,25 @@ export type CommentViewer = {
   capped?: boolean;
   /** #2080: signed out where only signed-in people may comment: no edit or delete. */
   readOnly?: boolean;
+  /**
+   * #2224: the viewer is an agent (an MCP caller) with this connection; absent
+   * for a person. An agent sees `answer.yes` only on an ask it posted itself.
+   */
+  agent?: AgentAttr | null;
+};
+
+/** #2224: the viewer may take an answer on this ask as its yes: not an agent, or the agent that posted it. */
+const askedByViewer = (c: StoredComment, viewer: CommentViewer): boolean => {
+  if (viewer.agent === undefined) return true;
+  const mine = c.author.kind === "user" ? c.author.agent : undefined;
+  if (!mine || !viewer.agent) return false;
+  if (mine.identity)
+    return mine.identity.identityId === viewer.agent.identity?.identityId;
+  return (
+    !viewer.agent.identity &&
+    mine.name === viewer.agent.name &&
+    mine.via === (viewer.agent.via ? viaKey(viewer.agent.via) : null)
+  );
 };
 
 /** Anonymous, guest-role, or capped to guest or restricted: never wakes an agent without an @. */
@@ -734,7 +754,8 @@ const commentOf = (
                       isTyped(c.ask.answer.by) &&
                       c.ask.answer.by.ref === viewer.userId &&
                       c.author.kind === "user" &&
-                      c.author.ref === viewer.userId,
+                      c.author.ref === viewer.userId &&
+                      askedByViewer(c, viewer),
                   },
                 }
               : {}),
@@ -1331,13 +1352,55 @@ export async function addThread(
 }
 
 /**
+ * #2224: the bus address of the agent that posted the ask at the thread's root
+ * (`author`), or null: a person's ask, or an agent with no verified bus
+ * identity (a notice then reaches nobody). It is the thread participant the
+ * author recorded at write time (same verified identity), at the address its
+ * owner's hub reports for that identity now (fresh read, never the names
+ * cache). Anything less than that answer gives null. Never a follower or the
+ * member's other agents.
+ */
+async function askingAddress(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  author: StoredActor,
+): Promise<BusAddress | null> {
+  const id = author.kind === "user" ? author.agent?.identity : undefined;
+  if (author.kind !== "user" || !id) return null;
+  const rows = await call(() =>
+    stub(env, artifactId).commentsParticipants({ threadIds: [threadId] }),
+  );
+  const row = rows
+    .flatMap(([, ps]) => ps)
+    .find(
+      (p) => p.owner === author.ref && p.identity?.identityId === id.identityId,
+    );
+  if (!row) return null;
+  // Fail closed: a fresh, uncached read of the owner's own hub must give the
+  // identity's current name, and that name must still be this identity's. A
+  // miss, a timeout, an error or another agent holding the name sends nothing.
+  const none = (reason: string): null => {
+    logInfo("ask_asker_unresolved", { artifactId, threadId, reason });
+    return null;
+  };
+  const current = (await agentNamesOf(env, row.owner, [id.identityId])).get(
+    id.identityId,
+  );
+  if (!current) return none("no_current_name");
+  const address = { namespace: row.namespace, name: current };
+  if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
+  const at = await agentIdentityOf(env, row.owner, address);
+  if (at?.identityId !== id.identityId) return none("name_not_theirs");
+  return address;
+}
+
+/**
  * A reply to the thread root's ask author (#1614). 400 not_an_ask unless the
  * root carries an ask and its author is an agent (a person's ask has no agent
  * to tell). The only addressee is that author's agents: the same target as
- * ask_answered (askerRoster: the agents that follow the artifact and belong to
- * the author's member; an MCP asker has no bus address until the open
- * publisher/asker user decision is made, so the member is the only link).
- * It can reach no other agent. The notice is fixed text with the ids.
+ * ask_answered (askerRoster: that exact agent by its verified bus address, #2224;
+ * an author with no bus address gets nobody). It can reach no other agent. The notice is fixed text with the ids.
  */
 async function resolveToAsker(
   env: Env,
@@ -1351,7 +1414,12 @@ async function resolveToAsker(
       "not_an_ask",
       "This thread has no question from an agent to reply to",
     );
-  const to = await askerRoster(env, artifactId, root.author.ref);
+  const to = await askerRoster(
+    env,
+    artifactId,
+    root.author.ref,
+    await askingAddress(env, artifactId, threadId, root.author),
+  );
   return {
     extras: to.length ? { asker: to.map((a) => storedAgent(a)) } : undefined,
     agents: to.map((agent) => ({ agent, kind: "asker" as const })),
@@ -1607,6 +1675,7 @@ export async function answerAsk(
         threadId,
         commentId,
         c.author.ref,
+        await askingAddress(env, artifactId, threadId, c.author),
         // Only an answer the asker picked themselves in the web app.
         c.ask?.answer !== undefined &&
           isTyped(c.ask.answer.by) &&

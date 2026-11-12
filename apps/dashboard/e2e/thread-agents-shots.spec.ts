@@ -12,7 +12,9 @@ async function open(page: Page, text: string) {
   await page
     .locator("li[data-thread]")
     .filter({ hasText: text })
-    .getByRole("button", { name: /\d+ repl(y|ies)/ })
+    // #2179: no "N replies" button any more; selecting the thread (its
+    // quote) opens it, as a reader does.
+    .getByRole("button", { name: /^Show (in page|pin)/ })
     .click();
   await expect(page.locator("[data-thread-agents]")).toBeVisible();
 }

@@ -197,7 +197,12 @@ export function CommentsDialog({
         >
           <span className="h-1 w-10 rounded-full bg-border" />
         </button>
-        <div className={`flex items-center justify-between px-4 pt-3 ${TXT}`}>
+        {/* #2179: the header sits above the sheet's scroller, so it never
+            scrolls away. */}
+        <div
+          data-comments-header=""
+          className={`flex flex-none items-center justify-between bg-[var(--oa-bg)] px-4 pt-3 ${TXT}`}
+        >
           <div className="flex items-baseline gap-2">
             <h2 className="m-0 font-semibold">Comments</h2>
             {open > 0 && (
