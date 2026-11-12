@@ -36,6 +36,17 @@ const STORE_PLAN = `insert into settings (key, value) values ('${PLAN_KEY}', ?1)
          and coalesce(json_extract(settings.value, '$.asOf'), 0) < json_extract(excluded.value, '$.asOf'))
   returning value`;
 
+/**
+ * yearlyTeamBusiness follows billing's environment, not the tier's version, so
+ * a fresh answer sets it even when STORE_PLAN refused the rest (equal or lower
+ * version). Display-only: nothing else in the stored plan is touched, so a
+ * stale answer can never move tier or status. Absent from the answer: removed.
+ */
+const SET_YEARLY = `update settings set value = json_set(value, '$.yearlyTeamBusiness', json(?1))
+  where key = '${PLAN_KEY}' and json_valid(value)`;
+const DROP_YEARLY = `update settings set value = json_remove(value, '$.yearlyTeamBusiness')
+  where key = '${PLAN_KEY}' and json_valid(value)`;
+
 const READ_BOTH = `select
   (select value from settings where key = '${PLAN_KEY}') as plan,
   (select value from settings where key = '${CHECK_KEY}') as "check"`;
@@ -87,7 +98,18 @@ export async function storePlan(
     env.DB.prepare(CHECK_OK).bind(now),
   ]);
   const applied = (stored?.results.length ?? 0) > 0;
-  if (!applied) return false;
+  if (!applied) {
+    await env.DB.prepare(
+      answer.yearlyTeamBusiness === undefined ? DROP_YEARLY : SET_YEARLY,
+    )
+      .bind(
+        ...(answer.yearlyTeamBusiness === undefined
+          ? []
+          : [String(answer.yearlyTeamBusiness)]),
+      )
+      .run();
+    return false;
+  }
   const next = effectivePlan(answer, null, env.TIER, now);
   if (next.lock && !prev?.lock) {
     logInfo("billing_plan_locked", { reason: next.lock.reason });

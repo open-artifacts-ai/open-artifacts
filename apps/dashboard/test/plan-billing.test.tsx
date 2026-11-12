@@ -25,7 +25,6 @@ import {
 import { isSoloPaused, useCan } from "../src/auth/permissions";
 import { planStatus } from "../src/settings/Plan";
 import { type Column, PlanCompare } from "../src/settings/PlanCompare";
-import { yearlyFlag } from "../src/settings/yearlyFlag";
 import {
   arts,
   calls,
@@ -863,22 +862,17 @@ describe("plan cards and comparison (#2007)", () => {
   });
 });
 
-// Yearly Team and Business behind the flag: the seat step (#2007).
+// Yearly Team and Business when billing says yearlyTeamBusiness: the seat step (#2007).
 describe("yearly Team and Business seat step", () => {
   const card = (c: string) => screen.getByTestId(`plan-card-${c}`);
   const checkout = (posts: ReturnType<typeof calls>) =>
     posts.find((c) => c.path.endsWith("/billing/checkout"))?.body;
-  const on = () => {
-    yearlyFlag.teamBusiness = true;
-    onTestFinished(() => {
-      yearlyFlag.teamBusiness = false;
-    });
-  };
   const renderPlanCompare = (props: { column: Column }) => {
     const view = (p: { column: Column }) => (
       <PlanCompare
         column={p.column}
         busy={false}
+        yearly
         seatsDefault={3}
         upgrade={() => {}}
       />
@@ -896,10 +890,9 @@ describe("yearly Team and Business seat step", () => {
   };
 
   it("shows the yearly prices and asks for seats, defaulting to creatorsThisMonth", async () => {
-    on();
     const posts = calls("POST");
     mountHosted("/settings/plan", {
-      billing: { ...TRIAL, creatorsThisMonth: 7 },
+      billing: { ...TRIAL, yearlyTeamBusiness: true, creatorsThisMonth: 7 },
     });
     await screen.findByTestId("plan-card-team");
     expect(card("team")).toHaveTextContent("$8.33 per creator a month");
@@ -936,9 +929,10 @@ describe("yearly Team and Business seat step", () => {
   });
 
   it("Business prices at $250 and Enter submits", async () => {
-    on();
     const posts = calls("POST");
-    mountHosted("/settings/plan", { billing: { ...TEAM, tier: "trial" } });
+    mountHosted("/settings/plan", {
+      billing: { ...TEAM, yearlyTeamBusiness: true, tier: "trial" },
+    });
     await screen.findByTestId("plan-card-business");
     const input = await open("Business");
     expect(screen.getByText("4 creators × $250 = $1,000 a year")).toBeVisible();
@@ -953,9 +947,8 @@ describe("yearly Team and Business seat step", () => {
   });
 
   it("defaults to at least 1 creator", async () => {
-    on();
     mountHosted("/settings/plan", {
-      billing: { ...TRIAL, creatorsThisMonth: 0 },
+      billing: { ...TRIAL, yearlyTeamBusiness: true, creatorsThisMonth: 0 },
     });
     await screen.findByTestId("plan-card-team");
     expect((await open()).value).toBe("1");
@@ -964,9 +957,10 @@ describe("yearly Team and Business seat step", () => {
   it.each(["0", "10001", "2.5", ""])(
     "refuses %j with an inline error",
     async (v) => {
-      on();
       const posts = calls("POST");
-      mountHosted("/settings/plan", { billing: TRIAL });
+      mountHosted("/settings/plan", {
+        billing: { ...TRIAL, yearlyTeamBusiness: true },
+      });
       await screen.findByTestId("plan-card-team");
       const input = await open();
       fireEvent.change(input, { target: { value: v } });
@@ -979,9 +973,10 @@ describe("yearly Team and Business seat step", () => {
   );
 
   it("Cancel and Esc send nothing and return focus to the button", async () => {
-    on();
     const posts = calls("POST");
-    mountHosted("/settings/plan", { billing: TRIAL });
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
     await screen.findByTestId("plan-card-team");
     const button = within(card("team")).getByRole("button", {
       name: "Upgrade to Team",
@@ -998,8 +993,9 @@ describe("yearly Team and Business seat step", () => {
   });
 
   it("formats a large count with a thousands separator", async () => {
-    on();
-    mountHosted("/settings/plan", { billing: TRIAL });
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
     await screen.findByTestId("plan-card-team");
     const input = await open();
     fireEvent.change(input, { target: { value: "10000" } });
@@ -1009,7 +1005,6 @@ describe("yearly Team and Business seat step", () => {
   });
 
   it("closes the step when the plan changes under it, and reopens at the default", async () => {
-    on();
     const { rerender } = renderPlanCompare({ column: "solo" });
     fireEvent.click(screen.getByRole("button", { name: "Upgrade to Team" }));
     fireEvent.change(await screen.findByLabelText("Creators"), {
@@ -1025,9 +1020,10 @@ describe("yearly Team and Business seat step", () => {
   });
 
   it("monthly sends only the tier and asks nothing", async () => {
-    on();
     const posts = calls("POST");
-    mountHosted("/settings/plan", { billing: TRIAL });
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
     await screen.findByTestId("plan-card-team");
     fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
     // The yearly alternative is per creator on Team and Business, not on Solo.
@@ -1043,9 +1039,10 @@ describe("yearly Team and Business seat step", () => {
   });
 
   it("a paid plan still goes to the portal with no seat step", async () => {
-    on();
     const posts = calls("POST");
-    mountHosted("/settings/plan", { billing: TEAM });
+    mountHosted("/settings/plan", {
+      billing: { ...TEAM, yearlyTeamBusiness: true },
+    });
     await screen.findByTestId("plan-card-team");
     fireEvent.click(
       within(card("business")).getByRole("button", {
@@ -1058,9 +1055,22 @@ describe("yearly Team and Business seat step", () => {
     );
   });
 
-  it("flag off: sends only the tier and shows no seat step", async () => {
+  it("yearlyTeamBusiness absent: sends only the tier and shows no seat step", async () => {
     const posts = calls("POST");
     mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() => expect(checkout(posts)).toEqual({ tier: "team" }));
+  });
+
+  it("yearlyTeamBusiness false: sends only the tier and shows no seat step", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: false },
+    });
     await screen.findByTestId("plan-card-team");
     fireEvent.click(
       within(card("team")).getByRole("button", { name: "Upgrade to Team" }),

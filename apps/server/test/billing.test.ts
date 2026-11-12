@@ -90,6 +90,7 @@ type Row = {
   trialEndsAt: number | null;
   soloTrialEndsAt?: number | null;
   hasCustomer?: boolean;
+  yearlyTeamBusiness?: boolean;
   graceUntil: number | null;
   version: number;
 };
@@ -1708,6 +1709,63 @@ describe("Me.instance.billing and the billing routes", () => {
     expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
       "hasCustomer",
     );
+  });
+
+  it("yearlyTeamBusiness: a GET /tier answer reaches the owner through the parse, never a member; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ version: 30, yearlyTeamBusiness: true });
+    expect(
+      (await getMe(owner.cookie)).instance.billing?.yearlyTeamBusiness,
+    ).toBe(true);
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "yearlyTeamBusiness",
+    );
+    await read({ version: 31, yearlyTeamBusiness: false });
+    expect(
+      (await getMe(owner.cookie)).instance.billing?.yearlyTeamBusiness,
+    ).toBe(false);
+    const { yearlyTeamBusiness: _, ...without } = row;
+    row = { ...without, version: 32 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "yearlyTeamBusiness",
+    );
+  });
+
+  it("yearlyTeamBusiness follows every fresh answer; the version guard still holds for everything else", async () => {
+    const stored = async () =>
+      JSON.parse(
+        (
+          await env.DB.prepare("select value from settings where key = ?")
+            .bind(PLAN_KEY)
+            .first<{ value: string }>()
+        )?.value ?? "null",
+      );
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ tier: "business", version: 5, yearlyTeamBusiness: false });
+    // Same version, yearly flips: only that field changes.
+    const before = await stored();
+    await read({ version: 5, tier: "team", yearlyTeamBusiness: true });
+    expect(await stored()).toEqual({ ...before, yearlyTeamBusiness: true });
+    // Lower version: the field still follows (billing's environment, not a
+    // versioned fact); tier and the rest keep the newer answer.
+    await read({ version: 4, tier: "solo", yearlyTeamBusiness: false });
+    expect(await stored()).toEqual({ ...before, yearlyTeamBusiness: false });
+    await read({ version: 3, tier: "solo", yearlyTeamBusiness: true });
+    expect(await stored()).toEqual({ ...before, yearlyTeamBusiness: true });
+    expect((await getMe(owner.cookie)).instance.billing).toMatchObject({
+      tier: "business",
+      yearlyTeamBusiness: true,
+    });
+    // A higher version replaces everything.
+    await read({ version: 6, tier: "team", yearlyTeamBusiness: true });
+    expect(await stored()).toMatchObject({ tier: "team", version: 6 });
   });
 
   it("hasCustomer follows the same-version, later-read rule", async () => {

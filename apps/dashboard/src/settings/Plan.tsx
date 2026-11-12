@@ -283,6 +283,7 @@ export function Plan() {
         column={column}
         trial={billing.tier === "trial"}
         busy={busy}
+        yearly={billing.yearlyTeamBusiness === true}
         upgrade={
           operatorPlan || lapsedPaid
             ? undefined

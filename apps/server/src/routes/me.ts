@@ -130,6 +130,9 @@ async function toMe(
       ...(details && plan.hasCustomer !== undefined
         ? { hasCustomer: plan.hasCustomer }
         : {}),
+      ...(details && plan.yearlyTeamBusiness !== undefined
+        ? { yearlyTeamBusiness: plan.yearlyTeamBusiness }
+        : {}),
       graceUntil:
         details && plan.graceUntil !== null
           ? new Date(plan.graceUntil).toISOString()
