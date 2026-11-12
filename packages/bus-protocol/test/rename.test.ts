@@ -113,6 +113,7 @@ describe("hello caps", () => {
       waitingQuery: "waiting_query",
       noticeAck: "notice_ack",
       nameChosen: "name_chosen",
+      ackConfirm: "ack_confirm",
     });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);

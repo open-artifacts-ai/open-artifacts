@@ -345,7 +345,11 @@ const HUB_CAPS = [
   BUS_CAPS.waiting,
   BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
+<<<<<<< HEAD
   BUS_CAPS.nameChosen,
+=======
+  BUS_CAPS.ackConfirm,
+>>>>>>> origin/main
 ];
 
 /**
@@ -362,6 +366,12 @@ const followGated = (ws: WebSocket): boolean => {
 const waitingQueryGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.waitingQuery);
+};
+
+/** #2198: `acked` goes only to a socket whose hello listed BUS_CAPS.ackConfirm. */
+const ackConfirmGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ackConfirm);
 };
 
 /** #1822: link_bind goes only to a socket whose hello listed BUS_CAPS.link. */
@@ -3360,6 +3370,31 @@ function settle(
   return r.fromAgent;
 }
 
+/**
+ * Whether an ack from `machineId` for `msgId` could still settle later: its
+ * own mail, in this session, pending (or lost_body). False for a repeat, an
+ * unknown id, another machine's, or an old session's: the hub then answers
+ * the ack with the same frame as a settled one, revealing nothing (#2198).
+ */
+function canStillSettle(
+  sql: SqlStorage,
+  machineId: string,
+  msgId: string,
+): boolean {
+  return (
+    one<{ n: number }>(
+      sql,
+      `select 1 as n from receipts r join agents a on a.id = r.to_agent
+       where r.id = ? and r.org_id = ? and a.machine_id = ?
+         and (r.state = 'pending' or (r.state = 'expired' and r.reason = 'lost_body'))
+         and r.rowid > a.session_start_rowid`,
+      msgId,
+      OWNER_ORG_ID,
+      machineId,
+    ) !== null
+  );
+}
+
 // ------------------------------------------------------------------- expiry
 //
 // One alarm serves every deadline (B7). Each step touches at most BATCH rows
@@ -5385,7 +5420,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.noticeAck) ||
           hasCap(f, BUS_CAPS.link) ||
           hasCap(f, BUS_CAPS.waiting) ||
-          hasCap(f, BUS_CAPS.waitingQuery)
+          hasCap(f, BUS_CAPS.waitingQuery) ||
+          hasCap(f, BUS_CAPS.ackConfirm)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -5514,13 +5550,21 @@ export class BusHub extends DurableObject<Env> {
           )
         )
           return;
-        // No reply either way: anything but the recipient's own pending mail
-        // is silently ignored.
-        this.#settle(
-          machineId,
-          f.msg_id,
-          f.type === "ack" ? "delivered" : "refused",
-        );
+        // Anything but the recipient's own pending mail is ignored; only a
+        // socket with ackConfirm hears back (#2198), after the settle.
+        {
+          const settled = this.#settle(
+            machineId,
+            f.msg_id,
+            f.type === "ack" ? "delivered" : "refused",
+          );
+          if (
+            f.type === "ack" &&
+            ackConfirmGated(ws) &&
+            (settled || !canStillSettle(sql, machineId, f.msg_id))
+          )
+            sendFrame(ws, { v: 1, id: f.id, type: "acked", msg_id: f.msg_id });
+        }
         return;
       case "fetch":
         if (sender) this.#fetch(ws, f, sender, machineId);
@@ -5814,11 +5858,17 @@ export class BusHub extends DurableObject<Env> {
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
       this.#arm(t);
     sql.exec(
+<<<<<<< HEAD
       "update agents set name = ?, updated_at = ?, name_chosen = case ? when 2 then name_chosen else ? end where id = ?",
       name,
       now,
       // A re-derived title (name_chosen false) leaves the flag; a default resets it.
       f.name_kind !== "default" && f.name_chosen === false ? 2 : 0,
+=======
+      "update agents set name = ?, updated_at = ?, name_chosen = ? where id = ?",
+      name,
+      now,
+>>>>>>> origin/main
       f.name_kind === "default" ? 0 : 1,
       agent.id,
     );
@@ -6350,7 +6400,7 @@ export class BusHub extends DurableObject<Env> {
     machineId: string,
     msgId: string,
     outcome: "delivered" | "refused",
-  ): void {
+  ): boolean {
     const from = settle(
       this.ctx.storage.sql,
       machineId,
@@ -6358,9 +6408,10 @@ export class BusHub extends DurableObject<Env> {
       outcome,
       this.#now(),
     );
-    if (from === null) return;
+    if (from === null) return false;
     this.#release(msgId);
     this.#tell(msgId, from, outcome, outcome === "refused" ? "closed" : null);
+    return true;
   }
 
   /**

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.163.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.2...v0.163.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** a hosted install with no plan says paid plans open soon ([#2326](https://github.com/open-artifacts-ai/open-artifacts/issues/2326)) ([#2328](https://github.com/open-artifacts-ai/open-artifacts/issues/2328)) ([1d17861](https://github.com/open-artifacts-ai/open-artifacts/commit/1d17861c546a2caea27e77ad4121950b57c60764))
+* **bus:** an away agent with a harness default name expires after an hour ([#2311](https://github.com/open-artifacts-ai/open-artifacts/issues/2311)) ([#2314](https://github.com/open-artifacts-ai/open-artifacts/issues/2314)) ([66b510b](https://github.com/open-artifacts-ai/open-artifacts/commit/66b510bb8520f19203ec64dcc4e54531fdb29e31))
+* **comments:** post and remove show at once, roll back on error (user request) ([#2321](https://github.com/open-artifacts-ai/open-artifacts/issues/2321)) ([28986ba](https://github.com/open-artifacts-ai/open-artifacts/commit/28986ba714742812795594e39645c653cd542d2f))
+
+
+### Bug Fixes
+
+* **bus:** a Codex ack is saved only once the hub has it; queue timeout 30 s ([#2198](https://github.com/open-artifacts-ai/open-artifacts/issues/2198), [#2181](https://github.com/open-artifacts-ai/open-artifacts/issues/2181)) ([#2302](https://github.com/open-artifacts-ai/open-artifacts/issues/2302)) ([0dee462](https://github.com/open-artifacts-ai/open-artifacts/commit/0dee462d720ec9baec7d2729dbb0274b9a4d21c8))
+* **comments:** clicking away or closing comments clears an unsent selection (user request) ([#2319](https://github.com/open-artifacts-ai/open-artifacts/issues/2319)) ([9d531ff](https://github.com/open-artifacts-ai/open-artifacts/commit/9d531fffcb4d649542696f0f8215a173300b14d3))
+* **comments:** no gray band under the phone comments sheet (user report) ([#2316](https://github.com/open-artifacts-ai/open-artifacts/issues/2316)) ([55709f9](https://github.com/open-artifacts-ai/open-artifacts/commit/55709f9005be92ea888419c3bd1aac8d5d9fb257))
+
+## [0.162.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.1...v0.162.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* **comments:** remove an agent from a thread without a confirm (user request) ([#2310](https://github.com/open-artifacts-ai/open-artifacts/issues/2310)) ([8d59732](https://github.com/open-artifacts-ai/open-artifacts/commit/8d597327445f3844ab4b33cc7026f0449673f636))
+* **comments:** the top of a comment shows every agent it notified, and no held flash (user report) ([#2312](https://github.com/open-artifacts-ai/open-artifacts/issues/2312)) ([162b983](https://github.com/open-artifacts-ai/open-artifacts/commit/162b983636f2bef72937b51019e4b8715467c04a))
+
 ## [0.162.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.0...v0.162.1) (2026-11-12)
 
 

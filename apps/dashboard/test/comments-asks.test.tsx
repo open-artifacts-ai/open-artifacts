@@ -474,9 +474,11 @@ describe("asks on the comments column", () => {
     await waitFor(() => expect(sent).toEqual({ optionId: "a" }));
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
     // The new answer ends Change mode: the others lock again.
-    expect(
-      within(c).getByRole("button", { name: /Side by side/ }),
-    ).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        within(c).getByRole("button", { name: /Side by side/ }),
+      ).toBeDisabled(),
+    );
     expect(
       within(c).getByRole("button", { name: "Change" }),
     ).toBeInTheDocument();
@@ -1791,10 +1793,12 @@ describe("asks for you: reveal, surfaces, gone (#1614)", () => {
 
   it("an already-active ask in an open column scrolls and takes focus on click", async () => {
     const scroll = vi.fn();
-    Element.prototype.scrollIntoView = scroll;
     serveThreads(() => [askThread()]);
     mount(viewerPath(OWNED));
     const c = await col();
+    // The column scrolls itself, never the document.
+    c.style.overflowY = "auto";
+    c.scrollTo = scroll;
     const b = (
       await screen.findAllByRole("button", { name: /1 ask for you$/ })
     )[0] as HTMLElement;

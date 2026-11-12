@@ -311,6 +311,16 @@ const WaitingCounts = z.strictObject({
 });
 
 /**
+ * The hub has settled the mail ack for `msg_id`, or it can no longer settle
+ * (`BUS_CAPS.ackConfirm`). One shape for both, so it says nothing about the id.
+ */
+const Acked = z.strictObject({
+  ...base,
+  type: z.literal("acked"),
+  msg_id: MsgIdSchema,
+});
+
+/**
  * Most follows one member holds, so the most `follows` lists. Equals
  * FOLLOW_LIMIT in @oa/shared (a server test pins the two).
  */
@@ -532,6 +542,7 @@ export const SERVER_FRAMES = [
   "follows",
   "link_bound",
   "waiting_counts",
+  "acked",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -568,6 +579,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   Follows,
   LinkBound,
   WaitingCounts,
+  Acked,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -601,6 +613,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Follows,
   LinkBound,
   WaitingCounts,
+  Acked,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;

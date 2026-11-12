@@ -186,6 +186,7 @@ describe("frames", () => {
       "follows",
       "link_bound",
       "waiting_counts",
+      "acked",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {

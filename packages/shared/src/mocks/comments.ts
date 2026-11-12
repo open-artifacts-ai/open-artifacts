@@ -279,6 +279,22 @@ export function createCommentMock({
           delivery: "withdrawn",
         },
       ];
+      // A comment can notify both: the mentions above, then thread agents told by it
+      // (one is also mentioned, and counts once in the header).
+      mention.notified = (
+        [
+          ["agent:product", "OA Product", 2],
+          ["agent:design", "OA Design", 1],
+          ["agent:release", "OA Release", 0],
+        ] as const
+      ).map(([key, name, color]) => ({
+        key,
+        name,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color },
+        delivery: "delivered" as const,
+      }));
       // #2229: a reply that told six agents without mentioning any.
       const six = comment(
         "Everyone: please confirm your part is ready.",

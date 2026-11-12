@@ -70,7 +70,7 @@ import {
   writeCodexAway,
 } from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
-import { TakenWatch } from "./codex-taken.ts";
+import { AckTracker, replayAcks, TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -696,11 +696,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   });
   /** Where Codex keeps its thread names (#1748). */
   const codexIndexHome = cx.home ?? codexHome();
+  /** Codex acks queued on the current link: ack frame id to msg_id. Only an `acked` echoing one of these confirms (#2198). */
+  const codexAckIds = new AckTracker();
+  const sendCodexAck = (id: string, unsent?: () => void): boolean =>
+    delivery.delivered(id, unsent, (fid) => {
+      // Only a hub that negotiated the cap ever answers.
+      if (hubAckConfirm) codexAckIds.track(fid, id);
+    });
   /** Queued Codex mail a turn has not taken yet (#2029): acked late, once it has. */
   const codexTaken = new TakenWatch({
     home: codexIndexHome,
     file: cx.takenFile ?? join(home(), "codex-pending.json"),
-    onTaken: (id) => delivery.delivered(id),
+    onTaken: (id, unsent) => sendCodexAck(id, unsent),
     log,
   });
   const codex = new CodexTransport({
@@ -1270,7 +1277,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const delivery = createDeliver({
     agents,
     ...(cl.retryDelaysMs ? { retryDelaysMs: cl.retryDelaysMs } : {}),
-    hub: { send: (f) => hub.send(f) },
+    hub: { send: (f, unsent) => hub.send(f, unsent) },
     transports: {
       "claude-code": (agent, mail) => claude.deliver(agent, mail),
       opencode: (agent, mail) => opencode.deliver(agent, mail),
@@ -1307,6 +1314,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubLinkArg = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
+  /** The hub's last hello_ok listed BUS_CAPS.ackConfirm: it answers a mail ack with `acked` (#2198). */
+  let hubAckConfirm = false;
+  /** Which link's hello_ok started the current Codex ack replay (#2198). */
+  let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
@@ -1445,6 +1456,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        case "acked": {
+          // Only the answer to an ack sent on this link, from a hub that
+          // negotiated the cap; anything else is ignored.
+          if (!hubAckConfirm) return;
+          const sent = codexAckIds.take(frame.id);
+          if (sent !== undefined && sent === frame.msg_id)
+            codexTaken.confirm(sent);
+          return;
+        }
         case "waiting_counts":
           waitingAsks.get(frame.id)?.(frame.counts);
           return;
@@ -1465,6 +1485,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             frame.caps?.includes(BUS_CAPS.waitingQuery) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
+          hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1478,6 +1499,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
+          // A hub that confirms acks gets every Codex ack it has not
+          // confirmed again, paced into the queue's spare half (#2198).
+          // Without the cap there is no replay: an ack queued is done.
+          if (hubAckConfirm) {
+            const link = ++codexReplayLink;
+            replayAcks(
+              codexTaken.unconfirmedIds(),
+              (id) => void sendCodexAck(id),
+              () => hubHelloed && link === codexReplayLink,
+              () => hub.headroom,
+            );
+          }
           return;
         // roster_changed has no local consumer yet (C6).
       }
@@ -1536,6 +1569,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
+      hubAckConfirm = false;
+      codexAckIds.clear();
       hubWaitingQuery = false;
       hubHelloed = false;
       statusRelay.dropped();
@@ -2634,6 +2669,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       for (const t of limited.values()) clearTimeout(t);
       for (const t of restoreTimers) clearTimeout(t);
       hub.stop();
+      codexTaken.flush();
       // A send waiting for delivered is queued at the hub: it answers so, not as an error.
       receipts.release();
       await new Promise((r) => setImmediate(r));

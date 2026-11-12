@@ -104,12 +104,23 @@ export const BUS_CAPS = {
    */
   noticeAck: "notice_ack",
   /**
+<<<<<<< HEAD
    * Chosen names (#2311): the client may send `agent_up.name_chosen: true`
    * for a session whose harness says the user (or a peer) named it. The hub
    * lists it in `hello_ok.caps`; a client sends the key only when it did (an
    * older hub's strict decoder refuses it).
    */
   nameChosen: "name_chosen",
+=======
+   * Confirmed acks (#2198): a mail `ack` from a socket listing it is answered
+   * by `acked {msg_id}` once the hub has durably settled the receipt, or, for
+   * an id that can no longer settle (a repeat, unknown, not this machine's),
+   * by the same opaque frame. Only on the link the ack came in on. Notice
+   * acks are not answered. A daemon listing it keeps an ack record until the
+   * hub confirmed it, and sends it again on a new link otherwise.
+   */
+  ackConfirm: "ack_confirm",
+>>>>>>> origin/main
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 
