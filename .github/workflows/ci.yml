@@ -279,6 +279,17 @@ jobs:
   # Builds the real release bundle (buildBundle, dry run) and asserts it contains no
   # live test hooks. Same release-only fast path as the other jobs: never skipped
   # via needs/if, so it can be a required check.
+  # #2258: a migration that shipped in a release never changes (an edit, even a
+  # comment, never reaches a deployed database). Always runs; git only, no install.
+  released-migrations-frozen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: bash scripts/ci/released-migrations-frozen.sh
   no-test-hooks:
     runs-on: ubuntu-latest
     steps:
