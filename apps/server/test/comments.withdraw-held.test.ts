@@ -423,13 +423,54 @@ describe("removing an agent withdraws its held notices (#2175)", () => {
     const t = (await (
       await post(s.id, editor, { mentions: [{ key: s.claude }] })
     ).json()) as Thread;
-    vi.mocked(busMod.busHub).mockImplementationOnce(() => {
-      throw new Error("hub down");
-    });
-    expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
+    const down = {
+      ...E,
+      BUS_HUB: {
+        idFromName: () => ({}),
+        get: () =>
+          new Proxy(
+            {},
+            {
+              get: () => () => {
+                throw new Error("hub down");
+              },
+            },
+          ),
+      },
+    } as unknown as Env;
+    await setThreadAgent(
+      down,
+      s.id,
+      t.id,
+      s.claude,
+      { userId: owner.userId, short: null, owner: true },
+      true,
+    );
     const th = await read(s.id);
     expect(th?.agents).toBeUndefined();
     expect(th?.comments[0]?.mentions?.[0]?.delivery).toBe("queued");
+  });
+
+  it("with an execution context the withdrawal runs after the call returns", async () => {
+    const { s, t } = await (async () => {
+      const s = await setup();
+      const t = (await (
+        await post(s.id, editor, { mentions: [{ key: s.claude }] })
+      ).json()) as Thread;
+      return { s, t };
+    })();
+    const later: Promise<unknown>[] = [];
+    await setThreadAgent(
+      E,
+      s.id,
+      t.id,
+      s.claude,
+      { userId: owner.userId, short: null, owner: true },
+      true,
+      { waitUntil: (p) => void later.push(p) },
+    );
+    expect(later).toHaveLength(1);
+    await Promise.all(later);
   });
 
   it("a member who may not remove it triggers nothing", async () => {

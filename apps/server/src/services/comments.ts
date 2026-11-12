@@ -1675,6 +1675,8 @@ export async function setThreadAgent(
   key: string,
   viewer: CommentViewer,
   removed: boolean,
+  /** The request's execution context: the hub withdrawal runs after the response (a hung hub must not delay the ×). */
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   if (outsider(viewer) || viewer.userId === null)
     throw new ApiError("forbidden", "Only members can change who is notified");
@@ -1693,7 +1695,10 @@ export async function setThreadAgent(
   await call(() =>
     stub(env, artifactId).commentsParticipantSet({ threadId, key, removed }),
   );
-  if (removed) await withdrawHeldFor(env, artifactId, threadId, p);
+  if (!removed) return;
+  const w = withdrawHeldFor(env, artifactId, threadId, p);
+  if (ctx) ctx.waitUntil(w);
+  else await w;
 }
 
 /** #2240: how long one withdrawHeld call may take before it is retried. */
