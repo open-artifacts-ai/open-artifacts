@@ -3,9 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import {
   AWARENESS_MS,
+  BAD_FRAME,
   createDocRoom,
   DOC_TOO_LARGE,
   errorCopy,
+  NOT_FOUND,
+  nearCap,
+  ROOM_FULL,
+  ROOM_FULL_RETRY,
+  roomNotice,
   UPDATE_BATCH_MS,
 } from "../src/viewer/doc/useDocRoom";
 import { FakeProvider } from "./doc-fake-provider";
@@ -206,6 +212,137 @@ describe("doc room error frames", () => {
     fake.frame("not json");
     fake.frame(JSON.stringify({ type: "hello" }));
     expect(room.getSnapshot().error).toBeNull();
+    room.destroy();
+  });
+});
+
+describe("the wire spec: hello and close codes", () => {
+  const hello = (role: string, extra: object = {}) =>
+    JSON.stringify({
+      type: "hello",
+      role,
+      bytes: 1000,
+      cap: 2097152,
+      version: 1,
+      ...extra,
+    });
+  const ready = () => {
+    const room = open();
+    fake.connect();
+    return room;
+  };
+
+  it("hello sets the role, reason and sizes from the server", () => {
+    const room = ready();
+    expect(room.getSnapshot().role).toBeNull();
+    fake.frame(hello("read", { reason: "room_full" }));
+    expect(room.getSnapshot()).toMatchObject({
+      role: "read",
+      reason: "room_full",
+      bytes: 1000,
+      cap: 2097152,
+    });
+    fake.frame(hello("edit"));
+    expect(room.getSnapshot()).toMatchObject({ role: "edit", reason: null });
+    room.destroy();
+  });
+
+  it("a viewer's hello says read with reason access", () => {
+    const room = ready();
+    fake.frame(hello("read", { reason: "access" }));
+    expect(room.getSnapshot()).toMatchObject({
+      role: "read",
+      reason: "access",
+    });
+    expect(roomNotice(room.getSnapshot())).toBeNull();
+    room.destroy();
+  });
+
+  it("a full room says so and offers to reconnect; reconnect reopens the socket", () => {
+    const room = ready();
+    fake.frame(hello("read", { reason: "room_full" }));
+    expect(roomNotice(room.getSnapshot())).toEqual({
+      text: ROOM_FULL,
+      retry: ROOM_FULL_RETRY,
+    });
+    const before = [fake.connects, fake.disconnects];
+    room.reconnect();
+    expect([fake.connects, fake.disconnects]).toEqual([
+      before[0] + 1,
+      before[1] + 1,
+    ]);
+    room.destroy();
+  });
+
+  it("warns near the cap, not before and not past it", () => {
+    const room = ready();
+    fake.frame(hello("edit", { bytes: 1_000_000 }));
+    expect(roomNotice(room.getSnapshot())).toBeNull();
+    fake.frame(hello("edit", { bytes: 1_950_000 }));
+    expect(roomNotice(room.getSnapshot())?.text).toBe(nearCap(1_950_000));
+    expect(nearCap(1_950_000)).toBe("This doc is almost full: 1.9 MB of 2 MB.");
+    room.destroy();
+  });
+
+  it("4401 auth_expired reconnects silently: nothing shown, nothing stopped", () => {
+    const room = ready();
+    fake.frame(hello("edit"));
+    fake.close(4401);
+    vi.advanceTimersByTime(1000);
+    const s = room.getSnapshot();
+    expect([s.ended, s.error]).toEqual([null, null]);
+    // The provider's own backoff reconnects; the room never calls disconnect.
+    expect(fake.disconnects).toBe(0);
+    expect(roomNotice(s)).toBeNull();
+    room.destroy();
+  });
+
+  it("4403 access_removed ends it: no retry, the spec's copy", () => {
+    const room = ready();
+    fake.close(4403);
+    const s = room.getSnapshot();
+    expect(s.ended).toBe("access_removed");
+    expect(roomNotice(s)?.text).toBe("You no longer have access.");
+    // The room stops y-websocket's reconnecting: one disconnect() after the close.
+    expect(fake.disconnects).toBe(1);
+    vi.advanceTimersByTime(5000);
+    expect(fake.connects).toBe(1);
+    room.destroy();
+  });
+
+  it("4404 not_found ends it with the gone copy", () => {
+    const room = ready();
+    fake.close(4404);
+    expect(room.getSnapshot().ended).toBe("not_found");
+    expect(roomNotice(room.getSnapshot())?.text).toBe(NOT_FOUND);
+    vi.advanceTimersByTime(5000);
+    expect(fake.connects).toBe(1);
+    room.destroy();
+  });
+
+  it("1007 bad_frame reconnects once, then stops and reports", () => {
+    const room = ready();
+    fake.close(1007);
+    vi.advanceTimersByTime(1);
+    expect(room.getSnapshot().ended).toBeNull();
+    expect(fake.connects).toBe(2);
+    fake.close(1007);
+    expect(room.getSnapshot().ended).toBe("bad_frame");
+    expect(roomNotice(room.getSnapshot())?.text).toBe(BAD_FRAME);
+    vi.advanceTimersByTime(5000);
+    expect(fake.connects).toBe(2);
+    room.destroy();
+  });
+
+  it("1013 try_again is left to the provider's backoff", () => {
+    const room = ready();
+    fake.close(1013);
+    vi.advanceTimersByTime(5000);
+    const s = room.getSnapshot();
+    expect(s.ended).toBeNull();
+    expect(s.status).toBe("offline");
+    // Not stopped by the room.
+    expect(fake.disconnects).toBe(0);
     room.destroy();
   });
 });

@@ -30,10 +30,56 @@ export function errorCopy(code: string | null): string | null {
   return code === DOC_TOO_LARGE_CODE ? DOC_TOO_LARGE : GENERIC_ERROR;
 }
 
+/**
+ * Copy for the wire spec's states (artifact UkN5r8hpoXu9DYxG). Product writes
+ * the final words; PLACEHOLDER marks the ones the spec does not give.
+ */
+/** Spec: close 4403 access_removed. */
+export const ACCESS_REMOVED = "You no longer have access.";
+/** Spec: hello reason room_full. */
+export const ROOM_FULL = "You can read; editing opens when someone leaves.";
+/** PLACEHOLDER: the button beside ROOM_FULL (the spec says "offer to reconnect"). */
+export const ROOM_FULL_RETRY = "Try again";
+/** PLACEHOLDER: close 4404 not_found ("show it's gone"). */
+export const NOT_FOUND = "This doc was deleted.";
+/** PLACEHOLDER: close 1007 bad_frame twice ("reconnect once, then stop and report"). */
+export const BAD_FRAME =
+  "This doc can't sync right now. Reload the page to try again.";
+/** PLACEHOLDER: hello bytes near cap ("warn near cap"); the share of the cap that counts as near. */
+export const NEAR_CAP_SHARE = 0.9;
+export const nearCap = (bytes: number) =>
+  `This doc is almost full: ${(bytes / 1048576).toFixed(1)} MB of 2 MB.`;
+
+/** Why the socket stopped for good (the client does not retry). */
+export type RoomEnd = "access_removed" | "not_found" | "bad_frame";
+
 export interface DocSnapshot {
   status: DocStatus;
   /** The server's last error code ({type:"error", code}), if any. */
   error: string | null;
+  /** The role the server gave in its hello frame; null before it. Server only. */
+  role: "edit" | "read" | null;
+  /** Why role is "read" when it is not the viewer's permission. */
+  reason: "room_full" | "access" | null;
+  /** Stored doc size and the cap, from hello. */
+  bytes: number | null;
+  cap: number | null;
+  /** The socket was closed for good; see RoomEnd. */
+  ended: RoomEnd | null;
+}
+
+/** What to say about the room (not the doc-full alert), or null. */
+export function roomNotice(
+  s: DocSnapshot,
+): { text: string; retry?: string } | null {
+  if (s.ended === "access_removed") return { text: ACCESS_REMOVED };
+  if (s.ended === "not_found") return { text: NOT_FOUND };
+  if (s.ended === "bad_frame") return { text: BAD_FRAME };
+  if (s.role === "read" && s.reason === "room_full")
+    return { text: ROOM_FULL, retry: ROOM_FULL_RETRY };
+  if (s.bytes && s.cap && s.bytes >= s.cap * NEAR_CAP_SHARE && s.bytes < s.cap)
+    return { text: nearCap(s.bytes) };
+  return null;
 }
 
 /** The part of y-websocket's WebsocketProvider the room uses. */
@@ -44,7 +90,14 @@ export interface RoomProvider {
   ws: {
     onmessage: ((e: { data: unknown }) => void) | null;
     bufferedAmount?: number;
+    addEventListener?: (
+      type: "close",
+      cb: (e: { code: number }) => void,
+    ) => void;
   } | null;
+  /** y-websocket's socket control: disconnect() also stops its reconnecting. */
+  disconnect?(): void;
+  connect?(): void;
   // biome-ignore lint/suspicious/noExplicitAny: y-websocket's event args vary by event.
   on(event: string, cb: (...a: any[]) => void): void;
   // biome-ignore lint/suspicious/noExplicitAny: as above.
@@ -63,6 +116,8 @@ export interface DocRoom {
   provider: RoomProvider;
   subscribe(cb: () => void): () => void;
   getSnapshot(): DocSnapshot;
+  /** Close and reopen the socket (the "Try again" beside a full room). */
+  reconnect(): void;
   /** discard: drop unsent edits instead of sending them (a resync). */
   destroy(discard?: boolean): void;
 }
@@ -117,7 +172,18 @@ export function createDocRoom(
   let snapshot: DocSnapshot = {
     status: "connecting",
     error: opts.error ?? null,
+    role: null,
+    reason: null,
+    bytes: null,
+    cap: null,
+    ended: null,
   };
+  let role: DocSnapshot["role"] = null;
+  let reason: DocSnapshot["reason"] = null;
+  let bytes: number | null = null;
+  let cap: number | null = null;
+  let ended: RoomEnd | null = null;
+  let badFrames = 0;
 
   let connected = !!provider.wsconnected;
   let sawDisconnect = false;
@@ -138,8 +204,20 @@ export function createDocRoom(
     return synced && !buffer && !draining && !unsent ? "saved" : "saving";
   };
   const publish = () => {
-    const next: DocSnapshot = { status: compute(), error };
-    if (next.status === snapshot.status && next.error === snapshot.error)
+    const next: DocSnapshot = {
+      status: compute(),
+      error,
+      role,
+      reason,
+      bytes,
+      cap,
+      ended,
+    };
+    if (
+      (Object.keys(next) as (keyof DocSnapshot)[]).every(
+        (k) => next[k] === snapshot[k],
+      )
+    )
       return;
     snapshot = next;
     for (const l of [...listeners]) l();
@@ -226,10 +304,50 @@ export function createDocRoom(
     if (!ws || wrapped.has(ws)) return;
     wrapped.add(ws);
     const binary = ws.onmessage;
+    // Close codes from the room (wire spec): 4401 auth_expired is the cookie
+    // re-authorizing, so y-websocket's own reconnect is right; 4403 and 4404
+    // end it; 1007 gets one resync; 1013 is the provider's backoff.
+    ws.addEventListener?.("close", (ev) => {
+      if (destroyed) return;
+      const stop = (why: RoomEnd) => {
+        ended = why;
+        provider.disconnect?.();
+        publish();
+      };
+      if (ev.code === 4403) stop("access_removed");
+      else if (ev.code === 4404) stop("not_found");
+      else if (ev.code === 1007) {
+        if (++badFrames > 1) stop("bad_frame");
+        else
+          setTimeout(() => {
+            if (destroyed) return;
+            provider.disconnect?.();
+            provider.connect?.();
+          }, 0);
+      }
+    });
     ws.onmessage = (e) => {
       if (typeof e.data !== "string") return binary?.(e);
       try {
-        const frame = JSON.parse(e.data) as { type?: string; code?: unknown };
+        const frame = JSON.parse(e.data) as {
+          type?: string;
+          code?: unknown;
+          role?: unknown;
+          reason?: unknown;
+          bytes?: unknown;
+          cap?: unknown;
+        };
+        if (frame.type === "hello") {
+          // The first frame: the role comes from the server only.
+          role = frame.role === "edit" ? "edit" : "read";
+          reason =
+            frame.reason === "room_full" || frame.reason === "access"
+              ? frame.reason
+              : null;
+          bytes = typeof frame.bytes === "number" ? frame.bytes : null;
+          cap = typeof frame.cap === "number" ? frame.cap : null;
+          publish();
+        }
         if (frame.type === "error") {
           error = typeof frame.code === "string" ? frame.code : "error";
           publish();
@@ -278,6 +396,13 @@ export function createDocRoom(
       return () => listeners.delete(cb);
     },
     getSnapshot: () => snapshot,
+    reconnect() {
+      if (destroyed) return;
+      ended = null;
+      badFrames = 0;
+      provider.disconnect?.();
+      provider.connect?.();
+    },
     destroy(discard = false) {
       destroyed = true;
       clearTimeout(batchTimer);
@@ -302,7 +427,15 @@ export function createDocRoom(
   };
 }
 
-const IDLE: DocSnapshot = { status: "connecting", error: null };
+const IDLE: DocSnapshot = {
+  status: "connecting",
+  error: null,
+  role: null,
+  reason: null,
+  bytes: null,
+  cap: null,
+  ended: null,
+};
 const none = () => () => {};
 
 /** The room for an artifact: created on mount, destroyed on unmount. */

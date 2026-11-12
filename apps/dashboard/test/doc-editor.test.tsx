@@ -835,6 +835,104 @@ describe("DocEditor", () => {
     expect(title).toHaveAttribute("readonly");
   });
 
+  describe("the wire spec", () => {
+    const hello = (role: string, extra: object = {}) =>
+      JSON.stringify({
+        type: "hello",
+        role,
+        bytes: 1000,
+        cap: 2097152,
+        ...extra,
+      });
+    const readOnly = () =>
+      expect(
+        document.querySelector(".ProseMirror")?.getAttribute("contenteditable"),
+      ).toBe("false");
+    const open = async () => {
+      const p = fakeProviders();
+      render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+      await screen.findByRole("toolbar");
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      act(() => f.connect());
+      return { p, f };
+    };
+
+    it("a viewer's hello (read, access) makes it read-only with no toolbar and no banner", async () => {
+      const { f } = await open();
+      act(() => f.frame(hello("read", { reason: "access" })));
+      await waitFor(() => expect(screen.queryByRole("toolbar")).toBeNull());
+      readOnly();
+      expect(screen.queryByRole("status", { name: "" })).toBeNull();
+      expect(screen.queryByText(/editing opens/)).toBeNull();
+    });
+
+    it("an edit hello leaves it editable", async () => {
+      const { f } = await open();
+      act(() => f.frame(hello("edit")));
+      expect(screen.getByRole("toolbar")).toBeVisible();
+    });
+
+    it("a full room reads only, says why, and Try again reconnects", async () => {
+      const { f } = await open();
+      act(() => f.frame(hello("read", { reason: "room_full" })));
+      expect(
+        await screen.findByText(
+          "You can read; editing opens when someone leaves.",
+        ),
+      ).toBeVisible();
+      readOnly();
+      const before = f.connects;
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(f.connects).toBe(before + 1);
+    });
+
+    it("warns near the cap and stays editable", async () => {
+      const { f } = await open();
+      act(() => f.frame(hello("edit", { bytes: 1_950_000 })));
+      expect(
+        await screen.findByText("This doc is almost full: 1.9 MB of 2 MB."),
+      ).toBeVisible();
+      expect(screen.getByRole("toolbar")).toBeVisible();
+    });
+
+    it("4403 says you no longer have access and stops editing", async () => {
+      const { f } = await open();
+      act(() => f.close(4403));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "You no longer have access.",
+      );
+      readOnly();
+      expect(screen.queryByRole("toolbar")).toBeNull();
+    });
+
+    it("4404 says the doc is gone", async () => {
+      const { f } = await open();
+      act(() => f.close(4404));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "This doc was deleted.",
+      );
+    });
+
+    it("1007 twice stops and reports; once is only a resync", async () => {
+      const { f } = await open();
+      act(() => f.close(1007));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByRole("alert")).toBeNull();
+      act(() => f.close(1007));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "This doc can't sync right now.",
+      );
+    });
+
+    it("4401 and 1013 show nothing", async () => {
+      const { f } = await open();
+      act(() => f.close(4401));
+      act(() => f.close(1013));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByRole("status", { name: "" })).toBeNull();
+    });
+  });
+
   it("reports Saving, Saved and Offline for the title bar", async () => {
     const p = fakeProviders();
     const seen: (string | null)[] = [];

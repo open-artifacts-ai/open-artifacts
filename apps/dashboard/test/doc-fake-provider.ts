@@ -16,7 +16,12 @@ export class FakeProvider implements RoomProvider {
   ws: {
     onmessage: ((e: { data: unknown }) => void) | null;
     bufferedAmount: number;
+    addEventListener: (
+      type: "close",
+      cb: (e: { code: number }) => void,
+    ) => void;
   } | null = null;
+  private closers: ((e: { code: number }) => void)[] = [];
   sentUpdates: Uint8Array[] = [];
   sentAwareness: number[][] = [];
   destroyed = false;
@@ -55,7 +60,12 @@ export class FakeProvider implements RoomProvider {
   /** The socket opens; `sync` also completes the sync exchange. */
   connect(sync = true) {
     this.connects++;
-    this.ws = { onmessage: null, bufferedAmount: 0 };
+    this.closers = [];
+    this.ws = {
+      onmessage: null,
+      bufferedAmount: 0,
+      addEventListener: (_t, cb) => this.closers.push(cb),
+    };
     this.wsconnected = true;
     this.emit("status", { status: "connected" });
     if (sync) {
@@ -65,6 +75,13 @@ export class FakeProvider implements RoomProvider {
   }
   disconnect() {
     this.disconnects++;
+    this.wsconnected = false;
+    this.synced = false;
+    this.emit("status", { status: "disconnected" });
+  }
+  /** The server closes the socket with a code (the wire spec's 4401 ... 1013). */
+  close(code: number) {
+    for (const cb of [...this.closers]) cb({ code });
     this.wsconnected = false;
     this.synced = false;
     this.emit("status", { status: "disconnected" });

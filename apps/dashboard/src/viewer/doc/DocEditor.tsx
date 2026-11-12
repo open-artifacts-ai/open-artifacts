@@ -1,3 +1,4 @@
+import { Button } from "@oa/ui/shadcn";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { useEffect, useMemo, useRef } from "react";
 import type * as Y from "yjs";
@@ -13,10 +14,12 @@ import { TitleField } from "./TitleField";
 import { Toolbar } from "./Toolbar";
 import {
   DOC_TOO_LARGE_CODE,
+  type DocSnapshot,
   type DocStatus,
   defaultProvider,
   errorCopy,
   type RoomProvider,
+  roomNotice,
   useDocRoom,
 } from "./useDocRoom";
 
@@ -49,24 +52,24 @@ export interface DocEditorProps {
 }
 
 export function DocEditor(props: DocEditorProps) {
-  const { room, status, error } = useDocRoom(
+  const { room, ...snap } = useDocRoom(
     props.artifactId,
     props.makeProvider ?? defaultProvider,
   );
   const { onStatus } = props;
+  const { status } = snap;
   useEffect(() => {
     // The state belongs to editing: a read-only viewer has nothing to save.
     onStatus?.(room && props.canEdit ? status : null);
   }, [onStatus, room, status, props.canEdit]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
   if (!room) return <div className="oa-doc" aria-busy="true" />;
-  return <Loaded {...props} room={room} error={error} status={status} />;
+  return <Loaded {...props} room={room} snap={snap} />;
 }
 
 function Loaded({
   room,
-  error,
-  status,
+  snap,
   artifactId,
   title,
   canEdit,
@@ -77,9 +80,9 @@ function Loaded({
   fresh = false,
 }: DocEditorProps & {
   room: NonNullable<ReturnType<typeof useDocRoom>["room"]>;
-  error: string | null;
-  status: DocStatus;
+  snap: DocSnapshot;
 }) {
+  const { error, status } = snap;
   const name = viewer?.name?.trim() || "Guest";
   const user = useMemo<DocUser>(
     () => ({ name, color: colorFor(name), kind: "user" }),
@@ -88,7 +91,10 @@ function Loaded({
   const page = useRef<HTMLDivElement>(null);
   // At the size limit the server refuses edits: read-only until it is under.
   const tooLarge = error === DOC_TOO_LARGE_CODE;
-  const editable = canEdit && !tooLarge;
+  // The server's hello role wins over what the page thinks (a full room joins
+  // read-only); a closed socket (access gone, doc deleted) takes no edits.
+  const editable =
+    canEdit && !tooLarge && snap.role !== "read" && snap.ended === null;
   const extensions = useMemo(
     () => [
       ...contentExtensions(),
@@ -151,6 +157,7 @@ function Loaded({
     } else editor.commands.focus("start");
   }, [editor, editable, status, fresh, artifactId, title]);
   const message = errorCopy(error);
+  const notice = message ? null : roomNotice(snap);
   return (
     <div className="oa-doc" data-editable={editable ? "" : undefined}>
       {editable && editor && <Toolbar editor={editor} />}
@@ -159,6 +166,23 @@ function Loaded({
           <p role="alert">{message}</p>
           {tooLarge && fullActions && (
             <div className="oa-doc-error-actions">{fullActions}</div>
+          )}
+        </div>
+      )}
+      {notice && (
+        <div className="oa-doc-error">
+          <p role={snap.ended ? "alert" : "status"}>{notice.text}</p>
+          {notice.retry && (
+            <div className="oa-doc-error-actions">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => room.reconnect()}
+              >
+                {notice.retry}
+              </Button>
+            </div>
           )}
         </div>
       )}

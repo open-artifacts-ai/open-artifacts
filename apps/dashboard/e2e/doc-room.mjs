@@ -9,7 +9,11 @@
 // once listening. --too-large answers every client edit with the error frame
 // {"type":"error","code":"doc_too_large"} instead of applying it. --blank starts
 // with an empty doc (a New doc). --full sends the same error frame to every
-// client as it connects (a doc already at its limit). Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+// client as it connects (a doc already at its limit).
+// Wire spec frames (artifact UkN5r8hpoXu9DYxG): --hello role[:reason[:bytes]]
+// sends the hello frame first (read:room_full, read:access:1950000, edit);
+// --close <code> closes every connection with that code, --close-first <code>
+// only the first (4401 4403 4404 1007 1013). Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -42,7 +46,11 @@ export function startDocRoom({
   tooLarge = false,
   blank = false,
   full = false,
+  hello = null,
+  close = null,
+  closeFirst = null,
 }) {
+  let connections = 0;
   const ydoc = new Y.Doc();
   if (!blank) {
     const { doc } = markdownToDoc(SAMPLE);
@@ -84,6 +92,27 @@ export function startDocRoom({
 
   const wss = new WebSocketServer({ port });
   wss.on("connection", (ws) => {
+    connections++;
+    // The wire spec's hello frame comes first, before any sync frame.
+    if (hello) {
+      const [role, reason, bytes] = hello.split(":");
+      ws.send(
+        JSON.stringify({
+          type: "hello",
+          role,
+          ...(reason ? { reason } : {}),
+          bytes: Number(bytes) || 1024,
+          cap: 2097152,
+          version: 1,
+        }),
+      );
+    }
+    // --close <code>: every connection is closed with that code (4403, 4404,
+    // 1007, 1013 ...); --close-first <code>: only the first one is.
+    const code = close ?? (connections === 1 ? closeFirst : null);
+    if (code) {
+      setTimeout(() => ws.close(Number(code), "wire spec"), 200);
+    }
     conns.set(ws, new Set());
     ws.binaryType = "arraybuffer";
     ws.on("message", (data) => {
@@ -214,7 +243,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const tooLarge = process.argv.includes("--too-large");
   const blank = process.argv.includes("--blank");
   const full = process.argv.includes("--full");
-  const room = startDocRoom({ port, fakes, tooLarge, blank, full });
+  const arg = (name) => {
+    const i = process.argv.indexOf(name);
+    return i >= 0 ? process.argv[i + 1] : null;
+  };
+  const room = startDocRoom({
+    port,
+    fakes,
+    tooLarge,
+    blank,
+    full,
+    hello: arg("--hello"),
+    close: arg("--close"),
+    closeFirst: arg("--close-first"),
+  });
   const stop = () => room.close().then(() => process.exit(0));
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
