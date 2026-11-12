@@ -211,6 +211,13 @@ const Rename = z.strictObject({
   proposed_name: WellFormedText.pipe(z.string().min(1).max(256)),
   /** A tool rename is `chosen`; a harness reverting to its fallback is `default`. Absent means `chosen`. */
   name_kind: NameKindSchema.optional(),
+  /**
+   * #2311: false when the harness re-derived the title (not a user's or a
+   * peer's choice): the hub then leaves `name_chosen` as it is. Absent or
+   * true marks the name chosen. Sent only to a hub that listed
+   * `BUS_CAPS.nameChosen`.
+   */
+  name_chosen: z.boolean().optional(),
 });
 
 /**

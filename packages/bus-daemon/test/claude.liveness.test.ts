@@ -92,9 +92,7 @@ describe("claude liveness", () => {
       ["s4242", undefined],
     ]);
     writeSession(d, 4242, { nameSource: "user" });
-    expect(live().map((x) => [x.ref, x.nameChosen])).toEqual([
-      ["s4242", true],
-    ]);
+    expect(live().map((x) => [x.ref, x.nameChosen])).toEqual([["s4242", true]]);
     writeSession(d, 4242, { nameSource: "peer", name: "pi-2" });
     expect(live()[0]?.nameChosen).toBe(true);
   });

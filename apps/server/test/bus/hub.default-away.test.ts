@@ -280,6 +280,55 @@ describe("agent_up name_chosen (#2311)", () => {
       { n: "ref_c", c: 1 },
       { n: "ref_d", c: 0 },
     ]);
+    // A re-derived title (name_chosen false) leaves the flag as it is; a plain rename marks it.
+    send({
+      v: 1,
+      id: "r1",
+      type: "rename",
+      agent_ref: "ref_c",
+      proposed_name: "Title A",
+      name_chosen: false,
+    });
+    send({
+      v: 1,
+      id: "r2",
+      type: "rename",
+      agent_ref: "ref_d",
+      proposed_name: "Title B",
+      name_chosen: false,
+    });
+    for (
+      let i = 0;
+      i < 100 && types.filter((t) => t === "renamed").length < 2;
+      i++
+    )
+      await new Promise((r) => setTimeout(r, 20));
+    const flagsNow = () =>
+      inHub(h, (_, s) =>
+        s.storage.sql
+          .exec<{ n: string; c: number }>(
+            "select native_ref as n, name_chosen as c from agents order by native_ref",
+          )
+          .toArray(),
+      );
+    expect(await flagsNow()).toEqual([
+      { n: "ref_c", c: 1 },
+      { n: "ref_d", c: 0 },
+    ]);
+    send({
+      v: 1,
+      id: "r3",
+      type: "rename",
+      agent_ref: "ref_d",
+      proposed_name: "Chosen B",
+    });
+    for (
+      let i = 0;
+      i < 100 && types.filter((t) => t === "renamed").length < 3;
+      i++
+    )
+      await new Promise((r) => setTimeout(r, 20));
+    expect((await flagsNow()).find((x) => x.n === "ref_d")?.c).toBe(1);
   });
 });
 

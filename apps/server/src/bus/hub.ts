@@ -5814,9 +5814,11 @@ export class BusHub extends DurableObject<Env> {
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
       this.#arm(t);
     sql.exec(
-      "update agents set name = ?, updated_at = ?, name_chosen = ? where id = ?",
+      "update agents set name = ?, updated_at = ?, name_chosen = case ? when 2 then name_chosen else ? end where id = ?",
       name,
       now,
+      // A re-derived title (name_chosen false) leaves the flag; a default resets it.
+      f.name_kind !== "default" && f.name_chosen === false ? 2 : 0,
       f.name_kind === "default" ? 0 : 1,
       agent.id,
     );

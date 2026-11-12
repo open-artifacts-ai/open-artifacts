@@ -479,7 +479,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
-      ...(rec.nameChosen && hubNameChosen ? { name_chosen: true as const } : {}),
+      ...(rec.nameChosen && hubNameChosen
+        ? { name_chosen: true as const }
+        : {}),
       // A /clear: the new ref takes over the old address and its mail (#1295).
       ...(rec.replaces !== undefined && hubMailbox
         ? { replaces: rec.replaces }
@@ -989,7 +991,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * while the link or the agent's registration is not ready rides the next
    * agent_up (it carries proposedName).
    */
-  const renameIfChanged = (rec: AgentRecord, name: string, filePid: number) => {
+  const renameIfChanged = (
+    rec: AgentRecord,
+    name: string,
+    filePid: number,
+    chosen?: boolean,
+  ) => {
+    if (chosen !== undefined) rec.nameChosen = chosen;
     const was = rec.sessionName ?? rec.proposedName;
     // Never a name nobody chose: empty, or the file's own `claude-<pid>`
     // fallback (a file with no name, whichever process wrote it).
@@ -1057,6 +1065,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agent_ref: rec.ref,
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
+        // #2311: a re-derived Claude title is a rename, not a user's choice.
+        ...(hubNameChosen && rec.kind === "claude-code"
+          ? { name_chosen: rec.nameChosen === true }
+          : {}),
       })
     ) {
       rec.sentName = rec.proposedName;
@@ -1139,7 +1151,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
-        renameIfChanged(prev, s.name, s.pid);
+        renameIfChanged(prev, s.name, s.pid, s.nameChosen === true);
         continue;
       }
       // #2110: a record closed while its process and session file are still
@@ -1457,6 +1469,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
+          // #2311: agent_up went out in onOpen, before this hello_ok said the
+          // hub takes name_chosen: say it again for a session the user named.
+          if (hubNameChosen)
+            for (const rec of agents.all())
+              if (rec.live && rec.nameChosen && rec.replaces === undefined)
+                announceUp(rec);
           for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
