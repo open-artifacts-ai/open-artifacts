@@ -52,7 +52,7 @@ describe("ThreadAgents", () => {
   });
 
   it("× removes at once with no confirm; Undo restores and takes focus", () => {
-    mutate.mockImplementation((_v, o) => o.onSuccess());
+    mutate.mockImplementation(() => {});
     render(<ThreadAgents t={thread([agent("OA Billing", true)])} api={api} />);
     fireEvent.click(
       screen.getByRole("button", { name: "Stop notifying OA Billing" }),
@@ -161,7 +161,7 @@ describe("ThreadAgents", () => {
   });
 
   it("Undo after a removal puts it back", () => {
-    mutate.mockImplementation((_v, o) => o.onSuccess());
+    mutate.mockImplementation(() => {});
     render(<ThreadAgents t={thread([agent("OA Billing", true)])} api={api} />);
     fireEvent.click(
       screen.getByRole("button", { name: "Stop notifying OA Billing" }),

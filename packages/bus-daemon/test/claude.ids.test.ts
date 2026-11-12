@@ -122,6 +122,7 @@ describe("reply ids in the daemon", () => {
       "waiting",
       "waiting_query",
       "notice_ack",
+      "ack_confirm",
     ]);
   });
 
