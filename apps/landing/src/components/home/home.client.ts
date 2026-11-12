@@ -43,7 +43,22 @@ for (const b of $$("#pricing .toggle button"))
     for (const x of $$("#pricing .toggle button")) press(x, x === b);
     for (const el of $$("#pricing [data-m]"))
       el.textContent = el.dataset[p] ?? "";
+    requestAnimationFrame(alignPlans);
   });
+// The plan buttons share one baseline: each header row is as tall as the
+// tallest one, however a name, blurb or price wraps.
+function alignPlans() {
+  for (const c of [".pn", ".x-pd", ".amt"]) {
+    const els = $$(`#pricing thead th ${c}`);
+    for (const e of els) e.style.minHeight = "";
+    const h = Math.max(0, ...els.map((e) => e.getBoundingClientRect().height));
+    for (const e of els) e.style.minHeight = `${Math.ceil(h)}px`;
+  }
+}
+alignPlans();
+addEventListener("resize", alignPlans);
+addEventListener("load", alignPlans);
+document.fonts?.ready.then(alignPlans);
 
 /* ---- scroll story ---- */
 const stage = $("#stage"),
