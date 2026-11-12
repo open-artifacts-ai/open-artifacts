@@ -76,6 +76,15 @@ async function expectFlush(page: Page, name: string) {
     inner - 3,
   );
   expect(g.sheetBottom, name).toBeGreaterThan(inner - 1);
+  // The header (handle, title, close) is in view, not shifted off the top.
+  const head = await page
+    .locator("[data-comments-header]")
+    .evaluate((el) => el.getBoundingClientRect().top);
+  expect(head, `${name} header top`).toBeGreaterThanOrEqual(0);
+  await expect(
+    page.getByRole("button", { name: "Close comments" }),
+  ).toBeInViewport();
+  await expect(page.locator("[data-sheet-handle]")).toBeInViewport();
 }
 
 test("390: no band under the sheet with no keyboard", async ({ page }) => {
@@ -125,4 +134,25 @@ test("390: a keyboard that closes without a viewport resize leaves no band", asy
   // iOS can drop focus and leave the viewport event unsent: stale 320px.
   await field(page).blur();
   await expectFlush(page, "stale keyboard");
+});
+
+test("390: a draft left focused when the keyboard closes silently heals", async ({
+  page,
+}) => {
+  await open(page);
+  await field(page).focus();
+  await keyboard(page, 320);
+  await page.waitForTimeout(150);
+  // The keyboard goes away with the field still focused and no event heard.
+  await page.evaluate(() => {
+    const vv = window.visualViewport as VisualViewport;
+    Object.defineProperty(vv, "height", {
+      configurable: true,
+      get: () => window.innerHeight,
+    });
+  });
+  await expect
+    .poll(async () => (await gap(page)).kb, { timeout: 2000 })
+    .toBe("0px");
+  await expectFlush(page, "draft stuck");
 });

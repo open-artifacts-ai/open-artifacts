@@ -96,10 +96,20 @@ let stop: (() => void) | null = null;
  */
 export function trackViewportVar(): () => void {
   const root = document.documentElement;
+  let poll: ReturnType<typeof setInterval> | null = null;
   const set = () => {
     root.style.setProperty("--oa-vvh", `${viewHeight() / 100}px`);
     // The phone sheet is fixed to the layout viewport: lift it above the keyboard.
-    root.style.setProperty("--oa-kb", `${sheetLift()}px`);
+    const lift = sheetLift();
+    root.style.setProperty("--oa-kb", `${lift}px`);
+    // iOS can close the keyboard (a draft left open, a blur, a pan that
+    // never resets) without an event we hear: while lifted, look again, so a
+    // stale lift heals itself and never leaves the sheet's top off-screen.
+    if (lift > 0 && poll === null) poll = setInterval(set, 250);
+    else if (lift === 0 && poll !== null) {
+      clearInterval(poll);
+      poll = null;
+    }
   };
   if (users++ === 0) {
     set();
@@ -110,6 +120,8 @@ export function trackViewportVar(): () => void {
     document.addEventListener("focusout", set);
     window.addEventListener("resize", set);
     stop = () => {
+      if (poll !== null) clearInterval(poll);
+      poll = null;
       off();
       document.removeEventListener("focusin", set);
       document.removeEventListener("focusout", set);
