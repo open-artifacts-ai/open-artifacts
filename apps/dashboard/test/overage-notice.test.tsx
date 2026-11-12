@@ -1,5 +1,5 @@
 // #2246: the failed extra-creator charge notice. Owners and admins see it with
-// the months and one total; "Add a card" opens the billing portal; absent
+// the months and one total; "Update payment method" opens the billing portal; absent
 // field, no banner; a member sees nothing.
 
 import type { Me } from "@oa/shared";
@@ -39,7 +39,7 @@ describe("extra-creator charge notice (#2246)", () => {
     const n = within(await screen.findByTestId("overage-notice"));
     expect(
       n.getByText(
-        "Extra creators for October are waiting to be charged ($42). Add a card to settle it.",
+        "Extra creators for October are waiting to be charged ($42). Check your card to settle it.",
       ),
     ).toBeVisible();
   });
@@ -54,7 +54,7 @@ describe("extra-creator charge notice (#2246)", () => {
     const n = within(await screen.findByTestId("overage-notice"));
     expect(
       n.getByText(
-        "Extra creators for September and October are waiting to be charged ($118.50). Add a card to settle it.",
+        "Extra creators for September and October are waiting to be charged ($118.50). Check your card to settle it.",
       ),
     ).toBeVisible();
   });
@@ -72,12 +72,12 @@ describe("extra-creator charge notice (#2246)", () => {
     const n = within(await screen.findByTestId("overage-notice"));
     expect(
       n.getByText(
-        "Extra creators for August, September and October are waiting to be charged ($150). Add a card to settle it.",
+        "Extra creators for August, September and October are waiting to be charged ($150). Check your card to settle it.",
       ),
     ).toBeVisible();
   });
 
-  it("Add a card opens the billing portal", async () => {
+  it("Update payment method opens the billing portal", async () => {
     const posts = calls("POST");
     mountHosted("/settings/plan", {
       billing: {
@@ -85,7 +85,9 @@ describe("extra-creator charge notice (#2246)", () => {
         overageDue: { amountCents: 4200, months: [`${Y}-10`] },
       },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Add a card" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Update payment method" }),
+    );
     await waitFor(() =>
       expect(lastRedirect).toHaveBeenCalledWith(
         "https://checkout.stripe.com/c/pay/cs_test_mock_portal",

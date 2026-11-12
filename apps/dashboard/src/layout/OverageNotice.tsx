@@ -1,6 +1,6 @@
 // #2246: extra-creator charges that failed. A notice on every page and on
 // Plan and billing for owners and admins (the server sends the field to no one
-// else). It never changes access. "Add a card" opens the billing portal.
+// else). It never changes access. "Update payment method" opens the billing portal.
 
 import { BillingUrlSchema, type PlanView, R } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
@@ -41,7 +41,7 @@ export function monthList(months: string[]): string {
 }
 
 export function overageCopy(due: NonNullable<PlanView["overageDue"]>): string {
-  return `Extra creators for ${monthList(due.months)} are waiting to be charged (${dollars(due.amountCents)}). Add a card to settle it.`;
+  return `Extra creators for ${monthList(due.months)} are waiting to be charged (${dollars(due.amountCents)}). Check your card to settle it.`;
 }
 
 export function OverageNotice({
@@ -74,7 +74,7 @@ export function OverageNotice({
             disabled={portal.isPending}
             onClick={() => portal.mutate()}
           >
-            Add a card
+            Update payment method
           </Button>
         }
       >
