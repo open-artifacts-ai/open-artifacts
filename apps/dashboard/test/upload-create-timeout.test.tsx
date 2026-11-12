@@ -167,4 +167,85 @@ describe("Create dialog timeout and retry", () => {
     await click("Try again");
     expect(m.createArtifact.mock.calls[1]?.[1].entry).toBe("b.md");
   });
+
+  it("treats 502 and 504 like 503", async () => {
+    for (const status of [502, 504]) {
+      cleanup();
+      m.createArtifact
+        .mockReset()
+        .mockRejectedValue(
+          new ApiClientError("internal", "bad gateway", status),
+        );
+      open();
+      await click("Create");
+      expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    }
+  });
+
+  it("focuses Try again after the error", async () => {
+    m.createArtifact.mockRejectedValue(
+      new ApiClientError("internal", "x", 503),
+    );
+    open();
+    await click("Create");
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Try again" }),
+    );
+  });
+
+  it("says files when several were picked", async () => {
+    m.createArtifact.mockRejectedValue(
+      new ApiClientError("internal", "x", 503),
+    );
+    const files = [new File(["a"], "a.md"), new File(["b"], "index.html")];
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <UploadDialog files={files} onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    await click("Create");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Your files are still here.",
+    );
+  });
+
+  it("uploads again after invalid_upload when nothing landed", async () => {
+    m.get.mockRejectedValue(new Error("404"));
+    m.createArtifact.mockRejectedValueOnce(
+      new ApiClientError("internal", "x", 503),
+    );
+    m.createArtifact.mockRejectedValueOnce(
+      new ApiClientError("bad_request", "used", 400, {
+        reason: "invalid_upload",
+      }),
+    );
+    m.createArtifact.mockResolvedValueOnce({ id: "a1", version: 1 });
+    open();
+    await click("Create");
+    await click("Try again");
+    expect(m.uploadFiles).toHaveBeenCalledTimes(1);
+    await click("Create");
+    expect(m.uploadFiles).toHaveBeenCalledTimes(2);
+    expect(m.createArtifact).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives the landed check a time bound", async () => {
+    m.createArtifact.mockRejectedValueOnce(
+      new ApiClientError("internal", "x", 503),
+    );
+    m.createArtifact.mockResolvedValueOnce({ id: "a1", version: 1 });
+    m.get.mockImplementation(
+      (_p: unknown, _s: unknown, signal: AbortSignal) =>
+        new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("abort"))),
+        ),
+    );
+    open();
+    await click("Create");
+    await click("Try again");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CREATE_TIMEOUT_MS);
+    });
+    expect(m.createArtifact).toHaveBeenCalledTimes(2);
+  });
 });

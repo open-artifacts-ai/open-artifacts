@@ -14,7 +14,10 @@ for (const scheme of ["light", "dark"] as const) {
       });
       const d = page.getByRole("dialog", { name: "Create artifact" });
       await d.getByRole("button", { name: "Create" }).click();
-      await expect(d.getByRole("button", { name: "Try again" })).toBeVisible();
+      await expect(d.getByRole("alert")).toHaveText(
+        "Couldn't create the artifact: the server didn't answer. Your file is still here.",
+      );
+      await expect(d.getByRole("button", { name: "Try again" })).toBeFocused();
       await page.screenshot({
         path: info.outputPath(`create-error-${scheme}.png`),
       });

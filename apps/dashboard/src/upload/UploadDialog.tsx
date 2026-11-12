@@ -66,6 +66,7 @@ export function UploadDialog({
   const [retryTitle, setRetryTitle] = useState<string | null>(null);
   // A create was sent; it may have landed without us hearing.
   const createSent = useRef(false);
+  const submitButton = useRef<HTMLButtonElement>(null);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const busy = progress !== null;
@@ -80,6 +81,11 @@ export function UploadDialog({
       abort.current?.abort();
     };
   }, []);
+
+  // After a failed create, the button that retries takes focus.
+  useEffect(() => {
+    if (retryTitle !== null) submitButton.current?.focus();
+  }, [retryTitle]);
 
   const cancel = () => {
     abort.current?.abort();
@@ -99,13 +105,24 @@ export function UploadDialog({
   };
 
   /** The artifact a lost create may have made, if it exists. */
-  const landed = async (id: string | undefined) => {
+  const landed = async (id: string | undefined, outer: AbortSignal) => {
     if (!id) return null;
+    const look = new AbortController();
+    const relay = () => look.abort();
+    outer.addEventListener("abort", relay, { once: true });
+    const t = setTimeout(relay, CREATE_TIMEOUT_MS);
     try {
-      const a = await api.get(R.artifact(id), ArtifactSummarySchema);
+      const a = await api.get(
+        R.artifact(id),
+        ArtifactSummarySchema,
+        look.signal,
+      );
       return { id: a.id, version: a.currentVersion };
     } catch {
       return null;
+    } finally {
+      clearTimeout(t);
+      outer.removeEventListener("abort", relay);
     }
   };
 
@@ -131,7 +148,7 @@ export function UploadDialog({
       const n = Object.keys(uploaded.current.files).length;
       setProgress({ done: n, total: n });
       if (createSent.current) {
-        const done = await landed(uploaded.current.reserved);
+        const done = await landed(uploaded.current.reserved, signal);
         if (done) return await finish(done);
       }
       // The entry can change after the first upload: the latest choice wins.
@@ -152,6 +169,7 @@ export function UploadDialog({
       try {
         r = await createArtifact(input, current, create.signal);
       } finally {
+        clearTimeout(timer);
         signal.removeEventListener("abort", relay);
       }
       await finish(r);
@@ -164,22 +182,33 @@ export function UploadDialog({
         timedOut ||
         (uploaded.current !== null &&
           e instanceof ApiClientError &&
-          (e.status === 0 || e.status === 503));
+          (e.status === 0 ||
+            e.status === 502 ||
+            e.status === 503 ||
+            e.status === 504));
+      const deadUpload =
+        e instanceof ApiClientError &&
+        e.code === "bad_request" &&
+        (e.details as { reason?: string } | undefined)?.reason ===
+          "invalid_upload";
       if (
         createSent.current &&
         e instanceof ApiClientError &&
-        (e.code === "conflict" ||
-          (e.code === "bad_request" &&
-            (e.details as { reason?: string } | undefined)?.reason ===
-              "invalid_upload"))
+        (e.code === "conflict" || deadUpload)
       ) {
-        const done = await landed(uploaded.current?.reserved);
+        const done = await landed(uploaded.current?.reserved, signal);
         if (done && alive.current) return await finish(done);
+        if (deadUpload) {
+          // Its upload ids are spent: the next click uploads again.
+          uploaded.current = null;
+          createSent.current = false;
+        }
       }
+      if (!alive.current) return;
       if (down) {
         setRetryTitle(title);
         setError(
-          "Couldn't create the artifact: the server didn't answer. Your file is still here.",
+          `Couldn't create the artifact: the server didn't answer. Your ${files.length === 1 ? "file is" : "files are"} still here.`,
         );
         return;
       }
@@ -207,6 +236,7 @@ export function UploadDialog({
             Cancel
           </Button>
           <Button
+            ref={submitButton}
             variant="default"
             disabled={busy || invalid}
             onClick={() => void submit()}
