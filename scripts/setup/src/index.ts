@@ -475,8 +475,8 @@ export async function run(
     return 0;
   }
   if (isTokenCommand(argv)) return tokenCommand(argv, deps, root);
-  if (argv.includes("--rollback")) return rollbackCommand(argv, deps, root);
   if (argv.includes("--uninstall")) return uninstallCommand(argv, deps, root);
+  if (argv.includes("--rollback")) return rollbackCommand(argv, deps, root);
   const ci = argv.includes("--ci");
   const json = argv.includes("--json") || ci;
   let human: string | undefined;

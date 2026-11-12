@@ -2,8 +2,8 @@ import { parseArgs } from "node:util";
 import { type Deps, realFs } from "./cf.ts";
 import { homeOf, patTokenFile } from "./secret-file.ts";
 import { readState } from "./state.ts";
-import { names } from "./steps/resources.ts";
 import { DASH_SENDING, records } from "./steps/email.ts";
+import { names } from "./steps/resources.ts";
 
 type Item = {
   /** Order to remove in: access, dns, worker, then data. */
