@@ -13,7 +13,7 @@ import {
   requireUser,
 } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
-import { monthOf, sendUsage } from "../billing/creators.js";
+import { creatorCount, monthOf, sendUsage } from "../billing/creators.js";
 import { billingActive } from "../billing/plan.js";
 import {
   BillingUnavailableError,
@@ -127,14 +127,33 @@ export function mountBilling(app: AppType): void {
           "Solo can only be bought on a Solo or trial instance",
         );
     }
+    // Monthly Team and Business bill per creator (#2123): the subscription
+    // starts at this instance's own creator count for the current UTC month
+    // (billing bills at least 1). Counted here, never taken from the body
+    // (the strict schema refuses a creators field). A yearly plan prepays
+    // seats instead.
+    let creators: number | undefined;
+    if (tier !== "solo" && interval !== "year") {
+      try {
+        creators = await creatorCount(c.env, monthOf(Date.now()));
+      } catch (e) {
+        logWarn("billing_url_failed", e, {
+          route: CHECKOUT_PATH,
+          why: "creators",
+        });
+        throw unavailable();
+      }
+    }
     // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
     // interval (month or year; required for solo) and seats (yearly team or
-    // business), both forwarded unchanged.
+    // business), both forwarded unchanged, and creators (monthly team or
+    // business).
     return c.json(
       await stripeUrl(c, CHECKOUT_PATH, {
         plan: tier,
         ...(interval ? { interval } : {}),
         ...(seats !== undefined ? { seats } : {}),
+        ...(creators !== undefined ? { creators } : {}),
       }),
     );
   });
