@@ -6753,21 +6753,16 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #2311: when the default-name sweep next has work: a pass under way, else
    * the later of the oldest closed agent's DEFAULT_NAME_AWAY_MS and the gap
-   * since the last pass. Null with no closed agent.
+   * since the last pass (one index lookup). Null with no closed agent.
    */
   #defaultPurgeDeadline(): number | null {
     const sql = this.ctx.storage.sql;
-    // Rows the sweep can take: not chosen, not a role holder, and a name that
-    // may be a default (a prefilter of isDefaultAgentName).
+    // One index lookup, like #purgeDeadline: never a scan of the closed
+    // history. The sweep itself decides which rows it can take (its pass gap
+    // keeps a closed agent that stays from waking the alarm in a loop).
     const oldest = one<{ t: number | null }>(
       sql,
-      `select min(a.updated_at) as t from agents a indexed by agents_closed
-        where a.live = 0 and a.name_chosen = 0
-          and not exists (select 1 from roles r where r.org_id = a.org_id and r.agent_id = a.id)
-          and (lower(a.name) = lower(a.kind) or lower(a.name) glob 'claude-[0-9]*'
-            or lower(a.name) glob 'agent*' or lower(a.name) glob 'pi*' or lower(a.name) glob 'omp*'
-            or lower(a.name) glob 'codex*' or lower(a.name) like lower(a.kind) || '-%'
-            or exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)))`,
+      "select min(updated_at) as t from agents indexed by agents_closed where live = 0",
     )?.t;
     if (oldest === null || oldest === undefined) return null;
     const meta = (k: string) =>
