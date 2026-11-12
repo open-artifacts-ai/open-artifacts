@@ -117,7 +117,8 @@ if (!process.env.COREPACK_HOME && process.env.HOME)
     "node",
     "corepack",
   );
-const inTmp = (v: string | undefined) =>
+/** True when a path sits under a temp root the guard trusts. */
+export const inTmp = (v: string | undefined) =>
   !!v && TMP_ROOTS.some((t) => under(real(v), t));
 if (!inTmp(process.env.HOME)) process.env.HOME = join(GUARD_DIR, "home");
 const HOME = process.env.HOME as string;

@@ -19,10 +19,21 @@ import {
   AGENT_CLIS,
   BLOCK_EXIT,
   guardEntriesOn,
+  inTmp,
   STUB_DIR,
 } from "./agent-cli-guard";
 
 const pi_ = () => "/usr/bin/pi";
+
+// The "real CLI" cases need a dir outside every temp root, since the guard
+// trusts temp dirs. The repo's node_modules/.cache is that dir, except when
+// the repo itself was cloned under /tmp (scripts/ci/public-only.sh does
+// this); then fall back to the runner's RUNNER_TEMP, else skip.
+const REPO = process.cwd().replace(/\/(apps|packages|scripts)\/.*$/, "");
+const FAKE_ROOT = [
+  join(REPO, "node_modules", ".cache"),
+  process.env.RUNNER_TEMP,
+].find((d): d is string => !!d && !inTmp(d));
 const MSG = (n: string) => `real ${n} blocked by the test guard (#2168)`;
 
 describe("agent CLI guard (#2168)", () => {
@@ -65,15 +76,12 @@ describe("agent CLI guard (#2168)", () => {
     expect(r.stderr).toContain(MSG(name));
   });
 
-  describe("a real executable pi outside any temp dir", () => {
-    // Under node_modules/.cache (git-ignored, not a temp dir). The file
-    // writes a marker if it ever runs.
-    const dir = join(
-      process.cwd().replace(/\/(apps|packages)\/.*$/, ""),
-      "node_modules",
-      ".cache",
-      `agent-cli-guard-${process.pid}`,
-    );
+  describe("a real executable pi outside any temp dir", {
+    skip: !FAKE_ROOT,
+  }, () => {
+    // Under FAKE_ROOT (not a temp dir). The file writes a marker if it
+    // ever runs.
+    const dir = join(FAKE_ROOT ?? "", `agent-cli-guard-${process.pid}`);
     const marker = join(dir, "ran");
     const pi = join(dir, "pi");
     beforeAll(() => {
@@ -108,15 +116,12 @@ describe("agent CLI guard (#2168)", () => {
     });
   });
 
-  describe("a guarded CLI run through its JS entry (#2207)", () => {
+  describe("a guarded CLI run through its JS entry (#2207)", {
+    skip: !FAKE_ROOT,
+  }, () => {
     // Like a global install: bin/pi is a symlink to lib/.../cli.js, outside
     // any temp dir. The marker proves it never ran.
-    const dir = join(
-      process.cwd().replace(/\/(apps|packages|scripts)\/.*$/, ""),
-      "node_modules",
-      ".cache",
-      `agent-cli-guard-js-${process.pid}`,
-    );
+    const dir = join(FAKE_ROOT ?? "", `agent-cli-guard-js-${process.pid}`);
     const cli = join(dir, "lib", "cli.js");
     const marker = join(dir, "ran");
     beforeAll(() => {
