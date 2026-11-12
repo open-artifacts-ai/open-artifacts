@@ -1312,7 +1312,7 @@ export async function list(
   q: ListQuery,
 ): Promise<Page<ArtifactSummary>> {
   if (caller.kind !== "user")
-    throw new ApiError("unauthorized", "Sign in required");
+    throw new ApiError("unauthorized", "Log in required");
   if (q.spaceId !== undefined) {
     await checkListSpace(env, caller, q.spaceId);
     // mine is the caller's personal space: inside a shared one it can only

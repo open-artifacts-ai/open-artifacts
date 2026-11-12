@@ -139,7 +139,7 @@ beforeAll(async () => {
 });
 
 describe("oa:close-sockets (#1182)", () => {
-  it("closes every kind of open socket, signed-in and anonymous, with 4403 (never the TTL's 4408)", async () => {
+  it("closes every kind of open socket, logged-in and anonymous, with 4403 (never the TTL's 4408)", async () => {
     const pubId = await pub("public");
     const teamId = await pub("team");
     const s = await everyKind(pubId, teamId);

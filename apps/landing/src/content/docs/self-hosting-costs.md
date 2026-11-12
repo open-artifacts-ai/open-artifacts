@@ -15,18 +15,18 @@ Every feature works on the Cloudflare Workers Free plan. For personal use, an in
 | R2 | Artifact files and thumbnails |
 | KV | OAuth state for MCP clients |
 | Durable Objects | Live-page data, one per artifact |
-| Access (Zero Trust) | Sign-in |
+| Access (Zero Trust) | Login |
 
-## Access sign-in seats
+## Access login seats
 
-Every person who signs in to your instance through Cloudflare Access, viewers included, uses a Zero Trust seat. A seat is held until you remove the user, however many times they sign in.
+Every person who logs in to your instance through Cloudflare Access, viewers included, uses a Zero Trust seat. A seat is held until you remove the user, however many times they log in.
 
-- **Free plan:** up to 50 users at no cost. Once all 50 seats are used, new users can't sign in.
+- **Free plan:** up to 50 users at no cost. Once all 50 seats are used, new users can't log in.
 - **Pay-as-you-go:** $7 per user per month, and every user is billable, not just those past 50.
 
-To see or free seats, open **Zero Trust → Team & Resources → Users** in the Cloudflare dashboard. You can also turn on seat expiration there, so people who haven't signed in for a while stop using a seat. Sources: Cloudflare's [seat management](https://developers.cloudflare.com/cloudflare-one/team-and-resources/users/seat-management/) docs and [Zero Trust plans](https://www.cloudflare.com/plans/zero-trust-services/).
+To see or free seats, open **Zero Trust → Team & Resources → Users** in the Cloudflare dashboard. You can also turn on seat expiration there, so people who haven't logged in for a while stop using a seat. Sources: Cloudflare's [seat management](https://developers.cloudflare.com/cloudflare-one/team-and-resources/users/seat-management/) docs and [Zero Trust plans](https://www.cloudflare.com/plans/zero-trust-services/).
 
-A personal instance uses one seat. For a team, count everyone you'll share with. A sign-in option that doesn't use Access is planned.
+A personal instance uses one seat. For a team, count everyone you'll share with. A login option that doesn't use Access is planned.
 
 ## Staying within the free plan
 

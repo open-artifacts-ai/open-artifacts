@@ -12,7 +12,7 @@ import { muted, SettingsCard } from "./ui";
     no punctuation can read as part of it. */
 export const setupPrompt = () =>
   `Set up Open Artifacts for me: follow ${location.origin}/llms.txt
-Sign in through the browser. Never ask me to paste a token into this chat.`;
+Log in through the browser. Never ask me to paste a token into this chat.`;
 
 /** Whoever the server lets connect an agent (its canConnect): not a guest,
     not capped. The role covers an older server, whose /me has no auth.

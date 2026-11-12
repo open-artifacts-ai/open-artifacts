@@ -123,7 +123,7 @@ for (const scheme of ["light", "dark"] as const)
         ).toBeVisible();
         await expect(
           page.getByText(
-            "If b***@example.com can sign in here, we sent it a code.",
+            "If b***@example.com can log in here, we sent it a code.",
           ),
         ).toBeVisible();
         await expect(
@@ -144,7 +144,7 @@ for (const scheme of ["light", "dark"] as const)
         });
       });
 
-      test("a refused Google sign-in shows the mapped copy", async ({
+      test("a refused Google login shows the mapped copy", async ({
         page,
       }, info) => {
         await page.setViewportSize({ width, height: 860 });
@@ -178,7 +178,7 @@ test("Google keeps a safe next and never takes a hostile one", async ({
 test("an unknown ?error= is never echoed", async ({ page }) => {
   await page.goto("/sign-in?hosted=1&error=javascript%3Aalert(1)");
   await expect(page.getByRole("alert")).toContainText(
-    "Sign-in didn't work. Try again.",
+    "Login didn't work. Try again.",
   );
   expect(await page.content()).not.toContain("javascript:alert(1)");
 });

@@ -233,7 +233,7 @@ describe("M1 session expiry on the viewer", () => {
       { status: 401 },
     );
 
-  it("a 401 elsewhere on a private artifact sends the viewer to sign in", async () => {
+  it("a 401 elsewhere on a private artifact sends the viewer to log in", async () => {
     server.use(http.get("*/api/v1/artifacts/:id/versions", unauthorized));
     const redirect = mount(`/a/${id("Landing page")}`);
     await waitFor(() =>
@@ -246,7 +246,7 @@ describe("M1 session expiry on the viewer", () => {
   it("a 401 elsewhere on a public artifact stays in the anonymous view", async () => {
     server.use(http.get("*/api/v1/artifacts/:id/versions", unauthorized));
     const redirect = mount(`/a/${id("Q4 report")}`);
-    await screen.findByRole("link", { name: "Sign in" }, { timeout: 2000 });
+    await screen.findByRole("link", { name: "Log in" }, { timeout: 2000 });
     expect(redirect).not.toHaveBeenCalled();
   });
 });

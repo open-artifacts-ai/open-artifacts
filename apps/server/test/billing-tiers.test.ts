@@ -167,7 +167,7 @@ describe("the plan read: lazy, once per invocation, seeded by the user load (R4)
       props,
     );
 
-  it("the SPA and the content host read no plan; a signed-in call reads it once, in its user load; an anonymous API call once", async () => {
+  it("the SPA and the content host read no plan; a logged-in call reads it once, in its user load; an anonymous API call once", async () => {
     await cachePlan(row({}), mid);
     const c = counting();
     for (const url of [

@@ -326,7 +326,7 @@ describe("can", () => {
     expect(can("owner", "transfer", { ...ctx, personal: true })).toBe(true);
     expect(can("manager", "transfer", { ...ctx, personal: true })).toBe(false);
   });
-  it("data.seed: the uncapped, signed-in owner only", () => {
+  it("data.seed: the uncapped, logged-in owner only", () => {
     expect(can("owner", "data.seed", ctx)).toBe(true);
     expect(can("manager", "data.seed", ctx)).toBe(false);
     expect(can("editor", "data.seed", ctx)).toBe(false);

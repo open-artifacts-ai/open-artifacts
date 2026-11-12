@@ -5,13 +5,13 @@
   Placeholders (HTML-escape every value):
     {{client_name}}    MCP client name from dynamic registration, e.g. "Claude Code"
     {{redirect_host}}  host of the client's redirect_uri, e.g. "localhost:33418"
-    {{user_email}}     signed-in user's email
+    {{user_email}}     logged-in user's email
     {{instance_name}}  instance display name, e.g. "Northwind Eng"
     {{instance_host}}  app host, e.g. "artifacts.northwind.dev"
     {{form_action}}    POST target for the decision, e.g. "/oauth/authorize"
     {{csrf_token}}     CSRF token, posted as "csrf"
     {{request_id}}     opaque id of the pending authorization request, posted as "request"
-    {{switch_url}}     URL that signs out and restarts sign-in
+    {{switch_url}}     URL that logs out and restarts login
   The form posts decision=approve or decision=deny.
 -->
 <html lang="en">
@@ -89,7 +89,7 @@ button.primary{background:var(--text);border-color:var(--text);color:var(--surfa
       <li><svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg><div><b>Manage live data</b><small>Read and change the data stored by your live pages.</small></div></li>
       <li><svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg><div><b>Delete and share as you</b><small>Delete artifacts, make them public, and share them with others.</small></div></li>
     </ul>
-    <div class="who">Signed in as <b>{{user_email}}</b><a href="{{switch_url}}">Not you?</a></div>
+    <div class="who">Logged in as <b>{{user_email}}</b><a href="{{switch_url}}">Not you?</a></div>
     <div class="note" role="note"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>Only approve if you just started this from {{client_name}}.</span></div>
     <div class="actions">
       <button type="submit" name="decision" value="deny">Deny</button>

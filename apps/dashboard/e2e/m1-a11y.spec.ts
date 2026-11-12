@@ -85,14 +85,14 @@ const reachCodeStep = async (page: Page) => {
 
 for (const theme of ["light", "dark"])
   for (const w of [1280, 390])
-    test(`axe sign-in code step ${theme} ${w}`, async ({ page }) => {
+    test(`axe login code step ${theme} ${w}`, async ({ page }) => {
       await open(page, "/sign-in?hosted=1&method=code", theme, w);
       await reachCodeStep(page);
       const v = await axeViolations(page);
       expect(v, v.join("\n")).toEqual([]);
     });
 
-test("keyboard: sign in with an emailed code, no mouse", async ({ page }) => {
+test("keyboard: log in with an emailed code, no mouse", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/sign-in?hosted=1&method=code&next=%2Fshared");
   await page.waitForLoadState("networkidle");

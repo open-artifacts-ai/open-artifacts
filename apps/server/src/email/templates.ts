@@ -136,12 +136,12 @@ export function signInSentence(
   },
 ): string {
   const parts = orderSignInMethods(methods).map((m) => METHOD_PHRASE[m](to));
-  if (parts.length > 0) return `You'll sign in with ${parts.join(" or ")}.`;
+  if (parts.length > 0) return `You'll log in with ${parts.join(" or ")}.`;
   const instance = oneLine(p.instance, NAME_MAX);
   // Design's final copy (review #799).
   return p.cantSignIn === "needs_invite"
-    ? `You can't sign in to ${instance} yet. Ask an admin there to invite you, then open this link again.`
-    : `This address can't sign in to ${instance}. Ask ${oneLine(p.inviter, NAME_MAX)} to share it with an address that can.`;
+    ? `You can't log in to ${instance} yet. Ask an admin there to invite you, then open this link again.`
+    : `This address can't log in to ${instance}. Ask ${oneLine(p.inviter, NAME_MAX)} to share it with an address that can.`;
 }
 
 type Common = {
@@ -237,7 +237,7 @@ const CODE_TXT = `Your {{instanceName}} login code is {{code}}
 
 Enter it on the login page. It expires in {{minutes}} minutes and works once.
 
-If you didn't ask for this, ignore this email: nobody can sign in without the code.
+If you didn't ask for this, ignore this email: nobody can log in without the code.
 
 {{appHost}}
 `;
@@ -248,7 +248,7 @@ const CODE_HTML = `<!doctype html>
 <p>Your {{instanceName}} login code is</p>
 <p style="font:600 28px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px">{{code}}</p>
 <p>Enter it on the login page. It expires in {{minutes}} minutes and works once.</p>
-<p style="color:#5d636e">If you didn't ask for this, ignore this email: nobody can sign in without the code.</p>
+<p style="color:#5d636e">If you didn't ask for this, ignore this email: nobody can log in without the code.</p>
 <p style="color:#5d636e">{{appHost}}</p>
 </body></html>
 `;
@@ -345,7 +345,7 @@ const DIRECTORY_ALERT_LINE: Record<DirectoryAlert, string> = {
   unhealthy:
     "Google directory sync has been failing for 24 hours. People keep the access they had at the last successful sync until it recovers.",
   customer_mismatch:
-    "Directory sync is paused and people synced from Google can't sign in: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Sign in with Google and reconnect the directory to restore their access.",
+    "Directory sync is paused and people synced from Google can't log in: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Sign in with Google and reconnect the directory to restore their access.",
   scope_missing:
     "Google directory sync stopped: a permission it needs was removed. Reconnect the directory and grant every permission.",
   break_glass:

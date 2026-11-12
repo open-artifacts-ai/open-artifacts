@@ -181,7 +181,7 @@ it("403 space_forbidden shows Design's copy in the dialog", async () => {
 
 // -- the account menu (Design follow-up)
 
-it("the account menu starts with the signed-in email, not a menu item", async () => {
+it("the account menu starts with the logged-in email, not a menu item", async () => {
   mountHosted("/");
   const trigger = await screen.findByRole("button", { name: "Account menu" });
   fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });

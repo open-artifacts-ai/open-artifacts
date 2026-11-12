@@ -186,7 +186,7 @@ for (const scheme of ["light", "dark"] as const)
       });
     });
 
-test("account menu shows the signed-in email as a label", async ({ page }) => {
+test("account menu shows the logged-in email as a label", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await page.goto("/?hosted=1");
   await page.waitForLoadState("networkidle");

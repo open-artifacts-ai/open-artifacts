@@ -321,8 +321,8 @@ describe("visibility", () => {
   });
 });
 
-describe("sign-in and identity", () => {
-  it("sign-in is audited as auth.signin", async () => {
+describe("login and identity", () => {
+  it("login is audited as auth.signin", async () => {
     const r = await admit(env, authConfig(direct()), {
       provider: "google",
       subject: `sub-${crypto.randomUUID()}`,
@@ -343,7 +343,7 @@ describe("sign-in and identity", () => {
     });
   });
 
-  it("code sign-in is audited as auth.signin (provider code, no tenant for guests)", async () => {
+  it("code login is audited as auth.signin (provider code, no tenant for guests)", async () => {
     const email = uniq("codeguest", "x.com");
     const uid = await seedUser(email, "guest");
     const m = mailer();
@@ -384,7 +384,7 @@ describe("sign-in and identity", () => {
     expect(rows[0]?.detail).not.toContain("@");
   });
 
-  it("a failing audit insert fails the sign-in", async () => {
+  it("a failing audit insert fails the login", async () => {
     await failAudit();
     await expect(
       admit(env, authConfig(direct()), {

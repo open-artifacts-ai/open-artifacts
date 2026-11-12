@@ -125,7 +125,7 @@ export const SECTIONS = {
     title: "Sharing and visibility",
     body: (
       p,
-    ) => `- private: you and the people you share with. team: every member of this instance. public: anyone with the link, no sign-in.
+    ) => `- private: you and the people you share with. team: every member of this instance. public: anyone with the link, no login.
 - share_artifact { id, email, role: "viewer" | "editor" } adds a person; unshare_artifact removes them. Editors can publish new versions.
 - set_visibility { id, visibility } changes who can open it. Sharing, visibility and delete are for the owner${p.spaces === false ? "" : " or space manager"} only.
 - Make an artifact public only when the user asks for it.`,
@@ -136,7 +136,7 @@ export const SECTIONS = {
       p,
     ) => `- Declare capabilities when publishing: capabilities: { db: true, viewer: true, storage: true }.
   - db: a shared document store every viewer sees, updated live.
-  - viewer: the signed-in viewer's email and name.
+  - viewer: the logged-in viewer's email and name.
   - storage: private per-viewer key/value storage.
 - Undeclared calls fail with capability_denied. ${DATA_WRITERS_NOTE} Anonymous writes are rate-limited.
 - Limits: ${p.dataDoc} per document on this instance (${p.plan} plan${p.dataDocNote}), ${LIMITS.artifactDataBytes / 1024 / 1024} MB per artifact, ${LIMITS.viewerWritesPerMin} writes per minute per viewer.

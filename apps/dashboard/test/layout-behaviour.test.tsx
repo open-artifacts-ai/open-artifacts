@@ -107,7 +107,7 @@ describe("layout behaviour", () => {
 
   // Log out redirects to AUTH.login, which (with a live Access session) signs
   // the user straight back in. It also redirects even when logout fails.
-  it("sign out does not land on the auto-login endpoint", async () => {
+  it("log out does not land on the auto-login endpoint", async () => {
     const { redirect } = mount(
       async (u) =>
         String(u).includes(AUTH.logout)
@@ -119,7 +119,7 @@ describe("layout behaviour", () => {
     await waitFor(() => expect(redirect).toHaveBeenCalledWith("/sign-in"));
   });
 
-  it("failed logout (500) does not pretend the user is signed out", async () => {
+  it("failed logout (500) does not pretend the user is logged out", async () => {
     const { redirect } = mount(
       async (u) =>
         String(u).includes(AUTH.logout)
@@ -128,19 +128,19 @@ describe("layout behaviour", () => {
       "/",
     );
     await signOut();
-    expect(await screen.findByText("Couldn't sign out")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't log out")).toBeInTheDocument();
     expect(redirect).not.toHaveBeenCalled();
   });
 
-  it("anonymous at /sign-in is not redirected and sees the sign-in page", async () => {
+  it("anonymous at /sign-in is not redirected and sees the login page", async () => {
     const { redirect } = mount(async () => unauth(), "/sign-in");
-    await screen.findByRole("heading", { name: /Sign in/ });
+    await screen.findByRole("heading", { name: /Log in/ });
     await settle();
     expect(redirect).not.toHaveBeenCalled();
     expect(screen.getByRole("main")).toBeInTheDocument();
   });
 
-  it("NoAccess renders for a signed-in non-member with a sign-out button", async () => {
+  it("NoAccess renders for a logged-in non-member with a sign-out button", async () => {
     mount(async () => meAs("guest"), "/no-access");
     expect(
       await screen.findByRole("heading", { name: /nothing here for you yet/ }),
@@ -149,7 +149,7 @@ describe("layout behaviour", () => {
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
   });
 
-  it("NoAccess sign out goes to /sign-in", async () => {
+  it("NoAccess log out goes to /sign-in", async () => {
     const { redirect } = mount(
       async (u) =>
         String(u).includes(AUTH.logout)

@@ -446,7 +446,7 @@ const reachProposedText = (
   url: string,
   expiresAt: string,
 ): string =>
-  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, signed in (it works once and expires at ${expiresAt}): ${url}`;
+  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, logged in (it works once and expires at ${expiresAt}): ${url}`;
 
 /** What an agent sees when its daemon is too old for the reach frames. */
 const REACH_OLD_DAEMON =

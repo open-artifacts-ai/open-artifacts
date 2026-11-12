@@ -81,7 +81,7 @@ for (const w of [1280, 390])
       }
 
       await page.goto(
-        `/a/${ID}?mock=signed-out${w < 600 ? "" : "&panel=open&tab=comments"}`,
+        `/a/${ID}?mock=logged-out${w < 600 ? "" : "&panel=open&tab=comments"}`,
       );
       if (w < 600)
         await page.getByRole("button", { name: /^Comments/ }).click();

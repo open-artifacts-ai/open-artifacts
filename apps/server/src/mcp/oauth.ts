@@ -529,7 +529,7 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
   const user = sessionUser(c);
   if (!user)
     return messagePage(
-      "Signed out",
+      "Logged out",
       "Your session ended. Start connecting again from your agent.",
       401,
     );
@@ -569,7 +569,7 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
     // refused at use (apiHandler).
     if (!(await getUser(c.env, user.id)))
       return messagePage(
-        "Signed out",
+        "Logged out",
         "Your session ended. Start connecting again from your agent.",
         401,
       );

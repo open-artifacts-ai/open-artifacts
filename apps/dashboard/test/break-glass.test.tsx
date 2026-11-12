@@ -92,11 +92,11 @@ const openDirectory = async () => {
 };
 
 describe("GET /me 401", () => {
-  it("a plain 401 still signs out to the sign-in page", async () => {
+  it("a plain 401 still logs out to the login page", async () => {
     server.use(
       http.get("*/api/v1/me", () =>
         HttpResponse.json(
-          { error: { code: "unauthorized", message: "Sign in" } },
+          { error: { code: "unauthorized", message: "Log in" } },
           { status: 401 },
         ),
       ),
@@ -110,7 +110,7 @@ describe("GET /me 401", () => {
     expect(screen.queryByText(C.title)).toBeNull();
   });
 
-  it("break_glass_required doesn't sign out: the card shows, no app shell", async () => {
+  it("break_glass_required doesn't log out: the card shows, no app shell", async () => {
     mountHosted("/settings/members", stale);
     await card();
     expect(lastRedirect).not.toHaveBeenCalled();
@@ -120,7 +120,7 @@ describe("GET /me 401", () => {
 
   // Everything but /me answers the locked-out owner a plain 401, and the
   // shell's first render asks for the library before /me answers.
-  it("a plain 401 elsewhere before /me answers doesn't sign out", async () => {
+  it("a plain 401 elsewhere before /me answers doesn't log out", async () => {
     mountHosted("/", stale, undefined, [
       http.get("*/api/v1/me", async () => {
         await new Promise((r) => setTimeout(r, 150));
@@ -137,7 +137,7 @@ describe("GET /me 401", () => {
       }),
       http.get("*/api/v1/artifacts", () =>
         HttpResponse.json(
-          { error: { code: "unauthorized", message: "Sign in" } },
+          { error: { code: "unauthorized", message: "Log in" } },
           { status: 401 },
         ),
       ),
@@ -146,12 +146,12 @@ describe("GET /me 401", () => {
     expect(lastRedirect).not.toHaveBeenCalled();
   });
 
-  it("a plain 401 elsewhere after the card shows doesn't sign out", async () => {
+  it("a plain 401 elsewhere after the card shows doesn't log out", async () => {
     mountHosted("/", stale);
     await card();
     reportApiError(
       lastClient,
-      new ApiClientError("unauthorized", "Sign in", 401),
+      new ApiClientError("unauthorized", "Log in", 401),
     );
     await new Promise((r) => setTimeout(r, 50));
     expect(
@@ -175,7 +175,7 @@ describe("GET /me 401", () => {
 });
 
 describe("stale (fresh: false)", () => {
-  it("asks for a fresh Google sign-in, back to this page", async () => {
+  it("asks for a fresh Google login, back to this page", async () => {
     mountHosted("/settings/members?tab=x", stale);
     await card();
     expect(screen.getByText(C.body("Open Artifacts"))).toBeVisible();
@@ -224,7 +224,7 @@ describe("stale (fresh: false)", () => {
 });
 
 describe("fresh (fresh: true)", () => {
-  it("offers the directory settings, not a sign-in", async () => {
+  it("offers the directory settings, not a login", async () => {
     mountHosted("/", fresh);
     await card();
     expect(screen.getByRole("button", { name: C.open })).toBeVisible();
@@ -327,11 +327,11 @@ describe("fresh (fresh: true)", () => {
     await waitFor(() => expect(meCalls()).toBe(1));
   });
 
-  it("the session was revoked (a plain 401 from the directory): to sign-in", async () => {
+  it("the session was revoked (a plain 401 from the directory): to login", async () => {
     mountHosted("/settings/directory", fresh, undefined, [
       http.get("*/api/v1/directory", () =>
         HttpResponse.json(
-          { error: { code: "unauthorized", message: "Sign in" } },
+          { error: { code: "unauthorized", message: "Log in" } },
           { status: 401 },
         ),
       ),
@@ -344,12 +344,12 @@ describe("fresh (fresh: true)", () => {
     expect(screen.queryByText(C.loadFailed)).toBeNull();
   });
 
-  it("revoked mid-confirm (a plain 401 from R.directoryConfirm): to sign-in", async () => {
+  it("revoked mid-confirm (a plain 401 from R.directoryConfirm): to login", async () => {
     mountHosted("/", fresh, undefined, [
       http.get("*/api/v1/directory", () => HttpResponse.json(PENDING)),
       http.post("*/api/v1/directory/confirm", () =>
         HttpResponse.json(
-          { error: { code: "unauthorized", message: "Sign in" } },
+          { error: { code: "unauthorized", message: "Log in" } },
           { status: 401 },
         ),
       ),
@@ -363,11 +363,11 @@ describe("fresh (fresh: true)", () => {
     );
   });
 
-  it("the fresh window lapsed (reauth_required): back to the sign-in step", async () => {
+  it("the fresh window lapsed (reauth_required): back to the login step", async () => {
     mountHosted("/", fresh, undefined, [
       http.get("*/api/v1/directory", () =>
         HttpResponse.json(
-          { error: { code: "reauth_required", message: "Sign in again" } },
+          { error: { code: "reauth_required", message: "Log in again" } },
           { status: 401 },
         ),
       ),

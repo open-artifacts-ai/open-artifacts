@@ -38,9 +38,7 @@ test("usage_off: R.usage is 404 on leo", async () => {
 // Cut (#1251): "the sign-in page never calls leo self-hosted". The page shows
 // one line or the other (apps/dashboard/src/pages/SignIn.tsx), so the test
 // below covers it.
-test("the sign-in page says it's hosted by Open Artifacts", async ({
-  page,
-}) => {
+test("the login page says it's hosted by Open Artifacts", async ({ page }) => {
   await page.goto(`${LEO}/sign-in`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await expect(page.getByText("Hosted by Open Artifacts")).toHaveCount(1);

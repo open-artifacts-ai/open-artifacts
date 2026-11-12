@@ -360,7 +360,7 @@ describe("device flow", () => {
 });
 
 describe("approval page: the person types the code (RFC 8628 5.4)", () => {
-  it("no session redirects to sign-in with the page as next", async () => {
+  it("no session redirects to login with the page as next", async () => {
     const r = await page(null);
     expect(r.status).toBe(302);
     expect(r.headers.get("location")).toBe(
@@ -382,7 +382,7 @@ describe("approval page: the person types the code (RFC 8628 5.4)", () => {
     expect(html).toContain('spellcheck="false"');
     expect(html).toContain('autocapitalize="characters"');
     expect(html).toContain(">Continue<");
-    expect(html).toContain("Signed in as");
+    expect(html).toContain("Logged in as");
     expect(html).not.toContain("secret-host-name");
     expect(html).not.toContain(d.user_code);
     expect(r.headers.get("content-security-policy")).toContain(

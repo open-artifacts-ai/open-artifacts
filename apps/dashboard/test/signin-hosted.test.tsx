@@ -92,7 +92,7 @@ it("access mode renders today's page", async () => {
 it("an unknown ?error= shows the failed copy and never echoes the value", async () => {
   mountHosted("/sign-in?error=%3Cscript%3Ealert(1)%3C%2Fscript%3E");
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Sign-in didn't work. Try again.",
+    "Login didn't work. Try again.",
   );
   expect(document.body.innerHTML).not.toContain("<script>alert(1)");
   expect(document.body.textContent).not.toContain("alert(1)");
@@ -156,8 +156,8 @@ it.each([
     "no_access",
     "You don't have access here yet. Ask an admin to invite you, then try again.",
   ],
-  ["expired", "Sign-in took too long. Try again."],
-  ["failed", "Sign-in didn't work. Try again."],
+  ["expired", "Login took too long. Try again."],
+  ["failed", "Login didn't work. Try again."],
 ])("error=%s", async (error, copy) => {
   mountHosted(`/sign-in?error=${error}`);
   expect(await screen.findByRole("alert")).toHaveTextContent(copy); // Design D8, 2026-10-21
@@ -207,12 +207,12 @@ it("direct with a hostile Access start: dropped", async () => {
     providersWith([{ id: "access", start: "//evil.example/login?via=access" }]),
   ]);
   expect(
-    await screen.findByText("Sign-in isn't set up yet. Ask your admin."),
+    await screen.findByText("Login isn't set up yet. Ask your admin."),
   ).toBeVisible();
   expect(screen.queryByText(/Cloudflare Access/)).toBeNull();
 });
 
-it("empty providers says sign-in is not set up", async () => {
+it("empty providers says login is not set up", async () => {
   server.use(
     http.get("*/auth/providers", () =>
       HttpResponse.json({ mode: "direct", providers: [] }),
@@ -220,7 +220,7 @@ it("empty providers says sign-in is not set up", async () => {
   );
   mount("/sign-in");
   expect(
-    await screen.findByText("Sign-in isn't set up yet. Ask your admin."),
+    await screen.findByText("Login isn't set up yet. Ask your admin."),
   ).toBeVisible();
 });
 
@@ -229,9 +229,7 @@ it("request shows the masked address, resend timer and expiry", async () => {
   mountHosted("/sign-in?method=code");
   await requestThroughUi("bob@example.com");
   expect(
-    screen.getByText(
-      "If b***@example.com can sign in here, we sent it a code.",
-    ),
+    screen.getByText("If b***@example.com can log in here, we sent it a code."),
   ).toBeVisible();
   // Muted text while the timer runs: nothing to click.
   expect(screen.getByText("Resend in 60s").tagName).toBe("SPAN");
@@ -392,7 +390,7 @@ it("a 404 from the code request says codes aren't available", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: SEND }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Sign-in by email code isn't available right now. Use Continue with Google, or ask your admin.",
+    "Login by email code isn't available right now. Use Continue with Google, or ask your admin.",
   ); // Design D8, 2026-10-21
 });
 
@@ -730,9 +728,9 @@ const codeUnavailable = (path: string) =>
     ),
   );
 const CODES_OFF =
-  "Sign-in by email code isn't available right now. Ask your admin for help.";
+  "Login by email code isn't available right now. Ask your admin for help.";
 const CODES_OFF_GOOGLE =
-  "Sign-in by email code isn't available right now. Use Continue with Google, or ask your admin.";
+  "Login by email code isn't available right now. Use Continue with Google, or ask your admin.";
 
 it("code_unavailable on request (Google on): inline on the email step, Google stays live", async () => {
   mountHosted("/sign-in?method=code&next=%2Fmine", true, undefined, [
@@ -790,7 +788,7 @@ it("self-hosted: ?error= shows today's banner and never echoes the value", async
       name: "Continue with Cloudflare Access",
     }),
   ).toHaveAttribute("href", "/auth/login");
-  expect(screen.getByText("Sign-in didn't finish.")).toBeVisible();
+  expect(screen.getByText("Login didn't finish.")).toBeVisible();
   expect(
     screen.getByText("The login link expired or was cancelled. Try again."),
   ).toBeVisible();
@@ -802,13 +800,13 @@ it("self-hosted: ?error= shows today's banner and never echoes the value", async
 it("self-hosted: no ?error= shows no banner", async () => {
   mount("/sign-in");
   await screen.findByRole("link", { name: "Continue with Cloudflare Access" });
-  expect(screen.queryByText("Sign-in didn't finish.")).toBeNull();
-  expect(screen.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  expect(screen.queryByText("Login didn't finish.")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Log in" })).toBeVisible();
 });
 
 it("a numeric ?error= in Access mode still shows today's banner", async () => {
   mountHosted("/sign-in?error=1", { mode: "access" });
-  expect(await screen.findByText("Sign-in didn't finish.")).toBeVisible();
+  expect(await screen.findByText("Login didn't finish.")).toBeVisible();
 });
 
 it("Google only: one Google button, a guest link carrying next, no code form", async () => {
@@ -982,7 +980,7 @@ it("Access mode keeps today's /no-access page", async () => {
   mount("/no-access");
   expect(
     await screen.findByRole("heading", {
-      name: "You're signed in, but there's nothing here for you yet",
+      name: "You're logged in, but there's nothing here for you yet",
     }),
   ).toBeVisible();
 });

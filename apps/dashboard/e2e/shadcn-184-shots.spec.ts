@@ -187,9 +187,9 @@ for (const scheme of ["light", "dark"] as const)
         }
       });
 
-      test("not found: signed-in-as avatar", async ({ page }, info) => {
+      test("not found: logged-in-as avatar", async ({ page }, info) => {
         await page.goto("/nope?hosted=1");
-        await expect(page.getByText("Signed in as")).toBeVisible();
+        await expect(page.getByText("Logged in as")).toBeVisible();
         await shot(page, info, "not-found");
       });
     });

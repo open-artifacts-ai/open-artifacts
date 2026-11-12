@@ -419,7 +419,7 @@ describe("break-glass", () => {
     }
   }
 
-  it("break-glass: the reauth sign-in asks Google for max_age=0; its session opens only the break-glass routes", async () => {
+  it("break-glass: the reauth login asks Google for max_age=0; its session opens only the break-glass routes", async () => {
     const owner = await synced("owner");
     await mismatch();
     const { authorize, session } = await googleSignIn(owner, {
@@ -457,7 +457,7 @@ describe("break-glass", () => {
     expect((await errOf(unforced)).code).toBe("reauth_required");
   });
 
-  it("break-glass: fresh Google sign-in (9 min) reaches R.directory; 11 min → 401 reauth_required", async () => {
+  it("break-glass: fresh Google login (9 min) reaches R.directory; 11 min → 401 reauth_required", async () => {
     const owner = await synced("owner");
     await mismatch();
     const fresh = await cookieFor(owner.id, { age: 9 * MIN });

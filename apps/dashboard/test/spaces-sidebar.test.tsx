@@ -283,7 +283,7 @@ it("visibilityHint", () => {
     "Only you, and anyone you add",
   );
   expect(visibilityHint("public", eng, "Acme")).toBe(
-    "Anyone with the link, no sign-in",
+    "Anyone with the link, no login",
   );
   expect(visibilityHint("team", undefined, "Acme")).toBeNull();
 });

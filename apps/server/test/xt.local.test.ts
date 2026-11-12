@@ -82,7 +82,7 @@ function local(id: string, secret: string, hookKey: string): Install {
 const A = local("xt-a", "a".repeat(40), "A".repeat(32));
 const B = local("xt-b", "b".repeat(40), "B".repeat(32));
 
-describe("sign-in negative catalog (local)", () => {
+describe("login negative catalog (local)", () => {
   for (const c of SIGNIN_NEGATIVE_CASES) {
     const t = c.liveOnly ? it.skip : it;
     t(c.name, () => c.run(A, B));

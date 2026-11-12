@@ -62,7 +62,7 @@ export async function listTrash(
   c: Caller,
   q: TrashQuery,
 ): Promise<Page<TrashItem>> {
-  if (c.kind !== "user") throw new ApiError("unauthorized", "Sign in required");
+  if (c.kind !== "user") throw new ApiError("unauthorized", "Log in required");
   const { user } = c;
   const capped = capOfCaller(c) != null;
   const on = spacesOn(env);

@@ -208,7 +208,7 @@ describe("llms.txt can't drift from agentClients", () => {
     // Cursor has no token variant: it gets a note instead.
     expect(token.map((t) => t.agent)).not.toContain("Cursor");
     expect(connect).toContain(
-      "#### Cursor\nNo token-file option: sign in through the browser as above.",
+      "#### Cursor\nNo token-file option: log in through the browser as above.",
     );
   });
 

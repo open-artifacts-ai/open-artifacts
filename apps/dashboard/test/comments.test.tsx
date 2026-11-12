@@ -1432,7 +1432,7 @@ describe("comments: errors", () => {
   });
 });
 
-describe("comments: live and signed out", () => {
+describe("comments: live and logged out", () => {
   it("refetches the list when the events socket says comments changed", async () => {
     const gets = calls("GET");
     mount(viewerPath(OWNED));
@@ -1446,7 +1446,7 @@ describe("comments: live and signed out", () => {
     await waitFor(() => expect(n()).toBeGreaterThan(before));
   });
 
-  it("a signed-out visitor who can't comment sees the list and Sign in to comment.", async () => {
+  it("a logged-out visitor who can't comment sees the list and Log in to comment.", async () => {
     server.use(
       http.get("*/api/v1/me", () =>
         HttpResponse.json(
@@ -1480,7 +1480,7 @@ describe("comments: live and signed out", () => {
     mount(viewerPath(PUBLIC));
     const c = await col();
     const link = await within(c).findByRole("link", {
-      name: "Sign in to comment",
+      name: "Log in to comment",
     });
     expect(link).toHaveAttribute(
       "href",
@@ -1491,7 +1491,7 @@ describe("comments: live and signed out", () => {
     expect(within(c).queryByRole("textbox")).toBeNull();
   });
 
-  it("#2080: commenters signed-in bars a guest without can.comment, and the refusal reads Sign in to comment.", async () => {
+  it("#2080: commenters logged-in bars a guest without can.comment, and the refusal reads Log in to comment.", async () => {
     server.use(
       http.get("*/api/v1/me", () =>
         HttpResponse.json(
@@ -1514,7 +1514,7 @@ describe("comments: live and signed out", () => {
     mount(viewerPath(PUBLIC));
     const c = await col();
     expect(
-      await within(c).findByRole("link", { name: "Sign in to comment" }),
+      await within(c).findByRole("link", { name: "Log in to comment" }),
     ).toBeInTheDocument();
     expect(within(c).getByText("From someone")).toBeInTheDocument();
     expect(within(c).queryByRole("textbox")).toBeNull();
@@ -1524,12 +1524,12 @@ describe("comments: live and signed out", () => {
       commentError(
         new ApiClientError(
           "comments_signed_in_only",
-          "Sign in to comment.",
+          "Log in to comment.",
           403,
         ),
         false,
       ),
-    ).toBe("Sign in to comment.");
+    ).toBe("Log in to comment.");
   });
 
   it("a guest on a public artifact that allows anonymous writes gets a name field", async () => {
@@ -1568,7 +1568,7 @@ describe("comments: live and signed out", () => {
     );
     // (jsdom's window.location is "/", not the memory router's path.)
     expect(
-      within(c).getByRole("link", { name: "Sign in" }).getAttribute("href"),
+      within(c).getByRole("link", { name: "Log in" }).getAttribute("href"),
     ).toMatch(/^\/sign-in\?next=%2F/);
     fireEvent.change(within(c).getByRole("textbox", { name: "Your name" }), {
       target: { value: "Pat" },
@@ -1802,7 +1802,7 @@ describe("comments: guests and Retry-After", () => {
     }
   });
 
-  it("a signed-in viewer never sends the anon token", async () => {
+  it("a logged-in viewer never sends the anon token", async () => {
     localStorage.setItem("oa.anonId", TOKEN);
     const got: (string | null)[] = [];
     server.use(
@@ -2222,12 +2222,12 @@ describe("comments: review round 1", () => {
         comment: false,
       },
     });
-  it("M6: a signed-in viewer who can't comment sees no sign-in line, no composer, and no draft from the frame", async () => {
+  it("M6: a logged-in viewer who can't comment sees no login line, no composer, and no draft from the frame", async () => {
     cannot();
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByText("Can we tighten this headline?");
-    expect(within(c).queryByText("Sign in to comment.")).toBeNull();
+    expect(within(c).queryByText("Log in to comment.")).toBeNull();
     expect(within(c).queryByRole("textbox")).toBeNull();
     expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
     await act(async () => opts.at(-1)?.onCommentSelect(sel("nope")));
@@ -2286,7 +2286,7 @@ describe("comments: capped members", () => {
     return c;
   };
 
-  it("a capped member sees the threads but gets no composer, no Resolve, no draft and no sign-in line", async () => {
+  it("a capped member sees the threads but gets no composer, no Resolve, no draft and no login line", async () => {
     capped("guest");
     mount(viewerPath(OWNED));
     const c = await col();
@@ -2296,7 +2296,7 @@ describe("comments: capped members", () => {
     expect(within(c).queryByRole("textbox")).toBeNull();
     expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
     expect(within(c).queryByRole("button", { name: "Reopen" })).toBeNull();
-    expect(within(c).queryByText("Sign in to comment.")).toBeNull();
+    expect(within(c).queryByText("Log in to comment.")).toBeNull();
     await act(async () =>
       opts.at(-1)?.onCommentSelect({
         kind: "text",
@@ -2627,7 +2627,7 @@ describe("comments: unavailable is not forever", () => {
     expect(screen.queryByRole("tab", { name: "Comments" })).toBeNull();
   });
 
-  it("L-r6-2: a signed-out visitor with ?panel=open and no comments gets no side panel", async () => {
+  it("L-r6-2: a logged-out visitor with ?panel=open and no comments gets no side panel", async () => {
     server.use(
       http.get("*/api/v1/me", () =>
         HttpResponse.json(

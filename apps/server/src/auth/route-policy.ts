@@ -111,7 +111,7 @@ export async function enforce(
   if ("public" in p || "signed" in p) return;
   if ("artifact" in p) {
     if (p.signedIn && who.kind !== "user")
-      throw new ApiError("unauthorized", "Sign in required");
+      throw new ApiError("unauthorized", "Log in required");
     const id = artifactId();
     // Malformed ids never reach D1.
     if (!isId(id)) throw notFound();
@@ -180,7 +180,7 @@ export async function enforce(
   if ("org" in p && p.offWhen && featuresOf(env).includes(p.offWhen))
     throw notFound();
   if (who.kind !== "user")
-    throw new ApiError("unauthorized", "Sign in required");
+    throw new ApiError("unauthorized", "Log in required");
   if (
     "org" in p &&
     !orgCan(who.user, p.org, {

@@ -215,8 +215,8 @@ describe("GET /auth/providers", () => {
   });
 });
 
-describe("direct-mode sign-in routes", () => {
-  it("/auth/login goes to the SPA sign-in page with a safe next", async () => {
+describe("direct-mode login routes", () => {
+  it("/auth/login goes to the SPA login page with a safe next", async () => {
     expect(loc(await get(`${AUTH.login}?next=/a/x`, direct()))).toBe(
       `${SIGN_IN_PAGE}?next=%2Fa%2Fx`,
     );
@@ -254,7 +254,7 @@ describe("direct-mode sign-in routes", () => {
     ["tenant", { hd: "b.com" }],
     ["failed", { aud: "other" }],
   ])(
-    "refusal %s lands on the sign-in page with next, no session",
+    "refusal %s lands on the login page with next, no session",
     async (reason, claims) => {
       const r = await googleRoundTrip(direct(), {
         email: uniq("x"),
@@ -265,7 +265,7 @@ describe("direct-mode sign-in routes", () => {
     },
   );
 
-  it("identity_conflict, removed and no_access land on the sign-in page too", async () => {
+  it("identity_conflict, removed and no_access land on the login page too", async () => {
     const a = uniq("conf");
     await seedUser(a, "member", { googleSub: `old-${a}` });
     expect(
@@ -287,7 +287,7 @@ describe("direct-mode sign-in routes", () => {
     ).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx&via=google`);
   });
 
-  it("a stale state retries once, then expired on the sign-in page", async () => {
+  it("a stale state retries once, then expired on the login page", async () => {
     const first = await get(`${AUTH.callbackGoogle}?state=s&code=c`, direct());
     expect(loc(first)).toBe(`${AUTH.loginGoogle}?next=%2F&retry=1`);
     const second = await get(
@@ -297,14 +297,14 @@ describe("direct-mode sign-in routes", () => {
     expect(loc(second)).toBe(`${SIGN_IN_PAGE}?error=expired&next=%2F`);
   });
 
-  it("no COOP on the sign-in page and the Google routes", async () => {
+  it("no COOP on the login page and the Google routes", async () => {
     for (const p of [SIGN_IN_PAGE, AUTH.loginGoogle, AUTH.callbackGoogle])
       expect(
         (await get(p, direct())).headers.get("cross-origin-opener-policy"),
       ).toBeNull();
   });
 
-  it("MCP connector: authorize → login → sign-in page → Google → back to authorize", async () => {
+  it("MCP connector: authorize → login → login page → Google → back to authorize", async () => {
     const authorize = "/oauth/authorize?client_id=c&response_type=code";
     const toSignIn = loc(
       await get(
@@ -411,7 +411,7 @@ describe("direct-mode sign-in routes", () => {
   });
 
   it.each(["removed", "suspended"])(
-    "a %s user's Google sign-in lands on error=removed (linked or not)",
+    "a %s user's Google login lands on error=removed (linked or not)",
     async (status) => {
       const a = uniq(`na-${status}`);
       await seedUser(a, "member", { status, googleSub: `na-${a}` });
@@ -440,7 +440,7 @@ describe("direct-mode sign-in routes", () => {
   });
 });
 
-describe("Me sign-in fields", () => {
+describe("Me login fields", () => {
   const me = async (e: Env, auth: string) => {
     const headers: Record<string, string> = auth.startsWith("oa_pat_")
       ? { authorization: `Bearer ${auth}` }
@@ -514,7 +514,7 @@ describe("Me sign-in fields", () => {
     const o = await me(off, owner.cookie);
     expect(o.instance.signIn?.problems).toEqual(authConfig(off).problems);
     expect(o.instance.signIn?.problems?.[0]).toMatch(
-      /^Email sign-in is on, but sending email isn't set up/,
+      /^Email login is on, but sending email isn't set up/,
     );
     // Codes aren't offered when the install can't send email.
     expect(o.instance.signIn?.providers).toEqual(["google"]);
@@ -594,7 +594,7 @@ describe("Me sign-in fields", () => {
     expect((await me(env, cookie)).instance.tier).toBeNull();
   });
 
-  it("a guest under direct sign-in is read-only with cap guest", async () => {
+  it("a guest under direct login is read-only with cap guest", async () => {
     const { cookie } = await login(uniq("guest", "x.com"), "guest");
     expect((await me(direct(), cookie)).auth).toMatchObject({
       readOnly: true,

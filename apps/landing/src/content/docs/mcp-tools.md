@@ -4,7 +4,7 @@ description: The tools every instance's MCP server exposes, and what each one ta
 order: 3
 ---
 
-Tool inputs are JSON Schema. Each tool returns plain text plus structured output. Calls act as the signed-in user (or the token's owner), and an artifact you can't access is reported as not found.
+Tool inputs are JSON Schema. Each tool returns plain text plus structured output. Calls act as the logged-in user (or the token's owner), and an artifact you can't access is reported as not found.
 
 ## Publishing
 
@@ -77,7 +77,7 @@ Search indexes each publish asynchronously, so a new version becomes searchable 
 
 ## Sharing
 
-- `share_artifact`: gives an email address `viewer` or `editor` access. The person doesn't need to have signed in yet.
+- `share_artifact`: gives an email address `viewer` or `editor` access. The person doesn't need to have logged in yet.
 - `unshare_artifact`: removes that access.
 - `set_visibility`: `private`, `team`, or `public`.
 
@@ -101,7 +101,7 @@ Anyone who can open an artifact can comment on it, unless the owner turned comme
 
 ## Bus roles
 
-`bus_role_propose`: proposes a change to one of your bus role addresses: point a role at one of your open agents by its bus name, or clear it. It changes nothing by itself. It returns a link; you open it in your browser and confirm it, after signing in again if your last sign-in isn't recent. The link works once and expires after 15 minutes. No agent credential (a token or an OAuth connection) can confirm it. Offered only on an instance where the bus is on.
+`bus_role_propose`: proposes a change to one of your bus role addresses: point a role at one of your open agents by its bus name, or clear it. It changes nothing by itself. It returns a link; you open it in your browser and confirm it, after logging in again if your last login isn't recent. The link works once and expires after 15 minutes. No agent credential (a token or an OAuth connection) can confirm it. Offered only on an instance where the bus is on.
 
 ## REST API
 

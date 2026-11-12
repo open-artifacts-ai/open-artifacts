@@ -136,7 +136,7 @@ const page = (
 const GONE = {
   title: "This link doesn't work",
   message:
-    "No role change waits behind this link for you. Check that you're signed in as the right person, or ask the agent to propose it again.",
+    "No role change waits behind this link for you. Check that you're logged in as the right person, or ask the agent to propose it again.",
 };
 
 /** Each refusal's page: nothing was changed. */
@@ -273,7 +273,7 @@ export function confirmCaller(
     return {
       response: messagePage(
         "Use your browser",
-        "Only you can confirm this, signed in in your browser. No token can.",
+        "Only you can confirm this, logged in in your browser. No token can.",
         401,
       ),
     };
@@ -285,10 +285,10 @@ export function confirmCaller(
       return {
         response: cardResponse(
           renderSignInCard({
-            title: "Signed out",
-            message: "Your session ended. Sign in, then confirm again.",
+            title: "Logged out",
+            message: "Your session ended. Log in, then confirm again.",
             href: `${AUTH.login}?next=${encodeURIComponent(path)}`,
-            label: "Sign in",
+            label: "Log in",
           }),
           401,
           true,
@@ -316,8 +316,8 @@ export function confirmCaller(
   if (!interactiveSession(c))
     return {
       response: messagePage(
-        "Sign in again",
-        `Confirming ${what} takes a browser sign-in. Sign in again, then open the link.`,
+        "Log in again",
+        `Confirming ${what} takes a browser login. Log in again, then open the link.`,
         403,
       ),
     };
@@ -329,10 +329,10 @@ export function confirmCaller(
       return {
         response: cardResponse(
           renderSignInCard({
-            title: "Sign in again",
-            message: `To confirm ${what}, sign in again first. Your last sign-in is more than 10 minutes old.`,
+            title: "Log in again",
+            message: `To confirm ${what}, log in again first. Your last login is more than 10 minutes old.`,
             href: reauthUrl(c, path),
-            label: "Sign in again",
+            label: "Log in again",
           }),
           403,
           true,

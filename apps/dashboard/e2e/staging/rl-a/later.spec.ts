@@ -194,7 +194,7 @@ test("#794: a member who views editors-only live data sees View only", async ({
   );
 });
 
-test("#800: inviting outside the sign-in domain warns that they may not sign in", async ({
+test("#800: inviting outside the login domain warns that they may not log in", async ({
   browser,
 }) => {
   await needs("#800", "0.74.0");
@@ -214,7 +214,7 @@ test("#800: inviting outside the sign-in domain warns that they may not sign in"
   const sent = page.getByRole("dialog", { name: `Invite sent to ${maybe}` });
   await expect(sent).toBeVisible();
   await expect(sent).toContainText(
-    `${maybe} is outside ${domains.join(" or ")}, so they may not be able to sign in.`,
+    `${maybe} is outside ${domains.join(" or ")}, so they may not be able to log in.`,
   );
 });
 

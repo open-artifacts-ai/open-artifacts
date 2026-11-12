@@ -105,18 +105,18 @@ export function EraseDialog({
         >
           <p className="m-0">
             This deletes what's left of {first}'s account: their name and email,
-            sign-ins, agent connections and tokens, the shares they received,
-            and their space roles. It can't be undone, and they can't be
-            restored afterwards.
+            logins, agent connections and tokens, the shares they received, and
+            their space roles. It can't be undone, and they can't be restored
+            afterwards.
           </p>
           <p className="m-0">
             What stays: work they published, shown as from a former member;
             shares they created; and the audit log.
           </p>
           <p className={`m-0 ${muted}`}>
-            They can still come back as a new, empty account if your sign-in
-            rules let them in. A Google account they used stays blocked until an
-            admin resets its link.
+            They can still come back as a new, empty account if your login rules
+            let them in. A Google account they used stays blocked until an admin
+            resets its link.
           </p>
           <div className="grid gap-[6px]">
             <Label htmlFor={id}>Type "erase" to confirm</Label>

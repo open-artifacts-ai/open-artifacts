@@ -92,7 +92,7 @@ it("staleAt is never shown: no deadline, access is frozen as of the last sync", 
     /Access is frozen as of the last sync \(.+\)\. Changes in Google, including people who left, won't apply here until sync recovers\./,
   );
   expect(s).toHaveTextContent(
-    "Nobody loses access while sync is down. While sync is down, people sign in again every 24 hours.",
+    "Nobody loses access while sync is down. While sync is down, people log in again every 24 hours.",
   );
   expect(s).not.toHaveTextContent("After 24 hours");
   expect(s).toHaveTextContent("Last error: Google returned 503.");
@@ -401,7 +401,7 @@ it.each([
   ],
   [
     "domain_mismatch",
-    "That Google Workspace isn't example.com. Sign in with a example.com super admin.",
+    "That Google Workspace isn't example.com. Log in with a example.com super admin.",
   ],
   [
     "customer_mismatch",
@@ -486,7 +486,7 @@ it("Sync now while sync is off: the copy under the header, no link", async () =>
 const BODY =
   "Open Artifacts stops syncing with Google and deletes its connection. Everyone keeps the access they have now, and you manage members here from now on.";
 const MISMATCH =
-  "Open Artifacts stops syncing with Google and deletes its connection. Your directory reports a different Google organization, so people who sign in through it stay signed out until you connect again.";
+  "Open Artifacts stops syncing with Google and deletes its connection. Your directory reports a different Google organization, so people who log in through it stay logged out until you connect again.";
 const LEAVING =
   "People who leave in Google keep their access until you remove them in Members, and restricted groups stay in force until you lift them.";
 const openDisconnect = async () => {
@@ -517,7 +517,7 @@ it("Disconnect: option A's copy, a danger confirm, and Cancel", async () => {
   expect(within(d).getByRole("button", { name: "Cancel" })).toBeVisible();
 });
 
-it("Disconnect in a customer mismatch: the signed-out sentence replaces the access one", async () => {
+it("Disconnect in a customer mismatch: the logged-out sentence replaces the access one", async () => {
   mountHosted(
     "/settings/directory",
     true,
@@ -603,21 +603,21 @@ it("an admin sees the connection but no Disconnect", async () => {
   expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
 });
 
-it("reauth_required offers a fresh Google sign-in back to this page", async () => {
+it("reauth_required offers a fresh Google login back to this page", async () => {
   mountHosted("/settings/directory", true, undefined, [
     http.get("*/api/v1/directory", () =>
       HttpResponse.json(
-        { error: { code: "reauth_required", message: "Sign in again" } },
+        { error: { code: "reauth_required", message: "Log in again" } },
         { status: 401 },
       ),
     ),
   ]);
   expect(
-    await screen.findByRole("heading", { name: "Sign in again to continue" }),
+    await screen.findByRole("heading", { name: "Log in again to continue" }),
   ).toBeVisible();
   expect(
     screen.getByText(
-      "For your security, sign in with Google again to manage the directory.",
+      "For your security, log in with Google again to manage the directory.",
     ),
   ).toBeVisible();
   expect(

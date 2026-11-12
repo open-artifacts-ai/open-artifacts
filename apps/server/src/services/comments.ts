@@ -1052,7 +1052,7 @@ async function resolveExtras(
       "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
     );
   if (x.ask && who.kind !== "user")
-    throw new ApiError("forbidden", "Sign in to ask a question");
+    throw new ApiError("forbidden", "Log in to ask a question");
   const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);

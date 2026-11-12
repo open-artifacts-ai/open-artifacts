@@ -333,7 +333,7 @@ function PersonRow({
               <>
                 <Badge variant="outline">Guest</Badge>
                 <span className="sr-only">
-                  {name}, guest, can only view. Guests sign in by link and can't
+                  {name}, guest, can only view. Guests log in by link and can't
                   publish, edit or write live data, from the app or any AI
                   agent.
                 </span>

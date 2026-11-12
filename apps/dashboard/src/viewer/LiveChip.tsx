@@ -326,7 +326,7 @@ export function GoneBanner({
         !authed && (
           <Button asChild variant="outline" size="xs" className={btn}>
             <a href={`${AUTH.login}?next=${encodeURIComponent(next)}`}>
-              Sign in
+              Log in
             </a>
           </Button>
         )

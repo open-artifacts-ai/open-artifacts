@@ -573,7 +573,7 @@ function TopBar({ me }: { me: Me | null }) {
             align="end"
             className="min-w-[200px] text-[length:var(--oa-text-sm)]"
           >
-            {/* Who's signed in: a label, not an item (the header hides it on phones). */}
+            {/* Who's logged in: a label, not an item (the header hides it on phones). */}
             <DropdownMenuLabel className="truncate font-normal text-muted-foreground">
               {me.user.email}
             </DropdownMenuLabel>

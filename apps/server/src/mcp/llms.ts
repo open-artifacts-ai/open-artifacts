@@ -83,7 +83,7 @@ const tokenBlock = (agent: string, s: Snippet | undefined) =>
         ...(s.hint ? [`Note: ${s.hint}`] : []),
         `Then: ${s.verify}`,
       ].join("\n")
-    : `#### ${agent}\nNo token-file option: sign in through the browser as above.`;
+    : `#### ${agent}\nNo token-file option: log in through the browser as above.`;
 
 const pluginBlock = (origin: string) => {
   const { marketplace, name, option } = CLAUDE_PLUGIN;
@@ -118,7 +118,7 @@ export function renderLlms(
   ];
   return `# ${PRODUCT_NAME} at ${host}
 
-You are setting up ${PRODUCT_NAME} for the person you're working with. Do every step below yourself. Never ask them to paste a token, password or secret into this chat. Sign-in happens in their browser.
+You are setting up ${PRODUCT_NAME} for the person you're working with. Do every step below yourself. Never ask them to paste a token, password or secret into this chat. Login happens in their browser.
 
 Server address (MCP, streamable HTTP): ${mcpUrl}
 
@@ -151,8 +151,8 @@ Tell the person: "${PRODUCT_NAME} is connected." Include the address ${origin}.
 
 ## Troubleshoot
 
-- The browser sign-in never opened: start it from the client (for example \`claude mcp login ${SERVER_NAME}\` or \`codex mcp login ${SERVER_NAME}\`), then ask the person to approve it in the browser.
-- 401 or "unauthorized" after it worked before: the sign-in expired or was revoked. Sign in again the same way. Don't switch to a token unless the person asks.
+- The browser login never opened: start it from the client (for example \`claude mcp login ${SERVER_NAME}\` or \`codex mcp login ${SERVER_NAME}\`), then ask the person to approve it in the browser.
+- 401 or "unauthorized" after it worked before: the login expired or was revoked. Log in again the same way. Don't switch to a token unless the person asks.
 - 404 or "not found" on the server address: check it is exactly the address above, including \`/mcp\`: ${mcpUrl}
 - The tools don't appear: restart the client as in Restart, then list the tools again.
 - Still stuck: tell the person what you ran and the exact error, without any token or secret in it.

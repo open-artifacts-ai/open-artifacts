@@ -102,7 +102,7 @@ it("publish, new version and index alarm write the #248 row counts", async () =>
   expect(hit?.body).toContain("beta");
 });
 
-it("a Google sign-in writes the user touch plus the auth.signin audit row", async () => {
+it("a Google login writes the user touch plus the auth.signin audit row", async () => {
   const sub = `sub-${crypto.randomUUID()}`;
   const email = uniq("rows-signin");
   await seedUser(email, "member", { googleSub: sub });

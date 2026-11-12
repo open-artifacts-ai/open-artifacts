@@ -89,11 +89,11 @@ describe("viewer shell review", () => {
     );
   });
 
-  it("Sign in link keeps the version in next", async () => {
+  it("Log in link keeps the version in next", async () => {
     anonymous();
     mount(viewerPath(PUBLIC, 1));
     await frame();
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute(
       "href",
       login(viewerPath(PUBLIC, 1)),
     );
@@ -293,7 +293,7 @@ describe("full screen (#290)", () => {
     expect(screen.queryByRole("tablist")).toBeNull();
   });
 
-  it("anonymous + 404 redirects to sign-in, back to the full-screen view", async () => {
+  it("anonymous + 404 redirects to login, back to the full-screen view", async () => {
     anonymous();
     artifactIs(404, "not_found");
     const { redirect } = mount(full(OWNED));
@@ -302,7 +302,7 @@ describe("full screen (#290)", () => {
     );
   });
 
-  it("signed in + 404 shows not found", async () => {
+  it("logged in + 404 shows not found", async () => {
     artifactIs(404, "not_found");
     mount(full(OWNED));
     expect(

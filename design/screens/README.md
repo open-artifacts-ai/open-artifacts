@@ -22,7 +22,7 @@ Each screen is designed for 1280 px and 390 px wide, with no horizontal page scr
 
 | Role | Sidebar | Settings | Usage |
 |---|---|---|---|
-| `owner`, `admin` | Library, Usage, Settings, agents | Members, Agents, Instance (OAuth clients and tokens are always the signed-in user's own) | Yes |
+| `owner`, `admin` | Library, Usage, Settings, agents | Members, Agents, Instance (OAuth clients and tokens are always the logged-in user's own) | Yes |
 | `member` | Library, Settings, agents | Agents only: MCP URL, snippets, their own OAuth clients and tokens | 404 |
 | `guest` | "Shared with me" only | 404 | 404 |
 
@@ -37,7 +37,7 @@ A screen a role can't reach renders the `edge-pages.html?page=not-found` 404 in 
 | `library.html` | Library | `layout=grid\|list`, `overlay=none\|drop\|filter\|drawer`, `state=hover\|focus\|active`, `banner=none\|cpu` | Scope tabs, filters, search, drop-zone overlay. `banner=cpu` shows the CPU-limit warning (See plans for owner and admin only; members get "Ask your instance owner about upgrading."). Cards and rows are fully clickable (the title link is stretched over them). `state=hover\|focus\|active` forces that interaction state on the first card, or the first row with `layout=list` |
 | `artifact-view.html` | Artifact view | `tab=versions\|share\|details`, `panel=open\|closed`, `menu=none\|version\|more`, `notice=none\|slow\|cpu`, `reloads=0\|2` | Title bar, version picker, side panel, raw-open. `notice=slow\|cpu` shows a dismissible info strip above the frame while the artifact stays visible (the shell can't prove a failure); `reloads=2` adds the Workers Paid hint, with See plans for owner and admin only |
 | `version-diff.html` | Version diff | `menu=none\|a\|b` | Source diff plus rendered previews side by side |
-| `public-viewer.html` | Anonymous public viewer | none | Minimal chrome, no sign-in |
+| `public-viewer.html` | Anonymous public viewer | none | Minimal chrome, no login |
 | `share-dialog.html` | Share dialog | `as=creator\|editor\|viewer`, `vis=team\|private\|public` | Visibility segmented control, invites with role, copy link. Non-creators see everything read-only except Copy link |
 | `settings.html` | Settings | `tab=members\|agents\|instance\|token-created` | Agents tab: MCP URL, snippets, OAuth clients, tokens. `tab=token-created` opens the Agents tab with the dialog that shows the new token once |
 | `usage.html` | Usage | `state=not-configured`, `cpu=default\|hits` | Four meters with limits, plus a CPU card (per-request limit, not a quota). `cpu=hits` shows 4 requests over the limit and a 9.6 ms p99. "Not configured" state with setup steps |
@@ -47,8 +47,8 @@ A screen a role can't reach renders the `edge-pages.html?page=not-found` 404 in 
 
 ### Edge pages
 
-- `?page=no-access`: signed in, not a member, nothing shared. Offers "Sign in as someone else".
-- `?page=sign-in`: "Continue with Cloudflare Access". The heading reads "Sign in to Open Artifacts" by default, because anonymous visitors may not know the instance name. Add `name=` (for example `name=Northwind%20Eng`) to show the variant for a known instance name. `state=loading` shows the redirecting button; `state=error` shows a failed-sign-in banner.
+- `?page=no-access`: logged in, not a member, nothing shared. Offers "Log in as someone else".
+- `?page=sign-in`: "Continue with Cloudflare Access". The heading reads "Log in to Open Artifacts" by default, because anonymous visitors may not know the instance name. Add `name=` (for example `name=Northwind%20Eng`) to show the variant for a known instance name. `state=loading` shows the redirecting button; `state=error` shows a failed-login banner.
 - `?page=not-found`: the 404. An artifact the viewer can't access returns this same page, so the copy never says whether it exists.
 - `?page=quota`: the library with the danger banner "Daily free-plan limit reached; resets at 00:00 UTC". `state=loading` shows skeleton cards.
 

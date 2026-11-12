@@ -81,7 +81,7 @@ const POINTS: Record<Column, string[]> = {
   team: [
     "Everything in Solo",
     "Invite people; viewers are free",
-    "Shared spaces and company sign-in",
+    "Shared spaces and company login",
   ],
   business: [
     "Everything in Team",
@@ -121,7 +121,7 @@ const GROUPS: { title: string; rows: { row: string; on: Column[] }[] }[] = [
       },
       { row: "Invite people as members", on: ["team", "business"] },
       { row: "Shared spaces", on: ["team", "business"] },
-      { row: "Company sign-in", on: ["team", "business"] },
+      { row: "Company login", on: ["team", "business"] },
     ],
   },
   {

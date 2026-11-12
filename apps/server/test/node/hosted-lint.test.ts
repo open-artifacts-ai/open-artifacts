@@ -19,9 +19,9 @@ const READS: Record<string, string> = {
   "auth/config.ts: domainJoin":
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":
-    "fail closed: hosted Google sign-in requires the broker transport",
+    "fail closed: hosted Google login requires the broker transport",
   "routes/codes.ts: (anonymous)":
-    "fail closed: hosted code sign-in requires Turnstile",
+    "fail closed: hosted code login requires Turnstile",
   "routes/me.ts: toMe":
     "reports: Me.instance.hosted; tightens: Me.instance.update is null (no self-host upgrade nudge, review item 39)",
   "services/bus.ts: busOn":

@@ -465,7 +465,7 @@ export const reachProposedText = (
   url: string,
   expiresAt: string,
 ): string =>
-  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, signed in (it works once and expires at ${expiresAt}): ${url}`;
+  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, logged in (it works once and expires at ${expiresAt}): ${url}`;
 
 /**
  * The `propose_reach` tool's namespaces, checked before anything is sent: 1 to

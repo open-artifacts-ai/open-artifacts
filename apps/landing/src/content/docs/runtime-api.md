@@ -68,7 +68,7 @@ await votes.set(crypto.randomUUID(), { option: "Lisbon" });
 
 `viewer.get()` returns `{ email, name }`, or `null` for an anonymous viewer of a public artifact.
 
-`viewer.anonId()` returns an anonymous viewer's id on an artifact whose viewers can change its data (`dataWriters: "viewers"`), and `null` otherwise (signed-in viewers included).
+`viewer.anonId()` returns an anonymous viewer's id on an artifact whose viewers can change its data (`dataWriters: "viewers"`), and `null` otherwise (logged-in viewers included).
 
 ### Anonymous ids
 
@@ -79,7 +79,7 @@ On a public artifact that lets viewers change its data, each anonymous browser g
 - It is not a person or an account, so don't treat it as proof of who someone is.
 - It is signed by the server: no one can forge someone else's id, but anyone can reset their own.
 - It expires after a fixed period, but a write after about half of that period renews it with the same id, so a guest who keeps using the page keeps their id. An expired (or legacy) token is never renewed: the browser's next write gets a new id, and it can no longer edit or delete comments it wrote under the old one (they stay visible with their display name). This is how a leaked token stops working.
-- It is only issued on artifacts with `dataWriters: "viewers"`. Signed-in viewers never get one.
+- It is only issued on artifacts with `dataWriters: "viewers"`. Logged-in viewers never get one.
 
 An `anonId` is a label, not a permission. Any anonymous viewer can still overwrite or delete any document, so use it to show who did what (for example, a seat claimed by `anonId`) and expect conflicts.
 
