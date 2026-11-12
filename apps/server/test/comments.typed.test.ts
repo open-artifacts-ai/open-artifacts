@@ -23,14 +23,25 @@ import {
 import { addThread } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
-import { api, login } from "./helpers.js";
+import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { api as baseApi, login } from "./helpers.js";
+
+const api = (
+  app: Parameters<typeof baseApi>[0],
+  path: string,
+  auth: string | null,
+  init: Parameters<typeof baseApi>[3] = {},
+) => baseApi(app, path, auth, init, E);
 
 // #1797: `typed` is set from the credential kind (a browser session), and the
 // notice tier follows it: "your user" only for a typed comment or answer by the
 // user who owns the agent notified.
 
 const app = createApp();
-const E = env as unknown as Env;
+const real = env as unknown as Env;
+const hubs = new FakeHubs();
+/** The stub hubs (#2224): the asker's address is read fresh from its owner's hub. */
+const E = hubs.env();
 const tag = newId().slice(0, 6).toLowerCase();
 const NOTE = { kind: "note" };
 
@@ -72,6 +83,7 @@ beforeAll(async () => {
   editor = await mk("t-editor");
   ownerPat = (await createPat(E, owner.userId, "owner token")).token;
   ownerBlankPat = (await createPat(E, owner.userId, "")).token;
+  for (const u of [owner, editor]) await connectedMachine(real.DB, u.userId);
 });
 
 /** A team artifact: the editor is shared in, the owner's agent Claude and the editor's Codex follow. */
@@ -87,6 +99,18 @@ async function setup() {
   await api(app, R.shares(a.id), owner.cookie, {
     method: "PUT",
     body: { email: editor.email, role: "editor" },
+  });
+  hubs.set({
+    owner: owner.userId,
+    identityId: "id-ns-owner-Claude",
+    namespace: "ns-owner",
+    name: "Claude",
+  });
+  hubs.set({
+    owner: editor.userId,
+    identityId: "id-ns-editor-Codex",
+    namespace: "ns-editor",
+    name: "Codex",
   });
   await follow(
     E,
@@ -151,7 +175,17 @@ const mcpWho = (u: U) =>
   ({
     kind: "user",
     id: u.userId,
-    agent: { name: "owner token", version: null, via: null },
+    agent: {
+      name: "owner token",
+      version: null,
+      via: null,
+      identity: {
+        identityId: "id-ns-owner-Claude",
+        namespace: "ns-owner",
+        name: "Claude",
+        kind: "x",
+      },
+    },
   }) as never;
 const art = (id: string) =>
   ({ id, format: "html", currentVersion: 1 }) as never;

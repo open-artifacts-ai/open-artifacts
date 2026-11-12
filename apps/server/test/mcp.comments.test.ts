@@ -736,4 +736,52 @@ describe("the comment notice", () => {
       "commented",
     ]);
   });
+
+  it("list_comments shows a member a removed agent, marked; a restricted caller gets no agents (#2174)", async () => {
+    const id = await pub({ visibility: "team" });
+    await follow(E, owner.userId, { namespace: "ns/r", name: "removable" }, id);
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "editor",
+    });
+    const roster = (await (
+      await api(app, R.artifactAgents(id), reader.cookie)
+    ).json()) as { key: string; name: string }[];
+    const key = roster.find((a) => a.name.startsWith("removable"))?.key;
+    expect(key).toBeTruthy();
+    const t = (await (
+      await api(app, comments(id), owner.cookie, {
+        method: "POST",
+        body: { anchor: { kind: "note" }, body: "hey", mentions: [{ key }] },
+      })
+    ).json()) as Thread;
+    const gone = await api(
+      app,
+      R.commentThreadAgent(id, t.id, key as string),
+      owner.cookie,
+      { method: "DELETE" },
+    );
+    expect(gone.status).toBe(204);
+    for (const who of [owner, reader]) {
+      const l = sc<CommentList>(
+        await tool(who.client, "list_comments", { id, status: "open" }),
+      );
+      expect(l.threads[0]?.agents?.map((a) => [a.name, a.removed])).toEqual([
+        [expect.stringContaining("removable"), true],
+      ]);
+    }
+    await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(reader.userId)
+      .run();
+    try {
+      // The capped caller is refused outright (as with #2151), never shown the roster.
+      await expect(
+        tool(reader.client, "list_comments", { id, status: "open" }),
+      ).rejects.toThrow(/Only members can connect agents/);
+    } finally {
+      await E.DB.prepare("update users set restricted_manual = 0 where id = ?")
+        .bind(reader.userId)
+        .run();
+    }
+  });
 });

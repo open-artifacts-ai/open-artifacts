@@ -27,7 +27,7 @@ import { muted, SettingsCard, STACK } from "./ui";
 /** The public docs page on leaving hosted (#2108). */
 const LEAVE_HOSTED_URL = "https://open-artifacts.com/docs/hosted/";
 
-type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
+type Buy = Pick<BillingCheckoutInput, "tier" | "interval" | "seats">;
 
 const NAME: Record<BillingTier, string> = {
   free: "Solo",
@@ -163,8 +163,14 @@ export function Plan() {
   // The portal needs a Stripe customer. A provisioned or comped plan has
   // none (hasCustomer false): no Manage billing, since billing would refuse.
   // Absent means billing's answer predates the field: keep the button.
-  const portal = (paid && !lapsedPaid) || billing.status === "past_due";
-  const operatorPlan = portal && billing.hasCustomer === false;
+  // A Solo with no Stripe customer (its free month ended unpaid) has no portal
+  // to go to: it pays through the Pay buttons below (#2137).
+  const soloNoCustomer = solo && billing.hasCustomer === false;
+  const portal =
+    (paid && !lapsedPaid) || (billing.status === "past_due" && !soloNoCustomer);
+  // Only a Team or Business plan can be set up by Open Artifacts; a Solo with
+  // no customer simply hasn't paid yet (#2137).
+  const operatorPlan = portal && !solo && billing.hasCustomer === false;
   // A paying Solo (a Stripe customer, active or past_due, past its free month)
   // manages its plan in the portal and sees no Pay buttons. During the free
   // month the Pay buttons stay: they are the way to start paying or pick yearly.
@@ -277,13 +283,25 @@ export function Plan() {
         column={column}
         trial={billing.tier === "trial"}
         busy={busy}
+        yearly={billing.yearlyTeamBusiness === true}
         upgrade={
           operatorPlan || lapsedPaid
             ? undefined
             : // A paid plan changes in the billing portal, never a second checkout.
               portal
               ? () => go.mutate("portal")
-              : (tier) => go.mutate({ tier })
+              : // Seats come only from the yearly step; the schema needs them with year.
+                (tier, seats) =>
+                  go.mutate(
+                    seats === undefined
+                      ? { tier }
+                      : { tier, interval: "year", seats },
+                  )
+        }
+        seatsDefault={
+          operatorPlan || lapsedPaid || portal
+            ? undefined
+            : Math.max(1, billing.creatorsThisMonth ?? 1)
         }
       />
     </div>

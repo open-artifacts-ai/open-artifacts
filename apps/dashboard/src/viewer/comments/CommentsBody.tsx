@@ -11,7 +11,14 @@ import {
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, FileText } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
 import {
@@ -35,6 +42,7 @@ import {
   actor,
   asksForMe,
   Delivery,
+  DeliveryFaces,
   type Extras,
   extrasBody,
   MentionChips,
@@ -43,12 +51,29 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  newProblems,
   nextAskFor,
   removeMention,
 } from "./asks";
+import {
+  focusRow,
+  holdAnchor,
+  NewReplyPill,
+  scrollerOf,
+  useKeepScroll,
+} from "./keepScroll";
+import { LIVE_TINT_MS } from "./liveReplies";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { ThreadAgents } from "./threadAgents";
+import { ThreadParticipants } from "./threadParticipants";
 import { type CommentsApi, useCommentsApi } from "./useComments";
+import {
+  fieldCap,
+  keyboardInset,
+  onViewport,
+  trackViewportVar,
+  viewBottom,
+} from "./viewport";
 
 const touch = () =>
   typeof window !== "undefined" &&
@@ -204,6 +229,98 @@ function QuoteBar({
   );
 }
 
+/**
+ * #2234: the outlined field. One line when empty, then it grows a line at a
+ * time up to ~10 lines (240px; ~6 on a phone) and scrolls inside its own edge.
+ */
+export const FIELD =
+  "min-h-[42px] max-h-[min(9rem,calc(var(--oa-vvh,1svh)*40))] md:max-h-[min(15rem,calc(var(--oa-vvh,1svh)*40))] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
+export const FIELD_MAX = 240;
+export const FIELD_MAX_PHONE = 144;
+
+/** Fallback for browsers without `field-sizing: content`: size to the text, capped. */
+export function growField(el: HTMLTextAreaElement | null) {
+  if (!el) return;
+  if (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))
+    return;
+  const phone = !!window.matchMedia?.("(max-width: 767px)").matches;
+  // #2239: 40% of what is visible, so the iOS keyboard counts.
+  const max = fieldCap(phone ? FIELD_MAX_PHONE : FIELD_MAX);
+  // Measuring with height:auto shortens the list and clamps the scroller:
+  // put its scrollTop back.
+  const box = scrollerOf(el);
+  const at = box?.scrollTop ?? 0;
+  el.style.height = "auto";
+  const edge = el.offsetHeight - el.clientHeight; // borders (and a scrollbar)
+  el.style.height = `${Math.min(el.scrollHeight + edge, max)}px`;
+  if (box && box.scrollTop !== at) box.scrollTop = at;
+}
+
+/**
+ * Focus without scrolling the document, then make the field visible inside
+ * the panel's own scroller, between the sticky header and the action row.
+ */
+export function focusField(el: HTMLElement | null) {
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  const adjust = () => {
+    const box = scrollerOf(el);
+    if (!box || !el.isConnected) return;
+    const head =
+      box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ??
+      0;
+    const foot =
+      box.querySelector<HTMLElement>("[data-oa-action-outlet]")?.offsetHeight ??
+      0;
+    const b = box.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const top = b.top + head;
+    // Above the action row, and above the keyboard where there is one.
+    const bottom = Math.min(b.bottom - foot, viewBottom());
+    if (r.top < top) box.scrollTop -= top - r.top;
+    else if (r.bottom > bottom)
+      box.scrollTop += Math.min(r.bottom - bottom, r.top - top);
+  };
+  adjust();
+  // #2239: the row's height is 0 until the layout settles (the pin sheet
+  // claims the outlet after focus), and the keyboard arrives later still:
+  // look again as they change, for a moment.
+  const box = scrollerOf(el);
+  const outlet = box?.querySelector<HTMLElement>("[data-oa-action-outlet]");
+  const ro =
+    outlet && typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(adjust)
+      : null;
+  if (outlet) ro?.observe(outlet);
+  const off = onViewport(adjust);
+  const frame = requestAnimationFrame(adjust);
+  setTimeout(() => {
+    ro?.disconnect();
+    off();
+    cancelAnimationFrame(frame);
+  }, 1000);
+}
+
+/**
+ * #2239: with the keyboard open, keep the whole card (its Reply and Resolve
+ * row too) above the keyboard while its field grows, never pushing the field
+ * itself under the header.
+ */
+export function keepCardClear(el: HTMLElement | null) {
+  if (!el || keyboardInset() === 0 || document.activeElement !== el) return;
+  const box = scrollerOf(el);
+  const card = el.closest<HTMLElement>("[data-thread]");
+  if (!box || !card) return;
+  const head =
+    box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ?? 0;
+  const bottom = Math.min(box.getBoundingClientRect().bottom, viewBottom());
+  const over = card.getBoundingClientRect().bottom - bottom;
+  if (over <= 0) return;
+  const room =
+    el.getBoundingClientRect().top - (box.getBoundingClientRect().top + head);
+  box.scrollTop += Math.max(0, Math.min(over, room));
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -321,8 +438,44 @@ function Composer({
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
-    if (autoFocus) ref.current?.focus();
+    if (autoFocus) focusField(ref.current);
   }, [autoFocus]);
+  // Width changes (panel resize, rotation, a restored hidden draft)
+  // change how many lines the text takes.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let w = el.offsetWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.offsetWidth === w) return;
+      w = el.offsetWidth;
+      growField(el);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // A late font swap changes the line count without changing the width.
+  useEffect(() => {
+    let live = true;
+    document.fonts?.ready.then(() => live && growField(ref.current));
+    return () => {
+      live = false;
+    };
+  }, []);
+  // #2239: the keyboard changes the cap (40% of what is visible).
+  useEffect(() => {
+    const off = onViewport(() => growField(ref.current));
+    const untrack = trackViewportVar();
+    return () => {
+      off();
+      untrack();
+    };
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: text is what changes the height.
+  useLayoutEffect(() => {
+    growField(ref.current);
+    keepCardClear(ref.current);
+  }, [text]);
   const body = text.trim();
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
@@ -362,7 +515,7 @@ function Composer({
     <div
       className={
         card
-          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3 focus-within:border-ring focus-within:ring-1 focus-within:ring-ring"
+          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3"
           : "flex flex-col gap-2"
       }
       data-oa-composing={composing ? "" : undefined}
@@ -378,12 +531,9 @@ function Composer({
         }
         value={text}
         maxLength={COMMENT_BODY_MAX}
-        rows={open ? 3 : 1}
-        className={
-          card
-            ? `${CTXT} border-0 bg-transparent p-0 shadow-none focus-visible:outline-none`
-            : CTXT
-        }
+        rows={1}
+        data-oa-field=""
+        className={`${CTXT} ${FIELD}`}
         onFocus={() => {
           setOpen(true);
           retryAgents();
@@ -427,7 +577,11 @@ function Composer({
               return;
             }
           }
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          if (
+            e.key === "Enter" &&
+            (e.metaKey || e.ctrlKey) &&
+            !e.nativeEvent.isComposing
+          ) {
             e.preventDefault();
             void go();
           }
@@ -528,14 +682,46 @@ function Composer({
 
 export { initials };
 
+/**
+ * #2229: a header that is too tight for the faces gives way in order: the time
+ * first (it stays in the name's tooltip), then the faces down to the summary
+ * mark and its count, and only then the name truncates. Measured: while the
+ * name is cut off, step once more; a new width starts over.
+ */
+function useTightHeader(active: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [stage, setStage] = useState(0);
+  const width = useRef(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !active || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width.current) return;
+      width.current = el.clientWidth;
+      setStage(0);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [active]);
+  // Runs after every render: one step per cut-off name, until it fits or nothing is left to give.
+  useLayoutEffect(() => {
+    const name = ref.current?.querySelector<HTMLElement>("[data-author-name]");
+    if (active && name && name.scrollWidth > name.clientWidth && stage < 2)
+      setStage(stage + 1);
+  });
+  return { ref, stage: active ? stage : 0 };
+}
+
 function Who({
   a,
   at,
   edited,
+  hideTime = false,
 }: {
   a: CommentAuthor;
   at: string;
   edited: boolean;
+  hideTime?: boolean;
 }) {
   const isAgent = a.kind === "agent";
   return (
@@ -543,7 +729,11 @@ function Who({
       <AuthorFace a={a} />
       <div className="flex min-w-0 flex-col self-center">
         <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${CTXT}`}>
-          <b className="min-w-0 truncate" title={a.name}>
+          <b
+            data-author-name=""
+            className="min-w-0 truncate"
+            title={hideTime ? `${a.name}, ${exactDate(at)}` : a.name}
+          >
             {a.name}
           </b>
           {isAgent && (
@@ -555,7 +745,7 @@ function Who({
             </span>
           )}
           <span
-            className={`${MUTED} shrink-0 whitespace-nowrap ${TXT}`}
+            className={`${MUTED} shrink-0 whitespace-nowrap ${TXT} ${hideTime ? "sr-only" : ""}`}
             title={exactDate(at)}
           >
             {versionDate(at)}
@@ -574,12 +764,15 @@ function CommentRow({
   thread,
   c,
   root,
+  allProblems,
   askQuestion,
 }: {
   api: CommentsApi;
   thread: CommentThread;
   c: CommentT;
   root: boolean;
+  /** The thread's new delivery problems per comment, computed once in ThreadCard. */
+  allProblems: ReturnType<typeof newProblems>;
   /** Open a question to the agent that asked (#1794). */
   askQuestion?: () => void;
 }) {
@@ -591,21 +784,43 @@ function CommentRow({
   const [mode, setMode] = useState<"view" | "edit" | "delete">("view");
   const [delError, setDelError] = useState<unknown>(null);
   const any = c.can.edit || c.can.delete;
+  // #2229: marks sit on people's comments, for members (#2004: not guests, nor the capped); an agent's own reply has none.
+  const marks = !api.guest && !api.capped && c.author.kind !== "agent";
+  const problems = allProblems.get(c.id);
+  const tight = useTightHeader(marks && !!c.notified?.length);
   return (
-    <li className="flex flex-col gap-1" data-comment={c.id}>
-      <div className="flex items-start justify-between gap-2">
-        <Who a={c.author} at={c.createdAt} edited={c.editedAt !== null} />
-        {any && mode === "view" && (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Comment actions"
-            aria-expanded={menu}
-            onClick={() => setMenu((m) => !m)}
-          >
-            •••
-          </Button>
-        )}
+    <li
+      className="flex flex-col gap-1"
+      data-comment={c.id}
+      data-live={api.live.tint.has(c.id) ? "" : undefined}
+    >
+      <div
+        ref={tight.ref}
+        data-header-stage={tight.stage}
+        className="flex items-start justify-between gap-2"
+      >
+        <Who
+          a={c.author}
+          at={c.createdAt}
+          edited={c.editedAt !== null}
+          hideTime={tight.stage >= 1}
+        />
+        <div className="flex shrink-0 items-center gap-1">
+          {marks && c.notified?.length ? (
+            <DeliveryFaces told={c.notified} compact={tight.stage >= 2} />
+          ) : null}
+          {any && mode === "view" && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Comment actions"
+              aria-expanded={menu}
+              onClick={() => setMenu((m) => !m)}
+            >
+              •••
+            </Button>
+          )}
+        </div>
       </div>
       {/* #2118: the face hangs in its own column; the text lines up with the name. */}
       <div className="flex flex-col gap-1 pl-8" data-comment-body="">
@@ -673,10 +888,15 @@ function CommentRow({
               body={c.body}
               mentions={c.mentions}
               guest={api.guest}
+              marks={marks}
             />
           </p>
         )}
-        <Delivery c={c} guest={api.guest} />
+        <Delivery
+          c={c}
+          guest={api.guest}
+          problems={api.guest ? [] : (problems ?? [])}
+        />
         {mode === "delete" && (
           <div
             role="alertdialog"
@@ -786,8 +1006,17 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const navigate = useNavigate();
   const resolved = t.status === "resolved";
   const [first, ...rest] = t.comments;
+  const allProblems = useMemo(() => newProblems(t.comments), [t.comments]);
   const expanded = isActive || rest.length === 0;
-  const shown = expanded ? rest : [];
+  // #2179: a folded thread keeps its first comment and its latest reply in
+  // view, and nothing the reader saw folds away mid-visit: the latest reply on
+  // load and every reply since stay (api.live.kept). Only replies folded at
+  // load stay behind the button.
+  // A fold hides two replies or more: never "Show 1 earlier reply".
+  const last = rest[rest.length - 1];
+  const kept = rest.filter((c) => c === last || api.live.kept.has(c.id));
+  const shown = expanded || rest.length - kept.length < 2 ? rest : kept;
+  const hidden = rest.length - shown.length;
   const orphan = api.positions.get(t.id)?.state === "orphan";
   const revealTick = api.revealed.tick;
   const revealedHere = api.revealed.id === t.id;
@@ -846,6 +1075,17 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       watch?.disconnect();
     };
   }, [isActive, revealTick]);
+  // #2179: "Show N earlier replies" moves focus to the first reply it
+  // revealed (after the effect above, which may focus the card).
+  const [revealFirst, setRevealFirst] = useState<string | null>(null);
+  useEffect(() => {
+    if (!revealFirst || !expanded) return;
+    const r = el.current?.querySelector<HTMLElement>(
+      `[data-comment="${CSS.escape(revealFirst)}"]`,
+    );
+    setRevealFirst(null);
+    if (r) focusRow(r);
+  }, [revealFirst, expanded]);
   // Leaving the thread drops the question mode.
   useEffect(() => {
     if (!isActive) setAsking(null);
@@ -876,19 +1116,22 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-card p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          className="cursor-pointer border-0 bg-transparent p-0 text-left"
-          aria-label={
-            t.anchor.kind === "pin"
-              ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
-              : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
-          }
-          aria-pressed={isActive}
-          onClick={() => api.select(t.id, true)}
-        >
-          <Quote t={t} api={api} />
-        </button>
+        <div className="flex items-start gap-2">
+          <button
+            type="button"
+            className="min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left"
+            aria-label={
+              t.anchor.kind === "pin"
+                ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
+                : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
+            }
+            aria-pressed={isActive}
+            onClick={() => api.select(t.id, true)}
+          >
+            <Quote t={t} api={api} />
+          </button>
+          <ThreadParticipants t={t} api={api} />
+        </div>
         {orphan && (
           <p className={`${TXT} ${MUTED}`}>
             Made on version {t.version}.{" "}
@@ -916,35 +1159,57 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {t.resolvedAt ? ` · ${versionDate(t.resolvedAt)}` : ""}
           </p>
         )}
-        <ul className="m-0 flex list-none flex-col gap-3 p-0">
-          <CommentRow
-            api={api}
-            thread={t}
-            c={first}
-            root
-            askQuestion={
-              asker && !asking
-                ? () => {
-                    setAsking(asker);
-                    api.select(t.id, true);
-                  }
-                : undefined
-            }
-          />
-          {shown.map((c) => (
-            <CommentRow key={c.id} api={api} thread={t} c={c} root={false} />
-          ))}
-        </ul>
-        {!expanded && (
-          <Button
-            size="xs"
-            variant="ghost"
-            className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
-            onClick={() => api.select(t.id, true)}
-          >
-            {rest.length === 1 ? "1 reply" : `${rest.length} replies`}
-          </Button>
-        )}
+        {/* The fold button sits between two lists, not inside one. */}
+        <div className="flex flex-col gap-3">
+          <ul className="m-0 flex list-none flex-col gap-3 p-0">
+            <CommentRow
+              api={api}
+              thread={t}
+              c={first}
+              allProblems={allProblems}
+              root
+              askQuestion={
+                asker && !asking
+                  ? () => {
+                      setAsking(asker);
+                      api.select(t.id, true);
+                    }
+                  : undefined
+              }
+            />
+          </ul>
+          {hidden > 0 && (
+            <Button
+              size="xs"
+              variant="ghost"
+              data-earlier=""
+              className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
+              onClick={() => {
+                // The thread keeps its top: the revealed replies open below
+                // it, not above the reader.
+                holdAnchor(el.current);
+                setRevealFirst(rest[0]?.id ?? null);
+                api.select(t.id, true);
+              }}
+            >
+              {`Show ${hidden} earlier replies`}
+            </Button>
+          )}
+          {shown.length > 0 && (
+            <ul className="m-0 flex list-none flex-col gap-3 p-0">
+              {shown.map((c) => (
+                <CommentRow
+                  key={c.id}
+                  api={api}
+                  thread={t}
+                  c={c}
+                  allProblems={allProblems}
+                  root={false}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
         {statusErr != null && (
           <p role="alert" className={`${TXT} text-destructive`}>
             {commentError(statusErr, api.capped, errCtx)}
@@ -1195,16 +1460,35 @@ export function CommentsBody({
   // #2118: one composer at a time: a quote open hides the whole-page box
   // (mounted still, so a typed note survives) until Cancel or send.
   const draftOpen = api.draft != null && api.canComment;
+  const box = useRef<HTMLDivElement>(null);
+  const keep = useKeepScroll(box, api.live.arrived);
   return (
     // #1711: in the short sheet the list keeps its content height (`flex-none`:
     // no grow, no shrink, no zero basis), so the action row's outlet sits after
     // it, stuck to the sheet's bottom, instead of riding up to the sheet's top
     // when a card is scrolled into view. Every other surface grows as before.
     <div
-      className={`flex min-h-0 ${grow ? "flex-1" : "flex-none"} flex-col gap-3 p-4`}
+      ref={box}
+      className={`flex ${grow ? "min-h-fit flex-1" : "min-h-0 flex-none"} flex-col gap-3 p-4 [overflow-anchor:none]`}
+      style={
+        { "--oa-live-tint-ms": `${LIVE_TINT_MS}ms` } as React.CSSProperties
+      }
     >
+      {keep.pill === "up" && (
+        <NewReplyPill dir="up" onClick={keep.go} under={heading} />
+      )}
+      {/* #2179: one polite message per refetch that brought replies. The
+          region stays mounted; a zero-width space alternates so the same
+          words twice are still a change. */}
+      <p data-live-region="" className="sr-only" aria-live="polite">
+        {api.live.announce.text}
+        {api.live.announce.n % 2 ? "\u200b" : ""}
+      </p>
       {heading && (
-        <div className="flex items-baseline justify-between gap-2">
+        <div
+          data-comments-header=""
+          className="sticky top-0 z-20 -mx-4 -mt-4 flex items-baseline justify-between gap-2 bg-[var(--oa-bg)] px-4 pt-4 pb-2"
+        >
           <h2 className={`m-0 font-semibold ${CTXT}`}>Comments</h2>
           {api.listedOpen > 0 && (
             <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
@@ -1307,6 +1591,14 @@ export function CommentsBody({
             </section>
           )}
         </>
+      )}
+      {keep.pill === "down" && (
+        <NewReplyPill
+          dir="down"
+          foot={keep.foot}
+          onClick={keep.go}
+          under={heading}
+        />
       )}
     </div>
   );

@@ -26,9 +26,15 @@
  *    - ANY argv element or shell word is an absolute path whose basename is
  *      a guarded CLI outside the stub dir and temp dirs (`timeout 5 /abs/pi`,
  *      `env -u X /abs/pi`, `sh -c "/abs/pi"`, `cd / && /abs/pi`).
+ *    - ANY argv element or shell word is an absolute path whose real path
+ *      is the target of a guarded CLI symlink found on the PATH at setup
+ *      (`node /abs/.../pi-coding-agent/dist/cli.js`, `bun /abs/cli.js`),
+ *      outside the stub dir and temp dirs. The targets are collected from
+ *      the PATH before the stub dir goes on it (see guardEntriesOn).
  *    Not covered: a CLI reached by a bare name inside a shell string after
- *    the first word (PATH stubs cover it), or by a path built at run time
- *    inside the child.
+ *    the first word (PATH stubs cover it), a path built at run time inside
+ *    the child, a JS entry the PATH does not link to, or a CLI whose
+ *    entry is a relative path with a changed cwd inside a shell string.
  * Trusted by design: anything under a temp dir (/tmp, /var/tmp, os.tmpdir),
  * where tests build their own fakes, including symlinks to system tools.
  * Not exercised: the DEFAULT_PATH fallback and the macOS /private symlink
@@ -39,6 +45,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -110,7 +117,8 @@ if (!process.env.COREPACK_HOME && process.env.HOME)
     "node",
     "corepack",
   );
-const inTmp = (v: string | undefined) =>
+/** True when a path sits under a temp root the guard trusts. */
+export const inTmp = (v: string | undefined) =>
   !!v && TMP_ROOTS.some((t) => under(real(v), t));
 if (!inTmp(process.env.HOME)) process.env.HOME = join(GUARD_DIR, "home");
 const HOME = process.env.HOME as string;
@@ -128,6 +136,41 @@ place("CODEX_HOME", ".codex");
 place("OA_BUS_HOME", ".oa-bus");
 place("PI_CODING_AGENT_DIR", join(".pi", "agent"));
 place("HERMES_HOME", ".hermes");
+
+// Real files the guarded names resolve to on a PATH: a bin symlink such as
+// `pi -> ../lib/node_modules/.../dist/cli.js` runs the same code as
+// `node <abs>/cli.js`. Anything under the stub dir or a temp dir is left out.
+const ENTRIES = new Set<string>();
+// Kept only when the target looks like the CLI's own entry: a guarded
+// basename or a JS file. A shared shim (volta-shim, mise) is not an entry,
+// nor is a target that a non-guarded executable in the same dir also
+// resolves to (blocking it would block `node`, `npm`, ...).
+export function guardEntriesOn(path: string): void {
+  for (const d of path.split(delimiter)) {
+    if (!d) continue;
+    let siblings: string[] | undefined;
+    for (const n of AGENT_CLIS) {
+      const f = join(d, n);
+      if (!isExecFile(f)) continue;
+      const r = real(f);
+      if (under(r, STUB_DIR) || TMP_ROOTS.some((t) => under(r, t))) continue;
+      if (!CLI_SET.has(basename(r)) && !/\.[cm]?js$/.test(r)) continue;
+      siblings ??= readdirSync(d)
+        .filter((e) => !CLI_SET.has(e))
+        .map((e) => real(join(d, e)));
+      if (siblings.includes(r)) continue;
+      ENTRIES.add(r);
+    }
+  }
+}
+function isExecFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+guardEntriesOn(process.env.PATH ?? "");
 
 // 2. Stub dir first on PATH.
 const pathParts = (process.env.PATH ?? "")
@@ -157,9 +200,13 @@ const WRAPPERS = new Set(["env", "nohup", "exec", "command"]);
 /** Throws on any word that is an absolute path to a real guarded CLI. */
 function scanWords(parts: readonly string[], cwd: string | undefined): void {
   for (const part of parts)
-    for (const w of part.split(/[\s;&|()"'`$<>]+/))
-      if (w.startsWith("/") && CLI_SET.has(basename(w)))
-        refuse(basename(w), resolve(cwd ?? process.cwd(), w));
+    for (const w of part.split(/[\s;&|()"'`$<>=]+/))
+      if (w.startsWith("/")) {
+        const abs = resolve(cwd ?? process.cwd(), w);
+        if (CLI_SET.has(basename(w))) refuse(basename(w), abs);
+        else if (ENTRIES.size > 0 && ENTRIES.has(real(abs)))
+          refuse(basename(w), real(abs));
+      }
 }
 
 function refuse(name: string, p: string): void {

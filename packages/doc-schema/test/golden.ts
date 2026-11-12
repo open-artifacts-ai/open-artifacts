@@ -22,6 +22,10 @@ export const GOLDEN: Record<string, string> = {
     "- [ ] ship **slice 1**\n- [x] read [the design](https://example.com)\n",
   listItemParagraphs: "- First\n\n  continued\n- Second\n",
   adjacentLists: "- a\n\n\n* b\n\n1. c\n\n\n1) d\n",
+  hardBreak: "Line one\\\nline two\\\nline three\n\nNext paragraph.\n",
+  hardBreakInBlocks:
+    "- item one\\\n  still item one\n\n* [ ] task\\\n  continued\n\n> quoted\\\n> on two lines\n",
+  hardBreakWithMarks: "**bold** and *italic*\\\n`code` after\n",
   quote: "> A quote.\n>\n> Second paragraph.\n",
   quoteWithBlocks: "> ## In a quote\n>\n> - item\n>\n> ```js\n> x()\n> ```\n",
   codeBlock: "```ts\nconst a = 1;\n\nconsole.log(a);\n```\n",

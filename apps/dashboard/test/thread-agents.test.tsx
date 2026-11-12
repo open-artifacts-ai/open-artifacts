@@ -45,6 +45,12 @@ describe("ThreadAgents", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("a removed agent is not a chip", () => {
+    const gone = { ...agent("OA Billing", true), removed: true };
+    const { container } = render(<ThreadAgents t={thread([gone])} api={api} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it("× opens the confirm; Keep closes it; Remove sends the removal", () => {
     render(<ThreadAgents t={thread([agent("OA Billing", true)])} api={api} />);
     fireEvent.click(

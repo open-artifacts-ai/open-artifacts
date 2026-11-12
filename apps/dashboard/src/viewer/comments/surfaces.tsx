@@ -154,7 +154,7 @@ export function CommentsDialog({
         aria-label="Comments"
         data-sheet-height={height}
         data-pin-replies={height === "pin" && pinReplies ? "" : undefined}
-        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:bottom-[var(--oa-kb,0px)] max-[600px]:max-h-[calc(100dvh-var(--oa-kb,0px)-1rem)] max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;
@@ -197,7 +197,12 @@ export function CommentsDialog({
         >
           <span className="h-1 w-10 rounded-full bg-border" />
         </button>
-        <div className={`flex items-center justify-between px-4 pt-3 ${TXT}`}>
+        {/* #2179: the header sits above the sheet's scroller, so it never
+            scrolls away. */}
+        <div
+          data-comments-header=""
+          className={`flex flex-none items-center justify-between bg-[var(--oa-bg)] px-4 pt-3 ${TXT}`}
+        >
           <div className="flex items-baseline gap-2">
             <h2 className="m-0 font-semibold">Comments</h2>
             {open > 0 && (

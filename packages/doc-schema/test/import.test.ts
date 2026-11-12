@@ -86,13 +86,6 @@ const CASES: {
     kinds: ["heading_level", "heading_level"],
   },
   {
-    name: "hard break",
-    md: "line one  \nline two\\\nline three\n",
-    out: "line one line two line three\n",
-    kinds: ["hard_break", "hard_break"],
-    lines: [1, 1],
-  },
-  {
     name: "mixed task list",
     md: "- [ ] task\n- plain\n",
     out: "- \\[ \\] task\n- plain\n",

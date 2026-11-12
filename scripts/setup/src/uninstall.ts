@@ -1,0 +1,188 @@
+import { parseArgs } from "node:util";
+import { type Deps, realFs } from "./cf.ts";
+import { homeOf, patTokenFile } from "./secret-file.ts";
+import { readState } from "./state.ts";
+import { DASH_SENDING, records } from "./steps/email.ts";
+import { names } from "./steps/resources.ts";
+
+type Item = {
+  /** Order to remove in: access, dns, worker, then data. */
+  order: number;
+  kind: string;
+  resource: string;
+  how: string;
+  /** Deleting this destroys data. */
+  destroysData?: boolean;
+};
+
+/**
+ * --uninstall --check: a dry run. Reads only the saved state file and which token
+ * files exist, then lists what setup created and how to remove each piece.
+ * It makes no network call and runs no process.
+ */
+export async function uninstallCommand(
+  argv: string[],
+  deps: Deps,
+  root: string,
+): Promise<number> {
+  const { values: v } = parseArgs({
+    args: argv,
+    strict: false,
+    options: { name: { type: "string" }, json: { type: "boolean" } },
+  });
+  const json = Boolean(v.json);
+  const out = (status: "ok" | "error", message: string, data?: unknown) =>
+    deps.out(
+      json
+        ? JSON.stringify({ step: "uninstall", status, message, data })
+        : message,
+    );
+  const extra = argv.filter(
+    (a) =>
+      a.startsWith("-") &&
+      !["--uninstall", "--check", "--json"].includes(a) &&
+      a !== "--name" &&
+      !a.startsWith("--name="),
+  );
+  if (extra.length) {
+    out(
+      "error",
+      `--uninstall --check runs on its own; drop ${extra.join(", ")} (only --check, --json and --name are allowed). Nothing was changed.`,
+    );
+    return 1;
+  }
+  if (!argv.includes("--check")) {
+    out(
+      "error",
+      "--uninstall only has a dry run so far: add --check. Nothing was changed.",
+    );
+    return 1;
+  }
+  const fs = deps.fs ?? realFs;
+  const s = readState(fs, root);
+  const given = v.name as string | undefined;
+  const name = s.name ?? given;
+  if (!name) {
+    out("error", "no saved state: pass --name <install name>");
+    return 1;
+  }
+  if (s.name && given !== undefined && given !== s.name) {
+    out(
+      "error",
+      `--name ${given} differs from the saved name ${s.name}; drop --name or run from the right clone`,
+    );
+    return 1;
+  }
+  const w = `pnpm --dir apps/server exec wrangler`;
+  const acct = s.accountId ? ` (account ${s.accountId})` : "";
+  const items: Item[] = [];
+  if (s.accessAppId)
+    items.push({
+      order: 1,
+      kind: "Access app",
+      resource: `${name} (${s.accessAppId})`,
+      how: 'Zero Trust dashboard: Access, Applications, the app, Delete. Its policy "Open Artifacts – everyone" can go with it if nothing else uses it.',
+    });
+  if (s.emailDomain) {
+    const d = s.emailDomain;
+    const recs = records(d)
+      .filter((r) => !r.name.startsWith("_dmarc"))
+      .map((r) => `${r.type} ${r.name}`)
+      .join(", ");
+    items.push({
+      order: 2,
+      kind: "Email Sending domain and DNS records",
+      resource: d,
+      how: `Dashboard (${DASH_SENDING}): Email Service, Email Sending, remove ${d}. Then in the zone's DNS page delete ${recs}. Delete TXT _dmarc.${d} only if onboarding created it: on an apex sending domain it may be your own policy.`,
+    });
+  }
+  if (s.pendingAccessAppId)
+    items.push({
+      order: 1,
+      kind: "Orphaned Access app (a setup run was interrupted)",
+      resource: `${name} (${s.pendingAccessAppId})`,
+      how: "Zero Trust dashboard: Access, Applications, the app with this id, Delete.",
+    });
+  const hosts = [s.appHost, s.contentHost].filter(Boolean) as string[];
+  if (hosts.length)
+    items.push({
+      order: 3,
+      kind: "Custom domains (DNS)",
+      resource: hosts.join(", "),
+      how: "Removed with the Worker. To free them first: dashboard, Workers & Pages, the Worker, Settings, Domains & Routes, delete each.",
+    });
+  items.push({
+    order: 4,
+    kind: "Worker (and its Durable Objects)",
+    resource: name,
+    how: `${w} delete --name ${name}. This destroys the Durable Objects (ArtifactRuntime, BusHub, DirectorySync, UserPresence): live-page and agent bus state is not exported and is lost.`,
+    destroysData: true,
+  });
+  // Names come from setup's own naming (resources.ts), so they hold without saved ids.
+  const n = names(name);
+  items.push({
+    order: 0,
+    kind: "Backup (do this first)",
+    resource: `D1 ${n.d1}, R2 ${n.r2}`,
+    how: `D1: a whole-database export fails here (the search index is a virtual table), so export the tables. List them at run time: ${w} d1 execute ${n.d1} --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'artifact_search*' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name != 'd1_migrations'" ; then one command per table <t> it returned: ${w} d1 export ${n.d1} --remote --no-schema --table <t> --output <t>.sql . Check each file: its INSERT count must equal ${w} d1 execute ${n.d1} --remote --command "SELECT COUNT(*) FROM <t>" (empty tables are normal). Skipped on purpose: the search index (artifact_search*, a virtual table), Cloudflare's internal _cf_* tables, sqlite_* tables (sqlite_sequence) and d1_migrations. An export locks the database while it runs. If an export fails, or a count does not match, stop and do not delete anything. Restore is not supported yet; this copy is for safekeeping. R2: rclone sync r2:${n.r2} ./backup-r2 copies the whole bucket (needs R2 S3 credentials: dashboard, R2, Manage API Tokens); to fetch single keys, list them in the dashboard or with rclone lsf r2:${n.r2}, then ${w} r2 object get ${n.r2}/<key> --remote --file <path>. Lighter option: ask any AI agent to save the latest version of each artifact (latest versions only).`,
+  });
+  items.push({
+    order: 5,
+    kind: "KV namespace",
+    resource: s.kvId ? `${n.kv} (${s.kvId})` : n.kv,
+    how: s.kvId
+      ? `${w} kv namespace delete --namespace-id ${s.kvId}`
+      : `Find the id: ${w} kv namespace list (the entry titled ${n.kv}), then ${w} kv namespace delete --namespace-id <id>`,
+    destroysData: true,
+  });
+  items.push({
+    order: 6,
+    kind: "D1 database",
+    resource: s.d1Id ? `${n.d1} (${s.d1Id})` : n.d1,
+    how: `${w} d1 delete ${n.d1} . Cloudflare can undelete a D1 database only within 7 days.`,
+    destroysData: true,
+  });
+  items.push({
+    order: 7,
+    kind: "R2 bucket",
+    resource: n.r2,
+    how: `Empty it first. The dashboard's select all clears only the listed page, so for a bulk path add a lifecycle rule that expires all objects (R2, the bucket, Settings, Object lifecycle rules) and wait for it to run, or run rclone purge r2:${n.r2}. Then ${w} r2 bucket delete ${n.r2}`,
+    destroysData: true,
+  });
+  const home = homeOf(deps.env);
+  const files = [
+    ...["cloudflare", "access", "analytics"].map(
+      (k) => `${home}/.open-artifacts/${name}-${k}-token`,
+    ),
+    ...(s.appHost ? [patTokenFile(home, s.appHost)] : []),
+  ].filter((p) => fs.readToken?.(p) != null);
+  items.push({
+    order: 8,
+    kind: "Local files",
+    resource: [
+      ...files,
+      `${root}/.openartifacts/state.json`,
+      `${root}/apps/server/wrangler.jsonc`,
+    ].join(", "),
+    how: "Delete them last, since later commands read them. Revoke the Cloudflare API tokens in the dashboard (My Profile, API Tokens) too.",
+  });
+  items.sort((a, b) => a.order - b.order);
+  if (json) {
+    out("ok", `dry run: ${items.length} things to remove; nothing changed`, {
+      name,
+      accountId: s.accountId,
+      items,
+    });
+    return 0;
+  }
+  const lines = [
+    `Uninstall dry run for ${name}${acct}. Nothing was changed. Remove in this order:`,
+    ...items.map(
+      (i, n) =>
+        `${n + 1}. ${i.kind}: ${i.resource}\n   ${i.how}${i.destroysData ? "\n   DESTROYS DATA: export first." : ""}`,
+    ),
+    "Full guide: /docs/uninstall/",
+  ];
+  out("ok", lines.join("\n"));
+  return 0;
+}

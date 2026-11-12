@@ -6,7 +6,7 @@ import type {
 } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { UPSERT } from "./store.js";
+import { CONNECTED_KEYS, UPSERT } from "./store.js";
 
 // Directory sync health at rest (P3 T13), in directory_state next to T12's
 // binding rows, so every reader (R.directory, Me.instance.directory, and
@@ -119,9 +119,13 @@ export async function readHealthRaw(
   const row = await stmt(env.DB, READ)
     .bind(HK.health)
     .first<{ value: string }>();
-  if (!row) return { h: NEVER, raw: null };
+  return parseHealth(row?.value ?? null);
+}
+
+function parseHealth(raw: string | null): { h: Health; raw: string | null } {
+  if (raw === null) return { h: NEVER, raw: null };
   try {
-    const v = JSON.parse(row.value) as Partial<Health>;
+    const v = JSON.parse(raw) as Partial<Health>;
     return {
       h: {
         ...NEVER,
@@ -130,11 +134,33 @@ export async function readHealthRaw(
         liftsPaused: Array.isArray(v.liftsPaused) ? v.liftsPaused : [],
         lanes: { ...NEVER.lanes, ...(v.lanes ?? {}) },
       },
-      raw: row.value,
+      raw,
     };
   } catch {
-    return { h: NEVER, raw: row.value };
+    return { h: NEVER, raw };
   }
+}
+
+/**
+ * Health and whether a directory is connected (any CONNECTED key), in the one D1 statement /me
+ * already spends on health (both are directory_state rows): no extra read.
+ */
+export async function readHealthBound(
+  env: Pick<Env, "DB">,
+): Promise<{ h: Health; bound: boolean }> {
+  const { results } = await stmt(
+    env.DB,
+    `select key, value from directory_state where key in (?, ${CONNECTED_KEYS.map(() => "?").join(", ")})`,
+  )
+    .bind(HK.health, ...CONNECTED_KEYS)
+    .all<{ key: string; value: string }>();
+  let health: string | null = null;
+  let bound = false;
+  for (const r of results) {
+    if (r.key === HK.health) health = r.value;
+    else bound = true;
+  }
+  return { h: parseHealth(health).h, bound };
 }
 
 /**
@@ -244,6 +270,8 @@ export function instanceDirectory(
   h: Health,
   admin: boolean,
   now = Date.now(),
+  /** A directory is connected (live or pending); set for owners and admins only. */
+  bound?: boolean,
 ): InstanceDirectory {
   if (mode === "off" || !admin)
     return {
@@ -265,6 +293,7 @@ export function instanceDirectory(
     banner: unhealthy && now - (h.unhealthySince ?? now) >= BANNER_AFTER_MS,
     tokensUnverified: unhealthy,
     state: h.state,
+    ...(bound === undefined ? {} : { bound }),
     staleAt: f.staleAt,
     // A snoozed hold doesn't light the Settings dot (#412).
     heldSweeps: h.held.filter((x) => !snoozedAt(x, now)).length,
