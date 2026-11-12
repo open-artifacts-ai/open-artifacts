@@ -183,3 +183,23 @@ describe("focusField re-measures after layout (#2239)", () => {
     sc.remove();
   });
 });
+
+describe("focusField's cleanup after teardown", () => {
+  it("does not throw when cancelAnimationFrame is gone by the time it runs", () => {
+    vi.useFakeTimers();
+    const el = document.createElement("textarea");
+    document.body.append(el);
+    focusField(el);
+    const cancel = globalThis.cancelAnimationFrame;
+    // jsdom teardown removes the window's globals before a pending timer fires.
+    // biome-ignore lint/suspicious/noExplicitAny: removing a global on purpose.
+    (globalThis as any).cancelAnimationFrame = undefined;
+    try {
+      expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+    } finally {
+      globalThis.cancelAnimationFrame = cancel;
+      vi.useRealTimers();
+      el.remove();
+    }
+  });
+});

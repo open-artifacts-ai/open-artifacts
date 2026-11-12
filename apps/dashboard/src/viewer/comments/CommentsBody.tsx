@@ -300,7 +300,8 @@ export function focusField(el: HTMLElement | null) {
   setTimeout(() => {
     ro?.disconnect();
     off();
-    cancelAnimationFrame(frame);
+    // The page (or a test's jsdom) may be gone by now.
+    globalThis.cancelAnimationFrame?.(frame);
   }, 1000);
 }
 
