@@ -8,6 +8,7 @@ import { Button } from "@oa/ui/shadcn";
 import { readOnlyCopy } from "../api/errorCopy";
 import { AppLink } from "../library/AppLink";
 import { Notice } from "./Notice";
+import { OverageNotice } from "./OverageNotice";
 
 export const PLAN_PAGE = "/settings/plan";
 /**
@@ -49,22 +50,32 @@ export function PlanBanner({
   className?: string;
 }) {
   const billing = me?.instance.billing;
-  if (!billing?.readOnly) return null;
   // Owners and admins reach Plan and billing even while the plan locks the
   // instance (the cap "plan" is only on the other people).
   const admin = me?.user.role === "owner" || me?.user.role === "admin";
+  // #2246: unpaid extra-creator charges; the server sends them to admins only.
+  const overage =
+    admin && billing?.overageDue ? (
+      <div className={`mb-[var(--oa-space-3)] ${className}`}>
+        <OverageNotice due={billing.overageDue} compact />
+      </div>
+    ) : null;
+  if (!billing?.readOnly) return overage;
   return (
-    <div
-      data-testid="plan-banner"
-      className={`mb-[var(--oa-space-3)] ${className}`}
-    >
-      <Notice
-        tone="warning"
-        compact
-        action={admin ? ownerAction(billing.reason) : undefined}
+    <>
+      {overage}
+      <div
+        data-testid="plan-banner"
+        className={`mb-[var(--oa-space-3)] ${className}`}
       >
-        {readOnlyCopy(billing.reason, admin)}
-      </Notice>
-    </div>
+        <Notice
+          tone="warning"
+          compact
+          action={admin ? ownerAction(billing.reason) : undefined}
+        >
+          {readOnlyCopy(billing.reason, admin)}
+        </Notice>
+      </div>
+    </>
   );
 }

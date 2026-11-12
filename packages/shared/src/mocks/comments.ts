@@ -176,7 +176,14 @@ export function createCommentMock({
     const a = comment("Can we tighten this headline?", other, m);
     const b = comment("Agreed, shorter is better.", mine());
     const c = comment("Looks good overall.", other, m);
-    const d = comment("Which layout do we ship?", other, m);
+    // #2344: the steps an agent puts in the body, shown above the question.
+    const d = comment(
+      seedAsk
+        ? "Steps to compare:\n1. Open the Landing page\n2. Resize to 390 px wide\n3. Check the hero in both layouts"
+        : "Which layout do we ship?",
+      other,
+      m,
+    );
     d.ask = {
       question: "Which layout do we ship?",
       options: [
@@ -430,7 +437,10 @@ export function createCommentMock({
         '<script>alert(1)</script> <img src=x onerror="alert(1)"> ![pic](https://example.com/p.png) &lt;b&gt;',
         bot,
       );
-      const ask = comment("Pick **one**", bot);
+      const ask = comment(
+        "Steps:\n\n- Open the **pricing** page\n- Compare with [the spec](https://example.com/spec)\n\nThen pick below. Raw <b>html</b> stays text.",
+        bot,
+      );
       ask.ask = {
         question:
           "Which `layout` should we **ship**? See https://example.com/spec",

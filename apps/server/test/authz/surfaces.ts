@@ -1894,6 +1894,86 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #2263 passkeys: the matrix's sessions are not fresh forced sign-ins, so
+  // an allowed caller is answered reauth_required (register, remove) or
+  // no_passkey (a challenge: the world's members hold none) before anything
+  // is written.
+  "POST /api/v1/passkeys/register/begin": {
+    real: {
+      req: () => ({ path: "" }),
+      allow: code("reauth_required"),
+    },
+  },
+  "POST /api/v1/passkeys/register/challenge": {
+    real: {
+      req: () => ({ path: "" }),
+      allow: code("reauth_required"),
+    },
+  },
+  "POST /api/v1/passkeys/register/finish": {
+    real: {
+      req: () => ({ path: "", body: { probe: 1 } }),
+      allow: code("reauth_required"),
+    },
+  },
+  "POST /api/v1/passkeys/:id/challenge": {
+    real: {
+      req: () => ({ path: "/api/v1/passkeys/probe/challenge" }),
+      allow: code("no_passkey"),
+    },
+  },
+  "DELETE /api/v1/passkeys/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/passkeys/probe" }),
+      allow: code("reauth_required"),
+    },
+  },
+  "POST /api/v1/passkeys/:id/cancel-removal": {
+    real: {
+      req: () => ({ path: "/api/v1/passkeys/probe/cancel-removal" }),
+      allow: code("conflict"),
+    },
+  },
+  "PATCH /api/v1/passkeys/settings": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          actions: {
+            merge: true,
+            deploy: true,
+            delete: true,
+            share: true,
+            public: true,
+            command: true,
+          },
+          everyPick: false,
+        },
+      }),
+      allow: ok(200),
+    },
+  },
+  "POST /api/v1/passkeys/settings/challenge": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          actions: {
+            merge: true,
+            deploy: true,
+            delete: true,
+            share: true,
+            public: true,
+            command: true,
+          },
+          everyPick: false,
+        },
+      }),
+      allow: code("no_passkey"),
+    },
+  },
   // Hosted only (ORG's hostedOnly): no refusal mode, since on a hosted
   // install an allowed caller's request reaches billing. In this world the
   // only refusals are the handler's 404 (every signed-in caller) and the
@@ -2127,6 +2207,18 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/notices/guest_shares/dismiss", org("notices.own")],
   ["POST /api/v1/notices/guest_summary/dismiss", org("notices.manage")],
   ["POST /api/v1/artifacts", org("artifact.create")],
+  // #2263: passkeys. A browser session only; the handlers answer 403 to a
+  // token, which the matrix reads as a deny for every non-cookie caller.
+  ["GET /api/v1/passkeys", U, [200]],
+  ["POST /api/v1/passkeys/register/begin", U],
+  ["POST /api/v1/passkeys/register/challenge", U],
+  ["POST /api/v1/passkeys/register/finish", U],
+  ["POST /api/v1/passkeys/:id/challenge", U],
+  ["DELETE /api/v1/passkeys/:id", U],
+  ["POST /api/v1/passkeys/:id/cancel-removal", U],
+  ["GET /api/v1/passkeys/settings", U, [200]],
+  ["PATCH /api/v1/passkeys/settings", U],
+  ["POST /api/v1/passkeys/settings/challenge", U],
   ["GET /api/v1/tokens", U, [200]],
   ["POST /api/v1/tokens", org("tokens.create")],
   ["PATCH /api/v1/tokens/:id", U],

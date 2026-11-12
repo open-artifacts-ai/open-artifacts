@@ -55,6 +55,7 @@ import {
   newProblems,
   nextAskFor,
   removeMention,
+  showsAskBody,
 } from "./asks";
 import {
   focusRow,
@@ -1063,6 +1064,23 @@ function CommentRow({
             }
             askQuestion={askQuestion}
             guest={api.guest}
+            body={
+              showsAskBody(c.body, c.ask.question) ? (
+                <div
+                  className={`break-words ${CTXT}`}
+                  data-ask-body=""
+                  {...roving}
+                >
+                  <MentionedText
+                    body={c.body}
+                    mentions={c.mentions}
+                    guest={api.guest}
+                    marks={marks}
+                    createdAt={c.createdAt}
+                  />
+                </div>
+              ) : undefined
+            }
           />
         ) : (
           <div className={`break-words ${CTXT}`} {...roving}>

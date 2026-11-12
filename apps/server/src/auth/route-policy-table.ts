@@ -278,6 +278,19 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   }),
   [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`]:
     art("comments.read"),
+  // #2263: passkeys; the handlers refuse anything but a browser session.
+  "GET /api/v1/passkeys": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/register/begin": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/register/challenge": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/register/finish": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/:id/challenge": { user: "the caller's passkeys" },
+  "DELETE /api/v1/passkeys/:id": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/:id/cancel-removal": { user: "the caller's passkeys" },
+  "GET /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
+  "PATCH /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
+  "POST /api/v1/passkeys/settings/challenge": {
+    user: "the caller's passkey settings",
+  },
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
   "PATCH /api/v1/tokens/:id": { user: "the caller's tokens" },

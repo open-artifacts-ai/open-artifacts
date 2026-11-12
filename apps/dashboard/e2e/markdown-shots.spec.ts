@@ -55,6 +55,10 @@ for (const width of [1280, 390])
               e.parentElement.getBoundingClientRect().right + 1,
         ),
       ).toBe(true);
+      const card = page.locator("[data-ask]", { hasText: "Which" });
+      await expect(card.locator("[data-ask-body] ul li")).toHaveCount(2);
+      await expect(card.locator("[data-ask-body] a")).toHaveCount(1);
+      await expect(card.locator("button a")).toHaveCount(0);
       const body = await page.screenshot();
       await info.attach(`markdown-${width}-${theme}`, {
         body,
@@ -65,6 +69,8 @@ for (const width of [1280, 390])
         await page.screenshot({
           path: `${OUT}/markdown-${width}-${theme}.png`,
         });
+        await card.scrollIntoViewIfNeeded();
+        await card.screenshot({ path: `${OUT}/ask-${width}-${theme}.png` });
         await rich
           .locator("pre")
           .screenshot({ path: `${OUT}/code-${width}-${theme}.png` });

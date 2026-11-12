@@ -21,6 +21,7 @@ import { mountDirectory } from "./directory.js";
 import { mountMe } from "./me.js";
 import { mountMembers } from "./members.js";
 import { mountOnboarding } from "./onboarding.js";
+import { mountPasskeys } from "./passkeys.js";
 import { mountSearch } from "./search.js";
 import { mountSettings } from "./settings.js";
 import { mountShareNotices } from "./share-notices.js";
@@ -52,6 +53,7 @@ export function mountRoutes(app: AppType): void {
   mountSearch(app);
   mountRuntime(app);
   mountComments(app);
+  mountPasskeys(app);
   mountTokens(app);
   mountUsage(app);
   mountAudit(app);
