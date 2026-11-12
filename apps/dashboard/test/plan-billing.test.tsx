@@ -431,6 +431,21 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
       expect(screen.queryByText(/renews/)).toBeNull();
       expect(screen.getByText("First charge on Dec 1, 2026.")).toBeVisible();
     });
+    it("a Team row with a future soloTrialEndsAt still shows renews", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TEAM,
+          hasCustomer: true,
+          soloTrialEndsAt: "2026-12-01T00:00:00.000Z",
+          interval: "year",
+          renewsAt: RENEWS,
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent(
+        "$100 per creator per year, renews Dec 1, 2027",
+      );
+    });
     it("a no-card Solo trial shows no renewal, whatever billing sends", async () => {
       mountHosted("/settings/plan", {
         billing: { ...TRIAL, interval: "month", renewsAt: RENEWS },

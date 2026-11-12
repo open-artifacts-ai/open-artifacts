@@ -242,7 +242,7 @@ export function Plan() {
     billing.interval &&
     billing.renewsAt &&
     (tierKey === "solo" || tierKey === "team" || tierKey === "business")
-      ? soloTrialing
+      ? billing.tier === "solo" && soloTrialing
         ? // A free month with a card on file: "First charge on" gives the date.
           PRICE_BY_INTERVAL[tierKey][billing.interval]
         : `${PRICE_BY_INTERVAL[tierKey][billing.interval]}, renews ${date(billing.renewsAt)}`
