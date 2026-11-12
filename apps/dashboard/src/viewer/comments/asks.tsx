@@ -20,7 +20,7 @@ import { versionDate } from "../versionDate";
 import { PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
-import { linkify } from "./linkify";
+import { Markdown, MarkdownInline } from "./Markdown";
 
 const MUTED = "text-muted-foreground";
 
@@ -619,9 +619,9 @@ export function AskBlock({
             asks{askedWho(ask.to, mine)}
           </p>
           {body}
-          <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {linked(ask.question, 0)}
-          </p>
+          <div id={qid} className={`${TXT} font-semibold break-words`}>
+            <Markdown body={ask.question} />
+          </div>
           <ul
             ref={opts}
             aria-labelledby={qid}
@@ -673,7 +673,7 @@ export function AskBlock({
                       <b>{o.label}</b>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
-                          {o.detail}
+                          <MarkdownInline body={o.detail} links={false} />
                         </span>
                       )}
                     </span>
@@ -857,15 +857,15 @@ export function removeMention(
   return atStart ? out.trimStart() : out;
 }
 
-/** A posted body with each `@name` from its mentions as a chip. Text spans only,
-    never HTML; a body with no mentions is the plain string. */
-export function MentionedText({
-  body,
-  mentions,
-  guest = false,
-  marks,
-  createdAt,
-}: {
+/** A posted body as the safe markdown subset (#2338), with each `@name` from its
+    mentions as a chip in its text. Text spans and elements only, never HTML. */
+export function MentionedText(props: MentionedProps) {
+  return (
+    <Markdown body={props.body} text={(s) => <>{mentioned(s, props)}</>} />
+  );
+}
+
+type MentionedProps = {
   body: string;
   mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
     key: string;
@@ -877,8 +877,14 @@ export function MentionedText({
   marks?: boolean;
   /** The comment's createdAt, for "sending" before a queued notice is held. */
   createdAt?: string;
-}) {
-  if (!mentions?.length) return <>{linked(body, 0)}</>;
+};
+
+/** One run of plain text with its mention chips. Links were cut out by the parser. */
+function mentioned(
+  body: string,
+  { mentions, guest = false, marks, createdAt }: MentionedProps,
+): React.ReactNode[] {
+  if (!mentions?.length) return [body];
   const names = [...new Set(mentions.map((m) => m.name))]
     .sort((x, y) => y.length - x.length)
     .map(esc);
@@ -894,7 +900,7 @@ export function MentionedText({
       (x) => x.name.toLowerCase() === (m[2] ?? "").toLowerCase(),
     );
     const face = same.length === 1 ? same[0] : undefined;
-    if (at > last) out.push(...linked(body.slice(last, at), last));
+    if (at > last) out.push(body.slice(last, at));
     if (marks && !guest && face?.delivery) {
       out.push(
         <MarkedChip
@@ -921,31 +927,9 @@ export function MentionedText({
     );
     last = end;
   }
-  if (last === 0) return <>{linked(body, 0)}</>;
-  if (last < body.length) out.push(...linked(body.slice(last), last));
-  return <>{out}</>;
-}
-
-/** Plain text with its http(s) URLs as links that open in a new tab. */
-function linked(text: string, base: number): React.ReactNode[] {
-  let at = base;
-  return linkify(text).map((p) => {
-    const key = at;
-    at += p.text.length;
-    return p.url ? (
-      <a
-        key={key}
-        href={p.text}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="break-all underline"
-      >
-        {p.text}
-      </a>
-    ) : (
-      p.text
-    );
-  });
+  if (last === 0) return [body];
+  if (last < body.length) out.push(body.slice(last));
+  return out;
 }
 
 /** Who gets notified: the mentioned agents. */

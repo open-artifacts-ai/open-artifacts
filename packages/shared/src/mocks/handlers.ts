@@ -115,6 +115,8 @@ export type MockOptions = {
   commentAsks?: boolean;
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
   commentAgents?: boolean;
+  /** #2338: agent comments with markdown, a hostile body and a markdown ask. */
+  commentMarkdown?: boolean;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
   commentersSignedIn?: boolean;
   /**
@@ -653,6 +655,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
     seedAgents: opts.commentAgents,
+    seedMarkdown: opts.commentMarkdown,
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });

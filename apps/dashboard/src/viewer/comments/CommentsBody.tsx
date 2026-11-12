@@ -1066,8 +1066,8 @@ function CommentRow({
             guest={api.guest}
             body={
               showsAskBody(c.body, c.ask.question) ? (
-                <p
-                  className={`whitespace-pre-wrap break-words ${CTXT}`}
+                <div
+                  className={`break-words ${CTXT}`}
                   data-ask-body=""
                   {...roving}
                 >
@@ -1078,12 +1078,12 @@ function CommentRow({
                     marks={marks}
                     createdAt={c.createdAt}
                   />
-                </p>
+                </div>
               ) : undefined
             }
           />
         ) : (
-          <p className={`whitespace-pre-wrap break-words ${CTXT}`} {...roving}>
+          <div className={`break-words ${CTXT}`} {...roving}>
             <MentionedText
               body={c.body}
               mentions={c.mentions}
@@ -1091,7 +1091,7 @@ function CommentRow({
               marks={marks}
               createdAt={c.createdAt}
             />
-          </p>
+          </div>
         )}
         <Delivery
           c={c}
