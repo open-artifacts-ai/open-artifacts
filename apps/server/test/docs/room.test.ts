@@ -303,15 +303,33 @@ describe("DocRoom storage", () => {
 
   it("compacts past the row threshold", async () => {
     const stub = roomStub();
-    const a = await connect(stub);
-    for (let i = 0; i <= COMPACT_ROWS; i++) {
-      a.doc.getText("t").insert(0, "k");
-      await a.ping();
-      await inRoom(stub, (r) => r.flush());
-      if (i < COMPACT_ROWS) expect(await snapRows(stub)).toBe(0);
-    }
+    // One synchronous pass inside the room: no socket timing, no clock.
+    const out = await inRoom(stub, (r) => {
+      const x = r as unknown as {
+        sql: SqlStorage;
+        buffer: Uint8Array[];
+        bufferBytes: number;
+      };
+      const snaps = () =>
+        x.sql.exec<{ n: number }>("SELECT count(*) AS n FROM snapshot").one().n;
+      const d = new Y.Doc();
+      let pending: Uint8Array | null = null;
+      d.on("update", (u: Uint8Array) => {
+        pending = u;
+      });
+      const before: number[] = [];
+      for (let i = 0; i <= COMPACT_ROWS; i++) {
+        d.getText("t").insert(0, "k");
+        x.buffer.push(pending as unknown as Uint8Array);
+        x.bufferBytes += (pending as unknown as Uint8Array).byteLength;
+        r.flush();
+        if (i < COMPACT_ROWS) before.push(snaps());
+      }
+      return { before, after: snaps() };
+    });
+    expect(out.before.every((n) => n === 0)).toBe(true);
+    expect(out.after).toBe(1);
     expect(await rows(stub)).toBe(0);
-    expect(await snapRows(stub)).toBe(1);
     const j = await connect(stub);
     await j.until(() => textOf(j).length === COMPACT_ROWS + 1);
   });
