@@ -1,13 +1,16 @@
 import { Clock, KeyRound } from "lucide-react";
+import { AppLink } from "../../library/AppLink";
 import { TXT } from "../ui";
 import { coolingTime, type PasskeyFailure } from "./passkey";
 
 const MUTED = "text-muted-foreground";
 
+// TODO(#2263): the base64url and assertion helpers in passkey.ts move to apps/dashboard/src/auth/webauthn.ts later; keep them here for now.
+
 /** The neutral inset for an account that can't approve yet: no passkey, or a new one still cooling (#2263). */
 export function PasskeyBlocked({ f }: { f: PasskeyFailure }) {
   if (f.kind !== "no_passkey" && f.kind !== "cooling") return null;
-  const when = f.kind === "cooling" ? coolingTime(f.until) : null;
+  const when = f.kind === "cooling" ? coolingTime(f.usableAt) : null;
   return (
     <div
       data-passkey-error={f.kind}
@@ -25,8 +28,11 @@ export function PasskeyBlocked({ f }: { f: PasskeyFailure }) {
             <span title={when?.title}>{when?.text ?? "later"}</span>
           </span>
         ) : (
-          // TODO(#2263): link to Settings > Security once Frontend's section lands.
-          <span>Add a passkey to approve this here</span>
+          <span>
+            <AppLink href="/settings/security" className="underline">
+              Add a passkey to approve this here
+            </AppLink>
+          </span>
         )}
       </p>
       {f.kind === "no_passkey" && (

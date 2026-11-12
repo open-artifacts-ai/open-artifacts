@@ -221,7 +221,7 @@ export const R = {
   /** POST AnswerBody { optionId, assertion? } -> Comment (#1535). A `confirm: "passkey"` ask needs the assertion (#2263): 400 passkey_failed, 410 challenge_expired, 403 passkey_required. Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
   commentAnswer: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer`,
-  /** POST { optionId } -> AnswerChallenge (#2263): a single-use passkey challenge for this exact pick. 409 no_passkey; 409 passkey_cooling (details { until }). */
+  /** POST { optionId } -> AnswerChallenge (#2263): a single-use passkey challenge for this exact pick. 409 no_passkey; 409 passkey_cooling (details { usableAt }). */
   commentAnswerChallenge: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer/challenge`,
   /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */

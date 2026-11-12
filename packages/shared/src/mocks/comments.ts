@@ -590,7 +590,7 @@ export function createCommentMock({
               code: "passkey_cooling",
               message: "This passkey is new",
               details: {
-                until: new Date(Date.now() + 20 * 3600_000).toISOString(),
+                usableAt: new Date(Date.now() + 20 * 3600_000).toISOString(),
               },
             },
           },

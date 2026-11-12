@@ -13,6 +13,13 @@ describe("passkeyFailure", () => {
   it("maps browser errors", () => {
     expect(passkeyFailure(dom("NotAllowedError")).kind).toBe("cancelled");
     expect(passkeyFailure(dom("TypeError")).kind).toBe("other");
+    expect(passkeyFailure(dom("InvalidStateError")).kind).toBe("cancelled");
+    expect(passkeyFailure(dom("ConstraintError")).kind).toBe("cancelled");
+    expect(
+      passkeyLine(
+        passkeyFailure(new ApiClientError("passkey_required", "x", 403)),
+      )?.text,
+    ).toBe("This now needs your passkey. Pick again.");
   });
   it("maps server codes", () => {
     const e = (code: ApiClientError["code"], d?: unknown) =>
@@ -21,8 +28,10 @@ describe("passkeyFailure", () => {
     expect(passkeyFailure(e("passkey_failed")).kind).toBe("failed");
     expect(passkeyFailure(e("challenge_expired")).kind).toBe("expired");
     expect(
-      passkeyFailure(e("passkey_cooling", { until: "2026-11-13T00:00:00Z" })),
-    ).toEqual({ kind: "cooling", until: "2026-11-13T00:00:00Z" });
+      passkeyFailure(
+        e("passkey_cooling", { usableAt: "2026-11-13T00:00:00Z" }),
+      ),
+    ).toEqual({ kind: "cooling", usableAt: "2026-11-13T00:00:00Z" });
     expect(passkeyFailure(e("conflict")).kind).toBe("other");
   });
 });

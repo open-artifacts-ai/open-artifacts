@@ -64,7 +64,8 @@ export type PasskeyFailure =
   | { kind: "failed" }
   | { kind: "expired" }
   | { kind: "no_passkey" }
-  | { kind: "cooling"; until: string | null }
+  | { kind: "cooling"; usableAt: string | null }
+  | { kind: "required" }
   | { kind: "too_many" }
   /** The ask already has an answer: the refetch shows it. */
   | { kind: "answered" }
@@ -75,18 +76,23 @@ export function passkeyFailure(e: unknown): PasskeyFailure {
   if (e instanceof ApiClientError) {
     if (e.code === "no_passkey") return { kind: "no_passkey" };
     if (e.code === "passkey_cooling") {
-      const u = (e.details as { until?: unknown } | undefined)?.until;
-      return { kind: "cooling", until: typeof u === "string" ? u : null };
+      const u = (e.details as { usableAt?: unknown } | undefined)?.usableAt;
+      return { kind: "cooling", usableAt: typeof u === "string" ? u : null };
     }
-    if (e.code === "passkey_failed" || e.code === "passkey_required")
-      return { kind: "failed" };
+    if (e.code === "passkey_failed") return { kind: "failed" };
+    if (e.code === "passkey_required") return { kind: "required" };
     if (e.code === "challenge_expired") return { kind: "expired" };
     if (e.code === "already_answered") return { kind: "answered" };
     if (e.code === "rate_limited") return { kind: "too_many" };
     return { kind: "other" };
   }
   const name = (e as { name?: string } | null)?.name;
-  if (name === "NotAllowedError" || name === "AbortError")
+  if (
+    name === "NotAllowedError" ||
+    name === "AbortError" ||
+    name === "InvalidStateError" ||
+    name === "ConstraintError"
+  )
     return { kind: "cancelled" };
   if (name === "NotSupportedError" || name === "SecurityError")
     return { kind: "failed" };
@@ -97,10 +103,10 @@ const WEEK = 7 * 24 * 3600_000;
 
 /** When a cooling passkey can approve, in the viewer's local time: weekday and time under 7 days, else the date. `title` is always the full date. */
 export function coolingTime(
-  until: string | null,
+  usableAt: string | null,
   now = Date.now(),
 ): { text: string; title: string } | null {
-  const t = until ? new Date(until) : null;
+  const t = usableAt ? new Date(usableAt) : null;
   if (!t || Number.isNaN(t.getTime())) return null;
   const title = t.toLocaleString([], { dateStyle: "full", timeStyle: "short" });
   const text =
@@ -126,6 +132,11 @@ export function passkeyLine(
       return {
         text: "That approval timed out. Nothing was approved.",
         danger: true,
+      };
+    case "required":
+      return {
+        text: "This now needs your passkey. Pick again.",
+        danger: false,
       };
     case "too_many":
       return { text: "Too many tries. Wait a moment.", danger: true };

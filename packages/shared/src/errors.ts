@@ -177,7 +177,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   no_billing_customer: 409,
   /** #2263: the caller has no passkey to approve with. */
   no_passkey: 409,
-  /** #2263: every new passkey approves nothing for 24 h; details { until } (ISO). */
+  /** #2263: every new passkey approves nothing for 24 h; details { usableAt } (ISO). */
   passkey_cooling: 409,
   /** #2263: the assertion did not verify. */
   passkey_failed: 400,

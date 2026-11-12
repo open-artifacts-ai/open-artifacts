@@ -158,14 +158,14 @@ test("Change on a verified answer asks for the passkey again and drops the pill"
   await expect(card.locator("[data-ask-verified]")).toBeVisible();
   await card.getByRole("button", { name: "Change" }).click();
   await expect(card.locator("[data-ask-verified]")).toHaveCount(0);
-  await expect(card.locator("[data-ask-answer]")).toContainText("picked");
-  // The new pick goes through the passkey prompt, and nothing is answered until it verifies.
+  // The current option can't be picked again (the server would answer 409 already_answered).
+  await expect(card.locator("[data-option=go]")).toBeDisabled();
+  await expect(card.locator("[data-option=stop]")).toBeEnabled();
   await page.evaluate(() => {
     (navigator.credentials as unknown as { get: () => Promise<never> }).get =
       () => new Promise(() => {});
   });
   await card.locator("[data-option=stop]").click();
   await expect(card.locator("[data-passkey-verifying]")).toBeVisible();
-  await expect(card.locator("[data-ask-answer]")).toContainText("picked");
   await expect(card.locator("[data-ask-answer]")).not.toContainText(/Stop|B ·/);
 });
