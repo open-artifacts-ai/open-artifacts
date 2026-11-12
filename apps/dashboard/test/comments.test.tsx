@@ -2889,6 +2889,23 @@ describe("clicking away from an unsent selection (Google Docs)", () => {
     expect(await screen.findByDisplayValue("mine")).toBeInTheDocument();
   });
 
+  it("a new selection with the list closed keeps the typed draft and shows it", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-typed-held");
+    fireEvent.change(await draftBox(), { target: { value: "mine" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await select("quote-new");
+    expect(await screen.findByDisplayValue("mine")).toBeInTheDocument();
+    expect(screen.getByText("quote-typed-held")).toBeInTheDocument();
+    expect(screen.queryByText("quote-new")).toBeNull();
+  });
+
   it("selecting different text starts a new draft", async () => {
     mount(viewerPath(OWNED));
     await col();

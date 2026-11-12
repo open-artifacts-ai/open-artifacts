@@ -352,8 +352,11 @@ export function useCommentsController({
     if (!gates.current.select()) return;
     // A reader who can't comment is in the runtime's "view" mode and sends none; page code could still forge one.
     if (!mayRef.current) return;
-    // Never swap the quote under words the reader is typing.
-    if (draftRef.current && dirty.current) return;
+    if (draftRef.current && (dirty.current || typed.current)) {
+      // Never swap the draft under typed words: show it, so it can be sent or discarded.
+      surface.current();
+      return;
+    }
     dirty.current = false;
     typed.current = false;
     draftText.current = "";
@@ -365,7 +368,11 @@ export function useCommentsController({
     // only for a viewer who can comment.
     if (modeRef.current !== "pin" || !mayRef.current) return;
     if (!gates.current.pin()) return;
-    if (draftRef.current && dirty.current) return;
+    if (draftRef.current && (dirty.current || typed.current)) {
+      // Never swap the draft under typed words: show it, so it can be sent or discarded.
+      surface.current();
+      return;
+    }
     dirty.current = false;
     typed.current = false;
     draftText.current = "";

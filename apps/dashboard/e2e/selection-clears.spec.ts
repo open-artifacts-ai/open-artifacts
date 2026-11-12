@@ -100,6 +100,27 @@ for (const w of [1280, 390]) {
         await shot(page, `${kind}-${w}-6-reopened-text-kept`);
       });
 
+      test("a new selection with the list closed keeps the typed draft", async ({
+        page,
+      }) => {
+        await box(page).fill("words I must keep");
+        if (w < 600)
+          await page.getByRole("button", { name: "Close comments" }).click();
+        else await page.getByRole("button", { name: /^Comments/ }).click();
+        await expect(box(page)).toHaveCount(0);
+        await fromFrame(page, "comment.select", {
+          anchor: {
+            kind: "text",
+            exact: "another quote",
+            prefix: "",
+            suffix: "",
+          },
+        });
+        await expect(box(page)).toHaveValue("words I must keep");
+        await expect(card(page)).toBeVisible();
+        await expect(page.getByText("another quote")).toHaveCount(0);
+      });
+
       test("a click inside the card keeps the draft", async ({ page }) => {
         await box(page).click();
         await card(page).click();
