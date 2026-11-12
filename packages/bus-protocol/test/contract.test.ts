@@ -71,6 +71,7 @@ describe("contract is pinned", () => {
       "follows",
       "link_bound",
       "waiting_counts",
+      "acked",
     ]);
   });
 

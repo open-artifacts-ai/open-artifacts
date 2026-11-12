@@ -108,6 +108,7 @@ Hub to client (`SERVER_FRAMES`):
 - `followed {artifact_id, url, followed_at}`, `unfollowed {removed}`, `follows {follows: [{artifact_id, url, followed_at}]}` (at most `MAX_FOLLOWS`, 200): replies to `follow`, `unfollow`, `following`.
 - `link_bound {}`: reply to `link_bind`.
 - `waiting_counts {counts}`: reply to `waiting_query`: `agent_ref` to pending count (1 to 100). A ref that is unknown, live, on another machine or has nothing waiting is omitted.
+- `acked {msg_id}`: reply to a mail `ack` from a socket whose hello listed `ack_confirm` (never to a notice ack). Sent after the receipt is settled, or for an id that can no longer settle (a repeat, unknown, or not this machine's) with the same frame, so it says nothing about the id. Only on the link the ack came in on.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
