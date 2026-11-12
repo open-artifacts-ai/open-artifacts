@@ -139,7 +139,6 @@ function caretFlags(
 export function contentExtensions(): Extensions {
   return [
     StarterKit.configure({
-      hardBreak: false,
       underline: false,
       // Collaboration brings its own undo/redo.
       undoRedo: false,
@@ -159,6 +158,28 @@ export function contentExtensions(): Extensions {
       addExtensions() {
         return (this.parent?.() ?? []).map((ext) => {
           if (ext.name === "code") return ext.extend({ excludes: "" });
+          // A heading takes no break, so Shift+Enter there does nothing (the
+          // default would split the heading and lead the new paragraph with a
+          // break).
+          if (ext.name === "hardBreak")
+            return ext.extend({
+              addKeyboardShortcuts() {
+                const keys = this.parent?.() ?? {};
+                return Object.fromEntries(
+                  Object.entries(keys).map(([key, run]) => [
+                    key,
+                    (args: Parameters<typeof run>[0]) =>
+                      this.editor.state.selection.$from.parent.type.name ===
+                      "heading"
+                        ? true
+                        : run(args),
+                  ]),
+                );
+              },
+            });
+          // A heading is one line in Markdown: text only, so no hardBreak
+          // (docSchema says the same).
+          if (ext.name === "heading") return ext.extend({ content: "text*" });
           // Only the attributes docSchema has: href and title.
           if (ext.name === "link")
             return ext.extend({

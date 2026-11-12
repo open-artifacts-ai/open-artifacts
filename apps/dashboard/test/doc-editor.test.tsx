@@ -1,4 +1,9 @@
-import { docSchema, yXmlFragmentToDoc } from "@oa/doc-schema";
+import {
+  docSchema,
+  docToMarkdown,
+  markdownToDoc,
+  yXmlFragmentToDoc,
+} from "@oa/doc-schema";
 import { TooltipProvider } from "@oa/ui/shadcn";
 import {
   act,
@@ -83,10 +88,10 @@ describe("schema", () => {
       "href",
       "title",
     ]);
-    expect(ours.nodes.heading.spec.content).toBe("inline*");
+    expect(ours.nodes.heading.spec.content).toBe("text*");
     expect(ours.marks.code.excludes(ours.marks.link)).toBe(false);
-    // No Tiptap-only nodes or marks sneak in (hardBreak, underline).
-    expect(ours.nodes.hardBreak).toBeUndefined();
+    // No Tiptap-only nodes or marks sneak in (underline).
+    expect(ours.nodes.hardBreak).toBeDefined();
     expect(ours.marks.underline).toBeUndefined();
   });
 });
@@ -216,9 +221,7 @@ describe("toolbar", () => {
     expect(editor.isActive("codeBlock")).toBe(true);
   });
 
-  it("Shift+Enter never puts a line break node in a heading (hardBreak is not in the schema yet, #2178)", () => {
-    const { editor } = collab("<h2>Title</h2>");
-    editor.commands.setTextSelection(3);
+  const shiftEnter = (editor: Editor) =>
     editor.view.someProp("handleKeyDown", (f) =>
       f(
         editor.view,
@@ -229,8 +232,26 @@ describe("toolbar", () => {
         }),
       ),
     );
+
+  it("Shift+Enter in a paragraph inserts a hardBreak that survives Markdown", () => {
+    const { ydoc, editor } = collab("<p>onetwo</p>");
+    editor.commands.setTextSelection(4);
+    shiftEnter(editor);
+    const doc = yXmlFragmentToDoc(ydoc.getXmlFragment("default"));
+    expect(JSON.stringify(doc.toJSON())).toContain("hardBreak");
+    const md = docToMarkdown(doc);
+    expect(md.split("\n")[0]).toMatch(/^one\\?$|^one {2}$/);
+    expect(md).toContain("two");
+    const back = markdownToDoc(md).doc;
+    expect(back.toJSON()).toEqual(doc.toJSON());
+  });
+
+  it("Shift+Enter in a heading puts no hardBreak in it", () => {
+    const { editor } = collab("<h2>Title</h2>");
+    editor.commands.setTextSelection(3);
+    shiftEnter(editor);
     expect(JSON.stringify(editor.getJSON())).not.toContain("hardBreak");
-    expect(editor.schema.nodes.hardBreak).toBeUndefined();
+    expect(editor.state.doc.firstChild?.textContent).toBe("Title");
   });
 
   it("Mod-K in the editor opens the link popover", async () => {
