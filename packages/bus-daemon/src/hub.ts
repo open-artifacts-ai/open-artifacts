@@ -116,6 +116,11 @@ export class HubConnection {
     return this.#pacer.remove(id);
   }
 
+  /** Frames bulk work may still queue; see FramePacer.headroom. */
+  get headroom(): number {
+    return this.#pacer.headroom;
+  }
+
   get open(): boolean {
     return this.#ws?.readyState === WebSocket.OPEN;
   }

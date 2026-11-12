@@ -1463,6 +1463,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               codexTaken.takenIds(),
               (id) => void delivery.delivered(id),
               () => hubHelloed && link === codexReplayLink,
+              undefined,
+              () => hub.headroom,
             );
           }
           return;

@@ -140,9 +140,9 @@ export const startsWithHead = (text: string, head: string): boolean =>
   text.startsWith(`${head}\n\n`);
 
 /**
- * Sends `ids` in batches of `batch`, one batch per `after` tick, until done or
- * `live()` turns false (the link closed or a newer one started). Each id goes
- * through the paced ack lane; none is skipped for a cap.
+ * Sends `ids` in batches of at most `batch` (and at most `room()`, the queue
+ * headroom) per `after` tick, until done or `live()` turns false (the link
+ * closed or a newer one started). A tick with no room sends nothing and waits.
  */
 export function replayInBatches(
   ids: string[],
@@ -151,13 +151,15 @@ export function replayInBatches(
   after: (fn: () => void) => void = (fn) => {
     setTimeout(fn, 1000).unref();
   },
+  room: () => number = () => Number.POSITIVE_INFINITY,
   batch = 200,
 ): void {
   let i = 0;
   const step = () => {
     if (!live()) return;
-    for (const id of ids.slice(i, i + batch)) send(id);
-    i += batch;
+    const n = Math.min(batch, room());
+    for (const id of ids.slice(i, i + n)) send(id);
+    i += Math.max(0, n);
     if (i < ids.length) after(step);
   };
   step();

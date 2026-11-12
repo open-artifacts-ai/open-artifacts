@@ -11,11 +11,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIMITS } from "@oa/bus-protocol";
+import { type ClientFrame, LIMITS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AgentRecord, AgentTable } from "../src/agents.ts";
 import { replayInBatches, TakenWatch } from "../src/codex-taken.ts";
 import { createDeliver, type Mail } from "../src/deliver.ts";
+import { FramePacer } from "../src/pacer.ts";
 import {
   CODEX_QUEUE_TIMEOUT_MS,
   CODEX_TEXT_CAP,
@@ -1546,6 +1547,52 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
     ticks.shift()?.();
     expect(sent).toHaveLength(200);
     expect(ticks).toHaveLength(0);
+  });
+
+  it("a replay beyond the pacer's limit leaves live user frames alone and still sends every ack", () => {
+    vi.useFakeTimers();
+    try {
+      const wire: string[] = [];
+      const dropped: string[] = [];
+      const p = new FramePacer({
+        onDropped: (f) => dropped.push(f.id),
+        send: (data) => {
+          wire.push(data);
+          return true;
+        },
+        max: 100,
+      });
+      const user = (n: number) =>
+        ({ v: 1, id: `u${n}`, type: "send" }) as unknown as ClientFrame;
+      const ids = Array.from({ length: 450 }, (_, n) => `a${n}`);
+      replayInBatches(
+        ids,
+        (id) =>
+          void p.push(
+            { v: 1, id, type: "ack", msg_id: id } as unknown as ClientFrame,
+            id,
+          ),
+        () => true,
+        (fn) => {
+          setTimeout(fn, 1000);
+        },
+        () => p.headroom,
+        200,
+      );
+      // A user request arrives mid-replay: kept, and accepted.
+      expect(p.push(user(1), "u1")).toBe(true);
+      for (let t = 0; t < 120; t++) {
+        vi.advanceTimersByTime(1000);
+        if (t === 3) expect(p.push(user(2), "u2")).toBe(true);
+        expect(p.size).toBeLessThanOrEqual(100);
+      }
+      expect(dropped).toEqual([]);
+      expect(wire.filter((d) => d.startsWith("a"))).toEqual(ids);
+      expect(wire).toContain("u1");
+      expect(wire).toContain("u2");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("the queue timeout is 30 s, under the hub's mail expiry", () => {
