@@ -57,12 +57,6 @@ for (const [width, theme] of [
     const x = page.getByRole("button", { name: "Stop notifying OA Product" });
     await x.click();
     await expect(
-      box.getByText(/Remove OA Product from this thread\?/),
-    ).toBeVisible();
-    await shot("3-confirm");
-
-    await page.getByRole("button", { name: "Remove", exact: true }).click();
-    await expect(
       box.getByText(/OA Product won't get replies in this thread/),
     ).toBeVisible();
     await shot("4-removed");
