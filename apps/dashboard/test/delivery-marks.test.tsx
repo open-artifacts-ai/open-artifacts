@@ -211,4 +211,20 @@ describe("#2229 copy and face stack", () => {
       "1 of 2 delivered",
     );
   });
+
+  it("a gone mention: Product's sentence and hover", () => {
+    const c = comment("c1", { mentions: [ag("Vega", "gone")] });
+    expect(render(<Delivery c={c} />).container.textContent).toBe(
+      "Vega isn't on the bus anymore. Mention another agent.",
+    );
+    const { container } = render(
+      <MentionedText body="hi @Vega" mentions={[ag("Vega", "gone")]} marks />,
+    );
+    fireEvent.mouseEnter(
+      container.querySelector("[data-mention-chip]") as Element,
+    );
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "Vega: not on the bus",
+    );
+  });
 });

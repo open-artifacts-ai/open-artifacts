@@ -74,7 +74,7 @@ export const markText = (name: string, d: DState, mention = false) =>
       ? "held until it's back"
       : d === "gone"
         ? mention
-          ? "gone"
+          ? "not on the bus"
           : "expired, offline too long"
         : d === "withdrawn"
           ? "removed before delivery"
@@ -192,7 +192,7 @@ const problemLine = (name: string, d: DState, notified: boolean) =>
     ? `${name} is offline. Held until it's back.`
     : notified
       ? `${name} didn't get this: it was offline too long. @-mention it to try again.`
-      : `${name} is gone · mention another agent`;
+      : `${name} isn't on the bus anymore. Mention another agent.`;
 
 type Problem = { id: string; m: CommentMention; notified: boolean };
 
