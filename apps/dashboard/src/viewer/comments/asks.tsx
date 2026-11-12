@@ -796,8 +796,17 @@ export function mentionedKeys(
   text: string,
   agents: readonly ArtifactAgent[],
 ): string[] {
+  return mentionSpans(text, agents).map((s) => s.key);
+}
+
+/** Where each counted `@name` sits in the text (`start` at the "@", `end`
+    after the name), in the order `mentionedKeys` lists them. */
+export function mentionSpans(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { key: string; start: number; end: number }[] {
   let rest = text;
-  const keys: string[] = [];
+  const out: { key: string; start: number; end: number }[] = [];
   for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
     const re = new RegExp(
       `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
@@ -805,14 +814,46 @@ export function mentionedKeys(
     );
     const m = re.exec(rest);
     if (!m) continue;
-    keys.push(a.key);
     const at = m.index + (m[1]?.length ?? 0);
+    out.push({ key: a.key, start: at, end: at + a.name.length + 1 });
     rest =
       rest.slice(0, at) +
       " ".repeat(a.name.length + 1) +
       rest.slice(at + a.name.length + 1);
   }
-  return keys;
+  return out;
+}
+
+/** #2317: split the text into plain runs and counted mentions (the pills),
+    in text order. Joining the `text` of every segment gives the input back. */
+export function mentionSegments(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { text: string; key?: string }[] {
+  const spans = mentionSpans(text, agents).sort((x, y) => x.start - y.start);
+  const out: { text: string; key?: string }[] = [];
+  let last = 0;
+  for (const s of spans) {
+    if (s.start > last) out.push({ text: text.slice(last, s.start) });
+    out.push({ text: text.slice(s.start, s.end), key: s.key });
+    last = s.end;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+/** #2317: Backspace with the caret right after a pill removes the whole
+    `@name`. Null when the key should act normally. */
+export function atomicBackspace(
+  text: string,
+  start: number,
+  end: number,
+  agents: readonly ArtifactAgent[],
+): { text: string; caret: number } | null {
+  if (start !== end) return null;
+  const s = mentionSpans(text, agents).find((m) => m.end === start);
+  if (!s) return null;
+  return { text: text.slice(0, s.start) + text.slice(s.end), caret: s.start };
 }
 
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";

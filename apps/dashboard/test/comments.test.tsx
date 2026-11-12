@@ -961,7 +961,7 @@ describe("comments: actions", () => {
       }),
     );
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
-    const card = box.parentElement as HTMLElement;
+    const card = box.parentElement?.parentElement as HTMLElement; // field wrapper, then card
     expect(card.firstElementChild?.textContent).toBe("Landing");
     expect(card.querySelectorAll("textarea")).toHaveLength(1);
     // #2234: the quote composer's field is the outlined, growing one.
