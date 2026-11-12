@@ -210,7 +210,7 @@ describe("Create dialog timeout and retry", () => {
   });
 
   it("uploads again after invalid_upload when nothing landed", async () => {
-    m.get.mockRejectedValue(new Error("404"));
+    m.get.mockRejectedValue(new ApiClientError("not_found", "no", 404));
     m.createArtifact.mockRejectedValueOnce(
       new ApiClientError("internal", "x", 503),
     );
@@ -247,5 +247,28 @@ describe("Create dialog timeout and retry", () => {
       await vi.advanceTimersByTimeAsync(CREATE_TIMEOUT_MS);
     });
     expect(m.createArtifact).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the upload when the landed lookup fails for any reason but 404", async () => {
+    m.get.mockRejectedValue(new ApiClientError("internal", "down", 503));
+    m.createArtifact.mockRejectedValueOnce(
+      new ApiClientError("internal", "x", 503),
+    );
+    m.createArtifact.mockRejectedValueOnce(
+      new ApiClientError("bad_request", "used", 400, {
+        reason: "invalid_upload",
+      }),
+    );
+    m.createArtifact.mockRejectedValueOnce(
+      new ApiClientError("internal", "x", 503),
+    );
+    open();
+    await click("Create");
+    await click("Try again");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "the server didn't answer",
+    );
+    await click("Try again");
+    expect(m.uploadFiles).toHaveBeenCalledTimes(1);
   });
 });

@@ -104,7 +104,7 @@ export function UploadDialog({
     void navigate({ to: viewerPath(r.id, r.version) as never });
   };
 
-  /** The artifact a lost create may have made, if it exists. */
+  /** The artifact a lost create may have made: it, null when the server says there is none (404), undefined when we could not tell. */
   const landed = async (id: string | undefined, outer: AbortSignal) => {
     if (!id) return null;
     const look = new AbortController();
@@ -118,8 +118,8 @@ export function UploadDialog({
         look.signal,
       );
       return { id: a.id, version: a.currentVersion };
-    } catch {
-      return null;
+    } catch (e) {
+      return e instanceof ApiClientError && e.status === 404 ? null : undefined;
     } finally {
       clearTimeout(t);
       outer.removeEventListener("abort", relay);
@@ -186,6 +186,7 @@ export function UploadDialog({
             e.status === 502 ||
             e.status === 503 ||
             e.status === 504));
+      let lookupFailed = false;
       const deadUpload =
         e instanceof ApiClientError &&
         e.code === "bad_request" &&
@@ -198,14 +199,16 @@ export function UploadDialog({
       ) {
         const done = await landed(uploaded.current?.reserved, signal);
         if (done && alive.current) return await finish(done);
-        if (deadUpload) {
+        // Only a 404 proves nothing landed; an unanswered lookup keeps the state.
+        if (deadUpload && done === null) {
           // Its upload ids are spent: the next click uploads again.
           uploaded.current = null;
           createSent.current = false;
         }
+        if (deadUpload && done === undefined) lookupFailed = true;
       }
       if (!alive.current) return;
-      if (down) {
+      if (down || lookupFailed) {
         setRetryTitle(title);
         setError(
           `Couldn't create the artifact: the server didn't answer. Your ${files.length === 1 ? "file is" : "files are"} still here.`,
