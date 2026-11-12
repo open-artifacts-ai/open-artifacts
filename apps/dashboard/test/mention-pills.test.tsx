@@ -29,7 +29,10 @@ describe("mentionSegments (#2317)", () => {
     ).toBe(t);
   });
   it("pills only the first of a duplicate", () => {
-    const segs = mentionSegments("@OA Manager and @OA Manager", agents.slice(0, 2));
+    const segs = mentionSegments(
+      "@OA Manager and @OA Manager",
+      agents.slice(0, 2),
+    );
     expect(segs.filter((s) => s.key)).toHaveLength(1);
     expect(segs[0]).toEqual({ text: "@OA Manager", key: "m" });
   });
