@@ -843,6 +843,52 @@ describe("ask_answered notice (#1535)", () => {
     expect(answered()).toHaveLength(0);
   });
 
+  it("an asker renamed after asking still gets ask_answered, at its current name (#2224)", async () => {
+    const s = await setup();
+    const runner = agentOf(owner, "Runner", "ns-rn");
+    const { t, cid } = await askFrom(owner, s.id, {}, {}, runner);
+    const identityId = (
+      runner as { agent: { identity: { identityId: string } } }
+    ).agent.identity.identityId;
+    const machineId = newId();
+    await E.DB.prepare(
+      "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+    )
+      .bind(machineId, owner.userId, newId(), Date.now(), Date.now())
+      .run();
+    const renamed = {
+      ...E,
+      BUS_HUB: {
+        idFromName: (n: string) => n,
+        get: () => ({
+          namesOf: async (ids: string[]) =>
+            ids.map((id) => ({ identityId: id, name: "Runner2" })),
+        }),
+      },
+    } as unknown as Env;
+    bus.clear();
+    try {
+      await answerAsk(
+        renamed,
+        s.id,
+        t.id,
+        cid,
+        who(viewer),
+        view(viewer),
+        "wide",
+        { version: 1 },
+      );
+    } finally {
+      await E.DB.prepare("delete from bus_machines where id = ?")
+        .bind(machineId)
+        .run();
+    }
+    expect(identityId).toBeTruthy();
+    expect(answered().map((x) => x.notice.to)).toEqual([
+      { namespace: "ns-rn", name: "Runner2" },
+    ]);
+  });
+
   it("answer.yes is true only for the agent that posted the ask (#2224)", async () => {
     const s = await setup();
     const { t, cid } = await askFrom(owner, s.id, {
