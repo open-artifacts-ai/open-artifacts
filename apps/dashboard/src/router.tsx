@@ -31,6 +31,7 @@ import { Members } from "./settings/Members";
 import { Notifications } from "./settings/Notifications";
 import { Plan } from "./settings/Plan";
 import { Profile } from "./settings/Profile";
+import { Security } from "./settings/Security";
 import { Gate, SettingsLayout } from "./settings/SettingsLayout";
 import { canAdminSpaces } from "./settings/spaces/access";
 import { Spaces } from "./settings/spaces/Spaces";
@@ -286,6 +287,7 @@ const routeTree = root.addChildren([
   settings.addChildren([
     gated("/settings/profile", [...ADMINS, "member"], "/", Profile),
     gated("/settings/notifications", [...ADMINS, "member"], "/", Notifications),
+    gated("/settings/security", [...ADMINS, "member"], "/", Security),
     gated("/settings/members", ADMINS, "/settings/connections", Members),
     createRoute({
       getParentRoute: () => settings,
