@@ -425,7 +425,9 @@ describe("removing an agent withdraws its held notices (#2175)", () => {
     });
     expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
     const th = await read(s.id);
-    expect(th?.agents).toBeUndefined();
+    // No active agent is left; the removed one stays listed, marked (#2174).
+    expect(th?.agents?.filter((a) => !a.removed) ?? []).toEqual([]);
+    expect(th?.agents?.find((a) => a.key === s.claude)?.removed).toBe(true);
     expect(th?.comments[0]?.mentions?.[0]?.delivery).toBe("queued");
   });
 
