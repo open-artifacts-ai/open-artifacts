@@ -24,12 +24,41 @@ import {
 
 const MIN = "0.162.0";
 
+const STEP_MS = 15_000;
+// Setup calls pace themselves against the hook window (hook-pace.ts), bounded
+// by the hook's own timeout less a margin; this only names a hang just under it.
+const SETUP_MS = 55_000;
+
+/** Fails fast and by name: a hung network step says which one hung. */
+async function step<T>(
+  name: string,
+  fn: () => Promise<T>,
+  ms = STEP_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${name} timed out after ${ms / 1000}s`)),
+      ms,
+    );
+  });
+  try {
+    return await Promise.race([fn(), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Two hook calls in all: one session, one OAuth grant (budget: 10 or fewer).
 let owner: Person;
 let agent: Agent;
 test.beforeAll(async ({ browser }) => {
-  owner = await personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member");
-  agent = await oauthAgent();
+  owner = await step(
+    "setup personAt",
+    () => personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member"),
+    SETUP_MS,
+  );
+  agent = await step("setup oauthAgent", () => oauthAgent(), SETUP_MS);
 });
 test.afterAll(async () => {
   await agent?.close();
@@ -45,26 +74,10 @@ const commentable = (title: string) => ({
 
 /** One commentable page owned by the shared person. */
 async function pageOf(title: string) {
-  const { id } = await publish(owner, commentable(`${title} ${Date.now()}`));
+  const { id } = await step("publish page", () =>
+    publish(owner, commentable(`${title} ${Date.now()}`)),
+  );
   return id;
-}
-
-const STEP_MS = 15_000;
-
-/** Fails fast and by name: a hung network step says which one hung. */
-async function step<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${name} timed out after ${STEP_MS / 1000}s`)),
-      STEP_MS,
-    );
-  });
-  try {
-    return await Promise.race([fn(), late]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 const threads = async (agent: Agent, id: string) => {
