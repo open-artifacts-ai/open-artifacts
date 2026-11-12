@@ -102,6 +102,31 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // Failed extra-creator charges (#2246): one month, and several months.
+  "overage-due": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 9,
+      overageDue: { amountCents: 4200, months: ["2026-10"] },
+      readOnly: false,
+    },
+  },
+  "overage-due-months": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 9,
+      overageDue: { amountCents: 11850, months: ["2026-09", "2026-10"] },
+      readOnly: false,
+    },
+  },
   "solo-no-customer": {
     billing: {
       tier: "solo",
