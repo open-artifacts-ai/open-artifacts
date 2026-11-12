@@ -305,8 +305,8 @@ describe("room full, TTL, access change, delete", () => {
     const s = await direct(id, "u:ttl-1");
     await s.hello;
     // Age the socket past its TTL, then fire the alarm.
-    await runInDurableObject(roomOf(id), (r: DocRoom) => {
-      for (const ws of r.ctx.getWebSockets()) {
+    await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
+      for (const ws of state.getWebSockets()) {
         const att = ws.deserializeAttachment() as { t: number };
         ws.serializeAttachment({ ...att, t: Date.now() - 11 * 60_000 });
       }
@@ -319,8 +319,8 @@ describe("room full, TTL, access change, delete", () => {
     const id = newId();
     const s = await direct(id, "u:ttl-2");
     await s.hello;
-    await runInDurableObject(roomOf(id), async (r: DocRoom) => {
-      const at = await r.ctx.storage.getAlarm();
+    await runInDurableObject(roomOf(id), async (_r: DocRoom, state) => {
+      const at = await state.storage.getAlarm();
       expect(at).not.toBeNull();
     });
     await runDurableObjectAlarm(roomOf(id));
