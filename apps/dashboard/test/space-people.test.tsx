@@ -1203,3 +1203,54 @@ for (const tier of ["team", "trial"] as const) {
     expect(vic).not.toHaveTextContent("Viewer");
   });
 }
+
+// #2156: a leftover synced role whose group no longer lists the person (the
+// mapping was deleted outside the UI). Below Business it reads as an ordinary
+// member with a reason and Remove; Business frozen keeps its own wording.
+const orphan = person({
+  userId: "o5",
+  user: { id: "o5", name: "Olive Gray", email: "olive@example.com" },
+  role: "viewer",
+  source: "sync",
+  syncRole: "viewer",
+  groups: [],
+});
+for (const [name, tier, directory] of [
+  ["Team, frozen", "team", "frozen"],
+  ["Team, synced before", "team", "google"],
+  ["the Team trial", "trial", "google"],
+  ["the Team trial, frozen", "trial", "frozen"],
+] as const) {
+  it(`${name}: an orphaned synced role shows a reason and Remove (DELETE by user id)`, async () => {
+    const dels = calls("DELETE");
+    mountHosted(ENG, { directory }, asTier(tier), [serve([orphan])]);
+    const olive = await row("Olive Gray");
+    expect(olive).toHaveTextContent("olive@example.com · manually added");
+    fireEvent.click(
+      within(await openMenu("Olive Gray")).getByRole("menuitem", {
+        name: "Remove from Engineering…",
+      }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Remove",
+      }),
+    );
+    await waitFor(() =>
+      expect(dels.at(-1)?.path).toBe(`/api/v1/spaces/${ID}/members/o5`),
+    );
+  });
+}
+
+it("Business frozen: an orphaned synced role is unchanged (kept, with Remove)", async () => {
+  mountHosted(ENG, { directory: "frozen" }, asTier("business"), [
+    serve([orphan]),
+  ]);
+  const olive = await row("Olive Gray");
+  expect(olive).toHaveTextContent("olive@example.com · kept from");
+  expect(
+    within(await openMenu("Olive Gray")).getByRole("menuitem", {
+      name: "Remove from Engineering…",
+    }),
+  ).toBeVisible();
+});

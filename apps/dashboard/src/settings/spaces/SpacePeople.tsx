@@ -742,13 +742,17 @@ export function SpacePeople({
     const own = top(m.groups.filter((g) => g.via === "space"));
     return {
       ...m,
-      // This space's own group role reads as one set by hand.
+      // This space's own group role reads as one set by hand. So does a
+      // synced role no group lists them for any more (a mapping deleted
+      // outside the UI): else it has no reason and no Remove (#2156).
       manualRole:
         m.manualRole && own
           ? RANK[own] > RANK[m.manualRole]
             ? own
             : m.manualRole
-          : (m.manualRole ?? own),
+          : (m.manualRole ??
+            own ??
+            (m.syncRole && !every.length ? m.syncRole : null)),
       // What the server computes: the Every space groups' highest role.
       syncRole: top(every),
       groups: every,
