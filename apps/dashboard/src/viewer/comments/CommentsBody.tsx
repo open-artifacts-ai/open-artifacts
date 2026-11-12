@@ -67,6 +67,7 @@ import { numbering, pinChanged, pinNumbering } from "./model";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
 import { type CommentsApi, useCommentsApi } from "./useComments";
+import { fieldCap, onViewport, trackViewportVar, viewBottom } from "./viewport";
 
 const touch = () =>
   typeof window !== "undefined" &&
@@ -227,7 +228,7 @@ function QuoteBar({
  * time up to ~10 lines (240px; ~6 on a phone) and scrolls inside its own edge.
  */
 export const FIELD =
-  "min-h-[42px] max-h-[min(9rem,40svh)] md:max-h-[min(15rem,40svh)] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
+  "min-h-[42px] max-h-[min(9rem,calc(var(--oa-vvh,1svh)*40))] md:max-h-[min(15rem,calc(var(--oa-vvh,1svh)*40))] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
 export const FIELD_MAX = 240;
 export const FIELD_MAX_PHONE = 144;
 
@@ -237,10 +238,8 @@ export function growField(el: HTMLTextAreaElement | null) {
   if (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))
     return;
   const phone = !!window.matchMedia?.("(max-width: 767px)").matches;
-  const max = Math.min(
-    phone ? FIELD_MAX_PHONE : FIELD_MAX,
-    window.innerHeight * 0.4 || Number.POSITIVE_INFINITY,
-  );
+  // #2239: 40% of what is visible, so the iOS keyboard counts.
+  const max = fieldCap(phone ? FIELD_MAX_PHONE : FIELD_MAX);
   // Measuring with height:auto shortens the list and clamps the scroller:
   // put its scrollTop back.
   const box = scrollerOf(el);
@@ -258,20 +257,42 @@ export function growField(el: HTMLTextAreaElement | null) {
 export function focusField(el: HTMLElement | null) {
   if (!el) return;
   el.focus({ preventScroll: true });
+  const adjust = () => {
+    const box = scrollerOf(el);
+    if (!box || !el.isConnected) return;
+    const head =
+      box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ??
+      0;
+    const foot =
+      box.querySelector<HTMLElement>("[data-oa-action-outlet]")?.offsetHeight ??
+      0;
+    const b = box.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const top = b.top + head;
+    // Above the action row, and above the keyboard where there is one.
+    const bottom = Math.min(b.bottom - foot, viewBottom());
+    if (r.top < top) box.scrollTop -= top - r.top;
+    else if (r.bottom > bottom)
+      box.scrollTop += Math.min(r.bottom - bottom, r.top - top);
+  };
+  adjust();
+  // #2239: the row's height is 0 until the layout settles (the pin sheet
+  // claims the outlet after focus), and the keyboard arrives later still:
+  // look again as they change, for a moment.
   const box = scrollerOf(el);
-  if (!box) return;
-  const head =
-    box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ?? 0;
-  const foot =
-    box.querySelector<HTMLElement>("[data-oa-action-outlet]")?.offsetHeight ??
-    0;
-  const b = box.getBoundingClientRect();
-  const r = el.getBoundingClientRect();
-  const top = b.top + head;
-  const bottom = b.bottom - foot;
-  if (r.top < top) box.scrollTop -= top - r.top;
-  else if (r.bottom > bottom)
-    box.scrollTop += Math.min(r.bottom - bottom, r.top - top);
+  const outlet = box?.querySelector<HTMLElement>("[data-oa-action-outlet]");
+  const ro =
+    outlet && typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(adjust)
+      : null;
+  if (outlet) ro?.observe(outlet);
+  const off = onViewport(adjust);
+  const frame = requestAnimationFrame(adjust);
+  setTimeout(() => {
+    ro?.disconnect();
+    off();
+    cancelAnimationFrame(frame);
+  }, 1000);
 }
 
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
@@ -393,7 +414,7 @@ function Composer({
   useEffect(() => {
     if (autoFocus) focusField(ref.current);
   }, [autoFocus]);
-  // Width changes (panel resize, rotation, late fonts, a restored hidden draft)
+  // Width changes (panel resize, rotation, a restored hidden draft)
   // change how many lines the text takes.
   useEffect(() => {
     const el = ref.current;
@@ -406,6 +427,23 @@ function Composer({
     });
     ro.observe(el);
     return () => ro.disconnect();
+  }, []);
+  // A late font swap changes the line count without changing the width.
+  useEffect(() => {
+    let live = true;
+    document.fonts?.ready.then(() => live && growField(ref.current));
+    return () => {
+      live = false;
+    };
+  }, []);
+  // #2239: the keyboard changes the cap (40% of what is visible).
+  useEffect(() => {
+    const off = onViewport(() => growField(ref.current));
+    const untrack = trackViewportVar();
+    return () => {
+      off();
+      untrack();
+    };
   }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: text is what changes the height.
   useLayoutEffect(() => growField(ref.current), [text]);
