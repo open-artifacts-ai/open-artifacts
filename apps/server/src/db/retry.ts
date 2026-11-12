@@ -12,12 +12,15 @@ import { isStorageFailure } from "./storage-failure.js";
  * - D1: only `first`, `all` and `raw` of a statement whose SQL is read-only
  *   (isReadOnlySql). Never `run`, never `batch`, never `exec`.
  * - KV: only `get`. Never put, delete or list.
+ * - R2 (FILES, #2218): get, head, list and delete retry (delete of a missing
+ *   key is a no-op, so repeating it is safe). put never retries here; use
+ *   putIdempotent where the bytes are in memory and the key is fresh.
  * - Bounds: RETRY.attempts tries in all; before try n+1 a random wait in
  *   [0, baseMs * 2^(n-1)); at most RETRY.maxWaitMs of waiting per call, and
  *   per request or cron run inside withReadBudget (fetch and scheduled).
  *   Durable Object calls have no request scope (RPC doesn't carry it), so
  *   there the cap is per call.
- * - Breaker, per isolate: RETRY.breakerFailures storage failures within
+ * - Breaker, per isolate and per store: RETRY.breakerFailures storage failures within
  *   breakerWindowMs open it for breakerOpenMs; while open nothing retries.
  *   Each read still makes its one first try, so during an outage a request
  *   reaches the 503 after one failed try, not several: nothing piles up.
@@ -38,7 +41,7 @@ export const RETRY = {
   breakerOpenMs: 30_000,
 } as const;
 
-export type StoreKind = "d1" | "kv";
+export type StoreKind = "d1" | "kv" | "r2";
 
 export interface RetryDeps {
   now(): number;
@@ -61,27 +64,41 @@ export function setRetryDeps(d: Partial<RetryDeps> | null): void {
 
 // ---------------------------------------------------------------- breaker
 
-let failures: number[] = [];
-let openUntil = 0;
+/** One breaker per store, so an R2 blip never disables D1 or KV retries. */
+const breakers = new Map<
+  StoreKind,
+  { failures: number[]; openUntil: number }
+>();
+const breakerOf = (store: StoreKind) => {
+  let b = breakers.get(store);
+  if (!b) {
+    b = { failures: [], openUntil: 0 };
+    breakers.set(store, b);
+  }
+  return b;
+};
 
-/** Tests: close the breaker and forget past failures. */
+/** Tests: close every breaker and forget past failures. */
 export function resetBreaker(): void {
-  failures = [];
-  openUntil = 0;
+  breakers.clear();
 }
 
-export function breakerOpen(now = deps.now()): boolean {
-  return now < openUntil;
+/** Open for `store`; with no store, true if any store's breaker is open. */
+export function breakerOpen(now = deps.now(), store?: StoreKind): boolean {
+  if (store) return now < breakerOf(store).openUntil;
+  return [...breakers.values()].some((b) => now < b.openUntil);
 }
 
-function recordFailure(now: number): void {
-  if (breakerOpen(now)) return;
-  failures = failures.filter((t) => now - t < RETRY.breakerWindowMs);
-  failures.push(now);
-  if (failures.length >= RETRY.breakerFailures) {
-    openUntil = now + RETRY.breakerOpenMs;
-    failures = [];
+function recordFailure(now: number, store: StoreKind): void {
+  if (breakerOpen(now, store)) return;
+  const b = breakerOf(store);
+  b.failures = b.failures.filter((t) => now - t < RETRY.breakerWindowMs);
+  b.failures.push(now);
+  if (b.failures.length >= RETRY.breakerFailures) {
+    b.openUntil = now + RETRY.breakerOpenMs;
+    b.failures = [];
     logWarn("storage_breaker_open", undefined, {
+      store,
       openMs: RETRY.breakerOpenMs,
     });
   }
@@ -107,13 +124,15 @@ export function retryRead<T>(
   store: StoreKind,
   read: () => Promise<T>,
 ): Promise<T> {
-  return settle(store, read, read());
+  const start = deps.now();
+  return settle(store, read, read(), start);
 }
 
 async function settle<T>(
   store: StoreKind,
   read: () => Promise<T>,
   first: Promise<T>,
+  start: number,
 ): Promise<T> {
   let waited = 0;
   for (let attempt = 1; ; attempt++) {
@@ -125,18 +144,23 @@ async function settle<T>(
     } catch (e) {
       if (!isStorageFailure(e)) throw e;
       const now = deps.now();
-      recordFailure(now);
+      recordFailure(now, store);
       const req = budget.getStore();
       const left = Math.min(
         RETRY.maxWaitMs - waited,
         req ? RETRY.maxWaitMs - req.waitedMs : Number.POSITIVE_INFINITY,
       );
+      // The allowance is elapsed time since the first try, the failed calls'
+      // own duration included: a slow outage must not cost 3 slow failures.
+      const delay0 = Math.floor(
+        deps.random() * RETRY.baseMs * 2 ** (attempt - 1),
+      );
       const reason =
         attempt >= RETRY.attempts
           ? "attempts"
-          : breakerOpen(now)
+          : breakerOpen(now, store)
             ? "breaker"
-            : left <= 0
+            : left <= 0 || now - start + delay0 > RETRY.maxWaitMs
               ? "budget"
               : null;
       if (reason) {
@@ -147,13 +171,26 @@ async function settle<T>(
         });
         throw e;
       }
-      const delay = Math.min(
-        left,
-        Math.floor(deps.random() * RETRY.baseMs * 2 ** (attempt - 1)),
-      );
+      const delay = Math.min(left, delay0);
       waited += delay;
       if (req) req.waitedMs += delay;
       await deps.sleep(delay);
+      // Re-check right before the next call: another request may have
+      // opened the breaker, or the sleep may have run past the deadline.
+      const woke = deps.now();
+      const late = breakerOpen(woke, store)
+        ? "breaker"
+        : woke - start > RETRY.maxWaitMs
+          ? "budget"
+          : null;
+      if (late) {
+        logWarn("storage_read_gave_up", undefined, {
+          store,
+          attempts: attempt,
+          reason: late,
+        });
+        throw e;
+      }
     }
   }
 }
@@ -265,6 +302,102 @@ export function retryingKv<T extends KVNamespace | undefined>(kv: T): T {
   return w as T;
 }
 
+// ---------------------------------------------------------------- r2
+
+const r2Memo = new WeakMap<R2Bucket, R2Bucket>();
+/** A retrying bucket -> the real one. */
+const rawR2 = new WeakMap<R2Bucket, R2Bucket>();
+const R2_RETRIED = new Set(["get", "head", "list", "delete"]);
+
+/** Fixed fields for a final R2 failure: operation, binding, error code. Never keys. */
+function logR2Failure(op: string, e: unknown): void {
+  const msg = e instanceof Error ? e.message : "";
+  logWarn("r2_failed", undefined, {
+    op,
+    bucket: "FILES",
+    class: e instanceof Error ? e.name : typeof e,
+    code: /\((\d+)\)$/.exec(msg)?.[1] ?? null,
+    transient: isStorageFailure(e),
+  });
+}
+
+/** `bucket` whose get, head, list and delete retry; every failure is logged. */
+export function retryingR2<T extends R2Bucket | undefined>(bucket: T): T {
+  if (!bucket || wrappers.has(bucket)) return bucket;
+  const hit = r2Memo.get(bucket);
+  if (hit) return hit as T;
+  const target = bucket as R2Bucket;
+  const w = new Proxy(target, {
+    get(t, p) {
+      const v = Reflect.get(t, p, t);
+      if (typeof v !== "function") return v;
+      const op = String(p);
+      const call = (...a: unknown[]) =>
+        (v as (...x: unknown[]) => Promise<unknown>).apply(t, a);
+      if (op === "put")
+        return (...a: unknown[]) =>
+          call(...a).catch((e) => {
+            logR2Failure(op, e);
+            throw e;
+          });
+      if (!R2_RETRIED.has(op)) return v.bind(t);
+      return (...a: unknown[]) =>
+        retryRead("r2", () => call(...a)).catch((e) => {
+          logR2Failure(op, e);
+          throw e;
+        });
+    },
+  });
+  wrappers.add(w);
+  r2Memo.set(target, w);
+  rawR2.set(w, target);
+  return w as T;
+}
+
+/**
+ * put for a fresh key with bytes held in memory (string or buffer, never a
+ * stream, no onlyIf): same key and same bytes each time, so a repeat is safe.
+ */
+export async function putIdempotent(
+  bucket: R2Bucket,
+  key: string,
+  value: string | ArrayBuffer | ArrayBufferView,
+  options?: Omit<R2PutOptions, "onlyIf">,
+): Promise<R2Object | null> {
+  // The raw bucket, so a try that is then retried logs only r2_retry.
+  const raw = rawR2.get(bucket) ?? bucket;
+  const size =
+    typeof value === "string"
+      ? new TextEncoder().encode(value).byteLength
+      : value.byteLength;
+  let tries = 0;
+  try {
+    return await retryRead("r2", async () => {
+      tries++;
+      try {
+        return await raw.put(key, value, options);
+      } catch (e) {
+        if (
+          tries > 1 &&
+          /\(10058\)$/.test(e instanceof Error ? e.message : "")
+        ) {
+          // The earlier try may have committed and lost its reply; this
+          // replay hit R2's one-write-per-second-per-key limit. If the key
+          // holds our bytes, the put succeeded.
+          const head = await raw.head(key).catch(() => null);
+          if (head && head.size === size) return head;
+        }
+        if (isStorageFailure(e))
+          logInfo("r2_retry", { op: "put", bucket: "FILES" });
+        throw e;
+      }
+    });
+  } catch (e) {
+    logR2Failure("put", e);
+    throw e;
+  }
+}
+
 // ---------------------------------------------------------------- env
 
 /**
@@ -281,6 +414,7 @@ export function withRetries<E extends object>(env: E): E {
       const v = Reflect.get(t, p, t);
       if (p === "DB") return retryingD1(v as D1Database | undefined);
       if (p === "OAUTH_KV") return retryingKv(v as KVNamespace | undefined);
+      if (p === "FILES") return retryingR2(v as R2Bucket | undefined);
       return v;
     },
   });

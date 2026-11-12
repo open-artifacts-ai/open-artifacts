@@ -90,6 +90,7 @@ type Row = {
   trialEndsAt: number | null;
   soloTrialEndsAt?: number | null;
   hasCustomer?: boolean;
+  yearlyTeamBusiness?: boolean;
   graceUntil: number | null;
   version: number;
 };
@@ -1710,6 +1711,69 @@ describe("Me.instance.billing and the billing routes", () => {
     );
   });
 
+  it("yearlyTeamBusiness: a GET /tier answer reaches the owner through the parse, never a member; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ version: 30, yearlyTeamBusiness: true });
+    expect(
+      (await getMe(owner.cookie)).instance.billing?.yearlyTeamBusiness,
+    ).toBe(true);
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "yearlyTeamBusiness",
+    );
+    await read({ version: 31, yearlyTeamBusiness: false });
+    expect(
+      (await getMe(owner.cookie)).instance.billing?.yearlyTeamBusiness,
+    ).toBe(false);
+    const { yearlyTeamBusiness: _, ...without } = row;
+    row = { ...without, version: 32 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "yearlyTeamBusiness",
+    );
+  });
+
+  it("yearlyTeamBusiness rides the version rule: a later asOf at the same version updates it; an earlier or equal asOf or a lower version changes nothing; absent reads as off", async () => {
+    const stored = async () =>
+      JSON.parse(
+        (
+          await env.DB.prepare("select value from settings where key = ?")
+            .bind(PLAN_KEY)
+            .first<{ value: string }>()
+        )?.value ?? "null",
+      );
+    const t = Date.now();
+    await cache({ tier: "business", version: 5, yearlyTeamBusiness: false }, t);
+    // (a) same version, later asOf: the flag updates.
+    await cache({ version: 5, yearlyTeamBusiness: true }, t + 1000);
+    expect(await stored()).toMatchObject({
+      version: 5,
+      yearlyTeamBusiness: true,
+    });
+    // (b) same version, earlier or equal asOf: nothing changes.
+    await cache({ version: 5, yearlyTeamBusiness: false }, t + 500);
+    await cache({ version: 5, yearlyTeamBusiness: false }, t + 1000);
+    expect(await stored()).toMatchObject({ yearlyTeamBusiness: true });
+    // (c) a lower version: nothing changes, tier included.
+    await cache(
+      { version: 4, tier: "team", yearlyTeamBusiness: false },
+      t + 5000,
+    );
+    expect(await stored()).toMatchObject({
+      tier: "business",
+      version: 5,
+      yearlyTeamBusiness: true,
+    });
+    // (d) a later asOf with the field absent: the field is gone (reads as off).
+    const { yearlyTeamBusiness: _, ...without } = row;
+    await storePlan(H, { ...without, version: 5, asOf: t + 2000 }, t + 2000);
+    const gone = await stored();
+    expect(gone).not.toHaveProperty("yearlyTeamBusiness");
+    expect(gone).toMatchObject({ tier: "business", version: 5 });
+  });
+
   it("hasCustomer follows the same-version, later-read rule", async () => {
     const t = Date.now();
     await cache({ tier: "business", version: 20, hasCustomer: false }, t);
@@ -1924,6 +1988,53 @@ describe("Me.instance.billing and the billing routes", () => {
     const last = calls.filter((c) => c.path === "/checkout").at(-1)?.body;
     expect(last).toMatchObject({ plan: "business", interval: "month" });
     expect(last).not.toHaveProperty("seats");
+  });
+
+  it("checkout monthly team and business send this month's creator count, counted server side (#2123)", async () => {
+    await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
+    const post = (body: unknown) =>
+      send(R.billingCheckout, owner.cookie, { method: "POST", body });
+    const last = () => calls.filter((c) => c.path === "/checkout").at(-1)?.body;
+    const n = () => calls.filter((c) => c.path === "/checkout").length;
+    // No creators yet this month: 0 (billing bills at least 1).
+    expect((await post({ tier: "team" })).status).toBe(200);
+    expect(last()).toMatchObject({ plan: "team", creators: 0 });
+    // Three this month, one last month (not counted).
+    const month = monthOf(Date.now());
+    await env.DB.prepare(
+      "insert into creator_months (month, user_id, source, first_at) values (?1, 'uA', 'version', 1), (?1, 'uB', 'data', 2), (?1, 'uC', 'version', 3), (?2, 'uD', 'version', 4)",
+    )
+      .bind(month, previousMonth(month))
+      .run();
+    expect((await post({ tier: "team" })).status).toBe(200);
+    expect(last()).toMatchObject({ plan: "team", creators: 3 });
+    expect((await post({ tier: "business", interval: "month" })).status).toBe(
+      200,
+    );
+    expect(last()).toMatchObject({
+      plan: "business",
+      interval: "month",
+      creators: 3,
+    });
+    // Yearly prepays seats; Solo is not per creator: neither sends creators.
+    expect(
+      (await post({ tier: "team", interval: "year", seats: 7 })).status,
+    ).toBe(200);
+    expect(last()).not.toHaveProperty("creators");
+    expect((await post({ tier: "solo", interval: "month" })).status).toBe(200);
+    expect(last()).not.toHaveProperty("creators");
+    // The count never comes from the request: a body naming creators is 400,
+    // before billing.
+    const before = n();
+    for (const body of [
+      { tier: "team", creators: 1 },
+      { tier: "business", interval: "month", creators: 99 },
+    ]) {
+      const r = await post(body);
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toMatchObject({ code: "bad_request" });
+    }
+    expect(n()).toBe(before);
   });
 
   it("checkout solo is refused (409) on a Team or Business instance, allowed on solo, free and trial", async () => {

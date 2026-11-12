@@ -120,7 +120,9 @@ export const MentionDeliverySchema = z.enum([
   "queued",
   "seen",
   "gone",
+  "withdrawn",
 ]);
+export type MentionDelivery = z.infer<typeof MentionDeliverySchema>;
 /** #1890: a mentioned or asked agent's identity fields, as an author's (CommentAuthorSchema). Absent: unknown. */
 const partyFace = {
   linked: z.boolean().optional(),
@@ -135,9 +137,15 @@ export const CommentMentionSchema = z.object({
   ...partyFace,
   /** The person the agent acts for, set by the server (#1822). */
   for: z.string().optional(),
-  delivery: MentionDeliverySchema,
+  /** Members only (#2004): an outsider gets no delivery state of an agent. */
+  delivery: MentionDeliverySchema.optional(),
 });
 export type CommentMention = z.infer<typeof CommentMentionSchema>;
+/** A thread agent a reply also told: members only, so the delivery is always there. */
+export const CommentNotifiedSchema = CommentMentionSchema.required({
+  delivery: true,
+});
+export type CommentNotified = z.infer<typeof CommentNotifiedSchema>;
 
 export const CommentSchema = z.object({
   id: z.string(),
@@ -155,7 +163,7 @@ export const CommentSchema = z.object({
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
   /** #2035: the thread's agents a person's reply also told, with delivery. Members only. */
-  notified: z.array(CommentMentionSchema).optional(),
+  notified: z.array(CommentNotifiedSchema).optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -167,6 +175,8 @@ export const ThreadAgentSchema = z.object({
   /** The person the agent acts for. */
   for: z.string().optional(),
   canRemove: z.boolean(),
+  /** #2174: a person took it out of this thread; it gets no replies until an @-mention or Undo. Absent when it is notified. */
+  removed: z.boolean().optional(),
 });
 export type ThreadAgent = z.infer<typeof ThreadAgentSchema>;
 
@@ -251,7 +261,7 @@ export const ReplyBodySchema = z.object({
   /**
    * Address the reply to the thread root's ask author (#1614): anyone who may
    * reply, viewers included. 400 not_an_ask when the root has no ask or its
-   * author is not an agent; 400 with mentions or assign. Its agents get a
+   * author is not an agent; 400 when combined with mentions or ask. Its agents get a
    * fixed notice; `mentions` on the returned comment says who and how it went.
    */
   toAsker: z.boolean().optional(),

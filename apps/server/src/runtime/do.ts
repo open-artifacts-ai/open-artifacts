@@ -49,6 +49,7 @@ import {
 } from "../services/thumbs.js";
 import {
   addParticipants,
+  askAuthors,
   askerNoticeDue,
   askRow,
   bodyOk,
@@ -57,6 +58,7 @@ import {
   deleteExtras,
   getComment,
   getThread,
+  heldTargets,
   insertComment,
   insertExtras,
   insertThread,
@@ -70,6 +72,7 @@ import {
   refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
+  refundThreadReplyCount,
   replyCount,
   rootId,
   type StoredActor,
@@ -86,6 +89,7 @@ import {
   threadExists,
   threadStatus,
   touchThread,
+  withdrawTargets,
 } from "./comments-store.js";
 import {
   INDEX_REPORT_MS,
@@ -2220,6 +2224,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // A refused asker notice gives the asker bound back (#1614).
       if (m && a.kind === "asker" && a.state === "gone")
         refundAskerIfAllGone(this.sql, a.commentId);
+      // A refused thread-reply notice gives its per-key spend back (#2197).
+      // Only queued->gone moves, so a repeat settle never refunds twice.
+      if (m && a.kind === "reply" && a.state === "gone") {
+        const c = this.sql
+          .exec<{ threadId: string; at: string }>(
+            "select thread_id as threadId, created_at as at from comments where id = ?",
+            a.commentId,
+          )
+          .toArray()[0];
+        if (c) refundThreadReplyCount(this.sql, c.threadId, a.key, c.at);
+      }
       return m;
     });
     if (moved) this.broadcastComments();
@@ -2303,6 +2318,37 @@ export class ArtifactRuntime extends DurableObject<Env> {
     );
     if (ok) this.broadcastComments();
     return ok;
+  }
+
+  /** #2175: this thread's targets for `key` still held. */
+  commentsHeldTargets(a: {
+    threadId: string;
+    key: string;
+  }): { commentId: string; kind: "mention" | "asker" | "reply" }[] {
+    this.ensureSchema();
+    return heldTargets(this.sql, a.threadId, a.key);
+  }
+
+  /** #2240: the ask comments of a thread with their authors. */
+  commentsAskAuthors(a: { threadId: string }): {
+    commentId: string;
+    author: StoredActor;
+  }[] {
+    this.ensureSchema();
+    return askAuthors(this.sql, a.threadId);
+  }
+
+  /** #2175: marks the targets the hub withdrew and gives back their spends. */
+  commentsTargetsWithdraw(a: {
+    threadId: string;
+    key: string;
+    targets: { commentId: string; kind: "mention" | "asker" | "reply" }[];
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      withdrawTargets(this.sql, a.threadId, a.key, a.targets),
+    );
+    this.broadcastComments();
   }
 
   /** #2035: records who a person's reply also told, and how it went; returns the comment. */
@@ -2530,6 +2576,9 @@ type RpcMethods =
   | "commentsThreadReplyRefund"
   | "commentsParticipants"
   | "commentsParticipantSet"
+  | "commentsHeldTargets"
+  | "commentsAskAuthors"
+  | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
   | "commentsStatus"
   | "commentsEdit"

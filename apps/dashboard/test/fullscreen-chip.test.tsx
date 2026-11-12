@@ -1,9 +1,10 @@
-// #2112, option B: the full-screen view's strip, and Full screen's icon.
+// #290, option A: the full-screen view's peek chip, and Full screen's icon.
 import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -31,7 +32,7 @@ const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
 ).id;
 const FULL = `${viewerPath(OWNED)}/full`;
-const TOP = "Exit full screen";
+const TOP = "Exit full screen, back to Landing page";
 const EMBED = "Open Landing page in Open Artifacts (opens in new tab)";
 
 const mount = (path: string) => {
@@ -48,39 +49,31 @@ const mount = (path: string) => {
   return router;
 };
 const chip = (name = TOP) => screen.findByRole("link", { name });
+const tick = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+beforeEach(() => {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout"],
+    shouldAdvanceTime: true,
+  });
+});
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
-describe("full-screen strip, top level", () => {
-  it("shows the title and the exit link with a stable name", async () => {
+describe("full-screen controls, top level", () => {
+  it("Exit is an icon with a stable name, in the group with Comments", async () => {
     mount(FULL);
     const a = await chip();
     expect(a).toHaveAttribute("href", viewerPath(OWNED));
     expect(a).not.toHaveAttribute("target");
-    expect(a).not.toHaveAttribute("data-open");
-    expect(a).toHaveTextContent("Exit full screen");
     expect(a).toHaveAccessibleName(TOP);
-    const bar = a.closest(".oa-fsbar") as HTMLElement;
-    expect(bar.querySelector(".oa-fstitle")).toHaveTextContent("Landing page");
-    expect(a.querySelector("svg.oa-fsx-x")).toHaveAttribute(
-      "aria-hidden",
-      "true",
-    );
-  });
-
-  it("orders title, Comments, then the exit link; icons are hidden from AT", async () => {
-    mount(FULL);
-    const a = await chip();
+    expect(a).toHaveTextContent("");
+    expect(a).not.toHaveAttribute("data-open");
     const bar = a.closest(".oa-fsbar") as HTMLElement;
     const comments = await within(bar).findByRole("button", {
       name: /^Comments/,
     });
-    const title = bar.querySelector(".oa-fstitle") as HTMLElement;
-    const follows = (x: Node, y: Node) =>
-      !!(x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(follows(title, comments)).toBe(true);
-    expect(follows(comments, a)).toBe(true);
     expect(comments.getAttribute("aria-label")).toMatch(
       /^Comments(, \d+ open)?$/,
     );
@@ -88,9 +81,10 @@ describe("full-screen strip, top level", () => {
       for (const svg of el.querySelectorAll("svg"))
         expect(svg).toHaveAttribute("aria-hidden", "true");
     expect(comments.querySelector("svg.oa-fsicon")).not.toBeNull();
+    expect(a.querySelector("svg.oa-fsicon")).not.toBeNull();
   });
 
-  it("comes before the frame in the document, so its controls are the first Tab stops", async () => {
+  it("comes before the frame in the document, so Tab reaches it first", async () => {
     mount(FULL);
     const a = await chip();
     const frame = document.querySelector("iframe") as HTMLIFrameElement;
@@ -99,7 +93,7 @@ describe("full-screen strip, top level", () => {
     ).toBeTruthy();
   });
 
-  it("a click follows to the viewer", async () => {
+  it("a click follows the link", async () => {
     const router = mount(FULL);
     const a = await chip();
     fireEvent.click(a);
@@ -118,7 +112,7 @@ describe("full-screen strip, top level", () => {
   });
 });
 
-describe("full-screen strip, embedded", () => {
+describe("full-screen controls, embedded", () => {
   beforeEach(() => {
     Object.defineProperty(window, "self", {
       configurable: true,
@@ -132,21 +126,18 @@ describe("full-screen strip, embedded", () => {
     });
   });
 
-  it("shows the title and one link that opens in a new tab; ignores Esc", async () => {
+  it("opens in a new tab as an icon and ignores Esc", async () => {
     const router = mount(FULL);
     const a = await chip(EMBED);
     expect(a).toHaveAttribute("href", viewerPath(OWNED));
     expect(a).toHaveAttribute("target", "_blank");
     expect(a).toHaveAttribute("rel", "noopener");
-    expect(a).toHaveTextContent("Open in Open Artifacts");
-    expect(a.querySelector("svg.oa-fsx-arrow")).not.toBeNull();
-    expect(a).toHaveAccessibleName(EMBED);
-    expect(
-      (a.closest(".oa-fsbar") as HTMLElement).querySelector(".oa-fstitle"),
-    ).toHaveTextContent("Landing page");
+    expect(a).toHaveTextContent("");
+    expect(a.querySelector("svg.oa-fsicon")).not.toBeNull();
     fireEvent.keyDown(document, { key: "Escape" });
-    await new Promise((r) => setTimeout(r, 50));
+    await tick(100);
     expect(router.state.location.pathname).toBe(FULL);
+    expect(a).toHaveAccessibleName(EMBED);
   });
 });
 

@@ -21,7 +21,12 @@ import { orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { creatorCount, monthOf } from "../billing/creators.js";
 import { refreshPlan } from "../billing/store.js";
-import { instanceDirectory, readHealth } from "../directory/health.js";
+import {
+  instanceDirectory,
+  readHealth,
+  readHealthBound,
+  readThawNotice,
+} from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
@@ -89,12 +94,31 @@ async function toMe(
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
   const mode = directoryMode(c.env);
-  if (mode !== "off")
-    me.instance.directory = instanceDirectory(
-      mode,
-      await readHealth(c.env),
-      orgCan(user, "members.manage", { cap }),
-    );
+  if (mode !== "off") {
+    const admin = orgCan(user, "members.manage", { cap });
+    // Owners and admins also learn whether a binding exists (#2149, the same
+    // D1 statement as health) and what the thaw puts back or put back (#2150,
+    // its own read, run alongside).
+    if (admin) {
+      const [{ h, bound }, thaw] = await Promise.all([
+        readHealthBound(c.env),
+        readThawNotice(c.env, mode),
+      ]);
+      me.instance.directory = instanceDirectory(
+        mode,
+        h,
+        true,
+        Date.now(),
+        bound,
+        thaw,
+      );
+    } else
+      me.instance.directory = instanceDirectory(
+        mode,
+        await readHealth(c.env),
+        false,
+      );
+  }
   me.auth = {
     method: c.var.authMethod ?? "access",
     readOnly: cap !== null,
@@ -129,6 +153,9 @@ async function toMe(
         : {}),
       ...(details && plan.hasCustomer !== undefined
         ? { hasCustomer: plan.hasCustomer }
+        : {}),
+      ...(details && plan.yearlyTeamBusiness !== undefined
+        ? { yearlyTeamBusiness: plan.yearlyTeamBusiness }
         : {}),
       graceUntil:
         details && plan.graceUntil !== null

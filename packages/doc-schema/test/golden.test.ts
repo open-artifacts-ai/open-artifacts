@@ -104,3 +104,134 @@ describe("golden round trip", () => {
     ]);
   });
 });
+
+describe("hard breaks (#2178)", () => {
+  const breakCount = (doc: PMNode) => {
+    let n = 0;
+    doc.descendants((node) => {
+      if (node.type.name === "hardBreak") n++;
+      return true;
+    });
+    return n;
+  };
+
+  it("reads a backslash break and a two-space break as hardBreak, with no change", () => {
+    for (const src of ["a\\\nb\n", "a  \nb\n"]) {
+      const { doc, changes } = markdownToDoc(src);
+      expect(changes).toEqual([]);
+      expect(doc.firstChild?.childCount).toBe(3);
+      expect(doc.firstChild?.child(1).type.name).toBe("hardBreak");
+      expect(docToMarkdown(doc)).toBe("a\\\nb\n");
+    }
+  });
+
+  it("drops a break at the end of a block", () => {
+    const trailing = docSchema.nodeFromJSON({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "a" }, { type: "hardBreak" }],
+        },
+      ],
+    });
+    expect(docToMarkdown(trailing)).toBe("a\n");
+    expect(breakCount(markdownToDoc("a  \n").doc)).toBe(0);
+    expect(breakCount(markdownToDoc("a  \nb  \n").doc)).toBe(1);
+  });
+
+  it("keeps several breaks in a row", () => {
+    const doc = docSchema.nodeFromJSON({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a" },
+            { type: "hardBreak" },
+            { type: "hardBreak" },
+            { type: "text", text: "b" },
+          ],
+        },
+      ],
+    });
+    const md = docToMarkdown(doc);
+    expect(md).toBe("a\\\n\\\nb\n");
+    expect(markdownToDoc(md).doc.eq(doc)).toBe(true);
+  });
+
+  it("is refused in a heading", () => {
+    expect(() =>
+      docSchema
+        .nodeFromJSON({
+          type: "doc",
+          content: [
+            {
+              type: "heading",
+              attrs: { level: 2 },
+              content: [
+                { type: "text", text: "a" },
+                { type: "hardBreak" },
+                { type: "text", text: "b" },
+              ],
+            },
+          ],
+        })
+        .check(),
+    ).toThrow();
+  });
+
+  it("a break in a setext heading imports as a space, reported", () => {
+    const { doc, changes } = markdownToDoc("Foo\\\nbar\n===\n");
+    expect(breakCount(doc)).toBe(0);
+    expect(docToMarkdown(doc)).toBe("# Foo bar\n");
+    expect(changes.map((c) => c.kind)).toEqual(["heading_break"]);
+  });
+
+  it("a break carries no marks: bold across one is two bold runs", () => {
+    const { doc } = markdownToDoc("**a\\\nb**\n");
+    const kids = doc.firstChild?.content.content ?? [];
+    expect(kids.map((k) => k.type.name)).toEqual(["text", "hardBreak", "text"]);
+    expect(kids[1].marks).toEqual([]);
+    expect(docToMarkdown(doc)).toBe("**a**\\\n**b**\n");
+    expect(markdownToDoc(docToMarkdown(doc)).doc.eq(doc)).toBe(true);
+    // JSON from an editor that marked the break is cleaned the same way.
+    const marked = docToMarkdown({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a", marks: [{ type: "bold" }] },
+            { type: "hardBreak", marks: [{ type: "bold" }] },
+            { type: "text", text: "b", marks: [{ type: "bold" }] },
+          ],
+        },
+      ],
+    });
+    expect(marked).toBe("**a**\\\n**b**\n");
+  });
+
+  it("is refused in a code block", () => {
+    expect(() =>
+      docSchema
+        .nodeFromJSON({
+          type: "doc",
+          content: [
+            {
+              type: "codeBlock",
+              attrs: { language: null },
+              content: [{ type: "hardBreak" }],
+            },
+          ],
+        })
+        .check(),
+    ).toThrow();
+  });
+
+  it("survives Yjs inside a list item and a quote", () => {
+    const { doc } = markdownToDoc(GOLDEN.hardBreakInBlocks);
+    expect(breakCount(doc)).toBe(3);
+    expect(viaYjs(doc).eq(doc)).toBe(true);
+  });
+});

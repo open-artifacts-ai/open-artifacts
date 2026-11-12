@@ -160,6 +160,21 @@ async function startMocks() {
       http.post("*/api/v1/artifacts/:id/move", conflict),
     );
   }
+  // ?mock=create-503: creating an artifact answers 503 temporarily_unavailable (the upload itself works).
+  if (params.get("mock") === "create-503")
+    extra.push(
+      http.post("*/api/v1/artifacts", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "temporarily_unavailable",
+              message: "Try again shortly",
+            },
+          },
+          { status: 503, headers: { "Retry-After": "5" } },
+        ),
+      ),
+    );
   // ?mock=name: no display name yet (suggested "Ada Lovelace"); after a PATCH the shared mock answers.
   if (params.get("mock") === "name") {
     let named = false;
@@ -176,6 +191,25 @@ async function startMocks() {
       ),
       http.patch("*/api/v1/me", () => {
         named = true;
+        return undefined;
+      }),
+    );
+  }
+  // ?mock=agent-name (#2277): a stored name that reads as an agent's, so others see the email; after a PATCH the shared mock answers.
+  if (params.get("mock") === "agent-name") {
+    let saved = false;
+    extra.push(
+      http.get("*/api/v1/me", () =>
+        saved
+          ? undefined
+          : HttpResponse.json({
+              ...fixtures.me,
+              displayName: "Ada's agent",
+              nameHiddenAs: "email",
+            }),
+      ),
+      http.patch("*/api/v1/me", () => {
+        saved = true;
         return undefined;
       }),
     );
