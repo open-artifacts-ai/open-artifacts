@@ -1513,6 +1513,8 @@ export const PasskeySchema = z.object({
   /** When it may first confirm a pick or a change (createdAt + 24 h). */
   usableAt: z.string(),
   usable: z.boolean(),
+  /** A removal asked for by re-auth alone is pending until then; null when none. */
+  removesAt: z.string().nullable(),
 });
 export type Passkey = z.infer<typeof PasskeySchema>;
 

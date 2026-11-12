@@ -263,6 +263,7 @@ export const AuditActionSchema = z.enum([
   "bus.reach.expired",
   "passkey.add",
   "passkey.remove",
+  "passkey.remove_cancel",
   "passkey.settings",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;

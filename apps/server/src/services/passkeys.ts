@@ -20,7 +20,7 @@ import {
 } from "../auth/webauthn.js";
 import { stmt } from "../db/stmt.js";
 import { sendEmail, takeAll } from "../email/send.js";
-import { passkeyAddedEmail } from "../email/templates.js";
+import { passkeyAddedEmail, passkeyRemovedEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logWarn } from "../log.js";
@@ -50,6 +50,7 @@ type PasskeyRow = {
   label: string;
   created_at: number;
   last_used_at: number | null;
+  removal_at: number | null;
 };
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -61,12 +62,30 @@ const toPasskey = (r: PasskeyRow, now: number): Passkey => ({
   lastUsedAt: r.last_used_at === null ? null : iso(r.last_used_at),
   usableAt: iso(r.created_at + PASSKEY_COOLING_MS),
   usable: r.created_at + PASSKEY_COOLING_MS <= now,
+  removesAt: r.removal_at === null ? null : iso(r.removal_at),
 });
 
-const SELECT = "select * from passkeys where user_id = ?1 order by created_at";
-
-async function rowsOf(env: Env, userId: string): Promise<PasskeyRow[]> {
-  const { results } = await stmt(env.DB, SELECT).bind(userId).all<PasskeyRow>();
+/**
+ * The member's passkeys. A pending removal (a re-auth alone asked for it)
+ * still counts until its time; a row past it is gone, deleted here.
+ */
+async function rowsOf(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<PasskeyRow[]> {
+  await stmt(
+    env.DB,
+    "delete from passkeys where user_id = ?1 and removal_at is not null and removal_at <= ?2",
+  )
+    .bind(userId, now)
+    .run();
+  const { results } = await stmt(
+    env.DB,
+    "select * from passkeys where user_id = ?1 order by created_at",
+  )
+    .bind(userId)
+    .all<PasskeyRow>();
   return results;
 }
 
@@ -75,7 +94,7 @@ export async function listPasskeys(
   userId: string,
   now = Date.now(),
 ): Promise<Passkey[]> {
-  return (await rowsOf(env, userId)).map((r) => toPasskey(r, now));
+  return (await rowsOf(env, userId, now)).map((r) => toPasskey(r, now));
 }
 
 const usable = (rows: PasskeyRow[], now: number) =>
@@ -87,7 +106,7 @@ async function requireUsable(
   userId: string,
   now: number,
 ): Promise<PasskeyRow[]> {
-  const rows = await rowsOf(env, userId);
+  const rows = await rowsOf(env, userId, now);
   if (rows.length === 0)
     throw new ApiError("no_passkey", "Add a passkey in your settings first");
   const ok = usable(rows, now);
@@ -220,7 +239,7 @@ export async function verifyForScope(
     row.expires_at <= now
   )
     throw expired();
-  if (row.binding !== binding) return failed("binding");
+  // Consumed before anything else is compared: every failure below burns it.
   const res = await stmt(
     env.DB,
     "update pick_assertions set used_at = ?1 where id = ?2 and used_at is null and expires_at > ?1",
@@ -228,13 +247,14 @@ export async function verifyForScope(
     .bind(now, row.id)
     .run();
   if (!res.meta.changes) throw expired();
+  if (row.binding !== binding) return failed("binding");
   const credId = assertionCredentialId(assertion);
   if (!credId) return failed("credential");
   const pk = await stmt(
     env.DB,
-    "select * from passkeys where credential_id = ?1 and user_id = ?2",
+    "select * from passkeys where credential_id = ?1 and user_id = ?2 and (removal_at is null or removal_at > ?3)",
   )
-    .bind(credId, userId)
+    .bind(credId, userId, now)
     .first<PasskeyRow>();
   if (!pk) return failed("unknown_passkey");
   if (pk.created_at + PASSKEY_COOLING_MS > now) return failed("cooling");
@@ -273,7 +293,7 @@ export async function registerBegin(
   user: Account,
   now = Date.now(),
 ): Promise<PasskeyChallenge> {
-  const rows = await rowsOf(env, user.id);
+  const rows = await rowsOf(env, user.id, now);
   if (rows.length >= MAX_PASSKEYS)
     throw new ApiError("conflict", `At most ${MAX_PASSKEYS} passkeys`);
   const { challenge, expiresAt } = await issue(
@@ -445,44 +465,120 @@ export async function removeChallenge(
   return requestOptions(env, userId, "remove", removeScope(id), id, now);
 }
 
-/** Deletes the passkey; `assertion` is for removeChallenge, or the caller proved a fresh re-auth. */
+function removedEmail(
+  env: Env,
+  user: Account,
+  label: string,
+  pending: boolean,
+  ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
+): Promise<void> {
+  const send = (async () => {
+    const instance = (await getSettings(env)).name;
+    await sendEmail(
+      env,
+      user.id,
+      user.email,
+      () =>
+        passkeyRemovedEmail({
+          instance,
+          recipient: user.email,
+          appHost: env.APP_HOST,
+          label,
+          pending,
+        }),
+      { kind: "passkey", instance },
+    );
+  })().catch((e) => logWarn("passkey_email_failed", e));
+  if (!ctx) return send;
+  ctx.waitUntil(send);
+  return Promise.resolve();
+}
+
+/**
+ * Removes a passkey. With an assertion (for removeChallenge) it is gone at
+ * once. With only a re-auth it is pending for 24 h: it still counts for
+ * confirm and challenges until then, so a session that got a re-auth cannot
+ * switch the protection off in one step; the member can cancel. Either way
+ * the member is emailed. Returns when it goes (null: removed now).
+ */
 export async function removePasskey(
   env: Env,
-  userId: string,
+  user: Account,
   id: string,
   how: { assertion: unknown } | { reauth: true },
+  ctx?: Pick<ExecutionContext, "waitUntil">,
   now = Date.now(),
-): Promise<void> {
-  await ownRow(env, userId, id);
-  if ("assertion" in how)
+): Promise<{ removesAt: string | null }> {
+  const row = await ownRow(env, user.id, id);
+  if ("assertion" in how) {
     await verifyForScope(
       env,
-      userId,
+      user.id,
       "remove",
       removeScope(id),
       id,
       how.assertion,
       now,
     );
-  await env.DB.batch([
-    stmt(env.DB, "delete from passkeys where id = ?1 and user_id = ?2").bind(
-      id,
-      userId,
-    ),
-    audit(
-      env,
-      "passkey.remove",
-      { type: "user", id: userId },
-      userActor(userId),
-      {
-        detail: { passkeyId: id, passkeyVerified: "assertion" in how },
-        when: {
-          sql: "not exists (select 1 from passkeys where id = ?)",
-          args: [id],
-        },
-      },
-    ),
-  ]);
+    await env.DB.batch([
+      stmt(env.DB, "delete from passkeys where id = ?1 and user_id = ?2").bind(
+        id,
+        user.id,
+      ),
+      audit(
+        env,
+        "passkey.remove",
+        { type: "user", id: user.id },
+        userActor(user.id),
+        { detail: { passkeyId: id, passkeyVerified: true, pending: false } },
+      ),
+    ]);
+    await removedEmail(env, user, row.label, false, ctx);
+    return { removesAt: null };
+  }
+  const at = row.removal_at ?? now + PASSKEY_COOLING_MS;
+  if (row.removal_at === null) {
+    await env.DB.batch([
+      stmt(
+        env.DB,
+        "update passkeys set removal_at = ?1 where id = ?2 and user_id = ?3 and removal_at is null",
+      ).bind(at, id, user.id),
+      audit(
+        env,
+        "passkey.remove",
+        { type: "user", id: user.id },
+        userActor(user.id),
+        { detail: { passkeyId: id, passkeyVerified: false, pending: true } },
+      ),
+    ]);
+    await removedEmail(env, user, row.label, true, ctx);
+  }
+  return { removesAt: iso(at) };
+}
+
+/** Cancels a pending removal; 409 when none is pending (or it is not yours). */
+export async function cancelRemoval(
+  env: Env,
+  userId: string,
+  id: string,
+  now = Date.now(),
+): Promise<void> {
+  await rowsOf(env, userId, now);
+  const r = await stmt(
+    env.DB,
+    "update passkeys set removal_at = null where id = ?1 and user_id = ?2 and removal_at is not null and removal_at > ?3",
+  )
+    .bind(id, userId, now)
+    .run();
+  if (!r.meta.changes)
+    throw new ApiError("conflict", "No removal is pending for that passkey");
+  await audit(
+    env,
+    "passkey.remove_cancel",
+    { type: "user", id: userId },
+    userActor(userId),
+    { detail: { passkeyId: id } },
+  ).run();
 }
 
 // ------------------------------------------------------------------ settings
@@ -548,7 +644,7 @@ export async function getPasskeySettings(
 ): Promise<PasskeySettings> {
   const [s, rows] = await Promise.all([
     switchesOf(env, userId),
-    rowsOf(env, userId),
+    rowsOf(env, userId, now),
   ]);
   return {
     ...s,
@@ -684,9 +780,9 @@ export async function confirmFor(
   const ids = JSON.stringify(addressees);
   const { results } = await stmt(
     env.DB,
-    "select distinct user_id from passkeys where user_id in (select value from json_each(?1))",
+    "select distinct user_id from passkeys where user_id in (select value from json_each(?1)) and (removal_at is null or removal_at > ?2)",
   )
-    .bind(ids)
+    .bind(ids, Date.now())
     .all<{ user_id: string }>();
   for (const { user_id } of results) {
     const s = await switchesOf(env, user_id);

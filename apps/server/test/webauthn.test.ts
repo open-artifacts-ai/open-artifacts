@@ -5,7 +5,8 @@ import {
   verifyAssertion,
   verifyRegistration,
 } from "../src/auth/webauthn.js";
-import { FakeAuthenticator } from "./passkey-helper.js";
+import { b64urlEncode } from "../src/util/crypto.js";
+import { cborBytes, FakeAuthenticator } from "./passkey-helper.js";
 
 const want = {
   challenge: "chal-1",
@@ -150,5 +151,47 @@ describe("derToRaw", () => {
   it("rejects malformed DER", () => {
     expect(() => derToRaw(new Uint8Array([1, 2, 3]))).toThrow();
     expect(() => derToRaw(new Uint8Array([0x30, 0x02, 0x02, 0x00]))).toThrow();
+  });
+});
+
+describe("RSA keys", () => {
+  const coseRsa = async (bits: number) => {
+    const k = (await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: bits,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign", "verify"],
+    )) as CryptoKeyPair;
+    const jwk = await crypto.subtle.exportKey("jwk", k.publicKey);
+    const dec = (s: string) =>
+      Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
+        c.charCodeAt(0),
+      );
+    return b64urlEncode(
+      cborBytes(
+        new Map<number, Uint8Array | number>([
+          [1, 3],
+          [3, -257],
+          [-1, dec(jwk.n as string)],
+          [-2, dec(jwk.e as string)],
+        ]) as never,
+      ),
+    );
+  };
+  it("refuses a modulus under 2048 bits, takes 2048", async () => {
+    const a = await FakeAuthenticator.create();
+    const cred = await a.assert(o);
+    const stored = (publicKey: string) => ({ publicKey, signCount: 0 });
+    expect(
+      await reason(verifyAssertion(cred, want, stored(await coseRsa(1024)))),
+    ).toBe("algorithm");
+    // 2048 is accepted as a key (the signature is then wrong: ES256 signed it).
+    expect(
+      await reason(verifyAssertion(cred, want, stored(await coseRsa(2048)))),
+    ).toBe("signature");
   });
 });
