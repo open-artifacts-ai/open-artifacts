@@ -41,10 +41,7 @@ export function monthList(months: string[]): string {
 }
 
 export function overageCopy(due: NonNullable<PlanView["overageDue"]>): string {
-  const total = dollars(due.amountCents);
-  return due.months.length === 1
-    ? `Extra creators for ${monthList(due.months)} are waiting to be charged (${total}). Add a card to settle it.`
-    : `Extra creators for ${monthList(due.months)} are waiting to be charged (${total} in all). Add a card to settle them.`;
+  return `Extra creators for ${monthList(due.months)} are waiting to be charged (${dollars(due.amountCents)}). Add a card to settle it.`;
 }
 
 export function OverageNotice({

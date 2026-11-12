@@ -54,7 +54,25 @@ describe("extra-creator charge notice (#2246)", () => {
     const n = within(await screen.findByTestId("overage-notice"));
     expect(
       n.getByText(
-        "Extra creators for September and October are waiting to be charged ($118.50 in all). Add a card to settle them.",
+        "Extra creators for September and October are waiting to be charged ($118.50). Add a card to settle it.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("three months: a list with and before the last", async () => {
+    mountHosted("/settings/plan", {
+      billing: {
+        ...TEAM,
+        overageDue: {
+          amountCents: 15000,
+          months: [`${Y}-08`, `${Y}-09`, `${Y}-10`],
+        },
+      },
+    });
+    const n = within(await screen.findByTestId("overage-notice"));
+    expect(
+      n.getByText(
+        "Extra creators for August, September and October are waiting to be charged ($150). Add a card to settle it.",
       ),
     ).toBeVisible();
   });
