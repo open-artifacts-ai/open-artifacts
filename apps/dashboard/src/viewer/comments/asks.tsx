@@ -69,26 +69,55 @@ export function nextAskFor(
 }
 
 type DState = MentionDelivery;
-const isWait = (d: DState) => d === "queued" || d === "gone";
+/** What a mark shows: a queued notice is "sending" until the comment is HELD_AFTER_MS old. */
+type Shown = DState | "sending";
+const isWait = (d: Shown) => d === "queued" || d === "gone";
+
+/** A queued notice is delivered within moments; it is "held" only after this long. */
+export const HELD_AFTER_MS = 30_000;
+
+/** Maps each state to what to show now; re-renders once when the oldest pending one turns held. */
+function useShown(createdAt: string | undefined, states: readonly DState[]) {
+  const [, tick] = useState(0);
+  const born = createdAt ? Date.parse(createdAt) : Number.NaN;
+  const left = Number.isNaN(born) ? 0 : born + HELD_AFTER_MS - Date.now();
+  const pending = left > 0 && states.includes("queued");
+  useEffect(() => {
+    if (!pending) return;
+    const t = setTimeout(() => tick((n) => n + 1), left + 5);
+    return () => clearTimeout(t);
+  }, [pending, left]);
+  return (d: DState): Shown => (d === "queued" && left > 0 ? "sending" : d);
+}
 
 /** #2229: the details a mark opens, always "<agent>: <state>". A mention's gone is its own word. */
-export const markText = (name: string, d: DState, mention = false) =>
+export const markText = (name: string, d: Shown, mention = false) =>
   `${name}: ${
-    d === "queued"
-      ? "held until it's back"
-      : d === "gone"
-        ? mention
-          ? "not on the bus"
-          : "expired, offline too long"
-        : d === "withdrawn"
-          ? "removed before delivery"
-          : d === "seen"
-            ? "seen"
-            : "delivered"
+    d === "sending"
+      ? "sending"
+      : d === "queued"
+        ? "held until it's back"
+        : d === "gone"
+          ? mention
+            ? "not on the bus"
+            : "expired, offline too long"
+          : d === "withdrawn"
+            ? "removed before delivery"
+            : d === "seen"
+              ? "seen"
+              : "delivered"
   }`;
 
 /** Two ticks for delivered or seen, a clock for held or expired. */
-export function DeliveryIcon({ d }: { d: DState }) {
+export function DeliveryIcon({ d }: { d: Shown }) {
+  if (d === "sending")
+    return (
+      <Clock
+        aria-hidden="true"
+        data-mark="sending"
+        className="size-3.5 text-muted-foreground"
+      />
+    );
   if (d === "withdrawn")
     return (
       <Minus
@@ -188,6 +217,7 @@ function MarkedChip({
   face,
   p,
   guest,
+  createdAt,
 }: {
   text: string;
   face: Parameters<typeof PartyFace>[0]["p"] & {
@@ -196,9 +226,11 @@ function MarkedChip({
   };
   p: Parameters<typeof PartyFace>[0]["p"];
   guest: boolean;
+  createdAt?: string;
 }) {
   const { open, props, float } = useDetail();
-  const detail = markText(face.name, face.delivery, true);
+  const shown = useShown(createdAt, [face.delivery])(face.delivery);
+  const detail = markText(face.name, shown, true);
   const did = useId();
   return (
     <span className="relative inline-block align-middle">
@@ -217,7 +249,7 @@ function MarkedChip({
       >
         <PartyFace p={p} guest={guest} />
         {text}
-        <DeliveryIcon d={face.delivery} />
+        <DeliveryIcon d={shown} />
       </button>
       {open && (
         <span
@@ -299,40 +331,53 @@ export function Delivery({
   );
 }
 
-/** #2229: agents told without a mention, as up to three faces and one summary mark in the header. */
+/** #2229: everyone a comment notified (the agents it @-mentions, then the thread agents told by a reply), as up to three faces and one summary mark in the header. */
 export function DeliveryFaces({
-  told: all,
+  mentions = [],
+  told = [],
+  createdAt,
   compact = false,
 }: {
-  told: readonly CommentNotified[];
+  mentions?: readonly CommentNotified[];
+  told?: readonly CommentNotified[];
+  /** The comment's createdAt: a queued notice reads "sending" until it is HELD_AFTER_MS old. */
+  createdAt?: string;
   /** A tight header: the summary mark and its count, no faces. */
   compact?: boolean;
 }) {
   const { open, props, float } = useDetail();
   const did = useId();
-  if (!all.length) return null;
-  // A removed notice was never sent: it is listed in the details, not counted.
-  const told = all.filter((m) => m.delivery !== "withdrawn");
-  const sorted = [...told].sort(
-    (a, b) => Number(isWait(b.delivery)) - Number(isWait(a.delivery)),
+  const seen = new Set<string>();
+  const merged = [...mentions, ...told].filter(
+    (m) => !seen.has(m.key) && seen.add(m.key),
   );
-  const ok = told.filter((m) => !isWait(m.delivery)).length;
-  const held = told.length - ok;
+  const shownOf = useShown(
+    createdAt,
+    merged.map((m) => m.delivery),
+  );
+  if (!merged.length) return null;
+  const all = merged.map((m) => ({ ...m, shown: shownOf(m.delivery) }));
+  // A removed notice was never sent: it is listed in the details, not counted.
+  const told2 = all.filter((m) => m.shown !== "withdrawn");
+  const rank = (d: Shown) => (isWait(d) ? 2 : d === "sending" ? 1 : 0);
+  const sorted = [...told2].sort((a, b) => rank(b.shown) - rank(a.shown));
+  const ok = told2.filter((m) => rank(m.shown) === 0).length;
+  const held = told2.filter((m) => isWait(m.shown)).length;
+  const sending = told2.length - ok - held;
+  const rows = [...sorted, ...all.filter((m) => m.shown === "withdrawn")];
   const faces: Face[] = sorted.map((m) => ({
     key: m.key,
     round: false,
     el: <PartyFace p={m} />,
   }));
-  const label = !told.length
+  const label = !told2.length
     ? "Removed before delivery"
-    : `${ok} of ${told.length} delivered`;
+    : `${ok} of ${told2.length} delivered`;
   return (
     <span className="relative inline-flex shrink-0" data-delivery-faces="">
       {/* #2247: the label is the name; each agent's state is the description. */}
       <span id={did} hidden>
-        {[...sorted, ...all.filter((m) => m.delivery === "withdrawn")]
-          .map((m) => markText(m.name, m.delivery))
-          .join(". ")}
+        {rows.map((m) => markText(m.name, m.shown)).join(". ")}
       </span>
       <button
         type="button"
@@ -344,11 +389,19 @@ export function DeliveryFaces({
       >
         {!compact && <FaceStack faces={faces} moreClass={TXT} more />}
         <DeliveryIcon
-          d={!told.length ? "withdrawn" : held ? "queued" : "delivered"}
+          d={
+            !told2.length
+              ? "withdrawn"
+              : held
+                ? "queued"
+                : sending
+                  ? "sending"
+                  : "delivered"
+          }
         />
-        {held > 0 && (
+        {held + sending > 0 && (
           <span className={TXT} data-summary="">
-            {ok} of {told.length}
+            {ok} of {told2.length}
           </span>
         )}
       </button>
@@ -359,18 +412,16 @@ export function DeliveryFaces({
           className={`${FLOAT} right-0 ${TXT}`}
           {...float}
         >
-          {[...sorted, ...all.filter((m) => m.delivery === "withdrawn")].map(
-            (m) => (
-              <span
-                key={m.key}
-                data-told={m.key}
-                className="flex items-center gap-1.5"
-              >
-                <PartyFace p={m} />
-                {markText(m.name, m.delivery)}
-              </span>
-            ),
-          )}
+          {rows.map((m) => (
+            <span
+              key={m.key}
+              data-told={m.key}
+              className="flex items-center gap-1.5"
+            >
+              <PartyFace p={m} />
+              {markText(m.name, m.shown)}
+            </span>
+          ))}
         </span>
       )}
     </span>
@@ -748,6 +799,7 @@ export function MentionedText({
   mentions,
   guest = false,
   marks,
+  createdAt,
 }: {
   body: string;
   mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
@@ -758,6 +810,8 @@ export function MentionedText({
   guest?: boolean;
   /** #2229: show each mention's delivery in its chip. */
   marks?: boolean;
+  /** The comment's createdAt, for "sending" before a queued notice is held. */
+  createdAt?: string;
 }) {
   if (!mentions?.length) return <>{linked(body, 0)}</>;
   const names = [...new Set(mentions.map((m) => m.name))]
@@ -784,6 +838,7 @@ export function MentionedText({
           face={face as typeof face & { delivery: DState }}
           p={face}
           guest={guest}
+          createdAt={createdAt}
         />,
       );
       last = end;
