@@ -4,6 +4,8 @@ import * as Y from "yjs";
 import {
   AWARENESS_MS,
   BAD_FRAME,
+  BUSY_STABLE_MS,
+  busyDelay,
   createDocRoom,
   DOC_TOO_LARGE,
   defaultProvider,
@@ -350,11 +352,119 @@ describe("the wire spec: hello and close codes", () => {
     expect(room.getSnapshot().status).toBe("offline");
     vi.advanceTimersByTime(5000);
     const s = room.getSnapshot();
-    // Not stopped by the room: the provider backs off, then reconnects.
+    // Not ended: the room waits its own delay, then reconnects.
     expect(s.ended).toBeNull();
     expect(fake.connects).toBe(2);
     expect(s.status).toBe("saved");
-    expect(fake.disconnects).toBe(0);
+    room.destroy();
+  });
+});
+
+describe("1013 try_again backs off by itself", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("busyDelay: 1 s, 2 s, 4 s ... capped at 30 s, with up to 25% off, and still growing", () => {
+    expect([0, 1, 2, 3, 4, 5, 6].map((n) => busyDelay(n, () => 1))).toEqual([
+      1000, 2000, 4000, 8000, 16000, 30000, 30000,
+    ]);
+    expect([0, 1, 2, 3, 4, 5].map((n) => busyDelay(n, () => 0))).toEqual([
+      750, 1500, 3000, 6000, 12000, 22500,
+    ]);
+    // Worst case for each step is still shorter than the best of the next.
+    for (let n = 0; n < 4; n++)
+      expect(busyDelay(n, () => 1)).toBeLessThan(busyDelay(n + 1, () => 0));
+  });
+
+  it("each 1013 waits longer than the last; the provider's own 200 ms retry is stopped", () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const room = open();
+    fake.connect();
+    const gaps: number[] = [];
+    for (const want of [1000, 2000, 4000, 8000]) {
+      const before = fake.connects;
+      fake.close(1013);
+      // Not before the delay (y-websocket alone would retry at 200 ms) ...
+      vi.advanceTimersByTime(want - 1);
+      expect(fake.connects, `before ${want}`).toBe(before);
+      // ... and at it.
+      vi.advanceTimersByTime(1);
+      expect(fake.connects, `at ${want}`).toBe(before + 1);
+      gaps.push(want);
+    }
+    expect(gaps).toEqual([1000, 2000, 4000, 8000]);
+    room.destroy();
+  });
+
+  it("caps at 30 s", () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const room = open();
+    fake.connect();
+    // Each reconnect is closed again at once, so nothing resets the count.
+    for (const wait of [1000, 2000, 4000, 8000, 16000, 30000]) {
+      fake.close(1013);
+      vi.advanceTimersByTime(wait);
+    }
+    const before = fake.connects;
+    fake.close(1013);
+    vi.advanceTimersByTime(29_999);
+    expect(fake.connects).toBe(before);
+    vi.advanceTimersByTime(1);
+    expect(fake.connects).toBe(before + 1);
+    room.destroy();
+  });
+
+  it("resets once a connection has stayed up 10 s", () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const room = open();
+    fake.connect();
+    for (const want of [1000, 2000]) {
+      fake.close(1013);
+      vi.advanceTimersByTime(want);
+    }
+    // Up for 10 s: the room is not busy any more.
+    vi.advanceTimersByTime(BUSY_STABLE_MS);
+    const before = fake.connects;
+    fake.close(1013);
+    vi.advanceTimersByTime(999);
+    expect(fake.connects).toBe(before);
+    vi.advanceTimersByTime(1);
+    expect(fake.connects).toBe(before + 1);
+    room.destroy();
+  });
+
+  it("a connection that dies before 10 s does not reset it", () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const room = open();
+    fake.connect();
+    fake.close(1013);
+    vi.advanceTimersByTime(1000);
+    // Reconnected, then closed again after 9 s: the next wait is 2 s, not 1 s.
+    vi.advanceTimersByTime(9000);
+    const before = fake.connects;
+    fake.close(1013);
+    vi.advanceTimersByTime(1999);
+    expect(fake.connects).toBe(before);
+    vi.advanceTimersByTime(1);
+    expect(fake.connects).toBe(before + 1);
+    room.destroy();
+  });
+
+  it("destroying the room cancels a pending reconnect", () => {
+    const room = open();
+    fake.connect();
+    fake.close(1013);
+    room.destroy();
+    const before = fake.connects;
+    vi.advanceTimersByTime(60_000);
+    expect(fake.connects).toBe(before);
+  });
+
+  it("4401 still reconnects on the provider's own backoff", () => {
+    const room = open();
+    fake.connect();
+    fake.close(4401);
+    vi.advanceTimersByTime(200);
+    expect(fake.connects).toBe(2);
     room.destroy();
   });
 });

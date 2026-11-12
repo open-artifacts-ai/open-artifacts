@@ -32,8 +32,9 @@ const log = () => (room ? (roomLog.get(room) ?? []) : []);
  * line after the close), the doc is saved again, and nothing is shown.
  */
 async function reconnectsAfter(page: Page, code: number) {
-  await expect.poll(() => log().includes(`closing ${code}`)).toBe(true);
-  const at = log().indexOf(`closing ${code}`);
+  const closing = (l: string) => l.startsWith(`closing ${code} `);
+  await expect.poll(() => log().some(closing)).toBe(true);
+  const at = log().findIndex(closing);
   await expect
     .poll(() =>
       log()
@@ -142,6 +143,33 @@ test("close 4401 once: reconnects silently", async ({ page }, info) => {
 test("close 1013 once: backs off and comes back", async ({ page }, info) => {
   await open(page, info, ["--close-first", "1013"]);
   await reconnectsAfter(page, 1013);
+});
+
+test("1013 on every connection: the reconnect gaps grow, not a steady 200 ms", async ({
+  page,
+}, info) => {
+  test.setTimeout(60_000);
+  await open(page, info, ["--close", "1013"]);
+  // The room closes each settled connection 600 ms after it connected, and
+  // stamps each close. The gap between two closes is 600 ms plus the wait the
+  // client chose: ~0.75-1 s, then ~1.5-2 s, then ~3-4 s.
+  const closes = () =>
+    log()
+      .filter((l) => l.startsWith("closing 1013 "))
+      .map((l) => Number(l.split(" ")[2]));
+  await expect
+    .poll(() => closes().length, { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(4);
+  const t = closes();
+  const gaps = t.slice(1).map((x, i) => x - t[i]);
+  const [g1, g2, g3] = gaps;
+  // Every gap is longer than y-websocket's own ~200 ms retry would give.
+  expect(g1).toBeGreaterThan(600 + 700);
+  expect(g2).toBeGreaterThan(g1);
+  expect(g3).toBeGreaterThan(g2);
+  // And they grow by about double (wait 1 s -> 2 s -> 4 s, plus the fixed 600 ms).
+  expect(g2 - 600).toBeGreaterThan((g1 - 600) * 1.4);
+  expect(g3 - 600).toBeGreaterThan((g2 - 600) * 1.4);
 });
 
 test("saved: the title bar says Saved as v5 for a moment and the version data refetches", async ({

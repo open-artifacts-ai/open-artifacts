@@ -14,7 +14,8 @@
 // sends the hello frame first (read:room_full, read:access:1950000, edit);
 // --close <code> closes every connection with that code, --close-first <code>
 // only the first that settles, i.e. is still open and the newest 600 ms after it connected (4401 4403 4404 1007 1013). It logs "conn n" for
-// each connection and "closing <code>" for each close it makes. --saved n[:name[:auto]] and
+// each connection and "closing <code>" for each close it makes, each with a
+// millisecond timestamp. --saved n[:name[:auto]] and
 // --restored from:version send the version broadcasts. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
@@ -99,7 +100,7 @@ export function startDocRoom({
   wss.on("connection", (ws) => {
     connections++;
     // A log line per connection, so a test can tell a NEW socket opened.
-    console.log(`conn ${connections}`);
+    console.log(`conn ${connections} ${Date.now()}`);
     // The wire spec's hello frame comes first, before any sync frame.
     if (hello) {
       const [role, reason, bytes] = hello.split(":");
@@ -158,7 +159,7 @@ export function startDocRoom({
       const code = close ?? (!closedFirst ? closeFirst : null);
       if (!code) return;
       if (close === null) closedFirst = true;
-      console.log(`closing ${code}`);
+      console.log(`closing ${code} ${Date.now()}`);
       ws.close(Number(code), "wire spec");
     }, 600);
     conns.set(ws, new Set());

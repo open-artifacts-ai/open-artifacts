@@ -74,6 +74,22 @@ export function versionNote(e: VersionEvent): string {
 export const showsNote = (e: VersionEvent): boolean =>
   !(e.kind === "saved" && e.auto);
 
+/**
+ * 1013 try_again: the room is busy. y-websocket resets its backoff once a
+ * connection has synced, so a client that syncs and is then told to wait would
+ * retry about every 200 ms. The room backs off itself: 1 s, 2 s, 4 s ... up to
+ * 30 s, each with up to 25% knocked off (so the steps still grow), reset once
+ * a connection has stayed up 10 s.
+ */
+export const BUSY_BASE_MS = 1000;
+export const BUSY_MAX_MS = 30_000;
+export const BUSY_STABLE_MS = 10_000;
+export const busyDelay = (
+  attempt: number,
+  random: () => number = Math.random,
+): number =>
+  Math.min(BUSY_MAX_MS, BUSY_BASE_MS * 2 ** attempt) * (0.75 + 0.25 * random());
+
 /** Why the socket stopped for good (the client does not retry). */
 export type RoomEnd = "access_removed" | "not_found" | "bad_frame";
 
@@ -225,6 +241,11 @@ export function createDocRoom(
   let cap: number | null = null;
   let ended: RoomEnd | null = null;
   let badFrames = 0;
+  // 1013: how many busy closes in a row, the pending reconnect, and the timer
+  // that forgives them once a connection has stayed up.
+  let busyCloses = 0;
+  let busyTimer: ReturnType<typeof setTimeout> | undefined;
+  let stableTimer: ReturnType<typeof setTimeout> | undefined;
   const versionListeners = new Set<(e: VersionEvent) => void>();
 
   let connected = !!provider.wsconnected;
@@ -348,7 +369,7 @@ export function createDocRoom(
     const binary = ws.onmessage;
     // Close codes from the room (wire spec): 4401 auth_expired is the cookie
     // re-authorizing, so y-websocket's own reconnect is right; 4403 and 4404
-    // end it; 1007 gets one resync; 1013 is the provider's backoff.
+    // end it; 1007 gets one resync; 1013 waits its own growing delay.
     ws.addEventListener?.("close", (ev) => {
       if (destroyed) return;
       const stop = (why: RoomEnd) => {
@@ -358,7 +379,14 @@ export function createDocRoom(
       };
       if (ev.code === 4403) stop("access_removed");
       else if (ev.code === 4404) stop("not_found");
-      else if (ev.code === 1007) {
+      else if (ev.code === 1013) {
+        // Take over from y-websocket's backoff (disconnect() stops its retry).
+        provider.disconnect?.();
+        clearTimeout(busyTimer);
+        busyTimer = setTimeout(() => {
+          if (!destroyed) provider.connect?.();
+        }, busyDelay(busyCloses++));
+      } else if (ev.code === 1007) {
         if (++badFrames > 1) stop("bad_frame");
         else
           setTimeout(() => {
@@ -434,8 +462,15 @@ export function createDocRoom(
   };
 
   const onStatus = ({ status }: { status: string }) => {
-    if (status === "connected") connected = true;
-    else if (status === "disconnected") {
+    if (status === "connected") {
+      connected = true;
+      // Up for BUSY_STABLE_MS: the room is not busy any more.
+      clearTimeout(stableTimer);
+      stableTimer = setTimeout(() => {
+        busyCloses = 0;
+      }, BUSY_STABLE_MS);
+    } else if (status === "disconnected") {
+      clearTimeout(stableTimer);
       connected = false;
       sawDisconnect = true;
       synced = false;
@@ -478,6 +513,8 @@ export function createDocRoom(
       destroyed = true;
       clearTimeout(batchTimer);
       clearTimeout(drainTimer);
+      clearTimeout(busyTimer);
+      clearTimeout(stableTimer);
       // Send what is still waiting, then leave (unless it is being thrown away).
       if (buffer && !discard) sendUpdate?.(buffer, null);
       buffer = null;
