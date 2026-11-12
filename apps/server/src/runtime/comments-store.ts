@@ -816,6 +816,23 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (open.length === 0) refundAsker(sql, c.threadId, c.at);
 }
 
+/** #2240: the ask comments of a thread with their authors (to find an agent's own asks). */
+export function askAuthors(
+  sql: SqlStorage,
+  threadId: string,
+): { commentId: string; author: StoredActor }[] {
+  return sql
+    .exec<{ id: string; author: string }>(
+      "select c.id as id, c.author as author from comment_asks a join comments c on c.id = a.comment_id where a.thread_id = ? order by c.rowid",
+      threadId,
+    )
+    .toArray()
+    .map((r) => ({
+      commentId: r.id,
+      author: JSON.parse(r.author) as StoredActor,
+    }));
+}
+
 /** #2175: this thread's comments with a target for `key` still held (queued) or expired by the Worker (gone; the hub may still hold it): what to ask the hub about. */
 export function heldTargets(
   sql: SqlStorage,
