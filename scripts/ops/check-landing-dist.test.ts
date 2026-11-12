@@ -59,6 +59,37 @@ describe("check-landing-dist", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("ok: landing dist clean");
   });
+  const page = (links: string) =>
+    `<html><head><meta charset="utf-8"></head><body>\n${links}\n</body></html>`;
+  it("fails when a Get started free link goes to #pricing", () => {
+    put(
+      "index.html",
+      page(
+        '<a class="btn p" href="https://app.example.com/sign-up">Get started free</a>\n<a class="btn p" href="#pricing">Get started free</a>',
+      ),
+    );
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Get started free link without a sign-up URL");
+    expect(r.out).toContain("HOSTED_SIGNUP_URL");
+    expect(r.out).toContain(`${join(dir, "index.html")}:3`);
+    expect(r.out).not.toContain(`${join(dir, "index.html")}:2`);
+  });
+  it("fails when a Get started free link has no href", () => {
+    put("index.html", page("<a>Get started free</a>"));
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Get started free link without a sign-up URL");
+  });
+  it("passes when every Get started free link goes to the sign-up URL", () => {
+    put(
+      "index.html",
+      page(
+        '<a class="btn" href="https://app.example.com/sign-up">Get started free</a>\n<a href="#pricing">Pricing</a>',
+      ),
+    );
+    expect(run().code).toBe(0);
+  });
   it("fails on a page without a leading utf-8 charset meta", () => {
     put("ok.html", '<head>\n  <meta charset="UTF-8" />\n<title>x</title>');
     put("none.html", "<head><title>x</title></head>");
