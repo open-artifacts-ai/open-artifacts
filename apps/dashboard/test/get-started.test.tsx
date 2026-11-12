@@ -55,7 +55,7 @@ describe("Get started checklist", () => {
     expect(screen.getByText("0 of 3")).toBeInTheDocument();
     expect(screen.getByText("Connect your agent")).toBeInTheDocument();
     expect(screen.getByLabelText("Setup prompt")).toHaveValue(
-      `Set up Open Artifacts for me: follow ${location.origin}/llms.txt\nSign in through the browser. Never ask me to paste a token into this chat.`,
+      `Set up Open Artifacts for me: follow ${location.origin}/llms.txt`,
     );
     expect(screen.getByText("Waiting for your agent…")).toBeInTheDocument();
     expect(screen.getByText("Publish your first artifact")).toBeInTheDocument();
