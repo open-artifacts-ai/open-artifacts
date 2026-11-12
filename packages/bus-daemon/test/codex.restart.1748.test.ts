@@ -522,6 +522,25 @@ describe("a Codex restore is logged and survives a slow ps (#2202, #2297)", () =
     );
     expect(text).toMatch(/ codex_restored /);
     expect(text).not.toMatch(/codex_restore_dropped/);
+    // The hub was open before the restore landed: the retry announces it.
+    expect(await two.next("agent_up")).toMatchObject({
+      agent_ref: THREAD,
+      kind: "codex",
+    });
+  });
+
+  it("keeps a pending row in codex-agents.json while ps is unknown", async () => {
+    const w = world();
+    await attestedThenStopped(w);
+    const { events } = evLog();
+    await restartedWith(
+      w,
+      events,
+      { procs: () => undefined },
+      { restoreRetryMs: 60_000, claude: { syncMs: 10 } },
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    expect(readCodexAgents(w.agentsFile).map((a) => a.ref)).toEqual([THREAD]);
   });
 
   it("gives up after a few unknown reads and logs it", async () => {

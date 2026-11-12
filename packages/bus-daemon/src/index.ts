@@ -2130,6 +2130,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** #1748: each live attested Codex thread, kept so a restart can take it back. */
   const codexAgentsFile = cx.agentsFile ?? join(home(), "codex-agents.json");
   let codexSaved: string | undefined;
+  /** #2297: rows whose restore awaits a ps answer; kept in the file until they restore or drop. */
+  const restorePending = new Map<string, CodexAgent>();
   const persistCodex = () => {
     const rows: CodexAgent[] = [];
     for (const a of agents.all()) {
@@ -2145,6 +2147,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         busName: a.busName,
       });
     }
+    for (const [ref, r] of restorePending)
+      if (!rows.some((x) => x.ref === ref)) rows.push(r);
     const text = JSON.stringify(rows);
     // Never touches the home until a thread has been attested.
     if (codexSaved === undefined ? rows.length === 0 : text === codexSaved)
@@ -2170,7 +2174,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     const attempt = (rows: CodexAgent[], tries: number) => {
       const again: CodexAgent[] = [];
       for (const r of rows) {
-        if (agents.byRef(r.ref)) continue;
+        if (agents.byRef(r.ref)) {
+          restorePending.delete(r.ref);
+          continue;
+        }
         const drop = (reason: string) =>
           ev("codex_restore_dropped", { thread: r.ref, pid: r.pid, reason });
         let res: CodexRestore | undefined;
@@ -2187,10 +2194,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
         if ("unknown" in res) {
           // ps gave no answer: not gone, not admitted. Try again later.
-          if (tries + 1 < RESTORE_TRIES) again.push(r);
-          else drop("ps_unknown");
+          if (tries + 1 < RESTORE_TRIES) {
+            again.push(r);
+            restorePending.set(r.ref, r);
+          } else {
+            restorePending.delete(r.ref);
+            drop("ps_unknown");
+          }
           continue;
         }
+        restorePending.delete(r.ref);
         if ("dropped" in res) {
           drop(res.dropped);
           continue;
@@ -2224,6 +2237,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         });
         seenAt.set(r.ref, ++seenSeq);
         ev("codex_restored", { thread: r.ref, pid: r.pid });
+        // A retry that lands after the hub opened is announced here; at start,
+        // the hub's onOpen announces every live record.
+        const rec = agents.byRef(r.ref);
+        if (tries > 0 && rec?.live && hub.open) {
+          announceUp(rec);
+          tellOwed(r.ref);
+        }
         if (debug)
           log(`restored codex thread ${r.ref.slice(0, 8)} pid ${r.pid}`);
       }
