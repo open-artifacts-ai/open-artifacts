@@ -19,6 +19,11 @@ describe("comments scroll only their own scroller", () => {
     for (const f of files) expect(code(f), f).not.toMatch(/scrollIntoView/);
   });
   it("never calls focus() without preventScroll", () => {
-    for (const f of files) expect(code(f), f).not.toMatch(/\.focus\(\s*\)/);
+    for (const f of files) {
+      const c = code(f);
+      // focus(), focus?.(), and focus(x) whose argument lacks preventScroll.
+      for (const m of c.matchAll(/\.focus\??\.?\(([^)]*)\)/g))
+        expect(m[1], `${f}: ${m[0]}`).toMatch(/preventScroll/);
+    }
   });
 });

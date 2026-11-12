@@ -258,3 +258,23 @@ test("390: a sheet forced to overflow cannot be scrolled by a jump", async ({
   await expect(page.locator("[data-sheet-handle]")).toBeInViewport();
   await expect(page.locator("[data-comments-header]")).toBeInViewport();
 });
+
+test.describe("the side panel's comments tab", () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false });
+  test("has a scroller of its own for scrollWithin to move", async ({
+    page,
+  }) => {
+    await page.goto(`/a/${ID}?mock=asks&panel=open&tab=comments`);
+    const thread = page.locator("[data-thread]").first();
+    await expect(thread).toBeVisible();
+    // The nearest overflow auto/scroll ancestor: what scrollerOf finds.
+    const found = await thread.evaluate((el) => {
+      for (let n = el.parentElement; n; n = n.parentElement) {
+        const o = getComputedStyle(n).overflowY;
+        if (o === "auto" || o === "scroll") return true;
+      }
+      return false;
+    });
+    expect(found).toBe(true);
+  });
+});
