@@ -3,6 +3,8 @@
 // plan's card says so; higher plans offer the existing upgrade; lower plans
 // have no button. Yearly Team and Business prices are proposed until the user
 // confirms them and Billing makes them: until then they show monthly prices.
+
+import { formatCents, PLAN_PRICES, planPriceDisplay } from "@oa/shared";
 import {
   Badge,
   Button,
@@ -41,33 +43,35 @@ const WHO: Record<Column, string> = {
   team: "Invite your team",
   business: "Controls for your company",
 };
-const priceTable = (
-  yearly: boolean,
-): Record<
-  Column,
-  Record<Interval, { amount: string; unit: string; line: string }>
-> => ({
-  solo: {
-    month: { amount: "$1", unit: "a month", line: "or $10 a year" },
-    year: { amount: "$10", unit: "a year", line: "2 months free" },
-  },
-  team: {
-    month: {
-      amount: "$10",
-      unit: "per creator a month",
-      line: yearly ? "or $100 a year" : "Billed monthly",
-    },
-    year: { amount: "$100", unit: "per creator a year", line: "2 months free" },
-  },
-  business: {
-    month: {
-      amount: "$25",
-      unit: "per creator a month",
-      line: yearly ? "or $250 a year" : "Billed monthly",
-    },
-    year: { amount: "$250", unit: "per creator a year", line: "2 months free" },
-  },
-});
+/**
+ * A card's price from the shared table (#2237). Yearly leads with the monthly
+ * figure and says what is billed; monthly points at the yearly price when
+ * there is one. Team and Business have no yearly price until the flag is on.
+ */
+const cardPrice = (
+  c: Column,
+  interval: Interval,
+  yearlyOn: boolean,
+): { amount: string; unit: string; lines: string[] } => {
+  const yearly = interval === "year" && (c === "solo" || yearlyOn);
+  const d = planPriceDisplay(c, yearly ? "year" : "month");
+  if (yearly)
+    return {
+      amount: d.big,
+      unit: d.unit,
+      lines: [d.sub ?? "", "2 months free"],
+    };
+  const hasYearly = c === "solo" || yearlyOn;
+  return {
+    amount: d.big,
+    unit: d.unit,
+    lines: [
+      hasYearly
+        ? `or ${formatCents(PLAN_PRICES[c].year)} a year`
+        : "Billed monthly",
+    ],
+  };
+};
 const POINTS: Record<Column, string[]> = {
   solo: [
     "Artifacts, versions and restore",
@@ -234,7 +238,7 @@ function SeatStep({
   const [invalid, setInvalid] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const seats = parseSeats(raw);
-  const each = tier === "team" ? 100 : 250;
+  const each = PLAN_PRICES[tier].year / 100;
   const showError = invalid && seats === null;
   return (
     <Dialog open onOpenChange={(o) => !o && onCancel()}>
@@ -335,7 +339,6 @@ export function PlanCompare({
   seatsDefault?: number;
 }) {
   const yearlyOn = yearlyFlag.teamBusiness;
-  const PRICE = priceTable(yearlyOn);
   const [interval, setInterval] = useState<Interval>("year");
   const [asking, setAsking] = useState<"team" | "business" | null>(null);
   const opener = useRef<HTMLElement | null>(null);
@@ -367,7 +370,7 @@ export function PlanCompare({
       <div className="grid gap-[var(--oa-space-3)] md:grid-cols-3">
         {ORDER.map((c, i) => {
           // Team and Business have no yearly price checkout can charge yet: monthly under both.
-          const p = PRICE[c][c === "solo" || yearlyOn ? interval : "month"];
+          const p = cardPrice(c, interval, yearlyOn);
           const current = c === column;
           return (
             <section
@@ -406,7 +409,11 @@ export function PlanCompare({
                   <b className="text-[length:var(--oa-text-xl)]">{p.amount}</b>{" "}
                   <span className={muted}>{p.unit}</span>
                 </p>
-                <p className={`m-0 ${muted}`}>{p.line}</p>
+                {p.lines.map((l) => (
+                  <p key={l} className={`m-0 ${muted}`}>
+                    {l}
+                  </p>
+                ))}
               </div>
               {upgrade &&
                 (current && !trial ? (

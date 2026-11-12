@@ -753,7 +753,9 @@ describe("plan cards and comparison (#2007)", () => {
     const year = await screen.findByRole("button", { name: "Yearly" });
     expect(year).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("2 months free on Solo")).toBeVisible();
-    expect(card("solo")).toHaveTextContent("$10 a year");
+    expect(card("solo")).toHaveTextContent("$0.83 a month");
+    expect(card("solo")).toHaveTextContent("$10 billed yearly");
+    expect(card("solo")).toHaveTextContent("2 months free");
     // No price checkout can't charge: Team and Business stay monthly.
     expect(card("team")).toHaveTextContent("$10 per creator a month");
     expect(card("business")).toHaveTextContent("$25 per creator a month");
@@ -880,8 +882,12 @@ describe("yearly Team and Business seat step", () => {
       billing: { ...TRIAL, creatorsThisMonth: 7 },
     });
     await screen.findByTestId("plan-card-team");
-    expect(card("team")).toHaveTextContent("$100 per creator a year");
-    expect(card("business")).toHaveTextContent("$250 per creator a year");
+    expect(card("team")).toHaveTextContent("$8.33 per creator a month");
+    expect(card("team")).toHaveTextContent("$100 per creator, billed yearly");
+    expect(card("business")).toHaveTextContent("$20.83 per creator a month");
+    expect(card("business")).toHaveTextContent(
+      "$250 per creator, billed yearly",
+    );
     const input = await open();
     expect(
       screen.getByRole("dialog", { name: "How many creators on Team?" }),
