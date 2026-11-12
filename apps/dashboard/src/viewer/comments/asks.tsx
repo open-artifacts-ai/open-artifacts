@@ -535,6 +535,24 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const slot = answer.isPending ? (
+    <p role="status" data-passkey-verifying="" className={`m-0 ${MUTED}`}>
+      Waiting for your passkey…
+    </p>
+  ) : pkErr && (pkLine || pkErr.kind === "other") ? (
+    <p
+      role="alert"
+      data-passkey-error={pkErr.kind}
+      className={`m-0 ${pkLine?.danger || !pkLine ? "text-destructive" : MUTED}`}
+    >
+      {pkLine?.text ?? answerError(err, errCtx)}
+    </p>
+  ) : !pickedOpt && !blocked ? (
+    <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
+      <KeyRound aria-hidden="true" className="size-3.5" />
+      Approving this needs your passkey.
+    </p>
+  ) : null;
   const recIdx = ask.options.findIndex(
     (o) => o.id === ask.recommended?.optionId,
   );
@@ -605,31 +623,10 @@ export function AskBlock({
           <p id={qid} className={`${TXT} font-semibold break-words`}>
             {linked(ask.question, 0)}
           </p>
-          {pk && (
-            // One slot for the idle line, the wait and the failure, so the card never jumps.
+          {pk && slot && (
+            // One slot for the idle line, the wait and the failure; absent when empty.
             <div className={`min-h-5 ${TXT}`} data-passkey-slot="">
-              {answer.isPending ? (
-                <p
-                  role="status"
-                  data-passkey-verifying=""
-                  className={`m-0 ${MUTED}`}
-                >
-                  Waiting for your passkey…
-                </p>
-              ) : pkErr && (pkLine || pkErr.kind === "other") ? (
-                <p
-                  role="alert"
-                  data-passkey-error={pkErr.kind}
-                  className={`m-0 ${pkLine?.danger || !pkLine ? "text-destructive" : MUTED}`}
-                >
-                  {pkLine?.text ?? answerError(err, errCtx)}
-                </p>
-              ) : !pickedOpt && !blocked ? (
-                <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
-                  <KeyRound aria-hidden="true" className="size-3.5" />
-                  Approving this needs your passkey.
-                </p>
-              ) : null}
+              {slot}
             </div>
           )}
           {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
@@ -739,34 +736,36 @@ export function AskBlock({
             </p>
           )}
           {ask.answer && pickedOpt && (
-            <p className={`${TXT} font-medium`} data-ask-answer="">
-              {actor(ask.answer.by, "You")} picked{" "}
-              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-              {versionDate(ask.answer.at)}
-              {ask.closed ? " · closed" : ""}
-              {ask.answer.verified === "passkey" && (
+            <>
+              <p className={`${TXT} font-medium`} data-ask-answer="">
+                {actor(ask.answer.by, "You")} picked{" "}
+                {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                {versionDate(ask.answer.at)}
+                {ask.closed ? " · closed" : ""}
+                {canAnswer && locked && (
+                  <>
+                    {" · "}
+                    <Button
+                      size="xs"
+                      variant="link"
+                      className="h-auto p-0"
+                      onClick={() => setChanging(true)}
+                    >
+                      Change
+                    </Button>
+                  </>
+                )}
+              </p>
+              {ask.answer.verified === "passkey" && !changing && (
                 <span
                   data-ask-verified=""
-                  className={`ml-1 inline-flex items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                  className={`inline-flex w-fit items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
                 >
                   <ShieldCheck aria-hidden="true" className="size-3" />
                   Verified with passkey
                 </span>
               )}
-              {canAnswer && locked && (
-                <>
-                  {" · "}
-                  <Button
-                    size="xs"
-                    variant="link"
-                    className="h-auto p-0"
-                    onClick={() => setChanging(true)}
-                  >
-                    Change
-                  </Button>
-                </>
-              )}
-            </p>
+            </>
           )}
           {asked.length > 0 && (
             <p

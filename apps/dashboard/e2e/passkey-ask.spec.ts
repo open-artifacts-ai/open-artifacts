@@ -145,3 +145,27 @@ test("an ordinary ask is unchanged", async ({ page }) => {
   );
   expect(called).toBe(false);
 });
+
+test("Change on a verified answer asks for the passkey again and drops the pill", async ({
+  page,
+}) => {
+  await stubPasskey(page, 0);
+  await page.goto(`/a/${ID}?mock=asks&passkey=ok`);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  const card = page
+    .locator("[data-ask]")
+    .filter({ hasText: "Deploy to production?" });
+  await expect(card.locator("[data-ask-verified]")).toBeVisible();
+  await card.getByRole("button", { name: "Change" }).click();
+  await expect(card.locator("[data-ask-verified]")).toHaveCount(0);
+  await expect(card.locator("[data-ask-answer]")).toContainText("picked");
+  // The new pick goes through the passkey prompt, and nothing is answered until it verifies.
+  await page.evaluate(() => {
+    (navigator.credentials as unknown as { get: () => Promise<never> }).get =
+      () => new Promise(() => {});
+  });
+  await card.locator("[data-option=stop]").click();
+  await expect(card.locator("[data-passkey-verifying]")).toBeVisible();
+  await expect(card.locator("[data-ask-answer]")).toContainText("picked");
+  await expect(card.locator("[data-ask-answer]")).not.toContainText(/Stop|B ·/);
+});
