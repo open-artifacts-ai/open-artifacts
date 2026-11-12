@@ -12,7 +12,7 @@ import {
   resetNameClashCache,
   usersById,
 } from "../src/services/comments.js";
-import { toUserRef } from "../src/services/users.js";
+import { shownEffectiveName, toUserRef } from "../src/services/users.js";
 import { login } from "./helpers.js";
 
 // #1894: broader phrasings that read as an agent.
@@ -21,6 +21,14 @@ const CAUGHT = [
   "Leo Urbina, agent",
   "Leo Urbina (agent)",
   "Leo Urbina (AI)",
+  "Leo's AI agent",
+  "Leo's Claude Code",
+  "Leo's coding agent",
+  "Leo's agents",
+  "Leo [AI]",
+  "Leo: agent",
+  "Leo / agent",
+  "Leo | agent",
   "Leo Urbina - agent",
   "Leo Urbina's AI",
   "Leo Urbina’s bot",
@@ -31,6 +39,15 @@ const CAUGHT = [
   "Leo's Claude",
   "Leo​'s agent",
   "LEO URBINA’S AGENT.",
+];
+// Deliberate trade-offs, reviewed on #2274: real surnames that are caught (they
+// show as "Member" to others; the user can rename). Do not change silently.
+const TRADE_OFFS = [
+  "Chris Agent",
+  "Lois Assistant",
+  "James Agent",
+  "Jan, Bot",
+  "Pieter - Bot",
 ];
 const ALLOWED = [
   "Agent Smith",
@@ -47,15 +64,29 @@ const ALLOWED = [
 ];
 
 describe("readsAsAgent phrasings", () => {
+  it.each(TRADE_OFFS)("deliberately catches %s", (n) => {
+    expect(readsAsAgent(n)).toBe(true);
+  });
+  it("a real SSO name shows when the display name reads as an agent", () => {
+    const u = {
+      id: "u",
+      email: "l@x.com",
+      name: "Leo Urbina",
+      displayName: "Leo (AI)",
+    };
+    expect(shownEffectiveName(u)).toBe("Leo Urbina");
+    expect(toUserRef(u, true).name).toBe("Leo Urbina");
+    expect(shownEffectiveName({ ...u, name: "Leo's agent" })).toBe("l@x.com");
+  });
   it.each(CAUGHT)("catches %s", (n) => {
     expect(readsAsAgent(n)).toBe(true);
     expect(publicName({ name: n })).toBeNull();
     expect(
-      toUserRef({ id: "u", email: "l@x.com", name: "x", displayName: n }, true)
+      toUserRef({ id: "u", email: "l@x.com", name: "l", displayName: n }, true)
         .name,
     ).toBe("l@x.com");
     expect(
-      toUserRef({ id: "u", email: "l@x.com", name: "x", displayName: n }, false)
+      toUserRef({ id: "u", email: "l@x.com", name: "l", displayName: n }, false)
         .name,
     ).toBeNull();
     expect(cleanGuestName(n)).toBe("Guest");

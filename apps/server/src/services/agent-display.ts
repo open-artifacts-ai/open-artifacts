@@ -221,26 +221,31 @@ export const skeleton = (name: string): string =>
 const APOS = /['\u2018\u2019\u02bc\u2032\u00b4`]/gu;
 // Digits fold to l/o lookalikes, so a trailing number may arrive as those.
 const NUM = String.raw`(?:\s*#?[\dlo]{1,3})?`;
-const WORD = String.raw`(?:agent|assistant|bot|ai|claude)`;
 const AGENT_PATTERNS: RegExp[] = [
-  // "Leo's agent", "Leo Urbina's AI", "Leo's Claude 2"
-  new RegExp(String.raw`'\s*s\s+${WORD}${NUM}$`, "u"),
-  // "Leos agent" (no apostrophe): only the unambiguous words
-  new RegExp(String.raw`\S+s\s+(?:agent|assistant)${NUM}$`, "u"),
-  // "Leo, agent", "Leo - agent" ("ai" excluded: "Wei, Ai" is a name)
+  // "Leo's agent", "Leo's AI agent", "Leo's Claude Code", "Leo's agents"
   new RegExp(
-    String.raw`(?:,|\s[-\u2013\u2014]+)\s*(?:agent|assistant|bot)${NUM}$`,
+    String.raw`'\s*s\s+(?:\S+\s+){0,2}(?:agent|assistant|bot|ai|claude(?:\s+code)?)s?${NUM}$`,
     "u",
   ),
-  // "Leo (agent)", "Leo (AI)"
-  new RegExp(String.raw`\(\s*(?:agent|assistant|bot|ai)\)?${NUM}$`, "u"),
+  // "Leos agent" (no apostrophe): only the unambiguous words
+  new RegExp(String.raw`\S+s\s+(?:agent|assistant)${NUM}$`, "u"),
+  // "Leo, agent", "Leo: agent", "Leo / agent", "Leo | agent" (folds to l), "Leo - agent" ("ai" excluded: "Wei, Ai" is a name)
+  new RegExp(
+    String.raw`(?:[,:/]|\s[-\u2013\u2014]+|\sl\s)\s*(?:agent|assistant|bot)${NUM}$`,
+    "u",
+  ),
+  // "Leo (agent)", "Leo [AI]"
+  new RegExp(
+    String.raw`[(\[{<]\s*(?:agent|assistant|bot|ai)[)\]}>]?${NUM}$`,
+    "u",
+  ),
   // "Agent of Leo", "Assistant to Leo"
   /^(?:agent|assistant|bot|ai)\s+(?:of|to|for)\s+\S/u,
 ];
 export const readsAsAgent = (name: string): boolean => {
   const n = fold(name)
     .replace(APOS, "'")
-    .replace(/[\p{P}\p{S}\s]+$/u, (t) => (t.startsWith(")") ? ")" : ""));
+    .replace(/[\p{P}\p{S}\s]+$/u, (t) => (/^[)\]}>]/u.test(t) ? t[0] : ""));
   return AGENT_PATTERNS.some((re) => re.test(n));
 };
 
