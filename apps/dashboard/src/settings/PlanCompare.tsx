@@ -384,7 +384,8 @@ export function PlanCompare({
                   : "border-[var(--oa-border)]"
               } bg-card`}
             >
-              <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
+              {/* One min-height: Team's chips would otherwise push its price lower. */}
+              <div className="flex min-h-7 flex-wrap items-center gap-[var(--oa-space-2)]">
                 <h3
                   id={`plan-${c}`}
                   className="m-0 text-[length:var(--oa-text-base)] font-semibold"
