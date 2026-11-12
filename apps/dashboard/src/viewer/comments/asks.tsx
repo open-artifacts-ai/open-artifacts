@@ -311,7 +311,13 @@ export function Delivery({
   /** What is new in this comment; by default whatever is wrong in it. */
   problems?: readonly Problem[];
 }) {
-  const list = problems ?? newProblems([c]).get(c.id) ?? [];
+  const all = problems ?? newProblems([c]).get(c.id) ?? [];
+  // A queued notice is only "held" once the comment is HELD_AFTER_MS old.
+  const shownOf = useShown(
+    c.createdAt,
+    all.map((p) => p.m.delivery),
+  );
+  const list = all.filter((p) => shownOf(p.m.delivery) !== "sending");
   if (!list.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>

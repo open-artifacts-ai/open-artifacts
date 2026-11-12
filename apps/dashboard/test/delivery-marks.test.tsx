@@ -414,6 +414,31 @@ describe("a queued notice is sending until the comment is 30s old", () => {
       "Vega: held until it's back",
     );
   });
+  it("the held sentence stays hidden under 30s and appears after", () => {
+    vi.useFakeTimers({ now: T0 + 2_000 });
+    const c = comment("c1", {
+      createdAt: at(0),
+      notified: [ag("Sirius", "queued")],
+    });
+    const { container } = render(<Delivery c={c} />);
+    expect(container.textContent).toBe("");
+    act(() => {
+      vi.advanceTimersByTime(HELD_AFTER_MS);
+    });
+    expect(container.textContent).toBe(
+      "Sirius is offline. Held until it's back.",
+    );
+  });
+  it("an expired notice's sentence is not delayed", () => {
+    vi.useFakeTimers({ now: T0 + 2_000 });
+    const c = comment("c1", {
+      createdAt: at(0),
+      notified: [ag("Vega", "gone")],
+    });
+    expect(render(<Delivery c={c} />).container.textContent).toContain(
+      "Vega didn't get this",
+    );
+  });
   it("delivered never shows sending, and sets no timer", () => {
     vi.useFakeTimers({ now: T0 + 1_000 });
     const { container } = render(
