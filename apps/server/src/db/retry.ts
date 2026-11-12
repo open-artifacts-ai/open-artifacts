@@ -175,12 +175,19 @@ async function settle<T>(
       waited += delay;
       if (req) req.waitedMs += delay;
       await deps.sleep(delay);
-      // Another request may have opened the breaker while this one slept.
-      if (breakerOpen(deps.now(), store)) {
+      // Re-check right before the next call: another request may have
+      // opened the breaker, or the sleep may have run past the deadline.
+      const woke = deps.now();
+      const late = breakerOpen(woke, store)
+        ? "breaker"
+        : woke - start > RETRY.maxWaitMs
+          ? "budget"
+          : null;
+      if (late) {
         logWarn("storage_read_gave_up", undefined, {
           store,
           attempts: attempt,
-          reason: "breaker",
+          reason: late,
         });
         throw e;
       }

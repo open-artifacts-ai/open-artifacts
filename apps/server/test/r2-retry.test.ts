@@ -217,4 +217,24 @@ describe("R2 retry bounds and maybe-committed puts (#2218)", () => {
     const err = await putIdempotent(b, "k", "hello").catch((e) => e);
     expect(toErrorResponse(err).status).toBe(503);
   });
+
+  it("a sleep that overshoots the deadline makes no further call and returns the original error", async () => {
+    let t = 1_000;
+    const err = r2Down();
+    const b = {
+      get: vi.fn(async () => {
+        t += 270;
+        throw err;
+      }),
+    } as unknown as R2Bucket;
+    setRetryDeps({
+      now: () => t,
+      random: () => 0.5,
+      sleep: async () => {
+        t += 60; // wakes at 330 ms
+      },
+    });
+    await expect(retryingR2(b).get("k")).rejects.toBe(err);
+    expect(b.get).toHaveBeenCalledTimes(1);
+  });
 });
