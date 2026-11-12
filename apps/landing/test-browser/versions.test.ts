@@ -48,8 +48,19 @@ describe("phone versions card at 390px", () => {
       viewport: { width: 390, height: 844 },
     });
     await page.goto(`${base}/`, { waitUntil: "load" });
+    // on a phone the story is locked: bring the versions beat (8) up
+    await page.evaluate(() => {
+      const pl = document.getElementById("pl") as HTMLElement;
+      const unit = (
+        document.getElementById("plsteps") as HTMLElement
+      ).firstElementChild?.getBoundingClientRect().height as number;
+      scrollTo({
+        top: pl.getBoundingClientRect().top + scrollY + 8.5 * unit,
+        behavior: "instant",
+      });
+    });
     const card = page.locator('.mp[data-mp="ver"]');
-    await card.scrollIntoViewIfNeeded();
+    await card.waitFor({ state: "visible" });
     const banner = card.locator("[data-ban]");
     const shown = async () =>
       banner.evaluate((e) => e.classList.contains("on"));

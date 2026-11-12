@@ -2547,6 +2547,8 @@ footer */
     }
     .twf {
       position: relative;
+      /* the table scrolls inside .tw; without this a phone browser widens the whole page to fit it */
+      overflow: hidden;
     }
     .twf::after {
       display: block;
@@ -3152,5 +3154,237 @@ centred */
     color: var(--oa-text-muted);
     margin-top: 3px;
     min-height: 1.4em;
+  }
+
+  /* phones: the story in one locked screen (phonelock.client.ts). A sticky
+     screen stays while a run of empty steps scrolls past; no scroll hijacking.
+     Off until the script sets data-pl, so scripts-off and reduced motion keep
+     the cards. */
+  .plk {
+    display: none;
+  }
+  &[data-pl="1"] .sc,
+  &[data-pl="1"] .story {
+    display: none;
+  }
+  &[data-pl="1"] .plk {
+    display: block;
+  }
+  &[data-pl="1"] .hero {
+    padding-bottom: 20px;
+  }
+  .pl-pin {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    height: 100svh;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 16px 12px;
+    background: var(--oa-bg);
+    z-index: 3;
+    overflow: hidden;
+  }
+  .pl-head {
+    flex: none;
+  }
+  .pl-head .pm {
+    max-width: none;
+    margin-bottom: 9px;
+  }
+  .pl-head b {
+    display: block;
+    font-size: 20px;
+    line-height: 1.2;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+  }
+  .pl-head p {
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--oa-text-2);
+    margin-top: 3px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 2.8em;
+  }
+  .pl-view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .pl-view .x-sides {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-height: 0;
+  }
+  .pl-view .x-side {
+    min-height: 0;
+  }
+  .pl-view .x-side:first-child {
+    flex: 0 0 36%;
+    transition:
+      flex-basis 0.5s cubic-bezier(0.2, 0.8, 0.2, 1),
+      opacity 0.3s;
+  }
+  .pl-view .x-side:last-child {
+    flex: 1 1 0;
+  }
+  .pl-view .x-term,
+  .pl-view .x-art {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+  }
+  .pl-view .x-art {
+    box-shadow: none;
+  }
+  .pl-view .x-side figcaption {
+    min-height: 0;
+    margin-bottom: 5px;
+    font-size: 13.5px;
+  }
+  .pl-view .x-term {
+    font-size: 12px;
+  }
+  .pl-view .x-tbar {
+    padding: 5px 10px;
+  }
+  .pl-view .sc-roll {
+    padding: 8px 12px 0;
+  }
+  .pl-view .sc-roll p {
+    margin-bottom: 6px;
+  }
+  .pl-view .sc-ask {
+    padding: 6px 12px;
+    min-height: 32px;
+  }
+  .pl-view .sc-note {
+    margin: 0 10px 6px;
+    padding: 4px 9px;
+  }
+  .pl-view [data-s="4"] .sc-roll {
+    transform: translateY(var(--land, 0px));
+    transition: transform 1.2s ease-in-out;
+  }
+  .pl-view .x-abody {
+    padding: 8px 10px;
+  }
+  .pl-view .sc-prop,
+  .pl-view .x-chg {
+    font-size: 14px;
+  }
+  .pl-view .x-cm p {
+    font-size: 13.5px;
+  }
+  .pl-view .x-dec {
+    font-size: 16px;
+  }
+  .pl-view [data-s="3"] .x-blk[data-until],
+  .pl-view [data-s="4"] .x-blk[data-until],
+  .pl-view [data-s="4"] .x-blk[data-from="2"] {
+    display: none;
+  }
+  .plk[data-beat="4"] .pl-view .x-side:first-child {
+    flex-basis: 0;
+    opacity: 0;
+    overflow: hidden;
+  }
+  .plk[data-beat="4"] .pl-view .x-blk[data-from="2"] {
+    display: block;
+  }
+  .pl-chap {
+    flex: 1;
+    min-height: 0;
+    display: none;
+    flex-direction: column;
+  }
+  .plk.chap .pl-view {
+    display: none;
+  }
+  .plk.chap .pl-chap {
+    display: flex;
+  }
+  .plk .pl-slot.ch {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    background: none;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    opacity: 1;
+  }
+  .plk .pl-slot.ch.on {
+    display: flex;
+    animation: plin 0.3s ease-out;
+  }
+  .plk .pl-slot .try,
+  .plk .pl-slot .try.m {
+    margin-top: 0;
+    align-self: flex-start;
+    font-size: 13.5px;
+  }
+  .plk .pl-slot .mp {
+    margin-top: 8px;
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    padding: 10px;
+  }
+  .plk .pl-slot .mp p {
+    margin-top: 0;
+    max-width: none;
+  }
+  .pl-steps i {
+    display: block;
+    height: 65vh;
+    height: 65svh;
+  }
+  @media (max-height: 700px) {
+    .pl-head b {
+      font-size: 18.5px;
+    }
+    .pl-head p {
+      font-size: 13.5px;
+    }
+    .plk .pl-slot .mp {
+      gap: 8px;
+      padding: 8px;
+    }
+    .plk .pl-slot .mp .poll button {
+      min-height: 40px;
+      padding: 6px 12px;
+    }
+    .plk .pl-slot .mp .poll {
+      margin-bottom: 6px;
+    }
+    .plk .pl-slot .mbody {
+      padding: 10px 12px 12px;
+    }
+    .plk .pl-slot .cl li {
+      padding-block: 2px;
+    }
+    .plk .pl-slot .mopt {
+      min-height: 44px;
+    }
+    .pl-view [data-s="3"] .x-chg li:first-child,
+    .pl-view [data-s="4"] .x-sub {
+      display: none;
+    }
+  }
+}
+@keyframes plin {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
   }
 }

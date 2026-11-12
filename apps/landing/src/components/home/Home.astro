@@ -29,6 +29,15 @@ const [promptLead, promptUrl] = prompt.split(/(?<=install )/);
   <Scene />
   </header>
 
+  <div class="plk" id="pl" aria-label="The same work in a transcript and in an artifact, then what the artifact can do">
+    <div class="pl-pin">
+      <div class="pl-head" id="plhead" aria-live="polite"></div>
+      <div class="pl-view" id="plview"></div>
+      <div class="pl-chap" id="plchap"></div>
+    </div>
+    <div class="pl-steps" id="plsteps" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  </div>
+
   <Story />
 
   <Wall />

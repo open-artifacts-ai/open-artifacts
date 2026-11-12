@@ -3,6 +3,7 @@
 // toggle and the pause-when-off-screen rule. With reduced motion nothing
 // plays or animates: states swap at once.
 import { initPhone } from "./phone.client";
+import { initPhoneLock } from "./phonelock.client";
 import { initScene } from "./scene.client";
 
 const lp = document.getElementById("lp") as HTMLElement;
@@ -22,6 +23,9 @@ initPhone(lp, reduce);
 
 /* ---- hero scene ---- */
 initScene(lp, reduce);
+
+/* ---- phone lock ---- */
+initPhoneLock(lp, reduce);
 
 /* ---- pricing ---- */
 // A fade on the right edge says the table scrolls sideways, until the end.
