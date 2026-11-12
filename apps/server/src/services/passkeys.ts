@@ -10,7 +10,6 @@ import {
   type PasskeySettings,
   type PasskeySettingsPut,
 } from "@oa/shared";
-import { counterBucket } from "../auth/codes.js";
 import {
   assertionCredentialId,
   newChallenge,
@@ -125,7 +124,11 @@ async function issue(
   now: number,
 ): Promise<{ challenge: string; expiresAt: number }> {
   const taken = await takeAll(env, [
-    [`pk:ch:${userId}`, CHALLENGE_BUDGET, counterBucket("tenMin", now)],
+    [
+      `pk:ch:${userId}`,
+      CHALLENGE_BUDGET,
+      new Date(now).toISOString().slice(0, 15),
+    ],
   ]);
   if (taken !== -1)
     throw new ApiError(

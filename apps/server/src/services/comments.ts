@@ -47,8 +47,8 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
-  addressees,
   addresseeOf,
+  addressees,
   askRows,
   indexAnswered,
   indexAsk,
@@ -57,7 +57,6 @@ import {
   reconcileAsks,
 } from "./asks.js";
 import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
-import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import {
   type AskerAddress,
   agentKey,
@@ -84,6 +83,7 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
+import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -1697,7 +1697,10 @@ export async function answerChallenge(
 ) {
   const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
   if (!interactive || who.kind !== "user")
-    throw new ApiError("passkey_required", "Only the web app can use a passkey");
+    throw new ApiError(
+      "passkey_required",
+      "Only the web app can use a passkey",
+    );
   if (!isAsked(ask, who))
     throw new ApiError("forbidden", "Only the people asked can answer");
   if (ask.confirm !== "passkey")

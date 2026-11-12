@@ -1011,6 +1011,18 @@ export const SURFACES: readonly Surface[] = [
       badRequest,
     ),
   ),
+  // #2263: the passkey challenge for a pick. A malformed id stops at 400.
+  rest(
+    "comments answer challenge",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/answer/challenge`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/answer/challenge`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
   rest(
     "artifact agents",
     "comments.read",
