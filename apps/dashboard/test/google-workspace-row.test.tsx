@@ -58,7 +58,22 @@ it("no binding (mode off): hidden", async () => {
   expect(screen.queryByRole("button", BUTTON)).toBeNull();
 });
 
-it("Disconnect confirms, calls DELETE /directory, and the row goes", async () => {
+it("frozen with bound false (never connected, or disconnected): hidden", async () => {
+  mountHosted("/settings/connections", FROZEN, (m) => ({
+    ...m,
+    instance: {
+      ...m.instance,
+      directory: m.instance.directory && {
+        ...m.instance.directory,
+        bound: false,
+      },
+    },
+  }));
+  await screen.findByRole("heading", { name: "MCP server" });
+  expect(screen.queryByRole("button", BUTTON)).toBeNull();
+});
+
+it("Disconnect confirms, calls DELETE /directory, and the row goes through bound", async () => {
   const sent = calls("DELETE");
   mountHosted("/settings/connections", FROZEN);
   fireEvent.click(await screen.findByRole("button", BUTTON));

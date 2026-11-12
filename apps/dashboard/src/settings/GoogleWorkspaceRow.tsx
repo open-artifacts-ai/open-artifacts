@@ -24,9 +24,10 @@ export function GoogleWorkspaceRow() {
   const disconnect = useDisconnectDirectory(GOOGLE_DISCONNECT_COPY.done);
   if (state.status !== "authed") return null;
   const me = state.me;
-  // Business shows the Directory tab instead. A binding keeps mode frozen
-  // below Business; with none the server reports off.
-  if (!groupSyncHidden(me) || me.instance.directory?.mode !== "frozen")
+  // Business shows the Directory tab instead. Below Business the mode is
+  // frozen whatever the binding; `bound` says a live one exists.
+  const d = me.instance.directory;
+  if (!groupSyncHidden(me) || d?.mode !== "frozen" || d.bound !== true)
     return null;
   // The server's rule (directory.disconnect): the owner, uncapped.
   if (me.user.role !== "owner" || me.auth?.cap != null) return null;

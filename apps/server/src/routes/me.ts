@@ -21,7 +21,11 @@ import { orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { creatorCount, monthOf } from "../billing/creators.js";
 import { refreshPlan } from "../billing/store.js";
-import { instanceDirectory, readHealth } from "../directory/health.js";
+import {
+  instanceDirectory,
+  readHealth,
+  readHealthBound,
+} from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
@@ -89,12 +93,26 @@ async function toMe(
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
   const mode = directoryMode(c.env);
-  if (mode !== "off")
-    me.instance.directory = instanceDirectory(
-      mode,
-      await readHealth(c.env),
-      orgCan(user, "members.manage", { cap }),
-    );
+  if (mode !== "off") {
+    const admin = orgCan(user, "members.manage", { cap });
+    // Owners and admins also learn whether a binding exists (#2149): the same
+    // one D1 statement as health.
+    if (admin) {
+      const { h, bound } = await readHealthBound(c.env);
+      me.instance.directory = instanceDirectory(
+        mode,
+        h,
+        true,
+        Date.now(),
+        bound,
+      );
+    } else
+      me.instance.directory = instanceDirectory(
+        mode,
+        await readHealth(c.env),
+        false,
+      );
+  }
   me.auth = {
     method: c.var.authMethod ?? "access",
     readOnly: cap !== null,
