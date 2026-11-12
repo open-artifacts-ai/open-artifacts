@@ -204,6 +204,44 @@ describe("asks on the comments column", () => {
     expect(a.getAttribute("target")).toBe("_blank");
     expect(a.getAttribute("rel")).toBe("noopener noreferrer");
   });
+  it("option details have no links, keep other formatting, and a click anywhere picks", async () => {
+    let answered: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            {
+              id: "a",
+              label: "List only",
+              detail:
+                "See https://a.com/x and [the doc](https://b.com/y) with **bold** and `code`",
+            },
+            { id: "b", label: "Side by side" },
+          ],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          answered = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const btn = await within(c).findByRole("button", { name: /List only/ });
+    expect(btn.querySelector("a")).toBeNull();
+    expect(btn.querySelector("strong")?.textContent).toBe("bold");
+    expect(btn.querySelector("code")?.textContent).toBe("code");
+    expect(btn.textContent).toContain("https://a.com/x");
+    expect(btn.textContent).toContain("the doc");
+    fireEvent.click(btn.querySelector("strong") as HTMLElement);
+    await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
+  });
   it("shows the question, options, recommendation and why, and answers with the option id", async () => {
     let answered: unknown = null;
     serveThreads(() => [

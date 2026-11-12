@@ -664,7 +664,7 @@ export function AskBlock({
                       <b>{o.label}</b>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
-                          <MarkdownInline body={o.detail} />
+                          <MarkdownInline body={o.detail} links={false} />
                         </span>
                       )}
                     </span>

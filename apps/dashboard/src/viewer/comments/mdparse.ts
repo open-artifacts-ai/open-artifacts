@@ -25,7 +25,7 @@ export type Block =
 
 /** Past this the rest of the body is shown as plain text. Comments are 2,000 at most. */
 export const MAX_INPUT = 5000;
-const STEPS = 40000;
+const STEPS = 20000;
 const MAX_INLINE_DEPTH = 4;
 const MAX_QUOTE_DEPTH = 3;
 
@@ -55,9 +55,17 @@ const INVISIBLE = new RegExp(INVISIBLE_SRC);
 const INVISIBLE_G = new RegExp(INVISIBLE_SRC, "g");
 const ESCAPABLE = "\\`*_[]()#>-+.!<~|{}";
 
-const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c);
-const isAlnum = (c: string | undefined) =>
-  c !== undefined && /[\p{L}\p{N}]/u.test(c);
+const isSpace = (c: string | undefined) =>
+  c === undefined || c === " " || c === "\n" || c === "\t" || /\s/.test(c);
+const isAlnum = (c: string | undefined) => {
+  if (c === undefined) return false;
+  const n = c.charCodeAt(0);
+  if (n < 128)
+    return (
+      (n >= 48 && n <= 57) || (n >= 65 && n <= 90) || (n >= 97 && n <= 122)
+    );
+  return /[\p{L}\p{N}]/u.test(c);
+};
 
 function runLen(s: string, i: number, ch: string): number {
   let j = i;
@@ -117,7 +125,10 @@ function urlAt(s: string, i: number): string | null {
   if (s[i - 1] === "@") return null; // the name of an @-mention
   const head = s.slice(i, i + 8).toLowerCase();
   if (!head.startsWith("http://") && !head.startsWith("https://")) return null;
-  const first = linkify(s.slice(i))[0];
+  // URL_RE stops at whitespace, so the word alone decides it (linear overall).
+  let end = i;
+  while (end < s.length && !/\s/.test(s[end] as string)) end++;
+  const first = linkify(s.slice(i, end))[0];
   return first?.url ? safeHref(first.text) : null;
 }
 

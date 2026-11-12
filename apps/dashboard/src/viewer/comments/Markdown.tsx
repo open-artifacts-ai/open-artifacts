@@ -11,16 +11,21 @@ import {
     `text` returns for plain text, e.g. mention chips). Never HTML. */
 type TextFn = (s: string, key: string) => ReactNode;
 
-function inline(nodes: Inline[], text: TextFn, key: string): ReactNode[] {
+function inline(
+  nodes: Inline[],
+  text: TextFn,
+  key: string,
+  links = true,
+): ReactNode[] {
   return nodes.map((n, i) => {
     const k = `${key}.${i}`;
     switch (n.t) {
       case "text":
         return <Fragment key={k}>{text(n.s, k)}</Fragment>;
       case "b":
-        return <strong key={k}>{inline(n.c, text, k)}</strong>;
+        return <strong key={k}>{inline(n.c, text, k, links)}</strong>;
       case "i":
-        return <em key={k}>{inline(n.c, text, k)}</em>;
+        return <em key={k}>{inline(n.c, text, k, links)}</em>;
       case "code":
         return (
           <code
@@ -31,6 +36,8 @@ function inline(nodes: Inline[], text: TextFn, key: string): ReactNode[] {
           </code>
         );
       default:
+        // Inside a button: the text only, never an interactive element.
+        if (!links) return <Fragment key={k}>{n.label}</Fragment>;
         return (
           <a
             key={k}
@@ -68,16 +75,16 @@ function blocks(bs: Block[], text: TextFn, key: string): ReactNode[] {
         return (
           <pre
             key={k}
-            className="m-0 overflow-x-auto rounded bg-muted p-2 font-mono text-[0.9em] whitespace-pre"
+            className="m-0 max-w-full overflow-x-auto rounded bg-muted p-2 font-mono text-[0.9em] leading-snug whitespace-pre"
           >
-            <code>{b.s}</code>
+            <code className="block w-max min-w-full">{b.s}</code>
           </pre>
         );
       case "q":
         return (
           <blockquote
             key={k}
-            className="m-0 flex flex-col gap-1 border-l-2 border-border pl-2 text-muted-foreground"
+            className="m-0 flex flex-col gap-1 border-0 border-l-[3px] border-l-[color-mix(in_srgb,var(--oa-warning)_60%,transparent)] pl-2.5 text-muted-foreground"
           >
             {blocks(b.c, text, k)}
           </blockquote>
@@ -122,9 +129,12 @@ export function Markdown({
 export function MarkdownInline({
   body,
   text = (s) => s,
+  links = true,
 }: {
   body: string;
   text?: TextFn;
+  /** False: link text shows as plain text (inside a button). */
+  links?: boolean;
 }) {
-  return <>{inline(parseInlineOnly(body), text, "m")}</>;
+  return <>{inline(parseInlineOnly(body), text, "m", links)}</>;
 }

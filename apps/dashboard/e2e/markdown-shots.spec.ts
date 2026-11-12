@@ -42,6 +42,19 @@ for (const width of [1280, 390])
         .evaluateAll((as) => as.map((a) => a.getAttribute("href"))))
         expect(h).toMatch(/^https?:\/\//);
       await rich.scrollIntoViewIfNeeded();
+      // A long line scrolls inside the block, never clips.
+      const pre = rich.locator("pre");
+      expect(await pre.evaluate((e) => getComputedStyle(e).overflowX)).toBe(
+        "auto",
+      );
+      expect(
+        await pre.evaluate(
+          (e) =>
+            e.parentElement &&
+            e.getBoundingClientRect().right <=
+              e.parentElement.getBoundingClientRect().right + 1,
+        ),
+      ).toBe(true);
       const body = await page.screenshot();
       await info.attach(`markdown-${width}-${theme}`, {
         body,
@@ -52,5 +65,8 @@ for (const width of [1280, 390])
         await page.screenshot({
           path: `${OUT}/markdown-${width}-${theme}.png`,
         });
+        await rich
+          .locator("pre")
+          .screenshot({ path: `${OUT}/code-${width}-${theme}.png` });
       }
     });
