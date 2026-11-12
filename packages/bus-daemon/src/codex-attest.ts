@@ -27,6 +27,9 @@ export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
  */
 export const CODEX_REFUSALS = {
   notCodex: "it is not running under Codex.",
+  /** `ps` timed out or could not run: unknown, not "not Codex". Retryable. */
+  procUnknown:
+    "the bus could not check the process in time. Call the tool again.",
   restarted: "Codex restarted. Call the tool again.",
   notLoaded: "Codex does not have this thread loaded.",
   callNotFound:
@@ -320,7 +323,9 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     const thread = cx.thread_id;
     const p = cx.ppid;
     // 1. Parent: the claimed ppid is the adapter's real parent, and it is codex.
-    const rows = procs([hello.pid, p]) ?? new Map<number, Proc>();
+    const rows = procs([hello.pid, p]);
+    // ps timed out or failed: unknown, never "not Codex" and never admitted.
+    if (!rows) return no(CODEX_REFUSALS.procUnknown);
     const proc = rows.get(p);
     if (!proc || rows.get(hello.pid)?.ppid !== p)
       return no(CODEX_REFUSALS.notCodex);
