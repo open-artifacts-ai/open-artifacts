@@ -452,9 +452,7 @@ describe("a failed post never loses its text", () => {
     fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
     const box = within(c).getByRole("textbox", { name: "Reply" });
     fireEvent.change(box, { target: { value: "my careful reply" } });
-    fireEvent.click(
-      within(c).getByRole("button", { name: "Reply", exact: false }),
-    );
+    fireEvent.click(within(c).getByRole("button", { name: "Reply" }));
     // Close the panel while the post is in flight.
     fireEvent.click(screen.getByRole("button", { name: /^Comments/ }));
     await waitFor(() =>

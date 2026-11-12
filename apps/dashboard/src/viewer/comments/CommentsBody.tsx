@@ -1416,7 +1416,11 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               submit="Send"
               instant
               seed={lostAsk.lost}
-              onLost={lostAsk.onLost}
+              onLost={(l) => {
+                // Kept outside this card; if the card is still here, the box reopens with it.
+                lostAsk.onLost(l);
+                setAsking(asking);
+              }}
               autoFocus
               buttonsRight
               onCancel={() => setAsking(null)}

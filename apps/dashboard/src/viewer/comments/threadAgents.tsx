@@ -202,7 +202,11 @@ export function RemovalNotices({
   const prev = useRef<{ key: string; scope: Element | Document } | null>(null);
   useEffect(() => {
     if (key) {
+<<<<<<< HEAD
       undo.current?.focus({ preventScroll: true });
+=======
+      undo.current?.focus();
+>>>>>>> origin/main
       prev.current = {
         key,
         scope: undo.current?.closest("[data-thread]") ?? document,
@@ -229,8 +233,15 @@ export function RemovalNotices({
             ref={undo}
             type="button"
             className="cursor-pointer border-0 bg-transparent p-0 text-[var(--oa-accent-fg)] underline"
+<<<<<<< HEAD
             disabled={set.isPending}
             onClick={() => run(gone, false)}
+=======
+            aria-disabled={set.isPending || undefined}
+            onClick={() => {
+              if (!set.isPending) run(gone, false);
+            }}
+>>>>>>> origin/main
           >
             Undo
           </button>
@@ -295,8 +306,15 @@ export function ThreadAgents({
                     aria-label={`Stop notifying ${a.name}`}
                     className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
                     data-agent-x={a.key}
+<<<<<<< HEAD
                     disabled={set.isPending && set.variables?.key === a.key}
                     onClick={() => run(a, true)}
+=======
+                    aria-disabled={set.isPending || undefined}
+                    onClick={() => {
+                      if (!set.isPending) run(a, true);
+                    }}
+>>>>>>> origin/main
                   >
                     ×
                   </button>
