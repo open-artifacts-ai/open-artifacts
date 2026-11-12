@@ -99,6 +99,13 @@ export const PlanViewSchema = z.object({
    */
   cancelsAt: z.string().nullable().optional(),
   /**
+   * The interval a paying subscription bills on, and the ISO date it renews
+   * (null while a cancel is scheduled). Absent from an older answer. Owner and
+   * admins only.
+   */
+  interval: z.enum(["month", "year"]).nullable().optional(),
+  renewsAt: z.string().nullable().optional(),
+  /**
    * Extra-creator charges that failed and are unpaid: the total in cents and
    * the months ("YYYY-MM"), oldest first. Absent when nothing is due. A notice
    * only: it never moves tier or access. Owner and admins only.

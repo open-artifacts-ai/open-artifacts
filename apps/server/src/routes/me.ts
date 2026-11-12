@@ -165,6 +165,17 @@ async function toMe(
                 : new Date(plan.cancelsAt).toISOString(),
           }
         : {}),
+      ...(details && plan.interval !== undefined
+        ? { interval: plan.interval }
+        : {}),
+      ...(details && plan.renewsAt !== undefined
+        ? {
+            renewsAt:
+              plan.renewsAt === null
+                ? null
+                : new Date(plan.renewsAt).toISOString(),
+          }
+        : {}),
       ...(details && plan.soloCheckedOut !== undefined
         ? { soloCheckedOut: plan.soloCheckedOut }
         : {}),
