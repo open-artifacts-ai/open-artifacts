@@ -86,6 +86,20 @@ for (const w of [1280, 390]) {
         await shot(page, `${kind}-${w}-5-typed-kept`);
       });
 
+      test("closing and reopening the list keeps the typed text", async ({
+        page,
+      }) => {
+        await box(page).fill("words I must keep");
+        if (w < 600)
+          await page.getByRole("button", { name: "Close comments" }).click();
+        else await page.getByRole("button", { name: /^Comments/ }).click();
+        await expect(box(page)).toHaveCount(0);
+        await page.getByRole("button", { name: /^Comments/ }).click();
+        await expect(box(page)).toHaveValue("words I must keep");
+        await expect(card(page)).toBeVisible();
+        await shot(page, `${kind}-${w}-6-reopened-text-kept`);
+      });
+
       test("a click inside the card keeps the draft", async ({ page }) => {
         await box(page).click();
         await card(page).click();

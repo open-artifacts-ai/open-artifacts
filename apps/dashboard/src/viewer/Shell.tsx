@@ -306,7 +306,7 @@ function Viewer({
   const wasShown = useRef(false);
   const { dropDraft } = cmt;
   useEffect(() => {
-    if (wasShown.current && !listShown) dropDraft(true, true);
+    if (wasShown.current && !listShown) dropDraft();
     wasShown.current = listShown;
   }, [listShown, dropDraft]);
   // Latest values for the effect: the parent's key remounts this on id/version change.

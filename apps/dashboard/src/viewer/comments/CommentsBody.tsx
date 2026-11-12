@@ -335,6 +335,8 @@ function Composer({
   onSubmit,
   onCancel,
   initial = "",
+  restore,
+  onText,
   autoFocus = false,
   alwaysOpen = true,
   failure,
@@ -375,6 +377,9 @@ function Composer({
   onSubmit: (body: string, extras: Extras) => Promise<unknown>;
   onCancel?: () => void;
   initial?: string;
+  /** Text kept by the owner of the draft across the box unmounting, and where to keep it. */
+  restore?: string;
+  onText?: (text: string) => void;
   autoFocus?: boolean;
   /** Collapsed to one line until focused. */
   alwaysOpen?: boolean;
@@ -383,7 +388,7 @@ function Composer({
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
   const errCtx = useCommentErrorCtx();
-  const [text, setText] = useState(initial);
+  const [text, setText] = useState(restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
@@ -483,6 +488,9 @@ function Composer({
   const body = text.trim();
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
+  useEffect(() => {
+    onText?.(text);
+  }, [text, onText]);
   useEffect(() => {
     onDirty?.(body !== "");
     return () => onDirty?.(false, true);
@@ -1374,6 +1382,8 @@ function NewThread({ api }: { api: CommentsApi }) {
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
         onDirty={api.setDraftDirty}
+        restore={api.draftText.current}
+        onText={api.setDraftText}
         onCancel={api.cancelDraft}
         onSubmit={async (body, x) => {
           last.current = body;

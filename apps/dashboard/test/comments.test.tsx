@@ -2872,6 +2872,23 @@ describe("clicking away from an unsent selection (Google Docs)", () => {
     expect(clearSelection).not.toHaveBeenCalled();
   });
 
+  it("a click away with the list closed never drops typed text", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-closed");
+    fireEvent.change(await draftBox(), { target: { value: "mine" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await act(async () => opts.at(-1)?.onCommentAway());
+    await down(document.body);
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    expect(await screen.findByDisplayValue("mine")).toBeInTheDocument();
+  });
+
   it("selecting different text starts a new draft", async () => {
     mount(viewerPath(OWNED));
     await col();
@@ -2910,7 +2927,7 @@ describe("clicking away from an unsent selection (Google Docs)", () => {
       ).toBeNull(),
     );
     fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
-    // The composer remounts with the column; the draft itself (its quote) is kept.
     expect(await screen.findByText("quote-keep")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("typed")).toBeInTheDocument();
   });
 });
