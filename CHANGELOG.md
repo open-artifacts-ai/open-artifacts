@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.164.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.163.0...v0.164.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** a failed extra-creator charge shows a notice ([#2246](https://github.com/open-artifacts-ai/open-artifacts/issues/2246)) ([#2345](https://github.com/open-artifacts-ai/open-artifacts/issues/2345)) ([e8a9cad](https://github.com/open-artifacts-ai/open-artifacts/commit/e8a9cad37a94b35e9e0e05bea4436741f6e20bed))
+* **passkeys:** register passkeys and passkey settings ([#2263](https://github.com/open-artifacts-ai/open-artifacts/issues/2263) A) ([#2329](https://github.com/open-artifacts-ai/open-artifacts/issues/2329)) ([dc3a6c8](https://github.com/open-artifacts-ai/open-artifacts/commit/dc3a6c8b88397e33829f8de0f12dbbf7b8ef5f6a))
+
+
+### Bug Fixes
+
+* **comments:** ask cards show the comment body ([#2344](https://github.com/open-artifacts-ai/open-artifacts/issues/2344)) ([#2347](https://github.com/open-artifacts-ai/open-artifacts/issues/2347)) ([616c0bd](https://github.com/open-artifacts-ai/open-artifacts/commit/616c0bdca65eadb007fad8152ab22a49d2fe7c78))
+* **settings:** the agent setup prompt is one line ([#2352](https://github.com/open-artifacts-ai/open-artifacts/issues/2352)) ([#2353](https://github.com/open-artifacts-ai/open-artifacts/issues/2353)) ([81214c9](https://github.com/open-artifacts-ai/open-artifacts/commit/81214c9ca942206f9d295e5f06472d87c4829047))
+
 ## [0.163.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.2...v0.163.0) (2026-11-12)
 
 
