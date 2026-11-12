@@ -30,6 +30,8 @@ import {
   mentionQuery,
   nextAskFor,
   removeMention,
+  unmatchedMentions,
+  unmatchedMessage,
 } from "../src/viewer/comments/asks";
 import {
   calls,
@@ -2082,5 +2084,124 @@ describe("Ask a question (#1794)", () => {
     expect(
       within(c).queryByRole("button", { name: "Ask a question" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("an @name that notifies no one (#2306)", () => {
+  const bob = { key: "agent:bob", name: "Bob", online: true } as ArtifactAgent;
+
+  it("finds capitalised names no agent matches", () => {
+    expect(unmatchedMentions("@OA Platform how do we know", [bob])).toEqual([
+      "OA Platform",
+    ]);
+    expect(unmatchedMentions("@Bob and @Zed, hi", [bob])).toEqual(["Zed"]);
+    expect(unmatchedMentions("@Zed @Zed", [bob])).toEqual(["Zed"]);
+  });
+
+  it("stays quiet for emails, a lone @, lower case, code and matched names", () => {
+    for (const t of [
+      "mail a@b.com",
+      "Mail Me@Example today",
+      "meet @ 5pm",
+      "see @ Home",
+      "ask @bob later",
+      "run `npm i @Types/node` now",
+      "```\n@Decorator\n```",
+      "hi @Bob's idea",
+      "hi @Bob.",
+      "",
+    ])
+      expect(unmatchedMentions(t, [bob])).toEqual([]);
+  });
+
+  it("words the line for one, two and more names", () => {
+    expect(unmatchedMessage(["A"])).toBe(
+      "@A isn't an agent on this page, so they won't be notified.",
+    );
+    expect(unmatchedMessage(["A", "B"])).toBe(
+      "@A and @B aren't agents on this page, so they won't be notified.",
+    );
+    expect(unmatchedMessage(["A", "B", "C", "D"])).toBe(
+      "@A, @B and 2 more aren't agents on this page, so they won't be notified.",
+    );
+  });
+
+  const box = async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const b = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(b);
+    return { c, b };
+  };
+
+  it("shows the line for an unknown name, and sending still works", async () => {
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () => HttpResponse.json([bob])),
+    );
+    const posts = calls("POST");
+    const { c, b } = await box();
+    fireEvent.change(b, { target: { value: "@Zed look" } });
+    expect(await within(c).findByRole("status")).toHaveTextContent(
+      "@Zed isn't an agent on this page, so they won't be notified.",
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+    expect((posts[0]!.body as { mentions?: unknown[] }).mentions ?? []).toEqual(
+      [],
+    );
+  });
+
+  it("waits for a loading list, then resolves the mention", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, async () => {
+        await gate;
+        return HttpResponse.json([bob]);
+      }),
+    );
+    const posts = calls("POST");
+    const { c, b } = await box();
+    fireEvent.change(b, { target: { value: "@Bob look" } });
+    const send = await within(c).findByRole("button", {
+      name: "Checking agents…",
+    });
+    expect(send).toBeDisabled();
+    expect(posts).toHaveLength(0);
+    release();
+    fireEvent.click(await within(c).findByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+    expect((posts[0]!.body as { mentions: unknown[] }).mentions).toEqual([
+      { key: "agent:bob" },
+    ]);
+  });
+
+  it("after a failed list, the first Send warns and the second sends", async () => {
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "no" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    const posts = calls("POST");
+    const { c, b } = await box();
+    fireEvent.change(b, { target: { value: "@Bob look" } });
+    const send = () => within(c).findByRole("button", { name: "Comment" });
+    fireEvent.click(await send());
+    expect(await within(c).findByRole("status")).toHaveTextContent(
+      "Couldn't check which agents",
+    );
+    expect(posts).toHaveLength(0);
+    fireEvent.click(await send());
+    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+    expect((posts[0]!.body as { mentions?: unknown[] }).mentions ?? []).toEqual(
+      [],
+    );
   });
 });

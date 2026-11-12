@@ -708,6 +708,53 @@ export function mentionedKeys(
   return keys;
 }
 
+/**
+ * #2306: the `@Name` tokens in the text that name no listed agent. A token is
+ * `@` at the start or after whitespace, then capitalised words ("@OA Platform
+ * how" is "OA Platform"). Lower-case words, emails, "@ 5pm" and code never
+ * count, so the warning stays rare and right.
+ */
+export function unmatchedMentions(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): string[] {
+  let rest = text.replace(/```[\s\S]*?```|`[^`\n]*`/g, (m) =>
+    " ".repeat(m.length),
+  );
+  for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
+    const re = new RegExp(
+      `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
+      "i",
+    );
+    const m = re.exec(rest);
+    if (!m) continue;
+    const at = m.index + (m[1]?.length ?? 0);
+    rest =
+      rest.slice(0, at) +
+      " ".repeat(a.name.length + 1) +
+      rest.slice(at + a.name.length + 1);
+  }
+  const out: string[] = [];
+  const re = /(^|\s)@([A-Z][\w]*(?:[ \t]+[A-Z][\w]*)*)(?![\w@])/g;
+  for (let m = re.exec(rest); m; m = re.exec(rest)) {
+    const name = m[2] ?? "";
+    if (!out.some((n) => n.toLowerCase() === name.toLowerCase()))
+      out.push(name);
+  }
+  return out;
+}
+
+/** #2306: the line under the box for names that notify no one (copy pending Product). */
+export function unmatchedMessage(names: readonly string[]): string {
+  const tail = "so they won't be notified.";
+  const [a, b] = names;
+  if (a && names.length === 1)
+    return `@${a} isn't an agent on this page, ${tail}`;
+  if (a && b && names.length === 2)
+    return `@${a} and @${b} aren't agents on this page, ${tail}`;
+  return `@${a}, @${b} and ${names.length - 2} more aren't agents on this page, ${tail}`;
+}
+
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
 
 /** Drops every `@name` that `mentionedKeys` would count (same boundary), with a

@@ -54,6 +54,8 @@ import {
   newProblems,
   nextAskFor,
   removeMention,
+  unmatchedMentions,
+  unmatchedMessage,
 } from "./asks";
 import {
   focusRow,
@@ -417,6 +419,18 @@ function Composer({
     )
       void agentsQ.refetch();
   };
+  const mentionOk = mentionable && api.canMention && api.canComment;
+  const hasAt = /(^|\s)@/.test(text);
+  const notFound =
+    agentsQ.error instanceof ApiClientError && agentsQ.error.status === 404;
+  // #2306: never resolve against a list that is not there. While it loads,
+  // Send waits; after a failure the first Send says so, the second sends.
+  const checking = mentionOk && hasAt && agentsQ.isFetching && !agents;
+  const [listFailed, setListFailed] = useState(false);
+  const unmatched = useMemo(
+    () => (mentionOk && agents ? unmatchedMentions(text, agents) : []),
+    [mentionOk, agents, text],
+  );
   const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
   const found =
     query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
@@ -494,7 +508,15 @@ function Composer({
     setError(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
-      const keys = mentionedKeys(body, agents ?? []);
+      let list = agents;
+      if (mentionOk && /(^|\s)@/.test(body) && !list && !notFound) {
+        list = (await agentsQ.refetch()).data;
+        if (!list && !listFailed) {
+          setListFailed(true);
+          return;
+        }
+      }
+      const keys = mentionedKeys(body, list ?? []);
       if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
       const mentions = keys.map((key) => ({ key }));
       await onSubmit(body, {
@@ -624,6 +646,13 @@ function Composer({
           onRemove={(a) => setText((t) => removeMention(t, a.name, agents))}
         />
       )}
+      {(unmatched.length > 0 || (listFailed && hasAt && !agents)) && (
+        <p role="status" className={`${TXT} text-muted-foreground`}>
+          {unmatched.length > 0
+            ? unmatchedMessage(unmatched)
+            : "Couldn't check which agents are on this page, so @names won't notify anyone. Send again to post anyway."}
+        </p>
+      )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
           {commentError(error, capped, errCtx)}
@@ -654,10 +683,10 @@ function Composer({
                   <Button
                     size="xs"
                     className={`bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]${card ? " h-8 px-4" : ""}`}
-                    disabled={!body || busy}
+                    disabled={!body || busy || checking}
                     onClick={() => void go()}
                   >
-                    {submit}
+                    {checking ? "Checking agents…" : submit}
                   </Button>
                 </div>
               </div>
@@ -669,10 +698,10 @@ function Composer({
             >
               <Button
                 size="xs"
-                disabled={!body || busy}
+                disabled={!body || busy || checking}
                 onClick={() => void go()}
               >
-                {submit}
+                {checking ? "Checking agents…" : submit}
               </Button>
               {extra}
               {cancelBtn}
