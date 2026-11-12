@@ -538,6 +538,11 @@ describe("comments: layouts", () => {
     await wait(30);
     expect(card.contains(row)).toBe(false);
     expect(outlet.contains(row)).toBe(true);
+    expect(
+      within(card)
+        .getByRole("textbox", { name: "Reply" })
+        .hasAttribute("data-oa-field"),
+    ).toBe(true);
     fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
       target: { value: "Floats" },
     });
@@ -902,6 +907,19 @@ describe("comments: actions", () => {
     expect(posts[0]?.body).toMatchObject({ body: "Sent by key" });
   });
 
+  it("#2234: Ctrl+Enter while an IME is composing does not send", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Composing" } });
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true, isComposing: true });
+    await wait(30);
+    expect(posts).toHaveLength(0);
+  });
+
   it("#2118: Esc in the note box keeps the draft and does not close the phone sheet", async () => {
     viewport(400);
     mount(viewerPath(OWNED));
@@ -946,6 +964,10 @@ describe("comments: actions", () => {
     const card = box.parentElement as HTMLElement;
     expect(card.firstElementChild?.textContent).toBe("Landing");
     expect(card.querySelectorAll("textarea")).toHaveLength(1);
+    // #2234: the quote composer's field is the outlined, growing one.
+    expect(box.hasAttribute("data-oa-field")).toBe(true);
+    expect(box.className).toContain("border-input");
+    expect(box.className).toContain("max-h-");
     expect(
       c.querySelectorAll('textarea[aria-label="Add a comment"]'),
     ).toHaveLength(1);
