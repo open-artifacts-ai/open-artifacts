@@ -120,7 +120,9 @@ export const MentionDeliverySchema = z.enum([
   "queued",
   "seen",
   "gone",
+  "withdrawn",
 ]);
+export type MentionDelivery = z.infer<typeof MentionDeliverySchema>;
 /** #1890: a mentioned or asked agent's identity fields, as an author's (CommentAuthorSchema). Absent: unknown. */
 const partyFace = {
   linked: z.boolean().optional(),

@@ -23,7 +23,7 @@ export type ImportChangeKind =
   | "heading_level" // a heading 4 to 6: kept as a paragraph
   | "link" // a link that isn't http(s) or mailto:: kept as plain text
   | "code_language" // a code fence info string that isn't a plain language name: dropped
-  | "hard_break" // a hard line break: became a space
+  | "heading_break" // a line break inside a heading: became a space
   | "mixed_task_list"; // a list with some task items: kept as a bullet list, "[ ]" as text
 
 export interface ImportChange {
@@ -161,11 +161,17 @@ function tableLines(tokens: Token[], from: number, to: number): string[] {
   return lines;
 }
 
-function rewriteInline(inline: Token, changes: ImportChange[]): void {
+function rewriteInline(
+  inline: Token,
+  changes: ImportChange[],
+  inHeading: boolean,
+): void {
   const children = inline.children;
   if (!children) return;
   const line = lineOf(inline);
   let dropClose = false;
+  // A hard break at the very end of a block means nothing: drop it.
+  while (children.at(-1)?.type === "hardbreak") children.pop();
   inline.children = children.flatMap((child) => {
     if (child.type === "link_open") {
       const href = child.attrGet("href") ?? "";
@@ -197,8 +203,13 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
       changes.push({ kind: "image", line, text: short(source) });
       return textToken(source, child.level);
     }
-    if (child.type === "hardbreak") {
-      changes.push({ kind: "hard_break", line, text: short(inline.content) });
+    // A heading is one line: a break in a (setext) heading becomes a space.
+    if (child.type === "hardbreak" && inHeading) {
+      changes.push({
+        kind: "heading_break",
+        line,
+        text: short(inline.content),
+      });
       return textToken(" ", child.level);
     }
     return child;
@@ -263,7 +274,8 @@ function rewriteBlocks(tokens: Token[], changes: ImportChange[]): Token[] {
       tokens[close].tag = "p";
       out.push(t);
     } else {
-      if (t.type === "inline") rewriteInline(t, changes);
+      if (t.type === "inline")
+        rewriteInline(t, changes, tokens[i - 1]?.type === "heading_open");
       out.push(t);
     }
   }
@@ -356,6 +368,7 @@ function parserFor(changes: ImportChange[]): MarkdownParser {
       noCloseToken: true,
     },
     hr: { node: "horizontalRule" },
+    hardbreak: { node: "hardBreak" },
     em: { mark: "italic" },
     strong: { mark: "bold" },
     s: { mark: "strike" },
@@ -376,8 +389,10 @@ function parserFor(changes: ImportChange[]): MarkdownParser {
  */
 export function markdownToDoc(source: string): MarkdownImport {
   const changes: ImportChange[] = [];
-  const doc = parserFor(changes).parse(source.replace(/\r\n?/g, "\n"));
-  doc.check();
+  // toDocNode rebuilds the doc: a break carries no marks.
+  const doc = toDocNode(
+    parserFor(changes).parse(source.replace(/\r\n?/g, "\n")),
+  );
   return { doc, json: doc.toJSON() as DocJSON, changes };
 }
 
@@ -423,6 +438,9 @@ function renderBulletLike(
   const bullet = alternate(parent, index, BULLETS) ? "*" : "-";
   state.renderList(node, "  ", () => `${bullet} `);
 }
+
+// atBlockStart is read at runtime but missing from the types.
+const lineStart = (state: unknown) => state as { atBlockStart: boolean };
 
 const marks = defaultMarkdownSerializer.marks;
 
@@ -474,6 +492,17 @@ const serializer = new MarkdownSerializer(
       state.write(node.attrs.checked ? "[x] " : "[ ] ");
       state.renderContent(node);
     },
+    hardBreak(state, node, parent, index) {
+      // A break with only breaks or whitespace after it is dropped: the empty
+      // line would leave a literal backslash.
+      for (let i = index + 1; i < parent.childCount; i++) {
+        const sib = parent.child(i);
+        if (sib.type !== node.type && !(sib.isText && !sib.text?.trim())) {
+          state.write("\\\n");
+          return;
+        }
+      }
+    },
     text(state, node, parent, index) {
       const text = node.text ?? "";
       const next =
@@ -492,6 +521,32 @@ const serializer = new MarkdownSerializer(
       ) {
         state.text(text.slice(0, -1), true);
         state.text("\\!", false);
+        return;
+      }
+      const afterBreak =
+        index > 0 && parent.child(index - 1).type === docSchema.nodes.hardBreak;
+      if (afterBreak && !inAutolink && text.length > 0) {
+        // This text starts a line of the same paragraph: escape it as a line
+        // start, keep leading whitespace (the parser strips it) and keep a
+        // line of only "=" from becoming a setext heading underline.
+        let rest = text;
+        const ws = /^[ \t]/.exec(rest);
+        if (ws) {
+          state.text(ws[0] === " " ? "&#32;" : "&#9;", false);
+          rest = rest.slice(1);
+          lineStart(state).atBlockStart = false;
+        } else {
+          lineStart(state).atBlockStart = true;
+          if (
+            /^=+[ \t]*$/.test(rest) &&
+            (!next || next.type === parent.type.schema.nodes.hardBreak)
+          ) {
+            state.text("\\=", false);
+            rest = rest.slice(1);
+            lineStart(state).atBlockStart = false;
+          }
+        }
+        if (rest) state.text(rest, true);
         return;
       }
       state.text(text, !inAutolink);

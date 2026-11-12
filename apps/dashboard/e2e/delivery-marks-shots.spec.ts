@@ -50,12 +50,37 @@ for (const width of [1280, 390])
       await expect(held).toBeVisible();
       await expect(delivered.locator('[data-mark="ok"]')).toBeVisible();
       await expect(held.locator('[data-mark="wait"]')).toBeVisible();
-      await expect(thread.getByText(/Held until it's back/)).toHaveCount(1);
+      await expect(
+        thread.getByText("Claude Code: offline. Held until it's back."),
+      ).toHaveCount(1);
+      const removed = thread.locator(
+        '[data-mention-chip][data-delivery="withdrawn"]',
+      );
+      await expect(removed.locator('[data-mark="removed"]')).toBeVisible();
       await delivered.scrollIntoViewIfNeeded();
       await shot("1-mentions");
+      await removed.hover();
+      await expect(page.getByRole("tooltip")).toContainText(
+        "removed before delivery",
+      );
+      await shot("1b-removed-hover");
       await delivered.hover();
       await expect(page.getByRole("tooltip")).toContainText("Delivered to");
       await shot("2-chip-hover");
+      await page.mouse.move(0, 0);
+
+      // A reply that told six agents: three faces, +3, a clock with 5 of 6... as seeded.
+      const six = thread
+        .locator("[data-delivery-faces]")
+        .filter({ has: page.locator("[data-more]") })
+        .first();
+      await expect(six.locator("[data-avatar]")).toHaveCount(3);
+      await expect(six.locator("[data-more]")).toHaveText("+3");
+      await six.scrollIntoViewIfNeeded();
+      await shot("6-header-six");
+      await six.getByRole("button").hover();
+      await expect(page.getByRole("tooltip")).toBeVisible();
+      await shot("7-header-six-hover");
       await page.mouse.move(0, 0);
 
       // A plain reply tells four agents: faces and one summary in the header.

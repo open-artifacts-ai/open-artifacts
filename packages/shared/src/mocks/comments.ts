@@ -250,7 +250,7 @@ export function createCommentMock({
         closed: false,
       };
       const mention = comment(
-        "Looping in @OA Product and @Claude Code on this.",
+        "Looping in @OA Product and @Claude Code on this, and @OA Bus is off it.",
         other,
         m,
       );
@@ -269,12 +269,45 @@ export function createCommentMock({
           for: "Leo Urbina",
           delivery: "queued",
         },
+        {
+          key: "agent:bus",
+          name: "OA Bus",
+          linked: true,
+          product: "Codex",
+          animal: { id: "owl", color: 4 },
+          for: "Sam Rivera",
+          delivery: "withdrawn",
+        },
       ];
+      // #2229: a reply that told six agents without mentioning any.
+      const six = comment(
+        "Everyone: please confirm your part is ready.",
+        other,
+        m,
+      );
+      six.notified = (
+        [
+          ["agent:product", "OA Product", 2, "delivered"],
+          ["agent:bus", "OA Bus", 4, "delivered"],
+          ["agent:polish", "OA Polish", 5, "queued"],
+          ["agent:design", "OA Design", 1, "delivered"],
+          ["agent:billing", "OA Billing", 3, "gone"],
+          ["agent:release", "OA Release", 0, "delivered"],
+        ] as const
+      ).map(([key, name, color, delivery]) => ({
+        key,
+        name,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color },
+        delivery,
+      }));
       const f = [
         comment("Can the pricing section be shorter?", other, m),
         comment("Shortened to three sentences.", agent(true)),
         comment("Also fixed the footer typo.", agent(false)),
         mention,
+        six,
         ask,
         // #2172: a long run of linked-agent replies (each has an sr-only "linked, " span).
         ...Array.from({ length: 8 }, (_, i) =>

@@ -48,11 +48,8 @@ let adminSub: string;
 /** This test's env with the tier's FEATURES. */
 const tierEnv = (t: Tier): Env =>
   ({ ...base, FEATURES: TIER_FEATURES[t].join(",") }) as Env;
-/** Every downgrade the tiers allow (spec 4.5: the trial is Business). */
-const DOWNGRADES: [Tier, Tier][] = [
-  ["trial", "team"],
-  ["business", "team"],
-];
+/** Every downgrade the tiers allow (spec 4.5: only Business has Google sync; the trial is Team). */
+const DOWNGRADES: [Tier, Tier][] = [["business", "team"]];
 
 const stub = () => {
   const ns = env.DIRECTORY_SYNC;

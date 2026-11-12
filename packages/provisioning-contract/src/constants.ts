@@ -68,13 +68,22 @@ export const OAUTH_CLIENT_UNCLAIMED_MS = 24 * HOUR;
 /** 9A.3.1, 9A.7: every MCP client expires after 30 days (`clientRegistrationTTL: 2592000` s). */
 export const OAUTH_CLIENT_TTL_MS = 30 * DAY;
 
-/** `SIGNUPS_ENABLED` (2.4): `false`, `true`; staging also `test-users`. */
-export const SIGNUPS_ENABLED_VALUES = ["false", "true", "test-users"] as const;
+/**
+ * `SIGNUPS_ENABLED` (2.4): `false`, `true`; staging also `test-users`;
+ * `invite` (#2133): an allow list plus a waitlist, test users still admitted.
+ */
+export const SIGNUPS_ENABLED_VALUES = [
+  "false",
+  "true",
+  "test-users",
+  "invite",
+] as const;
 export type SignupsEnabled = (typeof SIGNUPS_ENABLED_VALUES)[number];
 
 /**
  * `SIGNUPS_ENABLED` exactly as set: `true` admits all, `test-users` only the
- * OIDC test users (4.2). Anything else, unset included, is `false` (closed,
+ * OIDC test users (4.2), `invite` the allow list (and test users). The API
+ * is the gate in `invite`, so a consumer treats it like `true`. Anything else, unset included, is `false` (closed,
  * as #859's consumer acks anything but "true"). Whether `test-users` is
  * allowed in prod is the deploy read-back's check (10.2), not this parser's.
  */

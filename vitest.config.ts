@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    setupFiles: ["./scripts/test/agent-cli-guard.ts"],
     include: ["scripts/**/*.test.ts"],
     // @oa/setup runs its own suite via `pnpm -r test`.
     exclude: ["scripts/setup/**", "scripts/hosted/**", "**/node_modules/**"],

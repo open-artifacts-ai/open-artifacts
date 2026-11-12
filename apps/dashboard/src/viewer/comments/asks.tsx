@@ -6,7 +6,7 @@ import type {
   KeyRef,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { CheckCheck, Clock } from "lucide-react";
+import { CheckCheck, Clock, Minus } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import {
   answerError,
@@ -73,10 +73,20 @@ export const markText = (name: string, d: DState, when: string) =>
     ? `${name}: held until it's back`
     : d === "gone"
       ? `${name}: expired`
-      : `${d === "seen" ? "Seen by" : "Delivered to"} ${name}, ${when}`;
+      : d === "withdrawn"
+        ? `${name}: removed before delivery`
+        : `${d === "seen" ? "Seen by" : "Delivered to"} ${name}, ${when}`;
 
 /** Two ticks for delivered or seen, a clock for held or expired. */
 export function DeliveryIcon({ d }: { d: DState }) {
+  if (d === "withdrawn")
+    return (
+      <Minus
+        aria-hidden="true"
+        data-mark="removed"
+        className="size-3.5 text-muted-foreground"
+      />
+    );
   return isWait(d) ? (
     <Clock
       aria-hidden="true"
@@ -236,21 +246,24 @@ export function Delivery({
 
 /** #2229: agents told without a mention, as up to three faces and one summary mark in the header. */
 export function DeliveryFaces({
-  told,
+  told: all,
   when,
 }: {
   told: readonly CommentMention[];
   when: string;
 }) {
   const { open, props } = useDetail();
-  if (!told.length) return null;
+  if (!all.length) return null;
+  // A removed notice was never sent: it is listed in the details, not counted.
+  const told = all.filter((m) => m.delivery !== "withdrawn");
   const sorted = [...told].sort(
     (a, b) => Number(isWait(b.delivery)) - Number(isWait(a.delivery)),
   );
   const ok = told.filter((m) => !isWait(m.delivery)).length;
   const held = told.length - ok;
-  const label =
-    held === 0
+  const label = !told.length
+    ? "Removed before delivery"
+    : held === 0
       ? `${ok} of ${told.length} delivered`
       : `${ok} of ${told.length} delivered, ${held} held`;
   return (
@@ -272,7 +285,9 @@ export function DeliveryFaces({
             +{told.length - 3}
           </span>
         )}
-        <DeliveryIcon d={held ? "queued" : "delivered"} />
+        <DeliveryIcon
+          d={!told.length ? "withdrawn" : held ? "queued" : "delivered"}
+        />
         {held > 0 && (
           <span className={TXT} data-summary="">
             {ok} of {told.length}
@@ -285,16 +300,18 @@ export function DeliveryFaces({
           data-delivery-detail=""
           className={`${FLOAT} right-0 ${TXT}`}
         >
-          {sorted.map((m) => (
-            <span
-              key={m.key}
-              data-told={m.key}
-              className="flex items-center gap-1.5"
-            >
-              <PartyFace p={m} />
-              {markText(m.name, m.delivery, when)}
-            </span>
-          ))}
+          {[...sorted, ...all.filter((m) => m.delivery === "withdrawn")].map(
+            (m) => (
+              <span
+                key={m.key}
+                data-told={m.key}
+                className="flex items-center gap-1.5"
+              >
+                <PartyFace p={m} />
+                {markText(m.name, m.delivery, when)}
+              </span>
+            ),
+          )}
         </span>
       )}
     </span>
