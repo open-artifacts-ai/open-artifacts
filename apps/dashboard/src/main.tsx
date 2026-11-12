@@ -492,6 +492,8 @@ async function startMocks() {
       commentAsks: params.get("mock") === "asks",
       // ?mock=agents (#1822): agent-authored comments, linked and not.
       commentAgents: params.get("mock") === "agents",
+      // ?mock=markdown (#2338): agent comments with markdown and a hostile one.
+      commentMarkdown: params.get("mock") === "markdown",
       // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
       commentersSignedIn: params.get("mock") === "signed-out",
       // ?mock=bus (#1293): the bus is on, with machines and agents.

@@ -1055,7 +1055,7 @@ function CommentRow({
             guest={api.guest}
           />
         ) : (
-          <p className={`whitespace-pre-wrap break-words ${CTXT}`} {...roving}>
+          <div className={`break-words ${CTXT}`} {...roving}>
             <MentionedText
               body={c.body}
               mentions={c.mentions}
@@ -1063,7 +1063,7 @@ function CommentRow({
               marks={marks}
               createdAt={c.createdAt}
             />
-          </p>
+          </div>
         )}
         <Delivery
           c={c}
