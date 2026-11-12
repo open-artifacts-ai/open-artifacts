@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { LIMITS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AgentRecord, AgentTable } from "../src/agents.ts";
-import { TakenWatch } from "../src/codex-taken.ts";
+import { replayInBatches, TakenWatch } from "../src/codex-taken.ts";
 import { createDeliver, type Mail } from "../src/deliver.ts";
 import {
   CODEX_QUEUE_TIMEOUT_MS,
@@ -1514,6 +1514,38 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
       now: () => Date.now() + 60_000,
     });
     expect(late.takenIds()).toEqual([]);
+  });
+
+  it("an older lost ack behind 500 newer records is still replayed, in batches", () => {
+    const ids = Array.from({ length: 701 }, (_, n) => `id${n}`);
+    const sent: string[] = [];
+    const ticks: (() => void)[] = [];
+    replayInBatches(
+      ids,
+      (id) => sent.push(id),
+      () => true,
+      (fn) => ticks.push(fn),
+    );
+    expect(sent).toHaveLength(200); // one batch per tick
+    while (ticks.length) ticks.shift()?.();
+    expect(sent).toEqual(ids); // the oldest, last in line, goes too
+  });
+
+  it("a replay stops when the link closes", () => {
+    const ids = Array.from({ length: 450 }, (_, n) => `id${n}`);
+    const sent: string[] = [];
+    const ticks: (() => void)[] = [];
+    let live = true;
+    replayInBatches(
+      ids,
+      (id) => sent.push(id),
+      () => live,
+      (fn) => ticks.push(fn),
+    );
+    live = false;
+    ticks.shift()?.();
+    expect(sent).toHaveLength(200);
+    expect(ticks).toHaveLength(0);
   });
 
   it("the queue timeout is 30 s, under the hub's mail expiry", () => {

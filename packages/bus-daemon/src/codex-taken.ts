@@ -140,6 +140,30 @@ export const startsWithHead = (text: string, head: string): boolean =>
   text.startsWith(`${head}\n\n`);
 
 /**
+ * Sends `ids` in batches of `batch`, one batch per `after` tick, until done or
+ * `live()` turns false (the link closed or a newer one started). Each id goes
+ * through the paced ack lane; none is skipped for a cap.
+ */
+export function replayInBatches(
+  ids: string[],
+  send: (id: string) => void,
+  live: () => boolean,
+  after: (fn: () => void) => void = (fn) => {
+    setTimeout(fn, 1000).unref();
+  },
+  batch = 200,
+): void {
+  let i = 0;
+  const step = () => {
+    if (!live()) return;
+    for (const id of ids.slice(i, i + batch)) send(id);
+    i += batch;
+    if (i < ids.length) after(step);
+  };
+  step();
+}
+
+/**
  * Which queued Codex items a turn has taken, read from the thread's rollout
  * (the user item a turn appends). A model cannot write a user item; a
  * same-user writer to CODEX_HOME could, which the attestation already assumes
@@ -296,7 +320,7 @@ export class TakenWatch {
    * `acked` only means the frame was queued locally, which proves nothing about
    * the hub (a restart or a lost write can drop it). The hub's ack is idempotent.
    */
-  takenIds(max = 500): string[] {
+  takenIds(max = Number.POSITIVE_INFINITY): string[] {
     const now = this.#now();
     const out: [string, number][] = [];
     for (const [id, r] of this.#recs)

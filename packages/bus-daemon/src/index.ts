@@ -69,7 +69,7 @@ import {
   writeCodexAway,
 } from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
-import { TakenWatch } from "./codex-taken.ts";
+import { replayInBatches, TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -1289,6 +1289,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubLinkArg = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
+  /** Which link's hello_ok started the current Codex ack replay (#2198). */
+  let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
@@ -1455,7 +1457,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           outbox.flush();
           // Every Codex ack still owed is sent again on each new link: a saved
           // `acked` only meant queued locally (#2198). Paced, bounded, idempotent.
-          for (const id of codexTaken.takenIds()) delivery.delivered(id);
+          {
+            const link = ++codexReplayLink;
+            replayInBatches(
+              codexTaken.takenIds(),
+              (id) => void delivery.delivered(id),
+              () => hubHelloed && link === codexReplayLink,
+            );
+          }
           return;
         // roster_changed has no local consumer yet (C6).
       }
