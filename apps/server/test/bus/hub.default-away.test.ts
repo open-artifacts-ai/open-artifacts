@@ -1,7 +1,6 @@
 // #2311: an away agent that still has a harness default name is purged an hour
 // after it closed; renamed, live and busy ones keep today's rules.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-<<<<<<< HEAD
 import {
   type ClientFrame,
   decodeServerFrame,
@@ -20,17 +19,6 @@ import {
   OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
 import { e, trackSocket } from "./helpers.js";
-=======
-import { newId } from "@oa/bus-protocol";
-import { describe, expect, it } from "vitest";
-import { isDefaultAgentName } from "../../src/bus/default-names.js";
-import {
-  BusHub,
-  DEFAULT_NAME_AWAY_MS,
-  OWNER_ORG_ID,
-} from "../../src/bus/hub.js";
-import { e } from "./helpers.js";
->>>>>>> origin/main
 
 type Stub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -225,7 +213,6 @@ describe("unnamed flag and renames (#2311)", () => {
   });
 });
 
-<<<<<<< HEAD
 describe("agent_up name_chosen (#2311)", () => {
   it("marks the agent chosen, so a default-looking name is not expired", async () => {
     const h = fresh();
@@ -345,8 +332,6 @@ describe("agent_up name_chosen (#2311)", () => {
   });
 });
 
-=======
->>>>>>> origin/main
 describe("role holders and named-by-words (#2311)", () => {
   it("isDefaultAgentName: digits-only suffixes, not words", () => {
     for (const n of ["claude-1", "pi", "pi-2", "agent-3", "codex-4-5"])

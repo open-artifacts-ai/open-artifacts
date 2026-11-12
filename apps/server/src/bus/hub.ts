@@ -345,11 +345,8 @@ const HUB_CAPS = [
   BUS_CAPS.waiting,
   BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
-<<<<<<< HEAD
   BUS_CAPS.nameChosen,
-=======
   BUS_CAPS.ackConfirm,
->>>>>>> origin/main
 ];
 
 /**
@@ -5858,17 +5855,11 @@ export class BusHub extends DurableObject<Env> {
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
       this.#arm(t);
     sql.exec(
-<<<<<<< HEAD
       "update agents set name = ?, updated_at = ?, name_chosen = case ? when 2 then name_chosen else ? end where id = ?",
       name,
       now,
       // A re-derived title (name_chosen false) leaves the flag; a default resets it.
       f.name_kind !== "default" && f.name_chosen === false ? 2 : 0,
-=======
-      "update agents set name = ?, updated_at = ?, name_chosen = ? where id = ?",
-      name,
-      now,
->>>>>>> origin/main
       f.name_kind === "default" ? 0 : 1,
       agent.id,
     );
