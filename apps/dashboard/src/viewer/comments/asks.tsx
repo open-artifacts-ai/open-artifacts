@@ -509,7 +509,7 @@ export function AskBlock({
       `[data-option="${CSS.escape(refocus)}"]`,
     );
     if (!el || el.disabled) return;
-    el.focus();
+    el.focus({ preventScroll: true });
     setRefocus(null);
   }, [refocus, answer.isPending, picked]);
   // A later answer, even one made elsewhere, ends the old failure and the Change mode.
