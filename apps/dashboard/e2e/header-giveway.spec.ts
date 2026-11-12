@@ -70,16 +70,43 @@ test("the header gives way in order, fits, and gives back without flicker", asyn
   expect(narrowest.stage).toBe(2);
   expect(narrowest.faces).toBe(0);
 
-  // Widen step by step: the stage never goes up while the column grows, and ends at 0.
-  let prev = narrowest.stage;
-  for (let i = 0; i < 20; i++) {
-    await page.keyboard.press("ArrowRight"); // shrinks (the handle is on the left edge)
-    await page.keyboard.press("ArrowLeft"); // grows
+  // Hysteresis: 16px wider is inside the 24px band, so the stage holds at 2
+  // and does not even flicker (no attribute change at all, not 2 -> 0 -> 2).
+  await head.evaluate((h) => {
+    const w = window as unknown as { __stages: string[] };
+    w.__stages = [];
+    new MutationObserver((rs) => {
+      for (const r of rs)
+        w.__stages.push((r.target as HTMLElement).dataset.headerStage ?? "");
+    }).observe(h, { attributes: true, attributeFilter: ["data-header-stage"] });
+  });
+  const changes = () =>
+    page.evaluate(() => (window as unknown as { __stages: string[] }).__stages);
+  const before = await colW(page);
+  await page.keyboard.press("ArrowLeft");
+  expect(await colW(page)).toBe(before + 16);
+  await page.waitForTimeout(300);
+  expect((await state()).stage).toBe(2);
+  expect(await changes()).toEqual([]);
+
+  // It gives back only once the column is 24px or more past where it gave way,
+  // and then for good (the stage holds once there is room).
+  let dropped = 0;
+  for (let i = 0; i < 30 && !dropped; i++) {
+    await page.keyboard.press("ArrowLeft");
+    await page.waitForTimeout(100);
+    if ((await state()).stage < 2) dropped = await colW(page);
+  }
+  expect(dropped).toBeGreaterThanOrEqual(before + 24);
+  await expect.poll(async () => (await state()).stage).toBeLessThan(2);
+
+  // Widen further, step by step: the stage never goes up, the header always fits.
+  let prev = (await state()).stage;
+  for (let i = 0; i < 12; i++) {
     await page.keyboard.press("ArrowLeft");
     await expect.poll(async () => (await state()).fits).toBe(true);
     const s = await state();
-    expect(s.fits).toBe(true);
-    expect(s.stage).toBeLessThanOrEqual(prev + 1);
+    expect(s.stage).toBeLessThanOrEqual(prev);
     prev = s.stage;
   }
   await page.keyboard.press("End");
