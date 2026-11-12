@@ -157,6 +157,7 @@ async function toMe(
       ...(details && plan.yearlyTeamBusiness !== undefined
         ? { yearlyTeamBusiness: plan.yearlyTeamBusiness }
         : {}),
+      ...(details && plan.overageDue ? { overageDue: plan.overageDue } : {}),
       graceUntil:
         details && plan.graceUntil !== null
           ? new Date(plan.graceUntil).toISOString()

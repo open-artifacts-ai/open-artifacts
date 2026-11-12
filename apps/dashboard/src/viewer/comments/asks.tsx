@@ -476,6 +476,11 @@ const showLetters = (opts: { id: string; label: string }[]) =>
     (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
   );
 
+const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+/** An ask's comment body is worth showing unless empty or just the question again. */
+export const showsAskBody = (body: string, question: string) =>
+  squash(body) !== "" && squash(body) !== squash(question);
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
@@ -485,8 +490,11 @@ export function AskBlock({
   reply,
   askQuestion,
   guest = false,
+  body,
 }: {
   artifactId: string;
+  /** The comment's own text (its steps), shown above the question; the caller renders it. */
+  body?: React.ReactNode;
   /** A guest sees the masked name and no tile (#1890). */
   guest?: boolean;
   thread: CommentThread;
@@ -610,6 +618,7 @@ export function AskBlock({
             )}{" "}
             asks{askedWho(ask.to, mine)}
           </p>
+          {body}
           <p id={qid} className={`${TXT} font-semibold break-words`}>
             {linked(ask.question, 0)}
           </p>

@@ -386,7 +386,7 @@ describe("ci.yml", () => {
     // fails unless every test shard succeeded.
     it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
       const job = w.jobs.test;
-      expect(job.needs).toEqual(["test-shard"]);
+      expect(job.needs).toEqual(["test-shard", "released-migrations-frozen"]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       expect(steps("test")).toHaveLength(1);
@@ -395,7 +395,14 @@ describe("ci.yml", () => {
       expect(gate["continue-on-error"]).toBeUndefined();
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(gate.env.SHARDS).toBe("${{ needs.test-shard.result }}");
-      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+      // #2258: `test` is the required check, so the frozen-migrations job gates through it.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.FROZEN).toBe(
+        "${{ needs.released-migrations-frozen.result }}",
+      );
+      expect(gate.run).toMatch(
+        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \]$/m,
+      );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
