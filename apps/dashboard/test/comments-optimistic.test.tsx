@@ -594,3 +594,37 @@ describe("two quick optimistic actions do not undo each other", () => {
     expect(removed().a2).toBe(true);
   });
 });
+
+describe("lostPosts", () => {
+  it("two failed posts for the same box keep both texts, in order", async () => {
+    const { dropLost, putLost: put } = await import(
+      "../src/viewer/comments/lostPosts"
+    );
+    const key = lostKey.reply(OWNED, "t-two");
+    put(key, { text: "first reply", error: new Error("a") });
+    const err = new Error("b");
+    put(key, { text: "second reply", error: err });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(
+          list([
+            note("t-two", [
+              {
+                ...mine("c9", "Earlier"),
+                author: { kind: "guest", name: "Pat", me: false },
+                can: { edit: false, delete: false },
+              },
+            ]),
+          ]),
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("button", { name: "Restore" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toHaveValue("first reply\n\nsecond reply");
+    dropLost(key);
+  });
+});

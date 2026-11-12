@@ -32,8 +32,12 @@ export const lostKey = {
 };
 
 export function putLost(key: string, l: LostPost) {
+  // A second failure for the same box keeps the first text: the new one goes
+  // after it, a blank line between. The latest error is the one shown.
+  const before = posts.get(key);
   const mine: LostPost = {
     ...l,
+    text: before ? `${before.text}\n\n${l.text}` : l.text,
     // Used up once a box has taken it (or the reader posts again).
     clear: () => {
       if (posts.get(key) === mine) dropLost(key);
