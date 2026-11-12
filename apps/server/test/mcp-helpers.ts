@@ -52,6 +52,8 @@ export async function connect(
     clientInfo?: { name: string; version: string };
     /** Negotiate the 2026-07-28 per-request era instead of 2025 (the default). */
     modern?: boolean;
+    /** Extra request headers (e.g. the bus link proof). */
+    headers?: Record<string, string>;
   } = {},
 ): Promise<Client> {
   const client = new Client(
@@ -59,7 +61,9 @@ export async function connect(
     opts.modern ? { versionNegotiation: { mode: "auto" } } : {},
   );
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
-    requestInit: { headers: { authorization: `Bearer ${token}` } },
+    requestInit: {
+      headers: { authorization: `Bearer ${token}`, ...opts.headers },
+    },
     fetch: async (url, init) => {
       // The MCP response streams (SSE) and can return before the tool has
       // run, so its waitUntil work is registered after the response exists.

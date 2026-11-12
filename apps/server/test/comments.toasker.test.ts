@@ -27,12 +27,23 @@ import {
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
-import { api, errOf, login } from "./helpers.js";
+import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { api as baseApi, errOf, login } from "./helpers.js";
+
+const api = (
+  app: Parameters<typeof baseApi>[0],
+  path: string,
+  auth: string | null,
+  init: Parameters<typeof baseApi>[3] = {},
+) => baseApi(app, path, auth, init, E);
 
 // #1614: a reply addressed to the ask's author (toAsker), server side.
 
 const app = createApp();
-const E = env as unknown as Env;
+const real = env as unknown as Env;
+const hubs = new FakeHubs();
+/** The stub hubs (#2224): the asker's address is read fresh from its owner's hub. */
+const E = hubs.env();
 const tag = newId().slice(0, 6).toLowerCase();
 
 class FakeBus implements NoticeDelivery {
@@ -78,6 +89,7 @@ beforeAll(async () => {
   owner = await mk("t-owner");
   editor = await mk("t-editor");
   viewer = await mk("t-viewer");
+  for (const u of [owner, editor]) await connectedMachine(real.DB, u.userId);
 });
 
 const NOTE = { kind: "note" };
@@ -102,6 +114,18 @@ async function setup(extra: Record<string, unknown> = {}) {
     "create",
   );
   const id = a.id;
+  hubs.set({
+    owner: owner.userId,
+    identityId: "id-ns-owner-Claude",
+    namespace: "ns-owner",
+    name: "Claude",
+  });
+  hubs.set({
+    owner: editor.userId,
+    identityId: "id-ns-editor-Codex",
+    namespace: "ns-editor",
+    name: "Codex",
+  });
   for (const [u, role] of [
     [editor, "editor"],
     [viewer, "viewer"],
@@ -124,7 +148,33 @@ async function setup(extra: Record<string, unknown> = {}) {
 }
 
 const view = (u: U) => ({ userId: u.userId, short: null, moderator: true });
-const asAgent = (u: U): CommentWho => ({
+/** A verified bus agent (#1822): the owner's Claude, the editor's Codex (#2224). */
+const asAgent = (u: U, name?: string, ns?: string): CommentWho => {
+  const n = name ?? (u === editor ? "Codex" : "Claude");
+  const space = ns ?? (u === editor ? "ns-editor" : "ns-owner");
+  hubs.set({
+    owner: owner.userId,
+    identityId: `id-${space}-${n}`,
+    namespace: space,
+    name: n,
+  });
+  return {
+    kind: "user",
+    id: u.userId,
+    agent: {
+      name: n,
+      version: null,
+      identity: {
+        identityId: `id-${space}-${n}`,
+        namespace: space,
+        name: n,
+        kind: "x",
+      },
+    },
+  };
+};
+/** An agent with no bus identity (unlinked). */
+const asUnlinked = (u: U): CommentWho => ({
   kind: "user",
   id: u.userId,
   agent: { name: "Claude Code", version: null },
@@ -157,7 +207,8 @@ const reply = (id: string, tid: string, u: U, body: object) =>
     method: "POST",
     body: { body: "Use the wide one", ...body },
   });
-const toAsker = () => bus.sent.filter((x) => x.notice.text.includes("replied"));
+const toAsker = () =>
+  bus.sent.filter((x) => x.notice.text.includes("question you asked"));
 
 describe("reply toAsker (#1614)", () => {
   it("a viewer reaches the asker's own following agent only, with fixed text and the ids", async () => {
@@ -263,17 +314,80 @@ describe("reply toAsker (#1614)", () => {
     expect(bus.sent).toHaveLength(0);
   });
 
-  it("an asker with no following agent: the reply is stored, nobody is told", async () => {
+  it("an asker with no bus identity: the reply is stored, nobody is told (#2224)", async () => {
     const s = await setup();
-    const t = await askBy(s.id, asAgent(owner), owner);
-    await E.DB.prepare("delete from follows where user_id = ?")
-      .bind(owner.userId)
-      .run();
+    const t = await askBy(s.id, asUnlinked(owner), owner);
     bus.clear();
     const res = await reply(s.id, t.id, viewer, { toAsker: true });
     expect(res.status).toBe(201);
     expect(((await res.json()) as Comment).mentions).toBeUndefined();
     expect(bus.sent).toHaveLength(0);
+  });
+
+  it("a follower agent of the same member gets nothing, only the asking agent (#2224)", async () => {
+    const s = await setup();
+    await follow(
+      E,
+      owner.userId,
+      { namespace: "ns-owner", name: "Other" },
+      s.id,
+    );
+    const t = await askBy(s.id, asAgent(owner, "Other", "ns-owner"), owner);
+    bus.clear();
+    expect((await reply(s.id, t.id, viewer, { toAsker: true })).status).toBe(
+      201,
+    );
+    expect(bus.sent.map((x) => x.notice.to)).toEqual([
+      { namespace: "ns-owner", name: "Other" },
+    ]);
+  });
+
+  it("the asker's address is read fresh and fails closed: a miss, a slow or failing hub, a taken name (#2224)", async () => {
+    const s = await setup();
+    const sent = async (fix: () => void) => {
+      const t = await askBy(s.id, asAgent(owner, "Runner", "ns-rn"), owner);
+      fix();
+      bus.clear();
+      const res = await reply(s.id, t.id, viewer, { toAsker: true });
+      expect(res.status).toBe(201);
+      hubs.mode = "ok";
+      hubs.set({
+        owner: owner.userId,
+        identityId: "id-ns-rn-Runner",
+        namespace: "ns-rn",
+        name: "Runner",
+      });
+      hubs.agents.delete("id-other-1");
+      return toAsker().map((x) => x.notice.to);
+    };
+    expect(await sent(() => hubs.agents.delete("id-ns-rn-Runner"))).toEqual([]);
+    expect(
+      await sent(() => {
+        hubs.mode = "hang";
+      }),
+    ).toEqual([]);
+    expect(
+      await sent(() => {
+        hubs.mode = "fail";
+      }),
+    ).toEqual([]);
+    // Renamed, and another agent now holds the old name: the asker is told at its new name only.
+    expect(
+      await sent(() => {
+        hubs.set({
+          owner: owner.userId,
+          identityId: "id-ns-rn-Runner",
+          namespace: "ns-rn",
+          name: "Runner2",
+        });
+        hubs.set({
+          owner: owner.userId,
+          identityId: "id-other-1",
+          namespace: "ns-rn",
+          name: "Runner",
+        });
+      }),
+    ).toEqual([{ namespace: "ns-rn", name: "Runner2" }]);
   });
 
   it("is bounded per thread: a second reply inside the window tells no one", async () => {
