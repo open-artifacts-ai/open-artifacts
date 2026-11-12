@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -136,6 +138,37 @@ describe("createEventLog", () => {
     await log.flush();
     expect(existsSync(join(real, "events.log"))).toBe(false);
     expect(statSync(real).mode & 0o777).toBe(0o755);
+  });
+  it("refuses a folder swapped for a symlink after the first write", async () => {
+    const d = tmp();
+    const logs = join(d, "logs");
+    const real = join(d, "real");
+    mkdirSync(real, { mode: 0o700 });
+    const log = createEventLog(join(logs, "events.log"), { now: () => at });
+    log("first");
+    await log.flush();
+    renameSync(logs, join(d, "moved"));
+    symlinkSync(real, logs);
+    log("later");
+    await log.flush();
+    expect(existsSync(join(real, "events.log"))).toBe(false);
+    expect(readFileSync(join(d, "moved", "events.log"), "utf8")).not.toContain(
+      "later",
+    );
+  });
+  it("sets modes through the descriptor and leaves a symlink target's mode alone", async () => {
+    const d = tmp();
+    const target = join(d, "target");
+    writeFileSync(target, "keep\n", { mode: 0o644 });
+    chmodSync(target, 0o644);
+    const f = join(d, "events.log");
+    symlinkSync(target, f);
+    symlinkSync(target, `${f}.1`);
+    const log = createEventLog(f, { now: () => at });
+    log("e");
+    await log.flush();
+    expect(statSync(target).mode & 0o777).toBe(0o644);
+    expect(readFileSync(target, "utf8")).toBe("keep\n");
   });
   it("does not hang on, or write to, a FIFO events.log", async () => {
     const d = tmp();
