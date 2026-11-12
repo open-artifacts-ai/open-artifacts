@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.161.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.161.0...v0.161.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **migrations:** restore 0031 to the bytes already deployed ([#2256](https://github.com/open-artifacts-ai/open-artifacts/issues/2256)) ([30ac2f8](https://github.com/open-artifacts-ai/open-artifacts/commit/30ac2f8aed05ca33647d05d9e4ae602bcdf90f54))
+
 ## [0.161.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.160.0...v0.161.0) (2026-11-12)
 
 
