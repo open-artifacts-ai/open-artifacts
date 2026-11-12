@@ -124,13 +124,15 @@ export function retryRead<T>(
   store: StoreKind,
   read: () => Promise<T>,
 ): Promise<T> {
-  return settle(store, read, read());
+  const start = deps.now();
+  return settle(store, read, read(), start);
 }
 
 async function settle<T>(
   store: StoreKind,
   read: () => Promise<T>,
   first: Promise<T>,
+  start: number,
 ): Promise<T> {
   let waited = 0;
   for (let attempt = 1; ; attempt++) {
@@ -148,12 +150,17 @@ async function settle<T>(
         RETRY.maxWaitMs - waited,
         req ? RETRY.maxWaitMs - req.waitedMs : Number.POSITIVE_INFINITY,
       );
+      // The allowance is elapsed time since the first try, the failed calls'
+      // own duration included: a slow outage must not cost 3 slow failures.
+      const delay0 = Math.floor(
+        deps.random() * RETRY.baseMs * 2 ** (attempt - 1),
+      );
       const reason =
         attempt >= RETRY.attempts
           ? "attempts"
           : breakerOpen(now, store)
             ? "breaker"
-            : left <= 0
+            : left <= 0 || now - start + delay0 > RETRY.maxWaitMs
               ? "budget"
               : null;
       if (reason) {
@@ -164,13 +171,19 @@ async function settle<T>(
         });
         throw e;
       }
-      const delay = Math.min(
-        left,
-        Math.floor(deps.random() * RETRY.baseMs * 2 ** (attempt - 1)),
-      );
+      const delay = Math.min(left, delay0);
       waited += delay;
       if (req) req.waitedMs += delay;
       await deps.sleep(delay);
+      // Another request may have opened the breaker while this one slept.
+      if (breakerOpen(deps.now(), store)) {
+        logWarn("storage_read_gave_up", undefined, {
+          store,
+          attempts: attempt,
+          reason: "breaker",
+        });
+        throw e;
+      }
     }
   }
 }
@@ -346,14 +359,32 @@ export async function putIdempotent(
 ): Promise<R2Object | null> {
   // The raw bucket, so a try that is then retried logs only r2_retry.
   const raw = rawR2.get(bucket) ?? bucket;
+  const size =
+    typeof value === "string"
+      ? new TextEncoder().encode(value).byteLength
+      : value.byteLength;
+  let tries = 0;
   try {
-    return await retryRead("r2", () =>
-      raw.put(key, value, options).catch((e) => {
+    return await retryRead("r2", async () => {
+      tries++;
+      try {
+        return await raw.put(key, value, options);
+      } catch (e) {
+        if (
+          tries > 1 &&
+          /\(10058\)$/.test(e instanceof Error ? e.message : "")
+        ) {
+          // The earlier try may have committed and lost its reply; this
+          // replay hit R2's one-write-per-second-per-key limit. If the key
+          // holds our bytes, the put succeeded.
+          const head = await raw.head(key).catch(() => null);
+          if (head && head.size === size) return head;
+        }
         if (isStorageFailure(e))
           logInfo("r2_retry", { op: "put", bucket: "FILES" });
         throw e;
-      }),
-    );
+      }
+    });
   } catch (e) {
     logR2Failure("put", e);
     throw e;

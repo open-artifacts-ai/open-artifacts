@@ -147,3 +147,74 @@ describe("R2 transient errors (#2218)", () => {
     );
   });
 });
+
+describe("R2 retry bounds and maybe-committed puts (#2218)", () => {
+  it("slow failures stop retrying within the elapsed budget", async () => {
+    let t = 1_000;
+    setRetryDeps({ now: () => t, sleep: async () => {}, random: () => 0.5 });
+    const b = {
+      get: vi.fn(async () => {
+        t += 8_000;
+        throw r2Down();
+      }),
+    } as unknown as R2Bucket;
+    await retryingR2(b)
+      .get("k")
+      .catch(() => {});
+    expect(b.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("a breaker opened while a retry sleeps stops that retry", async () => {
+    const t = 1_000;
+    const b = fakeBucket(Array.from({ length: 20 }, () => r2Down()));
+    setRetryDeps({
+      now: () => t,
+      random: () => 0.5,
+      sleep: async () => {
+        // Another request trips the breaker meanwhile.
+        for (let i = 0; i < 5; i++)
+          await retryingR2(fakeBucket([r2Down(), r2Down(), r2Down()]))
+            .head("x")
+            .catch(() => {});
+      },
+    });
+    await retryingR2(b)
+      .get("k")
+      .catch(() => {});
+    expect(b.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("a put that committed but lost its reply, then 10058 on replay, succeeds without a delete", async () => {
+    const stored = { size: 5 } as R2Object;
+    const b = {
+      put: vi
+        .fn()
+        .mockRejectedValueOnce(r2Down("put"))
+        .mockRejectedValueOnce(
+          new Error(
+            "put: Reduce your concurrent request rate for the same object. (10058)",
+          ),
+        ),
+      head: vi.fn(async () => stored),
+      delete: vi.fn(),
+    } as unknown as R2Bucket;
+    await expect(putIdempotent(b, "k", "hello")).resolves.toBe(stored);
+    expect(b.delete).not.toHaveBeenCalled();
+  });
+
+  it("10058 with a size mismatch answers retryable, not 500", async () => {
+    const b = {
+      put: vi
+        .fn()
+        .mockRejectedValueOnce(r2Down("put"))
+        .mockRejectedValue(
+          new Error(
+            "put: Reduce your concurrent request rate for the same object. (10058)",
+          ),
+        ),
+      head: vi.fn(async () => ({ size: 99 }) as R2Object),
+    } as unknown as R2Bucket;
+    const err = await putIdempotent(b, "k", "hello").catch((e) => e);
+    expect(toErrorResponse(err).status).toBe(503);
+  });
+});
