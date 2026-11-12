@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { probeSignup } from "./check-landing-dist";
+import { probeSignup, signupUrlInDist } from "./check-landing-dist";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const script = join(root, "scripts/ops/check-landing-dist.ts");
@@ -29,40 +29,65 @@ const SIGNUP = '<a class="btn p" href="https://app.example.com/sign-up">';
 const LOGIN =
   '<a class="login" href="https://app.example.com/sign-up">Log in</a>';
 
-const stub = (status: number, type: ResponseType = "basic") =>
-  (async () => ({ status, type })) as unknown as typeof fetch;
+// A stubbed fetch that records how it was called. With redirect "follow" the
+// real fetch hands back the final response, so the stub does too.
+const stub = (status: number) => {
+  const calls: { url: string; redirect?: string }[] = [];
+  const fn = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, redirect: init?.redirect });
+    return { status };
+  }) as unknown as typeof fetch;
+  return Object.assign(fn, { calls });
+};
 
 describe("probeSignup (release mode)", () => {
   const URL_ = "https://signup.example.com/";
-  it("passes on 2xx and 3xx, and on a manual redirect", async () => {
-    expect(await probeSignup(URL_, stub(200))).toBeNull();
-    expect(await probeSignup(URL_, stub(204))).toBeNull();
-    expect(await probeSignup(URL_, stub(302))).toBeNull();
-    expect(await probeSignup(URL_, stub(0, "opaqueredirect"))).toBeNull();
+  it("passes on a final 2xx, and asks fetch to follow redirects", async () => {
+    for (const status of [200, 204]) {
+      const f = stub(status);
+      expect(await probeSignup(URL_, f)).toBeNull();
+      expect(f.calls).toEqual([{ url: URL_, redirect: "follow" }]);
+    }
   });
-  it("fails on 4xx and 5xx and says the status", async () => {
-    expect(await probeSignup(URL_, stub(404))).toContain("answered 404");
-    expect(await probeSignup(URL_, stub(503))).toContain("answered 503");
+  it("fails on anything but a final 2xx (3xx left over, 4xx, 5xx) and says the status", async () => {
+    expect(await probeSignup(URL_, stub(404))).toContain("ends on a 404");
+    expect(await probeSignup(URL_, stub(503))).toContain("ends on a 503");
+    // a redirect that was not followed to a 2xx is not good enough
+    expect(await probeSignup(URL_, stub(302))).toContain("ends on a 302");
   });
-  it("fails when the URL is unset or the request throws", async () => {
+  it("fails when there is no URL or the request throws", async () => {
     expect(await probeSignup(undefined, stub(200))).toContain(
-      "HOSTED_SIGNUP_URL is not set",
+      "no sign-up URL was found in the built home page",
     );
-    expect(await probeSignup("  ", stub(200))).toContain("not set");
+    expect(await probeSignup("  ", stub(200))).toContain("no sign-up URL");
     const boom = (async () => {
       throw new Error("ENOTFOUND");
     }) as unknown as typeof fetch;
     expect(await probeSignup(URL_, boom)).toContain("ENOTFOUND");
   });
-  it("is off unless asked: the CLI only probes with --probe-signup", () => {
+  it("probes the URL the built page links to, not the environment", () => {
     put(
       "index.html",
       `<html><head><meta charset="utf-8"></head>${LOGIN}${SIGNUP}Get started free</a>`,
     );
-    expect(run().code).toBe(0);
+    expect(signupUrlInDist(dir)).toBe("https://app.example.com/sign-up");
+    // a dead (#pricing) link is not a sign-up URL
+    put(
+      "index.html",
+      '<a href="#pricing">Get started free</a><a href="https://app.example.com/b">Get started free</a>',
+    );
+    expect(signupUrlInDist(dir)).toBe("https://app.example.com/b");
+    put("index.html", '<a href="#pricing">Get started free</a>');
+    expect(signupUrlInDist(dir)).toBeUndefined();
+    expect(signupUrlInDist(join(dir, "nope"))).toBeUndefined();
+  });
+  it("is off unless asked: the CLI only probes with --probe-signup", () => {
+    // no sign-up URL in the page, whatever the environment says
+    put("index.html", '<html><head><meta charset="utf-8"></head><p>x</p>');
     const r = run(dir, ["--probe-signup"]);
     expect(r.code).toBe(1);
-    expect(r.out).toContain("HOSTED_SIGNUP_URL is not set");
+    expect(r.out).toContain("no sign-up URL was found in the built home page");
+    expect(run().out).not.toContain("no sign-up URL was found");
   });
 });
 

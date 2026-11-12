@@ -3,8 +3,9 @@
 // in <head> (the hero's glyphs turn to mojibake otherwise), or if the home
 // page's "Get started free" buttons are missing or do not go to the hosted
 // sign-up URL. Usage: node check-landing-dist.ts [distDir] [--probe-signup]
-// --probe-signup (release only) also requests HOSTED_SIGNUP_URL and fails
-// unless it answers 2xx or 3xx, so a release cannot ship dead sign-up buttons.
+// --probe-signup (release only) also requests the sign-up URL found in the
+// built home page (not the env), follows redirects, and fails unless the final
+// answer is 2xx, so a release cannot ship dead sign-up buttons.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -102,8 +103,17 @@ export function scan(
   return hits;
 }
 
+/** The sign-up URL the built home page links to (first live Get started free). */
+export function signupUrlInDist(dist: string): string | undefined {
+  const file = join(dist, "index.html");
+  if (!existsSync(file)) return undefined;
+  return linksLabelled(readFileSync(file, "utf8"), SIGNUP_LABEL).find(
+    (l) => l.href && l.href !== "#pricing" && l.href !== "#",
+  )?.href;
+}
+
 /**
- * Release mode: the sign-up URL must be set and must answer 2xx or 3xx.
+ * Release mode: the sign-up URL must end on a 2xx after redirects.
  * Returns an error message, or null when it is fine. `fetchFn` is injectable.
  */
 export async function probeSignup(
@@ -111,20 +121,18 @@ export async function probeSignup(
   fetchFn: typeof fetch = fetch,
 ): Promise<string | null> {
   const u = url?.trim();
-  if (!u) return "HOSTED_SIGNUP_URL is not set, so there is nothing to probe";
+  if (!u)
+    return "no sign-up URL was found in the built home page, so there is nothing to probe";
   try {
+    // Follow redirects: what counts is where a visitor ends up, and that
+    // final page must answer 2xx.
     const res = await fetchFn(u, {
       method: "GET",
-      redirect: "manual",
+      redirect: "follow",
       signal: AbortSignal.timeout(15_000),
     });
-    // Redirects are fine: a manual redirect shows up as 3xx (or opaque, 0).
-    if (
-      (res.status >= 200 && res.status < 400) ||
-      res.type === "opaqueredirect"
-    )
-      return null;
-    return `the sign-up URL ${u} answered ${res.status}; sign-up buttons would be dead links`;
+    if (res.status >= 200 && res.status < 300) return null;
+    return `the sign-up URL ${u} ends on a ${res.status}; sign-up buttons would be dead links`;
   } catch (e) {
     return `the sign-up URL ${u} could not be reached (${e instanceof Error ? e.message : String(e)})`;
   }
@@ -141,9 +149,8 @@ async function main(): Promise<number> {
     return 2;
   }
   const hits = scan(dist);
-  const probeError = probe
-    ? await probeSignup(process.env.HOSTED_SIGNUP_URL)
-    : null;
+  // The URL probed is the one the built page actually links to, not the env.
+  const probeError = probe ? await probeSignup(signupUrlInDist(dist)) : null;
   if (hits.length === 0 && !probeError) {
     console.log("ok: landing dist clean");
     return 0;
