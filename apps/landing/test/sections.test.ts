@@ -91,7 +91,7 @@ describe("landing sections", () => {
       expect(text).not.toContain(gone);
     expect(text).toContain("Sign-ups open in December. This plan");
     expect(text).toContain(
-      "Connect one or several. They publish to the same place, and they all read your comments.",
+      "Connect one or several. They publish to the same place, and they all get your comments.",
     );
     expect(text).toContain(
       "Set up Open Artifacts: open-artifacts.com/llms.txt",
