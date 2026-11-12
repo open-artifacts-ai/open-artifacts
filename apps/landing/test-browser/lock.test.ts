@@ -112,6 +112,14 @@ describe("phone locked story", () => {
   it("the chapter pieces take taps while the screen is locked", async () => {
     const { ctx, page } = await phone();
     await toBeat(page, 6);
+    // the piece fades in (animations are not paused while the screen is locked)
+    await page.waitForFunction(
+      () =>
+        getComputedStyle(document.querySelector(".pl-slot.on") as Element)
+          .opacity === "1",
+      undefined,
+      { timeout: 3000 },
+    );
     const card = page.locator('.pl-slot.on .mp[data-mp="ask"]');
     expect(await card.isVisible()).toBe(true);
     await card.locator('.mopt[data-k="b"]').tap();

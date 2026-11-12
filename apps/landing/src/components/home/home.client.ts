@@ -66,7 +66,7 @@ document.fonts?.ready.then(alignPlans);
 
 /* ---- scroll story ---- */
 const stage = $("#stage"),
-  chs = $$(".ch"),
+  chs = $$(".chs .ch"),
   rail = $$("#rail button"),
   ons = $$("[data-on]");
 const ver = $("#ver"),
@@ -259,7 +259,7 @@ render(true);
 /* ---- pause the animations when their section is off screen ---- */
 if ("IntersectionObserver" in window) {
   const seen = new Set<Element>();
-  const targets = ["header.hero", ".sc", "#story"]
+  const targets = ["header.hero", ".sc", "#story", "#pl"]
     .map((s) => lp.querySelector(s))
     .filter((e): e is Element => !!e);
   const io = new IntersectionObserver((es) => {
