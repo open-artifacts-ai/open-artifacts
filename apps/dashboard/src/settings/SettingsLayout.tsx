@@ -40,6 +40,11 @@ const TABS: {
     label: "Notifications",
     roles: ["owner", "admin", "member"],
   },
+  {
+    to: "/settings/security",
+    label: "Security",
+    roles: ["owner", "admin", "member"],
+  },
   { to: "/settings/members", label: "Members", roles: ["owner", "admin"] },
   {
     to: "/settings/spaces",

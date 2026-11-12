@@ -100,6 +100,7 @@ import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { BUS_FIXTURE_NOW, fakeHash, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
+import { createPasskeyMock, type PasskeyMockState } from "./passkeys.js";
 
 export type MockOptions = {
   latencyMs?: number;
@@ -131,6 +132,8 @@ export type MockOptions = {
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
+  /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
+  passkeys?: PasskeyMockState;
 };
 
 const err = (code: ErrorCode, message: string, details?: unknown) =>
@@ -653,9 +656,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });
+  const passkeyMock = createPasskeyMock(opts.passkeys ?? "none", { err, body });
   return [
     ...pre,
     ...(h?.handlers ?? []),
+    ...passkeyMock.handlers,
     ...commentMock.handlers,
     http.get("*/api/v1/me", () => HttpResponse.json(me)),
     http.patch("*/api/v1/me", async ({ request }) => {
