@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.165.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.164.0...v0.165.0) (2026-11-12)
+
+
+### Features
+
+* **settings:** Security section, passkeys and approval switches ([#2263](https://github.com/open-artifacts-ai/open-artifacts/issues/2263)) ([#2334](https://github.com/open-artifacts-ai/open-artifacts/issues/2334)) ([a492b2b](https://github.com/open-artifacts-ai/open-artifacts/commit/a492b2b2288d36e477c7328ca7590525c0b971ba))
+
 ## [0.164.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.163.0...v0.164.0) (2026-11-12)
 
 
