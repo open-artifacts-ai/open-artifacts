@@ -112,12 +112,16 @@ describe("a taken Codex record and the hub's confirmation (#2198)", () => {
   });
 
   it("a hub without the cap: no replay on the next link", async () => {
-    const { acks, helloOk, reconnect } = await world();
+    const { h, acks, record, helloOk, reconnect } = await world();
     await helloOk([]);
     await vi.waitFor(
       () => expect(acks().length).toBeGreaterThanOrEqual(1),
       WAIT,
     );
+    // Even an `acked` that echoes the ack is ignored without the cap.
+    h.toDaemon({ id: acks()[0]?.id, type: "acked", msg_id: ID });
+    await helloOk([]);
+    expect(record().confirmed).toBeUndefined();
     const sent = acks().length;
     await reconnect();
     await helloOk([]);

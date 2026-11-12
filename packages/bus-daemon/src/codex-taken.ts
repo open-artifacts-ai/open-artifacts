@@ -15,6 +15,52 @@ import { globRollout, readLines, threadRow } from "./codex-attest.ts";
 /** The hub keeps a notice record this long (#1752); a notice watch is dropped then. */
 export const NOTICE_WATCH_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * The Codex acks queued on the current link, by their frame id, so only an
+ * `acked` echoing one confirms (#2198). Bounded: at most `max` entries (the
+ * oldest goes first) and none older than `ttlMs`. Eviction is safe: the
+ * durable taken record stays eligible for replay on the next link.
+ */
+export class AckTracker {
+  readonly #m = new Map<string, { msg: string; at: number }>();
+  constructor(
+    private readonly max = 1000,
+    private readonly ttlMs = 5 * 60_000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  get size(): number {
+    return this.#m.size;
+  }
+
+  track(frameId: string, msg: string): void {
+    const t = this.now();
+    // Insertion order is age order: expired ones are all at the front.
+    for (const [k, v] of this.#m) {
+      if (t - v.at <= this.ttlMs) break;
+      this.#m.delete(k);
+    }
+    this.#m.set(frameId, { msg, at: t });
+    while (this.#m.size > this.max) {
+      const oldest = this.#m.keys().next().value;
+      if (oldest === undefined) break;
+      this.#m.delete(oldest);
+    }
+  }
+
+  /** The msg_id this frame id acked, once: undefined when unknown, evicted or expired. */
+  take(frameId: string): string | undefined {
+    const v = this.#m.get(frameId);
+    if (!v) return undefined;
+    this.#m.delete(frameId);
+    return this.now() - v.at <= this.ttlMs ? v.msg : undefined;
+  }
+
+  clear(): void {
+    this.#m.clear();
+  }
+}
+
 /** How long confirmations wait to share one write. */
 const CONFIRM_SAVE_MS = 250;
 

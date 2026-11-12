@@ -70,7 +70,7 @@ import {
   writeCodexAway,
 } from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
-import { replayAcks, TakenWatch } from "./codex-taken.ts";
+import { AckTracker, replayAcks, TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -694,9 +694,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Where Codex keeps its thread names (#1748). */
   const codexIndexHome = cx.home ?? codexHome();
   /** Codex acks queued on the current link: ack frame id to msg_id. Only an `acked` echoing one of these confirms (#2198). */
-  const codexAckIds = new Map<string, string>();
+  const codexAckIds = new AckTracker();
   const sendCodexAck = (id: string, unsent?: () => void): boolean =>
-    delivery.delivered(id, unsent, (fid) => codexAckIds.set(fid, id));
+    delivery.delivered(id, unsent, (fid) => {
+      // Only a hub that negotiated the cap ever answers.
+      if (hubAckConfirm) codexAckIds.track(fid, id);
+    });
   /** Queued Codex mail a turn has not taken yet (#2029): acked late, once it has. */
   const codexTaken = new TakenWatch({
     home: codexIndexHome,
@@ -1441,11 +1444,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         case "acked": {
           // Only the answer to an ack sent on this link, from a hub that
           // negotiated the cap; anything else is ignored.
-          const sent = codexAckIds.get(frame.id);
-          if (hubAckConfirm && sent === frame.msg_id) {
-            codexAckIds.delete(frame.id);
+          if (!hubAckConfirm) return;
+          const sent = codexAckIds.take(frame.id);
+          if (sent !== undefined && sent === frame.msg_id)
             codexTaken.confirm(sent);
-          }
           return;
         }
         case "waiting_counts":

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { type ClientFrame, LIMITS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AgentRecord, AgentTable } from "../src/agents.ts";
-import { replayAcks, TakenWatch } from "../src/codex-taken.ts";
+import { AckTracker, replayAcks, TakenWatch } from "../src/codex-taken.ts";
 import { createDeliver, type Mail } from "../src/deliver.ts";
 import { FramePacer } from "../src/pacer.ts";
 import {
@@ -1605,6 +1605,26 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("the ack tracker is bounded: oldest evicted, expired dropped, each id taken once", () => {
+    let now = 0;
+    const t = new AckTracker(3, 1000, () => now);
+    for (const n of [1, 2, 3, 4]) t.track(`f${n}`, `m${n}`);
+    expect(t.size).toBe(3);
+    expect(t.take("f1")).toBeUndefined(); // evicted
+    expect(t.take("f2")).toBe("m2");
+    expect(t.take("f2")).toBeUndefined(); // once
+    now = 2000;
+    t.track("f5", "m5"); // drops the expired ones
+    expect(t.size).toBe(1);
+    expect(t.take("f5")).toBe("m5");
+    t.track("f6", "m6");
+    now = 4000;
+    expect(t.take("f6")).toBeUndefined(); // expired before its answer
+    const big = new AckTracker();
+    for (let n = 0; n < 5000; n++) big.track(`g${n}`, "m");
+    expect(big.size).toBe(1000);
   });
 
   it("the queue timeout is 30 s, under the hub's mail expiry", () => {
