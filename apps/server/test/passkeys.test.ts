@@ -1,6 +1,4 @@
-import { env } from "cloudflare:workers";
 import {
-  newId,
   type Passkey,
   type PasskeyChallenge,
   type PasskeySettings,
@@ -8,90 +6,27 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { createPat } from "../src/auth/pat.js";
-import { sessionCookieName, signSession } from "../src/auth/session.js";
-import type { Env } from "../src/env.js";
-import { appOrigin } from "../src/http/errors.js";
-import { api, errOf, login } from "./helpers.js";
+import { api, errOf } from "./helpers.js";
+import {
+  addPasskey as add,
+  assertFor,
+  DAY,
+  E,
+  mkUser as mk,
+  origin,
+  rpId,
+  type U,
+} from "./passkey-fixtures.js";
 import { FakeAuthenticator } from "./passkey-helper.js";
 
 const app = createApp();
-const E = env as unknown as Env;
-const origin = appOrigin(E);
-const rpId = E.APP_HOST.split(":")[0] as string;
-const DAY = 24 * 3600 * 1000;
-const tag = newId().slice(0, 6).toLowerCase();
-
-type U = { cookie: string; fresh: string; userId: string; pat: string };
-async function mk(prefix: string): Promise<U> {
-  const l = await login(`${prefix}-${tag}@x.com`, "member");
-  const row = await E.DB.prepare(
-    "select session_epoch e from users where id = ?",
-  )
-    .bind(l.userId)
-    .first<{ e: number }>();
-  const now = Date.now();
-  const fresh = `${sessionCookieName(E)}=${await signSession(E, l.userId, now, {
-    provider: "access",
-    epoch: row?.e ?? 0,
-    authAt: now,
-  })}`;
-  return {
-    ...l,
-    fresh,
-    pat: (await createPat(E, l.userId, "agent")).token,
-  };
-}
 
 const json = <T>(r: Response) => r.json() as Promise<T>;
 
-/** Registers a passkey through the routes; `age` back-dates it past the cooling. */
-async function addPasskey(
-  u: U,
-  auth = u.fresh,
-  age = true,
-): Promise<{ a: FakeAuthenticator; passkey: Passkey }> {
-  const a = await FakeAuthenticator.create();
-  const begin = await api(app, R.passkeyRegisterBegin, auth, {
-    method: "POST",
-  });
-  expect(begin.status).toBe(200);
-  const { options } = await json<PasskeyChallenge>(begin);
-  const fin = await api(app, R.passkeyRegisterFinish, auth, {
-    method: "POST",
-    body: {
-      credential: await a.attest({
-        challenge: options.challenge as string,
-        origin,
-        rpId,
-      }),
-      label: "Laptop",
-    },
-  });
-  expect(fin.status).toBe(201);
-  const passkey = await json<Passkey>(fin);
-  if (age)
-    await E.DB.prepare("update passkeys set created_at = ? where id = ?")
-      .bind(Date.now() - 2 * DAY, passkey.id)
-      .run();
-  return { a, passkey };
-}
+const addPasskey = (u: U, auth = u.fresh, age = true) => add(app, u, auth, age);
 
 const get = async (u: U, body: object, path: string) =>
   api(app, path, u.cookie, { method: "POST", body });
-
-/** An assertion for the options a challenge route returned. */
-const assertFor = async (
-  a: FakeAuthenticator,
-  c: PasskeyChallenge,
-  extra = {},
-) =>
-  a.assert({
-    challenge: c.options.challenge as string,
-    origin,
-    rpId,
-    ...extra,
-  });
 
 const ALL_ON = {
   actions: {
