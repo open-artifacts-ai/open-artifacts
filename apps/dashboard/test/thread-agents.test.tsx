@@ -52,11 +52,7 @@ describe("ThreadAgents", () => {
   });
 
   it("× removes at once with no confirm; Undo restores and takes focus", () => {
-<<<<<<< HEAD
     mutate.mockImplementation(() => {});
-=======
-    mutate.mockImplementation((_v, o) => o.onSuccess());
->>>>>>> origin/main
     render(<ThreadAgents t={thread([agent("OA Billing", true)])} api={api} />);
     fireEvent.click(
       screen.getByRole("button", { name: "Stop notifying OA Billing" }),

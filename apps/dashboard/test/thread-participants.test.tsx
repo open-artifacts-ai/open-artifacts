@@ -163,7 +163,6 @@ describe("ThreadParticipants", () => {
     expect(document.querySelector("[data-off]")).toBeNull();
   });
 
-<<<<<<< HEAD
   it("a refused × puts the row back and shows the error (optimistic rollback)", () => {
     render(
       <ThreadParticipants
@@ -186,8 +185,6 @@ describe("ThreadParticipants", () => {
     expect(document.querySelector("[data-off]")).toBeNull();
   });
 
-=======
->>>>>>> origin/main
   it("after Undo the list stays open and focus returns to the restored ×", () => {
     render(
       <ThreadParticipants
@@ -201,13 +198,7 @@ describe("ThreadParticipants", () => {
         name: "Stop notifying OA Billing in this thread",
       }),
     );
-<<<<<<< HEAD
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-=======
-    act(() => mutate.mock.calls[0]?.[1].onSuccess());
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    act(() => mutate.mock.calls[1]?.[1].onSuccess());
->>>>>>> origin/main
     expect(list()).not.toBeNull();
     expect(document.activeElement).toBe(
       screen.getByRole("button", {
