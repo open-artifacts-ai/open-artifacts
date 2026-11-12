@@ -25,14 +25,21 @@ import {
   vi,
 } from "vitest";
 import { commentsKey, overlayPending, useAnswerAsk } from "../src/api/comments";
+import { lostKey, putLost } from "../src/viewer/comments/lostPosts";
 import { events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
+const opts: { onCommentSelect: (a: unknown) => void }[] = [];
 vi.mock("../src/viewer/bridge", async () => {
   const { loadArtifactFrame } = await import("../src/viewer/frame");
   return {
-    createBridge: (o: { iframe: HTMLIFrameElement; url: string }) => {
+    createBridge: (o: {
+      iframe: HTMLIFrameElement;
+      url: string;
+      onCommentSelect: (a: unknown) => void;
+    }) => {
       loadArtifactFrame(o.iframe, o.url);
+      opts.push(o);
       return {
         dispose: () => {},
         requestThumbnail: () => {},
@@ -412,5 +419,121 @@ describe("picking an option on an ask shows at once", () => {
     await waitFor(() => expect(result.current.isPending).toBe(true));
     const cached = qc.getQueryData<CommentList>(commentsKey(OWNED));
     expect(cached?.threads[0]?.comments[0]?.ask?.answer).toBeUndefined();
+  });
+});
+
+describe("a failed post never loses its text", () => {
+  const other = () =>
+    note("t0", [
+      {
+        ...mine("c0", "Earlier"),
+        author: { kind: "guest", name: "Pat", me: false },
+        can: { edit: false, delete: false },
+      },
+    ]);
+  const failPosts = (path: string) =>
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(list([other()])),
+      ),
+      http.post(path, async () => {
+        await delay(400);
+        return HttpResponse.json(
+          { error: { code: "rate_limited", message: "x" } },
+          { status: 429 },
+        );
+      }),
+    );
+
+  it("a reply whose card unmounted comes back, with the error, when the thread's box mounts", async () => {
+    failPosts(`*${R.commentReplies(OWNED, "t0")}`);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    const box = within(c).getByRole("textbox", { name: "Reply" });
+    fireEvent.change(box, { target: { value: "my careful reply" } });
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Reply", exact: false }),
+    );
+    // Close the panel while the post is in flight.
+    fireEvent.click(screen.getByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await new Promise((r) => setTimeout(r, 700));
+    const c2 = await col();
+    // The thread is still the active one, so its box mounts with the text and the error.
+    const back = await within(c2).findByRole("textbox", { name: "Reply" });
+    expect(back).toHaveValue("my careful reply");
+    expect(
+      await within(c2).findByText("Too many comments. Try again in a minute."),
+    ).toBeInTheDocument();
+  });
+
+  it("a failed reply whose thread is not active shows a Restore line that puts the text in its box", async () => {
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(list([other()])),
+      ),
+    );
+    putLost(lostKey.reply(OWNED, "t0"), {
+      text: "kept text",
+      error: new Error("x"),
+    });
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByText(/Your reply wasn.t posted/),
+    ).toBeInTheDocument();
+    fireEvent.click(within(c).getByRole("button", { name: "Restore" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toHaveValue("kept text");
+    expect(within(c).queryByText(/Your reply wasn.t posted/)).toBeNull();
+  });
+
+  it("a new comment that fails while another draft is open waits behind Restore and never overwrites it", async () => {
+    failPosts(`*${R.comments(OWNED)}`);
+    const sel = (exact: string) => ({
+      kind: "text",
+      exact,
+      prefix: "",
+      suffix: "",
+    });
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("Landing")));
+    const first = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(first, { target: { value: "first draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    // The box closed with the post; start another draft before the error lands.
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("Hero")));
+    const second = await screen.findByRole("textbox", {
+      name: "Add a comment",
+    });
+    fireEvent.change(second, { target: { value: "second draft" } });
+    const line = await within(c).findByText(
+      /Your comment wasn.t posted/,
+      undefined,
+      {
+        timeout: 3000,
+      },
+    );
+    expect(line).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Add a comment" })).toHaveValue(
+      "second draft",
+    );
+    expect(within(c).getByRole("button", { name: "Restore" })).toBeDisabled();
+    // Done with the second draft: Restore reopens the first with its text and error.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(await within(c).findByRole("button", { name: "Restore" }));
+    expect(
+      await screen.findByRole("textbox", { name: "Add a comment" }),
+    ).toHaveValue("first draft");
+    expect(
+      await screen.findByText("Too many comments. Try again in a minute."),
+    ).toBeInTheDocument();
   });
 });

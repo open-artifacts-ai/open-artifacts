@@ -64,6 +64,13 @@ import {
   useKeepScroll,
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
+import {
+  dropLost,
+  lostKey,
+  putLost,
+  useLostDrafts,
+  useLostPost,
+} from "./lostPosts";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
@@ -326,15 +333,61 @@ export function keepCardClear(el: HTMLElement | null) {
   box.scrollTop += Math.max(0, Math.min(over, room));
 }
 
-/** Keeps a failed post's text for a composer that has closed, until the next one mounts (or posts). */
-function useLost() {
-  const [lost, setLost] = useState<Lost | null>(null);
-  const clear = () => setLost(null);
+/** A failed post's text for a composer that has closed, kept outside this component (lostPosts) until a box takes it or the reader posts again. */
+function useLost(key: string) {
+  const lost = useLostPost(key);
   return {
-    lost,
-    onLost: (l: Lost) => setLost({ ...l, clear }),
-    clear,
+    lost: lost ?? null,
+    onLost: (l: Lost) => putLost(key, l),
+    clear: () => dropLost(key),
   };
+}
+
+/** "Your reply wasn't posted. Restore": a failed post whose box is not on screen. */
+function LostLine({
+  what,
+  onRestore,
+  disabled,
+}: {
+  what: string;
+  onRestore: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <p role="alert" className={`${TXT} text-destructive`} data-lost="">
+      Your {what} wasn&apos;t posted.{" "}
+      <button
+        type="button"
+        disabled={disabled}
+        className="cursor-pointer border-0 bg-transparent p-0 underline disabled:cursor-default disabled:no-underline disabled:opacity-60"
+        onClick={onRestore}
+      >
+        Restore
+      </button>
+    </p>
+  );
+}
+
+/** New comments that failed while another draft was open. Restore reopens one once that draft is done. */
+function LostDrafts({ api }: { api: CommentsApi }) {
+  const items = useLostDrafts(api.artifactId);
+  if (!items.length) return null;
+  return (
+    <>
+      {items.map(([key, l]) => (
+        <LostLine
+          key={key}
+          what="comment"
+          disabled={!!api.draft}
+          onRestore={() => {
+            if (!l.draft) return;
+            dropLost(key);
+            api.reopenDraft(l.draft, l);
+          }}
+        />
+      ))}
+    </>
+  );
 }
 
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
@@ -411,9 +464,20 @@ function Composer({
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(seed?.error ?? null);
   const mounted = useRef(true);
-  // The seed is used up by this mount: a later one starts empty.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: once, on mount
-  useEffect(() => seed?.clear?.(), []);
+  // A seed is used up when a box takes it: at mount it is the starting text; a
+  // later one (the post failed while this box was already on screen again)
+  // goes in front of whatever is typed, never over it.
+  const seeded = useRef(seed);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the seed
+  useEffect(() => {
+    if (!seed) return;
+    if (seed !== seeded.current) {
+      seeded.current = seed;
+      setText((cur) => (cur.trim() ? `${seed.text}\n${cur}` : seed.text));
+      setError(seed.error);
+    }
+    seed.clear?.();
+  }, [seed]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -1105,8 +1169,8 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
-  const lostReply = useLost();
-  const lostAsk = useLost();
+  const lostReply = useLost(lostKey.reply(api.artifactId, t.id));
+  const lostAsk = useLost(lostKey.ask(api.artifactId, t.id));
   // The agent a question goes to, kept while the box is open so a pick
   // elsewhere doesn't swap the draft away (the server then says why).
   const [asking, setAsking] = useState<string | null>(null);
@@ -1328,6 +1392,19 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {commentError(statusErr, api.capped, errCtx)}
           </p>
         )}
+        {/* A post that failed after its box closed, with no box on screen to take it back. */}
+        {canAct && lostReply.lost && !(isActive && !(asking && isActive)) && (
+          <LostLine what="reply" onRestore={() => api.select(t.id, true)} />
+        )}
+        {canAct && asker && lostAsk.lost && !(asking && isActive) && (
+          <LostLine
+            what="question"
+            onRestore={() => {
+              setAsking(asker);
+              api.select(t.id, true);
+            }}
+          />
+        )}
         {asking && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
@@ -1339,10 +1416,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               submit="Send"
               instant
               seed={lostAsk.lost}
-              onLost={(l) => {
-                lostAsk.onLost(l);
-                setAsking(asking);
-              }}
+              onLost={lostAsk.onLost}
               autoFocus
               buttonsRight
               onCancel={() => setAsking(null)}
@@ -1521,7 +1595,7 @@ function NewThread({ api }: { api: CommentsApi }) {
 
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
-  const lost = useLost();
+  const lost = useLost(lostKey.note(api.artifactId));
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -1665,6 +1739,7 @@ export function CommentsBody({
         </div>
       )}
       <Tools api={api} />
+      <LostDrafts api={api} />
       {api.draft && api.canComment && (
         <NewThread
           key={JSON.stringify(

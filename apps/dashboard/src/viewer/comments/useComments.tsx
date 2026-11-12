@@ -17,6 +17,7 @@ import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
+import { lostKey, putLost } from "./lostPosts";
 import {
   arrange,
   createGate,
@@ -453,8 +454,12 @@ export function useCommentsController({
       },
       draftSeed,
       reopenDraft: (d, lost) => {
-        // A draft the reader has since started elsewhere keeps its place.
-        if (draftRef.current) return;
+        // A draft the reader has since started keeps its place: the failed one
+        // waits behind a "Restore" line (lostPosts), text and error kept.
+        if (draftRef.current) {
+          putLost(lostKey.draft(id, d), { ...lost, draft: d });
+          return;
+        }
         setHeldQuote(null);
         setDraftSeed(lost);
         setDraft(d);
