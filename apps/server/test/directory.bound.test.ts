@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
 import { type InstanceDirectory, R } from "@oa/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { HK } from "../src/directory/health.js";
 import { K, UPSERT } from "../src/directory/store.js";
 import type { Env } from "../src/env.js";
 import { direct, mailer, uniq } from "./auth-helpers.js";
@@ -166,5 +167,26 @@ describe("Me.instance.directory.bound", () => {
       .first<{ n: number }>();
     expect(row?.n).toBe(0);
     expect((await meDirectory(e, owner.cookie))?.bound).toBe(false);
+  });
+
+  it("a corrupt binding row with the customer_mismatch tombstone: DELETE still returns 204 and wipes", async () => {
+    const owner = await login(uniq("bo"), "owner");
+    await env.DB.prepare(UPSERT).bind(K.binding, "not json").run();
+    await env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch").run();
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.directory}`, {
+        method: "DELETE",
+        headers: { cookie: owner.cookie, "x-oa-request": "1" },
+      }),
+      e,
+    );
+    expect(r.status).toBe(204);
+    const left = await env.DB.prepare(
+      "select count(*) n from directory_state where key in (?, ?)",
+    )
+      .bind(K.binding, K.prior)
+      .first<{ n: number }>();
+    expect(left?.n).toBe(0);
   });
 });

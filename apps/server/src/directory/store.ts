@@ -449,7 +449,7 @@ export const keepPrior = (env: Env, guard?: SqlGuard) =>
     `insert into directory_state (key, value)
       select ?1, json_object('customerId', json_extract(value, '$.customerId'),
         'domain', json_extract(value, '$.domain'))
-      from directory_state where key = ?2 and ${TOMBSTONED}${guard ? ` and ${guard.sql}` : ""}
+      from directory_state where key = ?2 and json_valid(value) and ${TOMBSTONED}${guard ? ` and ${guard.sql}` : ""}
       on conflict (key) do update set value = excluded.value`,
   ).bind(K.prior, K.binding, ...(guard?.args ?? []));
 
