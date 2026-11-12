@@ -47,6 +47,31 @@ describe("pricing buttons share a baseline", () => {
   }
 });
 
+describe("space above Simple pricing", () => {
+  for (const [width, gap] of [
+    [1280, 96],
+    [390, 56],
+  ] as const) {
+    it(`is ${gap}px at ${width}px`, async () => {
+      const page = await browser.newPage({
+        viewport: { width, height: 900 },
+      });
+      await page.goto(`${base}/`, { waitUntil: "load" });
+      const m = await page.evaluate(() => {
+        const sec = document.getElementById("pricing") as HTMLElement;
+        const h = document.getElementById("pricing-h") as HTMLElement;
+        return {
+          pad: Number.parseFloat(getComputedStyle(sec).paddingTop),
+          gap: h.getBoundingClientRect().top - sec.getBoundingClientRect().top,
+        };
+      });
+      expect(m.pad).toBe(gap);
+      expect(Math.round(m.gap)).toBe(gap);
+      await page.close();
+    });
+  }
+});
+
 describe("pricing table on a phone", () => {
   it("lets about 24px of the Team column peek in, with no sideways page scroll", async () => {
     const page = await browser.newPage({

@@ -1579,6 +1579,10 @@
   .x-sec {
     padding: clamp(56px, 8cqw, 92px) 0;
   }
+  /* room above "Simple pricing." (Design v23): 96px wide, 56px on a phone */
+  #pricing.x-sec {
+    padding-top: clamp(56px, 8vw, 96px);
+  }
   .x-sec h2 {
     font-size: clamp(26px, 3.4cqw, 38px);
     line-height: 1.14;
