@@ -2,6 +2,7 @@ import type { CommentAuthor, CommentThread, ThreadAgent } from "@oa/shared";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { TXT } from "../ui";
 import { AuthorFace, initials, PartyFace } from "./AuthorFace";
+import { type Face, FaceStack } from "./FaceStack";
 import { RemovalNotices, Tip, useAgentRemoval } from "./threadAgents";
 import type { CommentsApi } from "./useComments";
 
@@ -98,9 +99,7 @@ export function ThreadParticipants({
   }, [confirm, open]);
   if (n === 0) return null;
 
-  // 20px faces overlapping by 3px, each ringed in the card's colour; the first
-  // sits on top so every face shows its full initials or mark.
-  const faces = [
+  const faces: Face[] = [
     ...people.map((p) => ({
       key: `p-${p.id ?? p.name}`,
       round: true,
@@ -111,18 +110,7 @@ export function ThreadParticipants({
       round: false,
       el: <PartyFace p={a} medium />,
     })),
-  ]
-    .slice(0, SHOWN)
-    .map((f, i, all) => (
-      <span
-        key={f.key}
-        data-participant-face=""
-        style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -3 }}
-        className={`relative inline-flex shrink-0 bg-card ring-[1.5px] ring-card ${f.round ? "rounded-full" : "rounded-md"}`}
-      >
-        {f.el}
-      </span>
-    ));
+  ];
   const names = [
     `${people.length} ${people.length === 1 ? "person" : "people"}`,
     ...(member
@@ -189,9 +177,7 @@ export function ThreadParticipants({
           setOpen((o) => (mouse.current ? true : !o));
         }}
       >
-        <span aria-hidden="true" className="flex items-center">
-          {faces}
-        </span>
+        <FaceStack faces={faces} shown={SHOWN} attr="data-participant-face" />
         <span data-participants-count="">
           {n > SHOWN ? `+${n - SHOWN}` : n}
         </span>

@@ -756,7 +756,10 @@ describe("@mentions in the composer", () => {
     );
     expect(chips).toEqual(["@C++ Bot", "@OA Design"]);
     const p = c.querySelector("[data-mention-chip]")?.closest("p");
-    expect(p?.textContent).toBe(
+    // The marks' descriptions (hidden, #2247) are not part of what is read or copied.
+    const copy = p?.cloneNode(true) as HTMLElement;
+    for (const h of copy.querySelectorAll("[hidden]")) h.remove();
+    expect(copy.textContent).toBe(
       "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby",
     );
     expect(p?.querySelector("b")).toBeNull();
