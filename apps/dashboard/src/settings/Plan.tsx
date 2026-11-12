@@ -283,13 +283,12 @@ export function Plan() {
             : // A paid plan changes in the billing portal, never a second checkout.
               portal
               ? () => go.mutate("portal")
-              : (tier, interval, seats) =>
+              : // Seats come only from the yearly step; the schema needs them with year.
+                (tier, seats) =>
                   go.mutate(
-                    interval
-                      ? seats === undefined
-                        ? { tier, interval }
-                        : { tier, interval, seats }
-                      : { tier },
+                    seats === undefined
+                      ? { tier }
+                      : { tier, interval: "year", seats },
                   )
         }
         seatsDefault={

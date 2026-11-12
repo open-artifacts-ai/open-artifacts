@@ -7,6 +7,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  render,
   renderHook,
   screen,
   waitFor,
@@ -23,6 +24,7 @@ import {
 } from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
 import { planStatus } from "../src/settings/Plan";
+import { type Column, PlanCompare } from "../src/settings/PlanCompare";
 import { yearlyFlag } from "../src/settings/yearlyFlag";
 import {
   arts,
@@ -850,6 +852,18 @@ describe("yearly Team and Business seat step", () => {
       yearlyFlag.teamBusiness = false;
     });
   };
+  const renderPlanCompare = (props: { column: Column }) => {
+    const view = (p: { column: Column }) => (
+      <PlanCompare
+        column={p.column}
+        busy={false}
+        seatsDefault={3}
+        upgrade={() => {}}
+      />
+    );
+    const r = render(view(props));
+    return { rerender: (p: { column: Column }) => r.rerender(view(p)) };
+  };
   const open = async (tier = "Team") => {
     fireEvent.click(
       within(card(tier.toLowerCase())).getByRole("button", {
@@ -869,6 +883,14 @@ describe("yearly Team and Business seat step", () => {
     expect(card("team")).toHaveTextContent("$100 per creator a year");
     expect(card("business")).toHaveTextContent("$250 per creator a year");
     const input = await open();
+    expect(
+      screen.getByRole("dialog", { name: "How many creators on Team?" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Creators are people who publish or edit live data. Viewers are free. You can change this later in billing.",
+      ),
+    ).toBeVisible();
     expect(input.value).toBe("7");
     expect(input).toHaveFocus();
     expect(screen.getByText("7 creators × $100 = $700 a year")).toBeVisible();
@@ -940,13 +962,40 @@ describe("yearly Team and Business seat step", () => {
     });
     await open();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByLabelText("Creators")).toBeNull();
-    expect(button).toHaveFocus();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(button).toHaveFocus());
     const input = await open();
     fireEvent.keyDown(input, { key: "Escape" });
-    expect(screen.queryByLabelText("Creators")).toBeNull();
-    expect(button).toHaveFocus();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(button).toHaveFocus());
     expect(checkout(posts)).toBeUndefined();
+  });
+
+  it("formats a large count with a thousands separator", async () => {
+    on();
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("plan-card-team");
+    const input = await open();
+    fireEvent.change(input, { target: { value: "10000" } });
+    expect(
+      screen.getByText("10,000 creators × $100 = $1,000,000 a year"),
+    ).toBeVisible();
+  });
+
+  it("closes the step when the plan changes under it, and reopens at the default", async () => {
+    on();
+    const { rerender } = renderPlanCompare({ column: "solo" });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Team" }));
+    fireEvent.change(await screen.findByLabelText("Creators"), {
+      target: { value: "9" },
+    });
+    rerender({ column: "team" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    rerender({ column: "solo" });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Team" }));
+    expect(
+      ((await screen.findByLabelText("Creators")) as HTMLInputElement).value,
+    ).toBe("3");
   });
 
   it("monthly sends only the tier and asks nothing", async () => {

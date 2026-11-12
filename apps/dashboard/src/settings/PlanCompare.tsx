@@ -6,6 +6,12 @@
 import {
   Badge,
   Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Input,
   Label,
   Table,
@@ -213,85 +219,97 @@ function SeatStep({
   initial,
   busy,
   onCancel,
+  onClosed,
   onContinue,
 }: {
   tier: "team" | "business";
   initial: number;
   busy: boolean;
   onCancel: () => void;
+  /** After the dialog closes: put focus back on the button that opened it. */
+  onClosed: () => void;
   onContinue: (seats: number) => void;
 }) {
   const [raw, setRaw] = useState(String(Math.max(1, initial)));
   const [invalid, setInvalid] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    input.current?.focus();
-  }, []);
   const seats = parseSeats(raw);
   const each = tier === "team" ? 100 : 250;
   const showError = invalid && seats === null;
   return (
-    <form
-      aria-label="How many creators?"
-      noValidate
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (seats === null) {
-          setInvalid(true);
-          return;
-        }
-        onContinue(seats);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onCancel();
-      }}
-      className="grid gap-[var(--oa-space-2)] rounded-[var(--oa-radius-md)] border border-[var(--oa-border)] bg-card p-[var(--oa-space-4)]"
-    >
-      <h3 className="m-0 text-[length:var(--oa-text-base)] font-semibold">
-        How many creators? ({NAMES[tier]})
-      </h3>
-      <p className={`m-0 ${muted}`}>
-        Creators are people who publish or edit live data. Viewers are free. You
-        can change this later in billing.
-      </p>
-      <Label htmlFor="seat-count">Creators</Label>
-      <Input
-        id="seat-count"
-        ref={input}
-        type="number"
-        inputMode="numeric"
-        min={1}
-        max={SEATS_MAX}
-        step={1}
-        value={raw}
-        aria-invalid={showError}
-        aria-describedby="seat-help"
-        onChange={(e) => {
-          setRaw(e.target.value);
-          setInvalid(false);
+    <Dialog open onOpenChange={(o) => !o && onCancel()}>
+      {/* Phones: pinned near the top so the field stays above the keyboard. */}
+      <DialogContent
+        className="max-sm:top-4 max-sm:translate-y-0"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          input.current?.focus();
         }}
-        className="max-w-[10rem]"
-      />
-      <p
-        id="seat-help"
-        role={showError ? "alert" : undefined}
-        className={`m-0 ${showError ? "text-[var(--oa-danger)]" : muted}`}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          onClosed();
+        }}
       >
-        {showError
-          ? `Enter a whole number from 1 to ${SEATS_MAX.toLocaleString("en-US")}.`
-          : seats !== null
-            ? `${seats} ${seats === 1 ? "creator" : "creators"} × $${each} = $${(seats * each).toLocaleString("en-US")} a year`
-            : "Whole numbers from 1 to 10,000."}
-      </p>
-      <div className="flex gap-[var(--oa-space-2)]">
-        <Button type="submit" disabled={busy}>
-          Continue
-        </Button>
-        <Button type="button" variant="outline" onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </form>
+        <form
+          noValidate
+          className="grid gap-[var(--oa-space-2)]"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (busy) return;
+            if (seats === null) {
+              setInvalid(true);
+              return;
+            }
+            onContinue(seats);
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>How many creators on {NAMES[tier]}?</DialogTitle>
+            <DialogDescription>
+              Creators are people who publish or edit live data. Viewers are
+              free. You can change this later in billing.
+            </DialogDescription>
+          </DialogHeader>
+          <Label htmlFor="seat-count">Creators</Label>
+          <Input
+            id="seat-count"
+            ref={input}
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={SEATS_MAX}
+            step={1}
+            value={raw}
+            aria-invalid={showError}
+            aria-describedby="seat-help"
+            onChange={(e) => {
+              setRaw(e.target.value);
+              setInvalid(false);
+            }}
+            className="max-w-[10rem]"
+          />
+          <p
+            id="seat-help"
+            role={showError ? "alert" : undefined}
+            className={`m-0 ${showError ? "text-[var(--oa-danger)]" : muted}`}
+          >
+            {showError
+              ? `Enter a whole number from 1 to ${SEATS_MAX.toLocaleString("en-US")}.`
+              : seats !== null
+                ? `${seats.toLocaleString("en-US")} ${seats === 1 ? "creator" : "creators"} × $${each} = $${(seats * each).toLocaleString("en-US")} a year`
+                : "Whole numbers from 1 to 10,000."}
+          </p>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={busy}>
+              Continue
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -305,11 +323,7 @@ export function PlanCompare({
   /** The current plan's column (the invite trial is Team, #2113). */
   column: Column;
   /** Start the existing upgrade flow; absent: no buttons (can't buy here). */
-  upgrade?: (
-    tier: "team" | "business",
-    interval?: Interval,
-    seats?: number,
-  ) => void;
+  upgrade?: (tier: "team" | "business", seats?: number) => void;
   busy: boolean;
   /** The Team trial: nothing is paid yet, so both upgrades show and Team says "Your trial". */
   trial?: boolean;
@@ -325,6 +339,11 @@ export function PlanCompare({
   const [interval, setInterval] = useState<Interval>("year");
   const [asking, setAsking] = useState<"team" | "business" | null>(null);
   const opener = useRef<HTMLElement | null>(null);
+  // A plan change (a billing refetch made this Team) or a lost buy path ends the
+  // step; reopening starts again from the default.
+  const canBuy = upgrade !== undefined && seatsDefault !== undefined;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: these are the triggers
+  useEffect(() => setAsking(null), [column, trial, canBuy]);
   // Buttons rank from what is paid for: a trial has paid for nothing yet.
   const rank = trial ? 0 : ORDER.indexOf(column);
   return (
@@ -437,11 +456,9 @@ export function PlanCompare({
           tier={asking}
           initial={seatsDefault ?? 1}
           busy={busy}
-          onCancel={() => {
-            setAsking(null);
-            opener.current?.focus();
-          }}
-          onContinue={(seats) => upgrade(asking, "year", seats)}
+          onCancel={() => setAsking(null)}
+          onClosed={() => opener.current?.focus()}
+          onContinue={(seats) => upgrade(asking, seats)}
         />
       )}
       <ScrollFade>
