@@ -21,7 +21,7 @@ import {
   TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import type { Restriction, Space, SpaceCandidate } from "../../api/contract";
 import {
@@ -109,12 +109,14 @@ const ORPHAN_HINT =
  */
 function OrphanTip() {
   const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLButtonElement>(null);
   return (
     <TooltipProvider>
       <Tooltip open={open} onOpenChange={setOpen}>
         <TooltipTrigger asChild>
           {/* Radix closes a tooltip on pointer down and click; ours toggles. */}
           <button
+            ref={ref}
             type="button"
             onPointerDown={(e) => e.preventDefault()}
             onClick={(e) => {
@@ -126,7 +128,13 @@ function OrphanTip() {
             {ORPHAN_LINE}
           </button>
         </TooltipTrigger>
-        <TooltipContent>{ORPHAN_HINT}</TooltipContent>
+        <TooltipContent
+          onPointerDownOutside={(e) => {
+            if (ref.current?.contains(e.target as Node)) e.preventDefault();
+          }}
+        >
+          {ORPHAN_HINT}
+        </TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );

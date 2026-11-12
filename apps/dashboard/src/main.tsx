@@ -119,6 +119,43 @@ async function startMocks() {
       ),
     );
   }
+  // ?mock=orphan (with ?hosted=plan-team): a space's People list also holds Olive
+  // Gray, whose synced Viewer role no group lists her for any more (#2156).
+  if (params.get("mock") === "orphan") {
+    const hosted = createHandlers({
+      hosted: parseHostedParam(params.get("hosted")) ?? {},
+    });
+    extra.push(
+      http.get("*/api/v1/spaces/:id/members", async ({ request }) => {
+        const res = await getResponse(hosted, request);
+        const body = (await res?.json()) as {
+          items: { userId: string; user: object }[];
+          total?: number;
+        };
+        const [first] = body.items;
+        if (!first) return HttpResponse.json(body);
+        const olive = {
+          ...first,
+          userId: "orphan-olive",
+          user: {
+            id: "orphan-olive",
+            name: "Olive Gray",
+            email: "olive@example.com",
+          },
+          role: "viewer",
+          source: "sync",
+          manualRole: null,
+          syncRole: "viewer",
+          groups: [],
+        };
+        return HttpResponse.json({
+          ...body,
+          items: [...body.items, olive],
+          total: (body.total ?? body.items.length) + 1,
+        });
+      }),
+    );
+  }
   // ?mock=transfer-error (with ?hosted=1): a transfer's counts fail to load.
   if (params.get("mock") === "transfer-error")
     extra.push(
