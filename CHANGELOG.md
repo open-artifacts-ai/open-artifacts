@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.162.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.0...v0.162.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **bus:** a Codex restore is logged and survives a slow ps ([#2202](https://github.com/open-artifacts-ai/open-artifacts/issues/2202), [#2297](https://github.com/open-artifacts-ai/open-artifacts/issues/2297)) ([#2301](https://github.com/open-artifacts-ai/open-artifacts/issues/2301)) ([3ecbccc](https://github.com/open-artifacts-ai/open-artifacts/commit/3ecbcccd61d3942ac390e8c92b87102e7379fa71))
+* **bus:** a linked session stays linked through a reconnect and a slow lookup ([#2110](https://github.com/open-artifacts-ai/open-artifacts/issues/2110)) ([#2289](https://github.com/open-artifacts-ai/open-artifacts/issues/2289)) ([14a3994](https://github.com/open-artifacts-ai/open-artifacts/commit/14a3994b47fb86b270da227eec07797488bcfa99))
+* **bus:** a notice addressed to an identity reaches only that identity ([#2238](https://github.com/open-artifacts-ai/open-artifacts/issues/2238)) ([#2293](https://github.com/open-artifacts-ai/open-artifacts/issues/2293)) ([63824c1](https://github.com/open-artifacts-ai/open-artifacts/commit/63824c19e5eb2c278d2463d9c4fd4bfedc6c6ab6))
+* **bus:** a slow process read is retried, never read as not Codex ([#2288](https://github.com/open-artifacts-ai/open-artifacts/issues/2288)) ([#2291](https://github.com/open-artifacts-ai/open-artifacts/issues/2291)) ([b993f4e](https://github.com/open-artifacts-ai/open-artifacts/commit/b993f4ea0b176a00a1769d2124124685e28307c8))
+* **bus:** the event log never follows a swapped or linked logs path ([#2159](https://github.com/open-artifacts-ai/open-artifacts/issues/2159), [#2160](https://github.com/open-artifacts-ai/open-artifacts/issues/2160)) ([#2303](https://github.com/open-artifacts-ai/open-artifacts/issues/2303)) ([69e29e0](https://github.com/open-artifacts-ai/open-artifacts/commit/69e29e02c46b7255709f56cfe28fdb4a937b3d4b))
+* **comments:** focusField's cleanup survives a torn-down page ([#2300](https://github.com/open-artifacts-ai/open-artifacts/issues/2300)) ([a5b64d9](https://github.com/open-artifacts-ai/open-artifacts/commit/a5b64d95111449266b47e3a87b9fe7198fbb8bcc))
+* **release:** a held prod deploy fails the release run ([#2257](https://github.com/open-artifacts-ai/open-artifacts/issues/2257)) ([#2296](https://github.com/open-artifacts-ai/open-artifacts/issues/2296)) ([4257adb](https://github.com/open-artifacts-ai/open-artifacts/commit/4257adb3bd7fa82ac4858ff5a8d3986af008e319))
+
 ## [0.162.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.161.1...v0.162.0) (2026-11-12)
 
 
