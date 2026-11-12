@@ -342,6 +342,16 @@ describe("the header lists every agent the comment notified", () => {
     hover(container);
     expect(rows(container)).toEqual(["Vega: delivered"]);
   });
+  it("a gone mention reads as its chip does, a gone thread agent as before", () => {
+    const { container } = render(
+      <DeliveryFaces mentions={[ag("X", "gone")]} told={[ag("Y", "gone")]} />,
+    );
+    hover(container);
+    expect(rows(container)).toEqual([
+      "X: not on the bus",
+      "Y: expired, offline too long",
+    ]);
+  });
   it("both, mentions first, a duplicate key once", () => {
     const { container } = render(
       <DeliveryFaces
@@ -383,6 +393,17 @@ describe("a queued notice is sending until the comment is 30s old", () => {
     expect(container.querySelector("[data-told]")?.textContent).toBe(
       "Vega: held until it's back",
     );
+  });
+  it("a clock running behind cannot stretch sending past 30s", () => {
+    vi.useFakeTimers({ now: T0 - 600_000 });
+    const { container } = render(
+      <DeliveryFaces told={[ag("Vega", "queued")]} createdAt={at(0)} />,
+    );
+    expect(container.querySelector('[data-mark="sending"]')).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(HELD_AFTER_MS + 10);
+    });
+    expect(container.querySelector('[data-mark="wait"]')).not.toBeNull();
   });
   it("header: already over 30s old is held at once, no timer left", () => {
     vi.useFakeTimers({ now: T0 + HELD_AFTER_MS + 1 });

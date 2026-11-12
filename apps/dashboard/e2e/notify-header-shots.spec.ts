@@ -60,8 +60,12 @@ for (const width of [1280, 390])
       const box = page.getByRole("textbox", { name: /Comment on/ }).first();
       await box.click();
       await box.pressSequentially("@Codex");
-      await page.keyboard.press("Enter");
-      await box.pressSequentially(" take a look");
+      // Pick from the menu (Enter would add a newline to the body).
+      await page
+        .getByRole("listbox", { name: "Agents on this page" })
+        .getByRole("option", { name: /Codex/ })
+        .click();
+      await box.pressSequentially("take a look");
       await page.getByRole("button", { name: "Comment", exact: true }).click();
       const sent = page
         .locator("[data-comment]")

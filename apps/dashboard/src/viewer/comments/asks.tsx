@@ -80,14 +80,22 @@ export const HELD_AFTER_MS = 30_000;
 function useShown(createdAt: string | undefined, states: readonly DState[]) {
   const [, tick] = useState(0);
   const born = createdAt ? Date.parse(createdAt) : Number.NaN;
-  const left = Number.isNaN(born) ? 0 : born + HELD_AFTER_MS - Date.now();
-  const pending = left > 0 && states.includes("queued");
+  // The end of "sending", fixed on first sight and clamped: a client clock running
+  // behind cannot stretch it past HELD_AFTER_MS from now.
+  const until = useRef<number | null>(null);
+  if (until.current === null)
+    until.current = Number.isNaN(born)
+      ? 0
+      : Date.now() + Math.min(HELD_AFTER_MS, born + HELD_AFTER_MS - Date.now());
+  const end = until.current;
+  const sending = Date.now() < end;
+  const pending = sending && states.includes("queued");
   useEffect(() => {
     if (!pending) return;
-    const t = setTimeout(() => tick((n) => n + 1), left + 5);
+    const t = setTimeout(() => tick((n) => n + 1), end - Date.now() + 5);
     return () => clearTimeout(t);
-  }, [pending, left]);
-  return (d: DState): Shown => (d === "queued" && left > 0 ? "sending" : d);
+  }, [pending, end]);
+  return (d: DState): Shown => (d === "queued" && sending ? "sending" : d);
 }
 
 /** #2229: the details a mark opens, always "<agent>: <state>". A mention's gone is its own word. */
@@ -354,9 +362,11 @@ export function DeliveryFaces({
   const { open, props, float } = useDetail();
   const did = useId();
   const seen = new Set<string>();
-  const merged = [...mentions, ...told].filter(
-    (m) => !seen.has(m.key) && seen.add(m.key),
-  );
+  // A mention keeps its own wording for a gone agent ("not on the bus"), as its chip does.
+  const merged = [
+    ...mentions.map((m) => ({ ...m, mention: true })),
+    ...told.map((m) => ({ ...m, mention: false })),
+  ].filter((m) => !seen.has(m.key) && seen.add(m.key));
   const shownOf = useShown(
     createdAt,
     merged.map((m) => m.delivery),
@@ -383,7 +393,7 @@ export function DeliveryFaces({
     <span className="relative inline-flex shrink-0" data-delivery-faces="">
       {/* #2247: the label is the name; each agent's state is the description. */}
       <span id={did} hidden>
-        {rows.map((m) => markText(m.name, m.shown)).join(". ")}
+        {rows.map((m) => markText(m.name, m.shown, m.mention)).join(". ")}
       </span>
       <button
         type="button"
@@ -425,7 +435,7 @@ export function DeliveryFaces({
               className="flex items-center gap-1.5"
             >
               <PartyFace p={m} />
-              {markText(m.name, m.shown)}
+              {markText(m.name, m.shown, m.mention)}
             </span>
           ))}
         </span>
