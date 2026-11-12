@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.162.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.161.1...v0.162.0) (2026-11-12)
+
+
+### Features
+
+* **directory:** tell admins which roles group sync puts back after Team → Business ([#2150](https://github.com/open-artifacts-ai/open-artifacts/issues/2150)) ([#2268](https://github.com/open-artifacts-ai/open-artifacts/issues/2268)) ([b8de368](https://github.com/open-artifacts-ai/open-artifacts/commit/b8de3681042dfd3636c96dbd8546bfc091c27cb4))
+
+
+### Bug Fixes
+
+* **comments:** a reply notice the hub drops gives back its spend ([#2197](https://github.com/open-artifacts-ai/open-artifacts/issues/2197)) ([#2270](https://github.com/open-artifacts-ai/open-artifacts/issues/2270)) ([2b4acce](https://github.com/open-artifacts-ai/open-artifacts/commit/2b4acce6ebb18a1e7e512ea783caf449e532297e))
+* **comments:** one face stack, mark a11y and give-way ([#2247](https://github.com/open-artifacts-ai/open-artifacts/issues/2247)) ([#2266](https://github.com/open-artifacts-ai/open-artifacts/issues/2266)) ([8602a05](https://github.com/open-artifacts-ai/open-artifacts/commit/8602a059659a233ee75e4f2237002ed22bae9cb3))
+* **comments:** pill and composer respect the action row and iOS keyboard ([#2239](https://github.com/open-artifacts-ai/open-artifacts/issues/2239)) ([#2265](https://github.com/open-artifacts-ai/open-artifacts/issues/2265)) ([30f723f](https://github.com/open-artifacts-ai/open-artifacts/commit/30f723fa657d57f638a1221cbbde0dd3b5ef65aa))
+* **comments:** viewport follow-ups from [#2265](https://github.com/open-artifacts-ai/open-artifacts/issues/2265) review ([#2267](https://github.com/open-artifacts-ai/open-artifacts/issues/2267)) ([#2273](https://github.com/open-artifacts-ai/open-artifacts/issues/2273)) ([80e7061](https://github.com/open-artifacts-ai/open-artifacts/commit/80e7061da1d6804b4a9202e3fafb61bf37367535))
+* **names:** broader phrasings that read as an agent ([#1894](https://github.com/open-artifacts-ai/open-artifacts/issues/1894)) ([#2274](https://github.com/open-artifacts-ai/open-artifacts/issues/2274)) ([11daa0b](https://github.com/open-artifacts-ai/open-artifacts/commit/11daa0ba016efbc75b06c369f68fbd2cbad762a0))
+
 ## [0.161.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.161.0...v0.161.1) (2026-11-12)
 
 
