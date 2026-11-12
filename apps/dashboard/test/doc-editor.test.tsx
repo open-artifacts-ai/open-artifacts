@@ -545,8 +545,8 @@ describe("DocEditor", () => {
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
     await screen.findByRole("toolbar");
     const empty = () => document.querySelector("p.oa-doc-empty");
-    expect(empty()?.getAttribute("data-placeholder")).toMatch(
-      /^Write something/,
+    expect(empty()?.getAttribute("data-placeholder")).toBe(
+      "Start writing. Use the toolbar for headings, lists and more.",
     );
     act(() => {
       const para = new Y.XmlElement("paragraph");

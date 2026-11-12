@@ -76,9 +76,12 @@ const LinkGuard = Extension.create({
   },
 });
 
-/** The hint in an empty doc (Design's docs mockup). */
+/**
+ * The hint in an empty doc (Product's copy). Design's mockup also says "or type
+ * / for headings, lists and more": restore "type /" if a slash menu ships.
+ */
 export const DOC_PLACEHOLDER =
-  "Write something, or use the toolbar for headings, lists and more";
+  "Start writing. Use the toolbar for headings, lists and more.";
 
 /**
  * Shows DOC_PLACEHOLDER (CSS ::before on data-placeholder) while the doc is one
