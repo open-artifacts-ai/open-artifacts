@@ -37,11 +37,15 @@ export function effectiveName(u: NameFields): string {
 
 /**
  * effectiveName for anyone but the user themselves: a name that reads as an
- * agent ("X's agent", set or from SSO, #1894) falls back to the email.
+ * agent ("X's agent", set or from SSO, #1894) falls back to a real SSO name,
+ * then the email.
  */
 export function shownEffectiveName(u: NameFields): string {
   const n = effectiveName(u);
-  return readsAsAgent(n) ? u.email : n;
+  if (!readsAsAgent(n)) return n;
+  // The display name reads as an agent: a real SSO name still shows.
+  const idp = idpName(u.name, u.email);
+  return idp && !readsAsAgent(idp) ? idp : u.email;
 }
 
 /**
