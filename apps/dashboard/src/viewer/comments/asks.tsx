@@ -18,6 +18,8 @@ import {
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
 import { PartyFace } from "./AuthorFace";
+import { type Face, FaceStack } from "./FaceStack";
+import { lastWasTouch, useInputKind } from "./inputKind";
 import { linkify } from "./linkify";
 
 const MUTED = "text-muted-foreground";
@@ -113,7 +115,8 @@ export function DeliveryIcon({ d }: { d: DState }) {
 /**
  * Open on hover and focus, toggle on tap or click, close on Escape or leaving.
  * A touch tap toggles on its own (a second tap closes), whatever hover or focus
- * the browser fakes after it. Escape while open is swallowed, so it does not
+ * the browser fakes after it; the next keydown or mouse move (a hybrid device)
+ * ends "touch", so the keyboard and the mouse open it again (#2247). Escape while open is swallowed, so it does not
  * also close the panel, sheet or full screen behind it. `float` keeps the
  * details inside the comment's column.
  */
@@ -121,7 +124,7 @@ function useDetail() {
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [tap, setTap] = useState(false);
-  const touch = useRef(false);
+  useInputKind();
   const float = useRef<HTMLSpanElement>(null);
   const [shift, setShift] = useState(0);
   const open = hover || focus || tap;
@@ -148,18 +151,15 @@ function useDetail() {
       style: shift ? { transform: `translateX(${shift}px)` } : undefined,
     },
     props: {
-      onPointerDown: (e: React.PointerEvent) => {
-        touch.current = e.pointerType === "touch";
-      },
       onMouseEnter: () => {
-        if (!touch.current) setHover(true);
+        if (!lastWasTouch()) setHover(true);
       },
       onMouseLeave: () => {
         setHover(false);
         setTap(false);
       },
       onFocus: () => {
-        if (!touch.current) setFocus(true);
+        if (!lastWasTouch()) setFocus(true);
       },
       onBlur: () => {
         setFocus(false);
@@ -199,13 +199,18 @@ function MarkedChip({
 }) {
   const { open, props, float } = useDetail();
   const detail = markText(face.name, face.delivery, true);
+  const did = useId();
   return (
     <span className="relative inline-block align-middle">
+      {/* #2247: the name stays the chip's own text; the state is its description. */}
+      <span id={did} hidden>
+        {detail}
+      </span>
       <button
         type="button"
         data-mention-chip=""
         data-delivery={face.delivery}
-        aria-label={detail}
+        aria-describedby={did}
         aria-expanded={open}
         className="inline-flex cursor-pointer items-center gap-1 rounded-full border-0 bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)] font-[inherit] text-[length:inherit]"
         {...props}
@@ -304,6 +309,7 @@ export function DeliveryFaces({
   compact?: boolean;
 }) {
   const { open, props, float } = useDetail();
+  const did = useId();
   if (!all.length) return null;
   // A removed notice was never sent: it is listed in the details, not counted.
   const told = all.filter((m) => m.delivery !== "withdrawn");
@@ -312,38 +318,31 @@ export function DeliveryFaces({
   );
   const ok = told.filter((m) => !isWait(m.delivery)).length;
   const held = told.length - ok;
+  const faces: Face[] = sorted.map((m) => ({
+    key: m.key,
+    round: false,
+    el: <PartyFace p={m} />,
+  }));
   const label = !told.length
     ? "Removed before delivery"
     : `${ok} of ${told.length} delivered`;
   return (
     <span className="relative inline-flex shrink-0" data-delivery-faces="">
+      {/* #2247: the label is the name; each agent's state is the description. */}
+      <span id={did} hidden>
+        {[...sorted, ...all.filter((m) => m.delivery === "withdrawn")]
+          .map((m) => markText(m.name, m.delivery))
+          .join(". ")}
+      </span>
       <button
         type="button"
         aria-label={label}
+        aria-describedby={did}
         aria-expanded={open}
         className="inline-flex cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent p-0.5 text-muted-foreground"
         {...props}
       >
-        {!compact && (
-          // 3px overlap, each face ringed in the card's colour, the first on top (as #2185's stack).
-          <span className="inline-flex">
-            {sorted.slice(0, 3).map((m, i, all) => (
-              <span
-                key={m.key}
-                data-face=""
-                style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -3 }}
-                className="relative inline-flex shrink-0 rounded-md bg-card ring-[1.5px] ring-card"
-              >
-                <PartyFace p={m} />
-              </span>
-            ))}
-          </span>
-        )}
-        {!compact && told.length > 3 && (
-          <span className={TXT} data-more="">
-            +{told.length - 3}
-          </span>
-        )}
+        {!compact && <FaceStack faces={faces} moreClass={TXT} more />}
         <DeliveryIcon
           d={!told.length ? "withdrawn" : held ? "queued" : "delivered"}
         />

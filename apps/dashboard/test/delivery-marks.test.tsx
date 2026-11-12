@@ -59,7 +59,12 @@ describe("#2229 the mark inside the chip", () => {
     );
     const chip = container.querySelector("[data-mention-chip]") as HTMLElement;
     expect(screen.queryByRole("tooltip")).toBeNull();
-    expect(chip.getAttribute("aria-label")).toBe("Sirius: delivered");
+    // #2247: the name is the visible text; the state is the description.
+    expect(chip.hasAttribute("aria-label")).toBe(false);
+    expect(
+      document.getElementById(chip.getAttribute("aria-describedby") ?? "")
+        ?.textContent,
+    ).toBe("Sirius: delivered");
     fireEvent.mouseEnter(chip);
     expect(screen.getByRole("tooltip").textContent).toBe("Sirius: delivered");
     fireEvent.mouseLeave(chip);
