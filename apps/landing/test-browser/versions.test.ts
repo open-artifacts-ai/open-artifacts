@@ -72,6 +72,36 @@ describe("phone versions card at 390px", () => {
     expect(await card.locator("[data-vb]").textContent()).toBe("v3");
     // restore from v2: a new top, v6, current, and no second v4
     await card.locator('button[data-v="2"]').click();
+    try {
+      await card
+        .locator("[data-restore]")
+        .waitFor({ state: "visible", timeout: 5000 });
+    } catch (e) {
+      const state = await page.evaluate(() => {
+        const r = (s: string) => {
+          const el = document.querySelector(s);
+          if (!el) return null;
+          const b = el.getBoundingClientRect();
+          return [
+            Math.round(b.top),
+            Math.round(b.height),
+            getComputedStyle(el).display,
+          ];
+        };
+        return JSON.stringify({
+          scrollY,
+          beat: document.getElementById("pl")?.dataset.beat,
+          pl: r("#pl"),
+          slot: r(".pl-slot.on"),
+          mp: r('.mp[data-mp="ver"]'),
+          ban: r('.mp[data-mp="ver"] [data-ban]'),
+          restore: r('.mp[data-mp="ver"] [data-restore]'),
+          banCls: document.querySelector('.mp[data-mp="ver"] [data-ban]')
+            ?.className,
+        });
+      });
+      throw new Error(`restore not visible: ${state}`, { cause: e });
+    }
     await card.locator("[data-restore]").click();
     const first = card.locator(".vlist li").first();
     expect(await first.locator("b").textContent()).toBe("v6");

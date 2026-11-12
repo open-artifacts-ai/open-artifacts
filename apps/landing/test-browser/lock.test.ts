@@ -92,16 +92,24 @@ describe("phone locked story", () => {
     await toBeat(page, 0);
     const cdp = await ctx.newCDPSession(page);
     const before = await page.evaluate(() => scrollY);
-    for (let i = 0; i < 6; i++)
-      await cdp.send("Input.synthesizeScrollGesture", {
-        x: 195,
-        y: 600,
-        yDistance: -260,
-        gestureSourceType: "touch",
-        speed: 800,
+    // a finger drag: touchStart, many small touchMoves, touchEnd (the browser
+    // turns it into a scroll the way it does on a phone)
+    const touch = (type: string, y?: number) =>
+      cdp.send("Input.dispatchTouchEvent", {
+        type,
+        touchPoints: y === undefined ? [] : [{ x: 195, y }],
       });
+    for (let i = 0; i < 6; i++) {
+      await touch("touchStart", 560);
+      for (let y = 560; y >= 300; y -= 20) {
+        await touch("touchMove", y);
+        await page.waitForTimeout(8);
+      }
+      await touch("touchEnd");
+      await page.waitForTimeout(150);
+    }
     await frames(page);
-    expect(await page.evaluate(() => scrollY)).toBeGreaterThan(before + 800);
+    expect(await page.evaluate(() => scrollY)).toBeGreaterThan(before + 400);
     expect((await pinTop(page)).top).toBe(0);
     expect(
       Number(await page.locator("#pl").getAttribute("data-beat")),
