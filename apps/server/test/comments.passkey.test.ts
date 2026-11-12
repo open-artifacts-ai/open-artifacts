@@ -139,7 +139,7 @@ const read = async (k: K, auth = alice.cookie) => {
     .find((c) => c.id === k.commentId) as Comment;
 };
 const settings = (u: U, body: object) =>
-  api(app, R.passkeySettings, u.cookie, { method: "PUT", body });
+  api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
 
 describe("the server marks asks confirm: passkey", () => {
   it("from the actions the options name, for a member with a passkey", async () => {
@@ -306,6 +306,63 @@ describe("POST answer/challenge", () => {
 });
 
 describe("POST answer on a confirm ask", () => {
+  it("changing a verified answer needs a new assertion", async () => {
+    const k = await ask(alice);
+    const c1 = (await (
+      await challenge(k, alice.cookie)
+    ).json()) as PasskeyChallenge;
+    const a1 = await assertFor(aliceKey, c1);
+    expect(
+      (await answer(k, alice.cookie, { optionId: "merge", assertion: a1 }))
+        .status,
+    ).toBe(200);
+    // Without an assertion, or with the spent one, or by token: refused, answer unchanged.
+    const bare = await answer(k, alice.cookie, { optionId: "wait" });
+    expect(bare.status).toBe(403);
+    expect((await errOf(bare)).code).toBe("passkey_required");
+    expect(
+      (await answer(k, alice.cookie, { optionId: "wait", assertion: a1 }))
+        .status,
+    ).toBe(410);
+    expect((await answer(k, alice.pat, { optionId: "wait" })).status).toBe(403);
+    expect((await read(k)).ask?.answer?.optionId).toBe("merge");
+    // The same option again is 409; a fresh challenge for the other option works.
+    expect((await challenge(k, alice.cookie, "merge")).status).toBe(409);
+    const c2 = (await (
+      await challenge(k, alice.cookie, "wait")
+    ).json()) as PasskeyChallenge;
+    const r = await answer(k, alice.cookie, {
+      optionId: "wait",
+      assertion: await assertFor(aliceKey, c2),
+    });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as Comment).ask?.answer).toMatchObject({
+      optionId: "wait",
+      verified: "passkey",
+    });
+  });
+
+  it("refuses a malformed assertion with 400 bad_request", async () => {
+    const k = await ask(alice);
+    for (const assertion of [
+      { id: "x" },
+      "text",
+      {
+        id: "a",
+        rawId: "a",
+        type: "public-key",
+        response: {
+          clientDataJSON: "a".repeat(5000),
+          authenticatorData: "a",
+          signature: "a",
+        },
+      },
+    ]) {
+      const r = await answer(k, alice.cookie, { optionId: "merge", assertion });
+      expect(r.status).toBe(400);
+    }
+  });
+
   it("a verified pick records verified: passkey, and is your user's yes for the asker", async () => {
     const k = await ask(alice);
     const c = (await (
@@ -365,7 +422,16 @@ describe("POST answer on a confirm ask", () => {
     const k = await ask(alice);
     const none = await answer(k, alice.cookie, {
       optionId: "merge",
-      assertion: { id: "x" },
+      assertion: {
+        id: "x",
+        rawId: "x",
+        type: "public-key",
+        response: {
+          clientDataJSON: "x",
+          authenticatorData: "x",
+          signature: "x",
+        },
+      },
     });
     expect(none.status).toBe(410);
     expect((await errOf(none)).code).toBe("challenge_expired");

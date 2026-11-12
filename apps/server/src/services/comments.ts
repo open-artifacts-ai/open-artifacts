@@ -1683,7 +1683,7 @@ const isAsked = (ask: { to: StoredParty[] }, who: CommentWho): boolean =>
  * 403 passkey_required for anything but a browser session (a token or MCP
  * grant can never carry a passkey), 403 forbidden unless asked, 404 without an
  * ask, 400 for an ask that needs no passkey or an unknown option, 409
- * conflict once closed, 409 already_answered, then the passkey rules
+ * conflict once closed, 409 already_answered (that option is the answer already; another option is a change and needs a fresh assertion), then the passkey rules
  * (no_passkey, passkey_cooling) and the challenge budget (429).
  */
 export async function answerChallenge(
@@ -1709,8 +1709,11 @@ export async function answerChallenge(
     throw new ApiError("conflict", "This ask is closed");
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
-  if (ask.answer)
-    throw new ApiError("already_answered", "This ask is answered");
+  if (ask.answer?.optionId === optionId)
+    throw new ApiError(
+      "already_answered",
+      "This ask is answered with that option",
+    );
   return pickChallenge(env, who.id, artifactId, commentId, optionId);
 }
 
@@ -1753,8 +1756,11 @@ export async function answerAsk(
         "passkey_required",
         "This pick needs your passkey, in the web app",
       );
-    if (ask.answer)
-      throw new ApiError("already_answered", "This ask is answered");
+    if (ask.answer?.optionId === optionId)
+      throw new ApiError(
+        "already_answered",
+        "This ask is answered with that option",
+      );
     if (pick.assertion === undefined || pick.assertion === null)
       throw new ApiError("passkey_required", "This pick needs your passkey");
     await verifyPick(

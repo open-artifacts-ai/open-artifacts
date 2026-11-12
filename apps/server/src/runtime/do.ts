@@ -2185,11 +2185,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
-      // #2263: a confirm ask takes one answer, and only with a verified passkey.
+      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
       if (r.ask.confirm === "passkey") {
         if (a.verified !== "passkey")
           fail("passkey_required", "This pick needs your passkey");
-        if (r.ask.answer) fail("already_answered", "This ask is answered");
+        if (r.ask.answer?.optionId === a.optionId)
+          fail("already_answered", "This ask is answered with that option");
       }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
       const unchanged = r.ask.answer?.optionId === a.optionId;
