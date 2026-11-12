@@ -1,4 +1,6 @@
 // The four plan buttons sit on one line, wide and narrow, monthly and yearly.
+// On a phone the next plan's edge peeks in, so the swipe is obvious, and the
+// page itself never scrolls sideways.
 import type { Server } from "node:http";
 import { type Browser, chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -43,4 +45,30 @@ describe("pricing buttons share a baseline", () => {
       await page.close();
     });
   }
+});
+
+describe("pricing table on a phone", () => {
+  it("lets about 24px of the Team column peek in, with no sideways page scroll", async () => {
+    const page = await browser.newPage({
+      viewport: { width: 390, height: 900 },
+    });
+    await page.goto(`${base}/`, { waitUntil: "load" });
+    const m = await page.evaluate(() => {
+      const team = document.querySelector(
+        "table.cmp thead th.col-pop",
+      ) as HTMLElement;
+      const tw = document.querySelector("#twf .tw") as HTMLElement;
+      return {
+        left: team.getBoundingClientRect().left,
+        edge: tw.getBoundingClientRect().right,
+        vw: innerWidth,
+        sw: document.documentElement.scrollWidth,
+      };
+    });
+    expect(m.left).toBeLessThan(m.vw);
+    expect(m.edge - m.left).toBeGreaterThanOrEqual(18);
+    expect(m.edge - m.left).toBeLessThanOrEqual(30);
+    expect(m.sw).toBe(m.vw);
+    await page.close();
+  });
 });

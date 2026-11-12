@@ -2552,6 +2552,8 @@ footer */
     }
     .twf::after {
       display: block;
+      /* thin, so the next plan's edge shows through as a swipe cue */
+      width: 12px;
     }
     .x-foot nav a {
       padding: 8px 0;
