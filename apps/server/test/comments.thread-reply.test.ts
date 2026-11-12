@@ -885,6 +885,22 @@ describe("the thread's agents, removable (#2035)", () => {
       expect(threadReplies()).toHaveLength(1);
     });
 
+    it("settling spaced replies gone oldest first refunds each", async () => {
+      const s = await setup();
+      const t = (await (
+        await post(s.id, editor, { mentions: [{ key: s.claude }] })
+      ).json()) as Thread;
+      bus.clear();
+      bus.outcome = "held";
+      const r1 = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+      await age(s.id);
+      const r2 = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+      expect(await counts(s.id)).toBe(2);
+      await settle(s.id, r1.id, s.claude);
+      await settle(s.id, r2.id, s.claude);
+      expect(await counts(s.id)).toBe(0);
+    });
+
     it("gone then withdrawn does not refund again", async () => {
       const { s, t, last } = await fill();
       await settle(s.id, last, s.claude);

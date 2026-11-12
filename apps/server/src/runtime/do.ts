@@ -72,6 +72,7 @@ import {
   refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
+  refundThreadReplyCount,
   replyCount,
   rootId,
   type StoredActor,
@@ -2232,7 +2233,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
             a.commentId,
           )
           .toArray()[0];
-        if (c) refundThreadReply(this.sql, c.threadId, [a.key], c.at);
+        if (c) refundThreadReplyCount(this.sql, c.threadId, a.key, c.at);
       }
       return m;
     });
