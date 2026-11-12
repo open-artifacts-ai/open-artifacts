@@ -673,6 +673,70 @@ describe("asks on the comments column", () => {
   });
 });
 
+describe("#2344 the comment body on an ask", () => {
+  const STEPS = "Steps:\n1. Open the page\n2. Compare the layouts";
+  const withBody = (body: string, over: object = {}, askOver: object = {}) => {
+    const t = askThread(over, askOver) as {
+      comments: { body: string }[];
+    };
+    t.comments[0].body = body;
+    return t;
+  };
+  it("shows the body above the question, line breaks kept", async () => {
+    serveThreads(() => [withBody(STEPS)]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const body = await within(c).findByText(/Open the page/);
+    expect(body).toHaveAttribute("data-ask-body");
+    expect(body.className).toContain("whitespace-pre-wrap");
+    const q = within(c).getByText("Which layout?");
+    expect(
+      body.compareDocumentPosition(q) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+  it("hides the body when it only repeats the question", async () => {
+    serveThreads(() => [withBody("  Which   layout?\n")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+  });
+  it("hides the body when empty", async () => {
+    serveThreads(() => [withBody("")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+  });
+  it("a collapsed decided ask hides the body, expanding shows it", async () => {
+    serveThreads(() => [
+      withBody(
+        STEPS,
+        { status: "resolved" },
+        {
+          closed: true,
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Show resolved/ }),
+    );
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+    fireEvent.click(line);
+    expect(c.querySelector("[data-ask-body]")).not.toBeNull();
+  });
+});
+
 describe("@mentions in the composer", () => {
   it("puts the caret right after a picked name at once (#1795)", async () => {
     server.use(
