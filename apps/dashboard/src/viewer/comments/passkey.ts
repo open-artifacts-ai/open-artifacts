@@ -65,6 +65,9 @@ export type PasskeyFailure =
   | { kind: "expired" }
   | { kind: "no_passkey" }
   | { kind: "cooling"; until: string | null }
+  | { kind: "too_many" }
+  /** The ask already has an answer: the refetch shows it. */
+  | { kind: "answered" }
   | { kind: "other" };
 
 /** Which card state an error from the passkey flow belongs to. */
@@ -78,6 +81,8 @@ export function passkeyFailure(e: unknown): PasskeyFailure {
     if (e.code === "passkey_failed" || e.code === "passkey_required")
       return { kind: "failed" };
     if (e.code === "challenge_expired") return { kind: "expired" };
+    if (e.code === "already_answered") return { kind: "answered" };
+    if (e.code === "rate_limited") return { kind: "too_many" };
     return { kind: "other" };
   }
   const name = (e as { name?: string } | null)?.name;
@@ -88,28 +93,45 @@ export function passkeyFailure(e: unknown): PasskeyFailure {
   return { kind: "other" };
 }
 
-/** Copy for a passkey failure, or null when the ordinary answer error copy applies. */
-export function passkeyCopy(f: PasskeyFailure): string | null {
+const WEEK = 7 * 24 * 3600_000;
+
+/** When a cooling passkey can approve, in the viewer's local time: weekday and time under 7 days, else the date. `title` is always the full date. */
+export function coolingTime(
+  until: string | null,
+  now = Date.now(),
+): { text: string; title: string } | null {
+  const t = until ? new Date(until) : null;
+  if (!t || Number.isNaN(t.getTime())) return null;
+  const title = t.toLocaleString([], { dateStyle: "full", timeStyle: "short" });
+  const text =
+    t.getTime() - now < WEEK
+      ? `${t.toLocaleDateString([], { weekday: "short" })} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
+      : t.toLocaleDateString([], { dateStyle: "medium" });
+  return { text, title };
+}
+
+/** The inline line for a passkey failure (role=alert), or null for the box states and ordinary errors. */
+export function passkeyLine(
+  f: PasskeyFailure,
+): { text: string; danger: boolean } | null {
   switch (f.kind) {
     case "cancelled":
-      return "Passkey approval was cancelled.";
+      return { text: "Nothing was approved.", danger: false };
     case "failed":
-      return "The passkey didn't check out.";
+      return {
+        text: "Passkey check failed. Nothing was approved.",
+        danger: true,
+      };
     case "expired":
-      return "That approval timed out.";
-    case "no_passkey":
-      return "Add a passkey to approve this here. Or the agent can ask in its own terminal.";
-    case "cooling": {
-      const t = f.until ? new Date(f.until) : null;
-      return t && !Number.isNaN(t.getTime())
-        ? `Your new passkey can approve from ${t.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}.`
-        : "Your new passkey can't approve yet.";
-    }
+      return {
+        text: "That approval timed out. Nothing was approved.",
+        danger: true,
+      };
+    case "too_many":
+      return { text: "Too many tries. Wait a moment.", danger: true };
+    case "answered":
+      return { text: "This ask was already answered.", danger: false };
     default:
       return null;
   }
 }
-
-/** Failures worth a Retry button. */
-export const canRetry = (f: PasskeyFailure) =>
-  f.kind === "cancelled" || f.kind === "failed" || f.kind === "expired";

@@ -78,6 +78,7 @@ export const ERROR_CODES = [
   "passkey_failed",
   "challenge_expired",
   "passkey_required",
+  "already_answered",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -184,6 +185,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   challenge_expired: 410,
   /** #2263: a pick on a confirm ask without a valid assertion. */
   passkey_required: 403,
+  /** #2263: the ask already has a verified answer; the card shows the server's. */
+  already_answered: 409,
   /** Comments (#682). */
   invalid_anchor: 400,
   invalid_body: 400,

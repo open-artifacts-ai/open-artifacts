@@ -53,13 +53,16 @@ test("idle shows the passkey hint, then verified", async ({ page }) => {
   );
 });
 
-test("cancel shows Retry, retry verifies", async ({ page }) => {
+test("cancel returns to idle, picking again verifies", async ({ page }) => {
   await stubPasskey(page, 1);
   const card = await open(page, "ok");
   await card.locator("[data-option=merge]").click();
-  await expect(card.locator("[data-passkey-error=cancelled]")).toBeVisible();
+  await expect(card.locator("[data-passkey-error=cancelled]")).toHaveText(
+    "Nothing was approved.",
+  );
   await expect(card.locator("[data-ask-answer]")).toHaveCount(0);
-  await card.getByRole("button", { name: "Retry" }).click();
+  await expect(card.locator("[data-option=merge]")).toBeFocused();
+  await card.locator("[data-option=merge]").click();
   await expect(card.locator("[data-ask-verified]")).toBeVisible();
 });
 
@@ -68,8 +71,9 @@ test("no passkey", async ({ page }) => {
   const card = await open(page, "none");
   await card.locator("[data-option=merge]").click();
   await expect(card.locator("[data-passkey-error=no_passkey]")).toContainText(
-    "Add a passkey to approve this here.",
+    "Add a passkey to approve this here",
   );
+  await expect(card.locator("[data-option=merge]")).toBeDisabled();
   await expect(card.locator("[data-ask-answer]")).toHaveCount(0);
 });
 
@@ -82,12 +86,37 @@ test("new passkey is cooling", async ({ page }) => {
   );
 });
 
-test("expired challenge offers Retry", async ({ page }) => {
+test("too many tries", async ({ page }) => {
+  await stubPasskey(page);
+  const card = await open(page, "many");
+  await card.locator("[data-option=merge]").click();
+  await expect(card.locator("[data-passkey-error=too_many]")).toHaveText(
+    "Too many tries. Wait a moment.",
+  );
+});
+
+test("verified pill shows only when the server marks it", async ({ page }) => {
+  await stubPasskey(page);
+  await open(page, "ok");
+  const pill = page
+    .locator("[data-ask]")
+    .filter({ hasText: "Deploy to production?" })
+    .locator("[data-ask-verified]");
+  await expect(pill).toHaveText("Verified with passkey");
+  await expect(
+    page
+      .locator("[data-ask]")
+      .filter({ hasText: "Delete the old build?" })
+      .locator("[data-ask-verified]"),
+  ).toHaveCount(0);
+});
+
+test("expired challenge offers another try", async ({ page }) => {
   await stubPasskey(page);
   const card = await open(page, "expired");
   await card.locator("[data-option=merge]").click();
   await expect(card.locator("[data-passkey-error=expired]")).toBeVisible();
-  await expect(card.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(card.locator("[data-option=merge]")).toBeEnabled();
 });
 
 test("an ordinary ask is unchanged", async ({ page }) => {

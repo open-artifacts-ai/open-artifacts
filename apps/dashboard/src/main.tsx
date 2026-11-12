@@ -491,10 +491,15 @@ async function startMocks() {
       // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
       commentAsks: params.get("mock") === "asks",
       // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
-      commentPasskey: ["ok", "none", "cooling", "expired"].includes(
+      commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
         params.get("passkey") ?? "",
       )
-        ? (params.get("passkey") as "ok" | "none" | "cooling" | "expired")
+        ? (params.get("passkey") as
+            | "ok"
+            | "none"
+            | "cooling"
+            | "expired"
+            | "many")
         : undefined,
       // ?mock=agents (#1822): agent-authored comments, linked and not.
       commentAgents: params.get("mock") === "agents",

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ApiClientError } from "../src/api/client";
 import {
-  canRetry,
+  coolingTime,
   decodeRequestOptions,
-  passkeyCopy,
   passkeyFailure,
+  passkeyLine,
 } from "../src/viewer/comments/passkey";
 
 const dom = (name: string) => Object.assign(new Error(name), { name });
@@ -27,20 +27,40 @@ describe("passkeyFailure", () => {
   });
 });
 
-describe("passkeyCopy", () => {
-  it("has copy for passkey states and none for others", () => {
-    expect(passkeyCopy({ kind: "no_passkey" })).toMatch(/Add a passkey/);
+describe("passkeyLine and coolingTime", () => {
+  it("has the Design copy", () => {
+    expect(passkeyLine({ kind: "cancelled" })).toEqual({
+      text: "Nothing was approved.",
+      danger: false,
+    });
+    expect(passkeyLine({ kind: "failed" })?.text).toBe(
+      "Passkey check failed. Nothing was approved.",
+    );
+    expect(passkeyLine({ kind: "too_many" })?.text).toBe(
+      "Too many tries. Wait a moment.",
+    );
+    expect(passkeyLine({ kind: "no_passkey" })).toBeNull();
+    expect(passkeyLine({ kind: "other" })).toBeNull();
+  });
+  it("maps already_answered and 429", () => {
     expect(
-      passkeyCopy({ kind: "cooling", until: "2026-11-13T00:00:00Z" }),
-    ).toMatch(/can approve from/);
-    expect(passkeyCopy({ kind: "other" })).toBeNull();
-    for (const k of ["cancelled", "failed", "expired"] as const)
-      expect(canRetry({ kind: k })).toBe(true);
-    expect(canRetry({ kind: "no_passkey" })).toBe(false);
+      passkeyFailure(new ApiClientError("already_answered", "x", 409)).kind,
+    ).toBe("answered");
+    expect(
+      passkeyFailure(new ApiClientError("rate_limited", "x", 429)).kind,
+    ).toBe("too_many");
+  });
+  it("shows a weekday under 7 days and a date after", () => {
+    const now = Date.parse("2026-11-12T10:00:00Z");
+    const soon = coolingTime("2026-11-13T10:00:00Z", now);
+    expect(soon?.text).toMatch(/^[A-Za-z]+\.? \d{2}:\d{2}$/);
+    expect(soon?.title.length).toBeGreaterThan(soon?.text.length ?? 0);
+    expect(coolingTime("2026-12-30T10:00:00Z", now)?.text).not.toMatch(/:/);
+    expect(coolingTime(null)).toBeNull();
   });
   it("uses no em dashes", () => {
-    for (const k of ["cancelled", "failed", "expired", "no_passkey"] as const)
-      expect(passkeyCopy({ kind: k })).not.toContain("—");
+    for (const k of ["cancelled", "failed", "expired", "too_many"] as const)
+      expect(passkeyLine({ kind: k })?.text).not.toContain("\u2014");
   });
 });
 

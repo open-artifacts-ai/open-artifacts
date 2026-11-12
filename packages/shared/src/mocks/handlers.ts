@@ -113,7 +113,7 @@ export type MockOptions = {
   /** Seed an open ask for the caller on "Landing page" (#1535). */
   commentAsks?: boolean;
   /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
-  commentPasskey?: "ok" | "none" | "cooling" | "expired";
+  commentPasskey?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
   commentAgents?: boolean;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
