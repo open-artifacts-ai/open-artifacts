@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { type ClientFrame, LIMITS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AgentRecord, AgentTable } from "../src/agents.ts";
-import { replayInBatches, TakenWatch } from "../src/codex-taken.ts";
+import { replayAcks, TakenWatch } from "../src/codex-taken.ts";
 import { createDeliver, type Mail } from "../src/deliver.ts";
 import { FramePacer } from "../src/pacer.ts";
 import {
@@ -1478,13 +1478,13 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
     ]);
   });
 
-  it("an ack queued locally that never reached the hub is sent after a restart and reconnect", async () => {
-    // The first daemon queued the ack (saved acked) and died before the frame was written.
+  it("an unconfirmed ack is resent after a restart while the target stays away; a confirmed one is not", async () => {
+    // The first daemon queued the ack (saved acked) and died before the hub confirmed it.
     const { w, takenFile, home } = await taken(() => true);
     w.check();
     expect(acked(takenFile)).toBe(true);
-    // The restarted daemon: the thread stays away, so no agent_up redelivers.
     const w2 = new TakenWatch({ home, file: takenFile, onTaken: () => true });
+    expect(w2.unconfirmedIds()).toEqual([ID]);
     const sends: string[] = [];
     const d = createDeliver({
       agents: new AgentTable(),
@@ -1497,16 +1497,30 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
       transports: {},
       onClosed: () => undefined,
     });
-    // hello_ok of the new link.
-    for (const id of w2.takenIds()) d.delivered(id);
+    // hello_ok of the new link, with the cap.
+    replayAcks(
+      w2.unconfirmedIds(),
+      (id) => void d.delivered(id),
+      () => true,
+      () => 10,
+    );
     expect(sends).toEqual([ID]);
+    // The hub answers `acked`: done, across another restart too.
+    w2.confirm(ID);
+    expect(w2.unconfirmedIds()).toEqual([]);
+    expect(
+      new TakenWatch({
+        home,
+        file: takenFile,
+        onTaken: () => true,
+      }).unconfirmedIds(),
+    ).toEqual([]);
   });
 
-  it("takenIds: only taken records within retention, newest first, bounded", async () => {
+  it("unconfirmedIds: only taken records within retention", async () => {
     const { w, home, takenFile } = await taken(() => true);
     w.check();
-    expect(w.takenIds()).toEqual([ID]);
-    expect(w.takenIds(0)).toEqual([]);
+    expect(w.unconfirmedIds()).toEqual([ID]);
     const late = new TakenWatch({
       home,
       file: takenFile,
@@ -1514,38 +1528,37 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
       ttlMs: 1,
       now: () => Date.now() + 60_000,
     });
-    expect(late.takenIds()).toEqual([]);
+    expect(late.unconfirmedIds()).toEqual([]);
   });
 
-  it("an older lost ack behind 500 newer records is still replayed, in batches", () => {
+  it("a replay waits for room, stops when the link closes, and sends the oldest too", () => {
     const ids = Array.from({ length: 701 }, (_, n) => `id${n}`);
     const sent: string[] = [];
     const ticks: (() => void)[] = [];
-    replayInBatches(
+    let room = 0;
+    replayAcks(
       ids,
       (id) => sent.push(id),
       () => true,
+      () => room,
       (fn) => ticks.push(fn),
     );
-    expect(sent).toHaveLength(200); // one batch per tick
+    expect(sent).toEqual([]); // no room: nothing, one tick waits
+    room = 300;
     while (ticks.length) ticks.shift()?.();
-    expect(sent).toEqual(ids); // the oldest, last in line, goes too
-  });
-
-  it("a replay stops when the link closes", () => {
-    const ids = Array.from({ length: 450 }, (_, n) => `id${n}`);
-    const sent: string[] = [];
-    const ticks: (() => void)[] = [];
+    expect(sent).toEqual(ids);
+    const stopped: string[] = [];
     let live = true;
-    replayInBatches(
+    replayAcks(
       ids,
-      (id) => sent.push(id),
+      (id) => stopped.push(id),
       () => live,
+      () => 100,
       (fn) => ticks.push(fn),
     );
     live = false;
     ticks.shift()?.();
-    expect(sent).toHaveLength(200);
+    expect(stopped).toHaveLength(100);
     expect(ticks).toHaveLength(0);
   });
 
@@ -1565,7 +1578,7 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
       const user = (n: number) =>
         ({ v: 1, id: `u${n}`, type: "send" }) as unknown as ClientFrame;
       const ids = Array.from({ length: 450 }, (_, n) => `a${n}`);
-      replayInBatches(
+      replayAcks(
         ids,
         (id) =>
           void p.push(
@@ -1573,13 +1586,11 @@ describe("a late ack is saved only once the hub has it (#2198)", () => {
             id,
           ),
         () => true,
+        () => p.headroom,
         (fn) => {
           setTimeout(fn, 1000);
         },
-        () => p.headroom,
-        200,
       );
-      // A user request arrives mid-replay: kept, and accepted.
       expect(p.push(user(1), "u1")).toBe(true);
       for (let t = 0; t < 120; t++) {
         vi.advanceTimersByTime(1000);

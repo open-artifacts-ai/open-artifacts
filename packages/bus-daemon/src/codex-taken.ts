@@ -48,6 +48,8 @@ export type TakenRecord = {
   skip?: true;
   /** The late ack of `taken` went onto an open hub link (an unsent one is repeated until then). */
   acked?: true;
+  /** The hub answered the ack with `acked` (BUS_CAPS.ackConfirm): settled there, nothing left to send. Only a hub with the cap ever sets it. */
+  confirmed?: true;
 };
 
 /** What a record needs to give back after a failed save. */
@@ -140,26 +142,25 @@ export const startsWithHead = (text: string, head: string): boolean =>
   text.startsWith(`${head}\n\n`);
 
 /**
- * Sends `ids` in batches of at most `batch` (and at most `room()`, the queue
- * headroom) per `after` tick, until done or `live()` turns false (the link
- * closed or a newer one started). A tick with no room sends nothing and waits.
+ * Sends `ids`, at most `room()` per `after` tick (the pacer's headroom, so
+ * live traffic keeps the rest of its queue), until all went or `live()` turns
+ * false (the link closed or a newer one started). A tick with no room waits.
  */
-export function replayInBatches(
+export function replayAcks(
   ids: string[],
   send: (id: string) => void,
   live: () => boolean,
+  room: () => number,
   after: (fn: () => void) => void = (fn) => {
     setTimeout(fn, 1000).unref();
   },
-  room: () => number = () => Number.POSITIVE_INFINITY,
-  batch = 200,
 ): void {
   let i = 0;
   const step = () => {
     if (!live()) return;
-    const n = Math.min(batch, room());
+    const n = Math.max(0, room());
     for (const id of ids.slice(i, i + n)) send(id);
-    i += Math.max(0, n);
+    i += n;
     if (i < ids.length) after(step);
   };
   step();
@@ -317,25 +318,32 @@ export class TakenWatch {
   }
 
   /**
-   * Ids of `taken` records still within their retention, newest first, at most
-   * `max`. A new hub link resends their acks whether or not `acked` is saved:
-   * `acked` only means the frame was queued locally, which proves nothing about
-   * the hub (a restart or a lost write can drop it). The hub's ack is idempotent.
+   * Ids of `taken` records within retention whose ack the hub has not
+   * confirmed, newest first. A new link with BUS_CAPS.ackConfirm sends them
+   * again: `acked` only means the frame was queued locally, which proves
+   * nothing about the hub. The hub's ack is idempotent.
    */
-  takenIds(max = Number.POSITIVE_INFINITY): string[] {
+  unconfirmedIds(): string[] {
     const now = this.#now();
     const out: [string, number][] = [];
     for (const [id, r] of this.#recs)
       if (
         r.state === "taken" &&
         r.head !== undefined &&
+        r.confirmed !== true &&
         now - r.at <= (r.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS)
       )
         out.push([id, r.at]);
-    return out
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, max)
-      .map(([id]) => id);
+    return out.sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  }
+
+  /** The hub confirmed the ack of `id`: done, never sent again. */
+  confirm(id: string): void {
+    const r = this.#recs.get(id);
+    if (!r || r.state !== "taken" || r.confirmed) return;
+    r.confirmed = true;
+    r.acked = true;
+    this.#save();
   }
 
   /** Reads each watched record's new rollout lines; acks what a turn took. */
@@ -521,6 +529,7 @@ export class TakenWatch {
               : {}),
             ...(p.skip === true ? { skip: true as const } : {}),
             ...(p.acked === true ? { acked: true as const } : {}),
+            ...(p.confirmed === true ? { confirmed: true as const } : {}),
             ...(typeof p.ino === "number" ? { ino: p.ino } : {}),
             ...(typeof p.sig === "string" ? { sig: p.sig } : {}),
           };

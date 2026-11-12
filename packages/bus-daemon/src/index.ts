@@ -70,7 +70,7 @@ import {
   writeCodexAway,
 } from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
-import { replayInBatches, TakenWatch } from "./codex-taken.ts";
+import { replayAcks, TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -1292,6 +1292,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubLinkArg = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
+  /** The hub's last hello_ok listed BUS_CAPS.ackConfirm: it answers a mail ack with `acked` (#2198). */
+  let hubAckConfirm = false;
   /** Which link's hello_ok started the current Codex ack replay (#2198). */
   let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
@@ -1432,6 +1434,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        case "acked":
+          codexTaken.confirm(frame.msg_id);
+          return;
         case "waiting_counts":
           waitingAsks.get(frame.id)?.(frame.counts);
           return;
@@ -1451,6 +1456,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             frame.caps?.includes(BUS_CAPS.waitingQuery) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
+          hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1458,15 +1464,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
-          // Every Codex ack still owed is sent again on each new link: a saved
-          // `acked` only meant queued locally (#2198). Paced, bounded, idempotent.
-          {
+          // A hub that confirms acks gets every Codex ack it has not
+          // confirmed again, paced into the queue's spare half (#2198).
+          // Without the cap there is no replay: an ack queued is done.
+          if (hubAckConfirm) {
             const link = ++codexReplayLink;
-            replayInBatches(
-              codexTaken.takenIds(),
+            replayAcks(
+              codexTaken.unconfirmedIds(),
               (id) => void delivery.delivered(id),
               () => hubHelloed && link === codexReplayLink,
-              undefined,
               () => hub.headroom,
             );
           }
@@ -1527,6 +1533,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
+      hubAckConfirm = false;
       hubWaitingQuery = false;
       hubHelloed = false;
       statusRelay.dropped();
