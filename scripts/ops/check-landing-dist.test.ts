@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { probeSignup } from "./check-landing-dist";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const script = join(root, "scripts/ops/check-landing-dist.ts");
@@ -17,10 +18,51 @@ const put = (rel: string, body: string | Buffer) => {
   mkdirSync(dirname(join(dir, rel)), { recursive: true });
   writeFileSync(join(dir, rel), body);
 };
-const run = (d = dir) => {
-  const r = spawnSync("node", [script, d], { encoding: "utf8" });
+const run = (d = dir, extra: string[] = []) => {
+  const r = spawnSync("node", [script, d, ...extra], {
+    encoding: "utf8",
+    env: { ...process.env, HOSTED_SIGNUP_URL: "" },
+  });
   return { code: r.status, out: r.stdout, err: r.stderr };
 };
+const SIGNUP = '<a class="btn p" href="https://app.example.com/sign-up">';
+
+const stub = (status: number, type: ResponseType = "basic") =>
+  (async () => ({ status, type })) as unknown as typeof fetch;
+
+describe("probeSignup (release mode)", () => {
+  const URL_ = "https://signup.example.com/";
+  it("passes on 2xx and 3xx, and on a manual redirect", async () => {
+    expect(await probeSignup(URL_, stub(200))).toBeNull();
+    expect(await probeSignup(URL_, stub(204))).toBeNull();
+    expect(await probeSignup(URL_, stub(302))).toBeNull();
+    expect(await probeSignup(URL_, stub(0, "opaqueredirect"))).toBeNull();
+  });
+  it("fails on 4xx and 5xx and says the status", async () => {
+    expect(await probeSignup(URL_, stub(404))).toContain("answered 404");
+    expect(await probeSignup(URL_, stub(503))).toContain("answered 503");
+  });
+  it("fails when the URL is unset or the request throws", async () => {
+    expect(await probeSignup(undefined, stub(200))).toContain(
+      "HOSTED_SIGNUP_URL is not set",
+    );
+    expect(await probeSignup("  ", stub(200))).toContain("not set");
+    const boom = (async () => {
+      throw new Error("ENOTFOUND");
+    }) as unknown as typeof fetch;
+    expect(await probeSignup(URL_, boom)).toContain("ENOTFOUND");
+  });
+  it("is off unless asked: the CLI only probes with --probe-signup", () => {
+    put(
+      "index.html",
+      `<html><head><meta charset="utf-8"></head>${SIGNUP}Get started free</a>`,
+    );
+    expect(run().code).toBe(0);
+    const r = run(dir, ["--probe-signup"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("HOSTED_SIGNUP_URL is not set");
+  });
+});
 
 describe("check-landing-dist", () => {
   it("fails on TODO in html", () => {
@@ -53,7 +95,10 @@ describe("check-landing-dist", () => {
     expect(r.out).toMatch(/::error::Landing deploy skipped:.*OA-UNRELEASED/);
   });
   it("passes on a clean dir", () => {
-    put("index.html", '<html><head><meta charset="utf-8"></head><p>hi</p>');
+    put(
+      "index.html",
+      `<html><head><meta charset="utf-8"></head><p>hi</p>${SIGNUP}Get started free</a>`,
+    );
     put("llms.txt", "setup");
     const r = run();
     expect(r.code).toBe(0);
@@ -74,6 +119,26 @@ describe("check-landing-dist", () => {
     expect(r.out).toContain("HOSTED_SIGNUP_URL");
     expect(r.out).toContain(`${join(dir, "index.html")}:3`);
     expect(r.out).not.toContain(`${join(dir, "index.html")}:2`);
+  });
+  it("fails when the home page has no Get started free link at all", () => {
+    put("index.html", page('<a href="#self-host">Self-host it</a>'));
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('no "Get started free" link on the home page');
+  });
+  it("finds the label inside inner tags, and checks that link too", () => {
+    put(
+      "index.html",
+      page(
+        '<a class="btn" href="#pricing"><span>Get started\n free</span></a>',
+      ),
+    );
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Get started free link without a sign-up URL");
+    expect(r.out).not.toContain('no "Get started free" link');
+    put("index.html", page(`${SIGNUP}<span>Get started free</span></a>`));
+    expect(run().code).toBe(0);
   });
   it("fails when a Get started free link has no href", () => {
     put("index.html", page("<a>Get started free</a>"));

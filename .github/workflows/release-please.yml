@@ -120,7 +120,11 @@ jobs:
       # Re-run via workflow_dispatch with the tag once the landing is clean.
       - name: Check landing is release-ready
         if: steps.gate.outputs.present == 'true'
-        run: node scripts/ops/check-landing-dist.ts apps/landing/dist
+        env:
+          HOSTED_SIGNUP_URL: https://signup.open-artifacts.app/
+        # --probe-signup also requests the sign-up URL and fails unless it
+        # answers 2xx or 3xx, so a release cannot ship dead sign-up buttons.
+        run: node scripts/ops/check-landing-dist.ts apps/landing/dist --probe-signup
       - name: Deploy landing to production (open-artifacts.com)
         if: steps.gate.outputs.present == 'true'
         run: cd apps/landing && pnpm exec wrangler deploy

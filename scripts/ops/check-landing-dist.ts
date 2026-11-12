@@ -1,6 +1,10 @@
 // Release gate: fail if the built landing site still contains TODO fallbacks
 // or unrendered {{ placeholders }}, or if a page doesn't declare UTF-8 first
-// in <head> (the hero's glyphs turn to mojibake otherwise). Usage: node check-landing-dist.ts [distDir]
+// in <head> (the hero's glyphs turn to mojibake otherwise), or if the home
+// page's "Get started free" buttons are missing or do not go to the hosted
+// sign-up URL. Usage: node check-landing-dist.ts [distDir] [--probe-signup]
+// --probe-signup (release only) also requests HOSTED_SIGNUP_URL and fails
+// unless it answers 2xx or 3xx, so a release cannot ship dead sign-up buttons.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -17,8 +21,11 @@ const TEXT_EXT = new Set([
   ".css",
 ]);
 const TOKENS = ["TODO", "{{", "OA-UNRELEASED"];
+const SIGNUP_LABEL = "Get started free";
 const NO_SIGNUP =
   'Get started free link without a sign-up URL (set HOSTED_SIGNUP_URL for the landing build; its href is "#pricing" or missing)';
+const NO_BUTTONS =
+  'no "Get started free" link on the home page (the sign-up buttons are gone)';
 const CHARSET = /<head[^>]*>\s*<meta charset="utf-8"\s*\/?>/i;
 const MAX_LINES = 20;
 
@@ -28,6 +35,23 @@ function* walk(dir: string): Generator<string> {
     if (e.isDirectory()) yield* walk(p);
     else if (e.isFile()) yield p;
   }
+}
+
+/** Links whose visible text is "Get started free", even with inner tags. */
+function signupLinks(body: string) {
+  const out: { index: number; href: string | undefined }[] = [];
+  for (const m of body.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)) {
+    const text = (m[2] ?? "")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text !== SIGNUP_LABEL) continue;
+    out.push({
+      index: m.index ?? 0,
+      href: /\bhref="([^"]*)"/.exec(m[1] ?? "")?.[1]?.trim(),
+    });
+  }
+  return out;
 }
 
 export function scan(
@@ -47,31 +71,66 @@ export function scan(
     });
     // Every "Get started free" button must go to the hosted sign-up URL, which
     // the build gets from HOSTED_SIGNUP_URL. Without it the link falls back to
-    // the pricing table.
-    if (extname(file).toLowerCase() === ".html")
-      for (const m of body.matchAll(
-        /<a\b([^>]*)>\s*Get started free\s*<\/a>/g,
-      )) {
-        const href = /\bhref="([^"]*)"/.exec(m[1] ?? "")?.[1]?.trim();
-        if (!href || href === "#pricing" || href === "#")
+    // the pricing table. The home page must have them at all.
+    if (extname(file).toLowerCase() === ".html") {
+      const links = signupLinks(body);
+      for (const l of links)
+        if (!l.href || l.href === "#pricing" || l.href === "#")
           hits.push({
             file,
-            line: body.slice(0, m.index).split("\n").length,
+            line: body.slice(0, l.index).split("\n").length,
             token: NO_SIGNUP,
           });
-      }
+      if (file === join(dist, "index.html") && links.length === 0)
+        hits.push({ file, line: 1, token: NO_BUTTONS });
+    }
   }
   return hits;
 }
 
-function main(): number {
-  const dist = resolve(process.argv[2] ?? join(root, "apps/landing/dist"));
+/**
+ * Release mode: the sign-up URL must be set and must answer 2xx or 3xx.
+ * Returns an error message, or null when it is fine. `fetchFn` is injectable.
+ */
+export async function probeSignup(
+  url: string | undefined,
+  fetchFn: typeof fetch = fetch,
+): Promise<string | null> {
+  const u = url?.trim();
+  if (!u) return "HOSTED_SIGNUP_URL is not set, so there is nothing to probe";
+  try {
+    const res = await fetchFn(u, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    });
+    // Redirects are fine: a manual redirect shows up as 3xx (or opaque, 0).
+    if (
+      (res.status >= 200 && res.status < 400) ||
+      res.type === "opaqueredirect"
+    )
+      return null;
+    return `the sign-up URL ${u} answered ${res.status}; sign-up buttons would be dead links`;
+  } catch (e) {
+    return `the sign-up URL ${u} could not be reached (${e instanceof Error ? e.message : String(e)})`;
+  }
+}
+
+async function main(): Promise<number> {
+  const args = process.argv.slice(2);
+  const probe = args.includes("--probe-signup");
+  const dist = resolve(
+    args.find((a) => !a.startsWith("--")) ?? join(root, "apps/landing/dist"),
+  );
   if (!existsSync(dist) || !statSync(dist).isDirectory()) {
     console.error(`::error::landing dist not found: ${dist}`);
     return 2;
   }
   const hits = scan(dist);
-  if (hits.length === 0) {
+  const probeError = probe
+    ? await probeSignup(process.env.HOSTED_SIGNUP_URL)
+    : null;
+  if (hits.length === 0 && !probeError) {
     console.log("ok: landing dist clean");
     return 0;
   }
@@ -81,9 +140,11 @@ function main(): number {
     );
   if (hits.length > MAX_LINES)
     console.log(`... and ${hits.length - MAX_LINES} more`);
+  if (probeError)
+    console.log(`::error::landing not release-ready: ${probeError}`);
   const files = new Set(hits.map((h) => h.file)).size;
   console.log(
-    `::error::Landing deploy skipped: ${hits.length} ${TOKENS.join(" / ")} / missing charset / sign-up link hit(s) in ${files} file(s). The release is already created; fix the landing, then re-run this workflow via workflow_dispatch with the tag.`,
+    `::error::Landing deploy skipped: ${hits.length} ${TOKENS.join(" / ")} / missing charset / sign-up link hit(s) in ${files} file(s)${probeError ? " and a sign-up URL that does not answer" : ""}. The release is already created; fix the landing, then re-run this workflow via workflow_dispatch with the tag.`,
   );
   return 1;
 }
@@ -92,5 +153,5 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  process.exit(main());
+  process.exit(await main());
 }

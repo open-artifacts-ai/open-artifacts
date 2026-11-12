@@ -66,12 +66,18 @@ describe("phone versions card at 390px", () => {
     await card.waitFor({ state: "visible" });
     // A click while the piece is still moving (the fade-in, the banner opening)
     // can miss; Playwright then retries by scrolling the page, which moves the
-    // locked screen off this beat. So wait for every animation and transition
-    // in the screen to finish before each click.
+    // locked screen off this beat. So wait for every finite animation and
+    // transition in the screen to finish before each click (an endless one,
+    // like a blinking cursor, never finishes and must not block).
     const settled = () =>
       page.waitForFunction(() =>
         (document.querySelector(".pl-slot.on") as HTMLElement)
           .getAnimations({ subtree: true })
+          .filter(
+            (a) =>
+              a.effect?.getComputedTiming().iterations !==
+              Number.POSITIVE_INFINITY,
+          )
           .every((a) => a.playState === "finished"),
       );
     await settled();

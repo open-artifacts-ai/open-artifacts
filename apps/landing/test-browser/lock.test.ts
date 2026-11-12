@@ -59,6 +59,13 @@ describe("phone locked story", () => {
     expect(await page.locator("#lp").getAttribute("data-pl")).toBe("1");
     expect(await page.locator("#story").isVisible()).toBe(false);
     expect(await page.locator("#sc").isVisible()).toBe(false);
+    // the locked screen resizes inside itself; the browser must not scroll the
+    // page to compensate
+    expect(
+      await page
+        .locator("#pl")
+        .evaluate((e) => getComputedStyle(e).overflowAnchor),
+    ).toBe("none");
     await ctx.close();
   });
 
@@ -169,6 +176,12 @@ describe("phone locked story", () => {
     expect(await page.locator("#lp").getAttribute("data-pl")).toBe("0");
     expect(await page.locator("#pl").isVisible()).toBe(false);
     expect(await page.locator("#story").isVisible()).toBe(true);
+    // the scroll-anchoring opt-out belongs to the locked screen only
+    expect(
+      await page
+        .locator("#pl")
+        .evaluate((e) => getComputedStyle(e).overflowAnchor),
+    ).toBe("auto");
     await page.close();
   });
 });
