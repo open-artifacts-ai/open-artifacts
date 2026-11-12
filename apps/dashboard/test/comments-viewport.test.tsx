@@ -5,6 +5,7 @@ import {
   fieldCap,
   keyboardInset,
   onViewport,
+  onViewportResize,
   sheetLift,
   trackViewportVar,
   viewBottom,
@@ -65,6 +66,26 @@ describe("viewport helpers (#2239)", () => {
     expect(viewHeight()).toBe(window.innerHeight);
     expect(fieldCap(1e6)).toBe(window.innerHeight * 0.4);
   });
+  it("pinch zoom plus the keyboard never goes negative", () => {
+    const t = vv(250);
+    t.scale = 2; // 500 visible of 844
+    vi.stubGlobal("innerHeight", 844);
+    expect(keyboardInset()).toBe(344);
+    expect(sheetLift()).toBeGreaterThanOrEqual(0);
+    t.height = 600; // zoomed taller than the layout viewport
+    expect(keyboardInset()).toBe(0);
+    expect(sheetLift()).toBe(0);
+  });
+  it("onViewportResize ignores pans", () => {
+    const t = vv(800);
+    const fn = vi.fn();
+    const off = onViewportResize(fn);
+    t.dispatchEvent(new Event("scroll"));
+    expect(fn).not.toHaveBeenCalled();
+    t.dispatchEvent(new Event("resize"));
+    expect(fn).toHaveBeenCalledTimes(1);
+    off();
+  });
   it("browser chrome is not a keyboard", () => {
     vv(window.innerHeight - 60);
     expect(keyboardInset()).toBe(0);
@@ -92,6 +113,27 @@ describe("viewport helpers (#2239)", () => {
     expect(root.getPropertyValue("--oa-vvh")).toBe("4px");
     off();
     expect(root.getPropertyValue("--oa-vvh")).toBe("");
+  });
+});
+
+describe("focusField after blur (#2267)", () => {
+  it("stops adjusting once the field loses focus", () => {
+    vi.useFakeTimers();
+    const t = vv(window.innerHeight);
+    const sc = document.createElement("div");
+    sc.style.overflowY = "auto";
+    sc.innerHTML = "<textarea></textarea>";
+    const el = sc.lastElementChild as HTMLTextAreaElement;
+    sc.getBoundingClientRect = () => ({ top: 0, bottom: 400 }) as DOMRect;
+    el.getBoundingClientRect = () => ({ top: 330, bottom: 380 }) as DOMRect;
+    document.body.append(sc);
+    focusField(el);
+    el.blur();
+    t.height = 300;
+    t.dispatchEvent(new Event("resize"));
+    expect(sc.scrollTop).toBe(0);
+    vi.useRealTimers();
+    sc.remove();
   });
 });
 

@@ -668,6 +668,10 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         me.displayName = r.data.displayName;
         me.needsDisplayName = false;
         me.user.name = r.data.displayName;
+        // #2277: the mock's stand-in for the server's agent-name check.
+        me.nameHiddenAs = /\bagent\b/i.test(r.data.displayName)
+          ? "email"
+          : null;
       }
       if (r.data.commentEmail !== undefined)
         me.commentEmail = r.data.commentEmail;

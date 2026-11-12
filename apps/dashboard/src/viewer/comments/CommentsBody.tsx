@@ -64,6 +64,7 @@ import {
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
 import { numbering, pinChanged, pinNumbering } from "./model";
+import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
 import { type CommentsApi, useCommentsApi } from "./useComments";
@@ -71,6 +72,7 @@ import {
   fieldCap,
   keyboardInset,
   onViewport,
+  onViewportResize,
   trackViewportVar,
   viewBottom,
 } from "./viewport";
@@ -264,6 +266,7 @@ export function focusField(el: HTMLElement | null) {
   if (!el) return;
   el.focus({ preventScroll: true });
   const adjust = () => {
+    if (document.activeElement !== el) return;
     const box = scrollerOf(el);
     if (!box || !el.isConnected) return;
     const head =
@@ -464,7 +467,7 @@ function Composer({
   }, []);
   // #2239: the keyboard changes the cap (40% of what is visible).
   useEffect(() => {
-    const off = onViewport(() => growField(ref.current));
+    const off = onViewportResize(() => growField(ref.current));
     const untrack = trackViewportVar();
     return () => {
       off();
@@ -682,15 +685,37 @@ function Composer({
 
 export { initials };
 
+/** #2247: how much wider the header must get before a step is taken back (px). */
+export const GIVE_BACK = 24;
+
+/**
+ * The stage a header of `width` can go back down to. `gave[s]` is the width at
+ * which stage s was needed; a stage is given back only once the header is
+ * GIVE_BACK wider than that, so a drag that jitters around a boundary does
+ * not flicker between two stages.
+ */
+export function stageFor(
+  stage: number,
+  gave: readonly number[],
+  width: number,
+) {
+  let s = stage;
+  while (s > 0 && width >= (gave[s] ?? 0) + GIVE_BACK) s--;
+  return s;
+}
+
 /**
  * #2229: a header that is too tight for the faces gives way in order: the time
  * first (it stays in the name's tooltip), then the faces down to the summary
- * mark and its count, and only then the name truncates. Measured: while the
- * name is cut off, step once more; a new width starts over.
+ * mark and its count, and only then the name truncates. While the name is cut
+ * off, step once more, noting the width. #2247: it steps back down only when
+ * the width has grown past that note by GIVE_BACK, however the width moves.
  */
 function useTightHeader(active: boolean) {
   const ref = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState(0);
+  const [, tick] = useState(0);
+  const gave = useRef<number[]>([]);
   const width = useRef(0);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -698,16 +723,27 @@ function useTightHeader(active: boolean) {
     const ro = new ResizeObserver(() => {
       if (el.clientWidth === width.current) return;
       width.current = el.clientWidth;
-      setStage(0);
+      // Down if there is room; either way a render re-checks the name below.
+      setStage((s) => stageFor(s, gave.current, width.current));
+      tick((n) => n + 1);
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, [active]);
   // Runs after every render: one step per cut-off name, until it fits or nothing is left to give.
   useLayoutEffect(() => {
-    const name = ref.current?.querySelector<HTMLElement>("[data-author-name]");
-    if (active && name && name.scrollWidth > name.clientWidth && stage < 2)
+    const el = ref.current;
+    const name = el?.querySelector<HTMLElement>("[data-author-name]");
+    if (
+      active &&
+      el &&
+      name &&
+      name.scrollWidth > name.clientWidth &&
+      stage < 2
+    ) {
+      gave.current[stage + 1] = el.clientWidth;
       setStage(stage + 1);
+    }
   });
   return { ref, stage: active ? stage : 0 };
 }
@@ -788,6 +824,7 @@ function CommentRow({
   const marks = !api.guest && !api.capped && c.author.kind !== "agent";
   const problems = allProblems.get(c.id);
   const tight = useTightHeader(marks && !!c.notified?.length);
+  const roving = useRoving<HTMLParagraphElement>();
   return (
     <li
       className="flex flex-col gap-1"
@@ -883,7 +920,7 @@ function CommentRow({
             guest={api.guest}
           />
         ) : (
-          <p className={`whitespace-pre-wrap break-words ${CTXT}`}>
+          <p className={`whitespace-pre-wrap break-words ${CTXT}`} {...roving}>
             <MentionedText
               body={c.body}
               mentions={c.mentions}

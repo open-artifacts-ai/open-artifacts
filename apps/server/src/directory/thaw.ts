@@ -3,6 +3,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
 import { revokeUsersLive } from "../runtime/revoke.js";
+import { HK } from "./health.js";
 
 // P3 T15: sync back on after a freeze (Team to Business). It runs after the
 // reconcile's group walks, so directory_members is fresh. Each frozen edit
@@ -175,6 +176,21 @@ export function validEdit(r: Row): Pair {
     logWarn("directory_thaw_invalid", new Error("frozen edit out of range"));
   return { s: r.s, u: r.u, t: r.t, m, k: k ?? "delete" };
 }
+
+/**
+ * Marks a thaw's start (HK.thaw, /me's lastThaw.id) when frozen edits wait:
+ * once per reconcile run, `id` its startedAt. No edits, no marker, so a later
+ * reconcile with nothing to put back leaves the last thaw's notice be.
+ */
+export const markThaw = (env: Pick<Env, "DB">, id: number) =>
+  stmt(
+    env.DB,
+    `insert into directory_state (key, value)
+      select ?1, ?2 where exists (select 1 from frozen_edits)
+      on conflict(key) do update set value = excluded.value`,
+  )
+    .bind(HK.thaw, String(id))
+    .run();
 
 /** Users whose socket close is owed (DirectorySync's kv). */
 export type PendingRevokes = {

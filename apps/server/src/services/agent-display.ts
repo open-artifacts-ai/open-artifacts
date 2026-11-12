@@ -215,10 +215,39 @@ export const skeleton = (name: string): string =>
     .replace(/i/g, "l")
     .replace(/[^\p{L}\p{N}]/gu, "");
 
-/** A name ending in "'s agent" after folding: any apostrophe, case, trailing punctuation. */
-const AGENT_SUFFIX = /['\u2018\u2019\u02bc\u2032\u00b4`]\s*s\s*agent$/u;
-export const readsAsAgent = (name: string): boolean =>
-  AGENT_SUFFIX.test(fold(name).replace(/[\p{P}\p{S}\s]+$/u, ""));
+// #1894: phrasings that read as an agent, matched on the folded name. The agent
+// word counts only after a possessive or separator, or leading in "Agent of X",
+// so Agent Smith, Agnes, Botha, Abbot, Ai Weiwei, Claude Monet and Aiden stay names.
+const APOS = /['\u2018\u2019\u02bc\u2032\u00b4`]/gu;
+// Digits fold to l/o lookalikes, so a trailing number may arrive as those.
+const NUM = String.raw`(?:\s*#?[\dlo]{1,3})?`;
+const AGENT_PATTERNS: RegExp[] = [
+  // "Leo's agent", "Leo's AI agent", "Leo's Claude Code", "Leo's agents"
+  new RegExp(
+    String.raw`'\s*s\s+(?:\S+\s+){0,2}(?:agent|assistant|bot|ai|claude(?:\s+code)?)s?${NUM}$`,
+    "u",
+  ),
+  // "Leos agent" (no apostrophe): only the unambiguous words
+  new RegExp(String.raw`\S+s\s+(?:agent|assistant)${NUM}$`, "u"),
+  // "Leo, agent", "Leo: agent", "Leo / agent", "Leo | agent" (folds to l), "Leo - agent" ("ai" excluded: "Wei, Ai" is a name)
+  new RegExp(
+    String.raw`(?:[,:/]|\s[-\u2013\u2014]+|\sl\s)\s*(?:agent|assistant|bot)${NUM}$`,
+    "u",
+  ),
+  // "Leo (agent)", "Leo [AI]"
+  new RegExp(
+    String.raw`[(\[{<]\s*(?:agent|assistant|bot|ai)[)\]}>]?${NUM}$`,
+    "u",
+  ),
+  // "Agent of Leo", "Assistant to Leo"
+  /^(?:agent|assistant|bot|ai)\s+(?:of|to|for)\s+\S/u,
+];
+export const readsAsAgent = (name: string): boolean => {
+  const n = fold(name)
+    .replace(APOS, "'")
+    .replace(/[\p{P}\p{S}\s]+$/u, (t) => (/^[)\]}>]/u.test(t) ? t[0] : ""));
+  return AGENT_PATTERNS.some((re) => re.test(n));
+};
 
 /** A name an agent may show: one that reads as a person's agent shows the product, or "Agent". */
 export const plainAgentName = (name: string, product?: string): string =>
