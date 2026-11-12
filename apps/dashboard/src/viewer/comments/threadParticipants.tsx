@@ -236,8 +236,10 @@ export function ThreadParticipants({
                         title={`Stop notifying ${a.name} in this thread`}
                         className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
                         data-agent-x={a.key}
-                        disabled={rm.set.isPending}
-                        onClick={() => run(a, true)}
+                        aria-disabled={rm.set.isPending || undefined}
+                        onClick={() => {
+                          if (!rm.set.isPending) run(a, true);
+                        }}
                       >
                         ×
                       </button>
