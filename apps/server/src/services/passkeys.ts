@@ -288,20 +288,68 @@ export async function verifyForScope(
 
 export type Account = { id: string; email: string; name?: string | null };
 
+const REGISTER_AUTH = "register-auth";
+
+/** Passkeys that must approve adding another: past cooling and not pending removal. */
+const approvers = (rows: PasskeyRow[], now: number) =>
+  usable(rows, now).filter((r) => r.removal_at === null);
+
+/**
+ * With a usable passkey already on the account, adding another needs an
+ * assertion from it (scope "register-auth", bound to "register") on top of
+ * the fresh re-auth. This is its challenge; 409 when none is needed.
+ */
+export async function registerAuthChallenge(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<PasskeyChallenge> {
+  const rows = await rowsOf(env, userId, now);
+  if (approvers(rows, now).length === 0)
+    throw new ApiError("conflict", "No passkey needs to approve this");
+  return requestOptions(
+    env,
+    userId,
+    "register",
+    REGISTER_AUTH,
+    "register",
+    now,
+  );
+}
+
 export async function registerBegin(
   env: Env,
   user: Account,
+  assertion: unknown,
   now = Date.now(),
 ): Promise<PasskeyChallenge> {
   const rows = await rowsOf(env, user.id, now);
   if (rows.length >= MAX_PASSKEYS)
     throw new ApiError("conflict", `At most ${MAX_PASSKEYS} passkeys`);
+  const needed = approvers(rows, now).length > 0;
+  if (needed) {
+    if (assertion === undefined || assertion === null)
+      throw new ApiError(
+        "passkey_required",
+        "Approve adding a passkey with one you already have",
+      );
+    await verifyForScope(
+      env,
+      user.id,
+      "register",
+      REGISTER_AUTH,
+      "register",
+      assertion,
+      now,
+    );
+  }
+  // "authed" is written by the server alone: registerFinish reads it.
   const { challenge, expiresAt } = await issue(
     env,
     user.id,
     "register",
     "register",
-    "register",
+    needed ? "authed" : "register",
     now,
   );
   const name = (await getSettings(env)).name;
@@ -352,6 +400,15 @@ export async function registerFinish(
     .first<ChallengeRow>();
   if (!row || row.used_at !== null || row.expires_at <= now)
     throw new ApiError("challenge_expired", "Start adding the passkey again");
+  // An account with a usable passkey needs begin to have verified it.
+  if (
+    approvers(await rowsOf(env, user.id, now), now).length > 0 &&
+    row.binding !== "authed"
+  )
+    throw new ApiError(
+      "passkey_required",
+      "Approve adding a passkey with one you already have",
+    );
   const res = await stmt(
     env.DB,
     "update pick_assertions set used_at = ?1 where id = ?2 and used_at is null and expires_at > ?1",
