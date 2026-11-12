@@ -484,31 +484,52 @@ describe("DocEditor", () => {
     );
   });
 
-  it("on doc_too_large goes read-only with the size message, then reconnects once", async () => {
+  it("on doc_too_large goes read-only, then resyncs into a fresh Y.Doc without the rejected text", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
     await screen.findByRole("toolbar");
-    const fake = p.made.last as NonNullable<typeof p.made.last>;
-    act(() => fake.connect());
-    expect(fake.connects).toBe(1);
+    const first = p.made.last as NonNullable<typeof p.made.last>;
+    act(() => first.connect());
+    // A local edit the server will reject.
+    act(() => {
+      const para = new Y.XmlElement("paragraph");
+      const text = new Y.XmlText();
+      text.insert(0, "rejected text");
+      para.insert(0, [text]);
+      first.doc.getXmlFragment("default").insert(0, [para]);
+    });
+    await waitFor(() =>
+      expect(document.querySelector(".ProseMirror")?.textContent).toContain(
+        "rejected text",
+      ),
+    );
     const frame = JSON.stringify({ type: "error", code: "doc_too_large" });
-    act(() => fake.frame(frame));
+    act(() => first.frame(frame));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "This doc is at its size limit for your plan.",
     );
+    // A new provider on a new Y.Doc; the old room is gone.
+    await waitFor(() => expect(p.made.last).not.toBe(first));
+    const second = p.made.last as NonNullable<typeof p.made.last>;
+    expect(second.doc).not.toBe(first.doc);
+    expect(first.destroyed).toBe(true);
+    expect(first.sentUpdates).toHaveLength(0);
+    act(() => second.connect());
     await waitFor(() =>
-      expect(
-        document.querySelector(".ProseMirror")?.getAttribute("contenteditable"),
-      ).toBe("false"),
+      expect(document.querySelector(".ProseMirror")?.textContent).not.toContain(
+        "rejected text",
+      ),
     );
+    // Still read-only with the message.
+    expect(screen.getByRole("alert")).toBeVisible();
     expect(screen.queryByRole("toolbar")).toBeNull();
-    // The provider reconnects to resync: a disconnect, then a connect.
-    await waitFor(() => expect(fake.connects).toBe(2));
-    expect(fake.disconnects).toBe(1);
-    // A second frame does not start a reconnect loop.
-    act(() => fake.frame(frame));
+    expect(
+      document.querySelector(".ProseMirror")?.getAttribute("contenteditable"),
+    ).toBe("false");
+    // A repeat error does not rebuild again.
+    act(() => second.frame(frame));
     await new Promise((r) => setTimeout(r, 20));
-    expect(fake.connects).toBe(2);
+    expect(p.made.last).toBe(second);
   });
 
   it("reports Saving, Saved and Offline for the title bar", async () => {

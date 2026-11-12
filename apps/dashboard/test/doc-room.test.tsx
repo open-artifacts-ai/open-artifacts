@@ -144,22 +144,51 @@ describe("doc room error frames", () => {
     room.destroy();
   });
 
-  it("after doc_too_large reconnects the provider once to resync", () => {
-    const room = open();
+  it("asks for a fresh room once after doc_too_large, and a replacement does not", () => {
+    const onResync = vi.fn();
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { onResync },
+    );
     fake.connect();
-    expect([fake.connects, fake.disconnects]).toEqual([1, 0]);
     const frame = JSON.stringify({ type: "error", code: "doc_too_large" });
     fake.frame(frame);
+    expect(onResync).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect([fake.connects, fake.disconnects]).toEqual([2, 1]);
+    expect(onResync).toHaveBeenCalledTimes(1);
     expect(room.getSnapshot().error).toBe("doc_too_large");
-    // Synced again: the room is back to Saved, the error still shown.
-    expect(room.getSnapshot().status).toBe("saved");
-    // The new socket is watched too, and a repeat does not reconnect again.
     fake.frame(frame);
     vi.advanceTimersByTime(1000);
-    expect([fake.connects, fake.disconnects]).toEqual([2, 1]);
+    expect(onResync).toHaveBeenCalledTimes(1);
+    expect([fake.connects, fake.disconnects]).toEqual([1, 0]);
     room.destroy();
+
+    // A replacement starts with the error and never asks again.
+    const again = vi.fn();
+    const next = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { error: "doc_too_large", onResync: again },
+    );
+    expect(next.getSnapshot().error).toBe("doc_too_large");
+    fake.connect();
+    fake.frame(frame);
+    vi.advanceTimersByTime(1000);
+    expect(again).not.toHaveBeenCalled();
+    next.destroy();
+  });
+
+  it("destroy(true) drops unsent edits", () => {
+    const room = open();
+    fake.connect();
+    type(room, "rejected");
+    room.destroy(true);
+    expect(fake.sentUpdates).toHaveLength(0);
   });
 
   it("does not reconnect for other errors", () => {

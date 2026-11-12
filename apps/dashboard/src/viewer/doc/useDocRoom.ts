@@ -42,9 +42,6 @@ export interface RoomProvider {
   // biome-ignore lint/suspicious/noExplicitAny: as above.
   off(event: string, cb: (...a: any[]) => void): void;
   destroy(): void;
-  /** y-websocket's socket control; the room uses them to resync after doc_too_large. */
-  disconnect?(): void;
-  connect?(): void;
   // y-websocket's own senders. The room replaces them with batched ones.
   _updateHandler?: (update: Uint8Array, origin: unknown) => void;
   _awarenessUpdateHandler?: (
@@ -58,7 +55,8 @@ export interface DocRoom {
   provider: RoomProvider;
   subscribe(cb: () => void): () => void;
   getSnapshot(): DocSnapshot;
-  destroy(): void;
+  /** discard: drop unsent edits instead of sending them (a resync). */
+  destroy(discard?: boolean): void;
 }
 
 /**
@@ -89,11 +87,24 @@ export function defaultProvider(artifactId: string, ydoc: Y.Doc): RoomProvider {
  */
 export function createDocRoom(
   makeProvider: (ydoc: Y.Doc) => RoomProvider,
+  opts: {
+    /** A room that replaces one that hit doc_too_large: starts with that error. */
+    error?: string | null;
+    /**
+     * Called once, when the server rejects an edit as too large. The server
+     * dropped it and y-protocols will not resend it, but it is still in this
+     * Y.Doc: the owner replaces the room with a fresh one.
+     */
+    onResync?: () => void;
+  } = {},
 ): DocRoom {
   const ydoc = new Y.Doc();
   const provider = makeProvider(ydoc);
   const listeners = new Set<() => void>();
-  let snapshot: DocSnapshot = { status: "connecting", error: null };
+  let snapshot: DocSnapshot = {
+    status: "connecting",
+    error: opts.error ?? null,
+  };
 
   let connected = !!provider.wsconnected;
   let sawDisconnect = false;
@@ -104,8 +115,9 @@ export function createDocRoom(
   let unsent = false;
   let batchTimer: ReturnType<typeof setTimeout> | undefined;
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
-  let error: string | null = null;
-  let resynced = false;
+  let error: string | null = opts.error ?? null;
+  // A replacement room never asks for another replacement.
+  let resynced = !!opts.error;
   let destroyed = false;
 
   const compute = (): DocStatus => {
@@ -208,15 +220,12 @@ export function createDocRoom(
         if (frame.type === "error") {
           error = typeof frame.code === "string" ? frame.code : "error";
           publish();
-          // The server dropped that edit and y-protocols will not send it
-          // again: reconnect (once) so the sync exchange brings us back to
-          // what the server holds. The editor is read-only meanwhile.
+          // The rejected edit is still in this Y.Doc: ask for a fresh room
+          // (once). The editor is read-only meanwhile and after.
           if (error === DOC_TOO_LARGE_CODE && !resynced) {
             resynced = true;
             setTimeout(() => {
-              if (destroyed) return;
-              provider.disconnect?.();
-              provider.connect?.();
+              if (!destroyed) opts.onResync?.();
             }, 0);
           }
         }
@@ -256,12 +265,12 @@ export function createDocRoom(
       return () => listeners.delete(cb);
     },
     getSnapshot: () => snapshot,
-    destroy() {
+    destroy(discard = false) {
       destroyed = true;
       clearTimeout(batchTimer);
       clearTimeout(drainTimer);
-      // Send what is still waiting, then leave.
-      if (buffer) sendUpdate?.(buffer, null);
+      // Send what is still waiting, then leave (unless it is being thrown away).
+      if (buffer && !discard) sendUpdate?.(buffer, null);
       buffer = null;
       provider.awareness.off("update", onAwareness);
       provider.awareness.setLocalState(null);
@@ -294,10 +303,24 @@ export function useDocRoom(
   const [room, setRoom] = useState<DocRoom | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: makeProvider is a stable seam.
   useEffect(() => {
-    const r = createDocRoom((ydoc) => makeProvider(artifactId, ydoc));
-    setRoom(r);
+    let current: DocRoom;
+    const open = (error?: string | null) => {
+      current = createDocRoom((ydoc) => makeProvider(artifactId, ydoc), {
+        error,
+        onResync: () => {
+          // doc_too_large: the rejected edit is in the local Y.Doc. Rebuild
+          // the room (Y.Doc and provider; the editor rebinds to it) so local
+          // state is what the server holds. It stays read-only.
+          const old = current;
+          open(DOC_TOO_LARGE_CODE);
+          old.destroy(true);
+        },
+      });
+      setRoom(current);
+    };
+    open();
     return () => {
-      r.destroy();
+      current.destroy();
       setRoom(null);
     };
   }, [artifactId]);
