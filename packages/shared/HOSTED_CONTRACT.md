@@ -408,6 +408,10 @@ billing's answer predates it (unknown: the dashboard keeps Manage billing).
 and Business prices are configured in this environment; absent or false hides
 yearly Team and Business in the dashboard. Owner and admins only, like
 `hasCustomer`; billing's `GET /tier` answer carries it and the server passes it on.
+`overageDue` (`{ amountCents, months }`, optional): the extra-creator charges
+that failed and are unpaid (#2246), total in cents and months as `YYYY-MM`,
+oldest first. Billing sends null for none; the server passes it on only when
+present, owner and admins only. A notice only: it never moves tier or access.
 
 | State | What it does | `reason` |
 |---|---|---|
