@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.160.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.159.0...v0.160.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** billing turns yearly Team and Business on per environment (yearlyTeamBusiness) ([#2251](https://github.com/open-artifacts-ai/open-artifacts/issues/2251)) ([47d1b4a](https://github.com/open-artifacts-ai/open-artifacts/commit/47d1b4a9f9b896f7cb083003707f34a9a8be09f4))
+* **comments:** delivery shows as marks on the chip and faces in the header ([#2229](https://github.com/open-artifacts-ai/open-artifacts/issues/2229)) ([#2243](https://github.com/open-artifacts-ai/open-artifacts/issues/2243)) ([65a2819](https://github.com/open-artifacts-ai/open-artifacts/commit/65a2819c4cbb846b890d661dd83d73e456239154))
+
+
+### Bug Fixes
+
+* **settings:** a Team owner can disconnect a leftover Google Workspace grant in Connections ([#2149](https://github.com/open-artifacts-ai/open-artifacts/issues/2149)) ([#2245](https://github.com/open-artifacts-ai/open-artifacts/issues/2245)) ([c0b0f02](https://github.com/open-artifacts-ai/open-artifacts/commit/c0b0f029c75269013dfa4672fe698e6a636d9f13))
+
 ## [0.159.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.158.0...v0.159.0) (2026-11-12)
 
 
