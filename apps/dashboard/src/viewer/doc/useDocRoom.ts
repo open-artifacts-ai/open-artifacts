@@ -171,10 +171,21 @@ export function roomServerUrl(): string {
 
 export const roomName = (artifactId: string) => `${artifactId}/doc`;
 
+/**
+ * Which server closes y-websocket reconnects after. Its default treats every
+ * 4400-4499 close as final, but the wire spec's 4401 auth_expired means "the
+ * cookie re-authorizes: reconnect silently". Only 4403 (access removed) and
+ * 4404 (doc deleted) are final; 1007 and 1013 reconnect (1007 once, see the
+ * room), with the provider's backoff.
+ */
+export const roomShouldReconnect = (e: { code: number }): boolean =>
+  e.code !== 4403 && e.code !== 4404;
+
 export function defaultProvider(artifactId: string, ydoc: Y.Doc): RoomProvider {
   // disableBc: other tabs sync through the server, so "Saved" means saved.
   return new WebsocketProvider(roomServerUrl(), roomName(artifactId), ydoc, {
     disableBc: true,
+    shouldReconnect: roomShouldReconnect,
   }) as unknown as RoomProvider;
 }
 
@@ -402,7 +413,9 @@ export function createDocRoom(
         )
           for (const l of [...versionListeners])
             l({ kind: "restored", from: frame.from, version: frame.version });
-        if (frame.type === "error") {
+        // rate_limited (spec): cursor or sync frames were dropped; the client
+        // keeps its throttles and says nothing.
+        if (frame.type === "error" && frame.code !== "rate_limited") {
           error = typeof frame.code === "string" ? frame.code : "error";
           publish();
           // The rejected edit is still in this Y.Doc: ask for a fresh room

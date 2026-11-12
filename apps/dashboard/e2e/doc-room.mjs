@@ -13,7 +13,8 @@
 // Wire spec frames (artifact UkN5r8hpoXu9DYxG): --hello role[:reason[:bytes]]
 // sends the hello frame first (read:room_full, read:access:1950000, edit);
 // --close <code> closes every connection with that code, --close-first <code>
-// only the first (4401 4403 4404 1007 1013). --saved n[:name[:auto]] and
+// only the first that settles, i.e. is still open and the newest 600 ms after it connected (4401 4403 4404 1007 1013). It logs "conn n" for
+// each connection and "closing <code>" for each close it makes. --saved n[:name[:auto]] and
 // --restored from:version send the version broadcasts. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
@@ -54,6 +55,7 @@ export function startDocRoom({
   restored = null,
 }) {
   let connections = 0;
+  let closedFirst = false;
   const ydoc = new Y.Doc();
   if (!blank) {
     const { doc } = markdownToDoc(SAMPLE);
@@ -96,6 +98,8 @@ export function startDocRoom({
   const wss = new WebSocketServer({ port });
   wss.on("connection", (ws) => {
     connections++;
+    // A log line per connection, so a test can tell a NEW socket opened.
+    console.log(`conn ${connections}`);
     // The wire spec's hello frame comes first, before any sync frame.
     if (hello) {
       const [role, reason, bytes] = hello.split(":");
@@ -143,10 +147,20 @@ export function startDocRoom({
     }
     // --close <code>: every connection is closed with that code (4403, 4404,
     // 1007, 1013 ...); --close-first <code>: only the first one is.
-    const code = close ?? (connections === 1 ? closeFirst : null);
-    if (code) {
-      setTimeout(() => ws.close(Number(code), "wire spec"), 200);
-    }
+    // --close-first closes the first connection that SETTLES (still open
+    // after 200 ms), so a React StrictMode socket that is torn down at once
+    // never counts, and the test sees whether the client reconnects.
+    const mine = connections;
+    setTimeout(() => {
+      // Still open, and still the newest: a StrictMode socket the page has
+      // torn down (or is tearing down) is neither.
+      if (ws.readyState !== 1 || mine !== connections) return;
+      const code = close ?? (!closedFirst ? closeFirst : null);
+      if (!code) return;
+      if (close === null) closedFirst = true;
+      console.log(`closing ${code}`);
+      ws.close(Number(code), "wire spec");
+    }, 600);
     conns.set(ws, new Set());
     ws.binaryType = "arraybuffer";
     ws.on("message", (data) => {

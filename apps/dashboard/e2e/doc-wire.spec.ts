@@ -3,7 +3,7 @@
 // 4401, 4403, 4404, 1007 and 1013.
 import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
-import { startRoom, stopRoom } from "./room";
+import { roomLog, startRoom, stopRoom } from "./room";
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -17,11 +17,50 @@ const open = async (
   page: Page,
   info: Parameters<typeof startRoom>[0],
   args: string[],
+  query = "",
 ) => {
   room = await startRoom(info, page, args);
-  await page.goto(`/a/${LANDING}?mock=doc`);
+  await page.goto(`/a/${LANDING}?mock=doc${query}`);
   await expect(page.locator(".ProseMirror")).toBeVisible();
 };
+
+/** What the room printed: "conn n" per connection, "closing code" per close. */
+const log = () => (room ? (roomLog.get(room) ?? []) : []);
+
+/**
+ * After the room closed a connection with `code`: a NEW socket opened (a log
+ * line after the close), the doc is saved again, and nothing is shown.
+ */
+async function reconnectsAfter(page: Page, code: number) {
+  await expect.poll(() => log().includes(`closing ${code}`)).toBe(true);
+  const at = log().indexOf(`closing ${code}`);
+  await expect
+    .poll(() =>
+      log()
+        .slice(at)
+        .some((l) => l.startsWith("conn ")),
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+}
+
+/**
+ * The mock doc answers this currentVersion from ~600 ms in, before the room's
+ * frame (1.2 s after connect), as the server would once it had saved: so the
+ * pill can only tick if the page refetches on the event.
+ */
+const serverSavesAt = (page: Page, version: number) =>
+  page.addInitScript((v) => {
+    setTimeout(() => {
+      (window as unknown as { __oaDocVersion: number }).__oaDocVersion = v;
+    }, 600);
+  }, version);
+const pill = (page: Page, v: number) =>
+  page.getByRole("button", { name: new RegExp(`^Version: v${v}\\b`) });
 const prose = (page: Page) => page.locator(".ProseMirror");
 
 test("hello read/access: a viewer reads only, no toolbar, no banner", async ({
@@ -83,9 +122,7 @@ test("close 4404: the doc is gone", async ({ page }, info) => {
 
 test("close 1007 once: resyncs and stays editable", async ({ page }, info) => {
   await open(page, info, ["--close-first", "1007"]);
-  await page.waitForTimeout(1500);
-  await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await reconnectsAfter(page, 1007);
 });
 
 test("close 1007 every time: stops after one resync and reports", async ({
@@ -99,16 +136,12 @@ test("close 1007 every time: stops after one resync and reports", async ({
 
 test("close 4401 once: reconnects silently", async ({ page }, info) => {
   await open(page, info, ["--close-first", "4401"]);
-  await page.waitForTimeout(1500);
-  await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await reconnectsAfter(page, 4401);
 });
 
 test("close 1013 once: backs off and comes back", async ({ page }, info) => {
   await open(page, info, ["--close-first", "1013"]);
-  await page.waitForTimeout(1500);
-  await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await reconnectsAfter(page, 1013);
 });
 
 test("saved: the title bar says Saved as v5 for a moment and the version data refetches", async ({
@@ -137,22 +170,28 @@ test("saved: the title bar says Saved as v5 for a moment and the version data re
   ).toBeVisible({ timeout: 8000 });
 });
 
-test("restored by someone else: says so, refetches, the doc stays editable", async ({
+test("restored by someone else: says so, the pill ticks, the doc stays editable", async ({
   page,
 }, info) => {
+  await serverSavesAt(page, 7);
   await open(page, info, ["--restored", "3:7"]);
   await expect(
     page.getByRole("status").filter({ hasText: "Restored v3 as v7" }),
   ).toBeVisible();
+  await expect(pill(page, 7)).toBeVisible();
   await expect(prose(page)).toHaveAttribute("contenteditable", "true");
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
-test("a named save shows its name", async ({ page }, info) => {
+test("a named save shows its name and the pill ticks", async ({
+  page,
+}, info) => {
+  await serverSavesAt(page, 6);
   await open(page, info, ["--saved", "6:Before launch"]);
   await expect(
     page.getByRole("status").filter({ hasText: "Saved as v6 (Before launch)" }),
   ).toBeVisible();
+  await expect(pill(page, 6)).toBeVisible();
   if (process.env.SHOTS_DIR)
     await page.screenshot({
       path: `${process.env.SHOTS_DIR}/doc-titlebar-saved-named-1280.png`,
@@ -163,33 +202,37 @@ test("a named save shows its name", async ({ page }, info) => {
 test("an auto-save is quiet but the version pill still ticks", async ({
   page,
 }, info) => {
-  let artifactGets = 0;
-  page.on("request", (r) => {
-    if (
-      r.method() === "GET" &&
-      r.url().endsWith(`/api/v1/artifacts/${LANDING}`)
-    )
-      artifactGets++;
-  });
-  room = await startRoom(info, page, ["--saved", "9::auto"]);
-  await page.goto(`/a/${LANDING}?mock=doc`);
-  await expect(prose(page)).toBeVisible();
-  // The pill shows the current version; the room's frame comes 1.2 s in.
-  const pill = page.getByRole("button", { name: /^Version: v2\b/ });
-  await expect(pill).toBeVisible();
-  const before = artifactGets;
-  await page.evaluate(() => {
-    (window as unknown as { __oaDocVersion: number }).__oaDocVersion = 9;
-  });
-  await expect.poll(() => artifactGets).toBeGreaterThan(before);
-  await expect(
-    page.getByRole("button", { name: /^Version: v9\b/ }),
-  ).toBeVisible();
+  await serverSavesAt(page, 9);
+  await open(page, info, ["--saved", "9::auto"]);
+  await expect(pill(page, 9)).toBeVisible();
   // No note at all: the status line stays plain.
   await expect(page.getByText(/Saved as v9/)).toHaveCount(0);
   await expect(
     page.getByRole("status").filter({ hasText: /^Saved$/ }),
   ).toBeVisible();
+});
+
+test("without StrictMode the editor opens exactly one room socket", async ({
+  page,
+}, info) => {
+  // The dev build's StrictMode mounts the editor twice, and the first room is
+  // destroyed at once. Under the mock, MSW's passthrough still opens that
+  // first socket a moment later (its stack is MSW's createConnection), which
+  // is why two sockets show in dev. A build without StrictMode, as production
+  // is, makes one.
+  const created: string[] = [];
+  page.on("websocket", (ws) => {
+    if (ws.url().endsWith("/doc")) created.push(ws.url());
+  });
+  await open(page, info, ["--hello", "edit"], "&strict=off");
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  // Rooms are created once (useDocRoom): the room log shows one connection.
+  await expect
+    .poll(() => log().filter((l) => l.startsWith("conn ")).length)
+    .toBe(1);
+  expect(created.length).toBe(1);
 });
 
 test.describe("phone", () => {

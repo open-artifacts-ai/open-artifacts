@@ -9,6 +9,9 @@ const BASE = Number(process.env.OA_DOC_PORT) || 1235;
 /** This worker's port. Tests of one worker run one at a time, so it is free. */
 export const roomPort = (info: TestInfo) => BASE + info.parallelIndex;
 
+/** What each room printed ("conn n", "closing code", ...), by process. */
+export const roomLog = new WeakMap<ChildProcess, string[]>();
+
 export async function startRoom(
   info: TestInfo,
   page: Page,
@@ -18,6 +21,11 @@ export async function startRoom(
   const room = spawn(process.execPath, ["e2e/doc-room.mjs", ...args], {
     env: { ...process.env, OA_DOC_PORT: String(port) },
     stdio: ["ignore", "pipe", "inherit"],
+  });
+  const lines: string[] = [];
+  roomLog.set(room, lines);
+  room.stdout?.on("data", (d) => {
+    for (const l of String(d).split("\n")) if (l.trim()) lines.push(l.trim());
   });
   await new Promise<void>((resolve, reject) => {
     room.once("error", reject);

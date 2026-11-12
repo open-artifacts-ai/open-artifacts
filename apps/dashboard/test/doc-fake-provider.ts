@@ -1,6 +1,9 @@
 import { Awareness } from "y-protocols/awareness";
 import type * as Y from "yjs";
-import type { RoomProvider } from "../src/viewer/doc/useDocRoom";
+import {
+  type RoomProvider,
+  roomShouldReconnect,
+} from "../src/viewer/doc/useDocRoom";
 
 // biome-ignore lint/suspicious/noExplicitAny: event args vary.
 type Cb = (...a: any[]) => void;
@@ -35,7 +38,14 @@ export class FakeProvider implements RoomProvider {
     removed: number[];
   }) => void;
 
-  constructor(public doc: Y.Doc) {
+  /** y-websocket's: whether it reconnects after the server closes with a code. */
+  shouldConnect = true;
+  constructor(
+    public doc: Y.Doc,
+    public shouldReconnect: (e: {
+      code: number;
+    }) => boolean = roomShouldReconnect,
+  ) {
     this.awareness = new Awareness(doc);
     this._updateHandler = (update, origin) => {
       if (origin !== this) this.sentUpdates.push(update);
@@ -59,6 +69,7 @@ export class FakeProvider implements RoomProvider {
   }
   /** The socket opens; `sync` also completes the sync exchange. */
   connect(sync = true) {
+    this.shouldConnect = true;
     this.connects++;
     this.closers = [];
     this.ws = {
@@ -74,6 +85,7 @@ export class FakeProvider implements RoomProvider {
     }
   }
   disconnect() {
+    this.shouldConnect = false;
     this.disconnects++;
     this.wsconnected = false;
     this.synced = false;
@@ -85,6 +97,13 @@ export class FakeProvider implements RoomProvider {
     this.wsconnected = false;
     this.synced = false;
     this.emit("status", { status: "disconnected" });
+    // Like y-websocket: a close the policy allows is retried after a backoff
+    // (a no-op if something already reconnected); one it does not is final.
+    if (!this.shouldReconnect({ code })) this.shouldConnect = false;
+    else
+      setTimeout(() => {
+        if (this.shouldConnect && !this.wsconnected) this.connect();
+      }, 200);
   }
   emitSync() {
     this.emit("sync", this.synced);

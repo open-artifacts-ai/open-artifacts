@@ -561,10 +561,14 @@ if (isEmbed()) lockToPath(router, location.pathname);
 
 const el = document.getElementById("root");
 if (!el) throw new Error("missing #root");
-createRoot(el).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
-  </StrictMode>,
+const app = (
+  <QueryClientProvider client={queryClient}>
+    <RouterProvider router={router} />
+  </QueryClientProvider>
 );
+// ?strict=off (mock mode only): render without StrictMode, so an e2e can tell
+// what the dev build's double mount does from what a production build does.
+const strictOff =
+  import.meta.env.VITE_MOCK === "1" &&
+  new URLSearchParams(location.search).get("strict") === "off";
+createRoot(el).render(strictOff ? app : <StrictMode>{app}</StrictMode>);

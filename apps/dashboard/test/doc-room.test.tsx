@@ -6,12 +6,14 @@ import {
   BAD_FRAME,
   createDocRoom,
   DOC_TOO_LARGE,
+  defaultProvider,
   errorCopy,
   NOT_FOUND,
   nearCap,
   ROOM_FULL,
   ROOM_FULL_RETRY,
   roomNotice,
+  roomShouldReconnect,
   showsNote,
   UPDATE_BATCH_MS,
   versionNote,
@@ -292,10 +294,14 @@ describe("the wire spec: hello and close codes", () => {
     const room = ready();
     fake.frame(hello("edit"));
     fake.close(4401);
+    expect(room.getSnapshot().status).toBe("offline");
     vi.advanceTimersByTime(1000);
     const s = room.getSnapshot();
     expect([s.ended, s.error]).toEqual([null, null]);
-    // The provider's own backoff reconnects; the room never calls disconnect.
+    // A NEW socket opened (the provider's backoff, allowed by the policy) and
+    // the doc is saved again; the room never calls disconnect.
+    expect(fake.connects).toBe(2);
+    expect(s.status).toBe("saved");
     expect(fake.disconnects).toBe(0);
     expect(roomNotice(s)).toBeNull();
     room.destroy();
@@ -341,12 +347,51 @@ describe("the wire spec: hello and close codes", () => {
   it("1013 try_again is left to the provider's backoff", () => {
     const room = ready();
     fake.close(1013);
+    expect(room.getSnapshot().status).toBe("offline");
     vi.advanceTimersByTime(5000);
     const s = room.getSnapshot();
+    // Not stopped by the room: the provider backs off, then reconnects.
     expect(s.ended).toBeNull();
-    expect(s.status).toBe("offline");
-    // Not stopped by the room.
+    expect(fake.connects).toBe(2);
+    expect(s.status).toBe("saved");
     expect(fake.disconnects).toBe(0);
+    room.destroy();
+  });
+});
+
+describe("the reconnect policy", () => {
+  it("only 4403 and 4404 are final; 4401, 1007 and 1013 reconnect", () => {
+    for (const code of [4401, 1007, 1013, 1006])
+      expect(roomShouldReconnect({ code }), String(code)).toBe(true);
+    for (const code of [4403, 4404])
+      expect(roomShouldReconnect({ code }), String(code)).toBe(false);
+  });
+
+  it("defaultProvider hands the policy to y-websocket, which by default would stop at 4401", () => {
+    const doc = new Y.Doc();
+    const p = defaultProvider("A1", doc) as unknown as {
+      shouldReconnect: (e: { code: number }) => boolean;
+      destroy(): void;
+    };
+    try {
+      expect(p.shouldReconnect({ code: 4401 })).toBe(true);
+      expect(p.shouldReconnect({ code: 4403 })).toBe(false);
+      expect(p.shouldReconnect({ code: 4404 })).toBe(false);
+    } finally {
+      p.destroy();
+      doc.destroy();
+    }
+  });
+
+  it("rate_limited is ignored: no error, no alert copy", () => {
+    const room = open();
+    fake.connect();
+    fake.frame(JSON.stringify({ type: "error", code: "rate_limited" }));
+    expect(room.getSnapshot().error).toBeNull();
+    expect(errorCopy(room.getSnapshot().error)).toBeNull();
+    // Other codes still show the generic message.
+    fake.frame(JSON.stringify({ type: "error", code: "forbidden" }));
+    expect(room.getSnapshot().error).toBe("forbidden");
     room.destroy();
   });
 });

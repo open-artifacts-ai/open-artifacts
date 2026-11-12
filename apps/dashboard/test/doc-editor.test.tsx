@@ -1001,6 +1001,16 @@ describe("DocEditor", () => {
       expect(screen.queryByRole("alert")).toBeNull();
     });
 
+    it("rate_limited shows nothing and leaves it editable", async () => {
+      const { f } = await open();
+      act(() =>
+        f.frame(JSON.stringify({ type: "error", code: "rate_limited" })),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByRole("toolbar")).toBeVisible();
+    });
+
     it("4401 and 1013 show nothing", async () => {
       const { f } = await open();
       act(() => f.close(4401));
