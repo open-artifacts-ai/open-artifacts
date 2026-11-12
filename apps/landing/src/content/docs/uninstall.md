@@ -16,12 +16,12 @@ Add `--json` for a machine-readable list. With no saved state, pass `--name`; it
 
 Deleting the D1 database and the R2 bucket destroys every artifact, version, share, and live-page data value. It cannot be undone. Back up first, from `apps/server`'s wrangler (`pnpm --dir apps/server exec wrangler ...`):
 
-- **Database:** a whole-database `wrangler d1 export` fails here, because the search index is a virtual table. Export table by table. First list the tables: `wrangler d1 execute <name> --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'artifact_search%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'"`. Then for each table `<t>`: `wrangler d1 export <name> --remote --table <t> --output <t>.sql`. The search index is not exported; it is rebuilt from the artifacts. An export locks the database while it runs.
+- **Database:** a whole-database `wrangler d1 export` fails here, because the search index is a virtual table. Export the tables instead. List them at run time: `wrangler d1 execute <name> --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'artifact_search*' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name != 'd1_migrations'"`. Then run one export, repeating `--table` for every name it returned: `wrangler d1 export <name> --remote --no-schema --table <t1> --table <t2> --output backup.sql`. Skipped on purpose: the search index (`artifact_search*`, a virtual table), Cloudflare's internal `_cf_*` tables, `sqlite_*` tables (`sqlite_sequence`) and `d1_migrations`. An export locks the database while it runs.
 - **Files in R2:** `rclone sync r2:<name> ./backup-r2` copies the whole bucket. It needs R2 S3 credentials (dashboard, R2, Manage API Tokens). To fetch single keys, list them in the dashboard or with `rclone lsf r2:<name>`, then `wrangler r2 object get <name>/<key> --remote --file <path>`. Without `--remote`, wrangler reads a local store, not your bucket.
 - **Not exported:** live-page and agent bus state lives in Durable Objects, which deleting the Worker destroys. No export covers it.
 - **Lighter option:** ask any AI agent: "Save the latest version of every artifact I own into a folder on this computer." This saves only the latest versions, not history, shares or data.
 
-Check the backup before you go on.
+Restore is not supported yet. This copy is for safekeeping.
 
 ## Order
 

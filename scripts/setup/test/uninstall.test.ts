@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/index.ts";
 import { core, ROOT, STATE } from "./fakes.ts";
@@ -156,12 +157,32 @@ describe("--uninstall --check", () => {
     expect(out).toContain("apps/server/wrangler.jsonc");
     expect(out).toContain("Open Artifacts – everyone");
     expect(out).toContain(
-      "d1 export acme --remote --table <t> --output <t>.sql",
+      "d1 export acme --remote --no-schema --table <t1> --table <t2> --output backup.sql",
     );
-    expect(out).not.toContain("--output backup.sql");
-    expect(out).toContain("NOT LIKE 'artifact_search%'");
+    expect(out).toContain("NOT GLOB 'artifact_search*'");
+    expect(out).toContain("NOT GLOB 'sqlite_*'");
+    expect(out).toContain("NOT GLOB '_cf_*'");
+    expect(out).toContain("name != 'd1_migrations'");
+    expect(out).not.toContain("LIKE");
+    expect(out).not.toContain("rebuilt");
+    expect(out).toContain("Restore is not supported yet");
     expect(out).toContain("r2 object get acme/<key> --remote");
     expect(out).toContain("rclone sync r2:acme");
     expect(out).toContain("only within 7 days");
+  });
+
+  it("the doc gives the same table query as the dry run", async () => {
+    const n = setup();
+    await run(["--uninstall", "--check"], n.deps, ROOT);
+    const q = /--command "([^"]+)"/.exec(n.lines.join("\n"))?.[1];
+    const doc = readFileSync(
+      new URL(
+        "../../../apps/landing/src/content/docs/uninstall.md",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(q).toContain("sqlite_master");
+    expect(doc).toContain(q as string);
   });
 });
