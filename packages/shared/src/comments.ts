@@ -261,7 +261,7 @@ export const ReplyBodySchema = z.object({
   /**
    * Address the reply to the thread root's ask author (#1614): anyone who may
    * reply, viewers included. 400 not_an_ask when the root has no ask or its
-   * author is not an agent; 400 with mentions or assign. Its agents get a
+   * author is not an agent; 400 when combined with mentions or ask. Its agents get a
    * fixed notice; `mentions` on the returned comment says who and how it went.
    */
   toAsker: z.boolean().optional(),
