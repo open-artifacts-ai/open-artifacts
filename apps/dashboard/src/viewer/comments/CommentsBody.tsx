@@ -215,8 +215,8 @@ function QuoteBar({
  * #2234: the outlined field. One line when empty, then it grows a line at a
  * time up to ~10 lines (240px; ~6 on a phone) and scrolls inside its own edge.
  */
-const FIELD =
-  "min-h-[42px] max-h-36 md:max-h-60 resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+export const FIELD =
+  "min-h-[42px] max-h-36 md:max-h-60 resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
 export const FIELD_MAX = 240;
 export const FIELD_MAX_PHONE = 144;
 

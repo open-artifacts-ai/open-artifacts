@@ -28,3 +28,9 @@ describe("composer growth (#2234)", () => {
     expect(el.style.height).toBe(`${FIELD_MAX}px`);
   });
 });
+
+it("#2234: phones get a 16px field so iOS does not zoom on focus", async () => {
+  const { FIELD } = await import("../src/viewer/comments/CommentsBody");
+  expect(FIELD).toContain("max-[599px]:text-[16px]");
+  expect(FIELD).toContain("[@media(pointer:coarse)]:text-[16px]");
+});

@@ -89,3 +89,27 @@ for (const w of [1280, 390]) {
     await shot(page, `${w}-light-zero`);
   });
 }
+
+// #2234: touch screens get a 16px field (no iOS focus zoom) and no key hint.
+test.describe("touch", () => {
+  test.use({ hasTouch: true, isMobile: true });
+  test("390: field is at least 16px and the send hint is hidden", async ({
+    page,
+  }) => {
+    await open(page, 390, "light");
+    const note = page.getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    const px = await note.evaluate((e) =>
+      Number.parseFloat(getComputedStyle(e).fontSize),
+    );
+    expect(px).toBeGreaterThanOrEqual(16);
+    await expect(page.locator("[data-send-hint]")).toHaveCount(0);
+  });
+});
+test("1280: a fine pointer shows the send hint", async ({
+  page,
+}) => {
+  await open(page, 1280, "light");
+  await expect(page.locator("[data-send-hint]").first()).toBeVisible();
+});
