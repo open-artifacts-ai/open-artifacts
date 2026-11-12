@@ -281,6 +281,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // #2263: passkeys; the handlers refuse anything but a browser session.
   "GET /api/v1/passkeys": { user: "the caller's passkeys" },
   "POST /api/v1/passkeys/register/begin": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/register/challenge": { user: "the caller's passkeys" },
   "POST /api/v1/passkeys/register/finish": { user: "the caller's passkeys" },
   "POST /api/v1/passkeys/:id/challenge": { user: "the caller's passkeys" },
   "DELETE /api/v1/passkeys/:id": { user: "the caller's passkeys" },

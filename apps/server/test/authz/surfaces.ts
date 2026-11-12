@@ -1904,6 +1904,12 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("reauth_required"),
     },
   },
+  "POST /api/v1/passkeys/register/challenge": {
+    real: {
+      req: () => ({ path: "" }),
+      allow: code("reauth_required"),
+    },
+  },
   "POST /api/v1/passkeys/register/finish": {
     real: {
       req: () => ({ path: "", body: { probe: 1 } }),
@@ -2205,6 +2211,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   // token, which the matrix reads as a deny for every non-cookie caller.
   ["GET /api/v1/passkeys", U, [200]],
   ["POST /api/v1/passkeys/register/begin", U],
+  ["POST /api/v1/passkeys/register/challenge", U],
   ["POST /api/v1/passkeys/register/finish", U],
   ["POST /api/v1/passkeys/:id/challenge", U],
   ["DELETE /api/v1/passkeys/:id", U],

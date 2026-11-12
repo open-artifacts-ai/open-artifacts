@@ -81,7 +81,9 @@ export const R = {
   member: (id: string) => `/api/v1/members/${seg(id)}`,
   /** GET -> Passkey[] (#2263): the caller's passkeys, session only. */
   passkeys: "/api/v1/passkeys",
-  /** POST -> { options, expiresAt }: WebAuthn creation options. Needs a fresh re-auth (403 reauth_required); session only. */
+  /** POST -> { options, expiresAt }: assertion options for approving a new passkey with one the member already has (fresh re-auth too). 409 when no existing passkey needs to approve. Send the assertion to R.passkeyRegisterBegin. */
+  passkeyRegisterChallenge: "/api/v1/passkeys/register/challenge",
+  /** POST { assertion? } -> { options, expiresAt }: WebAuthn creation options. 403 passkey_required without `assertion` when the member has a usable passkey (past 24 h, not pending removal); R.passkeyRegisterFinish then needs no second assertion. Needs a fresh re-auth (401 reauth_required); session only. */
   passkeyRegisterBegin: "/api/v1/passkeys/register/begin",
   /** POST PasskeyRegisterBody { credential, label? } -> 201 Passkey. A passkey approves only 24 hours after it is added; the member gets an email. */
   passkeyRegisterFinish: "/api/v1/passkeys/register/finish",

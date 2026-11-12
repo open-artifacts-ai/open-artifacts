@@ -1518,6 +1518,11 @@ export const PasskeySchema = z.object({
 });
 export type Passkey = z.infer<typeof PasskeySchema>;
 
+/** POST R.passkeyRegisterBegin: required when the member already has a usable passkey. */
+export const PasskeyRegisterBeginBodySchema = z
+  .strictObject({ assertion: PasskeyAssertionSchema.optional() })
+  .optional();
+
 export const PasskeyRegisterBodySchema = z.strictObject({
   credential: PasskeyCredentialSchema,
   label: z.string().trim().min(1).max(60).optional(),

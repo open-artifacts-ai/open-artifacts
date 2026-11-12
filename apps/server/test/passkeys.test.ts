@@ -52,10 +52,21 @@ async function addPasskey(
   u: U,
   auth = u.fresh,
   age = true,
+  /** A passkey the member already has: it approves adding this one. */
+  approver?: FakeAuthenticator,
 ): Promise<{ a: FakeAuthenticator; passkey: Passkey }> {
   const a = await FakeAuthenticator.create();
+  let assertion: unknown;
+  if (approver) {
+    const ch = await api(app, R.passkeyRegisterChallenge, auth, {
+      method: "POST",
+    });
+    expect(ch.status).toBe(200);
+    assertion = await assertFor(approver, await json<PasskeyChallenge>(ch));
+  }
   const begin = await api(app, R.passkeyRegisterBegin, auth, {
     method: "POST",
+    ...(assertion ? { body: { assertion } } : {}),
   });
   expect(begin.status).toBe(200);
   const { options } = await json<PasskeyChallenge>(begin);
@@ -321,7 +332,7 @@ describe("removing a passkey", () => {
   it("an assertion bound to another passkey's removal fails", async () => {
     const u = await mk("rm3");
     const one = await addPasskey(u);
-    const two = await addPasskey(u);
+    const two = await addPasskey(u, u.fresh, true, one.a);
     const c = await json<PasskeyChallenge>(
       await get(u, {}, R.passkeyChallenge(one.passkey.id)),
     );
@@ -568,5 +579,81 @@ describe("a failed check burns the challenge", () => {
       api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
     expect((await patch({ ...off("merge"), assertion })).status).toBe(400);
     expect((await patch({ ...off("deploy"), assertion })).status).toBe(410);
+  });
+});
+
+describe("adding a passkey when one is already usable", () => {
+  const begin = (u: U, body?: object) =>
+    api(app, R.passkeyRegisterBegin, u.fresh, {
+      method: "POST",
+      ...(body ? { body } : {}),
+    });
+
+  it("a re-auth alone is refused (403 passkey_required); the first passkey needed only a re-auth", async () => {
+    const u = await mk("reg2");
+    const first = await addPasskey(u); // no passkey yet: a re-auth is enough
+    const r = await begin(u);
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("passkey_required");
+    // Nor can finish run without a begin that verified the approval.
+    const fin = await api(app, R.passkeyRegisterFinish, u.fresh, {
+      method: "POST",
+      body: {
+        credential: await (await FakeAuthenticator.create()).attest({
+          challenge: "x",
+          origin,
+          rpId,
+        }),
+      },
+    });
+    expect([403, 410]).toContain(fin.status);
+    expect(first.passkey.usable).toBe(false); // listed fresh; aged below
+  });
+
+  it("works with an assertion from the existing passkey, once", async () => {
+    const u = await mk("reg3");
+    const first = await addPasskey(u);
+    const second = await addPasskey(u, u.fresh, true, first.a);
+    expect(
+      (await json<Passkey[]>(await api(app, R.passkeys, u.cookie))).length,
+    ).toBe(2);
+    // The approval is single use and bound: a replayed assertion fails.
+    const ch = await json<PasskeyChallenge>(
+      await api(app, R.passkeyRegisterChallenge, u.fresh, { method: "POST" }),
+    );
+    const assertion = await assertFor(second.a, ch);
+    expect((await begin(u, { assertion })).status).toBe(200);
+    expect((await begin(u, { assertion })).status).toBe(410);
+  });
+
+  it("an assertion from a passkey that has not cleared 24 h does not count, and a cooling-only account needs just a re-auth", async () => {
+    const u = await mk("reg4");
+    await addPasskey(u, u.fresh, false); // cooling: not an approver
+    expect((await begin(u)).status).toBe(200);
+    // No approver needed: the challenge route says so.
+    const ch = await api(app, R.passkeyRegisterChallenge, u.fresh, {
+      method: "POST",
+    });
+    expect(ch.status).toBe(409);
+  });
+
+  it("a passkey pending removal is not an approver", async () => {
+    const u = await mk("reg5");
+    const { passkey } = await addPasskey(u);
+    await api(app, R.passkey(passkey.id), u.fresh, { method: "DELETE" });
+    expect((await begin(u)).status).toBe(200);
+  });
+
+  it("the challenge needs a fresh re-auth and a browser session", async () => {
+    const u = await mk("reg6");
+    await addPasskey(u);
+    expect(
+      (await api(app, R.passkeyRegisterChallenge, u.cookie, { method: "POST" }))
+        .status,
+    ).toBe(401);
+    expect(
+      (await api(app, R.passkeyRegisterChallenge, u.pat, { method: "POST" }))
+        .status,
+    ).toBe(403);
   });
 });

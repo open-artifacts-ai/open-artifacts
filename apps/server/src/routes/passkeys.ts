@@ -1,4 +1,5 @@
 import {
+  PasskeyRegisterBeginBodySchema,
   PasskeyRegisterBodySchema,
   PasskeyRemoveBodySchema,
   PasskeySettingsPatchSchema,
@@ -15,6 +16,7 @@ import {
   getPasskeySettings,
   listPasskeys,
   putPasskeySettings,
+  registerAuthChallenge,
   registerBegin,
   registerFinish,
   removeChallenge,
@@ -67,10 +69,20 @@ export function mountPasskeys(app: AppType): void {
     return c.json(await putPasskeySettings(c.env, user.id, body));
   });
 
+  app.post(R.passkeyRegisterChallenge, async (c) => {
+    const user = member(c);
+    requireFreshReauth(c);
+    return c.json(await registerAuthChallenge(c.env, user.id));
+  });
+
   app.post(R.passkeyRegisterBegin, async (c) => {
     const user = member(c);
     requireFreshReauth(c);
-    return c.json(await registerBegin(c.env, user));
+    const body = await c.req.json().catch(() => undefined);
+    const parsed = PasskeyRegisterBeginBodySchema.safeParse(body);
+    if (!parsed.success)
+      throw new ApiError("bad_request", "Invalid request body");
+    return c.json(await registerBegin(c.env, user, parsed.data?.assertion));
   });
 
   app.post(R.passkeyRegisterFinish, async (c) => {
