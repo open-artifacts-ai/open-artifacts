@@ -77,17 +77,16 @@ describe("landing sections", () => {
     expect(png.readUInt32BE(20)).toBe(630);
   });
 
-  it("says the beta is free: Get started free everywhere, no charge or trial wording", () => {
+  it("launch strings: Get started free everywhere, the trial line under the hero buttons", () => {
     expect(index.match(/>Get started free<\/a>/g)).toHaveLength(5);
     expect(text).toContain(
-      "Free during the private beta. No card needed. Open source, MIT licensed.",
+      "Solo is free for 30 days, no card needed. Open source, MIT licensed.",
     );
     for (const gone of [
       "Start free",
       "Then $1 a month",
       "free first month",
-      "30 days",
-      "30-day",
+      "Free during the private beta",
     ])
       expect(text).not.toContain(gone);
     expect(text).toContain("Sign-ups open in December. This plan");
@@ -180,7 +179,7 @@ describe("landing sections", () => {
     );
     expect(text).not.toContain("Ask your agent to publish.");
     expect(text).toContain(
-      "A comment sits on the line it is about. Your agent reads it, answers in the thread, then changes the artifact.",
+      "A comment sits on the line it is about. Mention your agent and it answers in the thread, then changes the artifact.",
     );
     const rail = index.slice(index.indexOf('id="rail"'));
     expect(

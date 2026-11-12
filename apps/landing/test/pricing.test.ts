@@ -90,11 +90,11 @@ describe("pricing", () => {
     );
   });
 
-  it("says the beta is free, with no trial or charge wording", () => {
+  it("keeps the trial wording in the footnote", () => {
     expect(pricing).toContain(
-      "Everything is free during the private beta. These are the prices when paid plans open, and we&#39;ll email you before anything changes.",
+      "Solo is free for 30 days, no card. Team starts with a 30-day trial when you invite someone.",
     );
-    expect(pricing).not.toMatch(/30 days|30-day|no card/i);
+    expect(pricing).not.toContain("private beta");
   });
 
   it("shows Soon where a feature is not there yet, in the table's own styles", () => {
@@ -108,10 +108,11 @@ describe("pricing", () => {
           .replace(/<span class="sr-only">[\s\S]*?<\/span>/, "")
           .replace(/<[^>]+>/g, ""),
       );
+    // the bus is delivered on hosted: a tick on every plan
     expect(cells("Agents that work together (the bus)")).toEqual([
-      "Soon",
-      "Soon",
-      "Soon",
+      "✓",
+      "✓",
+      "✓",
       "✓",
     ]);
     // "Soon" only replaces a tick we cannot deliver yet; a dash stays a dash
