@@ -1738,8 +1738,8 @@ export async function answerAsk(
   viewer: CommentViewer,
   optionId: string,
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
-  after?: Announce,
-  pick: PickAuth = { interactive: true },
+  after: Announce | undefined,
+  pick: PickAuth,
 ): Promise<Comment> {
   const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
   let verified: "passkey" | undefined;
