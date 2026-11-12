@@ -1104,10 +1104,12 @@ describe("comments: actions", () => {
     await waitFor(() =>
       expect(patches[0]?.body).toEqual({ body: "Agreed, much shorter." }),
     );
-    expect(
-      await within(c).findByText("Agreed, much shorter."),
-    ).toBeInTheDocument();
-    expect(within(c).getByText(/edited/)).toBeInTheDocument();
+    // The saved row can re-render after it first shows (the refetch replaces
+    // the node): query fresh on each try instead of holding a found node.
+    await waitFor(() => {
+      expect(within(c).getByText("Agreed, much shorter.")).toBeInTheDocument();
+      expect(within(c).getByText(/edited/)).toBeInTheDocument();
+    });
   });
 
   it("deletes a reply after Delete this reply?, and a root after Delete this thread?", async () => {
