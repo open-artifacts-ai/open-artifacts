@@ -35,6 +35,7 @@ import {
   addReply,
   addThread,
   answerAsk,
+  answerChallenge,
   artifactAgents,
   type CommentViewer,
   type CommentWho,
@@ -60,6 +61,7 @@ const THREAD = `${COMMENTS}/:threadId`;
 const REPLIES = `${THREAD}/replies`;
 const COMMENT = `${THREAD}/comments/:commentId`;
 const ANSWER = `${COMMENT}/answer`;
+const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -189,6 +191,9 @@ const StatusQuery = z.object({
 });
 const StatusPatch = z.strictObject({ status: z.enum(["open", "resolved"]) });
 const EditBody = z.strictObject({ body: z.string() });
+const ChallengeBodySchema = z.strictObject({
+  optionId: z.string().regex(COMMENT_KEY_RE),
+});
 
 /** A body that failed its schema: the anchor's issues are invalid_anchor, the body's invalid_body. */
 const bad = (issues: { path: PropertyKey[] }[]): never => {
@@ -378,8 +383,39 @@ export function mountComments(app: AppType): void {
       viewer,
       raw.data.optionId,
       { version: artifact.currentVersion, ctx: execCtx(c) },
+      // #2263: only a browser session can carry a passkey assertion.
+      { interactive: interactiveSession(c), assertion: raw.data.assertion },
     );
     return c.json(out);
+  });
+
+  // #2263: the WebAuthn challenge for a pick on a confirm ask.
+  app.post(ANSWER_CHALLENGE, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const raw = ChallengeBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    const { who: signed } = await identity(
+      c,
+      id,
+      false,
+      modOf(cw, level, artifact),
+    );
+    // A guest is never asked: the same 403 the answer gives.
+    if (!signed)
+      throw new ApiError("forbidden", "Only the people asked can answer");
+    return c.json(
+      await answerChallenge(
+        c.env,
+        id,
+        threadId,
+        commentId,
+        signed,
+        raw.data.optionId,
+        interactiveSession(c),
+      ),
+    );
   });
 
   // The agents that can be mentioned: for the owner and editors,
