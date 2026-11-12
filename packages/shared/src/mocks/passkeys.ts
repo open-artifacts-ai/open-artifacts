@@ -61,6 +61,7 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
       lastUsedAt: used === null ? null : at(used),
       usableAt: usableAt.toISOString(),
       usable: usableAt.getTime() <= Date.now(),
+      removesAt: null,
     };
   };
   let keys: Passkey[] =
