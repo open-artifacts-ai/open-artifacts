@@ -9,6 +9,8 @@ import {
   effectiveName,
   getUser,
   idpName,
+  nameHiddenAs,
+  shownEffectiveName,
   toUserRef,
   upsertOnLogin,
 } from "../src/services/users.js";
@@ -51,6 +53,32 @@ describe("effective name", () => {
     );
     expect(senderName({ name: "Leo", email: "me@test.invalid" })).toBe("Leo");
   });
+});
+
+describe("nameHiddenAs (#2277)", () => {
+  const email = "me@test.invalid";
+  const u = (displayName: string | null, name: string) => ({
+    displayName,
+    name,
+    email,
+  });
+  it("null when the effective name passes", () => {
+    expect(nameHiddenAs(u("Leo", "Ada Lovelace"))).toBeNull();
+    expect(nameHiddenAs(u(null, "Ada Lovelace"))).toBeNull();
+    expect(nameHiddenAs(u(null, "me"))).toBeNull();
+  });
+  it("email when no passing name remains", () => {
+    expect(nameHiddenAs(u("Leo's agent", "me"))).toBe("email");
+    expect(nameHiddenAs(u(null, "Leo's agent"))).toBe("email");
+    expect(nameHiddenAs(u("Leo's agent", "Leo's agent"))).toBe("email");
+  });
+  // Needs #2274: until shownEffectiveName falls back to a real SSO name.
+  it.skipIf(shownEffectiveName(u("Leo's agent", "Ada Lovelace")) === email)(
+    "sso when a passing SSO name shows instead",
+    () => {
+      expect(nameHiddenAs(u("Leo's agent", "Ada Lovelace"))).toBe("sso");
+    },
+  );
 });
 
 describe("GET/PATCH /api/v1/me", () => {

@@ -408,12 +408,23 @@ export async function getUser(env: Env, id: string): Promise<Member | null> {
   return (await getUserWithEpoch(env, id))?.user ?? null;
 }
 
+export type NameHiddenAs = "sso" | "email" | null;
+
+/** null when others see the user's effective name; else what they see instead (#2277). */
+export function nameHiddenAs(u: NameFields): NameHiddenAs {
+  const shown = shownEffectiveName(u);
+  if (shown === effectiveName(u)) return null;
+  return shown === u.email ? "email" : "sso";
+}
+
 export type Profile = {
   displayName: string | null;
   suggestedName: string | null;
   needsDisplayName: boolean;
   /** Email me about comments (#1467); on unless turned off. */
   commentEmail: boolean;
+  /** #2277: what others see instead of the user's name because it reads as an agent's. */
+  nameHiddenAs: NameHiddenAs;
 };
 
 function toProfile(r: NameFields & { commentEmail: number }): Profile {
@@ -423,6 +434,7 @@ function toProfile(r: NameFields & { commentEmail: number }): Profile {
     suggestedName,
     needsDisplayName: !r.displayName && !suggestedName,
     commentEmail: r.commentEmail !== 0,
+    nameHiddenAs: nameHiddenAs(r),
   };
 }
 
