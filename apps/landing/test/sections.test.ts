@@ -191,7 +191,7 @@ describe("landing sections", () => {
     expect(text).not.toContain("Custom domains your pick");
   });
 
-  it("lists the agents it works with: single-colour marks and the Hermes tile, nothing loaded from outside", () => {
+  it("lists the agents it works with: marks in their own colours and the Hermes tile, nothing loaded from outside", () => {
     const sec =
       index.match(
         /<section class="x-sec x-band x-agents"[\s\S]*?<\/section>/,
@@ -228,7 +228,7 @@ describe("landing sections", () => {
     expect(imgs).toHaveLength(1);
     expect(imgs[0]).toMatch(/src="data:image\/png;base64,/);
     // names are text, not alt text; nothing is fetched
-    expect(sec).not.toMatch(/src="https?:|href="https?:|url\(/);
+    expect(sec).not.toMatch(/src="https?:|href="https?:|url\((?!#)/);
   });
 
   it("the home header links Pricing, Self-host, Docs and GitHub", () => {
