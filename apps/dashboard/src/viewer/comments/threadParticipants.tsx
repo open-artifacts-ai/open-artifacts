@@ -77,12 +77,25 @@ export function ThreadParticipants({
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => {
-      if (!box.current?.contains(e.target as Node)) setOpen(false);
+      // A target the render already removed (the confirm's Remove) was inside.
+      const t = e.target as Node;
+      if (t.isConnected && !box.current?.contains(t)) setOpen(false);
     };
     document.addEventListener("pointerdown", down);
     return () => document.removeEventListener("pointerdown", down);
   }, [open]);
   useEffect(() => () => clearTimeout(timer.current), []);
+  // The confirm closing takes the focused Remove with it; keep focus in the group so it stays open.
+  const asked = useRef(false);
+  useEffect(() => {
+    const was = asked.current;
+    asked.current = confirm !== null;
+    if (!was || confirm !== null || !open) return;
+    if (box.current?.contains(document.activeElement)) return;
+    quiet.current = true;
+    trigger.current?.focus({ preventScroll: true });
+    quiet.current = false;
+  }, [confirm, open]);
   if (n === 0) return null;
 
   // 20px faces overlapping by 3px, each ringed in the card's colour; the first

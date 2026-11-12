@@ -55,6 +55,8 @@ for (const w of [1280, 390])
       // Close and reopen: the removed agent stays listed, with Add back.
       await page.keyboard.press("Escape");
       await expect(list).toBeHidden();
+      // Focus is still on the trigger after the removal: leave it, then come back.
+      await trig.blur();
       await trig.focus();
       await expect(list).toBeVisible();
       await expect(list.locator("[data-off]")).toContainText("Not notified");
