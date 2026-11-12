@@ -89,9 +89,9 @@ export const R = {
   passkeyChallenge: (id: string) => `/api/v1/passkeys/${seg(id)}/challenge`,
   /** DELETE { assertion? } -> 204: needs a passkey assertion for R.passkeyChallenge, or a fresh re-auth. Own passkeys only (else 404). */
   passkey: (id: string) => `/api/v1/passkeys/${seg(id)}`,
-  /** GET -> PasskeySettings; PUT PasskeySettingsPut -> PasskeySettings. Turning a switch off needs `assertion` for R.passkeySettingsChallenge of the same body (400 passkey_failed, 403 passkey_required); turning one on needs nothing; `command` can not be turned off (400). */
+  /** GET -> PasskeySettings; PATCH PasskeySettingsPatch -> PasskeySettings. Turning a switch off needs `assertion` for R.passkeySettingsChallenge of the same body (400 passkey_failed, 403 passkey_required); turning one on needs nothing; `command` can not be turned off (400). */
   passkeySettings: "/api/v1/passkeys/settings",
-  /** POST PasskeySettingsPut -> { options, expiresAt }: a challenge bound to exactly that settings change. */
+  /** POST PasskeySettingsPatch -> { options, expiresAt }: a challenge bound to exactly that settings change. */
   passkeySettingsChallenge: "/api/v1/passkeys/settings/challenge",
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",

@@ -274,7 +274,7 @@ describe("the passkey settings", () => {
   it("refuses to turn run-a-command off", async () => {
     const u = await mk("set-cmd");
     const r = await api(app, R.passkeySettings, u.cookie, {
-      method: "PUT",
+      method: "PATCH",
       body: off("command"),
     });
     expect(r.status).toBe(400);
@@ -292,7 +292,7 @@ describe("the passkey settings", () => {
   it("turning a switch on needs nothing, and an unchanged PUT writes nothing", async () => {
     const u = await mk("set-on");
     const r = await api(app, R.passkeySettings, u.cookie, {
-      method: "PUT",
+      method: "PATCH",
       body: { ...ALL_ON, everyPick: true },
     });
     expect(r.status).toBe(200);
@@ -302,7 +302,7 @@ describe("the passkey settings", () => {
       passkeyVerified: false,
     });
     const same = await api(app, R.passkeySettings, u.cookie, {
-      method: "PUT",
+      method: "PATCH",
       body: { ...ALL_ON, everyPick: true },
     });
     expect(same.status).toBe(200);
@@ -312,7 +312,7 @@ describe("the passkey settings", () => {
   it("turning one off: no passkey, cooling passkey, then no assertion", async () => {
     const u = await mk("set-off");
     const put = (body: object) =>
-      api(app, R.passkeySettings, u.cookie, { method: "PUT", body });
+      api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
     const none = await put(off("merge"));
     expect(none.status).toBe(409);
     expect((await errOf(none)).code).toBe("no_passkey");
@@ -357,13 +357,60 @@ describe("the passkey settings", () => {
     ).toBe(true);
   });
 
+  it("refuses a malformed assertion before verifying (400 bad_request)", async () => {
+    const u = await mk("set-bad");
+    for (const assertion of [
+      { id: "x" },
+      "text",
+      { id: "a!", rawId: "a", type: "public-key", response: {} },
+      {
+        id: "a",
+        rawId: "a",
+        type: "other",
+        response: {
+          clientDataJSON: "a",
+          authenticatorData: "a",
+          signature: "a",
+        },
+      },
+      {
+        id: "a",
+        rawId: "a",
+        type: "public-key",
+        response: {
+          clientDataJSON: "a".repeat(5000),
+          authenticatorData: "a",
+          signature: "a",
+        },
+      },
+      {
+        id: "a",
+        rawId: "a",
+        type: "public-key",
+        extra: 1,
+        response: {
+          clientDataJSON: "a",
+          authenticatorData: "a",
+          signature: "a",
+        },
+      },
+    ]) {
+      const r = await api(app, R.passkeySettings, u.cookie, {
+        method: "PATCH",
+        body: { ...off("merge"), assertion },
+      });
+      expect(r.status).toBe(400);
+      expect((await errOf(r)).code).toBe("bad_request");
+    }
+  });
+
   it("a token cannot read or change them", async () => {
     const u = await mk("set-tok");
     expect((await api(app, R.passkeySettings, u.pat)).status).toBe(403);
     expect(
       (
         await api(app, R.passkeySettings, u.pat, {
-          method: "PUT",
+          method: "PATCH",
           body: ALL_ON,
         })
       ).status,
@@ -385,7 +432,7 @@ describe("challenges", () => {
     expect(second.options.challenge).not.toBe(first.options.challenge);
     const put = (assertion: unknown) =>
       api(app, R.passkeySettings, u.cookie, {
-        method: "PUT",
+        method: "PATCH",
         body: { ...body, assertion },
       });
     // The voided challenge's assertion carries the wrong challenge.

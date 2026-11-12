@@ -5,7 +5,7 @@ import {
   pinAnchorSchema,
   textAnchorSchema,
 } from "./anchor.js";
-import { IdSchema } from "./schemas.js";
+import { IdSchema, PasskeyAssertionSchema } from "./schemas.js";
 
 // Comments REST contract (#682): /api/v1/artifacts/:id/comments. The shell and
 // the MSW mocks build against these; the Backend implements the same shapes.
@@ -295,7 +295,7 @@ export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 export const AnswerBodySchema = z.object({
   optionId: key,
   /** #2263: the WebAuthn assertion (PublicKeyCredential.toJSON()) for the challenge of R.commentAnswerChallenge; required on an ask with confirm "passkey". */
-  assertion: z.unknown().optional(),
+  assertion: PasskeyAssertionSchema.optional(),
 });
 export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 

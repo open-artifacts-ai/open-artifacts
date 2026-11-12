@@ -1,7 +1,7 @@
 import {
   PasskeyRegisterBodySchema,
   PasskeyRemoveBodySchema,
-  PasskeySettingsPutSchema,
+  PasskeySettingsPatchSchema,
   R,
 } from "@oa/shared";
 import type { Context } from "hono";
@@ -56,13 +56,13 @@ export function mountPasskeys(app: AppType): void {
 
   app.post(R.passkeySettingsChallenge, async (c) => {
     const user = member(c);
-    const body = await jsonBody(c, PasskeySettingsPutSchema);
+    const body = await jsonBody(c, PasskeySettingsPatchSchema);
     return c.json(await settingsChallenge(c.env, user.id, body));
   });
 
-  app.put(R.passkeySettings, async (c) => {
+  app.patch(R.passkeySettings, async (c) => {
     const user = member(c);
-    const body = await jsonBody(c, PasskeySettingsPutSchema);
+    const body = await jsonBody(c, PasskeySettingsPatchSchema);
     return c.json(await putPasskeySettings(c.env, user.id, body));
   });
 
