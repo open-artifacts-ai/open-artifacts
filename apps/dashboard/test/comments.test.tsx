@@ -907,6 +907,19 @@ describe("comments: actions", () => {
     expect(posts[0]?.body).toMatchObject({ body: "Sent by key" });
   });
 
+  it("#2234: Ctrl+Enter while an IME is composing does not send", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Composing" } });
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true, isComposing: true });
+    await wait(30);
+    expect(posts).toHaveLength(0);
+  });
+
   it("#2118: Esc in the note box keeps the draft and does not close the phone sheet", async () => {
     viewport(400);
     mount(viewerPath(OWNED));

@@ -50,6 +50,7 @@ import {
   focusRow,
   holdAnchor,
   NewReplyPill,
+  scrollerOf,
   useKeepScroll,
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
@@ -216,7 +217,7 @@ function QuoteBar({
  * time up to ~10 lines (240px; ~6 on a phone) and scrolls inside its own edge.
  */
 export const FIELD =
-  "min-h-[42px] max-h-36 md:max-h-60 resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
+  "min-h-[42px] max-h-[min(9rem,40svh)] md:max-h-[min(15rem,40svh)] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
 export const FIELD_MAX = 240;
 export const FIELD_MAX_PHONE = 144;
 
@@ -226,9 +227,41 @@ export function growField(el: HTMLTextAreaElement | null) {
   if (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))
     return;
   const phone = !!window.matchMedia?.("(max-width: 767px)").matches;
-  const max = phone ? FIELD_MAX_PHONE : FIELD_MAX;
+  const max = Math.min(
+    phone ? FIELD_MAX_PHONE : FIELD_MAX,
+    window.innerHeight * 0.4 || Number.POSITIVE_INFINITY,
+  );
+  // Measuring with height:auto shortens the list and clamps the scroller:
+  // put its scrollTop back.
+  const box = scrollerOf(el);
+  const at = box?.scrollTop ?? 0;
   el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+  const edge = el.offsetHeight - el.clientHeight; // borders (and a scrollbar)
+  el.style.height = `${Math.min(el.scrollHeight + edge, max)}px`;
+  if (box && box.scrollTop !== at) box.scrollTop = at;
+}
+
+/**
+ * Focus without scrolling the document, then make the field visible inside
+ * the panel's own scroller, between the sticky header and the action row.
+ */
+export function focusField(el: HTMLElement | null) {
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  const box = scrollerOf(el);
+  if (!box) return;
+  const head =
+    box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ?? 0;
+  const foot =
+    box.querySelector<HTMLElement>("[data-oa-action-outlet]")?.offsetHeight ??
+    0;
+  const b = box.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const top = b.top + head;
+  const bottom = b.bottom - foot;
+  if (r.top < top) box.scrollTop -= top - r.top;
+  else if (r.bottom > bottom)
+    box.scrollTop += Math.min(r.bottom - bottom, r.top - top);
 }
 
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
@@ -348,8 +381,22 @@ function Composer({
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
-    if (autoFocus) ref.current?.focus({ preventScroll: true });
+    if (autoFocus) focusField(ref.current);
   }, [autoFocus]);
+  // Width changes (panel resize, rotation, late fonts, a restored hidden draft)
+  // change how many lines the text takes.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let w = el.offsetWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.offsetWidth === w) return;
+      w = el.offsetWidth;
+      growField(el);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: text is what changes the height.
   useLayoutEffect(() => growField(ref.current), [text]);
   const body = text.trim();
@@ -453,7 +500,11 @@ function Composer({
               return;
             }
           }
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          if (
+            e.key === "Enter" &&
+            (e.metaKey || e.ctrlKey) &&
+            !e.nativeEvent.isComposing
+          ) {
             e.preventDefault();
             void go();
           }

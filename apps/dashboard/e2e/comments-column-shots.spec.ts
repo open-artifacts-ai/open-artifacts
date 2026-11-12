@@ -107,9 +107,26 @@ test.describe("touch", () => {
     await expect(page.locator("[data-send-hint]")).toHaveCount(0);
   });
 });
-test("1280: a fine pointer shows the send hint", async ({
-  page,
-}) => {
+test("1280: a fine pointer shows the send hint", async ({ page }) => {
   await open(page, 1280, "light");
   await expect(page.locator("[data-send-hint]").first()).toBeVisible();
 });
+
+// #2234: the reply composer inside a thread card.
+for (const theme of ["light", "dark"]) {
+  test(`1280 ${theme}: reply in card`, async ({ page }) => {
+    await open(page, 1280, theme);
+    const card = page.locator("[data-thread]").first();
+    await card.getByRole("button", { name: "Reply" }).first().click();
+    const box = card.getByRole("textbox", { name: "Reply" });
+    await box.fill(
+      "Thanks, I will check the footer link and the pricing copy.",
+    );
+    await expect(box).toBeVisible();
+    if (OUT) {
+      mkdirSync(OUT, { recursive: true });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: `${OUT}/1280-${theme}-reply.png` });
+    }
+  });
+}
