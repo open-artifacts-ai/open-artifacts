@@ -11,7 +11,14 @@ import {
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, FileText } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
 import {
@@ -35,6 +42,7 @@ import {
   actor,
   asksForMe,
   Delivery,
+  DeliveryFaces,
   type Extras,
   extrasBody,
   MentionChips,
@@ -43,6 +51,7 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  newProblems,
   nextAskFor,
   removeMention,
 } from "./asks";
@@ -606,14 +615,46 @@ function Composer({
 
 export { initials };
 
+/**
+ * #2229: a header that is too tight for the faces gives way in order: the time
+ * first (it stays in the name's tooltip), then the faces down to the summary
+ * mark and its count, and only then the name truncates. Measured: while the
+ * name is cut off, step once more; a new width starts over.
+ */
+function useTightHeader(active: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [stage, setStage] = useState(0);
+  const width = useRef(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !active || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width.current) return;
+      width.current = el.clientWidth;
+      setStage(0);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [active]);
+  // Runs after every render: one step per cut-off name, until it fits or nothing is left to give.
+  useLayoutEffect(() => {
+    const name = ref.current?.querySelector<HTMLElement>("[data-author-name]");
+    if (active && name && name.scrollWidth > name.clientWidth && stage < 2)
+      setStage(stage + 1);
+  });
+  return { ref, stage: active ? stage : 0 };
+}
+
 function Who({
   a,
   at,
   edited,
+  hideTime = false,
 }: {
   a: CommentAuthor;
   at: string;
   edited: boolean;
+  hideTime?: boolean;
 }) {
   const isAgent = a.kind === "agent";
   return (
@@ -621,7 +662,11 @@ function Who({
       <AuthorFace a={a} />
       <div className="flex min-w-0 flex-col self-center">
         <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${CTXT}`}>
-          <b className="min-w-0 truncate" title={a.name}>
+          <b
+            data-author-name=""
+            className="min-w-0 truncate"
+            title={hideTime ? `${a.name}, ${exactDate(at)}` : a.name}
+          >
             {a.name}
           </b>
           {isAgent && (
@@ -633,7 +678,7 @@ function Who({
             </span>
           )}
           <span
-            className={`${MUTED} shrink-0 whitespace-nowrap ${TXT}`}
+            className={`${MUTED} shrink-0 whitespace-nowrap ${TXT} ${hideTime ? "sr-only" : ""}`}
             title={exactDate(at)}
           >
             {versionDate(at)}
@@ -652,12 +697,15 @@ function CommentRow({
   thread,
   c,
   root,
+  allProblems,
   askQuestion,
 }: {
   api: CommentsApi;
   thread: CommentThread;
   c: CommentT;
   root: boolean;
+  /** The thread's new delivery problems per comment, computed once in ThreadCard. */
+  allProblems: ReturnType<typeof newProblems>;
   /** Open a question to the agent that asked (#1794). */
   askQuestion?: () => void;
 }) {
@@ -669,25 +717,43 @@ function CommentRow({
   const [mode, setMode] = useState<"view" | "edit" | "delete">("view");
   const [delError, setDelError] = useState<unknown>(null);
   const any = c.can.edit || c.can.delete;
+  // #2229: marks sit on people's comments, for members (#2004: not guests, nor the capped); an agent's own reply has none.
+  const marks = !api.guest && !api.capped && c.author.kind !== "agent";
+  const problems = allProblems.get(c.id);
+  const tight = useTightHeader(marks && !!c.notified?.length);
   return (
     <li
       className="flex flex-col gap-1"
       data-comment={c.id}
       data-live={api.live.tint.has(c.id) ? "" : undefined}
     >
-      <div className="flex items-start justify-between gap-2">
-        <Who a={c.author} at={c.createdAt} edited={c.editedAt !== null} />
-        {any && mode === "view" && (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Comment actions"
-            aria-expanded={menu}
-            onClick={() => setMenu((m) => !m)}
-          >
-            •••
-          </Button>
-        )}
+      <div
+        ref={tight.ref}
+        data-header-stage={tight.stage}
+        className="flex items-start justify-between gap-2"
+      >
+        <Who
+          a={c.author}
+          at={c.createdAt}
+          edited={c.editedAt !== null}
+          hideTime={tight.stage >= 1}
+        />
+        <div className="flex shrink-0 items-center gap-1">
+          {marks && c.notified?.length ? (
+            <DeliveryFaces told={c.notified} compact={tight.stage >= 2} />
+          ) : null}
+          {any && mode === "view" && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Comment actions"
+              aria-expanded={menu}
+              onClick={() => setMenu((m) => !m)}
+            >
+              •••
+            </Button>
+          )}
+        </div>
       </div>
       {/* #2118: the face hangs in its own column; the text lines up with the name. */}
       <div className="flex flex-col gap-1 pl-8" data-comment-body="">
@@ -755,10 +821,15 @@ function CommentRow({
               body={c.body}
               mentions={c.mentions}
               guest={api.guest}
+              marks={marks}
             />
           </p>
         )}
-        <Delivery c={c} guest={api.guest} />
+        <Delivery
+          c={c}
+          guest={api.guest}
+          problems={api.guest ? [] : (problems ?? [])}
+        />
         {mode === "delete" && (
           <div
             role="alertdialog"
@@ -868,6 +939,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const navigate = useNavigate();
   const resolved = t.status === "resolved";
   const [first, ...rest] = t.comments;
+  const allProblems = useMemo(() => newProblems(t.comments), [t.comments]);
   const expanded = isActive || rest.length === 0;
   // #2179: a folded thread keeps its first comment and its latest reply in
   // view, and nothing the reader saw folds away mid-visit: the latest reply on
@@ -1027,6 +1099,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               api={api}
               thread={t}
               c={first}
+              allProblems={allProblems}
               root
               askQuestion={
                 asker && !asking
@@ -1063,6 +1136,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                   api={api}
                   thread={t}
                   c={c}
+                  allProblems={allProblems}
                   root={false}
                 />
               ))}

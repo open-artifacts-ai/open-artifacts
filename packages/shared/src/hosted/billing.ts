@@ -81,6 +81,12 @@ export const PlanViewSchema = z.object({
    * predates it (unknown: the dashboard keeps showing Manage billing).
    */
   hasCustomer: z.boolean().optional(),
+  /**
+   * Billing sets this true when yearly Team and Business prices are configured
+   * in this environment; absent or false hides yearly Team and Business.
+   * Owner and admins only.
+   */
+  yearlyTeamBusiness: z.boolean().optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

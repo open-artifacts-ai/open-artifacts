@@ -88,6 +88,20 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // Yearly Team and Business prices configured (billing.yearlyTeamBusiness).
+  yearly: {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      yearlyTeamBusiness: true,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
   "solo-no-customer": {
     billing: {
       tier: "solo",

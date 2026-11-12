@@ -404,6 +404,10 @@ trial's end, optional, absent when billing's answer predates it.
 for the instance (a provisioned or comped plan has none, so no portal): owner
 and admins only, the plan cap included; absent for everyone else and when
 billing's answer predates it (unknown: the dashboard keeps Manage billing).
+`yearlyTeamBusiness` (boolean, optional): billing sets it true when yearly Team
+and Business prices are configured in this environment; absent or false hides
+yearly Team and Business in the dashboard. Owner and admins only, like
+`hasCustomer`; billing's `GET /tier` answer carries it and the server passes it on.
 
 | State | What it does | `reason` |
 |---|---|---|

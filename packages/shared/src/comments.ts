@@ -137,9 +137,15 @@ export const CommentMentionSchema = z.object({
   ...partyFace,
   /** The person the agent acts for, set by the server (#1822). */
   for: z.string().optional(),
-  delivery: MentionDeliverySchema,
+  /** Members only (#2004): an outsider gets no delivery state of an agent. */
+  delivery: MentionDeliverySchema.optional(),
 });
 export type CommentMention = z.infer<typeof CommentMentionSchema>;
+/** A thread agent a reply also told: members only, so the delivery is always there. */
+export const CommentNotifiedSchema = CommentMentionSchema.required({
+  delivery: true,
+});
+export type CommentNotified = z.infer<typeof CommentNotifiedSchema>;
 
 export const CommentSchema = z.object({
   id: z.string(),
@@ -157,7 +163,7 @@ export const CommentSchema = z.object({
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
   /** #2035: the thread's agents a person's reply also told, with delivery. Members only. */
-  notified: z.array(CommentMentionSchema).optional(),
+  notified: z.array(CommentNotifiedSchema).optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
