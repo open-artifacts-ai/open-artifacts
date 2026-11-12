@@ -446,6 +446,26 @@ describe("Settings › Security: passkeys", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("a passkey_cooling 409 from the challenge is shown, not treated as 'no approval needed'", async () => {
+    use("usable");
+    const usableAt = new Date(Date.now() + 3 * 3600_000).toISOString();
+    server.use(
+      http.post(`*${R.passkeyRegisterChallenge}`, () =>
+        err("passkey_cooling", 409, { usableAt }),
+      ),
+    );
+    const posts = calls("POST");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    const line = await screen.findByText(
+      /^Your new passkey can approve from .+\. Nothing was added\.$/,
+    );
+    expect(line).toHaveTextContent(webauthn.coolingTime(usableAt));
+    expect(posts.some((c) => c.path === R.passkeyRegisterBegin)).toBe(false);
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("a stale list: a 409 from the challenge falls back to begin without an assertion", async () => {
     use("usable");
     server.use(

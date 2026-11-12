@@ -242,8 +242,9 @@ function PasskeyList({
           );
           assertion = await getAssertion(ch.options);
         } catch (e) {
-          // 409: none needs to approve after all (our list was stale).
-          if (!(e instanceof ApiClientError && e.status === 409)) throw e;
+          // 409 conflict only: none needs to approve after all (our list was
+          // stale). passkey_cooling is also a 409 but is an answer, not this.
+          if (!(e instanceof ApiClientError && e.code === "conflict")) throw e;
         }
       }
       const begin = await api.send(
