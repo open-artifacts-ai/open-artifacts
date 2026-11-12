@@ -600,8 +600,8 @@ jobs:
   # #1056 untangle D: the public code installs, builds, typechecks and tests
   # with every private path (scripts/ci/private-paths.txt) removed.
   # Not a required check, and nothing needs it. It runs on the merge queue and
-  # on dispatch. On a pull request it runs only when the PR changes scripts/ci/
-  # or scripts/test/ (#2254), the paths whose breakage shows up only here: the
+  # on dispatch. On a pull request it runs only when the PR changes scripts/ci/,
+  # scripts/test/ or this workflow (#2254), the paths whose breakage shows up only here: the
   # decision is made inside the job, like migration-timing, so a PR that
   # touches neither passes in seconds. It does not block a merge: a red run is
   # a signal to fix, not a gate. A PR that brings back a listed private path is
@@ -624,7 +624,7 @@ jobs:
           if [ "$EVENT" = pull_request ]; then
             run=false
             if [ -z "${BASE_SHA:-}" ] || ! files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
-              || grep -qE '^(scripts/ci/|scripts/test/)' <<< "$files"; then
+              || grep -qE '^(scripts/ci/|scripts/test/|\.github/workflows/ci\.yml$)' <<< "$files"; then
               run=true
             fi
           fi
