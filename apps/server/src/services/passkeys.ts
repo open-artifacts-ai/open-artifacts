@@ -293,14 +293,14 @@ export type Account = { id: string; email: string; name?: string | null };
 
 const REGISTER_AUTH = "register-auth";
 
-/** Passkeys that must approve adding another: past cooling and not pending removal. */
-const approvers = (rows: PasskeyRow[], now: number) =>
-  usable(rows, now).filter((r) => r.removal_at === null);
-
 /**
- * With a usable passkey already on the account, adding another needs an
- * assertion from it (scope "register-auth", bound to "register") on top of
- * the fresh re-auth. This is its challenge; 409 when none is needed.
+ * Adding a passkey: with no passkey row at all a fresh re-auth is enough
+ * (lost-device recovery is: schedule the removal, wait out its 24 h, add).
+ * With any row (cooling and pending removal included) an assertion from a
+ * usable one is needed too, scope "register-auth" bound to "register"; a
+ * passkey pending removal still counts until its time. Only cooling ones:
+ * 409 passkey_cooling. This is the challenge for that assertion; 409
+ * conflict when none is needed.
  */
 export async function registerAuthChallenge(
   env: Env,
@@ -308,7 +308,7 @@ export async function registerAuthChallenge(
   now = Date.now(),
 ): Promise<PasskeyChallenge> {
   const rows = await rowsOf(env, userId, now);
-  if (approvers(rows, now).length === 0)
+  if (rows.length === 0)
     throw new ApiError("conflict", "No passkey needs to approve this");
   return requestOptions(
     env,
@@ -329,8 +329,10 @@ export async function registerBegin(
   const rows = await rowsOf(env, user.id, now);
   if (rows.length >= MAX_PASSKEYS)
     throw new ApiError("conflict", `At most ${MAX_PASSKEYS} passkeys`);
-  const needed = approvers(rows, now).length > 0;
+  const needed = rows.length > 0;
   if (needed) {
+    // 409 passkey_cooling when every passkey is still under 24 h.
+    await requireUsable(env, user.id, now);
     if (assertion === undefined || assertion === null)
       throw new ApiError(
         "passkey_required",
@@ -404,10 +406,7 @@ export async function registerFinish(
   if (!row || row.used_at !== null || row.expires_at <= now)
     throw new ApiError("challenge_expired", "Start adding the passkey again");
   // An account with a usable passkey needs begin to have verified it.
-  if (
-    approvers(await rowsOf(env, user.id, now), now).length > 0 &&
-    row.binding !== "authed"
-  )
+  if ((await rowsOf(env, user.id, now)).length > 0 && row.binding !== "authed")
     throw new ApiError(
       "passkey_required",
       "Approve adding a passkey with one you already have",
