@@ -293,6 +293,8 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
       await screen.findByRole("button", { name: "Manage billing" }),
     ).toBeVisible();
     expect(screen.getByText("First charge on Dec 1, 2026.")).toBeVisible();
+    expect(screen.getByText("Your free month ends Dec 1, 2026.")).toBeVisible();
+    expect(screen.queryByText(/Then \$1\/month/)).toBeNull();
     expect(pay()).toBeNull();
     expect(screen.queryByRole("button", { name: "Pay $10/year" })).toBeNull();
   });

@@ -111,7 +111,10 @@ export const planStatus = (
       pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",
-        text: `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
+        // With a card on file the charge line under it names the first charge.
+        text: b.soloCheckedOut
+          ? `Your free month ends ${date(b.soloTrialEndsAt)}.`
+          : `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
       },
     };
   return { pill: { label: "Active", tone: "ok" } };
