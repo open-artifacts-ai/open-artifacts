@@ -122,7 +122,11 @@ describe("thaw banner", () => {
     "Directory sync is back on: 3 role changes you made on Team were replaced by your groups.";
 
   it("shows once with the audit link and stays dismissed for that thaw", async () => {
-    mountHosted("/", { billing: BUSINESS }, dir({ lastThaw: T }, "business"));
+    mountHosted(
+      "/settings/members",
+      { billing: BUSINESS },
+      dir({ lastThaw: T }, "business"),
+    );
     const note = await screen.findByText(
       (_, el) =>
         el?.tagName === "P" && el.textContent?.startsWith(text) === true,
@@ -139,12 +143,16 @@ describe("thaw banner", () => {
 
   it("stays hidden after a reload for the same thaw, shows for a new one", async () => {
     localStorage.setItem("oa.thawNotice.dismissed", "1000");
-    mountHosted("/", { billing: BUSINESS }, dir({ lastThaw: T }, "business"));
+    mountHosted(
+      "/settings/members",
+      { billing: BUSINESS },
+      dir({ lastThaw: T }, "business"),
+    );
     await screen.findByRole("main");
     expect(screen.queryByText(text, { exact: false })).toBeNull();
     cleanup();
     mountHosted(
-      "/",
+      "/settings/members",
       { billing: BUSINESS },
       dir({ lastThaw: { ...T, id: "2000" } }, "business"),
     );
@@ -153,7 +161,7 @@ describe("thaw banner", () => {
 
   it("says 1 role change for one", async () => {
     mountHosted(
-      "/",
+      "/settings/members",
       { billing: BUSINESS },
       dir({ lastThaw: { ...T, reverted: 1 } }, "business"),
     );
@@ -172,4 +180,21 @@ describe("thaw banner", () => {
       screen.queryByText("Directory sync is back on", { exact: false }),
     ).toBeNull();
   });
+});
+
+it("the thaw banner is on Members only", async () => {
+  mountHosted(
+    "/",
+    { billing: BUSINESS },
+    dir(
+      {
+        lastThaw: { id: "1", reverted: 2, at: "2026-11-12T00:00:00.000Z" },
+      },
+      "business",
+    ),
+  );
+  await screen.findByRole("main");
+  expect(
+    screen.queryByText("Directory sync is back on", { exact: false }),
+  ).toBeNull();
 });

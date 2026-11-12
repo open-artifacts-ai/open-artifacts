@@ -222,11 +222,19 @@ function ThawBanner({ me, className }: { me: Me | null; className: string }) {
 }
 
 /** The sync notices: the thaw's one-time banner, then the health banner. */
-export function SyncBanner(props: { me: Me | null; className?: string }) {
+export function SyncBanner(props: {
+  me: Me | null;
+  className?: string;
+  /** The thaw notice shows on Members only (Product's copy on #2150). */
+  members?: boolean;
+}) {
+  const { members, ...rest } = props;
   return (
     <>
-      <ThawBanner me={props.me} className={props.className ?? ""} />
-      <SyncHealthBanner {...props} />
+      {members && (
+        <ThawBanner me={props.me} className={props.className ?? ""} />
+      )}
+      <SyncHealthBanner {...rest} />
     </>
   );
 }
