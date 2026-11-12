@@ -135,7 +135,9 @@ describe("--uninstall --check", () => {
     const n = setup();
     await run(["--uninstall", "--check", "--json"], n.deps, ROOT);
     const r = JSON.parse(n.lines.at(-1) as string);
-    const w = r.data.items.find((i: { kind: string }) => i.kind.startsWith("Worker"));
+    const w = r.data.items.find((i: { kind: string }) =>
+      i.kind.startsWith("Worker"),
+    );
     expect(w.destroysData).toBe(true);
     expect(w.how).toContain("BusHub");
   });
@@ -153,7 +155,9 @@ describe("--uninstall --check", () => {
     );
     expect(out).toContain("apps/server/wrangler.jsonc");
     expect(out).toContain("Open Artifacts – everyone");
-    expect(out).toContain("d1 export acme --remote --table <t> --output <t>.sql");
+    expect(out).toContain(
+      "d1 export acme --remote --table <t> --output <t>.sql",
+    );
     expect(out).not.toContain("--output backup.sql");
     expect(out).toContain("NOT LIKE 'artifact_search%'");
     expect(out).toContain("r2 object get acme/<key> --remote");
