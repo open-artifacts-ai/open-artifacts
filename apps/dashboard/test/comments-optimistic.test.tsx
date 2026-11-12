@@ -24,7 +24,12 @@ import {
   it,
   vi,
 } from "vitest";
-import { commentsKey, overlayPending, useAnswerAsk } from "../src/api/comments";
+import {
+  commentsKey,
+  overlayPending,
+  useAnswerAsk,
+  useThreadAgent,
+} from "../src/api/comments";
 import { lostKey, putLost } from "../src/viewer/comments/lostPosts";
 import { events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
@@ -533,5 +538,59 @@ describe("a failed post never loses its text", () => {
     expect(
       await screen.findByText("Too many comments. Try again in a minute."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("two quick optimistic actions do not undo each other", () => {
+  it("the first × failing puts back only its agent; the second stays removed", async () => {
+    const agent = (key: string) => ({
+      key,
+      name: key,
+      canRemove: true,
+    });
+    const t: CommentThread = {
+      ...note("t1", [mine("c1", "root")]),
+      agents: [agent("a1"), agent("a2")],
+    };
+    const qc = new QueryClient();
+    // The settle refetch would hide what this checks.
+    qc.invalidateQueries = vi.fn(() => Promise.resolve());
+    qc.setQueryData(commentsKey(OWNED), list([t]));
+    server.use(
+      http.delete(`*${R.commentThreadAgent(OWNED, "t1", "a1")}`, async () => {
+        await delay(500);
+        return HttpResponse.json(
+          { error: { code: "forbidden", message: "x" } },
+          { status: 403 },
+        );
+      }),
+      http.delete(`*${R.commentThreadAgent(OWNED, "t1", "a2")}`, async () => {
+        await delay(1200);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const { result } = renderHook(() => useThreadAgent(OWNED), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      ),
+    });
+    const removed = () =>
+      Object.fromEntries(
+        (
+          qc.getQueryData<CommentList>(commentsKey(OWNED))?.threads[0]
+            ?.agents ?? []
+        ).map((a) => [a.key, a.removed === true]),
+      );
+    act(() => {
+      result.current.mutate({ thread: "t1", key: "a1", removed: true });
+    });
+    await waitFor(() => expect(removed().a1).toBe(true));
+    act(() => {
+      result.current.mutate({ thread: "t1", key: "a2", removed: true });
+    });
+    await waitFor(() => expect(removed()).toEqual({ a1: true, a2: true }));
+    // a1 fails first: it comes back; a2 is still removed.
+    await waitFor(() => expect(removed().a1).toBe(false));
+    expect(removed().a2).toBe(true);
   });
 });

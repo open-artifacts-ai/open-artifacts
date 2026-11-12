@@ -184,6 +184,17 @@ export const useThreads = (id: string, enabled: boolean, guest = false) => {
 type Snapshot = { prev: CommentList | undefined };
 
 /**
+ * What an optimistic action changed, and how to put back only that: `apply`
+ * edits the list, `undo` restores just the touched item from `prev` (the list
+ * before this action). A failure never rewinds the whole list, so two quick
+ * actions cannot undo each other.
+ */
+type Patch<V> = {
+  apply: (list: CommentList, v: V, me: Comment["author"]) => CommentList;
+  undo: (list: CommentList, v: V, prev: CommentList) => CommentList;
+};
+
+/**
  * Optimistic edits to the cached list (TanStack onMutate): `apply` shows the
  * result at once, an error puts the snapshot back, and the settle refetch makes
  * the server's record the truth. Used only for actions whose outcome is
@@ -196,12 +207,12 @@ const useRefetching = <V, T>(
   guest: boolean,
   mints: boolean,
   fn: (v: V, x?: RequestExtra) => Promise<T>,
-  apply?: (list: CommentList, v: V, me: Comment["author"]) => CommentList,
+  patch?: Patch<V>,
 ) => {
   const qc = useQueryClient();
   return useMutation<T, ApiClientError, V, Snapshot | undefined>({
     mutationFn: (v: V) => withAnon(guest, mints, (x) => fn(v, x)),
-    onMutate: apply
+    onMutate: patch
       ? async (v) => {
           // A fetch already on its way would overwrite the edit below.
           await qc.cancelQueries({ queryKey: commentsKey(id) });
@@ -209,14 +220,18 @@ const useRefetching = <V, T>(
           if (prev)
             qc.setQueryData<CommentList>(
               commentsKey(id),
-              apply(prev, v, viewerAuthor(qc, guest)),
+              patch.apply(prev, v, viewerAuthor(qc, guest)),
             );
           return { prev };
         }
       : undefined,
-    onError: apply
-      ? (_e, _v, ctx) => {
-          if (ctx?.prev) qc.setQueryData(commentsKey(id), ctx.prev);
+    onError: patch
+      ? (_e, v, ctx) => {
+          const prev = ctx?.prev;
+          if (!prev) return;
+          qc.setQueryData<CommentList>(commentsKey(id), (cur) =>
+            cur ? patch.undo(cur, v, prev) : cur,
+          );
         }
       : undefined,
     // Settled, not success: a 404 or 403 means the list is stale too.
@@ -231,6 +246,22 @@ const mapThread = (
 ): CommentList => ({
   ...list,
   threads: list.threads.map((t) => (t.id === thread ? f(t) : t)),
+});
+const setStatus = (
+  list: CommentList,
+  thread: string,
+  status: "open" | "resolved",
+): CommentList =>
+  mapThread(list, thread, (t) => ({
+    ...t,
+    status,
+    // Who resolved it and when are the server's to say.
+    ...(status === "open" ? { resolvedBy: null, resolvedAt: null } : {}),
+  }));
+/** `next` with the open count moved by what changed from `list`. */
+const withOpen = (list: CommentList, next: CommentList): CommentList => ({
+  ...next,
+  open: list.open + countOpen(next.threads) - countOpen(list.threads),
 });
 const countOpen = (threads: readonly CommentThread[]) =>
   threads.filter((t) => t.status === "open").length;
@@ -441,13 +472,29 @@ export const useThreadAgent = (id: string, guest = false) =>
         x,
       ),
     // The chip and row change at once; a refusal puts them back.
-    (list, v) =>
-      mapThread(list, v.thread, (t) => ({
-        ...t,
-        agents: t.agents?.map((a) =>
-          a.key === v.key ? { ...a, removed: v.removed ? true : undefined } : a,
-        ),
-      })),
+    {
+      apply: (list, v) =>
+        mapThread(list, v.thread, (t) => ({
+          ...t,
+          agents: t.agents?.map((a) =>
+            a.key === v.key
+              ? { ...a, removed: v.removed ? true : undefined }
+              : a,
+          ),
+        })),
+      // Only this agent goes back; another removal in flight stays.
+      undo: (list, v, prev) => {
+        const was = prev.threads
+          .find((t) => t.id === v.thread)
+          ?.agents?.find((a) => a.key === v.key);
+        return mapThread(list, v.thread, (t) => ({
+          ...t,
+          agents: t.agents?.map((a) =>
+            a.key === v.key ? { ...a, removed: was?.removed } : a,
+          ),
+        }));
+      },
+    },
   );
 const AgentList = z.array(ArtifactAgentSchema);
 /** The agents that follow or publish to the artifact (the @ picker). Owners and editors only; a failure just means no picker. */
@@ -486,33 +533,48 @@ export const useAnswerAsk = (id: string) =>
         undefined,
         x,
       ),
-    (list, v, me) =>
-      mapThread(list, v.thread, (t) => ({
-        ...t,
-        comments: t.comments.map((c) =>
-          c.id !== v.comment ||
-          !c.ask ||
-          c.ask.closed ||
-          (c.ask as { confirm?: unknown }).confirm
-            ? c
-            : {
-                ...c,
-                ask: {
-                  ...c.ask,
-                  answer: {
-                    optionId: v.optionId,
-                    by: me,
-                    at: new Date().toISOString(),
-                    typed: true,
-                    yes: false,
-                    // Not answered until the server confirms: the card keeps its
-                    // "needs you" border and the header keeps counting it.
-                    sending: true,
-                  } as NonNullable<typeof c.ask.answer>,
+    {
+      apply: (list, v, me) =>
+        mapThread(list, v.thread, (t) => ({
+          ...t,
+          comments: t.comments.map((c) =>
+            c.id !== v.comment ||
+            !c.ask ||
+            c.ask.closed ||
+            (c.ask as { confirm?: unknown }).confirm
+              ? c
+              : {
+                  ...c,
+                  ask: {
+                    ...c.ask,
+                    answer: {
+                      optionId: v.optionId,
+                      by: me,
+                      at: new Date().toISOString(),
+                      typed: true,
+                      yes: false,
+                      // Not answered until the server confirms: the card keeps its
+                      // "needs you" border and the header keeps counting it.
+                      sending: true,
+                    } as NonNullable<typeof c.ask.answer>,
+                  },
                 },
-              },
-        ),
-      })),
+          ),
+        })),
+      undo: (list, v, prev) => {
+        const was = prev.threads
+          .find((t) => t.id === v.thread)
+          ?.comments.find((c) => c.id === v.comment)?.ask?.answer;
+        return mapThread(list, v.thread, (t) => ({
+          ...t,
+          comments: t.comments.map((c) =>
+            c.id === v.comment && c.ask
+              ? { ...c, ask: { ...c.ask, answer: was } }
+              : c,
+          ),
+        }));
+      },
+    },
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>
@@ -529,17 +591,23 @@ export const useSetThreadStatus = (id: string, guest = false) =>
         undefined,
         x,
       ),
-    (list, v) => {
-      const next = mapThread(list, v.thread, (t) => ({
-        ...t,
-        status: v.status,
-        // Who resolved it and when are the server's to say.
-        ...(v.status === "open" ? { resolvedBy: null, resolvedAt: null } : {}),
-      }));
-      return {
-        ...next,
-        open: list.open + countOpen(next.threads) - countOpen(list.threads),
-      };
+    {
+      apply: (list, v) => withOpen(list, setStatus(list, v.thread, v.status)),
+      // Only this thread's status goes back.
+      undo: (list, v, prev) => {
+        const was = prev.threads.find((t) => t.id === v.thread);
+        return was
+          ? withOpen(
+              list,
+              mapThread(list, v.thread, (t) => ({
+                ...t,
+                status: was.status,
+                resolvedBy: was.resolvedBy,
+                resolvedAt: was.resolvedAt,
+              })),
+            )
+          : list;
+      },
     },
   );
 export const useEditComment = (id: string, guest = false) =>
@@ -575,19 +643,42 @@ export const useDeleteComment = (id: string, guest = false) =>
         x,
       ),
     // Deleting the root takes the thread with it, as the server does.
-    (list, v) => {
-      const t = list.threads.find((x) => x.id === v.thread);
-      if (!t) return list;
-      if (t.comments[0]?.id === v.comment)
-        return {
-          ...list,
-          threads: list.threads.filter((x) => x.id !== v.thread),
-          open: list.open - (t.status === "open" ? 1 : 0),
-        };
-      return mapThread(list, v.thread, (x) => ({
-        ...x,
-        comments: x.comments.filter((c) => c.id !== v.comment),
-      }));
+    {
+      apply: (list, v) => {
+        const t = list.threads.find((x) => x.id === v.thread);
+        if (!t) return list;
+        if (t.comments[0]?.id === v.comment)
+          return {
+            ...list,
+            threads: list.threads.filter((x) => x.id !== v.thread),
+            open: list.open - (t.status === "open" ? 1 : 0),
+          };
+        return mapThread(list, v.thread, (x) => ({
+          ...x,
+          comments: x.comments.filter((c) => c.id !== v.comment),
+        }));
+      },
+      // Only the deleted comment (or thread) comes back, in its old place.
+      undo: (list, v, prev) => {
+        const was = prev.threads.find((x) => x.id === v.thread);
+        if (!was) return list;
+        const at = was.comments.findIndex((c) => c.id === v.comment);
+        const gone = was.comments[at];
+        if (!gone) return list;
+        if (at === 0) {
+          if (list.threads.some((x) => x.id === v.thread)) return list;
+          const i = prev.threads.indexOf(was);
+          const threads = [...list.threads];
+          threads.splice(Math.min(i, threads.length), 0, was);
+          return withOpen(list, { ...list, threads });
+        }
+        return mapThread(list, v.thread, (x) => {
+          if (x.comments.some((c) => c.id === v.comment)) return x;
+          const comments = [...x.comments];
+          comments.splice(Math.min(at, comments.length), 0, gone);
+          return { ...x, comments };
+        });
+      },
     },
   );
 
