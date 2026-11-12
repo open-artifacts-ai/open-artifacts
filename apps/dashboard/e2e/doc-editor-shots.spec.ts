@@ -146,7 +146,8 @@ for (const [scheme, width] of COMBOS) {
       await expect(page.getByRole("tooltip")).toHaveText(
         /Heading 1\s*(Ctrl|⌘)/,
       );
-      // Below the button, so it never covers the title or the Comments button.
+      // Below the button, so it never covers the title or the Comments button
+      // (on a phone the bar is at the bottom, so it opens above).
       const button = await page
         .getByRole("button", { name: "Heading 1" })
         .boundingBox();
@@ -154,7 +155,10 @@ for (const [scheme, width] of COMBOS) {
         .locator('[data-slot="tooltip-content"]')
         .boundingBox();
       if (!button || !tip) throw new Error("no boxes");
-      expect(tip.y).toBeGreaterThanOrEqual(button.y + button.height - 1);
+      if (width <= 640)
+        // The bar is at the bottom of a phone screen: the tooltip flips above it.
+        expect(tip.y + tip.height).toBeLessThanOrEqual(button.y + 1);
+      else expect(tip.y).toBeGreaterThanOrEqual(button.y + button.height - 1);
       await shot(page, info, `doc-editor-tooltip-${scheme}-${width}.png`);
     });
 

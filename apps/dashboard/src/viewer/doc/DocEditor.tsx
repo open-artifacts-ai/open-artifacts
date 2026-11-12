@@ -107,6 +107,9 @@ function Loaded({
       extensions,
       editable,
       editorProps: {
+        // Keep the caret clear of the phone toolbar at the bottom.
+        scrollMargin: { top: 8, right: 8, bottom: 64, left: 8 },
+        scrollThreshold: { top: 8, right: 8, bottom: 64, left: 8 },
         attributes: {
           class: "oa-doc-prose",
           "aria-label": title,

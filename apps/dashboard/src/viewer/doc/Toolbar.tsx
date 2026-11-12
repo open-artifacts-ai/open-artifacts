@@ -26,6 +26,7 @@ import {
   SquareCode,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { trackViewportVar, useKeyboardOpen } from "../comments/viewport";
 import { LINK_REFUSED, toAllowedHref } from "./extensions";
 
 /** A shortcut as Tiptap binds it: "Mod" is Cmd on a Mac and Ctrl elsewhere. */
@@ -304,10 +305,15 @@ export function Toolbar({ editor }: { editor: Editor }) {
       link: e.isActive("link"),
     }),
   });
+  // On a phone the toolbar is fixed to the bottom and lifted above the
+  // on-screen keyboard: --oa-kb follows the visual viewport (#2276).
+  useEffect(() => trackViewportVar(), []);
+  const keyboard = useKeyboardOpen();
   return (
     <TooltipProvider delayDuration={400}>
       <div
         className="oa-doc-toolbar"
+        data-keyboard={keyboard ? "" : undefined}
         role="toolbar"
         aria-label="Formatting"
         aria-orientation="horizontal"

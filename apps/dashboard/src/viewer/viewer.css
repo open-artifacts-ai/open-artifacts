@@ -969,6 +969,31 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   background: var(--oa-accent-soft);
   color: var(--oa-accent-fg);
 }
+/*
+ * #2276: on a phone the toolbar sits at the bottom of the screen, above the
+ * on-screen keyboard. It is fixed to the layout viewport and lifted by --oa-kb
+ * (the keyboard's height, from the visual viewport; see comments/viewport.ts).
+ */
+@media (max-width: 640px) {
+  .oa-doc-toolbar {
+    position: fixed;
+    inset-inline: 0;
+    bottom: var(--oa-kb, 0px);
+    z-index: 20;
+    padding: 4px 12px calc(4px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--oa-border);
+    border-bottom: 0;
+    background: var(--oa-bg);
+  }
+  /* The keyboard covers the home indicator: no inset under the bar. */
+  .oa-doc-toolbar[data-keyboard] {
+    padding-bottom: 4px;
+  }
+  /* Room under the text for the bar, so the last line can scroll clear of it. */
+  .oa-doc[data-editable] .oa-doc-scroll {
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  }
+}
 @media (max-width: 600px) {
   .oa-doc-page {
     padding: 28px 16px 64px;

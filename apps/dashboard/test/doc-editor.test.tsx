@@ -153,6 +153,68 @@ describe("toolbar", () => {
     expect(seps[1]).toHaveAttribute("aria-hidden", "true");
   });
 
+  it("follows the on-screen keyboard: --oa-kb lifts the bar and data-keyboard drops the inset", () => {
+    const vv = Object.assign(new EventTarget(), {
+      height: window.innerHeight,
+      offsetTop: 0,
+      scale: 1,
+    });
+    Object.defineProperty(window, "visualViewport", {
+      value: vv,
+      configurable: true,
+    });
+    try {
+      setup();
+      const bar = screen.getByRole("toolbar");
+      const root = document.documentElement;
+      expect(bar).not.toHaveAttribute("data-keyboard");
+      expect(root.style.getPropertyValue("--oa-kb")).toBe("0px");
+      // The keyboard opens: the visual viewport loses 300 px.
+      act(() => {
+        vv.height = window.innerHeight - 300;
+        vv.dispatchEvent(new Event("resize"));
+      });
+      expect(bar).toHaveAttribute("data-keyboard");
+      expect(root.style.getPropertyValue("--oa-kb")).toBe("300px");
+      // Browser chrome (tens of px) is not a keyboard.
+      act(() => {
+        vv.height = window.innerHeight - 60;
+        vv.dispatchEvent(new Event("resize"));
+      });
+      expect(bar).not.toHaveAttribute("data-keyboard");
+    } finally {
+      Reflect.deleteProperty(window, "visualViewport");
+    }
+  });
+
+  it("stops tracking the viewport when the bar goes away", () => {
+    const vv = Object.assign(new EventTarget(), {
+      height: window.innerHeight - 300,
+      offsetTop: 0,
+      scale: 1,
+    });
+    Object.defineProperty(window, "visualViewport", {
+      value: vv,
+      configurable: true,
+    });
+    try {
+      const { unmount } = render(
+        <TooltipProvider>
+          <Toolbar editor={collab().editor} />
+        </TooltipProvider>,
+      );
+      expect(document.documentElement.style.getPropertyValue("--oa-kb")).toBe(
+        "300px",
+      );
+      unmount();
+      expect(document.documentElement.style.getPropertyValue("--oa-kb")).toBe(
+        "",
+      );
+    } finally {
+      Reflect.deleteProperty(window, "visualViewport");
+    }
+  });
+
   it("names every button's shortcut: in a tooltip and in aria-keyshortcuts", async () => {
     setup();
     const want: Record<string, [string, string]> = {
