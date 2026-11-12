@@ -147,5 +147,23 @@ test("390: the pin sheet's field is capped by what the keyboard leaves", async (
   );
   const hgt = await field.evaluate((el) => el.getBoundingClientRect().height);
   expect(hgt).toBeLessThanOrEqual((844 - 320) * 0.4 + 1);
+  // Reply and Resolve stay above the keyboard, without scrolling.
+  const actions = page
+    .locator("li[data-thread]")
+    .filter({ hasText: "Pinned thread for the keyboard" })
+    .getByRole("button", { name: "Resolve" });
+  await expect(actions).toBeVisible();
+  const kbTop = 844 - 320;
+  await expect
+    .poll(async () => (await actions.boundingBox())?.y ?? 9999)
+    .toBeLessThanOrEqual(kbTop);
+  const box = await actions.boundingBox();
+  expect((box?.y ?? 9999) + (box?.height ?? 0)).toBeLessThanOrEqual(kbTop);
+  // The keyboard's top, as a red line drawn only for the shot.
+  await page.evaluate((top) => {
+    const d = document.createElement("div");
+    d.style.cssText = `position:fixed;left:0;right:0;top:${top}px;height:0;border-top:2px solid red;z-index:99999;pointer-events:none`;
+    document.body.append(d);
+  }, kbTop);
   await shot(page, "390-pin-composer-long");
 });

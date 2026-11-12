@@ -59,14 +59,17 @@ let users = 0;
 let stop: (() => void) | null = null;
 
 /**
- * Publishes the visible height as `--oa-vvh` (one hundredth of it, so
+ * Publishes the keyboard's height as `--oa-kb` and the visible height as `--oa-vvh` (one hundredth of it, so
  * `calc(var(--oa-vvh, 1svh) * 40)` is 40svh that follows the keyboard).
  * Reference counted: the first user installs it, the last removes it.
  */
 export function trackViewportVar(): () => void {
   const root = document.documentElement;
-  const set = () =>
+  const set = () => {
     root.style.setProperty("--oa-vvh", `${viewHeight() / 100}px`);
+    // The phone sheet is fixed to the layout viewport: lift it above the keyboard.
+    root.style.setProperty("--oa-kb", `${keyboardInset()}px`);
+  };
   if (users++ === 0) {
     set();
     stop = onViewport(set);
@@ -76,5 +79,6 @@ export function trackViewportVar(): () => void {
     stop?.();
     stop = null;
     root.style.removeProperty("--oa-vvh");
+    root.style.removeProperty("--oa-kb");
   };
 }

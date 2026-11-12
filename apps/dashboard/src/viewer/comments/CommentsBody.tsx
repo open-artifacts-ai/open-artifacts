@@ -67,7 +67,13 @@ import { numbering, pinChanged, pinNumbering } from "./model";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
 import { type CommentsApi, useCommentsApi } from "./useComments";
-import { fieldCap, onViewport, trackViewportVar, viewBottom } from "./viewport";
+import {
+  fieldCap,
+  keyboardInset,
+  onViewport,
+  trackViewportVar,
+  viewBottom,
+} from "./viewport";
 
 const touch = () =>
   typeof window !== "undefined" &&
@@ -295,6 +301,26 @@ export function focusField(el: HTMLElement | null) {
   }, 1000);
 }
 
+/**
+ * #2239: with the keyboard open, keep the whole card (its Reply and Resolve
+ * row too) above the keyboard while its field grows, never pushing the field
+ * itself under the header.
+ */
+export function keepCardClear(el: HTMLElement | null) {
+  if (!el || keyboardInset() === 0 || document.activeElement !== el) return;
+  const box = scrollerOf(el);
+  const card = el.closest<HTMLElement>("[data-thread]");
+  if (!box || !card) return;
+  const head =
+    box.querySelector<HTMLElement>("[data-comments-header]")?.offsetHeight ?? 0;
+  const bottom = Math.min(box.getBoundingClientRect().bottom, viewBottom());
+  const over = card.getBoundingClientRect().bottom - bottom;
+  if (over <= 0) return;
+  const room =
+    el.getBoundingClientRect().top - (box.getBoundingClientRect().top + head);
+  box.scrollTop += Math.max(0, Math.min(over, room));
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -446,7 +472,10 @@ function Composer({
     };
   }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: text is what changes the height.
-  useLayoutEffect(() => growField(ref.current), [text]);
+  useLayoutEffect(() => {
+    growField(ref.current);
+    keepCardClear(ref.current);
+  }, [text]);
   const body = text.trim();
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
