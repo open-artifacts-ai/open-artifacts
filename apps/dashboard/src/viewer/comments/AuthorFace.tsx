@@ -25,12 +25,19 @@ const linkedFace = (a: CommentAuthor) =>
 function AgentTile({
   animal,
   small = false,
+  medium = false,
 }: {
   animal: { id: string; color: number } | null;
   small?: boolean;
+  /** 20px, for the participants group (#2174). */
+  medium?: boolean;
 }) {
-  const box = small ? "size-4 rounded" : "size-6 rounded-md";
-  const glyph = small ? "size-2.5" : "size-3.5";
+  const box = medium
+    ? "size-5 rounded-md"
+    : small
+      ? "size-4 rounded"
+      : "size-6 rounded-md";
+  const glyph = medium ? "size-3" : small ? "size-2.5" : "size-3.5";
   if (animal) {
     const n = PRESENCE_PALETTE_SIZE;
     const color = `var(--oa-presence-${((animal.color % n) + n) % n})`;
@@ -67,12 +74,20 @@ function AgentTile({
 export function PartyFace({
   p,
   guest = false,
+  medium = false,
 }: {
   p: { linked?: boolean; animal?: { id: string; color: number } };
   guest?: boolean;
+  medium?: boolean;
 }) {
   if (guest || p.linked === undefined) return null;
-  return <AgentTile small animal={p.linked && p.animal ? p.animal : null} />;
+  return (
+    <AgentTile
+      small
+      medium={medium}
+      animal={p.linked && p.animal ? p.animal : null}
+    />
+  );
 }
 
 /** One face for a comment author: person = initials in a circle; linked agent =

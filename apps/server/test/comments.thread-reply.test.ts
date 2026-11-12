@@ -25,6 +25,7 @@ import {
   addReply,
   addThread,
   type CommentWho,
+  listComments,
   setThreadAgent,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
@@ -717,7 +718,7 @@ describe("the publishing agent joins page-wide threads (#1968)", () => {
 });
 
 describe("the thread's agents, removable (#2035)", () => {
-  const list = async (id: string, u: U | null) =>
+  const list = async (id: string, u: { cookie: string } | null) =>
     (await (await api(app, R.comments(id), u?.cookie ?? null)).json()) as {
       threads: Thread[];
     };
@@ -753,7 +754,12 @@ describe("the thread's agents, removable (#2035)", () => {
       await post(s.id, owner, { mentions: [{ key: s.codex }] })
     ).json()) as Thread;
     expect((await stop(s.id, t.id, s.codex, editor)).status).toBe(204);
-    expect((await list(s.id, owner)).threads[0]?.agents).toBeUndefined();
+    expect(
+      (await list(s.id, owner)).threads[0]?.agents?.map((a) => [
+        a.name,
+        a.removed,
+      ]),
+    ).toEqual([["Codex", true]]);
   });
 
   it("a removed agent hears no later reply; an @-mention puts it back", async () => {
@@ -767,14 +773,25 @@ describe("the thread's agents, removable (#2035)", () => {
     bus.clear();
     await reply(s.id, t.id, viewer);
     expect(names()).toEqual(["Pi"]);
-    expect(
-      (await list(s.id, owner)).threads[0]?.agents?.map((a) => a.name),
-    ).toEqual(["Pi"]);
+    // #2174: the removed agent stays listed, marked; the live ones are the others.
+    const after = (await list(s.id, owner)).threads[0]?.agents ?? [];
+    expect(after.filter((a) => !a.removed).map((a) => a.name)).toEqual(["Pi"]);
+    expect(after.filter((a) => a.removed).map((a) => a.name)).toEqual([
+      "Claude",
+    ]);
     // Mentioned again: it is back and hears this one as the mention.
     await reply(s.id, t.id, editor, { mentions: [{ key: s.claude }] });
     expect(
-      (await list(s.id, owner)).threads[0]?.agents?.map((a) => a.name).sort(),
-    ).toEqual(["Claude", "Pi"]);
+      (await list(s.id, owner)).threads[0]?.agents?.map((a) => [
+        a.name,
+        a.removed,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["Claude", undefined],
+        ["Pi", undefined],
+      ]),
+    );
     bus.clear();
     await reply(s.id, t.id, viewer);
     expect(names()).toEqual(["Claude", "Pi"]);
@@ -790,6 +807,25 @@ describe("the thread's agents, removable (#2035)", () => {
     bus.clear();
     await reply(s.id, t.id, viewer);
     expect(names()).toEqual(["Claude"]);
+  });
+
+  it("a removed agent is listed for every member, a viewer-role one included, and for no outsider (#2174)", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    await stop(s.id, t.id, s.claude, owner);
+    for (const u of [owner, editor, viewer]) {
+      const a = (await list(s.id, u)).threads[0]?.agents;
+      expect(a?.map((x) => [x.name, x.removed])).toEqual([["Claude", true]]);
+    }
+    // The owner can still bring it back: canRemove stays true on the removed row.
+    expect((await list(s.id, owner)).threads[0]?.agents?.[0]?.canRemove).toBe(
+      true,
+    );
+    expect((await list(s.id, editor)).threads[0]?.agents?.[0]?.canRemove).toBe(
+      false,
+    );
   });
 
   it("an agent that is not in the thread is 404", async () => {
@@ -879,6 +915,25 @@ describe("the thread's agents, removable (#2035)", () => {
         ),
       ).rejects.toMatchObject({ code: "forbidden" });
     expect((await list(s.id, owner)).threads[0]?.agents).toHaveLength(1);
+    // #2174: a removed agent is no more visible to an outsider than a live one.
+    await stop(s.id, t.id, s.claude, owner);
+    expect((await list(s.id, null)).threads[0]?.agents).toBeUndefined();
+    expect((await list(s.id, gr)).threads[0]?.agents).toBeUndefined();
+    expect((await list(s.id, owner)).threads[0]?.agents?.[0]?.removed).toBe(
+      true,
+    );
+    // A capped (restricted) member reading through the service gets no agents, live or removed.
+    const asCapped = await listComments(E, s.id, "open", {
+      userId: viewer.userId,
+      short: null,
+      capped: true,
+    });
+    expect(asCapped.threads[0]?.agents).toBeUndefined();
+    const asMember = await listComments(E, s.id, "open", {
+      userId: viewer.userId,
+      short: null,
+    });
+    expect(asMember.threads[0]?.agents?.[0]?.removed).toBe(true);
   });
 
   it("a third member's @-mention puts back an agent another person removed (by design)", async () => {
@@ -887,12 +942,17 @@ describe("the thread's agents, removable (#2035)", () => {
       await post(s.id, owner, { mentions: [{ key: s.claude }] })
     ).json()) as Thread;
     expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
-    expect((await list(s.id, owner)).threads[0]?.agents).toBeUndefined();
+    expect((await list(s.id, owner)).threads[0]?.agents?.[0]?.removed).toBe(
+      true,
+    );
     // The editor, a third person, @-mentions it: it is back for everyone.
     await reply(s.id, t.id, editor, { mentions: [{ key: s.claude }] });
     expect(
-      (await list(s.id, viewer)).threads[0]?.agents?.map((a) => a.name),
-    ).toEqual(["Claude"]);
+      (await list(s.id, viewer)).threads[0]?.agents?.map((a) => [
+        a.name,
+        a.removed,
+      ]),
+    ).toEqual([["Claude", undefined]]);
     bus.clear();
     await reply(s.id, t.id, viewer);
     expect(names()).toEqual(["Claude"]);

@@ -21,9 +21,11 @@ for (const width of [1280, 390])
       await page.setViewportSize({ width, height: 900 });
       await page.goto(`/a/${ID}?mock=agents`);
       await page.getByRole("button", { name: /^Comments/ }).click();
+      // The long thread holds the mentions and the ask; mock=agents has other threads (#2174).
       await page
+        .locator("li[data-thread]")
+        .filter({ hasText: "Can the pricing section be shorter?" })
         .getByRole("button", { name: /^Show \d+ earlier repl/ })
-        .first()
         .click();
       await expect(author(page, "true")).toBeVisible();
       await expect(author(page, "false")).toBeVisible();

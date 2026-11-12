@@ -65,6 +65,7 @@ import {
 import { LIVE_TINT_MS } from "./liveReplies";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { ThreadAgents } from "./threadAgents";
+import { ThreadParticipants } from "./threadParticipants";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
 const touch = () =>
@@ -1048,19 +1049,22 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-card p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          className="cursor-pointer border-0 bg-transparent p-0 text-left"
-          aria-label={
-            t.anchor.kind === "pin"
-              ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
-              : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
-          }
-          aria-pressed={isActive}
-          onClick={() => api.select(t.id, true)}
-        >
-          <Quote t={t} api={api} />
-        </button>
+        <div className="flex items-start gap-2">
+          <button
+            type="button"
+            className="min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left"
+            aria-label={
+              t.anchor.kind === "pin"
+                ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
+                : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
+            }
+            aria-pressed={isActive}
+            onClick={() => api.select(t.id, true)}
+          >
+            <Quote t={t} api={api} />
+          </button>
+          <ThreadParticipants t={t} api={api} />
+        </div>
         {orphan && (
           <p className={`${TXT} ${MUTED}`}>
             Made on version {t.version}.{" "}

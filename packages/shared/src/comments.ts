@@ -175,6 +175,8 @@ export const ThreadAgentSchema = z.object({
   /** The person the agent acts for. */
   for: z.string().optional(),
   canRemove: z.boolean(),
+  /** #2174: a person took it out of this thread; it gets no replies until an @-mention or Undo. Absent when it is notified. */
+  removed: z.boolean().optional(),
 });
 export type ThreadAgent = z.infer<typeof ThreadAgentSchema>;
 
