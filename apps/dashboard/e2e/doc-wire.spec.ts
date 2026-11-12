@@ -58,7 +58,9 @@ test("hello read/room_full: reads only, says why, Try again reconnects", async (
 test("hello near the cap: warns and stays editable", async ({ page }, info) => {
   await open(page, info, ["--hello", "edit::1950000"]);
   await expect(
-    page.getByText("This doc is almost full: 1.9 MB of 2 MB."),
+    page.getByText(
+      "This doc is almost full (1.9 of 2 MB). Images take the most space.",
+    ),
   ).toBeVisible();
   await expect(page.getByRole("toolbar")).toBeVisible();
 });
@@ -74,7 +76,9 @@ test("close 4403: no access, read-only, no retry", async ({ page }, info) => {
 
 test("close 4404: the doc is gone", async ({ page }, info) => {
   await open(page, info, ["--close", "4404"]);
-  await expect(page.getByRole("alert")).toHaveText("This doc was deleted.");
+  await expect(page.getByRole("alert")).toHaveText(
+    "This doc was deleted. Its owner can restore it from Trash.",
+  );
 });
 
 test("close 1007 once: resyncs and stays editable", async ({ page }, info) => {
@@ -88,8 +92,8 @@ test("close 1007 every time: stops after one resync and reports", async ({
   page,
 }, info) => {
   await open(page, info, ["--close", "1007"]);
-  await expect(page.getByRole("alert")).toContainText(
-    "This doc can't sync right now.",
+  await expect(page.getByRole("alert")).toHaveText(
+    "This doc can't sync right now. Reload the page to try again. Copy any unsaved changes first.",
   );
 });
 

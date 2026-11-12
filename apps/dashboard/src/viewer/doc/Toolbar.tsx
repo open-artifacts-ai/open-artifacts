@@ -25,7 +25,7 @@ import {
   type LucideIcon,
   SquareCode,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { trackViewportVar, useKeyboardOpen } from "../comments/viewport";
 import { LINK_REFUSED, toAllowedHref } from "./extensions";
 
@@ -295,7 +295,40 @@ function LinkButton({ editor, on }: { editor: Editor; on: boolean }) {
 }
 
 /** One quiet row under the title bar; scrolls sideways on a phone. */
+/**
+ * Whether the bar has more to the right than shows: it overflows and is not
+ * scrolled to its end. The fade on the cut edge follows this (phone, #2276).
+ */
+export function hasMoreToTheRight(el: {
+  scrollWidth: number;
+  clientWidth: number;
+  scrollLeft: number;
+}): boolean {
+  return (
+    el.scrollWidth > el.clientWidth + 1 &&
+    el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+  );
+}
+
 export function Toolbar({ editor }: { editor: Editor }) {
+  const bar = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    const el = bar.current;
+    if (!el) return;
+    const sync = () => setMore(hasMoreToTheRight(el));
+    sync();
+    el.addEventListener("scroll", sync, { passive: true });
+    window.addEventListener("resize", sync);
+    const ro =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", sync);
+      window.removeEventListener("resize", sync);
+      ro?.disconnect();
+    };
+  }, []);
   const state = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -312,7 +345,9 @@ export function Toolbar({ editor }: { editor: Editor }) {
   return (
     <TooltipProvider delayDuration={400}>
       <div
+        ref={bar}
         className="oa-doc-toolbar"
+        data-more={more ? "" : undefined}
         data-keyboard={keyboard ? "" : undefined}
         role="toolbar"
         aria-label="Formatting"
@@ -345,6 +380,7 @@ export function Toolbar({ editor }: { editor: Editor }) {
             on={!!state.on[i.id]}
           />
         ))}
+        <span className="oa-doc-fade" aria-hidden="true" />
       </div>
     </TooltipProvider>
   );

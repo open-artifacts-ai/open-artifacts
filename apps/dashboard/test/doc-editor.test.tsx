@@ -27,7 +27,12 @@ import {
 } from "../src/viewer/doc/extensions";
 import { isFresh, markFresh, NEW_DOC_TOAST } from "../src/viewer/doc/fresh";
 import { TITLE_SAVE_MS, TitleField } from "../src/viewer/doc/TitleField";
-import { ariaShortcut, shortcutText, Toolbar } from "../src/viewer/doc/Toolbar";
+import {
+  ariaShortcut,
+  hasMoreToTheRight,
+  shortcutText,
+  Toolbar,
+} from "../src/viewer/doc/Toolbar";
 import { fakeProviders } from "./doc-fake-provider";
 
 // Radix's tooltip measures its arrow; jsdom has no ResizeObserver.
@@ -151,6 +156,47 @@ describe("toolbar", () => {
     expect(seps[1].nextElementSibling).toHaveAttribute("data-tool", "code");
     expect(seps[1].previousElementSibling).toHaveAttribute("data-tool", "task");
     expect(seps[1]).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("hasMoreToTheRight: only when it overflows and is not at the end", () => {
+    const at = (scrollWidth: number, clientWidth: number, scrollLeft: number) =>
+      hasMoreToTheRight({ scrollWidth, clientWidth, scrollLeft });
+    expect(at(390, 390, 0)).toBe(false); // fits
+    expect(at(391, 390, 0)).toBe(false); // sub-pixel
+    expect(at(450, 390, 0)).toBe(true); // cut at the right
+    expect(at(450, 390, 30)).toBe(true); // scrolled a little
+    expect(at(450, 390, 60)).toBe(false); // at the end
+  });
+
+  it("shows the fade (data-more) only while buttons are hidden to the right", () => {
+    setup();
+    const bar = screen.getByRole("toolbar");
+    const dims = (scrollWidth: number, clientWidth: number, left: number) => {
+      Object.defineProperty(bar, "scrollWidth", {
+        value: scrollWidth,
+        configurable: true,
+      });
+      Object.defineProperty(bar, "clientWidth", {
+        value: clientWidth,
+        configurable: true,
+      });
+      bar.scrollLeft = left;
+      act(() => {
+        bar.dispatchEvent(new Event("scroll"));
+      });
+    };
+    // jsdom has no layout: it fits, so no fade.
+    expect(bar).not.toHaveAttribute("data-more");
+    dims(450, 390, 0);
+    expect(bar).toHaveAttribute("data-more");
+    dims(450, 390, 60);
+    expect(bar).not.toHaveAttribute("data-more");
+    dims(450, 390, 10);
+    expect(bar).toHaveAttribute("data-more");
+    expect(bar.querySelector(".oa-doc-fade")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
   });
 
   it("follows the on-screen keyboard: --oa-kb lifts the bar and data-keyboard drops the inset", () => {
@@ -890,7 +936,9 @@ describe("DocEditor", () => {
       const { f } = await open();
       act(() => f.frame(hello("edit", { bytes: 1_950_000 })));
       expect(
-        await screen.findByText("This doc is almost full: 1.9 MB of 2 MB."),
+        await screen.findByText(
+          "This doc is almost full (1.9 of 2 MB). Images take the most space.",
+        ),
       ).toBeVisible();
       expect(screen.getByRole("toolbar")).toBeVisible();
     });
@@ -908,8 +956,8 @@ describe("DocEditor", () => {
     it("4404 says the doc is gone", async () => {
       const { f } = await open();
       act(() => f.close(4404));
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        "This doc was deleted.",
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "This doc was deleted. Its owner can restore it from Trash.",
       );
     });
 
@@ -919,8 +967,8 @@ describe("DocEditor", () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(screen.queryByRole("alert")).toBeNull();
       act(() => f.close(1007));
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        "This doc can't sync right now.",
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "This doc can't sync right now. Reload the page to try again. Copy any unsaved changes first.",
       );
     });
 

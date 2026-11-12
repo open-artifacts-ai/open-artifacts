@@ -40,15 +40,17 @@ export const ACCESS_REMOVED = "You no longer have access.";
 export const ROOM_FULL = "You can read; editing opens when someone leaves.";
 /** PLACEHOLDER: the button beside ROOM_FULL (the spec says "offer to reconnect"). */
 export const ROOM_FULL_RETRY = "Try again";
-/** PLACEHOLDER: close 4404 not_found ("show it's gone"). */
-export const NOT_FOUND = "This doc was deleted.";
-/** PLACEHOLDER: close 1007 bad_frame twice ("reconnect once, then stop and report"). */
+/** Product's copy: close 4404 not_found. */
+export const NOT_FOUND =
+  "This doc was deleted. Its owner can restore it from Trash.";
+/** Product's copy: close 1007 bad_frame, the second time. */
 export const BAD_FRAME =
-  "This doc can't sync right now. Reload the page to try again.";
-/** PLACEHOLDER: hello bytes near cap ("warn near cap"); the share of the cap that counts as near. */
+  "This doc can't sync right now. Reload the page to try again. Copy any unsaved changes first.";
+/** The share of the cap that counts as near (hello bytes). */
 export const NEAR_CAP_SHARE = 0.9;
+/** Product's copy: hello bytes near the cap, in MB to one decimal. */
 export const nearCap = (bytes: number) =>
-  `This doc is almost full: ${(bytes / 1048576).toFixed(1)} MB of 2 MB.`;
+  `This doc is almost full (${(bytes / 1048576).toFixed(1)} of 2 MB). Images take the most space.`;
 
 /** A version was saved or restored (wire spec: broadcast, so no polling). */
 export type VersionEvent =

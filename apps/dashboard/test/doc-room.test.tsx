@@ -281,7 +281,9 @@ describe("the wire spec: hello and close codes", () => {
     expect(roomNotice(room.getSnapshot())).toBeNull();
     fake.frame(hello("edit", { bytes: 1_950_000 }));
     expect(roomNotice(room.getSnapshot())?.text).toBe(nearCap(1_950_000));
-    expect(nearCap(1_950_000)).toBe("This doc is almost full: 1.9 MB of 2 MB.");
+    expect(nearCap(1_950_000)).toBe(
+      "This doc is almost full (1.9 of 2 MB). Images take the most space.",
+    );
     room.destroy();
   });
 

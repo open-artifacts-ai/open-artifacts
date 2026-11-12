@@ -77,6 +77,38 @@ for (const scheme of ["light", "dark"] as const) {
       await expect.poll(() => bottomEdge(page)).toBeCloseTo(800, 0);
     });
 
+    test("a fade marks the cut right edge until the bar is scrolled to the end", async ({
+      page,
+    }) => {
+      await page.goto(`/a/${LANDING}?mock=doc`);
+      await expect(bar(page)).toBeVisible();
+      const fade = page.locator(".oa-doc-fade");
+      const opacity = () =>
+        fade.evaluate((el) => Number(getComputedStyle(el).opacity));
+      // At 390 the last buttons are cut off: the fade shows.
+      await expect(bar(page)).toHaveAttribute("data-more", "");
+      await expect.poll(opacity).toBe(1);
+      // It sits at the visible right edge of the bar.
+      const fb = await fade.boundingBox();
+      const bb = await bar(page).boundingBox();
+      expect((fb?.x ?? 0) + (fb?.width ?? 0)).toBeCloseTo(
+        (bb?.x ?? 0) + (bb?.width ?? 0),
+        0,
+      );
+      // Scrolled to the end: the code-block button shows and the fade is gone.
+      await bar(page).evaluate((el) => {
+        el.scrollLeft = el.scrollWidth;
+      });
+      await expect(bar(page)).not.toHaveAttribute("data-more");
+      await expect.poll(opacity).toBe(0);
+      await shot(page, `doc-phone-toolbar-end-${scheme}-390.png`);
+      // And back: scrolled left, it returns.
+      await bar(page).evaluate((el) => {
+        el.scrollLeft = 0;
+      });
+      await expect(bar(page)).toHaveAttribute("data-more", "");
+    });
+
     test("the last line can scroll clear of the bar", async ({ page }) => {
       await page.goto(`/a/${LANDING}?mock=doc`);
       await expect(bar(page)).toBeVisible();
@@ -96,9 +128,11 @@ for (const scheme of ["light", "dark"] as const) {
 
 test.describe("wider than a phone", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
-  test("the toolbar stays on top", async ({ page }) => {
+  test("the toolbar stays on top, with no fade", async ({ page }) => {
     await page.goto(`/a/${LANDING}?mock=doc`);
     await expect(bar(page)).toBeVisible();
+    await expect(bar(page)).not.toHaveAttribute("data-more");
+    await expect(page.locator(".oa-doc-fade")).toBeHidden();
     expect((await bar(page).boundingBox())?.y).toBeLessThan(200);
   });
 });

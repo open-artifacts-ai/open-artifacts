@@ -582,6 +582,15 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
 .oa-doc-toolbar > * {
   flex: none;
 }
+/* Wider than a phone the bar never overflows into a fade. */
+.oa-doc-fade {
+  display: none;
+}
+@media (max-width: 640px) {
+  .oa-doc-fade {
+    display: block;
+  }
+}
 .oa-doc-sep {
   width: 1px;
   height: 16px;
@@ -984,6 +993,31 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
     border-top: 1px solid var(--oa-border);
     border-bottom: 0;
     background: var(--oa-bg);
+  }
+  /*
+   * A fade on the cut right edge, so the buttons past it are easy to find.
+   * It sticks to the visible right edge and shows only while there is more to
+   * the right (data-more: overflowing and not scrolled to the end).
+   */
+  .oa-doc-fade {
+    position: sticky;
+    /* Sticky measures inside the bar's 12px side padding: reach the edge. */
+    right: -12px;
+    align-self: stretch;
+    width: 44px;
+    margin-left: -44px;
+    background: linear-gradient(to right, transparent, var(--oa-bg) 80%);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .oa-doc-toolbar[data-more] .oa-doc-fade {
+    opacity: 1;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .oa-doc-fade {
+      transition: none;
+    }
   }
   /* The keyboard covers the home indicator: no inset under the bar. */
   .oa-doc-toolbar[data-keyboard] {
