@@ -194,5 +194,5 @@ it("the account menu starts with the signed-in email, not a menu item", async ()
     within(menu)
       .getAllByRole("menuitem")
       .map((i) => i.textContent),
-  ).toEqual(["Sign out"]);
+  ).toEqual(["Log out"]);
 });

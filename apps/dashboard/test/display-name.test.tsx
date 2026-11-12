@@ -187,7 +187,7 @@ describe("display-name dialog", () => {
     sessionStorage.setItem("oa:display-name-skipped:u_other", "1");
     const menu = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.keyDown(menu, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
     await waitFor(() =>
       expect(
         Object.keys(sessionStorage).filter((k) =>
@@ -214,7 +214,7 @@ describe("display-name dialog", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const menu = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.keyDown(menu, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
     expect(await screen.findByText("Couldn't sign out")).toBeInTheDocument();
     expect(
       sessionStorage.getItem(`oa:display-name-skipped:${fixtures.me.user.id}`),

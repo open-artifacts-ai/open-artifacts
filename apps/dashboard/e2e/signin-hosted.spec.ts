@@ -10,14 +10,14 @@ const NAME = "Acme Artifacts";
 const signIn = async (
   page: Page,
   query: string,
-  heading = `Sign in to ${NAME}`,
+  heading = `Log in to ${NAME}`,
 ) => {
   await page.goto(`/sign-in?${query}`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("heading", { name: heading }).waitFor();
 };
 
-const GUEST = "Get a sign-in code";
+const GUEST = "Get a login code";
 
 const noOverflow = async (page: Page) => {
   const over = await page.evaluate(
@@ -35,7 +35,7 @@ for (const scheme of ["light", "dark"] as const)
         await page.setViewportSize({ width, height: 860 });
         await signIn(page, "hosted=email-only");
         await expect(
-          page.getByText("We'll email you an 8-digit sign-in code."),
+          page.getByText("We'll email you an 8-digit login code."),
         ).toBeVisible();
         await expect(
           page.getByRole("textbox", { name: "Work email" }),
@@ -78,7 +78,7 @@ for (const scheme of ["light", "dark"] as const)
           ),
         ).toBeVisible();
         await expect(
-          page.getByRole("link", { name: "Get a sign-in code", exact: true }),
+          page.getByRole("link", { name: "Get a login code", exact: true }),
         ).toHaveAttribute("href", "/sign-in?method=code&next=%2F");
         await expect(page.getByRole("textbox")).toHaveCount(0);
         await noOverflow(page);
@@ -189,7 +189,7 @@ test("guest link to code page; a typed code opens the server's next", async ({
   await page.setViewportSize({ width: 1280, height: 860 });
   await signIn(page, "hosted=1&next=%2Fshared");
   await page
-    .getByRole("link", { name: "Get a sign-in code", exact: true })
+    .getByRole("link", { name: "Get a login code", exact: true })
     .click();
   await page.getByRole("heading", { name: GUEST }).waitFor();
   await page.getByRole("textbox", { name: "Email" }).fill("guest@outside.org");

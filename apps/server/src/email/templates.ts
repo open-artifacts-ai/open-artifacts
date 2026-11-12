@@ -233,9 +233,9 @@ export function shareEmail(
   );
 }
 
-const CODE_TXT = `Your {{instanceName}} sign-in code is {{code}}
+const CODE_TXT = `Your {{instanceName}} login code is {{code}}
 
-Enter it on the sign-in page. It expires in {{minutes}} minutes and works once.
+Enter it on the login page. It expires in {{minutes}} minutes and works once.
 
 If you didn't ask for this, ignore this email: nobody can sign in without the code.
 
@@ -243,18 +243,18 @@ If you didn't ask for this, ignore this email: nobody can sign in without the co
 `;
 
 const CODE_HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Sign-in code</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Login code</title></head>
 <body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-<p>Your {{instanceName}} sign-in code is</p>
+<p>Your {{instanceName}} login code is</p>
 <p style="font:600 28px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px">{{code}}</p>
-<p>Enter it on the sign-in page. It expires in {{minutes}} minutes and works once.</p>
+<p>Enter it on the login page. It expires in {{minutes}} minutes and works once.</p>
 <p style="color:#5d636e">If you didn't ask for this, ignore this email: nobody can sign in without the code.</p>
 <p style="color:#5d636e">{{appHost}}</p>
 </body></html>
 `;
 
 /**
- * A sign-in code, shown as "1234 5678" (Design). No link carries the code,
+ * A login code, shown as "1234 5678" (Design). No link carries the code,
  * and the subject never contains it (subjects show up in notifications).
  */
 export function loginCodeEmail(p: {
@@ -275,7 +275,7 @@ export function loginCodeEmail(p: {
   return render(
     CODE_HTML,
     CODE_TXT,
-    "Your {{instanceName}} sign-in code",
+    "Your {{instanceName}} login code",
     values,
   );
 }

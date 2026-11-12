@@ -313,7 +313,7 @@ it("a hostile Google start is dropped: no Google link to it", async () => {
         }),
       ),
     ]);
-    await screen.findByRole("heading", { name: /^Sign in to / });
+    await screen.findByRole("heading", { name: /^Log in to / });
     expect(
       screen.queryByRole("link", { name: "Continue with Google" }),
     ).toBeNull();
@@ -825,11 +825,11 @@ it("Google only: one Google button, a guest link carrying next, no code form", a
     ),
   ).toBeVisible();
   // A full-width outlined secondary button, not an inline link.
-  expect(screen.getByRole("link", { name: "Get a sign-in code" })).toHaveClass(
+  expect(screen.getByRole("link", { name: "Get a login code" })).toHaveClass(
     "oa-split-btn",
   );
   expect(
-    screen.getByRole("link", { name: "Get a sign-in code" }),
+    screen.getByRole("link", { name: "Get a login code" }),
   ).toHaveAttribute("href", "/sign-in?method=code&next=%2Fmine");
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.queryByRole("button", { name: SEND })).toBeNull();
@@ -839,7 +839,7 @@ it("Google only: one Google button, a guest link carrying next, no code form", a
 it("Google only: a hostile next is dropped from the guest link", async () => {
   mountHosted("/sign-in?next=%2F%2Fevil.example");
   expect(
-    await screen.findByRole("link", { name: "Get a sign-in code" }),
+    await screen.findByRole("link", { name: "Get a login code" }),
   ).toHaveAttribute("href", "/sign-in?method=code&next=%2F");
 });
 
@@ -867,7 +867,7 @@ it("Google on, guests off: no guest link, and ?method=code stays Google only", a
 it("?method=code: the guest email step, Back keeps next, Google stays a way in", async () => {
   mountHosted("/sign-in?method=code&next=%2Fmine");
   expect(
-    await screen.findByRole("heading", { name: "Get a sign-in code" }),
+    await screen.findByRole("heading", { name: "Get a login code" }),
   ).toBeVisible();
   expect(
     screen.getByText("Use the email address the link was shared with."),
@@ -886,7 +886,7 @@ it("?method=code: the guest email step, Back keeps next, Google stays a way in",
 
 it("guest page footer names the Google domain", async () => {
   mountHosted("/sign-in?method=code");
-  await screen.findByRole("heading", { name: "Get a sign-in code" });
+  await screen.findByRole("heading", { name: "Get a login code" });
   const footer = screen.getByRole("link", { name: "Continue with Google" })
     .parentElement!;
   expect(footer.textContent).toBe(
@@ -907,7 +907,7 @@ it("guest page footer without a Google domain", async () => {
       }),
     ),
   ]);
-  await screen.findByRole("heading", { name: "Get a sign-in code" });
+  await screen.findByRole("heading", { name: "Get a login code" });
   const footer = screen.getByRole("link", { name: "Continue with Google" })
     .parentElement!;
   expect(footer.textContent).toBe(
@@ -931,7 +931,7 @@ it('guest page footer: "a" before a consonant domain', async () => {
       }),
     ),
   ]);
-  await screen.findByRole("heading", { name: "Get a sign-in code" });
+  await screen.findByRole("heading", { name: "Get a login code" });
   expect(
     screen.getByRole("link", { name: "Continue with Google" }).parentElement!
       .textContent,
@@ -946,9 +946,9 @@ it("guest flow: the link, the email step, the code, then the server's next", asy
   const seen = calls("POST");
   mountHosted("/sign-in?next=%2Fa%2FDe6gHjKmNp7qRsTu");
   fireEvent.click(
-    await screen.findByRole("link", { name: "Get a sign-in code" }),
+    await screen.findByRole("link", { name: "Get a login code" }),
   );
-  await screen.findByRole("heading", { name: "Get a sign-in code" });
+  await screen.findByRole("heading", { name: "Get a login code" });
   await requestThroughUi("sam@northwind.example");
   expect(seen.find((c) => c.path === "/auth/code/request")!.body).toEqual({
     email: "sam@northwind.example",

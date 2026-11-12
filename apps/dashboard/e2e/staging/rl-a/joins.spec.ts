@@ -82,7 +82,7 @@ async function askForCode(browser: Browser, address: string): Promise<Page> {
   const page = await ctx.newPage();
   await page.goto("/sign-in?method=code");
   await expect(
-    page.getByRole("heading", { level: 1, name: "Get a sign-in code" }),
+    page.getByRole("heading", { level: 1, name: "Get a login code" }),
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Email" }).fill(address);
   // The slot is rendered, so the page has a site key and asks for a token.

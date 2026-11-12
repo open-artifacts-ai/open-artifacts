@@ -208,7 +208,7 @@ describe("stale (fresh: false)", () => {
     );
   });
 
-  it("Sign out posts logout, then goes to /sign-in", async () => {
+  it("Log out posts logout, then goes to /sign-in", async () => {
     let out = false;
     mountHosted("/", stale, undefined, [
       http.post(`*${AUTH.logout}`, () => {

@@ -578,7 +578,7 @@ function TopBar({ me }: { me: Me | null }) {
               {me.user.email}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={signOut}>Sign out</DropdownMenuItem>
+            <DropdownMenuItem onSelect={signOut}>Log out</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

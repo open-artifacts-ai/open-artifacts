@@ -40,7 +40,7 @@ export function NoAccess() {
           Sign in as someone else
         </a>
         <button type="button" className="oa-btn" onClick={signOut}>
-          Sign out
+          Log out
         </button>
       </div>
     </EdgePanel>

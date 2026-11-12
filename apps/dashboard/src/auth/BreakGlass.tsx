@@ -30,7 +30,7 @@ export const BREAK_GLASS_COPY = {
   reauth: "Sign in with Google again",
   reauthNote: "To keep this safe, sign in again first.",
   open: "Open directory settings",
-  signOut: "Sign out",
+  signOut: "Log out",
   audit:
     "You can only use directory settings here. Each use is recorded in the audit log, and we email you when this access starts.",
   // The minimal directory screen.

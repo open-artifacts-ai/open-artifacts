@@ -256,7 +256,7 @@ function HostedSignIn({
   if (!google && !email && accessButton)
     return (
       <>
-        <h1>Sign in to {name}</h1>
+        <h1>Log in to {name}</h1>
         {banner}
         <p className="oa-split-sub">Use your work email to open {name}.</p>
         {accessButton}
@@ -266,7 +266,7 @@ function HostedSignIn({
   if (!google && !email)
     return (
       <>
-        <h1>Sign in to {name}</h1>
+        <h1>Log in to {name}</h1>
         <p className="oa-split-sub">
           Sign-in isn't set up yet. Ask your admin.
         </p>
@@ -277,12 +277,10 @@ function HostedSignIn({
   if (!google && email)
     return (
       <>
-        <h1>Sign in to {name}</h1>
+        <h1>Log in to {name}</h1>
         {banner}
         {step === "email" && (
-          <p className="oa-split-sub">
-            We'll email you an 8-digit sign-in code.
-          </p>
+          <p className="oa-split-sub">We'll email you an 8-digit login code.</p>
         )}
         <CodeSignIn
           next={next}
@@ -313,9 +311,7 @@ function HostedSignIn({
             </Link>
           </p>
         )}
-        <h1>
-          {step === "email" ? "Get a sign-in code" : `Sign in to ${name}`}
-        </h1>
+        <h1>{step === "email" ? "Get a login code" : `Log in to ${name}`}</h1>
         {banner}
         {step === "email" && (
           <p className="oa-split-sub">
@@ -346,7 +342,7 @@ function HostedSignIn({
   // Google only: one button; guests get their own row.
   return (
     <>
-      <h1>Sign in to {name}</h1>
+      <h1>Log in to {name}</h1>
       {banner}
       <p className="oa-split-sub">
         {domain
@@ -371,7 +367,7 @@ function HostedSignIn({
           </p>
           <Button asChild variant="outline" className="oa-split-btn">
             <Link to={SIGN_IN_PAGE as string} search={{ method: "code", next }}>
-              Get a sign-in code
+              Get a login code
             </Link>
           </Button>
         </div>

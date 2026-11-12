@@ -54,7 +54,7 @@ afterEach(() => vi.unstubAllGlobals());
 const signOut = async () => {
   const t = await screen.findByRole("button", { name: "Account menu" });
   fireEvent.keyDown(t, { key: "Enter" });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
 };
 const settle = () => new Promise((r) => setTimeout(r, 100));
 
@@ -105,7 +105,7 @@ describe("layout behaviour", () => {
     expect(screen.queryByRole("link", { name: "Library" })).toBeNull();
   });
 
-  // Sign out redirects to AUTH.login, which (with a live Access session) signs
+  // Log out redirects to AUTH.login, which (with a live Access session) signs
   // the user straight back in. It also redirects even when logout fails.
   it("sign out does not land on the auto-login endpoint", async () => {
     const { redirect } = mount(
@@ -146,9 +146,7 @@ describe("layout behaviour", () => {
       await screen.findByRole("heading", { name: /nothing here for you yet/ }),
     ).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Sign out" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
   });
 
   it("NoAccess sign out goes to /sign-in", async () => {
@@ -159,7 +157,7 @@ describe("layout behaviour", () => {
           : meAs("member"),
       "/no-access",
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Log out" }));
     await waitFor(() => expect(redirect).toHaveBeenCalledWith("/sign-in"));
   });
 
