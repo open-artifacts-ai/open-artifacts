@@ -26,6 +26,7 @@ const TERMINAL = new Set([
   "link",
   "leads",
   "version",
+  "help",
 ]);
 
 /**
@@ -142,6 +143,9 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return link(cmd, ctx);
     case "version":
       say(ctx, ctx.copy.header(ctx.version));
+      return 0;
+    case "help":
+      say(ctx, ctx.copy.help());
       return 0;
   }
 }
