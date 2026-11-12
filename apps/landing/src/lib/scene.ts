@@ -152,7 +152,7 @@ export function sceneHtml(t: number): string {
     `<span class="chip ver" data-k="ver">${S.ver}</span></div>` +
     `<div class="x-abody">` +
     `<div class="x-blk hit${off(s < 4)}" data-from="4"><h4>Decision</h4><p class="x-dec"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span>Launch day is Thursday, Dec 4.</span></p><p class="x-sub">Sam asked for the change. OA Product updated the plan.</p></div>` +
-    `<div class="x-blk${off(s > 3)}" data-until="3"><h4>Q4 launch plan</h4><p class="sc-prop">Sign-ups open in December with a free first month on Solo. This plan is the one place the team and the agents work from.</p></div>` +
+    `<div class="x-blk${off(s > 3)}" data-until="3"><h4>Q4 launch plan</h4><p class="sc-prop">Sign-ups open in December. This plan is the one place the team and the agents work from.</p></div>` +
     `<div class="x-blk${off(s < 2)}" data-from="2"><h4 data-k="ch">${S.ch}</h4><ul class="x-chg"><li>A timeline, from docs ready to the first-week review.</li><li class="${off(s < 3).trim()}" data-from="3">Launch day moved to Thursday, Dec 4.</li></ul></div>` +
     `<div class="x-blk${off(s < 3)}" data-from="3"><h4>Comments</h4>` +
     `<div class="x-cm${off(t < 30)}" data-at="30"><span class="pp" aria-hidden="true">SR</span><p><b>Sam Rivera</b>Can we move this to Thursday? Tuesday is the board meeting.</p></div>` +

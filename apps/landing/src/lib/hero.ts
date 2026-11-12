@@ -14,7 +14,7 @@ export function heroActions(signupUrl: string | undefined): HeroAction[] {
   ];
 }
 
-/** Where "Start free for 30 days" goes: hosted sign-up, else the pricing table. */
+/** Where "Get started free" goes: hosted sign-up (HOSTED_SIGNUP_URL, set at build), else the pricing table. */
 export function signupHref(signupUrl: string | undefined): string {
   return signupUrl?.trim() || "#pricing";
 }

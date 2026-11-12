@@ -37,14 +37,17 @@ describe("landing sections", () => {
     expect(index).toMatch(/<h1[^>]*>Stop reading transcripts\.<\/h1>/);
   });
 
-  it("has the title and a description built from the headline and the question", () => {
+  it("has the title and OA Product's description", () => {
     expect(index).toContain(
       "<title>Open Artifacts: stop reading transcripts</title>",
     );
     const desc =
       index.match(/<meta name="description" content="([^"]*)"/)?.[1] ?? "";
     expect(desc).toBe(
-      "Stop reading transcripts. You work with a mix of agents and people, so why is collaborating between all of them so hard?",
+      "Your agents put their work in an artifact. Your team reads it, comments and decides. Open source, works with any agent.",
+    );
+    expect(index).toContain(
+      '<meta property="og:title" content="Open Artifacts: stop reading transcripts"',
     );
     expect(desc.length).toBeLessThanOrEqual(160);
     expect(desc).not.toContain("Google Docs");
@@ -72,6 +75,28 @@ describe("landing sections", () => {
     expect(png.subarray(1, 4).toString()).toBe("PNG");
     expect(png.readUInt32BE(16)).toBe(1200);
     expect(png.readUInt32BE(20)).toBe(630);
+  });
+
+  it("says the beta is free: Get started free everywhere, no charge or trial wording", () => {
+    expect(index.match(/>Get started free<\/a>/g)).toHaveLength(5);
+    expect(text).toContain(
+      "Free during the private beta. No card needed. Open source, MIT licensed.",
+    );
+    for (const gone of [
+      "Start free",
+      "Then $1 a month",
+      "free first month",
+      "30 days",
+      "30-day",
+    ])
+      expect(text).not.toContain(gone);
+    expect(text).toContain("Sign-ups open in December. This plan");
+    expect(text).toContain(
+      "Connect one or several. They publish to the same place, and they all read your comments.",
+    );
+    expect(text).toContain(
+      "Set up Open Artifacts: open-artifacts.com/llms.txt",
+    );
   });
 
   it("the hero has the lead line, the question and the cue under the buttons", () => {
@@ -155,7 +180,7 @@ describe("landing sections", () => {
     );
     expect(text).not.toContain("Ask your agent to publish.");
     expect(text).toContain(
-      "A comment sits on the line it is about. Mention your agent and it answers in the thread, then changes the artifact.",
+      "A comment sits on the line it is about. Your agent reads it, answers in the thread, then changes the artifact.",
     );
     const rail = index.slice(index.indexOf('id="rail"'));
     expect(

@@ -1,6 +1,6 @@
 // The words at the top of the home page. The lead line under the headline is
-// not final, so it lives here as one string; the meta description is built from
-// the headline and the question line (not the lead line).
+// not final, so it lives here as one string. The meta description is its own
+// sentence (OA Product's beta wording).
 export const HERO_COPY = {
   headline: "Stop reading transcripts.",
   /** Not final. */
@@ -11,7 +11,8 @@ export const HERO_COPY = {
 };
 
 export const HOME_TITLE = "Open Artifacts: stop reading transcripts";
-export const HOME_DESCRIPTION = `${HERO_COPY.headline} ${HERO_COPY.question}`;
+export const HOME_DESCRIPTION =
+  "Your agents put their work in an artifact. Your team reads it, comments and decides. Open source, works with any agent.";
 export const OG_ALT =
   "Stop reading transcripts. The same work in a transcript and in an artifact.";
 

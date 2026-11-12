@@ -75,7 +75,7 @@ export const WORDS = {
       ? `${money(yearly)} per creator, billed yearly`
       : `${money(yearly)} billed yearly`,
   selfHost: "Open source, MIT",
-  note: "Solo is per account; Team and Business are per creator. A creator is someone who publishes or edits; viewers and commenters are free. Solo is free for 30 days, no card. Team starts with a 30-day trial when you invite someone.",
+  note: "Solo is per account; Team and Business are per creator. A creator is someone who publishes or edits; viewers and commenters are free. Everything is free during the private beta. These are the prices when paid plans open, and we'll email you before anything changes.",
 };
 
 /** What a paid plan shows in each billing period (the page opens on Yearly). */

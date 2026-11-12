@@ -9,9 +9,9 @@ interface Props {
 const { signup } = Astro.props;
 
 const CTAS = [
-  "Start free for 30 days",
-  "Start free",
-  "Start free",
+  "Get started free",
+  "Get started free",
+  "Get started free",
   "Self-host it",
 ];
 const plans = PLAN_LIST.map((p, i) => ({
@@ -21,12 +21,15 @@ const plans = PLAN_LIST.map((p, i) => ({
   strings: p.monthly ? priceStrings(p) : null,
 }));
 
-// Which plans include a row: Solo, Team, Business, Self-host.
+// Which plans include a row: Solo, Team, Business, Self-host. "S" is a feature
+// that is not there yet and shows "Soon".
 const Y = true,
-  N = false;
+  N = false,
+  S = "soon";
+type Cell = boolean | "soon";
 const groups: {
   name: string;
-  rows: [string, [boolean, boolean, boolean, boolean]][];
+  rows: [string, [Cell, Cell, Cell, Cell]][];
 }[] = [
   {
     name: "Work with agents",
@@ -34,7 +37,7 @@ const groups: {
       ["Artifacts, versions and restore", [Y, Y, Y, Y]],
       ["Comments, @-mentions and asks", [Y, Y, Y, Y]],
       ["Live artifacts (polls, checklists, trackers)", [Y, Y, Y, Y]],
-      ["Agents that work together (the bus)", [Y, Y, Y, Y]],
+      ["Agents that work together (the bus)", [S, S, S, Y]],
     ],
   },
   {
@@ -51,8 +54,8 @@ const groups: {
     rows: [
       ["Google group sync", [N, N, Y, Y]],
       ["Outside-sharing controls", [N, N, Y, Y]],
-      ["Audit log", [N, N, Y, Y]],
-      ["Custom domain", [N, N, Y, Y]],
+      ["Audit log", [S, S, S, S]],
+      ["Custom domain", [S, S, S, Y]],
     ],
   },
 ];
@@ -79,7 +82,7 @@ const groups: {
         {g.rows.map(([label, inc]) => (
           <tr><th scope="row">{label}</th>
             {inc.map((on, i) => (
-              <td class:list={{ "col-pop": i === 1 }}>{on ? <><span class="x-y" aria-hidden="true">{"✓"}</span><span class="sr-only">Included</span></> : <><span class="x-n" aria-hidden="true">{"–"}</span><span class="sr-only">Not included</span></>}</td>
+              <td class:list={{ "col-pop": i === 1 }}>{on === "soon" ? <><span class="x-n" aria-hidden="true">Soon</span><span class="sr-only">Coming soon</span></> : on ? <><span class="x-y" aria-hidden="true">{"✓"}</span><span class="sr-only">Included</span></> : <><span class="x-n" aria-hidden="true">{"–"}</span><span class="sr-only">Not included</span></>}</td>
             ))}
           </tr>
         ))}

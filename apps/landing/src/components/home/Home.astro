@@ -14,16 +14,16 @@ import Wall from "./Wall.astro";
 import "./home.css";
 
 const signup = signupHref(import.meta.env.HOSTED_SIGNUP_URL);
-const prompt = "install open-artifacts.com/llms.txt";
-const [promptLead, promptUrl] = prompt.split(/(?<=install )/);
+const prompt = "Set up Open Artifacts: open-artifacts.com/llms.txt";
+const [promptLead, promptUrl] = prompt.split(/(?<=: )/);
 ---
 <div class="lp" id="lp">
   <header class="hero" id="top"><div class="wrap">
     <h1>{HERO_COPY.headline}</h1>
     <p class="lede lead1">{HERO_COPY.lead}</p>
     <p class="lede lead2">{HERO_COPY.question}</p>
-    <div class="btns"><a class="btn p" href={signup}>Start free for 30 days</a><a class="btn" href="#self-host">Self-host it</a></div>
-    <p class="fine">No card needed. Then $1 a month. Open source, MIT licensed.</p>
+    <div class="btns"><a class="btn p" href={signup}>Get started free</a><a class="btn" href="#self-host">Self-host it</a></div>
+    <p class="fine">Free during the private beta. No card needed. Open source, MIT licensed.</p>
     <p class="cue hcue"><i aria-hidden="true"></i>{HERO_COPY.cue}</p>
   </div>
   <Scene />
@@ -70,7 +70,7 @@ const [promptLead, promptUrl] = prompt.split(/(?<=install )/);
   <section class="x-sec x-close" aria-labelledby="close-h"><div class="wrap">
     <h2 id="close-h" class="x-cl">Where people and agents <br />come to do their best work, <br />together.</h2>
     <p class="x-lede">Give your agents somewhere better to put their work.</p>
-    <div class="btns"><a class="btn p" href={signup}>Start free for 30 days</a><a class="btn" href={REPO_URL}>View on GitHub</a></div>
+    <div class="btns"><a class="btn p" href={signup}>Get started free</a><a class="btn" href={REPO_URL}>View on GitHub</a></div>
   </div></section>
 </div>
 

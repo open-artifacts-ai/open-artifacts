@@ -21,7 +21,8 @@ describe("pricing", () => {
     for (const name of ["Solo", "Team", "Business", "Self-host"])
       expect(head).toContain(`<span class="pn">${name}</span>`);
     expect(head.match(/<a class="btn[^"]*" href="[^"]+">/g)).toHaveLength(4);
-    expect(head).toContain(">Start free for 30 days</a>");
+    expect(head.match(/>Get started free<\/a>/g)).toHaveLength(3);
+    expect(head).not.toContain("Start free");
     expect(head).toMatch(/href="#self-host">Self-host it<\/a>/);
   });
 
@@ -86,6 +87,37 @@ describe("pricing", () => {
     );
     expect(pricing).toContain(
       "A creator is someone who publishes or edits; viewers and commenters are free.",
+    );
+  });
+
+  it("says the beta is free, with no trial or charge wording", () => {
+    expect(pricing).toContain(
+      "Everything is free during the private beta. These are the prices when paid plans open, and we&#39;ll email you before anything changes.",
+    );
+    expect(pricing).not.toMatch(/30 days|30-day|no card/i);
+  });
+
+  it("shows Soon where a feature is not there yet, in the table's own styles", () => {
+    const row = (label: string) => {
+      const at = pricing.indexOf(`<th scope="row">${label}</th>`);
+      return pricing.slice(at, pricing.indexOf("</tr>", at));
+    };
+    const cells = (label: string) =>
+      [...row(label).matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) =>
+        m[1]
+          .replace(/<span class="sr-only">[\s\S]*?<\/span>/, "")
+          .replace(/<[^>]+>/g, ""),
+      );
+    expect(cells("Agents that work together (the bus)")).toEqual([
+      "Soon",
+      "Soon",
+      "Soon",
+      "✓",
+    ]);
+    expect(cells("Audit log")).toEqual(["Soon", "Soon", "Soon", "Soon"]);
+    expect(cells("Custom domain")).toEqual(["Soon", "Soon", "Soon", "✓"]);
+    expect(pricing).toContain(
+      '<span class="x-n" aria-hidden="true">Soon</span><span class="sr-only">Coming soon</span>',
     );
   });
 

@@ -2048,6 +2048,10 @@ footer */
     table.cmp td {
       padding: 10px 12px;
     }
+    /* Solo is wide enough that about 24px of Team peeks in at 390 */
+    table.cmp thead th:nth-child(2) {
+      min-width: 196px;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
   }
