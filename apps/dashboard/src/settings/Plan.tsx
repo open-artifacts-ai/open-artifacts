@@ -144,10 +144,16 @@ export function Plan() {
   const billing =
     state.status === "authed" ? state.me.instance.billing : undefined;
   if (!billing) {
+    // A hosted install with no billing answer has no way to pay yet (#2326).
     // Self-hosted installs have no plan; there is nothing to show.
+    const hosted = state.status === "authed" && state.me.instance.hosted;
     return (
       <div className={STACK}>
-        <p className={muted}>This install has no plan to manage.</p>
+        <p className={muted}>
+          {hosted
+            ? "Paid plans open soon. We'll email you before anything changes."
+            : "This install has no plan to manage."}
+        </p>
       </div>
     );
   }

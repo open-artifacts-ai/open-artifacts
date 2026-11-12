@@ -15,6 +15,55 @@ import { globRollout, readLines, threadRow } from "./codex-attest.ts";
 /** The hub keeps a notice record this long (#1752); a notice watch is dropped then. */
 export const NOTICE_WATCH_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * The Codex acks queued on the current link, by their frame id, so only an
+ * `acked` echoing one confirms (#2198). Bounded: at most `max` entries (the
+ * oldest goes first) and none older than `ttlMs`. Eviction is safe: the
+ * durable taken record stays eligible for replay on the next link.
+ */
+export class AckTracker {
+  readonly #m = new Map<string, { msg: string; at: number }>();
+  constructor(
+    private readonly max = 1000,
+    private readonly ttlMs = 5 * 60_000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  get size(): number {
+    return this.#m.size;
+  }
+
+  track(frameId: string, msg: string): void {
+    const t = this.now();
+    // Insertion order is age order: expired ones are all at the front.
+    for (const [k, v] of this.#m) {
+      if (t - v.at <= this.ttlMs) break;
+      this.#m.delete(k);
+    }
+    this.#m.set(frameId, { msg, at: t });
+    while (this.#m.size > this.max) {
+      const oldest = this.#m.keys().next().value;
+      if (oldest === undefined) break;
+      this.#m.delete(oldest);
+    }
+  }
+
+  /** The msg_id this frame id acked, once: undefined when unknown, evicted or expired. */
+  take(frameId: string): string | undefined {
+    const v = this.#m.get(frameId);
+    if (!v) return undefined;
+    this.#m.delete(frameId);
+    return this.now() - v.at <= this.ttlMs ? v.msg : undefined;
+  }
+
+  clear(): void {
+    this.#m.clear();
+  }
+}
+
+/** How long confirmations wait to share one write. */
+const CONFIRM_SAVE_MS = 250;
+
 /** Most bytes of one rollout one record reads per pass; the rest waits for the next tick. */
 export const TAKEN_SCAN_BUDGET = 2 * 1024 * 1024;
 
@@ -46,8 +95,10 @@ export type TakenRecord = {
   sig?: string;
   /** The last pass stepped over a line longer than the budget: the next read starts mid-line, so it skips to the next newline. */
   skip?: true;
-  /** The late ack of `taken` was sent (a lost one is repeated until then). */
+  /** The late ack of `taken` went onto an open hub link (an unsent one is repeated until then). */
   acked?: true;
+  /** The hub answered the ack with `acked` (BUS_CAPS.ackConfirm): settled there, nothing left to send. Only a hub with the cap ever sets it. */
+  confirmed?: true;
 };
 
 /** What a record needs to give back after a failed save. */
@@ -72,8 +123,13 @@ export type TakenOptions = {
   home: string;
   /** The records, kept on disk so a restart keeps watching. */
   file: string;
-  /** A turn took `id`: the transport vouches for it (late ack). */
-  onTaken: (id: string) => void;
+  /**
+   * A turn took `id`: the transport vouches for it (late ack). True only when
+   * the ack went onto an open hub link; false keeps the record unacked and the
+   * next pass sends it again. `unsent` is called if a queued ack is never
+   * written (the link dropped): the record is unacked again.
+   */
+  onTaken: (id: string, unsent: () => void) => boolean;
   log?: (msg: string) => void;
   now?: () => number;
   /** Past this, a record is dropped; default the hub's mailbox retention. */
@@ -135,6 +191,31 @@ export const startsWithHead = (text: string, head: string): boolean =>
   text.startsWith(`${head}\n\n`);
 
 /**
+ * Sends `ids`, at most `room()` per `after` tick (the pacer's headroom, so
+ * live traffic keeps the rest of its queue), until all went or `live()` turns
+ * false (the link closed or a newer one started). A tick with no room waits.
+ */
+export function replayAcks(
+  ids: string[],
+  send: (id: string) => void,
+  live: () => boolean,
+  room: () => number,
+  after: (fn: () => void) => void = (fn) => {
+    setTimeout(fn, 1000).unref();
+  },
+): void {
+  let i = 0;
+  const step = () => {
+    if (!live()) return;
+    const n = Math.max(0, room());
+    for (const id of ids.slice(i, i + n)) send(id);
+    i += n;
+    if (i < ids.length) after(step);
+  };
+  step();
+}
+
+/**
  * Which queued Codex items a turn has taken, read from the thread's rollout
  * (the user item a turn appends). A model cannot write a user item; a
  * same-user writer to CODEX_HOME could, which the attestation already assumes
@@ -145,6 +226,8 @@ export class TakenWatch {
   /** Ids (or `maybe:<id>`) an earlier build's marker file lists. */
   readonly #legacy = new Set<string>();
   readonly #now: () => number;
+  /** A confirmation save waiting for its tick. */
+  #pending?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly opts: TakenOptions) {
     this.#now = opts.now ?? Date.now;
@@ -285,6 +368,47 @@ export class TakenWatch {
     return atEof ? "missing" : "pending";
   }
 
+  /**
+   * Ids of `taken` records within retention whose ack the hub has not
+   * confirmed, newest first. A new link with BUS_CAPS.ackConfirm sends them
+   * again: `acked` only means the frame was queued locally, which proves
+   * nothing about the hub. The hub's ack is idempotent.
+   */
+  unconfirmedIds(): string[] {
+    const now = this.#now();
+    const out: [string, number][] = [];
+    for (const [id, r] of this.#recs)
+      if (
+        r.state === "taken" &&
+        r.head !== undefined &&
+        r.confirmed !== true &&
+        now - r.at <= (r.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS)
+      )
+        out.push([id, r.at]);
+    return out.sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  }
+
+  /** The hub confirmed the ack of `id`: done, never sent again. */
+  confirm(id: string): void {
+    const r = this.#recs.get(id);
+    if (!r || r.state !== "taken" || r.confirmed) return;
+    r.confirmed = true;
+    r.acked = true;
+    // Coalesced: one write per tick however many confirmations arrive. A
+    // crash before it only means an idempotent replay.
+    if (this.#pending) return;
+    this.#pending = setTimeout(() => this.flush(), CONFIRM_SAVE_MS);
+    this.#pending.unref();
+  }
+
+  /** Writes the coalesced confirmations now (a stop calls it). */
+  flush(): void {
+    if (!this.#pending) return;
+    clearTimeout(this.#pending);
+    this.#pending = undefined;
+    this.#save();
+  }
+
   /** Reads each watched record's new rollout lines; acks what a turn took. */
   check(): void {
     if (!this.#recs.size) return;
@@ -343,9 +467,15 @@ export class TakenWatch {
     let acked = false;
     for (const id of taken) {
       try {
-        this.opts.onTaken(id);
+        const sent = this.opts.onTaken(id, () => {
+          const r = this.#recs.get(id);
+          if (r?.acked) {
+            r.acked = undefined;
+            this.#save();
+          }
+        });
         const r = this.#recs.get(id);
-        if (r) {
+        if (sent === true && r) {
           r.acked = true;
           acked = true;
         }
@@ -462,6 +592,7 @@ export class TakenWatch {
               : {}),
             ...(p.skip === true ? { skip: true as const } : {}),
             ...(p.acked === true ? { acked: true as const } : {}),
+            ...(p.confirmed === true ? { confirmed: true as const } : {}),
             ...(typeof p.ino === "number" ? { ino: p.ino } : {}),
             ...(typeof p.sig === "string" ? { sig: p.sig } : {}),
           };

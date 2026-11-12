@@ -48,7 +48,7 @@ export function ThreadParticipants({
   api: CommentsApi;
 }) {
   const rm = useAgentRemoval(t, api);
-  const { gone, confirm, setConfirm, back, run } = rm;
+  const { gone, run } = rm;
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -56,8 +56,6 @@ export function ThreadParticipants({
   const pointer = useRef(false);
   const quiet = useRef(false);
   const [room, setRoom] = useState<number | undefined>(undefined);
-  const asking = useRef(false);
-  asking.current = confirm !== null;
   const mouse = useRef(false);
   const id = useId();
   const member = !api.guest && t.agents !== undefined;
@@ -78,7 +76,7 @@ export function ThreadParticipants({
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => {
-      // A target the render already removed (the confirm's Remove) was inside.
+      // A target the render already removed (an unmounted Undo) was inside.
       const t = e.target as Node;
       if (t.isConnected && !box.current?.contains(t)) setOpen(false);
     };
@@ -86,17 +84,6 @@ export function ThreadParticipants({
     return () => document.removeEventListener("pointerdown", down);
   }, [open]);
   useEffect(() => () => clearTimeout(timer.current), []);
-  // The confirm closing takes the focused Remove with it; keep focus in the group so it stays open.
-  const asked = useRef(false);
-  useEffect(() => {
-    const was = asked.current;
-    asked.current = confirm !== null;
-    if (!was || confirm !== null || !open) return;
-    if (box.current?.contains(document.activeElement)) return;
-    quiet.current = true;
-    trigger.current?.focus({ preventScroll: true });
-    quiet.current = false;
-  }, [confirm, open]);
   if (n === 0) return null;
 
   const faces: Face[] = [
@@ -120,7 +107,7 @@ export function ThreadParticipants({
   const leave = () => {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      if (!box.current?.contains(document.activeElement) && !asking.current) {
+      if (!box.current?.contains(document.activeElement)) {
         setOpen(false);
       }
     }, 150);
@@ -142,8 +129,8 @@ export function ThreadParticipants({
         if (e.pointerType === "mouse") leave();
       }}
       onBlur={(e) => {
-        // A focused button that leaves the list (Remove, once confirmed) blurs with no target; focus did not go elsewhere.
-        if (asking.current || !e.currentTarget.isConnected) return;
+        // A focused button that leaves the list (a ×, once removed) blurs with no target; focus did not go elsewhere.
+        if (!e.currentTarget.isConnected) return;
         if (!box.current?.contains(e.relatedTarget as Node | null))
           setOpen(false);
       }}
@@ -248,9 +235,20 @@ export function ThreadParticipants({
                         aria-label={`Stop notifying ${a.name} in this thread`}
                         title={`Stop notifying ${a.name} in this thread`}
                         className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-                        onClick={(e) => {
-                          back.current = e.currentTarget;
-                          setConfirm(a);
+                        data-agent-x={a.key}
+                        aria-disabled={
+                          (rm.set.isPending &&
+                            rm.set.variables?.key === a.key) ||
+                          undefined
+                        }
+                        onClick={() => {
+                          if (
+                            !(
+                              rm.set.isPending &&
+                              rm.set.variables?.key === a.key
+                            )
+                          )
+                            run(a, true);
                         }}
                       >
                         ×
@@ -272,7 +270,7 @@ export function ThreadParticipants({
               })}
             </>
           )}
-          <RemovalNotices rm={rm} api={api} />
+          <RemovalNotices rm={rm} api={api} fallback={trigger} />
         </div>
       )}
     </div>

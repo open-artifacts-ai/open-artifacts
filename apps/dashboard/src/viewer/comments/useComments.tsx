@@ -13,10 +13,11 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../../api/client";
-import { useThreads } from "../../api/comments";
+import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
+import { lostKey, putLost } from "./lostPosts";
 import {
   arrange,
   createGate,
@@ -26,6 +27,9 @@ import {
 } from "./model";
 
 type Bridge = ReturnType<typeof createBridge>;
+
+/** A post that failed after its box had closed: the text to put back and why. `clear` drops it once a box has taken it. */
+export type Lost = { text: string; error: unknown; clear?: () => void };
 
 export type PinPoint = { x: number; y: number; page?: number };
 /** A comment being started: on selected text, or on a placed pin (the server stamps the pin's contentHash). */
@@ -83,6 +87,9 @@ export type CommentsApi = {
   draft: Draft;
   /** Close the draft. `posted`: keep its quote painted until the list carries the new thread (#1834). */
   cancelDraft: (posted?: boolean) => void;
+  /** A new comment that failed after its box closed: the draft opens again with its text and the error. */
+  draftSeed: Lost | null;
+  reopenDraft: (d: NonNullable<Draft>, lost: Lost) => void;
   /** The draft's composer has (or no longer has) text the reader typed. */
   setDraftDirty: (dirty: boolean, unmounting?: boolean) => void;
   /** What the reader typed in the draft's box, kept while the list is closed. */
@@ -207,6 +214,7 @@ export function useCommentsController({
   const [positions, setPositions] = useState<Positions>(new Map());
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
+  const [draftSeed, setDraftSeed] = useState<Lost | null>(null);
   // #1834: a draft that was just posted stays painted until the refetched list
   // carries its thread, so posting turns the draft highlight into the thread's
   // without a frame in between. Cancel drops it at once.
@@ -293,6 +301,8 @@ export function useCommentsController({
     if (!heldQuote) return;
     const there = (all ?? []).some(
       (t) =>
+        // A thread still sending is not painted (the frame knows only real ids).
+        !isSending(t.id) &&
         t.anchor.kind === "text" &&
         t.anchor.exact === heldQuote.exact &&
         t.anchor.prefix === heldQuote.prefix &&
@@ -508,6 +518,20 @@ export function useCommentsController({
         draftText.current = "";
         if (posted && draft && "anchor" in draft) setHeldQuote(draft.anchor);
         setDraft(null);
+        setDraftSeed(null);
+      },
+      draftSeed,
+      reopenDraft: (d, lost) => {
+        // A draft the reader has since started keeps its place: the failed one
+        // waits behind a "Restore" line (lostPosts), text and error kept.
+        if (draftRef.current) {
+          putLost(lostKey.draft(id, d), { ...lost, draft: d });
+          return;
+        }
+        setHeldQuote(null);
+        setDraftSeed(lost);
+        setDraft(d);
+        surface.current();
       },
       draftText,
       setDraftText,
@@ -558,6 +582,7 @@ export function useCommentsController({
       reveal,
       revealed,
       draft,
+      draftSeed,
       showResolved,
       guestName,
       pinFormat,

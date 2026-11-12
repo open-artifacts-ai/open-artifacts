@@ -129,7 +129,7 @@ describe("ThreadParticipants", () => {
     expect(list()).toBeNull();
   });
 
-  it("× asks first; Keep sends nothing; Remove sends, then the row reads Not notified with Undo", () => {
+  it("× removes at once, no confirm; then the row reads Not notified with Undo", () => {
     render(
       <ThreadParticipants
         t={thread([agent("OA Billing", true)])}
@@ -142,22 +142,12 @@ describe("ThreadParticipants", () => {
         name: "Stop notifying OA Billing in this thread",
       });
     fireEvent.click(x());
-    expect(
-      screen.getByText(
-        "Remove OA Billing from this thread? It won't get replies here until someone @-mentions it.",
-      ),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Keep" }));
-    expect(mutate).not.toHaveBeenCalled();
-    fireEvent.click(x());
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     const call = mutate.mock.calls[0];
     expect(call?.[0]).toEqual({
       thread: "t1",
       key: "k-OA Billing",
       removed: true,
     });
-    act(() => call?.[1].onSuccess());
     expect(document.querySelector("[data-off]")?.textContent).toContain(
       "Not notified",
     );
@@ -170,8 +160,51 @@ describe("ThreadParticipants", () => {
       key: "k-OA Billing",
       removed: false,
     });
-    act(() => mutate.mock.calls[1]?.[1].onSuccess());
     expect(document.querySelector("[data-off]")).toBeNull();
+  });
+
+  it("a refused × puts the row back and shows the error (optimistic rollback)", () => {
+    render(
+      <ThreadParticipants
+        t={thread([agent("OA Billing", true)])}
+        api={api()}
+      />,
+    );
+    fireEvent.focus(trigger());
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Stop notifying OA Billing in this thread",
+      }),
+    );
+    // At once, before any answer.
+    expect(list()?.textContent).toContain(
+      "OA Billing won't get replies in this thread.",
+    );
+    act(() => mutate.mock.calls[0]?.[1].onError(new Error("x")));
+    expect(list()?.textContent).not.toContain("won't get replies");
+    expect(document.querySelector("[data-off]")).toBeNull();
+  });
+
+  it("after Undo the list stays open and focus returns to the restored ×", () => {
+    render(
+      <ThreadParticipants
+        t={thread([agent("OA Billing", true)])}
+        api={api()}
+      />,
+    );
+    fireEvent.focus(trigger());
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Stop notifying OA Billing in this thread",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(list()).not.toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", {
+        name: "Stop notifying OA Billing in this thread",
+      }),
+    );
   });
 
   it("canRemove false shows no ×", () => {
