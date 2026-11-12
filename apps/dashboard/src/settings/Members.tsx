@@ -69,6 +69,7 @@ import {
 } from "./departed";
 import { EraseDialog } from "./EraseDialog";
 import { restrictionReason } from "./restriction";
+import { ThawBanner } from "./ThawBanner";
 import { TransferDialog } from "./Transfer";
 import { errorText, muted, ReadOnlyNote, SettingsCard, STACK } from "./ui";
 
@@ -746,6 +747,7 @@ export function Members() {
   return (
     <div className={STACK}>
       <ReadOnlyNote />
+      <ThawBanner me={state.status === "authed" ? state.me : null} />
       {(departed.people.length > 0 || departed.failed) && (
         <DepartedCard
           people={departed.people}

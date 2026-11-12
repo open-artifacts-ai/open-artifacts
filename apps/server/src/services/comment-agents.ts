@@ -40,6 +40,8 @@ export type RosterAgent = ArtifactAgent & {
   /** The member whose agent it is. */
   userId: string;
   address: BusAddress;
+  /** #2238: the verified identity the address was resolved to; a notice then goes only to it. */
+  identityId?: string;
 };
 
 export async function agentKey(
@@ -347,6 +349,9 @@ export function commentNoticeText(
   ].join("\n");
 }
 
+/** #2238: an asking agent's bus address and the identity it was verified as. */
+export type AskerAddress = BusAddress & { identityId?: string };
+
 export type DeliveryState = "delivered" | "held" | "dropped";
 
 /** Sends one comment notice to a roster agent. Never throws. */
@@ -370,6 +375,7 @@ export async function notifyAgent(
     version,
     url,
     to: { namespace: to.address.namespace, name: to.address.name },
+    ...(to.identityId ? { toIdentity: to.identityId } : {}),
     text: commentNoticeText(
       kind,
       version,
@@ -436,7 +442,7 @@ export async function notifyAnswered(
   commentId: string,
   askerId: string,
   /** The asking agent's bus address; null sends nothing (#2224). */
-  asker: BusAddress | null,
+  asker: AskerAddress | null,
   /** The answer was picked in the web app by `askerId` themselves (#1797). */
   fromYourUser = false,
   /** Time the send may take; tests shrink it. */
@@ -464,6 +470,7 @@ export async function notifyAnswered(
       version,
       url,
       to: { namespace: to.namespace, name: to.name },
+      ...(to.identityId ? { toIdentity: to.identityId } : {}),
       text: commentNoticeText(
         "answered",
         version,
@@ -493,8 +500,8 @@ export async function askerAgents(
   artifactId: string,
   askerId: string,
   /** The asking agent's own bus address, or null: a person's ask, or an agent with no bus address (#2224). */
-  address: BusAddress | null,
-): Promise<BusAddress[]> {
+  address: AskerAddress | null,
+): Promise<AskerAddress[]> {
   if (!address) return [];
   const user = await getUser(env, askerId);
   if (!user || !(await accessLevel(env, callerOf(user), artifactId))) {
@@ -515,7 +522,7 @@ export async function askerRoster(
   env: Env,
   artifactId: string,
   askerId: string,
-  asker: BusAddress | null,
+  asker: AskerAddress | null,
 ): Promise<RosterAgent[]> {
   const out: RosterAgent[] = [];
   for (const address of await askerAgents(env, artifactId, askerId, asker))
@@ -524,7 +531,8 @@ export async function askerRoster(
       name: address.name,
       ...UNKNOWN,
       userId: askerId,
-      address,
+      address: { namespace: address.namespace, name: address.name },
+      ...(address.identityId ? { identityId: address.identityId } : {}),
     });
   return out;
 }

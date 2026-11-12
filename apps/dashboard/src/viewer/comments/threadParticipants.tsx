@@ -2,6 +2,7 @@ import type { CommentAuthor, CommentThread, ThreadAgent } from "@oa/shared";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { TXT } from "../ui";
 import { AuthorFace, initials, PartyFace } from "./AuthorFace";
+import { type Face, FaceStack } from "./FaceStack";
 import { RemovalNotices, Tip, useAgentRemoval } from "./threadAgents";
 import type { CommentsApi } from "./useComments";
 
@@ -47,7 +48,7 @@ export function ThreadParticipants({
   api: CommentsApi;
 }) {
   const rm = useAgentRemoval(t, api);
-  const { gone, confirm, setConfirm, back, run } = rm;
+  const { gone, run } = rm;
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -55,8 +56,6 @@ export function ThreadParticipants({
   const pointer = useRef(false);
   const quiet = useRef(false);
   const [room, setRoom] = useState<number | undefined>(undefined);
-  const asking = useRef(false);
-  asking.current = confirm !== null;
   const mouse = useRef(false);
   const id = useId();
   const member = !api.guest && t.agents !== undefined;
@@ -77,7 +76,7 @@ export function ThreadParticipants({
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => {
-      // A target the render already removed (the confirm's Remove) was inside.
+      // A target the render already removed (an unmounted Undo) was inside.
       const t = e.target as Node;
       if (t.isConnected && !box.current?.contains(t)) setOpen(false);
     };
@@ -85,22 +84,9 @@ export function ThreadParticipants({
     return () => document.removeEventListener("pointerdown", down);
   }, [open]);
   useEffect(() => () => clearTimeout(timer.current), []);
-  // The confirm closing takes the focused Remove with it; keep focus in the group so it stays open.
-  const asked = useRef(false);
-  useEffect(() => {
-    const was = asked.current;
-    asked.current = confirm !== null;
-    if (!was || confirm !== null || !open) return;
-    if (box.current?.contains(document.activeElement)) return;
-    quiet.current = true;
-    trigger.current?.focus({ preventScroll: true });
-    quiet.current = false;
-  }, [confirm, open]);
   if (n === 0) return null;
 
-  // 20px faces overlapping by 3px, each ringed in the card's colour; the first
-  // sits on top so every face shows its full initials or mark.
-  const faces = [
+  const faces: Face[] = [
     ...people.map((p) => ({
       key: `p-${p.id ?? p.name}`,
       round: true,
@@ -111,18 +97,7 @@ export function ThreadParticipants({
       round: false,
       el: <PartyFace p={a} medium />,
     })),
-  ]
-    .slice(0, SHOWN)
-    .map((f, i, all) => (
-      <span
-        key={f.key}
-        data-participant-face=""
-        style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -3 }}
-        className={`relative inline-flex shrink-0 bg-card ring-[1.5px] ring-card ${f.round ? "rounded-full" : "rounded-md"}`}
-      >
-        {f.el}
-      </span>
-    ));
+  ];
   const names = [
     `${people.length} ${people.length === 1 ? "person" : "people"}`,
     ...(member
@@ -132,7 +107,7 @@ export function ThreadParticipants({
   const leave = () => {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      if (!box.current?.contains(document.activeElement) && !asking.current) {
+      if (!box.current?.contains(document.activeElement)) {
         setOpen(false);
       }
     }, 150);
@@ -154,8 +129,8 @@ export function ThreadParticipants({
         if (e.pointerType === "mouse") leave();
       }}
       onBlur={(e) => {
-        // A focused button that leaves the list (Remove, once confirmed) blurs with no target; focus did not go elsewhere.
-        if (asking.current || !e.currentTarget.isConnected) return;
+        // A focused button that leaves the list (a ×, once removed) blurs with no target; focus did not go elsewhere.
+        if (!e.currentTarget.isConnected) return;
         if (!box.current?.contains(e.relatedTarget as Node | null))
           setOpen(false);
       }}
@@ -189,9 +164,7 @@ export function ThreadParticipants({
           setOpen((o) => (mouse.current ? true : !o));
         }}
       >
-        <span aria-hidden="true" className="flex items-center">
-          {faces}
-        </span>
+        <FaceStack faces={faces} shown={SHOWN} attr="data-participant-face" />
         <span data-participants-count="">
           {n > SHOWN ? `+${n - SHOWN}` : n}
         </span>
@@ -262,9 +235,10 @@ export function ThreadParticipants({
                         aria-label={`Stop notifying ${a.name} in this thread`}
                         title={`Stop notifying ${a.name} in this thread`}
                         className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-                        onClick={(e) => {
-                          back.current = e.currentTarget;
-                          setConfirm(a);
+                        data-agent-x={a.key}
+                        aria-disabled={rm.set.isPending || undefined}
+                        onClick={() => {
+                          if (!rm.set.isPending) run(a, true);
                         }}
                       >
                         ×
@@ -286,7 +260,7 @@ export function ThreadParticipants({
               })}
             </>
           )}
-          <RemovalNotices rm={rm} api={api} />
+          <RemovalNotices rm={rm} api={api} fallback={trigger} />
         </div>
       )}
     </div>

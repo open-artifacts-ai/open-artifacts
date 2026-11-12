@@ -72,6 +72,7 @@ import {
   refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
+  refundThreadReplyCount,
   replyCount,
   rootId,
   type StoredActor,
@@ -2223,6 +2224,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // A refused asker notice gives the asker bound back (#1614).
       if (m && a.kind === "asker" && a.state === "gone")
         refundAskerIfAllGone(this.sql, a.commentId);
+      // A refused thread-reply notice gives its per-key spend back (#2197).
+      // Only queued->gone moves, so a repeat settle never refunds twice.
+      if (m && a.kind === "reply" && a.state === "gone") {
+        const c = this.sql
+          .exec<{ threadId: string; at: string }>(
+            "select thread_id as threadId, created_at as at from comments where id = ?",
+            a.commentId,
+          )
+          .toArray()[0];
+        if (c) refundThreadReplyCount(this.sql, c.threadId, a.key, c.at);
+      }
       return m;
     });
     if (moved) this.broadcastComments();

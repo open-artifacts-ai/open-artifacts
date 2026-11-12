@@ -161,6 +161,7 @@ export const fixtures: {
     displayName: null,
     suggestedName: null,
     needsDisplayName: false,
+    nameHiddenAs: null,
   },
   artifacts: [
     art(ID.landing, "Landing page", "html", {

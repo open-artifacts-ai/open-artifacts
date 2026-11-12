@@ -1,9 +1,10 @@
 import type { Comment, CommentNotified } from "@oa/shared";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Delivery,
   DeliveryFaces,
+  HELD_AFTER_MS,
   MentionedText,
   newProblems,
 } from "../src/viewer/comments/asks";
@@ -59,7 +60,12 @@ describe("#2229 the mark inside the chip", () => {
     );
     const chip = container.querySelector("[data-mention-chip]") as HTMLElement;
     expect(screen.queryByRole("tooltip")).toBeNull();
-    expect(chip.getAttribute("aria-label")).toBe("Sirius: delivered");
+    // #2247: the name is the visible text; the state is the description.
+    expect(chip.hasAttribute("aria-label")).toBe(false);
+    expect(
+      document.getElementById(chip.getAttribute("aria-describedby") ?? "")
+        ?.textContent,
+    ).toBe("Sirius: delivered");
     fireEvent.mouseEnter(chip);
     expect(screen.getByRole("tooltip").textContent).toBe("Sirius: delivered");
     fireEvent.mouseLeave(chip);
@@ -311,5 +317,155 @@ describe("#2229 copy and face stack", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("the header lists every agent the comment notified", () => {
+  const rows = (c: HTMLElement) =>
+    [...c.querySelectorAll("[data-told]")].map((r) => r.textContent);
+  const hover = (c: HTMLElement) =>
+    fireEvent.mouseEnter(c.querySelector("button") as Element);
+  it("mentions only", () => {
+    const { container } = render(
+      <DeliveryFaces mentions={[ag("Sirius", "delivered")]} />,
+    );
+    hover(container);
+    expect(rows(container)).toEqual(["Sirius: delivered"]);
+    expect(screen.getByRole("button").getAttribute("aria-label")).toBe(
+      "1 of 1 delivered",
+    );
+  });
+  it("notified only", () => {
+    const { container } = render(
+      <DeliveryFaces told={[ag("Vega", "delivered")]} />,
+    );
+    hover(container);
+    expect(rows(container)).toEqual(["Vega: delivered"]);
+  });
+  it("a gone mention reads as its chip does, a gone thread agent as before", () => {
+    const { container } = render(
+      <DeliveryFaces mentions={[ag("X", "gone")]} told={[ag("Y", "gone")]} />,
+    );
+    hover(container);
+    expect(rows(container)).toEqual([
+      "X: not on the bus",
+      "Y: expired, offline too long",
+    ]);
+  });
+  it("both, mentions first, a duplicate key once", () => {
+    const { container } = render(
+      <DeliveryFaces
+        mentions={[ag("Sirius", "delivered"), ag("Vega", "delivered")]}
+        told={[ag("Rigel", "delivered"), ag("Vega", "delivered")]}
+      />,
+    );
+    hover(container);
+    expect(rows(container)).toEqual([
+      "Sirius: delivered",
+      "Vega: delivered",
+      "Rigel: delivered",
+    ]);
+    expect(screen.getByRole("button").getAttribute("aria-label")).toBe(
+      "3 of 3 delivered",
+    );
+  });
+});
+
+describe("a queued notice is sending until the comment is 30s old", () => {
+  afterEach(() => vi.useRealTimers());
+  const T0 = Date.parse("2026-11-12T10:00:00Z");
+  const at = (ms: number) => new Date(T0 + ms).toISOString();
+  it("header: sending, then held once the timer passes 30s", () => {
+    vi.useFakeTimers({ now: T0 + 5_000 });
+    const { container } = render(
+      <DeliveryFaces told={[ag("Vega", "queued")]} createdAt={at(0)} />,
+    );
+    expect(container.querySelector('[data-mark="sending"]')).not.toBeNull();
+    expect(container.querySelector('[data-mark="wait"]')).toBeNull();
+    fireEvent.mouseEnter(container.querySelector("button") as Element);
+    expect(container.querySelector("[data-told]")?.textContent).toBe(
+      "Vega: sending",
+    );
+    act(() => {
+      vi.advanceTimersByTime(HELD_AFTER_MS);
+    });
+    expect(container.querySelector('[data-mark="wait"]')).not.toBeNull();
+    expect(container.querySelector("[data-told]")?.textContent).toBe(
+      "Vega: held until it's back",
+    );
+  });
+  it("a clock running behind cannot stretch sending past 30s", () => {
+    vi.useFakeTimers({ now: T0 - 600_000 });
+    const { container } = render(
+      <DeliveryFaces told={[ag("Vega", "queued")]} createdAt={at(0)} />,
+    );
+    expect(container.querySelector('[data-mark="sending"]')).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(HELD_AFTER_MS + 10);
+    });
+    expect(container.querySelector('[data-mark="wait"]')).not.toBeNull();
+  });
+  it("header: already over 30s old is held at once, no timer left", () => {
+    vi.useFakeTimers({ now: T0 + HELD_AFTER_MS + 1 });
+    const { container } = render(
+      <DeliveryFaces told={[ag("Vega", "queued")]} createdAt={at(0)} />,
+    );
+    expect(container.querySelector('[data-mark="wait"]')).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("chip: sending, then held", () => {
+    vi.useFakeTimers({ now: T0 + 1_000 });
+    const { container } = render(
+      <MentionedText
+        body="hi @Vega"
+        mentions={[ag("Vega", "queued")]}
+        marks
+        createdAt={at(0)}
+      />,
+    );
+    const chip = container.querySelector("[data-mention-chip]") as Element;
+    expect(chip.querySelector('[data-mark="sending"]')).not.toBeNull();
+    fireEvent.mouseEnter(chip);
+    expect(screen.getByRole("tooltip").textContent).toBe("Vega: sending");
+    act(() => {
+      vi.advanceTimersByTime(HELD_AFTER_MS);
+    });
+    expect(chip.querySelector('[data-mark="wait"]')).not.toBeNull();
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "Vega: held until it's back",
+    );
+  });
+  it("the held sentence stays hidden under 30s and appears after", () => {
+    vi.useFakeTimers({ now: T0 + 2_000 });
+    const c = comment("c1", {
+      createdAt: at(0),
+      notified: [ag("Sirius", "queued")],
+    });
+    const { container } = render(<Delivery c={c} />);
+    expect(container.textContent).toBe("");
+    act(() => {
+      vi.advanceTimersByTime(HELD_AFTER_MS);
+    });
+    expect(container.textContent).toBe(
+      "Sirius is offline. Held until it's back.",
+    );
+  });
+  it("an expired notice's sentence is not delayed", () => {
+    vi.useFakeTimers({ now: T0 + 2_000 });
+    const c = comment("c1", {
+      createdAt: at(0),
+      notified: [ag("Vega", "gone")],
+    });
+    expect(render(<Delivery c={c} />).container.textContent).toContain(
+      "Vega didn't get this",
+    );
+  });
+  it("delivered never shows sending, and sets no timer", () => {
+    vi.useFakeTimers({ now: T0 + 1_000 });
+    const { container } = render(
+      <DeliveryFaces told={[ag("Vega", "delivered")]} createdAt={at(0)} />,
+    );
+    expect(container.querySelector('[data-mark="sending"]')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

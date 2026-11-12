@@ -5,7 +5,6 @@ import {
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
-  type BusAddress,
   BusAddressSchema,
   type Comment,
   type CommentAuthor,
@@ -57,6 +56,7 @@ import {
 } from "./asks.js";
 import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
 import {
+  type AskerAddress,
   agentKey,
   agentRoster,
   askerRoster,
@@ -81,7 +81,7 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
-import { effectiveName, getUser } from "./users.js";
+import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
 // MCP tools after them. Storage is the artifact's DO (runtime/comments-store);
@@ -298,7 +298,7 @@ export async function checkAnchor(
 
 type UserLite = { id: string; name: string | null; email: string };
 
-async function usersById(
+export async function usersById(
   env: Env,
   ids: Iterable<string>,
 ): Promise<Map<string, UserLite>> {
@@ -321,7 +321,7 @@ async function usersById(
       out.set(r.id, {
         id: r.id,
         email: r.email,
-        name: effectiveName(r),
+        name: shownEffectiveName(r),
       });
   }
   return out;
@@ -399,7 +399,7 @@ const NAMES_CACHE_MAX = 2000;
 const namesCache = new Map<string, { name: string; at: number }>();
 
 /** Every member's name, removed ones too (their names stay reserved), cached. */
-async function allClashes(env: Env): Promise<NameClashes> {
+export async function allClashes(env: Env): Promise<NameClashes> {
   if (clashCache && Date.now() - clashCache.at < CLASH_TTL_MS)
     return clashCache.map;
   const { results } = await env.DB.prepare(
@@ -411,7 +411,11 @@ async function allClashes(env: Env): Promise<NameClashes> {
     displayName: string | null;
   }>();
   const map = nameClashes(
-    results.map((r) => ({ id: r.id, email: r.email, name: effectiveName(r) })),
+    results.map((r) => ({
+      id: r.id,
+      email: r.email,
+      name: shownEffectiveName(r),
+    })),
   );
   clashCache = { at: Date.now(), map };
   return map;
@@ -1369,7 +1373,7 @@ async function askingAddress(
   artifactId: string,
   threadId: string,
   author: StoredActor,
-): Promise<BusAddress | null> {
+): Promise<AskerAddress | null> {
   const id = author.kind === "user" ? author.agent?.identity : undefined;
   if (author.kind !== "user" || !id) return null;
   const rows = await call(() =>
@@ -1396,7 +1400,7 @@ async function askingAddress(
   if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
   const at = await agentIdentityOf(env, row.owner, address);
   if (at?.identityId !== id.identityId) return none("name_not_theirs");
-  return address;
+  return { ...address, identityId: id.identityId };
 }
 
 /**

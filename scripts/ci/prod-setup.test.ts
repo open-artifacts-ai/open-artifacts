@@ -570,6 +570,33 @@ describe("release-please.yml deploy-prod invariants (#172)", () => {
       expect(text, f).not.toMatch(/run:[^\n]*\$\{\{\s*vars\.PROD_/);
     }
   });
+  it("a held deploy fails the job with the guard's reason (#2257)", () => {
+    const held = step(deploy, "id: held");
+    expect(held).toContain("steps.migration.outputs.hold == 'true'");
+    expect(held).toContain("REASON: ${{ steps.migration.outputs.reason }}");
+    expect(held).toContain("::error title=Prod deploy held::");
+    expect(held).toMatch(/exit 1/);
+    expect(deploy.indexOf("id: held")).toBeGreaterThan(
+      deploy.indexOf("id: migration"),
+    );
+  });
+  it("prod and the demo check /healthz serves the release after the upgrade (#2257)", () => {
+    const prod = step(deploy, "Check prod serves the released version");
+    expect(prod).toContain("PROD_APP_HOST");
+    expect(prod).toContain("/healthz");
+    expect(prod).toContain("timeout-minutes");
+    expect(prod).toMatch(/exit 1/);
+    expect(deploy.indexOf("Check prod serves")).toBeGreaterThan(
+      deploy.indexOf("prod-setup.sh upgrade"),
+    );
+    const demo = job("deploy-demo");
+    expect(step(demo, "Check the demo serves the released version")).toContain(
+      "DEMO_APP_HOST",
+    );
+    expect(demo.indexOf("Check the demo serves")).toBeGreaterThan(
+      demo.indexOf("demo-upgrade"),
+    );
+  });
   it("verify-release skips the prod check when prod is not installed", () => {
     const v = job("verify-release");
     expect(v).toContain("needs.deploy-prod.outputs.installed");

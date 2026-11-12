@@ -151,6 +151,10 @@ export function Plan() {
       </div>
     );
   }
+  // #2150: only with a binding (the server also sends owners and admins alone).
+  const dir =
+    state.status === "authed" ? state.me.instance.directory : undefined;
+  const pendingReverts = dir?.bound ? (dir.pendingReverts ?? 0) : 0;
   const { pill, note } = planStatus(billing);
   const column = COLUMN[billing.tier];
   const solo = column === "solo";
@@ -284,6 +288,7 @@ export function Plan() {
         trial={billing.tier === "trial"}
         busy={busy}
         yearly={billing.yearlyTeamBusiness === true}
+        pendingReverts={pendingReverts}
         upgrade={
           operatorPlan || lapsedPaid
             ? undefined

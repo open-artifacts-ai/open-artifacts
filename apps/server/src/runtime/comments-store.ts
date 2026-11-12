@@ -742,6 +742,30 @@ export function refundThreadReply(
     );
 }
 
+/**
+ * #2197: gives back one notice for `key` when its target settled gone. The
+ * state move already makes this once-only, so `n` is refunded whatever order
+ * the targets settle in; the pacing timestamps roll back only while `at` is
+ * still the last (SET expressions read the old row).
+ */
+export function refundThreadReplyCount(
+  sql: SqlStorage,
+  threadId: string,
+  key: string,
+  at: string,
+): void {
+  sql.exec(
+    `update comment_reply_notices set n = n - 1,
+       last_at = case when last_at = ? then coalesce(prev_at, '0') else last_at end,
+       prev_at = case when last_at = ? then null else prev_at end
+     where thread_id = ? and key = ? and n > 0`,
+    at,
+    at,
+    threadId,
+    key,
+  );
+}
+
 /** Sets one mention's state. */
 export function setTargetState(
   sql: SqlStorage,
