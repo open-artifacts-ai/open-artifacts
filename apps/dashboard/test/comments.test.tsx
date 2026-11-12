@@ -308,7 +308,12 @@ describe("comments: layouts", () => {
       HTMLElement.prototype,
       "offsetHeight",
     );
+    let rule: HTMLStyleElement;
     beforeEach(() => {
+      // jsdom has no Tailwind: the sheet's scroller needs its overflow.
+      rule = document.createElement("style");
+      rule.textContent = ".overflow-y-auto{overflow-y:auto}";
+      document.head.append(rule);
       outletH = 56;
       Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
         configurable: true,
@@ -320,6 +325,7 @@ describe("comments: layouts", () => {
       });
     });
     afterEach(() => {
+      rule.remove();
       if (realH)
         Object.defineProperty(HTMLElement.prototype, "offsetHeight", realH);
       else
@@ -356,19 +362,23 @@ describe("comments: layouts", () => {
     });
     it("opening a 3-reply pin scrolls its last reply to the end, above the row, smoothly", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       await open();
       await act(async () => opts.at(-1)?.onCommentOpen("p3"));
       await waitFor(() =>
-        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" }),
+        expect(spy).toHaveBeenCalledWith({
+          top: expect.any(Number),
+          behavior: "smooth",
+        }),
       );
-      const el = spy.mock.contexts.at(-1) as HTMLElement;
-      expect(el.getAttribute("data-comment")).toBe("p3-c3");
+      const el = document.querySelector(
+        '[data-comment="p3-c3"]',
+      ) as HTMLElement;
       expect(el.style.scrollMarginBottom).toBe("56px");
     });
     it("the margin uses the row's height once the outlet shows, even after the first frame", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       let fire: () => void = () => {};
       const OriginalRO = globalThis.ResizeObserver;
       globalThis.ResizeObserver = class {
@@ -385,12 +395,17 @@ describe("comments: layouts", () => {
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
         await new Promise((r) => setTimeout(r, 50));
         expect(spy).not.toHaveBeenCalledWith(
-          expect.objectContaining({ block: "end" }),
+          expect.objectContaining({ behavior: "smooth" }),
         );
         outletH = 56; // the composer claims it
         act(() => fire());
-        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" });
-        const el = spy.mock.contexts.at(-1) as HTMLElement;
+        expect(spy).toHaveBeenCalledWith({
+          top: expect.any(Number),
+          behavior: "smooth",
+        });
+        const el = document.querySelector(
+          '[data-comment="p3-c3"]',
+        ) as HTMLElement;
         expect(el.style.scrollMarginBottom).toBe("56px");
       } finally {
         globalThis.ResizeObserver = OriginalRO;
@@ -398,7 +413,7 @@ describe("comments: layouts", () => {
     });
     it("focusing the reply box after the first measure doesn't scroll again", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       let fire: () => void = () => {};
       let disconnected = false;
       const OriginalRO = globalThis.ResizeObserver;
@@ -417,7 +432,7 @@ describe("comments: layouts", () => {
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
         await waitFor(() =>
           expect(spy).toHaveBeenCalledWith({
-            block: "end",
+            top: expect.any(Number),
             behavior: "smooth",
           }),
         );
@@ -432,7 +447,7 @@ describe("comments: layouts", () => {
     });
     it("no outlet (the wide overlay at pin height): no last-reply scroll", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       viewport(800);
       server.use(
         http.get(`*${R.comments(OWNED)}`, () =>
@@ -452,26 +467,29 @@ describe("comments: layouts", () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
       expect(spy).not.toHaveBeenCalledWith(
-        expect.objectContaining({ block: "end" }),
+        expect.objectContaining({ behavior: "smooth" }),
       );
     });
     it("a single reply gets no extra scroll", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       await open();
       await act(async () => opts.at(-1)?.onCommentOpen("p1"));
       await new Promise((r) => setTimeout(r, 50));
       expect(spy).not.toHaveBeenCalledWith(
-        expect.objectContaining({ block: "end" }),
+        expect.objectContaining({ behavior: "smooth" }),
       );
     });
     it("reduced motion: the scroll is not smooth", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       await open(true);
       await act(async () => opts.at(-1)?.onCommentOpen("p3"));
       await waitFor(() =>
-        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "auto" }),
+        expect(spy).toHaveBeenCalledWith({
+          top: expect.any(Number),
+          behavior: "auto",
+        }),
       );
     });
   });
