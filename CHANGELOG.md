@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.168.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.167.0...v0.168.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** the Price row shows the interval and renewal date ([#2135](https://github.com/open-artifacts-ai/open-artifacts/issues/2135)) ([#2372](https://github.com/open-artifacts-ai/open-artifacts/issues/2372)) ([479681c](https://github.com/open-artifacts-ai/open-artifacts/commit/479681cf536b9011eccf37a86e5c35b85998ac10))
+
 ## [0.167.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.166.0...v0.167.0) (2026-11-12)
 
 
