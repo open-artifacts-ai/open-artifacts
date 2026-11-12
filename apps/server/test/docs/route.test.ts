@@ -249,8 +249,8 @@ describe("spoofed client headers are ignored", () => {
     expect(h.version).not.toBe(999);
     const ns = env.DOC_ROOM;
     if (!ns) throw new Error("DOC_ROOM unbound");
-    await runInDurableObject(ns.get(ns.idFromName(id)), (r: DocRoom) => {
-      const held = (t: string) => r.ctx.getWebSockets(t).length;
+    await runInDurableObject(ns.get(ns.idFromName(id)), (_r: DocRoom, state) => {
+      const held = (t: string) => state.getWebSockets(t).length;
       expect(held("a:u:somebody-else")).toBe(0);
       expect(held(`a:u:${viewer.userId}`)).toBe(1);
       expect(held("role:edit")).toBe(0);
