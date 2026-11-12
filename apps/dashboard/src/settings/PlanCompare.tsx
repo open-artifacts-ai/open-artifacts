@@ -67,7 +67,7 @@ const cardPrice = (
     unit: d.unit,
     lines: [
       hasYearly
-        ? `or ${formatCents(PLAN_PRICES[c].year)} a year`
+        ? `or ${formatCents(PLAN_PRICES[c].year)}${c === "solo" ? "" : " per creator"} a year`
         : "Billed monthly",
     ],
   };

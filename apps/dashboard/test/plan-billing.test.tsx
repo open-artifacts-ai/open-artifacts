@@ -1010,6 +1010,11 @@ describe("yearly Team and Business seat step", () => {
     mountHosted("/settings/plan", { billing: TRIAL });
     await screen.findByTestId("plan-card-team");
     fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
+    // The yearly alternative is per creator on Team and Business, not on Solo.
+    expect(card("team")).toHaveTextContent("or $100 per creator a year");
+    expect(card("business")).toHaveTextContent("or $250 per creator a year");
+    expect(card("solo")).toHaveTextContent("or $10 a year");
+    expect(card("solo")).not.toHaveTextContent("per creator a year");
     fireEvent.click(
       within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
     );
