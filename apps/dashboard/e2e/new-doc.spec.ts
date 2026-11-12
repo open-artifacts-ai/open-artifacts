@@ -99,7 +99,10 @@ for (const [scheme, width] of [
         name: "Docs need Cloudflare's Workers Paid plan",
       });
       await expect(note).toBeVisible();
-      await page.getByRole("button", { name: "New doc" }).click();
+      // aria-disabled: Playwright would wait for it to enable; people can press it.
+      await page
+        .getByRole("button", { name: "New doc" })
+        .click({ force: true });
       await expect(note).toBeFocused();
       await shot(page, `new-doc-gate-${tag}.png`);
     });
