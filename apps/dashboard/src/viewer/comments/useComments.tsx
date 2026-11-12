@@ -574,6 +574,7 @@ export function useCommentsController({
       commentOnSelection,
       dropDraft,
       onAway,
+      setDraftText,
     ],
   );
 }
