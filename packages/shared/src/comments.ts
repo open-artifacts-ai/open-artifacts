@@ -54,10 +54,29 @@ const key = z.string().regex(COMMENT_KEY_RE);
 export const KeyRefSchema = z.object({ key });
 export type KeyRef = z.infer<typeof KeyRefSchema>;
 
+/**
+ * #2263: the risky action an option carries out, named by the agent that
+ * wrote the ask. The server turns the actions an ask names, and the member's
+ * "ask for a passkey to approve" switches, into `confirm`. `command` is
+ * running a command on the member's computer (always confirmed).
+ */
+export const ASK_ACTIONS = [
+  "merge",
+  "deploy",
+  "delete",
+  "share",
+  "public",
+  "command",
+] as const;
+export const AskActionSchema = z.enum(ASK_ACTIONS);
+export type AskAction = z.infer<typeof AskActionSchema>;
+
 export const AskOptionSchema = z.object({
   id: key,
   label: z.string().min(1).max(ASK_LABEL_MAX),
   detail: z.string().max(ASK_DETAIL_MAX).optional(),
+  /** #2263: the risky action this option carries out. Only the author sets it; a pick on an ask whose options name an action the picker's switches cover needs their passkey. */
+  action: AskActionSchema.optional(),
 });
 export type AskOption = z.infer<typeof AskOptionSchema>;
 
@@ -102,6 +121,8 @@ export const CommentAskSchema = z
         at: z.string(),
         /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
         typed: z.boolean(),
+        /** #2263: set by the server when a passkey assertion for this pick verified. */
+        verified: z.literal("passkey").optional(),
         /**
          * #1797: your user's yes, computed for the caller by the server: typed,
          * picked by the caller's own person, on an ask the caller's own person
@@ -111,6 +132,8 @@ export const CommentAskSchema = z
       })
       .optional(),
     closed: z.boolean(),
+    /** #2263: a pick needs the picker's passkey (POST R.commentAnswerChallenge, then R.commentAnswer with the assertion). Set by the server when the ask is created, from its options' actions and the addressees' switches; never by a client, never removed by an edit. */
+    confirm: z.literal("passkey").optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type CommentAsk = z.infer<typeof CommentAskSchema>;
@@ -269,7 +292,11 @@ export const ReplyBodySchema = z.object({
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
 /** POST R.commentAnswer body. */
-export const AnswerBodySchema = z.object({ optionId: key });
+export const AnswerBodySchema = z.object({
+  optionId: key,
+  /** #2263: the WebAuthn assertion (PublicKeyCredential.toJSON()) for the challenge of R.commentAnswerChallenge; required on an ask with confirm "passkey". */
+  assertion: z.unknown().optional(),
+});
 export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 
 /** GET R.artifactAgents: the agents that follow or publish to the artifact. */

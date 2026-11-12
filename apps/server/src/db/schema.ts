@@ -503,6 +503,73 @@ export const artifactAsks = sqliteTable(
   ],
 );
 
+// #2263 passkeys: one row per WebAuthn credential a member registered. It can
+// confirm a pick only once `created_at` is 24 h old (services/passkeys.ts).
+// public_key is the credential's COSE key, base64url; sign_count is the last
+// counter the authenticator showed (0 stays 0 on authenticators without one).
+export const passkeys = sqliteTable(
+  "passkeys",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    credentialId: text("credential_id").notNull().unique(),
+    publicKey: text("public_key").notNull(),
+    alg: integer("alg").notNull(),
+    signCount: integer("sign_count").notNull().default(0),
+    label: text("label").notNull(),
+    createdAt: integer("created_at").notNull(),
+    lastUsedAt: integer("last_used_at"),
+  },
+  (t) => [index("passkeys_user_idx").on(t.userId)],
+);
+
+// #2263 single-use WebAuthn challenges, one live row per (user, scope): a new
+// challenge for the same scope replaces (voids) the old one. `binding` is what
+// the challenge was issued for (the picked option, the exact settings change,
+// the passkey to remove); a verify consumes it with a compare-and-set on
+// used_at before anything is recorded.
+export const pickAssertions = sqliteTable(
+  "pick_assertions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    scope: text("scope").notNull(),
+    binding: text("binding").notNull(),
+    challenge: text("challenge").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    usedAt: integer("used_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("pick_assertions_scope_idx").on(t.userId, t.scope),
+    check(
+      "pick_assertions_kind_check",
+      sql`${t.kind} in ('register', 'pick', 'settings', 'remove')`,
+    ),
+  ],
+);
+
+// #2263 a member's "ask for a passkey to approve" switches. No row: the
+// defaults (every action on, every pick off). ask_command is always 1.
+export const passkeySettings = sqliteTable("passkey_settings", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  askMerge: integer("ask_merge").notNull().default(1),
+  askDeploy: integer("ask_deploy").notNull().default(1),
+  askDelete: integer("ask_delete").notNull().default(1),
+  askShare: integer("ask_share").notNull().default(1),
+  askPublic: integer("ask_public").notNull().default(1),
+  askCommand: integer("ask_command").notNull().default(1),
+  everyPick: integer("every_pick").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(),
+});
+
 export const tokens = sqliteTable("tokens", {
   id: text("id").primaryKey(),
   userId: text("user_id")

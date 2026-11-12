@@ -332,6 +332,44 @@ export function spaceSelfAddEmail(p: {
   );
 }
 
+const PASSKEY_ADDED_TXT = `A passkey was added to your {{instanceName}} account{{labelPart}}.
+
+It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and sign out of other sessions: {{securityUrl}}
+
+{{appHost}}
+`;
+
+const PASSKEY_ADDED_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Passkey added</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>A passkey was added to your {{instanceName}} account{{labelPart}}.</p>
+<p>It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and sign out of other sessions.</p>
+<p><a href="{{securityUrl}}">Open security settings</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/** To a member when a passkey is added to their account (#2263). */
+export function passkeyAddedEmail(p: {
+  instance: string;
+  recipient: string;
+  appHost: string;
+  label: string;
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.instance });
+  const label = oneLine(p.label, NAME_MAX);
+  return render(
+    PASSKEY_ADDED_HTML,
+    PASSKEY_ADDED_TXT,
+    "A passkey was added to your account",
+    {
+      ...values,
+      labelPart: label ? ` (${label})` : "",
+      securityUrl: linkOn(origin, "/settings/security"),
+    },
+  );
+}
+
 /** Why the directory alert went out (P3 T13). */
 export type DirectoryAlert =
   | "unhealthy"

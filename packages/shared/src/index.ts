@@ -3,6 +3,7 @@ export * from "./anchor.js";
 export * from "./bus-notices.js";
 export * from "./comment-email-copy.js";
 export * from "./comments.js";
+export * from "./passkeys.js";
 export * from "./errors.js";
 export * from "./formats.js";
 export * from "./hosted/index.js";
