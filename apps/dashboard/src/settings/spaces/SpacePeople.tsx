@@ -102,6 +102,36 @@ const ORPHAN_LINE = "No longer in their group";
 const ORPHAN_HINT =
   "Added by directory sync. Their group no longer lists them, so they stay until you remove them.";
 
+/**
+ * The orphan reason and its tooltip. Hover and focus open it (Radix); a tap
+ * or click toggles it too, since a phone has no hover. Outside taps and
+ * Escape close it (Radix's dismissal).
+ */
+function OrphanTip() {
+  const [open, setOpen] = useState(false);
+  return (
+    <TooltipProvider>
+      <Tooltip open={open} onOpenChange={setOpen}>
+        <TooltipTrigger asChild>
+          {/* Radix closes a tooltip on pointer down and click; ours toggles. */}
+          <button
+            type="button"
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.preventDefault();
+              setOpen((o) => !o);
+            }}
+            className="cursor-help border-0 bg-transparent p-0 font-[inherit] text-[length:inherit] text-inherit underline decoration-dotted underline-offset-2"
+          >
+            {ORPHAN_LINE}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{ORPHAN_HINT}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 /** Where access comes from, winning role first. */
 const source = (m: PersonView, frozen: boolean) => {
   if (m.orphan) return ORPHAN_LINE;
@@ -365,19 +395,7 @@ function PersonRow({
             {why.includes(ORPHAN_LINE) && m.orphan ? (
               <>
                 {why.slice(0, why.indexOf(ORPHAN_LINE))}
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="cursor-help border-0 bg-transparent p-0 font-[inherit] text-[length:inherit] text-inherit underline decoration-dotted underline-offset-2"
-                      >
-                        {ORPHAN_LINE}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>{ORPHAN_HINT}</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                <OrphanTip />
                 {why.slice(why.indexOf(ORPHAN_LINE) + ORPHAN_LINE.length)}
               </>
             ) : (

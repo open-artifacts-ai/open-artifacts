@@ -1304,3 +1304,24 @@ for (const [name, extra, text] of [
     expect(await screen.findByRole("tooltip")).toHaveTextContent(HINT);
   });
 }
+
+it("the orphan tooltip opens on a tap, and a second tap or Escape closes it", async () => {
+  mountHosted(ENG, { directory: "frozen" }, asTier("team"), [serve([orphan])]);
+  const olive = await row("Olive Gray");
+  const trigger = within(olive).getByRole("button", {
+    name: "No longer in their group",
+  });
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  fireEvent.click(trigger);
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(HINT);
+  fireEvent.click(trigger);
+  await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  fireEvent.click(trigger);
+  expect(await screen.findByRole("tooltip")).toBeVisible();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  fireEvent.click(trigger);
+  expect(await screen.findByRole("tooltip")).toBeVisible();
+  fireEvent.pointerDown(document.body);
+  await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+});
