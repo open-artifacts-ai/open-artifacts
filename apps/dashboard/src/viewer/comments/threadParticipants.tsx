@@ -116,7 +116,7 @@ export function ThreadParticipants({
     .map((f, i, all) => (
       <span
         key={f.key}
-        data-face=""
+        data-participant-face=""
         style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -3 }}
         className={`relative inline-flex shrink-0 bg-card ring-[1.5px] ring-card ${f.round ? "rounded-full" : "rounded-md"}`}
       >
