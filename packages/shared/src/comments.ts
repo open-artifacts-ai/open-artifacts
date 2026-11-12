@@ -108,8 +108,12 @@ export const CommentAskSchema = z
          * wrote (as themselves or through an agent). Never set by a client.
          */
         yes: z.boolean(),
+        /** #2263: set only by the server after a passkey assertion verified this pick. */
+        verified: z.literal("passkey").optional(),
       })
       .optional(),
+    /** #2263: the options name a dangerous action; a pick needs a passkey. Only the server sets it. */
+    confirm: z.literal("passkey").optional(),
     closed: z.boolean(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
@@ -268,9 +272,19 @@ export const ReplyBodySchema = z.object({
 });
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
-/** POST R.commentAnswer body. */
-export const AnswerBodySchema = z.object({ optionId: key });
+/** POST R.commentAnswer body. `assertion` is a WebAuthn AuthenticationResponseJSON, required on a `confirm` ask (#2263). */
+export const AnswerBodySchema = z.object({
+  optionId: key,
+  assertion: z.record(z.string(), z.unknown()).optional(),
+});
 export type AnswerBody = z.infer<typeof AnswerBodySchema>;
+
+/** POST R.commentAnswerChallenge response (#2263): WebAuthn PublicKeyCredentialRequestOptionsJSON. */
+export const AnswerChallengeSchema = z.object({
+  options: z.object({ challenge: z.string() }).passthrough(),
+  expiresAt: z.string(),
+});
+export type AnswerChallenge = z.infer<typeof AnswerChallengeSchema>;
 
 /** GET R.artifactAgents: the agents that follow or publish to the artifact. */
 export const ArtifactAgentSchema = z.object({

@@ -8,17 +8,19 @@ import type {
   MentionDelivery,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { CheckCheck, Clock, Minus } from "lucide-react";
+import { CheckCheck, Clock, KeyRound, Minus } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
+  usePasskeyAnswer,
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
 import { PartyFace } from "./AuthorFace";
 import { linkify } from "./linkify";
+import { canRetry, passkeyCopy, passkeyFailure } from "./passkey";
 
 const MUTED = "text-muted-foreground";
 
@@ -426,7 +428,11 @@ export function AskBlock({
   askQuestion?: () => void;
 }) {
   const ask = c.ask;
-  const answer = useAnswerAsk(artifactId);
+  const plain = useAnswerAsk(artifactId);
+  const passkey = usePasskeyAnswer(artifactId);
+  // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
+  const answer = ask?.confirm === "passkey" ? passkey : plain;
+  const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
@@ -543,6 +549,7 @@ export function AskBlock({
                     data-option={o.id}
                     onClick={() => {
                       setErr(null);
+                      setLastPick(o.id);
                       answer.mutate(
                         { thread: thread.id, comment: c.id, optionId: o.id },
                         { onError: setErr },
@@ -565,6 +572,17 @@ export function AskBlock({
                         </span>
                       )}
                     </span>
+                    {ask.confirm === "passkey" && !sel && (
+                      <span
+                        data-passkey-hint=""
+                        role="img"
+                        aria-label="Needs a passkey"
+                        title="Needs a passkey"
+                        className="ml-auto shrink-0"
+                      >
+                        <KeyRound aria-hidden="true" className="size-3.5" />
+                      </span>
+                    )}
                     {rec && (
                       <span
                         className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
@@ -589,6 +607,9 @@ export function AskBlock({
               {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
               {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
+              {ask.answer.verified === "passkey" && (
+                <span data-ask-verified="">{" · Verified with passkey"}</span>
+              )}
               {canAnswer && locked && (
                 <>
                   {" · "}
@@ -626,11 +647,58 @@ export function AskBlock({
               Only the people asked can answer.
             </p>
           )}
-          {err != null && (
-            <p role="alert" className={`${TXT} text-destructive`}>
-              {answerError(err, errCtx)}
+          {answer.isPending && ask.confirm === "passkey" && (
+            <p
+              role="status"
+              data-passkey-verifying=""
+              className={`${TXT} ${MUTED}`}
+            >
+              Waiting for your passkey...
             </p>
           )}
+          {err != null &&
+            (() => {
+              const f = ask.confirm === "passkey" ? passkeyFailure(err) : null;
+              const msg = f ? passkeyCopy(f) : null;
+              if (!f || !msg)
+                return (
+                  <p role="alert" className={`${TXT} text-destructive`}>
+                    {answerError(err, errCtx)}
+                  </p>
+                );
+              return (
+                <p
+                  role="alert"
+                  data-passkey-error={f.kind}
+                  className={`${TXT} text-destructive`}
+                >
+                  {msg}
+                  {canRetry(f) && lastPick && (
+                    <>
+                      {" "}
+                      <Button
+                        size="xs"
+                        variant="link"
+                        className="h-auto p-0"
+                        onClick={() => {
+                          setErr(null);
+                          answer.mutate(
+                            {
+                              thread: thread.id,
+                              comment: c.id,
+                              optionId: lastPick,
+                            },
+                            { onError: setErr },
+                          );
+                        }}
+                      >
+                        Retry
+                      </Button>
+                    </>
+                  )}
+                </p>
+              );
+            })()}
           <div className="flex gap-2">
             {askQuestion && !pickedOpt && !ask.closed && (
               <Button size="xs" variant="outline" onClick={askQuestion}>

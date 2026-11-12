@@ -115,6 +115,12 @@ type Deps = {
   seedAsk?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
+  /**
+   * #2263: with seedAsk, also seed a `confirm: "passkey"` ask. The mode picks what the
+   * server says to a pick: "ok" verifies, "none" 409 no_passkey, "cooling" 409
+   * passkey_cooling, "expired" 410 on the answer.
+   */
+  passkeyMode?: "ok" | "none" | "cooling" | "expired";
 };
 
 const iso = () => new Date().toISOString();
@@ -132,6 +138,7 @@ export function createCommentMock({
   contentHash,
   seedAsk,
   seedAgents,
+  passkeyMode,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
@@ -194,8 +201,33 @@ export function createCommentMock({
       to: [other],
       closed: false,
     };
+    const f = comment("Merge the release PR?", mine());
+    f.ask = {
+      question: "Merge the release PR?",
+      options: [
+        { id: "merge", label: "Merge it" },
+        { id: "hold", label: "Hold" },
+      ],
+      to: [mine()],
+      confirm: "passkey",
+      closed: false,
+    };
     const asked: CommentThread[] = seedAsk
       ? [
+          ...(passkeyMode
+            ? [
+                {
+                  id: newId(),
+                  anchor: { kind: "note" as const },
+                  version: 1,
+                  status: "open" as const,
+                  resolvedBy: null,
+                  resolvedAt: null,
+                  createdAt: f.createdAt,
+                  comments: [f],
+                },
+              ]
+            : []),
           {
             id: newId(),
             anchor: { kind: "note" },
@@ -492,7 +524,31 @@ export function createCommentMock({
   const rep = `${A}/:tid/replies`;
   const one = `${A}/:tid/comments/:cid`;
   const answer = `${A}/:tid/comments/:cid/answer`;
+  const challenge = `${A}/:tid/comments/:cid/answer/challenge`;
   const handlers = [
+    http.post(challenge, async ({ params }) => {
+      const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
+      if (bad) return bad;
+      if (passkeyMode === "none")
+        return err("no_passkey", "Add a passkey to approve this");
+      if (passkeyMode === "cooling")
+        return HttpResponse.json(
+          {
+            error: {
+              code: "passkey_cooling",
+              message: "This passkey is new",
+              details: {
+                until: new Date(Date.now() + 20 * 3600_000).toISOString(),
+              },
+            },
+          },
+          { status: 409 },
+        );
+      return HttpResponse.json({
+        options: { challenge: "bW9jay1jaGFsbGVuZ2U", rpId: "localhost" },
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      });
+    }),
     http.get("*/api/v1/artifacts/:id/agents", ({ params }) => {
       if (!art(params.id)) return err("not_found", "Not found");
       return HttpResponse.json(MOCK_AGENTS);
@@ -512,7 +568,16 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
+      if (c.ask.confirm === "passkey") {
+        if (!j.data.assertion)
+          return err("passkey_required", "This pick needs a passkey");
+        if (passkeyMode === "expired")
+          return err("challenge_expired", "That approval timed out");
+      }
       c.ask.answer = {
+        ...(c.ask.confirm === "passkey"
+          ? { verified: "passkey" as const }
+          : {}),
         optionId: j.data.optionId,
         by: mine(),
         at: iso(),

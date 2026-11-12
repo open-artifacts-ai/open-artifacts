@@ -1,5 +1,6 @@
 import {
   ANON_ID_HEADER,
+  AnswerChallengeSchema,
   ArtifactAgentSchema,
   COMMENT_BODY_MAX,
   type Comment,
@@ -20,6 +21,10 @@ import {
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
+import {
+  assertionToJSON,
+  decodeRequestOptions,
+} from "../viewer/comments/passkey";
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -152,6 +157,42 @@ export const useAnswerAsk = (id: string) =>
         undefined,
         x,
       ),
+  );
+
+/**
+ * #2263: pick an option on a `confirm: "passkey"` ask. Challenge, then the passkey
+ * prompt, then the answer; nothing is answered until the server verifies it.
+ */
+export const usePasskeyAnswer = (id: string) =>
+  useRefetching(
+    id,
+    false,
+    false,
+    async (v: { thread: string; comment: string; optionId: string }, x) => {
+      const ch = await api.send(
+        "POST",
+        R.commentAnswerChallenge(id, v.thread, v.comment),
+        { optionId: v.optionId },
+        AnswerChallengeSchema,
+        undefined,
+        x,
+      );
+      const cred = await navigator.credentials.get({
+        publicKey: decodeRequestOptions(ch.options),
+      });
+      if (!cred) throw new DOMException("No credential", "NotAllowedError");
+      return api.send(
+        "POST",
+        R.commentAnswer(id, v.thread, v.comment),
+        {
+          optionId: v.optionId,
+          assertion: assertionToJSON(cred as PublicKeyCredential),
+        },
+        CommentSchema,
+        undefined,
+        x,
+      );
+    },
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>

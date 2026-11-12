@@ -72,6 +72,12 @@ export const ERROR_CODES = [
   "use_edit_doc",
   // Collaborative docs (#1100): a self-host needs Workers Paid for docs.
   "docs_need_paid",
+  // Passkey approval of dangerous asks (#2263).
+  "no_passkey",
+  "passkey_cooling",
+  "passkey_failed",
+  "challenge_expired",
+  "passkey_required",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -168,6 +174,16 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   billing_unavailable: 503,
   /** R.billingPortal on a plan with no Stripe customer (provisioned or comped): there is no portal to open. */
   no_billing_customer: 409,
+  /** #2263: the caller has no passkey to approve with. */
+  no_passkey: 409,
+  /** #2263: every new passkey approves nothing for 24 h; details { until } (ISO). */
+  passkey_cooling: 409,
+  /** #2263: the assertion did not verify. */
+  passkey_failed: 400,
+  /** #2263: the challenge timed out or was used; ask for another. */
+  challenge_expired: 410,
+  /** #2263: a pick on a confirm ask without a valid assertion. */
+  passkey_required: 403,
   /** Comments (#682). */
   invalid_anchor: 400,
   invalid_body: 400,
