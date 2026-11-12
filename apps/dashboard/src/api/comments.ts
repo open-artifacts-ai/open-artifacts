@@ -196,7 +196,9 @@ const useRefetching = <V, T>(
   guest: boolean,
   mints: boolean,
   fn: (v: V, x?: RequestExtra) => Promise<T>,
-  apply?: (list: CommentList, v: V) => CommentList,
+  apply?: (list: CommentList, v: V, me: Comment["author"]) => CommentList,
+  /** An error after which the edit stays until the refetch replaces it (a 409 whose answer the list is about to show). */
+  keepOn?: (e: ApiClientError) => boolean,
 ) => {
   const qc = useQueryClient();
   return useMutation<T, ApiClientError, V, Snapshot | undefined>({
@@ -207,12 +209,16 @@ const useRefetching = <V, T>(
           await qc.cancelQueries({ queryKey: commentsKey(id) });
           const prev = qc.getQueryData<CommentList>(commentsKey(id));
           if (prev)
-            qc.setQueryData<CommentList>(commentsKey(id), apply(prev, v));
+            qc.setQueryData<CommentList>(
+              commentsKey(id),
+              apply(prev, v, viewerAuthor(qc, guest)),
+            );
           return { prev };
         }
       : undefined,
     onError: apply
-      ? (_e, _v, ctx) => {
+      ? (e, _v, ctx) => {
+          if (keepOn?.(e)) return;
           if (ctx?.prev) qc.setQueryData(commentsKey(id), ctx.prev);
         }
       : undefined,
@@ -460,7 +466,14 @@ export const useArtifactAgents = (id: string, enabled: boolean) =>
     queryFn: ({ signal }) => api.get(R.artifactAgents(id), AgentList, signal),
   });
 
-/** Tap an option on an ask. The list refetches on settle, so a 409 shows the closed ask. */
+/**
+ * Tap an option on an ask: the pick shows at once and settles to the server's
+ * record on the refetch. A refusal rolls it back to unanswered; a 409 (someone
+ * answered first) keeps the pick until the refetch shows the real answer.
+ * Never for an ask with `confirm` (the passkey asks of #2263): a yes that needs
+ * the server's verification must not appear before it. The optimistic answer is
+ * never a person's yes (`yes: false`), whatever the server later says.
+ */
 export const useAnswerAsk = (id: string) =>
   useRefetching(
     id,
@@ -475,6 +488,31 @@ export const useAnswerAsk = (id: string) =>
         undefined,
         x,
       ),
+    (list, v, me) =>
+      mapThread(list, v.thread, (t) => ({
+        ...t,
+        comments: t.comments.map((c) =>
+          c.id !== v.comment ||
+          !c.ask ||
+          c.ask.closed ||
+          (c.ask as { confirm?: unknown }).confirm
+            ? c
+            : {
+                ...c,
+                ask: {
+                  ...c.ask,
+                  answer: {
+                    optionId: v.optionId,
+                    by: me,
+                    at: new Date().toISOString(),
+                    typed: true,
+                    yes: false,
+                  },
+                },
+              },
+        ),
+      })),
+    (e) => e.status === 409,
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>

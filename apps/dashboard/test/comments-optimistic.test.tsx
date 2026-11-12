@@ -2,11 +2,13 @@
 import type { Comment, CommentList, CommentThread } from "@oa/shared";
 import { R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   configure,
   fireEvent,
   getConfig,
+  renderHook,
   screen,
   waitFor,
   within,
@@ -22,7 +24,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { overlayPending } from "../src/api/comments";
+import { commentsKey, overlayPending, useAnswerAsk } from "../src/api/comments";
 import { events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -266,5 +268,146 @@ describe("overlayPending", () => {
     const out = overlayPending(list([]), [pend(null, "new", [])]);
     expect(out.threads).toHaveLength(1);
     expect(out.open).toBe(1);
+  });
+});
+
+describe("picking an option on an ask shows at once", () => {
+  const answerPath = `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`;
+  const pick = (optionId: string, by = "me", yes = true) => ({
+    optionId,
+    by: {
+      kind: "user" as const,
+      id: by,
+      name: by === "me" ? "Me" : "Sam",
+      me: by === "me",
+    },
+    at: "2026-11-12T11:00:00Z",
+    typed: true,
+    yes,
+  });
+  const ask = (
+    answer?: ReturnType<typeof pick>,
+    extra = {},
+  ): CommentThread => ({
+    ...note("t-ask", [
+      {
+        ...mine("c-ask", "Which layout?"),
+        author: { kind: "agent", id: "u1", name: "OA Product", me: false },
+        can: { edit: false, delete: false },
+        ask: {
+          question: "Which layout?",
+          options: [
+            { id: "a", label: "List only" },
+            { id: "b", label: "Side by side" },
+          ],
+          to: [{ kind: "user", id: "me", name: "Me", me: true }],
+          closed: false,
+          ...(answer ? { answer } : {}),
+          ...extra,
+        },
+      },
+    ]),
+  });
+  const serve = (get: () => CommentThread) =>
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () => HttpResponse.json(list([get()]))),
+    );
+  const opt = (c: HTMLElement, id: string) =>
+    c.querySelector<HTMLButtonElement>(
+      `[data-option="${id}"]`,
+    ) as HTMLButtonElement;
+
+  it("shows the pick before the server answers, then settles to its record", async () => {
+    let answer: ReturnType<typeof pick> | undefined;
+    serve(() => ask(answer));
+    server.use(
+      http.post(answerPath, async () => {
+        await delay(400);
+        answer = pick("a");
+        return HttpResponse.json({});
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /List only/ }),
+    );
+    expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
+    expect(
+      c.querySelector("[data-ask] [data-sending]") ??
+        c.querySelector("ul[data-sending]"),
+    ).not.toBeNull();
+    await waitFor(() => expect(c.querySelector("ul[data-sending]")).toBeNull());
+    expect(within(c).getAllByText(/You picked A/)).toHaveLength(1);
+  });
+
+  it("rolls back to unanswered on an error, shows the error and focuses the option", async () => {
+    serve(() => ask());
+    server.use(
+      http.post(answerPath, async () => {
+        await delay(150);
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    expect(await within(c).findByText(/You picked B/)).toBeInTheDocument();
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      "Couldn't send your answer. Try again.",
+    );
+    expect(within(c).queryByText(/You picked/)).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(opt(c, "b")));
+  });
+
+  it("a 409 shows the answer the server has, not ours", async () => {
+    let answer: ReturnType<typeof pick> | undefined;
+    serve(() => ask(answer));
+    server.use(
+      http.post(answerPath, async () => {
+        await delay(100);
+        answer = pick("a", "sam", false);
+        return new HttpResponse(null, { status: 409 });
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    await within(c).findByText(/Sam picked A/);
+    expect(within(c).queryByText(/picked B/)).toBeNull();
+  });
+
+  it("an ask with confirm is never optimistic (the cache stays as the server has it)", async () => {
+    // The schema does not carry `confirm` yet (#2263), so seed the cache directly.
+    const qc = new QueryClient();
+    qc.setQueryData(
+      commentsKey(OWNED),
+      list([ask(undefined, { confirm: "passkey" })]),
+    );
+    server.use(
+      http.post(answerPath, async () => {
+        await delay(300);
+        return HttpResponse.json({});
+      }),
+    );
+    const { result } = renderHook(() => useAnswerAsk(OWNED), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      ),
+    });
+    act(() => {
+      result.current.mutate({
+        thread: "t-ask",
+        comment: "c-ask",
+        optionId: "a",
+      });
+    });
+    await waitFor(() => expect(result.current.isPending).toBe(true));
+    const cached = qc.getQueryData<CommentList>(commentsKey(OWNED));
+    expect(cached?.threads[0]?.comments[0]?.ask?.answer).toBeUndefined();
   });
 });

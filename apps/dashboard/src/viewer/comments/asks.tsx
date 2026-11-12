@@ -499,9 +499,25 @@ export function AskBlock({
   const [changing, setChanging] = useState(false);
   const qid = useId();
   const picked = ask?.answer?.optionId;
+  const opts = useRef<HTMLUListElement>(null);
+  const [refocus, setRefocus] = useState<string | null>(null);
+  // Once the failed pick is rolled back and its option is enabled again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` changes when the rollback lands
+  useEffect(() => {
+    if (!refocus || answer.isPending) return;
+    const el = opts.current?.querySelector<HTMLButtonElement>(
+      `[data-option="${CSS.escape(refocus)}"]`,
+    );
+    if (!el || el.disabled) return;
+    el.focus();
+    setRefocus(null);
+  }, [refocus, answer.isPending, picked]);
   // A later answer, even one made elsewhere, ends the old failure and the Change mode.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` is the trigger.
   useEffect(() => {
+    // The rollback after a failed pick (or a 409's refetch) sets it back to
+    // unanswered: that failure stays. A new answer ends the old one.
+    if (picked === undefined) return;
     setErr(null);
     setChanging(false);
   }, [picked]);
@@ -586,8 +602,11 @@ export function AskBlock({
             {linked(ask.question, 0)}
           </p>
           <ul
+            ref={opts}
             aria-labelledby={qid}
-            className="m-0 flex list-none flex-col gap-1 p-0"
+            aria-busy={answer.isPending || undefined}
+            data-sending={answer.isPending ? "" : undefined}
+            className={`m-0 flex list-none flex-col gap-1 p-0 transition-opacity${answer.isPending ? " opacity-70" : ""}`}
           >
             {ask.options.map((o, i) => {
               const rec = ask.recommended?.optionId === o.id;
@@ -611,7 +630,13 @@ export function AskBlock({
                       setErr(null);
                       answer.mutate(
                         { thread: thread.id, comment: c.id, optionId: o.id },
-                        { onError: setErr },
+                        {
+                          onError: (e) => {
+                            setErr(e);
+                            // Back to unanswered: focus returns to the option.
+                            setRefocus(o.id);
+                          },
+                        },
                       );
                     }}
                   >
