@@ -401,6 +401,8 @@ function Composer({
   onSubmit,
   onCancel,
   initial = "",
+  restore,
+  onText,
   autoFocus = false,
   alwaysOpen = true,
   failure,
@@ -443,7 +445,7 @@ function Composer({
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
   /** Called when the box gains or loses text the reader typed. */
-  onDirty?: (dirty: boolean) => void;
+  onDirty?: (dirty: boolean, unmounting?: boolean) => void;
   placeholder: string;
   /** The placeholder for someone who can mention agents here. */
   mentionPlaceholder?: string;
@@ -453,6 +455,9 @@ function Composer({
   onSubmit: (body: string, extras: Extras) => Promise<unknown>;
   onCancel?: () => void;
   initial?: string;
+  /** Text kept by the owner of the draft across the box unmounting, and where to keep it. */
+  restore?: string;
+  onText?: (text: string) => void;
   autoFocus?: boolean;
   /** Collapsed to one line until focused. */
   alwaysOpen?: boolean;
@@ -461,7 +466,7 @@ function Composer({
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
   const errCtx = useCommentErrorCtx();
-  const [text, setText] = useState(seed?.text ?? initial);
+  const [text, setText] = useState(seed?.text ?? restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(seed?.error ?? null);
   const mounted = useRef(true);
@@ -583,8 +588,11 @@ function Composer({
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
   useEffect(() => {
+    onText?.(text);
+  }, [text, onText]);
+  useEffect(() => {
     onDirty?.(body !== "");
-    return () => onDirty?.(false);
+    return () => onDirty?.(false, true);
   }, [body, onDirty]);
   const go = async () => {
     if (!body || once.current) return;
@@ -1543,6 +1551,8 @@ function NewThread({ api }: { api: CommentsApi }) {
           lastDraft.current && api.reopenDraft(lastDraft.current, l)
         }
         onDirty={api.setDraftDirty}
+        restore={api.draftText.current}
+        onText={api.setDraftText}
         onCancel={api.cancelDraft}
         onSubmit={(body, x) => {
           last.current = body;

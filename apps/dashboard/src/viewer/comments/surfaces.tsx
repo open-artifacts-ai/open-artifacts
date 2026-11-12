@@ -75,7 +75,10 @@ export function SelectionBar() {
       {show && (
         // The bar is the chrome surface; the 48px accent button sits above the
         // home indicator (Design's final: plain bar, no quote line).
-        <div className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!">
+        <div
+          data-oa-keep-selection=""
+          className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!"
+        >
           <button
             type="button"
             className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border-0 bg-[var(--oa-accent)] font-semibold text-[var(--oa-accent-text)] text-[15px] hover:bg-[var(--oa-accent-fg)]"
@@ -97,6 +100,7 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
   return (
     <aside
       aria-label="Comments"
+      data-oa-keep-selection=""
       className="relative flex w-[340px] min-[960px]:w-[var(--oa-comments-w)] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-[var(--oa-bg)]"
     >
       <CommentsBody textFormat={textFormat} />

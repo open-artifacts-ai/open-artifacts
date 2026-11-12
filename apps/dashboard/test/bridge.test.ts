@@ -1273,6 +1273,7 @@ describe("the frame can't change the bridge's artifact", () => {
     expect(typeof b.setArtifact).toBe("function");
     expect(Object.keys(b).sort()).toEqual(
       [
+        "clearSelection",
         "commentOnSelection",
         "dispose",
         "focusComment",

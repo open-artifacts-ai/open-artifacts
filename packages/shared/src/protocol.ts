@@ -28,13 +28,15 @@ import { utf8Exceeds } from "./utf8.js";
  * know (all of them, not the field): bump this when a shell message gains one,
  * and have the shell leave that field out for a runtime that said an earlier
  * number. #1698: 2 adds `changed` on `comments.set` threads. #1834: 3 adds
- * `draft` on `comments.set`.
+ * `draft` on `comments.set`. 4 adds `comments.clear`.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
 export const PROTOCOL_PIN_CHANGED = 2;
 /** The first protocol whose runtime draws the quote being commented on (#1834). */
 export const PROTOCOL_COMMENT_DRAFT = 3;
+/** The first protocol whose runtime clears its selection on `comments.clear`. */
+export const PROTOCOL_COMMENT_CLEAR = 4;
 
 export const RUNTIME_METHODS = [
   "db.get",
@@ -256,6 +258,15 @@ export const ArtifactToShellSchema = z.union([
     has: z.boolean(),
     bottom: z.number().finite().min(-10_000_000).max(10_000_000),
   }),
+  /**
+   * A pointer went down in the frame outside the runtime's own button: the
+   * shell drops an unsent draft, as Google Docs does. Carries no data.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.away"),
+  }),
   /** A click in pin mode on an image or pdf page; x and y are 0..1 of the image or page. */
   z.strictObject({
     oa: z.literal(1),
@@ -381,6 +392,8 @@ export const ShellToArtifactSchema = z.union([
   }),
   /** The reader tapped the shell's "Comment on selection": run the frame's Comment path (#1732). */
   z.strictObject({ oa: z.literal(1), type: z.literal("comments.comment") }),
+  /** Clear the frame's live text selection (the reader clicked elsewhere in the shell). */
+  z.strictObject({ oa: z.literal(1), type: z.literal("comments.clear") }),
   /** Scroll the thread's highlight or pin into view and flash it. */
   z.strictObject({
     oa: z.literal(1),
