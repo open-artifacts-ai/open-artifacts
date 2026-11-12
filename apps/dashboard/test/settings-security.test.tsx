@@ -383,9 +383,11 @@ describe("Settings › Security: passkeys", () => {
     mount("/settings/security");
     await screen.findByText("MacBook");
     fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
-    const next = await screen.findByRole("button", { name: "Create passkey" });
+    const next = await screen.findByRole("button", { name: "Add passkey" });
     expect(
-      screen.getByText("Approved. Now create your new passkey."),
+      screen.getByText(
+        "Your current passkey was accepted. Now add the new one.",
+      ),
     ).toBeVisible();
     expect(next).toHaveFocus();
     const paths = posts.map((c) => c.path);
@@ -408,7 +410,7 @@ describe("Settings › Security: passkeys", () => {
     expect(posts.find((c) => c.path === R.passkeyRegisterFinish)?.body).toEqual(
       { credential: CREDENTIAL },
     );
-    expect(screen.queryByRole("button", { name: "Create passkey" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add passkey" })).toBeNull();
   });
 
   it("an only usable passkey that is pending removal still approves adding one", async () => {
@@ -432,7 +434,7 @@ describe("Settings › Security: passkeys", () => {
     mount("/settings/security");
     await screen.findByText("MacBook");
     fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
-    await screen.findByRole("button", { name: "Create passkey" });
+    await screen.findByRole("button", { name: "Add passkey" });
     expect(posts.some((c) => c.path === R.passkeyRegisterChallenge)).toBe(true);
     expect(posts.find((c) => c.path === R.passkeyRegisterBegin)?.body).toEqual({
       assertion: ASSERTION,
@@ -444,26 +446,24 @@ describe("Settings › Security: passkeys", () => {
     mount("/settings/security");
     await screen.findByText("MacBook");
     fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
-    const next = await screen.findByRole("button", { name: "Create passkey" });
+    const next = await screen.findByRole("button", { name: "Add passkey" });
     create.mockRejectedValueOnce(new DOMException("no", "NotAllowedError"));
     fireEvent.click(next);
     expect(await screen.findByText("Nothing was added.")).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Create passkey" }),
-    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Add passkey" })).toBeVisible();
 
     server.use(
       http.post(`*${R.passkeyRegisterFinish}`, () =>
         err("challenge_expired", 410),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Create passkey" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add passkey" }));
     expect(
       await screen.findByText(
         "That took too long. Try again. Nothing was added.",
       ),
     ).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Create passkey" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add passkey" })).toBeNull();
   });
 
   it("a cancelled approval adds nothing: no begin, no create", async () => {

@@ -117,7 +117,7 @@ for (const scheme of ["light", "dark"] as const)
         await expect(page.getByText("MacBook")).toBeVisible();
         await page.getByRole("button", { name: "Add a passkey" }).click();
         // Approved by the existing passkey; creating takes a second click.
-        const create = page.getByRole("button", { name: "Create passkey" });
+        const create = page.getByRole("button", { name: "Add passkey" });
         await expect(create).toBeFocused();
         await shot(page, `add-approved-${scheme}-${width}`);
         await create.click();
@@ -138,7 +138,7 @@ for (const scheme of ["light", "dark"] as const)
         await authenticator(page);
         await page.goto("/settings/security?mock=passkey-usable");
         await page.getByRole("button", { name: "Add a passkey" }).click();
-        await page.getByRole("button", { name: "Create passkey" }).click();
+        await page.getByRole("button", { name: "Add passkey" }).click();
         await expect(page.getByText("Passkey", { exact: true })).toBeVisible();
         await page.getByRole("button", { name: "Remove MacBook" }).click();
         await expect(page.getByRole("alertdialog")).toBeVisible();

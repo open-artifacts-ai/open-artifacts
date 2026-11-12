@@ -60,9 +60,10 @@ export const ADD_REAUTH_NOTE =
   "Adding a passkey asks you to sign in again first.";
 export const ADD_RETURN_LINE =
   "You're signed in again. Add your passkey within 10 minutes.";
-// Placeholders (Product): the step between approving and creating.
-export const APPROVED_LINE = "Approved. Now create your new passkey.";
-export const CREATE_BUTTON = "Create passkey";
+// Product's words for the step between approving and creating.
+export const APPROVED_LINE =
+  "Your current passkey was accepted. Now add the new one.";
+export const CREATE_BUTTON = "Add passkey";
 export const ALREADY_HERE =
   "This device already has a passkey for this account.";
 export const REMOVAL_STARTS =
