@@ -3534,9 +3534,11 @@ type NoticeRow = {
   foldN: number;
   foldRef: string | null;
   foldAcks: string | null;
+  /** #2238: the identity the notice is addressed to; null: by name only. */
+  toIdentity: string | null;
 };
 const NOTICE_COLS =
-  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks";
+  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks, to_identity as toIdentity";
 
 /** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
 const NOTICE_FOLD_MAX = 50;
@@ -3649,7 +3651,23 @@ function wellFormedNotice(n: BusNotice): boolean {
     n.to.namespace.length > 0 &&
     typeof n.to.name === "string" &&
     n.to.name.length > 0 &&
-    (n.notBefore === undefined || Number.isFinite(n.notBefore))
+    (n.notBefore === undefined || Number.isFinite(n.notBefore)) &&
+    (n.toIdentity === undefined ||
+      (typeof n.toIdentity === "string" &&
+        n.toIdentity.length > 0 &&
+        n.toIdentity.length <= 128))
+  );
+}
+
+/** #2238: the identity the agent row holds now, or null. */
+function identityOfAgent(sql: SqlStorage, agentId: string): string | null {
+  return (
+    one<{ i: string | null }>(
+      sql,
+      "select identity_id as i from agents where org_id = ? and id = ?",
+      OWNER_ORG_ID,
+      agentId,
+    )?.i ?? null
   );
 }
 
@@ -7071,10 +7089,24 @@ export class BusHub extends DurableObject<Env> {
     // notice can be in flight) reaches it by its live former name. The notice
     // is then kept at the resolved agent's address, so the flush paths find it.
     const sent = n.to.name.toLowerCase();
-    const byRole = resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
+    if (n.toIdentity !== undefined) {
+      // #2238: addressed to an identity: only the live agent at this very name
+      // that holds it. No role or former-name resolution. A mismatch (renamed,
+      // name reused, another member's id) drops the notice and touches no
+      // waiting row: the agent at the name is not who it was meant for.
+      const at = liveVisibleIn(sql, n.to.namespace, sent);
+      if (!at || identityOfAgent(sql, at.id) !== n.toIdentity) {
+        logEvent("notice_dropped", { reason: "identity" });
+        return "dropped";
+      }
+    }
+    const byRole =
+      n.toIdentity !== undefined
+        ? null
+        : resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
     const liveNamed = liveVisibleIn(sql, n.to.namespace, sent);
     const former =
-      byRole !== null || liveNamed !== null
+      byRole !== null || liveNamed !== null || n.toIdentity !== undefined
         ? []
         : liveFormer(sql, sent, now, { ns: n.to.namespace }, 2);
     const byAlias = byRole?.ok
@@ -7098,15 +7130,27 @@ export class BusHub extends DurableObject<Env> {
     // A socket that cannot decode a notice counts as offline (noticeGated).
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
-    const old = one<{
+    let old = one<{
       ack: string | null;
       foldN: number;
       foldAcks: string | null;
+      toIdentity: string | null;
     }>(
       sql,
-      "select ack, fold_n as foldN, fold_acks as foldAcks from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      "select ack, fold_n as foldN, fold_acks as foldAcks, to_identity as toIdentity from notices where to_ns = ? and to_lname = ? and ckey = ?",
       ...key,
     );
+    // #2238: a waiting notice for another identity than this address holds now
+    // is not this agent's: it settles as gone and never folds into this one.
+    if (old?.toIdentity && old.toIdentity !== identityOfAgent(sql, agent.id)) {
+      this.#settleGone([old.ack, ...parseAcks(old.foldAcks)]);
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      );
+      old = null;
+    }
+    const heldIdentity = n.toIdentity ?? old?.toIdentity ?? null;
     // #1752: the replaced notice's target and fold count move to the new one.
     const folds = old
       ? [...parseAcks(old.foldAcks), ...(old.ack ? [old.ack] : [])]
@@ -7130,6 +7174,7 @@ export class BusHub extends DurableObject<Env> {
         foldN,
         foldRef: foldN > 0 ? n.artifactId : null,
         foldAcks: folds.length > 0 ? JSON.stringify(folds) : null,
+        toIdentity: heldIdentity,
       };
       if (
         this.#sendNotice(
@@ -7175,8 +7220,8 @@ export class BusHub extends DurableObject<Env> {
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
     const foldRef = foldN > 0 ? n.artifactId : null;
     sql.exec(
-      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks, to_identity)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...key,
       n.id,
       n.text,
@@ -7187,10 +7232,30 @@ export class BusHub extends DurableObject<Env> {
       foldN,
       foldRef,
       folds.length > 0 ? JSON.stringify(folds) : null,
+      heldIdentity,
     );
     this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
     return "held";
+  }
+
+  /**
+   * #2238: a waiting notice addressed to an identity that the agent now at its
+   * address does not hold: it settles as gone and its row goes. True then.
+   */
+  #identityMismatch(r: NoticeRow, agent: AgentRow): boolean {
+    if (!r.toIdentity) return false;
+    const sql = this.ctx.storage.sql;
+    if (identityOfAgent(sql, agent.id) === r.toIdentity) return false;
+    this.#settleGone([r.ack, ...parseAcks(r.foldAcks)]);
+    sql.exec(
+      "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      r.toNs,
+      r.toLname,
+      r.ckey,
+    );
+    logEvent("notice_dropped", { reason: "identity" });
+    return true;
   }
 
   /**
@@ -7217,6 +7282,7 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      if (this.#identityMismatch(r, agent)) continue;
       if (!this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r)))
         break;
       sql.exec(
@@ -7308,6 +7374,7 @@ export class BusHub extends DurableObject<Env> {
         break;
       }
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
+      if (agent && this.#identityMismatch(r, agent)) continue;
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
       if (

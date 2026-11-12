@@ -5,7 +5,6 @@ import {
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
-  type BusAddress,
   BusAddressSchema,
   type Comment,
   type CommentAuthor,
@@ -57,6 +56,7 @@ import {
 } from "./asks.js";
 import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
 import {
+  type AskerAddress,
   agentKey,
   agentRoster,
   askerRoster,
@@ -1373,7 +1373,7 @@ async function askingAddress(
   artifactId: string,
   threadId: string,
   author: StoredActor,
-): Promise<BusAddress | null> {
+): Promise<AskerAddress | null> {
   const id = author.kind === "user" ? author.agent?.identity : undefined;
   if (author.kind !== "user" || !id) return null;
   const rows = await call(() =>
@@ -1400,7 +1400,7 @@ async function askingAddress(
   if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
   const at = await agentIdentityOf(env, row.owner, address);
   if (at?.identityId !== id.identityId) return none("name_not_theirs");
-  return address;
+  return { ...address, identityId: id.identityId };
 }
 
 /**
