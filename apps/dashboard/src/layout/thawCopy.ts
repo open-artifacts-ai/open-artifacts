@@ -2,8 +2,8 @@
 // the issue). One place, so the final wording changes here only.
 const people = (n: number) =>
   n === 1
-    ? "1 person whose role you changed on Team will go back to the role their group gives them."
-    : `${n} people whose roles you changed on Team will go back to the role their group gives them.`;
+    ? "1 person whose role was changed by hand on Team will go back to the role their group gives them."
+    : `${n} people whose roles were changed by hand on Team will go back to the role their group gives them.`;
 
 export const THAW_COPY = {
   /** Upgrade confirm, shown only when n > 0. */

@@ -80,7 +80,7 @@ describe("Upgrade to Business confirm", () => {
     expect(upgrade).not.toHaveBeenCalled();
     const d = screen.getByRole("dialog", { name: "Upgrade to Business" });
     expect(d).toHaveTextContent(
-      "Directory sync turns back on. 3 people whose roles you changed on Team will go back to the role their group gives them. People you removed stay removed, and people you added stay.",
+      "Directory sync turns back on. 3 people whose roles were changed by hand on Team will go back to the role their group gives them. People you removed stay removed, and people you added stay.",
     );
     fireEvent.click(within(d).getByRole("button", { name: "Upgrade" }));
     expect(upgrade).toHaveBeenCalledWith("business");
@@ -90,7 +90,7 @@ describe("Upgrade to Business confirm", () => {
     const upgrade = view(1);
     const d = screen.getByRole("dialog");
     expect(d).toHaveTextContent(
-      "1 person whose role you changed on Team will go back to the role their group gives them.",
+      "1 person whose role was changed by hand on Team will go back to the role their group gives them.",
     );
     fireEvent.click(within(d).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
