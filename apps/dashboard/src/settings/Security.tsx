@@ -59,8 +59,12 @@ export const ADD_REAUTH_NOTE =
   "Adding a passkey asks you to sign in again first.";
 export const ADD_RETURN_LINE =
   "You're signed in again. Add your passkey within 10 minutes.";
-export const ALREADY_HERE = "This device already has a passkey here."; // placeholder, Product to confirm
-export const REMOVAL_STARTS = "Passkey removal starts in 24 hours."; // placeholder
+export const ALREADY_HERE =
+  "This device already has a passkey for this account.";
+export const REMOVAL_STARTS =
+  "This passkey will be removed in 24 hours. You can cancel until then.";
+export const REMOVAL_DELAY_LINE =
+  "It's removed after 24 hours, so you can cancel if this wasn't you.";
 const RemovalSchema = z.object({ removesAt: z.string().nullable() });
 
 type Doing = "added" | "changed" | "removed";
@@ -325,7 +329,7 @@ function PasskeyList({
                   </small>
                   {p.removesAt && (
                     <small className={`block ${muted}`}>
-                      Removes {coolingTime(p.removesAt)}
+                      Will be removed {coolingTime(p.removesAt)}
                     </small>
                   )}
                   {!p.usable && (
@@ -350,7 +354,7 @@ function PasskeyList({
                     aria-label={`Cancel removal of ${p.label}`}
                     onClick={() => void cancelRemoval(p)}
                   >
-                    Cancel
+                    Cancel removal
                   </Button>
                 ) : (
                   <Button
@@ -389,6 +393,7 @@ function PasskeyList({
         body={
           <>
             <p>You won't be able to approve picks with it.</p>
+            {!keys?.some((k) => k.usable) && <p>{REMOVAL_DELAY_LINE}</p>}
             {keys?.length === 1 && (
               <p>
                 It's your only passkey. Without one, approve risky actions in

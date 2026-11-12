@@ -247,8 +247,13 @@ describe("Settings › Security: passkeys", () => {
     mount("/settings/security");
     await screen.findByText("This laptop");
     fireEvent.click(screen.getByRole("button", { name: "Remove This laptop" }));
-    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+    const d = await screen.findByRole("alertdialog");
+    expect(d).toHaveTextContent(
       "It's your only passkey. Without one, approve risky actions in your agent's terminal.",
+    );
+    // No usable passkey: the re-auth path, so the 24 hour delay is said too.
+    expect(d).toHaveTextContent(
+      "It's removed after 24 hours, so you can cancel if this wasn't you.",
     );
   });
 
@@ -257,9 +262,10 @@ describe("Settings › Security: passkeys", () => {
     mount("/settings/security");
     await screen.findByText("MacBook");
     fireEvent.click(screen.getByRole("button", { name: "Remove MacBook" }));
-    expect(await screen.findByRole("alertdialog")).not.toHaveTextContent(
-      "only passkey",
-    );
+    const d = await screen.findByRole("alertdialog");
+    expect(d).not.toHaveTextContent("only passkey");
+    // A usable passkey asserts: the removal is immediate, no delay line.
+    expect(d).not.toHaveTextContent("removed after 24 hours");
   });
 
   it("a failed remove shows its line under that passkey", async () => {
@@ -436,7 +442,7 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
     fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
     expect(
       await screen.findByText(
-        "This device already has a passkey here. Nothing was added.",
+        "This device already has a passkey for this account. Nothing was added.",
       ),
     ).toBeVisible();
   });
@@ -511,7 +517,7 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
     const posts = calls("POST");
     mount("/settings/security");
     const row = (await screen.findByText("Phone")).closest("li");
-    expect(row).toHaveTextContent(/Removes /);
+    expect(row).toHaveTextContent(/Will be removed /);
     expect(
       within(row as HTMLElement).queryByRole("button", { name: /^Remove / }),
     ).toBeNull();
@@ -537,11 +543,13 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
       }),
     );
     expect(
-      await screen.findByText("Passkey removal starts in 24 hours."),
+      await screen.findByText(
+        "This passkey will be removed in 24 hours. You can cancel until then.",
+      ),
     ).toBeVisible();
     expect(
       (await screen.findByText("This laptop")).closest("li"),
-    ).toHaveTextContent(/Removes /);
+    ).toHaveTextContent(/Will be removed /);
     expect(get).not.toHaveBeenCalled();
   });
 

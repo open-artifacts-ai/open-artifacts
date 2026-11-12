@@ -66,7 +66,7 @@ for (const scheme of ["light", "dark"] as const)
           if (s.n === "cooling")
             await expect(page.getByText(/Can approve from /)).toBeVisible();
           if (s.n === "pending")
-            await expect(page.getByText(/Removes /)).toBeVisible();
+            await expect(page.getByText(/Will be removed /)).toBeVisible();
           await shot(page, `${s.n}-${scheme}-${width}`);
         });
 
@@ -119,6 +119,17 @@ for (const scheme of ["light", "dark"] as const)
           .getByRole("button", { name: "Remove" })
           .click();
         await expect(page.getByText("MacBook", { exact: true })).toBeHidden();
+      });
+
+      test("remove confirm on the re-auth path (no usable passkey)", async ({
+        page,
+      }) => {
+        await page.goto("/settings/security?mock=passkey-cooling");
+        await page.getByRole("button", { name: "Remove This laptop" }).click();
+        await expect(
+          page.getByRole("alertdialog").getByText(/removed after 24 hours/),
+        ).toBeVisible();
+        await shot(page, `remove-confirm-reauth-${scheme}-${width}`);
       });
 
       if (width === 390) {
