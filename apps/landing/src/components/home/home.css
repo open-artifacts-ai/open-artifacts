@@ -882,6 +882,118 @@
     gap: 6px;
   }
 
+  /* the ask card as the product draws it: a bordered card, key chips, a
+     recommendation tag, and Ask a question / Next ask underneath */
+  .card.ask {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid var(--oa-border);
+    border-radius: 8px;
+    padding: 8px;
+  }
+  .card.ask.need {
+    border-color: var(--oa-warning);
+    box-shadow: 0 0 0 0.5px var(--oa-warning);
+  }
+  .card.ask > * {
+    margin: 0 !important;
+  }
+  .ask .lab {
+    display: block;
+  }
+  .ask .lab .x-tag {
+    margin: 0 2px;
+    color: var(--oa-text);
+  }
+  .ask .qq {
+    font-weight: 600;
+  }
+  .ask .opt,
+  .ask .mopt {
+    min-height: 40px;
+    gap: 8px;
+  }
+  .ask .opt b,
+  .ask .mopt b {
+    font-weight: 600;
+    min-width: 0;
+    flex: 1;
+  }
+  .ask .opt .k,
+  .ask .mopt .k,
+  .ask [aria-pressed="true"] .k {
+    width: auto;
+    height: auto;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--oa-accent-soft);
+    color: var(--oa-text);
+    font: 600 11.5px var(--oa-font-mono);
+  }
+  .ask [aria-pressed="true"] {
+    background: var(--oa-accent-soft);
+    border-color: var(--oa-accent);
+    box-shadow: 0 0 0 1px var(--oa-accent);
+  }
+  .ask .rec {
+    border-radius: 4px;
+    font-weight: 600;
+    padding: 0 6px;
+  }
+  .ask.locked [aria-pressed="false"] {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .ask .picked {
+    display: block;
+    font-weight: 500;
+    color: var(--oa-text);
+  }
+  .aact {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .abtn {
+    border: 1px solid var(--oa-border);
+    background: var(--oa-surface);
+    color: var(--oa-text);
+    border-radius: 6px;
+    padding: 3px 9px;
+    font: 500 12.5px var(--oa-font-sans);
+    cursor: pointer;
+    min-height: 26px;
+  }
+  .alink {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--oa-accent-fg);
+    text-decoration: underline;
+    font: inherit;
+    cursor: pointer;
+  }
+  .anote {
+    font-size: 12.5px;
+    color: var(--oa-text-muted);
+    font-style: italic;
+  }
+  .asksfy {
+    background: var(--oa-warning-soft);
+    color: var(--oa-warning);
+    font: 600 12.5px var(--oa-font-sans);
+    border-radius: 4px;
+    padding: 2px 8px;
+    box-shadow: inset 0 0 0 1px var(--oa-warning);
+    white-space: nowrap;
+    flex: none;
+  }
+  .mrow {
+    display: flex;
+    justify-content: flex-end;
+  }
+
   /* share popover */
   .pop {
     position: absolute;
@@ -2182,6 +2294,18 @@ footer */
     .mp .picked {
       font-size: 14px;
       margin-top: 10px;
+    }
+    .mp .abtn {
+      font-size: 14px;
+      padding: 6px 12px;
+      min-height: 36px;
+    }
+    .mp .anote {
+      font-size: 13.5px;
+    }
+    .mp .asksfy {
+      font-size: 13.5px;
+      padding: 3px 9px;
     }
     .mp .cl li {
       font-size: 15px;

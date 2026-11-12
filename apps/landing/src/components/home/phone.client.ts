@@ -24,29 +24,56 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
   /* decide */
   const askCard = mp("ask");
   const options = $$(".mopt", askCard);
+  const card = $(".card.ask", askCard);
+  const done = $("[data-done]", askCard);
+  const picked = $(".picked", askCard);
+  const note = $(".anote", askCard);
+  const setAsks = (n: number) => {
+    $("[data-afy]", askCard).textContent =
+      `${n} ask${n === 1 ? "" : "s"} for you`;
+  };
   for (const o of options)
     o.addEventListener("click", () => {
-      const k = o.dataset.k;
-      const name = k === "a" ? "Hacker News post" : "Email list";
+      const k = o.dataset.k as string;
       for (const x of options) x.setAttribute("aria-pressed", String(x === o));
+      card.classList.remove("need");
+      card.classList.add("locked");
+      $("[data-askq]", card).classList.add("hide");
+      setAsks(1);
       $(".why", askCard).classList.add("hide");
-      const picked = $(".picked", askCard);
       picked.classList.remove("hide");
-      const who = document.createElement("span");
-      who.className = "pp you";
-      who.textContent = "You";
-      picked.replaceChildren(who, `You picked ${name}`);
-      const done = $("[data-done]", askCard);
+      picked.innerHTML = `You picked ${k.toUpperCase()} · just now · <button type="button" class="alink" data-change>Change</button>`;
       done.classList.remove("on");
       $(".x", done).textContent =
         `Done. The plan now says the ${k === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
       const show = () => {
+        if (!card.classList.contains("locked")) return;
         done.hidden = false;
         done.classList.add("on");
       };
       if (reduce) show();
       else setTimeout(show, 500);
     });
+  card.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("[data-change]")) {
+      for (const x of options) x.setAttribute("aria-pressed", "false");
+      card.classList.add("need");
+      card.classList.remove("locked");
+      $("[data-askq]", card).classList.remove("hide");
+      setAsks(2);
+      $(".why", askCard).classList.remove("hide");
+      picked.classList.add("hide");
+      done.classList.remove("on");
+      done.hidden = true;
+      note.classList.add("hide");
+    } else if (t.closest("[data-next]") || t.closest("[data-askq]")) {
+      note.textContent = t.closest("[data-next]")
+        ? "In the product, this jumps to your next open ask."
+        : "In the product, this opens a question to the agent that asked.";
+      note.classList.remove("hide");
+    }
+  });
 
   /* live checklist */
   const live = mp("live");

@@ -251,6 +251,19 @@ describe("landing sections", () => {
     expect(index).not.toContain("runs on your own Cloudflare account");
   });
 
+  it("the Decide chapter shows the ask card as the product draws it", () => {
+    const card =
+      index.match(/<div class="card ask need">[\s\S]*?<\/p>/)?.[0] ?? "";
+    expect(card).toContain(
+      'OA Product <span class="x-tag">agent</span> asks you and Sam Rivera',
+    );
+    expect(card).toContain("<b>Email list</b>");
+    expect(card).toContain("Recommended");
+    expect(card).toContain("Ask a question");
+    expect(card).toContain("Next ask");
+    expect(index).toContain("2 asks for you");
+  });
+
   it("the phone chapter buttons say what to try", () => {
     expect(text).toContain("Try it: turn on the public link");
     expect(text).toContain("Try it: vote, or tick an item");

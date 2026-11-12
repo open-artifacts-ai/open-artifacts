@@ -53,13 +53,15 @@ import Agent from "./Agent.astro";
               <div class="cm rev" data-on="21"><span class="pp">MC</span><div><div class="w">Maya Chen</div><div class="x">Can this be Friday? I'm out on Thursday. <span class="men">@OA Product</span></div></div></div>
               <div class="cm rev" data-on="22"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Friday, Dec 12. The timeline is updated in v4.</div></div></div>
             </div>
-            <div class="card ask hide" id="ask">
-              <div class="lab"><Agent class="" />OA Product asks Sam Rivera</div>
+            <div class="card ask need hide" id="ask">
+              <div class="lab">OA Product <span class="x-tag">agent</span> asks you and Sam Rivera</div>
               <div class="qq">Which channel goes first on launch day?</div>
-              <button type="button" class="opt" data-k="a" aria-pressed="false"><span class="k">A</span>Hacker News post</button>
-              <button type="button" class="opt" data-k="b" aria-pressed="false"><span class="k">B</span>Email list<span class="rec">Recommended</span></button>
+              <button type="button" class="opt" data-k="a" aria-pressed="false"><span class="k">A</span><b>Hacker News post</b></button>
+              <button type="button" class="opt" data-k="b" aria-pressed="false"><span class="k">B</span><b>Email list</b><span class="rec">Recommended</span></button>
               <div class="why" id="why">Why B: the list converts best, and it gives us a day to fix surprises.</div>
               <div class="picked hide" id="picked"></div>
+              <div class="aact"><button type="button" class="abtn" data-askq>Ask a question</button><button type="button" class="abtn" data-next>Next ask ↓</button></div>
+              <p class="anote hide" role="status">In the product, this jumps to your next open ask.</p>
               <div class="cm rev" id="adone"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x" id="adonex"></div></div></div>
             </div>
           </div></aside>
@@ -90,12 +92,15 @@ import Agent from "./Agent.astro";
 <div class="cm rev" data-s="2"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Friday, Dec 12. The timeline is updated in v4.</div></div></div></div>
 </div></div></section>
     <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(6)} /></span><h2>Decide with one click.</h2><p>When your agent needs a call, it asks in the artifact, with options and its recommendation. You pick one and it carries on.</p><span class="try">Try it: pick an option</span><div class="mp" data-mp="ask">
-<div class="card ask"><div class="lab"><Agent class="" />OA Product asks Sam Rivera</div>
+<div class="mrow"><span class="asksfy" data-afy>2 asks for you</span></div>
+<div class="card ask need"><div class="lab">OA Product <span class="x-tag">agent</span> asks you and Sam Rivera</div>
 <div class="qq">Which channel goes first on launch day?</div>
-<button type="button" class="mopt" data-k="a" aria-pressed="false"><span class="k">A</span>Hacker News post</button>
-<button type="button" class="mopt" data-k="b" aria-pressed="false"><span class="k">B</span>Email list<span class="rec">Recommended</span></button>
+<button type="button" class="mopt" data-k="a" aria-pressed="false"><span class="k">A</span><b>Hacker News post</b></button>
+<button type="button" class="mopt" data-k="b" aria-pressed="false"><span class="k">B</span><b>Email list</b><span class="rec">Recommended</span></button>
 <div class="why">Why B: the list converts best, and it gives us a day to fix surprises.</div>
 <div class="picked hide" role="status"></div>
+<div class="aact"><button type="button" class="abtn" data-askq>Ask a question</button><button type="button" class="abtn" data-next>Next ask ↓</button></div>
+<p class="anote hide" role="status">In the product, this jumps to your next open ask.</p>
 <div class="cm rev" data-done hidden><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x"></div></div></div></div>
 </div></div></section>
     <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(7)} /></span><h2>Work on it together, live.</h2><p>Checklists, polls and trackers update for everyone, as people and agents use them.</p><span class="try">Try it: vote, or tick an item</span><div class="mp" data-mp="live" data-steps="4">

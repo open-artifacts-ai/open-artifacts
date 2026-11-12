@@ -123,6 +123,8 @@ function render(force = false) {
   $("#sopen").textContent =
     t >= 30 ? (done ? "All resolved" : "1 ask for you") : "1 open";
   for (const o of opts) press(o, o.dataset.k === pick);
+  $("#ask").classList.toggle("need", !pick);
+  $("#ask [data-askq]").classList.toggle("hide", !!pick);
   const name = pick === "a" ? "Hacker News post" : "Email list";
   $("#why").classList.toggle("hide", !!pick);
   const picked = $("#picked");
@@ -205,6 +207,16 @@ for (const o of opts)
     userPick = o.dataset.k as string;
     render(true);
   });
+$("#ask").addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const note = $("#ask .anote");
+  if (t.closest("[data-next]") || t.closest("[data-askq]")) {
+    note.textContent = t.closest("[data-next]")
+      ? "In the product, this jumps to your next open ask."
+      : "In the product, this opens a question to the agent that asked.";
+    note.classList.remove("hide");
+  }
+});
 pollBtns.forEach((b, i) => {
   b.addEventListener("click", () => {
     userVote = userVote === i ? null : i;
