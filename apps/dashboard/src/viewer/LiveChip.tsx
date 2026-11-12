@@ -12,8 +12,6 @@ import type { Gone, LiveUpdate, Swapped } from "./useLiveVersions";
 /** "Updated to vN" after an auto-swap (Design, option C): brief, no Undo. */
 export const NOTE_MS = 3_000;
 export const FULL_NOTE_MS = 3_000;
-/** The /full pill shows widened this long on arrival, then collapses. */
-export const PILL_REVEAL_MS = 4_000;
 
 const RefreshIcon = (
   <svg
@@ -176,9 +174,8 @@ function FullSwapped({
 }
 
 /**
- * /full and embeds: a pill 8px left of Comments in the strip. Held:
- * widened 4 s on arrival, then a 32px circle (embeds rest collapsed); hover
- * and focus widen it. Embedded, it opens /a/<id> in a new tab.
+ * /full and embeds: a short pill inside the controls group, 32px high, always
+ * showing its text. Embedded, it opens /a/<id> in a new tab.
  */
 export function FullLive({
   id,
@@ -197,29 +194,14 @@ export function FullLive({
   onView: () => void;
   onExpire: (version: number) => void;
 }) {
-  const [revealed, setRevealed] = useState(!embed);
-  const [hover, setHover] = useState(false);
-  const [focus, setFocus] = useState(false);
-  const arrived = held !== null;
-  useEffect(() => {
-    if (!arrived || embed) return;
-    setRevealed(true);
-    const t = setTimeout(() => setRevealed(false), PILL_REVEAL_MS);
-    return () => clearTimeout(t);
-  }, [arrived, embed]);
   if (held) {
-    const open = revealed || hover || focus;
     const label =
       held.restoredFrom !== undefined
         ? `v${held.restoredFrom} restored as v${held.version}`
         : `v${held.version} available`;
     const props = {
       className: "oa-lpill",
-      "data-open": open,
-      onPointerEnter: () => setHover(true),
-      onPointerLeave: () => setHover(false),
-      onFocus: () => setFocus(true),
-      onBlur: () => setFocus(false),
+      "data-open": true,
     };
     const inner = (action: string) => (
       <>
@@ -264,13 +246,13 @@ export function FullLive({
   return null;
 }
 
-/** /full when gone: the strip's replacement for the exit link. A link out, except embedded. */
+/** /full when gone: the peek chip's replacement. A link out, except embedded. */
 export function FullGone({ id, embed }: { id: string; embed: boolean }) {
   const dot = <span className="oa-lwdot" aria-hidden="true" />;
   return embed ? (
     <span className="oa-lpill oa-lpill-gone" data-open="true">
       {dot}
-      <span className="oa-lpill-text">No longer available</span>
+      No longer available
     </span>
   ) : (
     <Link
@@ -279,7 +261,7 @@ export function FullGone({ id, embed }: { id: string; embed: boolean }) {
       data-open="true"
     >
       {dot}
-      <span className="oa-lpill-text">No longer available · Exit</span>
+      No longer available · Exit
     </Link>
   );
 }

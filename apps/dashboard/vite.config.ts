@@ -55,7 +55,11 @@ export default defineConfig({
     projects: [
       {
         extends: true,
-        test: { name: "node", include: ["test/**/*.test.ts"] },
+        test: {
+          name: "node",
+          include: ["test/**/*.test.ts"],
+          setupFiles: ["../../scripts/test/agent-cli-guard.ts"],
+        },
       },
       {
         extends: true,
@@ -67,7 +71,10 @@ export default defineConfig({
           // jsdom's window.localStorage is used on every Node version.
           execArgv: ["--no-experimental-webstorage"],
           include: ["test/**/*.test.tsx"],
-          setupFiles: ["test/setup.ts"],
+          setupFiles: [
+            "test/setup.ts",
+            "../../scripts/test/agent-cli-guard.ts",
+          ],
           // Above test/setup.ts's 5 s asyncUtilTimeout, so a stuck wait reports its own failure.
           testTimeout: TEST_TIMEOUT_MS,
         },

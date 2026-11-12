@@ -35,6 +35,9 @@ export type ServiceProblem =
  * The OS service that keeps the daemon running: launchd or systemd --user
  * (steps/service.ts). Without one, `oa-bus daemon` runs in a terminal.
  */
+/** Why no service manager is touched: HOME, the bus home or XDG_CONFIG_HOME is outside the account's home (#2099). */
+export type Isolation = "home" | "bus-home" | "xdg";
+
 export type Service = {
   /** The installed service; undefined when none is. */
   kind?: "launchd" | "systemd";
@@ -43,7 +46,9 @@ export type Service = {
    * `running`: a daemon that would not stop holds the socket, and nothing
    * was started.
    */
-  ensure: () => Promise<{ running?: number }>;
+  ensure: () => Promise<{ running?: number; skipped?: Isolation; idle?: true }>;
+  /** HOME or the bus home is not the account's: no service call is made (#2099). */
+  isolated?: Isolation;
   /** install could not start a service and runs the daemon itself. */
   fallback?: boolean;
   /**
@@ -54,6 +59,7 @@ export type Service = {
     unit?: "launchd" | "systemd";
     stopped?: boolean;
     running?: number;
+    skipped?: Isolation;
   }>;
   problems?: () => ServiceProblem[];
   /** The installed service's environment, as install recorded it; empty when none is. */
@@ -183,6 +189,15 @@ const spawnDaemon = (
   }
 };
 
+/** undefined where the uid has no passwd entry (docker --user): no isolation check. */
+const accountHome = () => {
+  try {
+    return userInfo().homedir;
+  } catch {
+    return undefined;
+  }
+};
+
 const userName = () => {
   try {
     return userInfo().username;
@@ -232,6 +247,9 @@ export function realCtx(noColor: boolean): Ctx {
   ctx.service = systemService({
     platform: process.platform,
     userHome: ctx.userHome,
+    ...(accountHome() !== undefined
+      ? { accountHome: accountHome() as string }
+      : {}),
     home: () => ctx.home,
     env,
     exec: ctx.exec,
