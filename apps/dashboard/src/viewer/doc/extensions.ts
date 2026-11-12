@@ -207,11 +207,19 @@ export function contentExtensions(): Extensions {
                 return Object.fromEntries(
                   Object.entries(keys).map(([key, run]) => [
                     key,
-                    (args: Parameters<typeof run>[0]) =>
-                      this.editor.state.selection.$from.parent.type.name ===
-                      "heading"
-                        ? true
-                        : run(args),
+                    (args: Parameters<typeof run>[0]) => {
+                      const parent = this.editor.state.selection.$from.parent;
+                      // No break in a heading: do nothing.
+                      if (parent.type.name === "heading") return true;
+                      // In a code block a break is a newline; the default
+                      // would exit the block.
+                      if (parent.type.spec.code)
+                        return this.editor.commands.command(({ tr }) => {
+                          tr.insertText("\n");
+                          return true;
+                        });
+                      return run(args);
+                    },
                   ]),
                 );
               },

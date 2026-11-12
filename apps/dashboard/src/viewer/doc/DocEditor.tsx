@@ -137,12 +137,16 @@ function Loaded({
   useEffect(() => {
     if (placed.current || !editor || !editable || status !== "saved") return;
     placed.current = true;
+    // Already typing in the title: the cursor stays where the person put it.
+    const input = titleInput.current;
+    if (input && (document.activeElement === input || input.value !== title))
+      return;
     if (fresh) {
       titleInput.current?.focus();
       titleInput.current?.select();
       clearFresh(artifactId);
     } else editor.commands.focus("start");
-  }, [editor, editable, status, fresh, artifactId]);
+  }, [editor, editable, status, fresh, artifactId, title]);
   const message = errorCopy(error);
   return (
     <div className="oa-doc" data-editable={editable ? "" : undefined}>

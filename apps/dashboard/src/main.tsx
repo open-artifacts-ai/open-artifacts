@@ -474,7 +474,7 @@ async function startMocks() {
       plan: params.get("mock")?.startsWith("paid") ? "paid" : "free",
       // ?mock=newdoc (#1100): docs are on (New doc); ?mock=newdoc-gate: a free self-host.
       docs:
-        params.get("mock") === "newdoc"
+        params.get("mock") === "newdoc" || params.get("mock") === "doc"
           ? "on"
           : params.get("mock") === "newdoc-gate"
             ? "needs_paid"

@@ -260,6 +260,24 @@ describe("toolbar", () => {
     expect(back.toJSON()).toEqual(doc.toJSON());
   });
 
+  it("Shift+Enter and Mod+Enter in a code block add a newline and stay in the block", () => {
+    for (const mod of [{ shiftKey: true }, { ctrlKey: true }]) {
+      const { editor } = collab("<pre><code>one</code></pre>");
+      editor.commands.setTextSelection(4);
+      editor.view.someProp("handleKeyDown", (f) =>
+        f(
+          editor.view,
+          new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, ...mod }),
+        ),
+      );
+      expect(editor.state.doc.firstChild?.type.name, JSON.stringify(mod)).toBe(
+        "codeBlock",
+      );
+      expect(editor.state.doc.firstChild?.textContent).toBe("one\n");
+      expect(editor.state.selection.$from.parent.type.name).toBe("codeBlock");
+    }
+  });
+
   it("Shift+Enter in a heading puts no hardBreak in it", () => {
     const { editor } = collab("<h2>Title</h2>");
     editor.commands.setTextSelection(3);
@@ -632,6 +650,39 @@ describe("DocEditor", () => {
     expect(isFresh("A1")).toBe(false);
   });
 
+  it("typing in the title when the room syncs keeps the cursor there (existing doc)", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    const title = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Title",
+    });
+    act(() => title.focus());
+    fireEvent.change(title, { target: { value: "Plan B" } });
+    act(() => p.made.last?.connect());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(title).toHaveFocus();
+    expect(title.value).toBe("Plan B");
+    expect(document.querySelector(".ProseMirror")).not.toHaveFocus();
+  });
+
+  it("typing in the title when the room syncs does not select it (new doc)", async () => {
+    const p = fakeProviders();
+    markFresh("A1");
+    render(<DocEditor {...base} canEdit fresh makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    const title = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Title",
+    });
+    act(() => title.focus());
+    fireEvent.change(title, { target: { value: "Mine" } });
+    title.setSelectionRange(4, 4);
+    act(() => p.made.last?.connect());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(title).toHaveFocus();
+    expect([title.selectionStart, title.selectionEnd]).toEqual([4, 4]);
+  });
+
   it("the title is the first line of the editing column", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
@@ -941,6 +992,28 @@ describe("TitleField saving", () => {
     const { onSave, input } = field("Plan");
     type(input, "Plan");
     fireEvent.blur(input);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("a rename from elsewhere shows after blur when the field was untouched", () => {
+    const onSave = vi.fn();
+    const ref = { current: null as HTMLInputElement | null };
+    const props = {
+      editable: true,
+      onSave,
+      onEnter: () => {},
+      inputRef: ref,
+    };
+    const view = render(<TitleField title="Plan" {...props} />);
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Title",
+    });
+    act(() => input.focus());
+    view.rerender(<TitleField title="Roadmap" {...props} />);
+    // Focused and untouched: the field is left alone while the cursor is in it.
+    expect(input.value).toBe("Plan");
+    fireEvent.blur(input);
+    expect(input.value).toBe("Roadmap");
     expect(onSave).not.toHaveBeenCalled();
   });
 

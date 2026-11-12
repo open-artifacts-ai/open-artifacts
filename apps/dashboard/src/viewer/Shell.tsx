@@ -62,7 +62,7 @@ import { type FrameState, type Gone, useLiveVersions } from "./useLiveVersions";
 import { useTheme } from "./useTheme";
 import "./viewer.css";
 import { toast } from "../layout/toast";
-import { NewDocButton } from "../library/NewDoc";
+import { NewDocButton, useCanCreate } from "../library/NewDoc";
 import { useUploadSpace } from "../spaces/SpacePicker";
 import { fullPath } from "./paths";
 
@@ -393,6 +393,12 @@ function Viewer({
   const [docStatus, setDocStatus] = useState<DocStatus | null>(null);
   const renameDoc = usePatchArtifact(artifact.id);
   const docSpace = useUploadSpace(artifact.space?.id);
+  // The Library's gate: docs are on, and this caller may create.
+  const meState = useMe();
+  const canCreateDoc =
+    useCanCreate() &&
+    meState.status === "authed" &&
+    meState.me.instance.docs === "on";
   useEffect(() => {
     // No frame to wait for: the layer is ready at once.
     if (isDoc) cbs.current.onReady?.();
@@ -743,13 +749,16 @@ function Viewer({
                 onStatus={setDocStatus}
                 fullActions={
                   <>
-                    <NewDocButton
-                      docs="on"
-                      size="sm"
-                      variant="outline"
-                      spaceId={docSpace}
-                      onGate={() => {}}
-                    />
+                    {/* Only where the Library would offer New doc. */}
+                    {canCreateDoc && (
+                      <NewDocButton
+                        docs="on"
+                        size="sm"
+                        variant="outline"
+                        spaceId={docSpace}
+                        onGate={() => {}}
+                      />
+                    )}
                     <Button
                       size="sm"
                       variant="outline"

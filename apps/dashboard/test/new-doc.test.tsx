@@ -1,5 +1,6 @@
-import { createHandlers } from "@oa/shared/mocks";
+import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { AGENT_LINE } from "../src/library/NewDoc";
 import { isFresh } from "../src/viewer/doc/fresh";
@@ -16,6 +17,22 @@ describe("New doc (#1100)", () => {
     await screen.findByRole("link", { name: "Landing page" });
     expect(screen.queryByRole("button", { name: "New doc" })).toBeNull();
     expect(screen.queryByText(AGENT_LINE)).toBeNull();
+  });
+
+  it("is not offered to a guest, or on a capped or paused account", async () => {
+    useDocs("on");
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json({
+          ...fixtures.me,
+          user: { ...fixtures.me.user, role: "guest" },
+          instance: { ...fixtures.me.instance, docs: "on" },
+        }),
+      ),
+    );
+    mount("/shared");
+    await screen.findByRole("link", { name: "Shared draft" });
+    expect(screen.queryByRole("button", { name: "New doc" })).toBeNull();
   });
 
   it("creates a blank doc and opens it", async () => {

@@ -73,7 +73,12 @@ export function TitleField({
         const text = e.target.value;
         timer.current = setTimeout(() => save(text), TITLE_SAVE_MS);
       }}
-      onBlur={() => dirty.current && save(value)}
+      onBlur={() => {
+        if (dirty.current) save(value);
+        // Untouched: show what the artifact's title is now (it may have been
+        // renamed elsewhere while the cursor was here).
+        else setValue(title);
+      }}
       onKeyDown={(e) => {
         if (e.nativeEvent.isComposing) return;
         if (e.key === "Enter" || e.key === "ArrowDown") {

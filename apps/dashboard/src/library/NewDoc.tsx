@@ -4,6 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { api } from "../api/client";
+import { isSoloPaused } from "../auth/permissions";
+import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { markFresh, NEW_DOC_TOAST } from "../viewer/doc/fresh";
 
@@ -11,6 +13,17 @@ import { markFresh, NEW_DOC_TOAST } from "../viewer/doc/fresh";
 const HOSTED_URL = "https://open-artifacts.com";
 /** Where "How to turn on Workers Paid" goes (Product). */
 const PAID_URL = "https://open-artifacts.com/docs/self-hosting-costs";
+
+/** Guests and restricted (capped) members can't create anywhere, nor can anyone on an unpaid Solo. */
+export function useCanCreate(): boolean {
+  const me = useMe();
+  return (
+    me.status === "authed" &&
+    me.me.user.role !== "guest" &&
+    (me.me.auth?.cap ?? null) === null &&
+    !isSoloPaused(me.me)
+  );
+}
 
 /** The agent line under the tabs (Design, docs mockup step 1). */
 export const AGENT_LINE =
