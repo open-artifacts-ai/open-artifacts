@@ -477,6 +477,27 @@ describe("withdrawHeld follow-ups (#2211, #2205)", () => {
     );
   });
 
+  it("deletes a thread's asker or answered row whose only folds left are untargeted", async () => {
+    const s = await setup();
+    await put(s, {
+      ckey: "artX:T:asker:others",
+      ack: s.ack("artX", "c9", s.key, "asker"),
+      foldN: 1,
+    });
+    await put(s, {
+      ckey: `artX:T:thread_reply:${s.key}:others`,
+      ack: s.ack("artX", "c5", s.key, "reply"),
+      foldN: 2,
+    });
+    await put(s, {
+      ckey: "artX:q1:answered",
+      ack: s.ack("artX", "q1", s.key, "asker"),
+      foldN: 1,
+    });
+    expect((await call(s, ["q1"])).withdrawn).toHaveLength(3);
+    expect(await rows(s)).toEqual([]);
+  });
+
   it("withdraws the held ask-answered notice of a listed ask, leaves an unlisted one", async () => {
     const s = await setup();
     await put(s, { ckey: "artX:q1:answered", ack: null });

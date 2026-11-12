@@ -4258,13 +4258,20 @@ export class BusHub extends DurableObject<Env> {
             let text: string | null = null;
             if (own) {
               const next = keptFolds.pop();
-              if (next === undefined && foldN === 0) {
+              // A thread's own row (asker, thread_reply) or an answered row
+              // counts only folds of that thread or ask: with no targeted fold
+              // left it goes whatever fold_n says.
+              if (
+                next === undefined &&
+                (foldN === 0 || wholeThread || answered !== null)
+              ) {
                 del();
                 continue;
               }
-              // #2211: with no targeted fold left but legacy untargeted ones
-              // still counted, the row stays untargeted: a neutral line stands
-              // in for one of them and fold_n keeps the rest.
+              // #2211: a per-artifact row with no targeted fold left but
+              // untargeted ones still counted (they may be other threads')
+              // stays untargeted: a neutral line stands in for one of them
+              // and fold_n keeps the rest.
               ack = next ?? null;
               foldN = Math.max(0, foldN - 1);
               text = promotedText(
