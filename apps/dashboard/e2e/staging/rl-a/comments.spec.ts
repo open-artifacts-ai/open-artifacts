@@ -8,6 +8,7 @@ import {
   needs,
   OAUTH_HOOK_EMAIL,
   oauthAgent,
+  type Person,
   personAt,
   publish,
   refusal,
@@ -23,7 +24,17 @@ import {
 
 const MIN = "0.162.0";
 
-test.afterAll(cleanup);
+// Two hook calls in all: one session, one OAuth grant (budget: 10 or fewer).
+let owner: Person;
+let agent: Agent;
+test.beforeAll(async ({ browser }) => {
+  owner = await personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member");
+  agent = await oauthAgent();
+});
+test.afterAll(async () => {
+  await agent?.close();
+  await cleanup();
+});
 
 const commentable = (title: string) => ({
   title,
@@ -32,19 +43,10 @@ const commentable = (title: string) => ({
   comments: true,
 });
 
-/** The OAuth hook's member signed in, owning one commentable page. */
-async function ownerWithPage(
-  browser: Parameters<typeof personAt>[0],
-  title: string,
-) {
-  const owner = await personAt(
-    browser,
-    OAUTH_HOOK_EMAIL,
-    "agent-owner",
-    "member",
-  );
+/** One commentable page owned by the shared person. */
+async function pageOf(title: string) {
   const { id } = await publish(owner, commentable(`${title} ${Date.now()}`));
-  return { owner, id };
+  return id;
 }
 
 const threads = async (agent: Agent, id: string) => {
@@ -53,13 +55,10 @@ const threads = async (agent: Agent, id: string) => {
   return (r.data as unknown as CommentList).threads;
 };
 
-test("asks: an agent's ask, a person's typed answer (yes), and toAsker replies", async ({
-  browser,
-}) => {
+test("asks: an agent's ask, a person's typed answer (yes), and toAsker replies", async () => {
   await needs("asks and toAsker (#1535, #1794)", MIN);
-  const { owner, id } = await ownerWithPage(browser, "T19 ask");
-  const agent = await oauthAgent();
-  try {
+  const id = await pageOf("T19 ask");
+  {
     const question = "Ship the short version?";
     const options = [
       { id: "short", label: "Short" },
@@ -108,16 +107,8 @@ test("asks: an agent's ask, a person's typed answer (yes), and toAsker replies",
       }),
     });
     expect(await refusal(both, 400)).toBe("bad_request");
-  } finally {
-    await agent.close();
   }
-});
-
-test("asks: toAsker on a person's thread is not_an_ask", async ({
-  browser,
-}) => {
-  await needs("toAsker (#1794)", MIN);
-  const { owner, id } = await ownerWithPage(browser, "T19 not an ask");
+  // A person's thread has no agent to reply to.
   const t = await json<{ id: string }>(
     await api(owner, R.comments(id), {
       method: "POST",
@@ -131,19 +122,16 @@ test("asks: toAsker on a person's thread is not_an_ask", async ({
   expect(await refusal(res, 400)).toBe("not_an_ask");
 });
 
-test("live reply: an agent's reply shows with the page open, no reload", async ({
-  browser,
-}) => {
+test("live reply: an agent's reply shows with the page open, no reload", async () => {
   await needs("live replies (#2179)", MIN);
-  const { owner, id } = await ownerWithPage(browser, "T19 live reply");
+  const id = await pageOf("T19 live reply");
   const t = await json<{ id: string }>(
     await api(owner, R.comments(id), {
       method: "POST",
       body: JSON.stringify({ anchor: { kind: "note" }, body: "Watching" }),
     }),
   );
-  const agent = await oauthAgent();
-  try {
+  {
     const page = owner.page;
     await page.goto(`/a/${id}`);
     await page.getByRole("button", { name: /^Comments/ }).click();
@@ -160,21 +148,17 @@ test("live reply: an agent's reply shows with the page open, no reload", async (
     await expect(
       page.locator("[data-comment]").filter({ hasText: body }),
     ).toBeVisible();
-  } finally {
-    await agent.close();
   }
 });
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
-  test(`composer at ${w}px: the field grows to its cap and sends`, async ({
-    browser,
-  }) => {
-    await needs("composer (#2118)", MIN);
-    const { owner, id } = await ownerWithPage(browser, `T19 composer ${w}`);
-    const page = owner.page;
+test("composer: the field grows to its cap and sends, at 1280 and 390", async () => {
+  await needs("composer (#2118)", MIN);
+  const id = await pageOf("T19 composer");
+  const page = owner.page;
+  for (const [w, h] of [
+    [1280, 800],
+    [390, 844],
+  ] as const) {
     await page.setViewportSize({ width: w, height: h });
     await page.goto(`/a/${id}`);
     await page.getByRole("button", { name: /^Comments/ }).click();
@@ -198,4 +182,5 @@ for (const [w, h] of [
       page.locator("[data-comment]").filter({ hasText: text }),
     ).toBeVisible();
     await expect(note).toHaveValue("");
-  });
+  }
+});
