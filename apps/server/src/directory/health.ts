@@ -261,6 +261,54 @@ export function healthFields(h: Health, now = Date.now()) {
   };
 }
 
+export type ThawNotice = Pick<InstanceDirectory, "pendingReverts" | "lastThaw">;
+
+/** How long after a thaw its revert count stays on /me. */
+export const THAW_NOTICE_MS = 3 * 86_400_000;
+const THAW_REVERTS =
+  "('space.member.role', 'space.member.remove', 'space.member.add')";
+
+/**
+ * For owners and admins (#2150), one cheap read each:
+ * - frozen: pendingReverts, the frozen edits the thaw would revert (kind
+ *   override on a user who isn't removed; removals and manual adds stay);
+ * - google: lastThaw, from the thaw's own audit rows (actor sync, detail
+ *   thaw true, the role, remove and add outcomes) in the last 3 days. A thaw
+ *   writes a chunk per alarm, so its id is the time of its first such row
+ *   (stable); two thaws within 3 days read as one.
+ */
+export async function readThawNotice(
+  env: Pick<Env, "DB">,
+  mode: InstanceDirectory["mode"],
+  now = Date.now(),
+): Promise<ThawNotice> {
+  if (mode === "frozen") {
+    const r = await stmt(
+      env.DB,
+      `select count(*) as n from frozen_edits f join users u on u.id = f.user_id
+        where f.kind = 'override' and u.status <> 'removed'`,
+    ).first<{ n: number }>();
+    return { pendingReverts: r?.n ?? 0 };
+  }
+  if (mode !== "google") return {};
+  const r = await stmt(
+    env.DB,
+    `select count(*) as n, min(at) as first, max(at) as last from audit_events
+      where at >= ?1 and actor_kind = 'sync' and action in ${THAW_REVERTS}
+        and json_extract(detail, '$.thaw') = 1`,
+  )
+    .bind(now - THAW_NOTICE_MS)
+    .first<{ n: number; first: number | null; last: number | null }>();
+  if (!r?.n || r.first === null || r.last === null) return {};
+  return {
+    lastThaw: {
+      id: String(r.first),
+      reverted: r.n,
+      at: new Date(r.last).toISOString(),
+    },
+  };
+}
+
 /**
  * Me.instance.directory. Health (banner, state, staleAt, held sweeps) is
  * for org owners and admins only; everyone else reads the mode alone.
@@ -272,6 +320,8 @@ export function instanceDirectory(
   now = Date.now(),
   /** A directory is connected (live or pending); set for owners and admins only. */
   bound?: boolean,
+  /** pendingReverts and lastThaw (readThawNotice); owners and admins only. */
+  thaw: ThawNotice = {},
 ): InstanceDirectory {
   if (mode === "off" || !admin)
     return {
@@ -294,6 +344,7 @@ export function instanceDirectory(
     tokensUnverified: unhealthy,
     state: h.state,
     ...(bound === undefined ? {} : { bound }),
+    ...thaw,
     staleAt: f.staleAt,
     // A snoozed hold doesn't light the Settings dot (#412).
     heldSweeps: h.held.filter((x) => !snoozedAt(x, now)).length,

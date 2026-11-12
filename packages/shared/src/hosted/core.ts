@@ -189,6 +189,12 @@ export const InstanceDirectorySchema = z.object({
   staleAt: z.string().nullable(),
   /** A Google directory is connected, live or pending (#2149). Owners and admins only; absent for others and when mode is off. */
   bound: z.boolean().optional(),
+  /** Frozen edits the thaw would put back: changed roles on synced people (not removals, manual adds or removed users). Owners and admins only, while the mode is frozen (#2150). */
+  pendingReverts: z.number().int().optional(),
+  /** The last thaw (Team to Business) that put roles back, within 3 days: id (stable per thaw), roles reverted, ISO time of the latest revert. Owners and admins only; absent when none (#2150). */
+  lastThaw: z
+    .object({ id: z.string(), reverted: z.number().int(), at: z.string() })
+    .optional(),
   /** Held sweeps waiting for the owner, snoozed ones not counted (#412). 0 for non-admins. */
   heldSweeps: z.number().int(),
 });

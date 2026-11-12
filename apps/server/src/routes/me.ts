@@ -25,6 +25,7 @@ import {
   instanceDirectory,
   readHealth,
   readHealthBound,
+  readThawNotice,
 } from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
@@ -105,6 +106,7 @@ async function toMe(
         true,
         Date.now(),
         bound,
+        await readThawNotice(c.env, mode),
       );
     } else
       me.instance.directory = instanceDirectory(
