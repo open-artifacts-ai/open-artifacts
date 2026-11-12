@@ -826,7 +826,15 @@ function CommentRow({
   // #2229: marks sit on people's comments, for members (#2004: not guests, nor the capped); an agent's own reply has none.
   const marks = !api.guest && !api.capped && c.author.kind !== "agent";
   const problems = allProblems.get(c.id);
-  const tight = useTightHeader(marks && !!c.notified?.length);
+  // The mentions (each with its delivery) and the thread agents told by a reply, together.
+  const mentioned = (c.mentions ?? []).filter(
+    (m): m is typeof m & { delivery: NonNullable<typeof m.delivery> } =>
+      !!m.delivery,
+  );
+  const told = c.notified ?? [];
+  const tight = useTightHeader(
+    marks && (mentioned.length > 0 || told.length > 0),
+  );
   const roving = useRoving<HTMLParagraphElement>();
   return (
     <li
@@ -846,8 +854,13 @@ function CommentRow({
           hideTime={tight.stage >= 1}
         />
         <div className="flex shrink-0 items-center gap-1">
-          {marks && c.notified?.length ? (
-            <DeliveryFaces told={c.notified} compact={tight.stage >= 2} />
+          {marks && (mentioned.length > 0 || told.length > 0) ? (
+            <DeliveryFaces
+              mentions={mentioned}
+              told={told}
+              createdAt={c.createdAt}
+              compact={tight.stage >= 2}
+            />
           ) : null}
           {any && mode === "view" && (
             <Button
@@ -929,6 +942,7 @@ function CommentRow({
               mentions={c.mentions}
               guest={api.guest}
               marks={marks}
+              createdAt={c.createdAt}
             />
           </p>
         )}
