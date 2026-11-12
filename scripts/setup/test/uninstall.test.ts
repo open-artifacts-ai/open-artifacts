@@ -165,6 +165,9 @@ describe("--uninstall --check", () => {
     expect(out).toContain("name != 'd1_migrations'");
     expect(out).not.toContain("LIKE");
     expect(out).not.toContain("rebuilt");
+    expect(out).toContain(
+      "If an export fails, stop and do not delete anything",
+    );
     expect(out).toContain("Restore is not supported yet");
     expect(out).toContain("r2 object get acme/<key> --remote");
     expect(out).toContain("rclone sync r2:acme");

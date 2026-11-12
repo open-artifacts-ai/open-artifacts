@@ -21,7 +21,7 @@ Deleting the D1 database and the R2 bucket destroys every artifact, version, sha
 - **Not exported:** live-page and agent bus state lives in Durable Objects, which deleting the Worker destroys. No export covers it.
 - **Lighter option:** ask any AI agent: "Save the latest version of every artifact I own into a folder on this computer." This saves only the latest versions, not history, shares or data.
 
-Restore is not supported yet. This copy is for safekeeping.
+If an export fails, stop and don't delete anything. Restore is not supported yet. This copy is for safekeeping.
 
 ## Order
 
