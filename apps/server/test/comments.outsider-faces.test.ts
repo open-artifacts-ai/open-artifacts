@@ -175,6 +175,28 @@ describe("outsiders get no face fields (REST)", () => {
     if (_n !== "restricted") expect(JSON.stringify(l)).not.toContain("Runner");
   });
 
+  it.each([
+    ["signed out", () => null],
+    ["guest role", () => guestV],
+    ["restricted", () => restrictedV],
+  ])("%s: a mention carries no delivery state (#2004)", async (_n, who) => {
+    const l = await rest(who());
+    const ms = l.threads.flatMap((t) =>
+      t.comments.flatMap((c) => c.mentions ?? []),
+    );
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m).not.toHaveProperty("delivery");
+  });
+
+  it("a member's mention keeps its delivery state", async () => {
+    const l = await rest(memberV);
+    const ms = l.threads.flatMap((t) =>
+      t.comments.flatMap((c) => c.mentions ?? []),
+    );
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m.delivery).toBeDefined();
+  });
+
   it("a member keeps the face on authors, mention and ask.to", async () => {
     const all = faces(await rest(memberV)).filter(
       (a) => a.kind !== "user" && a.kind !== "guest",

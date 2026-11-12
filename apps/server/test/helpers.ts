@@ -83,6 +83,8 @@ export function api(
     body?: unknown;
     headers?: Record<string, string>;
   } = {},
+  /** The Worker env for the call (default: the pool's). */
+  e: unknown = env,
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "x-oa-request": "1",
@@ -98,6 +100,7 @@ export function api(
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     }),
+    e,
   );
 }
 

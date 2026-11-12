@@ -7,6 +7,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  render,
   renderHook,
   screen,
   waitFor,
@@ -23,6 +24,7 @@ import {
 } from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
 import { planStatus } from "../src/settings/Plan";
+import { type Column, PlanCompare } from "../src/settings/PlanCompare";
 import {
   arts,
   calls,
@@ -318,6 +320,26 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
     const { hasCustomer: _, ...unknown } = PAID;
     mountHosted("/settings/plan", { billing: unknown });
     await payShown();
+  });
+  it("past_due Solo with no customer: Pay buttons, never the operator line (#2137)", async () => {
+    mountHosted("/settings/plan", {
+      billing: {
+        ...PAUSED,
+        status: "past_due",
+        readOnly: true,
+        hasCustomer: false,
+      },
+    });
+    await payShown();
+    expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
+  });
+  it("paused Solo (solo_unpaid, no customer): Pay buttons, the way the banner points (#2137)", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...PAUSED, hasCustomer: false },
+    });
+    await payShown();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
   });
   it("tier free with a customer keeps the Pay buttons", async () => {
     mountHosted("/settings/plan", { billing: { ...PAID, tier: "free" } });
@@ -750,13 +772,16 @@ describe("plan cards and comparison (#2007)", () => {
     const year = await screen.findByRole("button", { name: "Yearly" });
     expect(year).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("2 months free on Solo")).toBeVisible();
-    expect(card("solo")).toHaveTextContent("$10 a year");
+    expect(card("solo")).toHaveTextContent("$0.83 a month");
+    expect(card("solo")).toHaveTextContent("$10 billed yearly");
+    expect(card("solo")).toHaveTextContent("2 months free");
     // No price checkout can't charge: Team and Business stay monthly.
     expect(card("team")).toHaveTextContent("$10 per creator a month");
     expect(card("business")).toHaveTextContent("$25 per creator a month");
-    expect(screen.queryByText(/\$8|\$20|Proposed/)).toBeNull();
+    expect(screen.queryByText(/\$100|\$250|Proposed/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
     expect(card("solo")).toHaveTextContent("$1 a month");
+    expect(card("solo")).toHaveTextContent("or $10 a year");
     expect(card("team")).toHaveTextContent("$10 per creator a month");
   });
 
@@ -834,5 +859,223 @@ describe("plan cards and comparison (#2007)", () => {
     await screen.findByTestId("plan-card-team");
     for (const c of ["solo", "team", "business"])
       expect(within(card(c)).queryByRole("button")).toBeNull();
+  });
+});
+
+// Yearly Team and Business when billing says yearlyTeamBusiness: the seat step (#2007).
+describe("yearly Team and Business seat step", () => {
+  const card = (c: string) => screen.getByTestId(`plan-card-${c}`);
+  const checkout = (posts: ReturnType<typeof calls>) =>
+    posts.find((c) => c.path.endsWith("/billing/checkout"))?.body;
+  const renderPlanCompare = (props: { column: Column }) => {
+    const view = (p: { column: Column }) => (
+      <PlanCompare
+        column={p.column}
+        busy={false}
+        yearly
+        seatsDefault={3}
+        upgrade={() => {}}
+      />
+    );
+    const r = render(view(props));
+    return { rerender: (p: { column: Column }) => r.rerender(view(p)) };
+  };
+  const open = async (tier = "Team") => {
+    fireEvent.click(
+      within(card(tier.toLowerCase())).getByRole("button", {
+        name: `Upgrade to ${tier}`,
+      }),
+    );
+    return (await screen.findByLabelText("Creators")) as HTMLInputElement;
+  };
+
+  it("shows the yearly prices and asks for seats, defaulting to creatorsThisMonth", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true, creatorsThisMonth: 7 },
+    });
+    await screen.findByTestId("plan-card-team");
+    expect(card("team")).toHaveTextContent("$8.33 per creator a month");
+    expect(card("team")).toHaveTextContent("$100 per creator, billed yearly");
+    expect(card("business")).toHaveTextContent("$20.83 per creator a month");
+    expect(card("business")).toHaveTextContent(
+      "$250 per creator, billed yearly",
+    );
+    const input = await open();
+    expect(
+      screen.getByRole("dialog", { name: "How many creators on Team?" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Creators are people who publish or edit live data. Viewers are free. You can change this later in billing.",
+      ),
+    ).toBeVisible();
+    expect(input.value).toBe("7");
+    expect(input).toHaveFocus();
+    expect(screen.getByText("7 creators × $100 = $700 a year")).toBeVisible();
+    fireEvent.change(input, { target: { value: "12" } });
+    expect(
+      screen.getByText("12 creators × $100 = $1,200 a year"),
+    ).toBeVisible();
+    expect(checkout(posts)).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(checkout(posts)).toEqual({
+        tier: "team",
+        interval: "year",
+        seats: 12,
+      }),
+    );
+  });
+
+  it("Business prices at $250 and Enter submits", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TEAM, yearlyTeamBusiness: true, tier: "trial" },
+    });
+    await screen.findByTestId("plan-card-business");
+    const input = await open("Business");
+    expect(screen.getByText("4 creators × $250 = $1,000 a year")).toBeVisible();
+    fireEvent.submit(input.closest("form") as HTMLFormElement);
+    await waitFor(() =>
+      expect(checkout(posts)).toEqual({
+        tier: "business",
+        interval: "year",
+        seats: 4,
+      }),
+    );
+  });
+
+  it("defaults to at least 1 creator", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true, creatorsThisMonth: 0 },
+    });
+    await screen.findByTestId("plan-card-team");
+    expect((await open()).value).toBe("1");
+  });
+
+  it.each(["0", "10001", "2.5", ""])(
+    "refuses %j with an inline error",
+    async (v) => {
+      const posts = calls("POST");
+      mountHosted("/settings/plan", {
+        billing: { ...TRIAL, yearlyTeamBusiness: true },
+      });
+      await screen.findByTestId("plan-card-team");
+      const input = await open();
+      fireEvent.change(input, { target: { value: v } });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Enter a whole number from 1 to 10,000.",
+      );
+      expect(checkout(posts)).toBeUndefined();
+    },
+  );
+
+  it("Cancel and Esc send nothing and return focus to the button", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    const button = within(card("team")).getByRole("button", {
+      name: "Upgrade to Team",
+    });
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(button).toHaveFocus());
+    const input = await open();
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(button).toHaveFocus());
+    expect(checkout(posts)).toBeUndefined();
+  });
+
+  it("formats a large count with a thousands separator", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    const input = await open();
+    fireEvent.change(input, { target: { value: "10000" } });
+    expect(
+      screen.getByText("10,000 creators × $100 = $1,000,000 a year"),
+    ).toBeVisible();
+  });
+
+  it("closes the step when the plan changes under it, and reopens at the default", async () => {
+    const { rerender } = renderPlanCompare({ column: "solo" });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Team" }));
+    fireEvent.change(await screen.findByLabelText("Creators"), {
+      target: { value: "9" },
+    });
+    rerender({ column: "team" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    rerender({ column: "solo" });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Team" }));
+    expect(
+      ((await screen.findByLabelText("Creators")) as HTMLInputElement).value,
+    ).toBe("3");
+  });
+
+  it("monthly sends only the tier and asks nothing", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
+    // The yearly alternative is per creator on Team and Business, not on Solo.
+    expect(card("team")).toHaveTextContent("or $100 per creator a year");
+    expect(card("business")).toHaveTextContent("or $250 per creator a year");
+    expect(card("solo")).toHaveTextContent("or $10 a year");
+    expect(card("solo")).not.toHaveTextContent("per creator a year");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() => expect(checkout(posts)).toEqual({ tier: "team" }));
+  });
+
+  it("a paid plan still goes to the portal with no seat step", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TEAM, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(
+      within(card("business")).getByRole("button", {
+        name: "Upgrade to Business",
+      }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() =>
+      expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true),
+    );
+  });
+
+  it("yearlyTeamBusiness absent: sends only the tier and shows no seat step", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() => expect(checkout(posts)).toEqual({ tier: "team" }));
+  });
+
+  it("yearlyTeamBusiness false: sends only the tier and shows no seat step", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: false },
+    });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() => expect(checkout(posts)).toEqual({ tier: "team" }));
   });
 });

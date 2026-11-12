@@ -708,9 +708,14 @@ export const setHabitsOptOut = (
 export type HabitsQuestion = {
   text: string;
   lines: string[];
+  /** Said under the lines: which harness gets none. */
+  note: string;
   yes: string;
   no: string;
 };
+
+/** The last line of the question: omp gets no habit lines. */
+export const OMP_NOTE = "omp: not supported yet";
 
 export const habitsQuestion = (
   shownFiles: string[],
@@ -719,7 +724,7 @@ export const habitsQuestion = (
   const yes = `${bus} install --habits`;
   const no = `${bus} install --no-habits`;
   const text = `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${shownFiles.join(" and ")}:`;
-  return { text, lines: HABITS_LINES.slice(), yes, no };
+  return { text, lines: HABITS_LINES.slice(), note: OMP_NOTE, yes, no };
 };
 
 /** What a person sees in the terminal and the agent prints for its user. */
@@ -729,6 +734,7 @@ export const habitsQuestionLines = (q: HabitsQuestion): string[] => [
   "QUESTION FOR YOUR USER (ask them; don't answer it yourself)",
   q.text,
   ...q.lines.map((l) => `  ${l}`),
+  `  ${q.note}`,
   `Yes:  ${q.yes}`,
   `No:   ${q.no}`,
 ];

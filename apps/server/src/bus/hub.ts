@@ -60,6 +60,7 @@ import {
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
+import { agentKey } from "../services/comment-agents.js";
 import {
   follow,
   following,
@@ -3540,6 +3541,25 @@ const NOTICE_COLS =
 /** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
 const NOTICE_FOLD_MAX = 50;
 
+/** #2211: how long withdrawHeld remembers what it withdrew, for a retried call. */
+const WITHDRAW_RECORD_MS = 3_600_000;
+
+/** #2211: former names withdrawHeld reads for an agent found by identity. */
+const WITHDRAW_FORMER_MAX = 8;
+
+/**
+ * #2175: the text of a held notice whose own comment was withdrawn and a fold
+ * promoted. The promoted comment's header and ids are not stored, so a neutral
+ * line stands in; the URL (line 2) and the tier tail (last line) of the
+ * commentNoticeText format are kept when the old text has that shape.
+ */
+function promotedText(old: string, artifactId: string): string {
+  const line = `New comment on artifact ${artifactId}. Read it with list_comments.`;
+  const lines = old.split("\n");
+  if (lines.length < 3 || !/^https?:\/\//.test(lines[1] ?? "")) return line;
+  return [line, lines[1], lines[lines.length - 1]].join("\n");
+}
+
 type AckTarget = {
   a: string;
   c: string;
@@ -3705,6 +3725,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from former_names)
             or exists (select 1 from notices)
             or exists (select 1 from notice_acks)
+            or exists (select 1 from notice_withdrawals)
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
@@ -4012,6 +4033,333 @@ export class BusHub extends DurableObject<Env> {
     }
     await this.#commitArm();
     return outcome;
+  }
+
+  /**
+   * #2175: the notices still HELD for an agent removed from comment thread
+   * `threadId` on `artifactId` are withdrawn: every target of `commentIds`, and
+   * the thread's own coalesced rows (`asker` and `thread_reply`, whose targets
+   * are returned; a `thread_reply` from before #2059 has none and is just
+   * deleted) whatever `commentIds` lists. #2205: so is the held "ask
+   * answered" row (ckey `${artifactId}:${id}:answered`) of each id in
+   * `commentIds`, its target returned when it has one. A row left with no
+   * target is deleted, unless it still counts untargeted (legacy) folds: it
+   * then stays with a neutral line standing in (#2211). Only targets keyed to
+   * the removed agent (the roster key notifyAgent builds) go. Notices already
+   * sent (notice_acks) count as delivered and stay. Withdrawn targets are
+   * returned, never settled: the caller marks them. Rows are read at the
+   * passed address and at the agent's own: found by identity, else by
+   * namespace + name (live or away); in both, a live former name in grace
+   * counts. #2211: idempotent for about an hour: a repeat call for the same
+   * agent and thread also returns what an earlier one withdrew (for those
+   * `commentIds`, and the thread-wide rows), each target once. Worker only.
+   */
+  async withdrawHeld(a: {
+    namespace: string;
+    name: string;
+    identityId?: string;
+    artifactId: string;
+    threadId: string;
+    commentIds: string[];
+  }): Promise<{
+    withdrawn: Array<{ commentId: string; kind: string; key: string }>;
+  }> {
+    type Withdrawn = { commentId: string; kind: string; key: string };
+    let withdrawn: Withdrawn[] = [];
+    let rowsTouched = 0;
+    let fresh = 0;
+    try {
+      if (
+        typeof a?.namespace !== "string" ||
+        typeof a.name !== "string" ||
+        typeof a.artifactId !== "string" ||
+        typeof a.threadId !== "string" ||
+        a.threadId.length === 0 ||
+        !Array.isArray(a.commentIds)
+      )
+        return { withdrawn };
+      const ids = new Set(
+        a.commentIds.filter((c): c is string => typeof c === "string"),
+      );
+      const sql = this.ctx.storage.sql;
+      const now = this.#now();
+      const identityId =
+        typeof a.identityId === "string" && a.identityId.length > 0
+          ? a.identityId
+          : null;
+      const byIdentity = identityId !== null;
+      // Rows are keyed by lowercased name; the roster key hashes the name as
+      // shown, so both spellings are kept for the key check.
+      const addrs = new Map<string, [string, string]>();
+      const names: Array<{ namespace: string; name: string }> = [];
+      const add = (ns: string, name: string) => {
+        addrs.set(`${ns}\u0000${name.toLowerCase()}`, [ns, name.toLowerCase()]);
+        names.push({ namespace: ns, name });
+      };
+      add(a.namespace, a.name);
+      if (byIdentity) {
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          "select namespace, name from agents where org_id = ? and identity_id = ?",
+          OWNER_ORG_ID,
+          identityId,
+        ))
+          add(r.namespace, r.name);
+        // #2211: a notice held under a name this agent has left, in its grace
+        // (as liveFormer resolves one: live agent, still in that scope).
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          `select a.namespace as namespace, f.name as name from former_names f
+             join agents a on a.id = f.agent_id
+            where a.org_id = ? and a.identity_id = ? and a.live = 1
+              and f.org_id = a.org_id and f.expires_at > ? and f.kind not in ('held', 'away')
+              and f.global = a.global and (f.global = 1 or f.namespace = a.namespace)
+            limit ?`,
+          OWNER_ORG_ID,
+          identityId,
+          now,
+          WITHDRAW_FORMER_MAX,
+        ))
+          add(r.namespace, r.name);
+      } else {
+        const lname = a.name.toLowerCase();
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          "select namespace, name from agents where org_id = ? and namespace = ? and lower(name) = ? and live in (0, 1)",
+          OWNER_ORG_ID,
+          a.namespace,
+          lname,
+        ))
+          add(r.namespace, r.name);
+        for (const r of liveFormer(sql, lname, now, { ns: a.namespace }, 2))
+          add(r.namespace, r.name);
+      }
+      // The removed agent's roster keys (agentKey, as notifyAgent builds
+      // `to.key`): a target keyed to another agent is not this agent's. A hub
+      // not named for a member cannot derive them, and skips the check.
+      const userId = this.ctx.id.name?.startsWith("bus:")
+        ? this.ctx.id.name.slice(4)
+        : null;
+      const keys =
+        userId === null
+          ? null
+          : new Set(
+              await Promise.all(
+                names.map((n) => agentKey(a.artifactId, userId, n)),
+              ),
+            );
+      const keyOk = (k: string) => keys === null || keys.has(k);
+      const askerPrefix = `${a.artifactId}:${a.threadId}:asker:`;
+      const replyPrefix = `${a.artifactId}:${a.threadId}:thread_reply:`;
+      // A thread_reply ckey is `${replyPrefix}${to.key}:${tier}`.
+      const ownReply = (ckey: string) => {
+        if (!ckey.startsWith(replyPrefix)) return false;
+        const rest = ckey.slice(replyPrefix.length);
+        const cut = rest.lastIndexOf(":");
+        return cut > 0 && keyOk(rest.slice(0, cut));
+      };
+      // #2205: the "ask answered" row of a listed ask, and that ask's id.
+      const answeredPrefix = `${a.artifactId}:`;
+      const answeredOf = (ckey: string): string | null => {
+        if (!ckey.startsWith(answeredPrefix) || !ckey.endsWith(":answered"))
+          return null;
+        const c = ckey.slice(answeredPrefix.length, -":answered".length);
+        return ids.has(c) ? c : null;
+      };
+      type Held = {
+        toNs: string;
+        toLname: string;
+        ckey: string;
+        text: string;
+        ack: string | null;
+        foldN: number;
+        foldRef: string | null;
+        foldAcks: string | null;
+      };
+      const parse = (s: string | null): AckTarget | null => {
+        if (!s) return null;
+        try {
+          const t = JSON.parse(s) as AckTarget;
+          return typeof t?.a === "string" && typeof t.c === "string" ? t : null;
+        } catch {
+          return null;
+        }
+      };
+      const agent = byIdentity
+        ? `i:${identityId}`
+        : `n:${a.namespace}\u0000${a.name.toLowerCase()}`;
+      const found: Array<Withdrawn & { whole: number }> = [];
+      this.ctx.storage.transactionSync(() => {
+        for (const [ns, lname] of addrs.values()) {
+          const held = all<Held>(
+            sql,
+            `select ${NOTICE_COLS} from notices where to_ns = ? and to_lname = ?`,
+            ns,
+            lname,
+          );
+          for (const r of held) {
+            const del = () =>
+              sql.exec(
+                "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+                r.toNs,
+                r.toLname,
+                r.ckey,
+              );
+            const reply = ownReply(r.ckey);
+            const answered = answeredOf(r.ckey);
+            if (
+              (reply || answered !== null) &&
+              r.ack === null &&
+              r.foldAcks === null
+            ) {
+              // A thread reply queued before #2059, or an answered notice
+              // (none carries a target today): nothing to return or refund.
+              rowsTouched++;
+              del();
+              continue;
+            }
+            // The thread's asker and (since #2059, targeted) thread_reply rows
+            // go whole: every target of this agent's is returned. An answered
+            // row goes whole too, for its own ask only.
+            const wholeThread = reply || r.ckey.startsWith(askerPrefix);
+            const hit = (s: string | null) => {
+              const t = parse(s);
+              return t !== null &&
+                t.a === a.artifactId &&
+                keyOk(t.key) &&
+                (wholeThread ||
+                  (answered === null ? ids.has(t.c) : t.c === answered))
+                ? t
+                : null;
+            };
+            const whole = wholeThread ? 1 : 0;
+            const folds = parseAcks(r.foldAcks);
+            const keptFolds: string[] = [];
+            let removedFolds = 0;
+            for (const f of folds) {
+              const t = hit(f);
+              if (t) {
+                found.push({ commentId: t.c, kind: t.k, key: t.key, whole });
+                removedFolds++;
+              } else keptFolds.push(f);
+            }
+            const own = hit(r.ack);
+            if (own)
+              found.push({
+                commentId: own.c,
+                kind: own.k,
+                key: own.key,
+                whole,
+              });
+            if (!own && removedFolds === 0) continue;
+            rowsTouched++;
+            let foldN = Math.max(0, r.foldN - removedFolds);
+            let ack = r.ack;
+            let text: string | null = null;
+            if (own) {
+              const next = keptFolds.pop();
+              // A thread's own row (asker, thread_reply) or an answered row
+              // counts only folds of that thread or ask: with no targeted fold
+              // left it goes whatever fold_n says.
+              if (
+                next === undefined &&
+                (foldN === 0 || wholeThread || answered !== null)
+              ) {
+                del();
+                continue;
+              }
+              // #2211: a per-artifact row with no targeted fold left but
+              // untargeted ones still counted (they may be other threads')
+              // stays untargeted: a neutral line stands in for one of them
+              // and fold_n keeps the rest.
+              ack = next ?? null;
+              foldN = Math.max(0, foldN - 1);
+              text = promotedText(
+                r.text,
+                (next === undefined ? r.foldRef : parse(next)?.a) ??
+                  a.artifactId,
+              );
+            }
+            sql.exec(
+              `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?"}
+               where to_ns = ? and to_lname = ? and ckey = ?`,
+              ack,
+              foldN,
+              foldN > 0 ? r.foldRef : null,
+              keptFolds.length > 0 ? JSON.stringify(keptFolds) : null,
+              ...(text === null ? [] : [text]),
+              r.toNs,
+              r.toLname,
+              r.ckey,
+            );
+          }
+        }
+        // #2211: recorded in the same transaction, so a lost reply is
+        // answered by the retry; this call returns what it withdrew now, then
+        // what an earlier call recorded for these ids and the thread's rows.
+        for (const w of found)
+          sql.exec(
+            `insert into notice_withdrawals (agent, artifact_id, thread_id, comment_id, kind, key, whole, at)
+             values (?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing`,
+            agent,
+            a.artifactId,
+            a.threadId,
+            w.commentId,
+            w.kind,
+            w.key,
+            w.whole,
+            now,
+          );
+        const seen = new Set<string>();
+        const out: Withdrawn[] = [];
+        const push = (w: Withdrawn) => {
+          const k = `${w.commentId}\u0000${w.kind}\u0000${w.key}`;
+          if (seen.has(k)) return;
+          seen.add(k);
+          out.push({ commentId: w.commentId, kind: w.kind, key: w.key });
+        };
+        for (const w of found) push(w);
+        fresh = out.length;
+        for (const r of all<{
+          commentId: string;
+          kind: string;
+          key: string;
+          whole: number;
+        }>(
+          sql,
+          `select comment_id as commentId, kind, key, whole from notice_withdrawals
+            where agent = ? and artifact_id = ? and thread_id = ? and at > ?
+            order by rowid`,
+          agent,
+          a.artifactId,
+          a.threadId,
+          now - WITHDRAW_RECORD_MS,
+        ))
+          if (r.whole === 1 || ids.has(r.commentId)) push(r);
+        withdrawn = out;
+      });
+      if (found.length > 0) this.#arm(now + WITHDRAW_RECORD_MS);
+    } catch (e) {
+      logError("bus_withdraw_held_failed", e);
+      return { withdrawn: [] };
+    }
+    // #2211: outside the try: the transaction has committed, so a failing log
+    // must not hide what was withdrawn.
+    try {
+      logEvent("notice_withdrawn", {
+        rows: rowsTouched,
+        targets: fresh,
+        replayed: withdrawn.length - fresh,
+      });
+    } catch {
+      // Logging is best effort.
+    }
+    try {
+      await this.#commitArm();
+    } catch (e) {
+      logError("bus_withdraw_arm_failed", e);
+    }
+    return { withdrawn };
   }
 
   /**
@@ -6937,7 +7285,14 @@ export class BusHub extends DurableObject<Env> {
       this.#settleAckRow(r.ack);
       sql.exec("delete from notice_acks where rowid = ?", r.rid);
     }
-    const gone = expired.length >= BATCH;
+    // #2211: withdrawal records past their hour go, BATCH per pass.
+    const records = all<{ rid: number }>(
+      sql,
+      "delete from notice_withdrawals where rowid in (select rowid from notice_withdrawals indexed by notice_withdrawals_at where at <= ? limit ?) returning rowid as rid",
+      now - WITHDRAW_RECORD_MS,
+      BATCH,
+    ).length;
+    const gone = expired.length >= BATCH || records >= BATCH;
     const due = all<NoticeRow>(
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
@@ -7184,6 +7539,7 @@ export class BusHub extends DurableObject<Env> {
       min("select min(not_before) as t from notices where parked = 0"),
       min("select min(expires_at) as t from notices"),
       min("select min(expires_at) as t from notice_acks"),
+      min("select min(at) as t from notice_withdrawals", WITHDRAW_RECORD_MS),
       min("select min(at) as t from rename_rl", HOUR_MS),
       this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);

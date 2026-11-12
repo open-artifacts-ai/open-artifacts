@@ -44,6 +44,7 @@ import {
 import {
   CONFIRM_TTL_MS,
   CONFIRM_WON,
+  CONNECTED_KEYS,
   dropPending,
   expirePending,
   K,
@@ -548,13 +549,6 @@ type RevokeOutcome = "revoked" | "revoke_failed" | "none";
 
 /** Any connection state: a live binding or token, or a pending consent. */
 const CONNECTED = `exists (select 1 from directory_state where key in (?, ?, ?, ?, ?))`;
-const CONNECTED_KEYS = [
-  K.binding,
-  K.refresh,
-  K.pendingBinding,
-  K.pendingRefresh,
-  K.confirm,
-];
 
 /**
  * True while every live and pending token row is one of `seen` (the values
@@ -614,14 +608,17 @@ export async function disconnectDirectory(
   actor: AuditActor,
   o: { showProblem: boolean; retry?: boolean },
 ): Promise<SyncStatus> {
-  const [live, pend, sub, p] = await Promise.all([
+  const [live, pend, sub, p, connected] = await Promise.all([
     readBinding(env, "live"),
     readBinding(env, "pending"),
     liveSub(env),
     readPendingAny(env),
+    env.DB.prepare(`select ${CONNECTED} as c`)
+      .bind(...CONNECTED_KEYS)
+      .first<{ c: number }>(),
   ]);
-  if (!live.binding && !live.sealed && !pend.binding && !pend.sealed && !p)
-    return directoryStatus(env, o);
+  // Any connection row, parsed or not: a corrupt binding with no token is wiped too.
+  if (!connected?.c) return directoryStatus(env, o);
   const revoked = await revokeOutcome(env, live.sealed, "live");
   // The same Google account as the live token: one grant, revoked above.
   const samePending = !!live.sealed && !!p?.s && p.s === sub;

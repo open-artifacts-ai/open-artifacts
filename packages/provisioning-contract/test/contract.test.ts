@@ -345,6 +345,16 @@ describe("error tables", () => {
 });
 
 describe("shapes", () => {
+  it("the World reads every SIGNUPS_ENABLED mode, invite included (#2133)", () => {
+    for (const signups of ["false", "true", "test-users", "invite"] as const) {
+      const w = { ...fixtureWorld(), signups };
+      expect(WorldSchema.parse(w).signups).toBe(signups);
+    }
+    expect(
+      WorldSchema.safeParse({ ...fixtureWorld(), signups: "nope" }).success,
+    ).toBe(false);
+  });
+
   it("round-trips the fixtures", () => {
     const install = fixtureInstall();
     expect(InstallDetailSchema.parse(install)).toEqual(install);

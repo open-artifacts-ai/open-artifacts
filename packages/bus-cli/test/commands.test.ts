@@ -1079,6 +1079,23 @@ describe("uninstall: transcript states 9 and 10", () => {
     expect(ctx.service.remove).toHaveBeenCalledOnce();
   });
 
+  it("#2099: another HOME removes no service and says why", async () => {
+    const ctx = fakeCtx({
+      service: {
+        ...launchd(),
+        remove: vi.fn(async () => ({ skipped: "home" as const })),
+      },
+      which: ALL,
+      exec: execWith(),
+    });
+    approve(ctx);
+    expect(await uninstall({ purge: false }, ctx)).toBe(0);
+    expect(ctx.all().join("\n")).toContain(
+      "Skipped removing the background service: this HOME isn't your account's home.",
+    );
+    expect(ctx.all().join("\n")).not.toContain("No service to remove");
+  });
+
   it("9: a second run has nothing to remove; exit 0", async () => {
     const ctx = fakeCtx({
       service: launchd(false),

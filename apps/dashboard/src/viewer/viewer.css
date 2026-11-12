@@ -105,92 +105,6 @@
   }
 }
 
-/* Full-screen strip (#2112, option B): the exit link sits in the strip, on the
-   app's chrome colors. */
-.oa-fsx {
-  position: relative;
-  box-sizing: border-box;
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--oa-border);
-  border-radius: 6px;
-  background: var(--oa-bg);
-  color: var(--oa-text);
-  font-family: var(--oa-font-sans);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-  text-decoration: none;
-}
-/* The hit area reaches 4px past every edge: 36px tall on touch. */
-.oa-fsx::before {
-  content: "";
-  position: absolute;
-  inset: -4px;
-}
-.oa-fsx:hover,
-.oa-fsx:focus,
-.oa-fsx:visited {
-  color: var(--oa-text);
-  text-decoration: none;
-}
-.oa-fsx:hover {
-  background: var(--oa-chrome);
-}
-.oa-fsx:focus-visible {
-  outline: 2px solid var(--oa-accent);
-  outline-offset: 1px;
-}
-.oa-fsx img,
-.oa-fsx-arrow,
-.oa-fsx-x {
-  flex: none;
-}
-.oa-fsx img {
-  width: 18px;
-  height: 18px;
-}
-/* The light-ink mark on dark chrome, the dark-ink mark on light. */
-.oa-fsx-dk {
-  display: none;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .oa-fsx-lt {
-    display: none;
-  }
-  :root:not([data-theme="light"]) .oa-fsx-dk {
-    display: block;
-  }
-}
-:root[data-theme="dark"] .oa-fsx-lt {
-  display: none;
-}
-:root[data-theme="dark"] .oa-fsx-dk {
-  display: block;
-}
-.oa-fsx-arrow,
-.oa-fsx-x {
-  width: 14px;
-  height: 14px;
-}
-.oa-fsx-arrow {
-  opacity: 0.8;
-}
-/* Under 600px the label goes; the accessible name stays on the link. */
-@media (max-width: 600px) {
-  .oa-fsx-label {
-    display: none;
-  }
-  .oa-fsx {
-    padding: 0 8px;
-  }
-}
-
 /* Live version updates (Design option B). Title bar chip: 28px, accent soft,
    6px accent dot, the ink primary button as a 22px pill. */
 .oa-lchip {
@@ -266,125 +180,135 @@
   }
 }
 
-/* /full and embeds: a 36px strip above the frame (never over it). Title on the
-   left; the live pill, Comments and the exit link on the right. It comes
-   before the frame in the DOM, so its controls are the first Tab stops. */
+/* /full and embeds (#2189): one compact group at the top right, over the
+   artifact. 32px high on a solid kit surface with a border, always. At rest
+   only the icons and count are muted; on hover, focus within, or while the
+   new-version pill shows they are full contrast. It never hides or moves. Comments (icon and count), the new-version pill,
+   then Exit. It comes before the frame in the DOM, so Tab reaches it first. */
 .oa-fsbar {
-  container-type: inline-size;
-  flex: none;
+  position: fixed;
+  right: max(8px, env(safe-area-inset-right));
+  top: max(8px, env(safe-area-inset-top));
+  z-index: 10;
   box-sizing: border-box;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  height: 36px;
-  padding: 0 max(12px, env(safe-area-inset-right)) 0
-    max(12px, env(safe-area-inset-left));
-  border-bottom: 1px solid var(--oa-border);
+  align-items: stretch;
+  height: 32px;
+  border-radius: 8px;
   background: var(--oa-chrome);
   color: var(--oa-text);
   font-family: var(--oa-font-sans);
-}
-.oa-fstitle {
-  min-width: 0;
-  overflow: hidden;
   font-size: 13px;
-  font-weight: 600;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1;
+  /* The 1px border is a ring outside the box, so the buttons are the full 32px. */
+  box-shadow:
+    0 0 0 1px var(--oa-border-strong),
+    0 1px 4px rgb(0 0 0 / 0.16);
 }
-.oa-fsactions {
-  display: flex;
-  flex: 0 1 auto;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
+.oa-fsbar > * + * {
+  border-left: 1px solid var(--oa-border);
 }
-.oa-fsbar .oa-fscomments {
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--oa-border);
-  border-radius: 6px;
-  background: var(--oa-bg);
-  color: var(--oa-text);
-  font-size: 13px;
-}
-.oa-fsbar .oa-fscomments:hover {
-  background: var(--oa-chrome);
-}
-/* Phones: Comments is its icon and count. */
-.oa-fscomments .oa-fsicon {
-  display: none;
-}
-@media (max-width: 600px) {
-  .oa-fscomments .oa-fsicon {
-    display: block;
-    flex: none;
-    width: 16px;
-    height: 16px;
-  }
-  .oa-fscomments .oa-fsword {
-    display: none;
-  }
-  .oa-fsbar .oa-fscomments {
-    gap: 5px;
-    padding: 0 8px;
-  }
-}
-/* The live and gone pills: the strip's buttons (28px, theme tokens). */
-.oa-lpill {
+.oa-fsx,
+.oa-fsbar .oa-fscomments,
+.oa-fsbar .oa-opencomment,
+.oa-fsbar .oa-lpill {
   position: relative;
   box-sizing: border-box;
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: none;
   align-items: center;
-  gap: 7px;
-  height: 28px;
-  min-width: 28px;
-  max-width: 28px;
-  padding: 0;
   justify-content: center;
-  overflow: hidden;
-  border: 1px solid var(--oa-border);
-  border-radius: 6px;
-  background: var(--oa-bg);
-  color: var(--oa-text);
-  font-family: var(--oa-font-sans);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1;
+  gap: 5px;
+  min-width: 32px;
+  height: 100%;
+  margin: 0;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--oa-text-muted);
+  font: inherit;
+  font-weight: 500;
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
-  animation: oa-live-in 200ms cubic-bezier(0.2, 0, 0, 1);
-  transition:
-    max-width 200ms cubic-bezier(0.2, 0, 0, 1),
-    padding 200ms cubic-bezier(0.2, 0, 0, 1);
+  transition: color 150ms cubic-bezier(0.2, 0, 0, 1);
 }
-/* The hit area stays inside the 36px strip: 4px past the 28px pill. */
-.oa-lpill::before {
-  content: "";
-  position: absolute;
-  inset: -4px;
-}
-.oa-lpill:hover,
-.oa-lpill:focus,
-.oa-lpill:visited {
+.oa-fsbar:hover :is(.oa-fsx, .oa-fscomments, .oa-opencomment),
+.oa-fsbar:focus-within :is(.oa-fsx, .oa-fscomments, .oa-opencomment),
+.oa-fsbar:has(.oa-lpill) :is(.oa-fsx, .oa-fscomments, .oa-opencomment),
+.oa-fsbar .oa-lpill {
   color: var(--oa-text);
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-fsx,
+  .oa-fsbar .oa-fscomments,
+  .oa-fsbar .oa-opencomment,
+  .oa-fsbar .oa-lpill {
+    transition: none;
+  }
+}
+.oa-fsbar > :first-child {
+  border-radius: 8px 0 0 8px;
+}
+.oa-fsbar > :last-child {
+  border-radius: 0 8px 8px 0;
+}
+.oa-fsbar > :only-child {
+  border-radius: 8px;
+}
+.oa-fsx:hover,
+.oa-fsx:focus,
+.oa-fsx:visited {
   text-decoration: none;
 }
-.oa-lpill:hover {
-  background: var(--oa-chrome);
+.oa-fsx:hover,
+.oa-fsbar .oa-fscomments:hover,
+.oa-fsbar .oa-opencomment:hover,
+.oa-fsbar a.oa-lpill:hover,
+.oa-fsbar button.oa-lpill:hover {
+  background: var(--oa-bg);
 }
-.oa-lpill:focus-visible {
+/* An inset ring, so the group's border never clips it. */
+.oa-fsx:focus-visible,
+.oa-fsbar .oa-fscomments:focus-visible,
+.oa-fsbar .oa-opencomment:focus-visible,
+.oa-fsbar .oa-lpill:focus-visible {
   outline: 2px solid var(--oa-accent);
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
-.oa-lpill[data-open="true"] {
-  max-width: 320px;
-  padding: 0 12px 0 10px;
-  justify-content: flex-start;
+.oa-fsicon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.oa-fscount {
+  font-variant-numeric: tabular-nums;
+}
+.oa-fsbar .oa-opencomment {
+  font-size: var(--oa-text-xs);
+}
+/* Touch: 44px tap targets. */
+@media (pointer: coarse) {
+  .oa-fsbar {
+    height: 44px;
+  }
+  .oa-fsx,
+  .oa-fsbar .oa-fscomments,
+  .oa-fsbar .oa-opencomment,
+  .oa-fsbar .oa-lpill {
+    min-width: 44px;
+  }
+}
+@media print {
+  .oa-fsbar {
+    display: none;
+  }
+}
+/* The new-version pill and the gone note, inside the group. */
+.oa-fsbar .oa-lpill {
+  animation: oa-live-in 200ms cubic-bezier(0.2, 0, 0, 1);
 }
 .oa-lpill .oa-ldot {
   background: var(--oa-accent);
@@ -392,31 +316,8 @@
 .oa-lpill-icon {
   display: none;
 }
-.oa-lpill-label {
-  display: none;
-}
-.oa-lpill[data-open="true"] .oa-lpill-label {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.oa-lpill-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Collapsed: a 32px circle, refresh icon, 7px dot top right. */
-.oa-lpill[data-open="false"] .oa-lpill-icon {
-  display: inline-flex;
-}
-.oa-lpill[data-open="false"] .oa-ldot {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 7px;
-  height: 7px;
-  box-shadow: 0 0 0 2px var(--oa-bg);
+.oa-fsbar .oa-lpill-label {
+  display: inline;
 }
 .oa-lpill-note,
 .oa-lpill-gone {
@@ -458,33 +359,6 @@ a.oa-lpill-gone {
   }
   .oa-vlayer[data-arrived="true"] {
     animation: none;
-  }
-}
-/* Touch: a 44px strip and 40px buttons. */
-@media (pointer: coarse) {
-  .oa-fsbar {
-    height: 44px;
-  }
-  .oa-fsx,
-  .oa-fsbar .oa-fscomments,
-  .oa-fsbar .oa-opencomment,
-  .oa-fsbar .oa-lpill {
-    min-width: 40px;
-    min-height: 40px;
-    justify-content: center;
-  }
-  .oa-fsx::before,
-  .oa-lpill::before {
-    display: none;
-  }
-}
-/* A narrow strip (a small embed): the exit link is icon only. */
-@container (max-width: 420px) {
-  .oa-fsx-label {
-    display: none;
-  }
-  .oa-fsx {
-    padding: 0 8px;
   }
 }
 @media print {
@@ -580,8 +454,6 @@ a.oa-lpill-gone {
 /* Embeds show no comments, only a way to open the artifact and add one (#682).
    It sits in the full-screen bar, left of the chip, so it never covers it. */
 .oa-opencomment {
-  display: inline-flex;
-  align-items: center;
   padding: 2px 8px;
   border-radius: 6px;
   background: var(--oa-bg);
@@ -1075,4 +947,23 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
 .oa-bare > .oa-edge > .oa-panel,
 .oa-vbody > .oa-edge > .oa-panel {
   margin-block: auto;
+}
+
+/* #2179: a reply that arrived live is tinted for a moment, then it fades to
+   nothing. With reduced motion the tint stays still until the attribute goes. */
+[data-comment][data-live] {
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--oa-accent) 16%, transparent);
+  /* The duration is LIVE_TINT_MS, set on the panel as --oa-live-tint-ms. */
+  animation: oa-live-tint var(--oa-live-tint-ms, 2.5s) ease-out forwards;
+}
+@keyframes oa-live-tint {
+  to {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-comment][data-live] {
+    animation: none;
+  }
 }
