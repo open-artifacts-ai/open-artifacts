@@ -704,8 +704,8 @@ describe("asks", () => {
     // #1822: a signed-out reader sees no bus name, only the owner's agent.
     const text = JSON.stringify(c.mentions);
     expect(text).not.toContain("Claude");
+    // #2004: and no delivery state of the agent.
     expect(Object.keys(c.mentions?.[0] ?? {}).sort()).toEqual([
-      "delivery",
       "for",
       "key",
       "name",
