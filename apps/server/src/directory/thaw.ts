@@ -11,6 +11,11 @@ import { HK } from "./health.js";
 // - override (an admin changed a synced row): the pair's manual row is put
 //   back exactly as it was before the first frozen edit (none: it goes),
 //   never more, never for a removed user.
+//   Unless no current mapping gives the pair a role (want is null): then the
+//   manual row stays as it is, as for a manual record, because nothing would
+//   re-derive a synced row and the person would lose the space (#2282).
+//   Never leave a live user with less access than they had unless a current
+//   mapping says so; a pre-freeze manual role is not put back over it either.
 // - delete (an explicit removal): final; the manual row stays as it is.
 // - manual (a manual row on a pair with no synced row): kept.
 // Then every pair's space_members(source = 'sync') row is derived again
@@ -98,7 +103,8 @@ const AUDITS = [
     0,
     "space.member.remove",
     `json_object('thaw', ${T})`,
-    `p.k = 'override' and p.m is null and ${manualOf("p.s", "p.u")} is not null`,
+    `p.k = 'override' and p.m is null and ${manualOf("p.s", "p.u")} is not null
+      and ${want("p.s", "p.u")} is not null`,
   ),
   // override: the pre-freeze role back on the manual row.
   auditRows(
@@ -106,7 +112,7 @@ const AUDITS = [
     "space.member.role",
     `json_object('thaw', ${T}, 'role', p.m)`,
     `p.k = 'override' and p.m in ${ROLES} and ${manualOf("p.s", "p.u")} <> p.m
-      and ${live("p.u")}`,
+      and ${live("p.u")} and ${want("p.s", "p.u")} is not null`,
   ),
   // override: the pre-freeze manual row re-added.
   auditRows(
@@ -126,7 +132,8 @@ const AUDITS = [
     4,
     "directory.sync",
     `json_patch(json_object('thaw', 'manual_kept'), json_object('role', ${manualOf("p.s", "p.u")}))`,
-    "p.k = 'manual'",
+    `(p.k = 'manual' or (p.k = 'override' and ${want("p.s", "p.u")} is null
+      and ${manualOf("p.s", "p.u")} is not null))`,
   ),
 ];
 /** The synced row the rebuild leaves (null: none), as DROP/SET/ADD_SYNC decide. */
@@ -142,11 +149,11 @@ const AUDIT_SYNC = auditRows(
 
 /** Override, no manual row before the freeze: the one it left goes. */
 const DROP_MANUAL = `delete from space_members where source = 'manual' and ${IN_OVERRIDE}
-  and ${STORED} is null`;
+  and ${STORED} is null and ${WANT_ROW} is not null`;
 /** Override, a manual row before the freeze: its role back, exactly. */
 const SET_MANUAL = `update space_members set role = ${STORED}
   where source = 'manual' and ${IN_OVERRIDE} and ${STORED} in ${ROLES}
-  and role <> ${STORED} and ${LIVE_ROW}`;
+  and role <> ${STORED} and ${LIVE_ROW} and ${WANT_ROW} is not null`;
 /** Override whose manual row went since (never for a removed user): back. */
 const ADD_MANUAL = `insert into space_members (space_id, user_id, role, source, created_at)
   select p.s, p.u, p.m, 'manual', ?2 from ${P} p

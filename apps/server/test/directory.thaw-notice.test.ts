@@ -48,6 +48,27 @@ beforeEach(async () => {
     .run();
 });
 
+// A mapping on the space gives the person a role: the thaw re-derives the
+// synced row, so the edit is a revert (without one it is kept, #2282).
+const derive = async (u: string) => {
+  const g = `g-${space}`;
+  await env.DB.prepare(
+    "insert or ignore into directory_groups (group_id, email) values (?, 'g@x.test')",
+  )
+    .bind(g)
+    .run();
+  await env.DB.prepare(
+    "insert or ignore into group_mappings (space_id, group_id, group_email, role) values (?, ?, 'g@x.test', 'viewer')",
+  )
+    .bind(space, g)
+    .run();
+  await env.DB.prepare(
+    "insert or ignore into directory_members (group_id, user_id) values (?, ?)",
+  )
+    .bind(g, u)
+    .run();
+};
+
 const edit = async (kind: string, status = "active", who?: string) => {
   const u = who ? { userId: who } : await login(uniq("fe"), "member");
   if (status !== "active")
@@ -60,6 +81,7 @@ const edit = async (kind: string, status = "active", who?: string) => {
     .bind(space, u.userId, kind)
     .run();
   // An override with no manual row before the freeze: the frozen one goes.
+  if (kind === "override") await derive(u.userId);
   if (kind === "override")
     await env.DB.prepare(
       "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', 1)",
@@ -273,12 +295,14 @@ describe("the real thaw", () => {
     )
       .bind(space, u, role)
       .run();
-  const frozenEdit = (u: string, m: string | null) =>
-    env.DB.prepare(
+  const frozenEdit = async (u: string, m: string | null) => {
+    await derive(u);
+    return env.DB.prepare(
       "insert into frozen_edits (space_id, user_id, at, manual_role, kind) values (?, ?, 1, ?, 'override')",
     )
       .bind(space, u, m)
       .run();
+  };
 
   it("pendingReverts before, then lastThaw after, from the thaw's own audit rows", async () => {
     const [a, b, c, d] = [

@@ -278,7 +278,8 @@ const THAW_REVERTS =
  * - frozen: pendingReverts, the people (not removed) the thaw would audit as
  *   a revert, by thaw.ts AUDITS 0-2: an override edit whose pre-freeze manual
  *   role (none: null) differs from the manual row now (so a role changed back
- *   by hand counts nobody). Removals and manual adds stay.
+ *   by hand counts nobody). Removals and manual adds stay, and so does a pair
+ *   no current mapping gives a role (the thaw keeps its manual row, #2282).
  * - google: lastThaw, from the thaw's audit rows (actor sync, detail thaw
  *   true, the role, remove and add outcomes) at or after the thaw's own start
  *   marker (HK.thaw, written when a reconcile's thaw step has frozen edits),
@@ -294,7 +295,10 @@ export async function readThawNotice(
       env.DB,
       `select count(distinct f.user_id) as n from frozen_edits f
         join users u on u.id = f.user_id
-        where f.kind = 'override' and u.status <> 'removed' and (
+        where f.kind = 'override' and u.status <> 'removed'
+          and exists (select 1 from group_mappings gm join directory_members dm
+            on dm.group_id = gm.group_id
+            where gm.space_id = f.space_id and dm.user_id = f.user_id) and (
           (f.manual_role is null and exists (select 1 from space_members m
             where m.space_id = f.space_id and m.user_id = f.user_id and m.source = 'manual'))
           or (f.manual_role is not null and not exists (select 1 from space_members m
