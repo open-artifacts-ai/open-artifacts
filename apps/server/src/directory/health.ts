@@ -16,7 +16,12 @@ import { CONNECTED_KEYS, UPSERT } from "./store.js";
 // - "sync.state": the SyncState alone, so T18's per-request denial for
 //   customer_mismatch is one primary-key probe.
 
-export const HK = { health: "sync.health", state: "sync.state" } as const;
+export const HK = {
+  health: "sync.health",
+  state: "sync.state",
+  /** The reconcile run (its startedAt, ms) whose thaw had frozen edits to apply: lastThaw's id (#2150). */
+  thaw: "sync.thaw",
+} as const;
 
 /** Unhealthy this long: the banner and the 24 h browser session cap (T18). */
 export const BANNER_AFTER_MS = 3600_000;
@@ -263,19 +268,21 @@ export function healthFields(h: Health, now = Date.now()) {
 
 export type ThawNotice = Pick<InstanceDirectory, "pendingReverts" | "lastThaw">;
 
-/** How long after a thaw its revert count stays on /me. */
+/** How long after a thaw its notice stays on /me. */
 export const THAW_NOTICE_MS = 3 * 86_400_000;
 const THAW_REVERTS =
   "('space.member.role', 'space.member.remove', 'space.member.add')";
 
 /**
- * For owners and admins (#2150), one cheap read each:
- * - frozen: pendingReverts, the people the thaw would revert (a frozen edit of
- *   kind override on a user who isn't removed; removals and manual adds stay);
- * - google: lastThaw, from the thaw's own audit rows (actor sync, detail
- *   thaw true, the role, remove and add outcomes) in the last 3 days. A thaw
- *   writes a chunk per alarm, so its id is the time of its first such row
- *   (stable); two thaws within 3 days read as one.
+ * For owners and admins (#2150), one or two cheap reads:
+ * - frozen: pendingReverts, the people (not removed) the thaw would audit as
+ *   a revert, by thaw.ts AUDITS 0-2: an override edit whose pre-freeze manual
+ *   role (none: null) differs from the manual row now (so a role changed back
+ *   by hand counts nobody). Removals and manual adds stay.
+ * - google: lastThaw, from the thaw's audit rows (actor sync, detail thaw
+ *   true, the role, remove and add outcomes) at or after the thaw's own start
+ *   marker (HK.thaw, written when a reconcile's thaw step has frozen edits),
+ *   within 3 days. The marker is the id, so each thaw has its own.
  */
 export async function readThawNotice(
   env: Pick<Env, "DB">,
@@ -285,32 +292,39 @@ export async function readThawNotice(
   if (mode === "frozen") {
     const r = await stmt(
       env.DB,
-      `select count(distinct f.user_id) as n from frozen_edits f join users u on u.id = f.user_id
-        where f.kind = 'override' and u.status <> 'removed'`,
+      `select count(distinct f.user_id) as n from frozen_edits f
+        join users u on u.id = f.user_id
+        where f.kind = 'override' and u.status <> 'removed' and (
+          (f.manual_role is null and exists (select 1 from space_members m
+            where m.space_id = f.space_id and m.user_id = f.user_id and m.source = 'manual'))
+          or (f.manual_role is not null and not exists (select 1 from space_members m
+            where m.space_id = f.space_id and m.user_id = f.user_id and m.source = 'manual'
+              and m.role = f.manual_role)))`,
     ).first<{ n: number }>();
     return { pendingReverts: r?.n ?? 0 };
   }
   if (mode !== "google") return {};
   const since = now - THAW_NOTICE_MS;
   const where = `from audit_events a join users u on u.id = a.target_id
-    where a.at >= ?1 and a.actor_kind = 'sync' and a.action in ${THAW_REVERTS}
-      and json_extract(a.detail, '$.thaw') = 1`;
+    where a.at >= ?1 and a.at >= (select cast(value as integer) from directory_state where key = ?2)
+      and a.actor_kind = 'sync' and a.action in ${THAW_REVERTS}
+      and json_extract(a.detail, '$.thaw') = 1 and u.status <> 'removed'`;
   const r = await stmt(
     env.DB,
-    `select count(distinct a.target_id) as n, min(a.at) as first, max(a.at) as last ${where}`,
+    `select count(distinct a.target_id) as n, max(a.at) as last, (select value from directory_state where key = ?2) as id ${where}`,
   )
-    .bind(since)
-    .first<{ n: number; first: number | null; last: number | null }>();
-  if (!r?.n || r.first === null || r.last === null) return {};
+    .bind(since, HK.thaw)
+    .first<{ n: number; last: number | null; id: string | null }>();
+  if (!r?.n || r.last === null || r.id === null) return {};
   const { results } = await stmt(
     env.DB,
     `select u.name, u.email ${where} group by a.target_id order by min(a.at), a.target_id limit 2`,
   )
-    .bind(since)
+    .bind(since, HK.thaw)
     .all<{ name: string; email: string }>();
   return {
     lastThaw: {
-      id: String(r.first),
+      id: r.id,
       reverted: r.n,
       names: results.map((x) => x.name.trim() || x.email),
       at: new Date(r.last).toISOString(),

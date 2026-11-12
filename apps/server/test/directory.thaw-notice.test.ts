@@ -4,6 +4,9 @@ import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { HK } from "../src/directory/health.js";
+import { UPSERT } from "../src/directory/store.js";
+import { markThaw, thawFrozenEdits } from "../src/directory/thaw.js";
 import type { Env } from "../src/env.js";
 import { mailer, uniq } from "./auth-helpers.js";
 import { directEnv, resetDirectory } from "./directory-helpers.js";
@@ -30,6 +33,8 @@ const meDirectory = async (e: Env, cookie: string) =>
 
 const frozen = () =>
   directEnv({ ...mailer().env, FEATURES: "spaces,sync_frozen" });
+const now = () => Date.now();
+const google = () => directEnv(mailer().env);
 let space: string;
 beforeEach(async () => {
   await resetDirectory();
@@ -54,6 +59,13 @@ const edit = async (kind: string, status = "active", who?: string) => {
   )
     .bind(space, u.userId, kind)
     .run();
+  // An override with no manual row before the freeze: the frozen one goes.
+  if (kind === "override")
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', 1)",
+    )
+      .bind(space, u.userId)
+      .run();
 };
 const thawRow = async (
   at: number,
@@ -125,10 +137,11 @@ describe("Me.instance.directory.pendingReverts", () => {
 });
 
 describe("Me.instance.directory.lastThaw", () => {
-  const now = () => Date.now();
-  const google = () => directEnv(mailer().env);
+  const mark = (t: number) =>
+    env.DB.prepare(UPSERT).bind(HK.thaw, String(t)).run();
   it("counts distinct people reverted and names the first two; removal_kept and sync rows are not counted", async () => {
     const t = now() - 1000;
+    await mark(t);
     const [a, b, c] = [
       await person("Alex Kim"),
       await person("Sam Lee"),
@@ -157,6 +170,7 @@ describe("Me.instance.directory.lastThaw", () => {
 
   it("one person: one name; two people: two names", async () => {
     const t = now() - 1000;
+    await mark(t);
     const a = await person("Alex Kim");
     await thawRow(t, "space.member.role", a);
     const owner = await login(uniq("lo"), "owner");
@@ -171,6 +185,7 @@ describe("Me.instance.directory.lastThaw", () => {
 
   it("falls back to the email when the name is blank", async () => {
     const a = await person("  ");
+    await mark(now() - 2000);
     await thawRow(now() - 1000, "space.member.role", a);
     const owner = await login(uniq("lo"), "owner");
     const d = await meDirectory(google(), owner.cookie);
@@ -179,6 +194,7 @@ describe("Me.instance.directory.lastThaw", () => {
 
   it("ignores non-sync actors and ordinary role changes", async () => {
     const t = now() - 1000;
+    await mark(t);
     const a = await person("Alex Kim");
     await thawRow(t, "space.member.role", a, { thaw: true }, "user");
     await thawRow(t, "space.member.role", a, { role: "viewer" });
@@ -189,6 +205,7 @@ describe("Me.instance.directory.lastThaw", () => {
   });
 
   it("ignores a thaw older than three days", async () => {
+    await mark(now() - 5 * 86_400_000);
     await thawRow(
       now() - 4 * 86_400_000,
       "space.member.role",
@@ -201,10 +218,93 @@ describe("Me.instance.directory.lastThaw", () => {
   });
 
   it("is absent for a member", async () => {
+    await mark(now() - 2000);
     await thawRow(now() - 1000, "space.member.role", await person("Alex Kim"));
     const m = await login(uniq("lm"), "member");
     expect(await meDirectory(google(), m.cookie)).not.toHaveProperty(
       "lastThaw",
     );
+  });
+
+  it("ignores reverts from before the thaw's marker, and each thaw has its own id", async () => {
+    const t = now() - 5000;
+    const a = await person("Alex Kim");
+    const b = await person("Sam Lee");
+    await mark(t);
+    await thawRow(t + 1, "space.member.role", a);
+    const owner = await login(uniq("lo"), "owner");
+    expect((await meDirectory(google(), owner.cookie))?.lastThaw).toMatchObject(
+      { id: String(t), reverted: 1, names: ["Alex Kim"] },
+    );
+    await mark(t + 100);
+    await thawRow(t + 101, "space.member.role", b);
+    expect((await meDirectory(google(), owner.cookie))?.lastThaw).toMatchObject(
+      { id: String(t + 100), reverted: 1, names: ["Sam Lee"] },
+    );
+  });
+
+  it("ignores removed people", async () => {
+    const t = now() - 1000;
+    await mark(t);
+    const a = await person("Gone Gal");
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(a)
+      .run();
+    await thawRow(t + 1, "space.member.role", a);
+    const owner = await login(uniq("lo"), "owner");
+    expect(await meDirectory(google(), owner.cookie)).not.toHaveProperty(
+      "lastThaw",
+    );
+  });
+
+  it("no marker, no lastThaw", async () => {
+    await thawRow(now() - 1000, "space.member.role", await person("Alex Kim"));
+    const owner = await login(uniq("lo"), "owner");
+    expect(await meDirectory(google(), owner.cookie)).not.toHaveProperty(
+      "lastThaw",
+    );
+  });
+});
+
+describe("the real thaw", () => {
+  const manual = (u: string, role: string) =>
+    env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, ?, 'manual', 1)",
+    )
+      .bind(space, u, role)
+      .run();
+  const frozenEdit = (u: string, m: string | null) =>
+    env.DB.prepare(
+      "insert into frozen_edits (space_id, user_id, at, manual_role, kind) values (?, ?, 1, ?, 'override')",
+    )
+      .bind(space, u, m)
+      .run();
+
+  it("pendingReverts before, then lastThaw after, from the thaw's own audit rows", async () => {
+    const [a, b, c, d] = [
+      await person("Alex Kim"),
+      await person("Sam Lee"),
+      await person("Pat Roe"),
+      await person("Dee Fox"),
+    ];
+    await manual(a, "editor"); // was viewer: role goes back
+    await frozenEdit(a, "viewer");
+    await frozenEdit(b, "viewer"); // manual row gone: added back
+    await manual(c, "viewer"); // changed and changed back: nobody
+    await frozenEdit(c, "viewer");
+    await manual(d, "editor"); // had none: the frozen one goes
+    await frozenEdit(d, null);
+    const owner = await login(uniq("ro"), "owner");
+    expect((await meDirectory(frozen(), owner.cookie))?.pendingReverts).toBe(3);
+    const t = now();
+    await markThaw(env, t);
+    await thawFrozenEdits(env, { now: t, revoke: async () => {} });
+    const d2 = await meDirectory(google(), owner.cookie);
+    expect(d2?.lastThaw?.id).toBe(String(t));
+    expect(d2?.lastThaw?.reverted).toBe(3);
+    expect(d2?.lastThaw?.names).toHaveLength(2);
+    for (const n of d2?.lastThaw?.names ?? [])
+      expect(["Alex Kim", "Sam Lee", "Dee Fox"]).toContain(n);
+    expect((await meDirectory(frozen(), owner.cookie))?.pendingReverts).toBe(0);
   });
 });

@@ -191,7 +191,7 @@ export const InstanceDirectorySchema = z.object({
   bound: z.boolean().optional(),
   /** Frozen edits the thaw would put back: changed roles on synced people (not removals, manual adds or removed users). Owners and admins only, while the mode is frozen (#2150). */
   pendingReverts: z.number().int().optional(),
-  /** The last thaw (Team to Business) that put roles back, within 3 days: id (stable per thaw), people put back, their first 2 names, ISO time of the latest revert. Owners and admins only; absent when none (#2150). */
+  /** The last thaw (Team to Business) that put roles back, within 3 days: id (the thaw's own start marker), people put back, their first 2 names, ISO time of the latest revert. Owners and admins only; absent when none (#2150). */
   lastThaw: z
     .object({
       id: z.string(),

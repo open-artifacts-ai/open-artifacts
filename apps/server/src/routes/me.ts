@@ -96,17 +96,21 @@ async function toMe(
   const mode = directoryMode(c.env);
   if (mode !== "off") {
     const admin = orgCan(user, "members.manage", { cap });
-    // Owners and admins also learn whether a binding exists (#2149): the same
-    // one D1 statement as health.
+    // Owners and admins also learn whether a binding exists (#2149, the same
+    // D1 statement as health) and what the thaw puts back or put back (#2150,
+    // its own read, run alongside).
     if (admin) {
-      const { h, bound } = await readHealthBound(c.env);
+      const [{ h, bound }, thaw] = await Promise.all([
+        readHealthBound(c.env),
+        readThawNotice(c.env, mode),
+      ]);
       me.instance.directory = instanceDirectory(
         mode,
         h,
         true,
         Date.now(),
         bound,
-        await readThawNotice(c.env, mode),
+        thaw,
       );
     } else
       me.instance.directory = instanceDirectory(
