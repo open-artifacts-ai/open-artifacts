@@ -7,7 +7,8 @@
 // --fakes (or OA_DOC_FAKES=1) also injects two people and one agent as remote
 // collaborators with fixed cursors, for screenshots. Prints "ready <port>"
 // once listening. --too-large answers every client edit with the error frame
-// {"type":"error","code":"doc_too_large"} instead of applying it. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+// {"type":"error","code":"doc_too_large"} instead of applying it. --blank starts
+// with an empty doc (a New doc). Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -34,10 +35,17 @@ We ship the new landing page on **Thursday**. The plan has three parts: copy, de
 Start with ten percent of visitors, watch the error rate for an hour, then go to everyone. If anything looks off we roll back with \`git revert\` and write it up here.
 `;
 
-export function startDocRoom({ port, fakes = false, tooLarge = false }) {
+export function startDocRoom({
+  port,
+  fakes = false,
+  tooLarge = false,
+  blank = false,
+}) {
   const ydoc = new Y.Doc();
-  const { doc } = markdownToDoc(SAMPLE);
-  docToYXmlFragment(doc, ydoc.getXmlFragment("default"));
+  if (!blank) {
+    const { doc } = markdownToDoc(SAMPLE);
+    docToYXmlFragment(doc, ydoc.getXmlFragment("default"));
+  }
   const awareness = new awarenessProtocol.Awareness(ydoc);
   awareness.setLocalState(null);
   const conns = new Map(); // ws -> Set of awareness client ids it controls
@@ -196,7 +204,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const fakes =
     process.argv.includes("--fakes") || process.env.OA_DOC_FAKES === "1";
   const tooLarge = process.argv.includes("--too-large");
-  const room = startDocRoom({ port, fakes, tooLarge });
+  const blank = process.argv.includes("--blank");
+  const room = startDocRoom({ port, fakes, tooLarge, blank });
   const stop = () => room.close().then(() => process.exit(0));
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
