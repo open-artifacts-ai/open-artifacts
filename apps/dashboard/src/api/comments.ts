@@ -197,8 +197,6 @@ const useRefetching = <V, T>(
   mints: boolean,
   fn: (v: V, x?: RequestExtra) => Promise<T>,
   apply?: (list: CommentList, v: V, me: Comment["author"]) => CommentList,
-  /** An error after which the edit stays until the refetch replaces it (a 409 whose answer the list is about to show). */
-  keepOn?: (e: ApiClientError) => boolean,
 ) => {
   const qc = useQueryClient();
   return useMutation<T, ApiClientError, V, Snapshot | undefined>({
@@ -217,8 +215,7 @@ const useRefetching = <V, T>(
         }
       : undefined,
     onError: apply
-      ? (e, _v, ctx) => {
-          if (keepOn?.(e)) return;
+      ? (_e, _v, ctx) => {
           if (ctx?.prev) qc.setQueryData(commentsKey(id), ctx.prev);
         }
       : undefined,
@@ -468,8 +465,9 @@ export const useArtifactAgents = (id: string, enabled: boolean) =>
 
 /**
  * Tap an option on an ask: the pick shows at once and settles to the server's
- * record on the refetch. A refusal rolls it back to unanswered; a 409 (someone
- * answered first) keeps the pick until the refetch shows the real answer.
+ * record on the refetch. The card only marks the picked option as sending
+ * until then (never "You picked"). A refusal, a 409 included, rolls it back to
+ * unanswered, and the settle refetch then shows whoever answered first.
  * Never for an ask with `confirm` (the passkey asks of #2263): a yes that needs
  * the server's verification must not appear before it. The optimistic answer is
  * never a person's yes (`yes: false`), whatever the server later says.
@@ -512,7 +510,6 @@ export const useAnswerAsk = (id: string) =>
               },
         ),
       })),
-    (e) => e.status === 409,
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>

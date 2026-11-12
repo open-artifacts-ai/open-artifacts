@@ -129,8 +129,8 @@ const answerRoute = (
     };
   }, o);
 
-const openAsk = async (page: Page) => {
-  await page.setViewportSize({ width: 1280, height: 800 });
+const openAsk = async (page: Page, w = 1280, h = 800) => {
+  await page.setViewportSize({ width: w, height: h });
   await page.goto(`/a/${ID}?mock=asks`);
   await page.getByRole("button", { name: /^Comments/ }).click();
   const first = page
@@ -140,31 +140,47 @@ const openAsk = async (page: Page) => {
   return first;
 };
 
-test("an ask pick shows at once, then settles", async ({ page }) => {
-  await answerRoute(page, { delay: 1200, mode: "ok" });
-  const ask = await openAsk(page);
-  await ask.locator("[data-option]").first().click();
-  await expect(ask.getByText(/You picked/)).toBeVisible({ timeout: 500 });
-  await expect(ask.locator("[data-sending]")).toHaveCount(1);
-  await expect(ask.locator("[data-sending]")).toHaveCount(0, { timeout: 5000 });
-  await expect(ask.getByText(/You picked/)).toHaveCount(1);
-});
+for (const [w, h] of [
+  [1280, 800],
+  [390, 844],
+] as const) {
+  test(`${w}px: an ask pick shows as sending (not answered), then settles`, async ({
+    page,
+  }) => {
+    await answerRoute(page, { delay: 1500, mode: "ok" });
+    const ask = await openAsk(page, w, h);
+    await ask.locator("[data-option]").first().click();
+    await expect(ask.locator("[data-sending]")).toHaveCount(1, {
+      timeout: 500,
+    });
+    await expect(ask.locator("[data-option]").first()).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(ask.locator("[data-option]").nth(1)).toBeDisabled();
+    await expect(ask.getByText(/You picked/)).toHaveCount(0);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/ask-sending-${w}.png` });
+    await expect(ask.getByText(/You picked/)).toHaveCount(1, { timeout: 5000 });
+    await expect(ask.locator("[data-sending]")).toHaveCount(0);
+  });
 
-test("an ask pick that fails rolls back, shows the error and refocuses the option", async ({
-  page,
-}) => {
-  await answerRoute(page, { delay: 300, mode: "fail" });
-  const ask = await openAsk(page);
-  const opt = ask.locator("[data-option]").first();
-  const id = await opt.getAttribute("data-option");
-  await opt.click();
-  await expect(ask.getByText(/You picked/)).toBeVisible({ timeout: 250 });
-  await expect(page.getByRole("alert").first()).toContainText(
-    "Only the people this ask is addressed to can answer.",
-  );
-  await expect(ask.getByText(/You picked/)).toHaveCount(0);
-  await expect(ask.locator(`[data-option="${id}"]`)).toBeFocused();
-});
+  test(`${w}px: a failed ask pick returns to the open card with the error`, async ({
+    page,
+  }) => {
+    await answerRoute(page, { delay: 300, mode: "fail" });
+    const ask = await openAsk(page, w, h);
+    const opt = ask.locator("[data-option]").first();
+    const id = await opt.getAttribute("data-option");
+    await opt.click();
+    await expect(page.getByRole("alert").first()).toContainText(
+      "Only the people this ask is addressed to can answer.",
+    );
+    await expect(ask.getByText(/You picked/)).toHaveCount(0);
+    await expect(ask.locator(`[data-option="${id}"]`)).toBeFocused();
+    await expect(ask.locator(`[data-option="${id}"]`)).toBeEnabled();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/ask-failed-${w}.png` });
+  });
+}
 
 test("a 409 settles to the answer the server has", async ({ page }) => {
   await answerRoute(page, { delay: 300, mode: "conflict", other: "wide" });

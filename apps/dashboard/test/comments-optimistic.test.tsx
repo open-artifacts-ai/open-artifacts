@@ -332,13 +332,17 @@ describe("picking an option on an ask shows at once", () => {
     fireEvent.click(
       await within(c).findByRole("button", { name: /List only/ }),
     );
-    expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
+    // Sending: the option is marked, but it does not read as answered yet.
+    await waitFor(() =>
+      expect(opt(c, "a")).toHaveAttribute("aria-pressed", "true"),
+    );
+    expect(within(c).queryByText(/You picked/)).toBeNull();
     expect(
       c.querySelector("[data-ask] [data-sending]") ??
         c.querySelector("ul[data-sending]"),
     ).not.toBeNull();
     await waitFor(() => expect(c.querySelector("ul[data-sending]")).toBeNull());
-    expect(within(c).getAllByText(/You picked A/)).toHaveLength(1);
+    expect(await within(c).findAllByText(/You picked A/)).toHaveLength(1);
   });
 
   it("rolls back to unanswered on an error, shows the error and focuses the option", async () => {
@@ -354,7 +358,6 @@ describe("picking an option on an ask shows at once", () => {
     fireEvent.click(
       await within(c).findByRole("button", { name: /Side by side/ }),
     );
-    expect(await within(c).findByText(/You picked B/)).toBeInTheDocument();
     expect(await within(c).findByRole("alert")).toHaveTextContent(
       "Couldn't send your answer. Try again.",
     );

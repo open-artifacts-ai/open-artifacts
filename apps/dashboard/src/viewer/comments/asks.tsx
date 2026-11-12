@@ -606,7 +606,7 @@ export function AskBlock({
             aria-labelledby={qid}
             aria-busy={answer.isPending || undefined}
             data-sending={answer.isPending ? "" : undefined}
-            className={`m-0 flex list-none flex-col gap-1 p-0 transition-opacity${answer.isPending ? " opacity-70" : ""}`}
+            className="m-0 flex list-none flex-col gap-1 p-0"
           >
             {ask.options.map((o, i) => {
               const rec = ask.recommended?.optionId === o.id;
@@ -618,7 +618,7 @@ export function AskBlock({
                     size="sm"
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
-                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
+                        ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                         : ""
                     }`}
                     disabled={
@@ -674,7 +674,7 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer && pickedOpt && (
+          {ask.answer && pickedOpt && !answer.isPending && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
               {actor(ask.answer.by, "You")} picked{" "}
               {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
