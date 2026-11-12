@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.166.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.165.0...v0.166.0) (2026-11-12)
+
+
+### Features
+
+* **comments:** @-mentions show as pills inside the comment box ([#2317](https://github.com/open-artifacts-ai/open-artifacts/issues/2317)) ([#2339](https://github.com/open-artifacts-ai/open-artifacts/issues/2339)) ([5e39b24](https://github.com/open-artifacts-ai/open-artifacts/commit/5e39b24bd2697d3e7312ef25f3700f9996ca090f))
+* **comments:** render a safe markdown subset in comment bodies ([#2338](https://github.com/open-artifacts-ai/open-artifacts/issues/2338)) ([#2340](https://github.com/open-artifacts-ai/open-artifacts/issues/2340)) ([cab83ec](https://github.com/open-artifacts-ai/open-artifacts/commit/cab83eca2234210f605fb8ffc4f0443c22f55226))
+
 ## [0.165.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.164.0...v0.165.0) (2026-11-12)
 
 
