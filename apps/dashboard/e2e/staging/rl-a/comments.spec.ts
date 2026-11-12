@@ -55,7 +55,7 @@ const threads = async (agent: Agent, id: string) => {
   return (r.data as unknown as CommentList).threads;
 };
 
-test("asks: an agent's ask, a person's typed answer (yes), and toAsker replies", async () => {
+test("asks: an agent's ask, a person's answer (not a yes), and toAsker replies", async () => {
   await needs("asks and toAsker (#1535, #1794)", MIN);
   const id = await pageOf("T19 ask");
   {
@@ -75,8 +75,9 @@ test("asks: an agent's ask, a person's typed answer (yes), and toAsker replies",
     if (!thread || !root?.ask) throw new Error("the ask is not listed");
     expect(root.ask.answer).toBeUndefined();
 
-    // The person picks in the browser session: typed, and their yes on an ask
-    // their own agent posted.
+    // The person picks in their session. T19 sessions use provider "test",
+    // which never counts as typed (auth/authz.ts interactiveSession), so the
+    // pick is recorded but is not a yes, by design.
     await json(
       await api(owner, R.commentAnswer(id, thread.id, root.id), {
         method: "POST",
@@ -86,8 +87,8 @@ test("asks: an agent's ask, a person's typed answer (yes), and toAsker replies",
     const answered = (await threads(agent, id))[0]?.comments[0]?.ask?.answer;
     expect(answered).toMatchObject({
       optionId: "short",
-      typed: true,
-      yes: true,
+      typed: false,
+      yes: false,
     });
 
     // toAsker: reaches the asking agent's address, if it has one (this one
