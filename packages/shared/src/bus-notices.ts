@@ -43,6 +43,13 @@ export type BusNotice = {
   /** `<origin>/a/<id>` */
   url: string;
   to: BusAddress;
+  /**
+   * #2238: the agent identity (identityId) the Worker resolved `to` to. The
+   * hub delivers only to the live agent at `to` that holds it, and otherwise
+   * drops the notice; it never falls back to name resolution. Absent:
+   * delivery by name, as before.
+   */
+  toIdentity?: string;
   /** The fixed template (the server's noticeText). */
   text: string;
   /** Waiting notices with the same (to, coalesceKey) replace each other: the artifact id. */
