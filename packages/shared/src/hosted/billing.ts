@@ -88,6 +88,17 @@ export const PlanViewSchema = z.object({
    */
   yearlyTeamBusiness: z.boolean().optional(),
   /**
+   * Billing says a Checkout already put a card on file (a Solo that paid during
+   * its free days: it is charged when the trial ends). Absent (an older answer)
+   * or false: the Pay buttons stay. Owner and admins only.
+   */
+  soloCheckedOut: z.boolean().optional(),
+  /**
+   * ISO date a scheduled cancel (cancel at period end) takes effect, or null
+   * when none; absent from an older answer. Owner and admins only.
+   */
+  cancelsAt: z.string().nullable().optional(),
+  /**
    * Extra-creator charges that failed and are unpaid: the total in cents and
    * the months ("YYYY-MM"), oldest first. Absent when nothing is due. A notice
    * only: it never moves tier or access. Owner and admins only.

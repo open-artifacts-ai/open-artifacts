@@ -91,6 +91,8 @@ type Row = {
   soloTrialEndsAt?: number | null;
   hasCustomer?: boolean;
   yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
   overageDue?: { amountCents: number; months: string[] } | null;
   graceUntil: number | null;
   version: number;
@@ -1733,6 +1735,53 @@ describe("Me.instance.billing and the billing routes", () => {
     await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
     expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
       "yearlyTeamBusiness",
+    );
+  });
+
+  it("soloCheckedOut: a GET /tier answer reaches the owner through the parse, never a member; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ version: 50, soloCheckedOut: true });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      true,
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
+    );
+    await read({ version: 51, soloCheckedOut: false });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      false,
+    );
+    const { soloCheckedOut: _, ...without } = row;
+    row = { ...without, version: 52 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
+    );
+  });
+
+  it("cancelsAt: ms from billing reaches the owner as an ISO date, never a member; null stays null; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const at = Date.UTC(2026, 11, 20);
+    await read({ version: 60, cancelsAt: at });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBe(
+      new Date(at).toISOString(),
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
+    );
+    await read({ version: 61, cancelsAt: null });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBeNull();
+    const { cancelsAt: _, ...without } = row;
+    row = { ...without, version: 62 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
     );
   });
 
