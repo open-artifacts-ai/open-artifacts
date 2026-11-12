@@ -61,6 +61,7 @@ import {
   holdAnchor,
   NewReplyPill,
   scrollerOf,
+  scrollWithin,
   useKeepScroll,
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
@@ -400,6 +401,8 @@ function Composer({
   onSubmit,
   onCancel,
   initial = "",
+  restore,
+  onText,
   autoFocus = false,
   alwaysOpen = true,
   failure,
@@ -442,7 +445,7 @@ function Composer({
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
   /** Called when the box gains or loses text the reader typed. */
-  onDirty?: (dirty: boolean) => void;
+  onDirty?: (dirty: boolean, unmounting?: boolean) => void;
   placeholder: string;
   /** The placeholder for someone who can mention agents here. */
   mentionPlaceholder?: string;
@@ -452,6 +455,9 @@ function Composer({
   onSubmit: (body: string, extras: Extras) => Promise<unknown>;
   onCancel?: () => void;
   initial?: string;
+  /** Text kept by the owner of the draft across the box unmounting, and where to keep it. */
+  restore?: string;
+  onText?: (text: string) => void;
   autoFocus?: boolean;
   /** Collapsed to one line until focused. */
   alwaysOpen?: boolean;
@@ -460,7 +466,7 @@ function Composer({
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
   const errCtx = useCommentErrorCtx();
-  const [text, setText] = useState(seed?.text ?? initial);
+  const [text, setText] = useState(seed?.text ?? restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(seed?.error ?? null);
   const mounted = useRef(true);
@@ -582,8 +588,11 @@ function Composer({
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
   useEffect(() => {
+    onText?.(text);
+  }, [text, onText]);
+  useEffect(() => {
     onDirty?.(body !== "");
-    return () => onDirty?.(false);
+    return () => onDirty?.(false, true);
   }, [body, onDirty]);
   const go = async () => {
     if (!body || once.current) return;
@@ -708,7 +717,8 @@ function Composer({
             e.preventDefault();
             void go();
           }
-          if (e.key === "Escape" && keepOnEsc) {
+          // An empty field lets Esc through (the phone sheet closes on it).
+          if (e.key === "Escape" && keepOnEsc && text !== "") {
             e.stopPropagation();
             return;
           }
@@ -1201,7 +1211,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
     if (!isActive) return;
-    el.current?.scrollIntoView?.({ block: "nearest" });
+    if (el.current) scrollWithin(el.current, "nearest");
     // #1783: in the short pin sheet a thread with 2+ replies shows its last
     // reply just above the floating action row, not the card's top.
     const card = el.current;
@@ -1229,13 +1239,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
         // One measure is enough: later size changes (typing) don't re-scroll.
         watch?.disconnect();
-        const reduce =
-          window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
-          true;
-        reply.scrollIntoView?.({
-          block: "end",
-          behavior: reduce ? "auto" : "smooth",
-        });
+        scrollWithin(reply, "end", true);
       };
       frame = requestAnimationFrame(go);
       if (typeof ResizeObserver !== "undefined") {
@@ -1547,6 +1551,8 @@ function NewThread({ api }: { api: CommentsApi }) {
           lastDraft.current && api.reopenDraft(lastDraft.current, l)
         }
         onDirty={api.setDraftDirty}
+        restore={api.draftText.current}
+        onText={api.setDraftText}
         onCancel={api.cancelDraft}
         onSubmit={(body, x) => {
           last.current = body;
