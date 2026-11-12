@@ -532,6 +532,17 @@ describe("DocEditor", () => {
     expect(p.made.last).toBe(second);
   });
 
+  it("a blank doc opens with the cursor in it, once synced", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    expect(document.querySelector(".ProseMirror")).not.toHaveFocus();
+    act(() => p.made.last?.connect());
+    await waitFor(() =>
+      expect(document.querySelector(".ProseMirror")).toHaveFocus(),
+    );
+  });
+
   it("reports Saving, Saved and Offline for the title bar", async () => {
     const p = fakeProviders();
     const seen: (string | null)[] = [];

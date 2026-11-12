@@ -51,12 +51,13 @@ export function DocEditor(props: DocEditorProps) {
   }, [onStatus, room, status, props.canEdit]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
   if (!room) return <div className="oa-doc" aria-busy="true" />;
-  return <Loaded {...props} room={room} error={error} />;
+  return <Loaded {...props} room={room} error={error} status={status} />;
 }
 
 function Loaded({
   room,
   error,
+  status,
   title,
   canEdit,
   viewer,
@@ -64,6 +65,7 @@ function Loaded({
 }: DocEditorProps & {
   room: NonNullable<ReturnType<typeof useDocRoom>["room"]>;
   error: string | null;
+  status: DocStatus;
 }) {
   const name = viewer?.name?.trim() || "Guest";
   const user = useMemo<DocUser>(
@@ -107,6 +109,14 @@ function Loaded({
   useEffect(() => {
     editor?.setEditable(editable);
   }, [editor, editable]);
+  // A new, blank doc opens with the cursor in it (New doc is one click to a
+  // cursor). Once, when the server has said what the doc holds.
+  const placed = useRef(false);
+  useEffect(() => {
+    if (placed.current || !editor || !editable || status !== "saved") return;
+    placed.current = true;
+    if (editor.isEmpty) editor.commands.focus("start");
+  }, [editor, editable, status]);
   const message = errorCopy(error);
   return (
     <div className="oa-doc" data-editable={editable ? "" : undefined}>

@@ -472,6 +472,13 @@ async function startMocks() {
       quotaExceeded,
       emailEnabled,
       plan: params.get("mock")?.startsWith("paid") ? "paid" : "free",
+      // ?mock=newdoc (#1100): docs are on (New doc); ?mock=newdoc-gate: a free self-host.
+      docs:
+        params.get("mock") === "newdoc"
+          ? "on"
+          : params.get("mock") === "newdoc-gate"
+            ? "needs_paid"
+            : undefined,
       update,
       // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
       hosted: parseHostedParam(params.get("hosted")),

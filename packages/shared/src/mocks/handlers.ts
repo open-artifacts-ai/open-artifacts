@@ -107,6 +107,8 @@ export type MockOptions = {
   emailEnabled?: boolean;
   /** Me.instance.plan, and GET /usage `plan` and its limits (default "free"). */
   plan?: Plan;
+  /** Me.instance.docs (#1100): New doc, or the note that docs need Workers Paid. */
+  docs?: "on" | "needs_paid";
   update?: InstanceUpdate | null;
   /** Comments writes answer 429 with this Retry-After, in seconds (#682). */
   commentsRateLimit?: number;
@@ -345,6 +347,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   if (opts.emailEnabled !== undefined)
     me.instance.emailEnabled = opts.emailEnabled;
   me.instance.plan = plan;
+  if (opts.docs) me.instance.docs = opts.docs;
   if (opts.update !== undefined) me.instance.update = opts.update;
   const artifacts: ArtifactSummary[] = f.artifacts;
   if (opts.events)

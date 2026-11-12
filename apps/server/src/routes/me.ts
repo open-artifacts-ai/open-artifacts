@@ -32,6 +32,7 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { busOn } from "../services/bus.js";
+import { docsState } from "../services/docs-available.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
@@ -71,6 +72,7 @@ async function toMe(
       mcpUrl: appUrl + MCP_PATH,
       emailEnabled: emailEnabled(c.env),
       plan: planOf(c.env.PLAN),
+      ...(docsState(c.env) ? { docs: docsState(c.env) } : {}),
       // Hosted tenants are upgraded by the platform: no self-host nudge
       // (review item 39).
       update:

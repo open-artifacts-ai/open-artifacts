@@ -32,6 +32,7 @@ import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
 import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
+import { AGENT_LINE, DocsGate, NewDocButton, useGate } from "./NewDoc";
 import { ALERT, BAR, Empty, GRID, H1, LIST, PAGE } from "./ui";
 import { uniqueItems, useSentinel } from "./useInfinite";
 import { type Scope, useLibraryQuery } from "./useLibraryQuery";
@@ -280,8 +281,26 @@ export function Library({ scope }: { scope: Scope }) {
       </Button>
     ) : undefined;
 
+  // Docs (#1100): absent from /me while the doc switch is off.
+  const docs = me.status === "authed" ? me.me.instance.docs : undefined;
+  const gate = useGate();
+  const showDocsNote =
+    docs !== undefined &&
+    canCreate &&
+    !filtered &&
+    scope === "all" &&
+    !showRevoked;
+
   const results = (
     <>
+      {showDocsNote &&
+        (docs === "needs_paid" ? (
+          <DocsGate gateRef={gate.ref} />
+        ) : (
+          <p className="text-[length:var(--oa-text-sm)] text-muted-foreground">
+            {AGENT_LINE}
+          </p>
+        ))}
       {!filtered && !space && scope === "all" && !showRevoked && (
         // Your own artifacts only: ones shared with you aren't your first.
         <GetStarted
@@ -427,6 +446,9 @@ export function Library({ scope }: { scope: Scope }) {
         </div>
         <span className="flex-1" />
         {/* No Upload inside a space you can only view (Design D4). */}
+        {docs && canCreate && (!space || canPublishHere) && (
+          <NewDocButton docs={docs} spaceId={uploadSpace} onGate={gate.show} />
+        )}
         {(!space || canPublishHere) && (
           <DropZone button allowed={canCreate} spaceId={uploadSpace} />
         )}
