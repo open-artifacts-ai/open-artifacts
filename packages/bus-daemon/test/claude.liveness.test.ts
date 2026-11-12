@@ -87,6 +87,8 @@ describe("claude liveness", () => {
       });
     writeSession(d, 4242, { entrypoint: "sdk-cli" });
     expect(live()).toEqual([]);
+    writeSession(d, 4242, { entrypoint: "sdk-cli", nameSource: "user" });
+    expect(live().map((x) => x.ref)).toEqual(["s4242"]);
     writeSession(d, 4242, { entrypoint: "cli", nameSource: "derived" });
     expect(live().map((x) => [x.ref, x.nameChosen])).toEqual([
       ["s4242", undefined],

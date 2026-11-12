@@ -46,12 +46,14 @@ export const busHome = (
 export const notASession = (rec: Record<string, unknown>): boolean =>
   rec.parkedJobId !== undefined ||
   Boolean(rec.agentBus) ||
-  isHeadlessEntrypoint(rec);
+  (isHeadlessEntrypoint(rec) && !nameWasChosen(rec));
 
 /**
  * #2311: a session started by `claude -p` or an SDK (entrypoint `sdk-cli`,
  * `sdk-ts`, ...): a child of some other session or program, never one the
  * user sits in. A file with no entrypoint (an older Claude) still counts.
+ * One a user or peer named (nameSource) is an app the user set up and joins
+ * (notASession).
  */
 export const isHeadlessEntrypoint = (rec: Record<string, unknown>): boolean =>
   typeof rec.entrypoint === "string" && rec.entrypoint !== "cli";

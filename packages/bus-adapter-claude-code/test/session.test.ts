@@ -53,6 +53,12 @@ describe("claude session discovery", () => {
     const dir = sessions();
     session(dir, 400, { entrypoint: "sdk-cli" });
     expect(findSession(500, deps(dir))).toBeNull();
+    session(dir, 400, { entrypoint: "sdk-cli", nameSource: "derived" });
+    expect(findSession(500, deps(dir))).toBeNull();
+    session(dir, 400, { entrypoint: "sdk-cli", nameSource: "user" });
+    expect(findSession(500, deps(dir))?.sessionId).toBe("s400");
+    session(dir, 400, { entrypoint: "sdk-cli", nameSource: "peer" });
+    expect(findSession(500, deps(dir))?.sessionId).toBe("s400");
     session(dir, 400, { entrypoint: "cli" });
     expect(findSession(500, deps(dir))?.sessionId).toBe("s400");
     session(dir, 400, {});
