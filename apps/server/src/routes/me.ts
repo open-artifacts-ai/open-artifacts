@@ -157,6 +157,14 @@ async function toMe(
       ...(details && plan.yearlyTeamBusiness !== undefined
         ? { yearlyTeamBusiness: plan.yearlyTeamBusiness }
         : {}),
+      ...(details && plan.cancelsAt !== undefined
+        ? {
+            cancelsAt:
+              plan.cancelsAt === null
+                ? null
+                : new Date(plan.cancelsAt).toISOString(),
+          }
+        : {}),
       ...(details && plan.soloCheckedOut !== undefined
         ? { soloCheckedOut: plan.soloCheckedOut }
         : {}),

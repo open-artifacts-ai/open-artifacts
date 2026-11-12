@@ -92,6 +92,7 @@ type Row = {
   hasCustomer?: boolean;
   yearlyTeamBusiness?: boolean;
   soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
   graceUntil: number | null;
   version: number;
 };
@@ -1757,6 +1758,29 @@ describe("Me.instance.billing and the billing routes", () => {
     await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
     expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
       "soloCheckedOut",
+    );
+  });
+
+  it("cancelsAt: ms from billing reaches the owner as an ISO date, never a member; null stays null; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const at = Date.UTC(2026, 11, 20);
+    await read({ version: 60, cancelsAt: at });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBe(
+      new Date(at).toISOString(),
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
+    );
+    await read({ version: 61, cancelsAt: null });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBeNull();
+    const { cancelsAt: _, ...without } = row;
+    row = { ...without, version: 62 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
     );
   });
 

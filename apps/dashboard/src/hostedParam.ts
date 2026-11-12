@@ -116,6 +116,34 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // A Solo that cancelled in its free days (billing.cancelsAt).
+  "solo-canceled": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      soloCheckedOut: true,
+      cancelsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // A Team plan set to cancel at the end of its period (billing.cancelsAt).
+  "team-canceled": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      cancelsAt: new Date(Date.now() + 12 * 86_400_000).toISOString(),
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
   "solo-no-customer": {
     billing: {
       tier: "solo",

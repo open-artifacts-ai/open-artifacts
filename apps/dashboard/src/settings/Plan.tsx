@@ -58,6 +58,10 @@ type Status = {
   tone: "ok" | "warn" | "bad" | "info";
 };
 
+/** A scheduled cancel that has not taken effect yet (#2138). */
+const cancelsInFuture = (b: PlanView): boolean =>
+  !!b.cancelsAt && Date.parse(b.cancelsAt) > Date.now();
+
 /** The status pill and the one note under it, from the plan alone. */
 export const planStatus = (
   b: PlanView,
@@ -111,10 +115,12 @@ export const planStatus = (
       pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",
-        // With a card on file the charge line under it names the first charge.
-        text: b.soloCheckedOut
-          ? `Your free month ends ${date(b.soloTrialEndsAt)}.`
-          : `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
+        // With a card on file the line under it names the first charge, or the
+        // end when the plan is set to cancel.
+        text:
+          b.soloCheckedOut || cancelsInFuture(b)
+            ? `Your free month ends ${date(b.soloTrialEndsAt)}.`
+            : `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
       },
     };
   return { pill: { label: "Active", tone: "ok" } };
@@ -188,6 +194,7 @@ export function Plan() {
   // manages its plan in the portal and sees no Pay buttons. During the free
   // month the Pay buttons stay: they are the way to start paying or pick yearly,
   // unless billing says a card is already on file (soloCheckedOut).
+  const cancelling = cancelsInFuture(billing);
   const soloTrialing =
     !!billing.soloTrialEndsAt &&
     Date.parse(billing.soloTrialEndsAt) > Date.now();
@@ -197,7 +204,7 @@ export function Plan() {
     (billing.status === "active" || billing.status === "past_due") &&
     // Still in the free days, but a Checkout already put a card on file (#2138):
     // a second Pay would only replace that subscription.
-    (!soloTrialing || billing.soloCheckedOut === true);
+    (!soloTrialing || billing.soloCheckedOut === true || cancelling);
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -254,7 +261,7 @@ export function Plan() {
                   Manage billing
                 </Button>
               )}
-              {column === "solo" && soloPaid && soloTrialing && (
+              {column === "solo" && soloPaid && soloTrialing && !cancelling && (
                 <span className={muted}>
                   First charge on {date(billing.soloTrialEndsAt as string)}.
                 </span>
@@ -281,6 +288,11 @@ export function Plan() {
                 </>
               )}
             </>
+          )}
+          {cancelling && (
+            <span className={muted}>
+              Ends on {date(billing.cancelsAt as string)}.
+            </span>
           )}
           {paid && !lapsedPaid && !operatorPlan && (
             <span className={muted}>

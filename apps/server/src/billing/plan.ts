@@ -82,6 +82,8 @@ export const TierAnswerSchema = z.object({
   yearlyTeamBusiness: z.boolean().optional(),
   /** A Checkout put a card on file. Absent from an answer that predates it (off). */
   soloCheckedOut: z.boolean().optional(),
+  /** When a scheduled cancel takes effect (ms), or null. Absent from an answer that predates it. */
+  cancelsAt: z.number().int().nullable().optional(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -143,6 +145,7 @@ export type EffectivePlan = {
   /** Absent when billing's answer carried none (off). */
   yearlyTeamBusiness?: boolean;
   soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -194,6 +197,9 @@ export function effectivePlan(
       : {}),
     ...("soloCheckedOut" in base && base.soloCheckedOut !== undefined
       ? { soloCheckedOut: base.soloCheckedOut }
+      : {}),
+    ...("cancelsAt" in base && base.cancelsAt !== undefined
+      ? { cancelsAt: base.cancelsAt }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",

@@ -93,6 +93,11 @@ export const PlanViewSchema = z.object({
    * or false: the Pay buttons stay. Owner and admins only.
    */
   soloCheckedOut: z.boolean().optional(),
+  /**
+   * ISO date a scheduled cancel (cancel at period end) takes effect, or null
+   * when none; absent from an older answer. Owner and admins only.
+   */
+  cancelsAt: z.string().nullable().optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

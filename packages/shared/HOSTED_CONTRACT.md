@@ -412,6 +412,10 @@ yearly Team and Business in the dashboard. Owner and admins only, like
 a card on file for a Solo still in its free days (D1 `solo_checked_out`); the
 dashboard then shows Manage billing and the first charge date instead of Pay.
 Absent or false: Pay stays. Owner and admins only, like `hasCustomer`.
+`cancelsAt` (ISO string or null, optional): when a scheduled cancel (cancel at
+period end) takes effect, from billing's `cancelsAt` (ms). null or absent: none.
+Owner and admins only. The dashboard shows "Ends on <date>." while it is in the
+future and keeps Manage billing so the plan can be resumed.
 
 | State | What it does | `reason` |
 |---|---|---|

@@ -308,6 +308,64 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
       expect(screen.queryByText(/First charge on/)).toBeNull();
     }
   });
+  describe("a scheduled cancel (cancelsAt)", () => {
+    const ENDS = "2026-12-20T00:00:00.000Z";
+    const endsLine = "Ends on Dec 20, 2026.";
+    it("a free-month Solo that cancelled: Ends on, Manage billing, no first charge, no price line", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TRIAL,
+          hasCustomer: true,
+          soloCheckedOut: true,
+          cancelsAt: ENDS,
+        },
+      });
+      expect(await screen.findByText(endsLine)).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Manage billing" }),
+      ).toBeVisible();
+      expect(screen.queryByText(/First charge on/)).toBeNull();
+      expect(screen.queryByText(/Then \$1\/month/)).toBeNull();
+      expect(pay()).toBeNull();
+    });
+    it("a paid Solo that cancelled", async () => {
+      mountHosted("/settings/plan", { billing: { ...PAID, cancelsAt: ENDS } });
+      expect(await screen.findByText(endsLine)).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Manage billing" }),
+      ).toBeVisible();
+    });
+    it("a Team plan that cancelled", async () => {
+      mountHosted("/settings/plan", {
+        billing: { ...TEAM, hasCustomer: true, cancelsAt: ENDS },
+      });
+      expect(await screen.findByText(endsLine)).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Manage billing" }),
+      ).toBeVisible();
+    });
+    it("a Business plan that cancelled", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TEAM,
+          tier: "business",
+          hasCustomer: true,
+          cancelsAt: ENDS,
+        },
+      });
+      expect(await screen.findByText(endsLine)).toBeVisible();
+    });
+    it("null, absent or a past date shows no Ends line", async () => {
+      for (const cancelsAt of [null, undefined, "2026-01-01T00:00:00.000Z"]) {
+        cleanup();
+        mountHosted("/settings/plan", {
+          billing: { ...TEAM, hasCustomer: true, cancelsAt },
+        });
+        await screen.findByRole("button", { name: "Manage billing" });
+        expect(screen.queryByText(/^Ends on /)).toBeNull();
+      }
+    });
+  });
   it("a paid Solo past its free month shows no charge date", async () => {
     mountHosted("/settings/plan", { billing: PAID });
     await screen.findByRole("button", { name: "Manage billing" });
