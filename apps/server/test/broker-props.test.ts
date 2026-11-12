@@ -65,7 +65,7 @@ import {
   type FakeDirectory,
   fakeDirectory,
 } from "./fixtures/fake-directory.js";
-import { fetchAndWait, login } from "./helpers.js";
+import { errOf, fetchAndWait, login } from "./helpers.js";
 import { pinMiddayUtc } from "./midday.js";
 
 const MIN = 60_000;
@@ -1053,7 +1053,7 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     vi.useRealTimers();
   });
 
-  it("a trial syncs (google handed over) though the provisioned TIER is Team", async () => {
+  it("a trial is Team: frozen handed over, no group reads, the binding stays", async () => {
     const t0 = pinMiddayUtc();
     // Connect while the install's provisioned features allow it (the request
     // carries no billing gate), then run on a Team-provisioned install whose
@@ -1069,12 +1069,15 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     });
     await tier({ tier: "trial", trialEndsAt: t0 + TRIAL_DAYS * DAY }, t0);
     modes.length = 0;
-    const google0 = g.adminCalls.length;
+    const members0 = g.adminCalls.filter((c) => c.includes("/members")).length;
     expect(await period(t0 + FAST_MS)).toBe("done");
     expect(modes.length).toBeGreaterThan(0);
-    expect(new Set(modes)).toEqual(new Set(["google"]));
-    expect(await kv("mode")).toBe("google");
-    expect(g.adminCalls.length).toBeGreaterThan(google0);
+    expect(new Set(modes)).toEqual(new Set(["frozen"]));
+    expect(await kv("mode")).toBe("frozen");
+    expect(g.adminCalls.filter((c) => c.includes("/members")).length).toBe(
+      members0,
+    );
+    expect((await status()).binding).not.toBeNull();
     expect((await status()).state).toBe("ok");
   });
 
@@ -1127,7 +1130,7 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
       { ...hostedProps(), ...billingProps } as never,
     );
 
-  it("SyncStatus.mode is the mode the DO follows: Business to Team reports frozen from POST /directory/sync (#860)", async () => {
+  it("SyncStatus.mode is the mode the DO follows: Business to Team reports frozen; POST /directory/sync is plan_required (#860)", async () => {
     const t0 = pinMiddayUtc();
     const m = mailer();
     e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
@@ -1140,8 +1143,10 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     expect(((await biz.json()) as SyncStatus).mode).toBe("google");
     await tier({ tier: "team" }, t0 + MIN);
     const r = await postBilled(R.directorySync);
-    expect(r.status).toBe(202);
-    expect(((await r.json()) as SyncStatus).mode).toBe("frozen");
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("plan_required");
+    // The scheduler hands the Team mode over.
+    expect(await period(t0 + FAST_MS)).toBe("done");
     expect(await kv("mode")).toBe("frozen");
     expect((await status()).mode).toBe("frozen");
   });
@@ -1153,10 +1158,11 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     await tier({ tier: "business" }, t0);
     await connected(t0);
     await tier({ tier: "team" }, t0 + MIN);
-    // Group sync is stopped on Team: the confirm can't apply, so the route
-    // answers before the DO and no SyncStatus carries a mode.
+    // Team has no group sync: the route answers plan_required before the
+    // DO, so no SyncStatus carries a mode.
     const r = await postBilled(R.directoryHeldConfirm("g-none"));
-    expect(r.status).toBe(409);
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("plan_required");
     // The kick a confirm ends with (and Sync now) hands over the tier's mode.
     const s = await inDo((st) =>
       engine(st).kick("confirm", t0 + 2 * MIN, "frozen", false),

@@ -105,7 +105,12 @@ export type StoredParty =
 /** #1890: the bus identity of a named agent, resolved at write time from the owner's hub. Never a name: names can be reclaimed. */
 export type StoredIdentity = { identityId: string; kind: string };
 
-export type MentionState = "delivered" | "queued" | "seen" | "gone";
+export type MentionState =
+  | "delivered"
+  | "queued"
+  | "seen"
+  | "gone"
+  | "withdrawn";
 
 export type StoredAsk = {
   question: string;
@@ -804,11 +809,69 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (!c) return;
   const open = sql
     .exec(
-      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state != 'gone' limit 1",
+      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state not in ('gone', 'withdrawn') limit 1",
       commentId,
     )
     .toArray();
   if (open.length === 0) refundAsker(sql, c.threadId, c.at);
+}
+
+/** #2175: this thread's comments with a target for `key` still held (queued) or expired by the Worker (gone; the hub may still hold it): what to ask the hub about. */
+export function heldTargets(
+  sql: SqlStorage,
+  threadId: string,
+  key: string,
+): { commentId: string; kind: "mention" | "asker" | "reply" }[] {
+  return sql
+    .exec<{ commentId: string; kind: "mention" | "asker" | "reply" }>(
+      "select comment_id as commentId, kind from comment_targets where thread_id = ? and key = ? and state in ('queued', 'gone') order by rowid",
+      threadId,
+      key,
+    )
+    .toArray();
+}
+
+/**
+ * #2175: marks the targets the hub withdrew "withdrawn" (only while still
+ * queued or gone, so a delivered or seen one stays) and gives back their spends: an asker
+ * notice like one that never reached the agent, a thread reply's per key.
+ */
+export function withdrawTargets(
+  sql: SqlStorage,
+  threadId: string,
+  key: string,
+  targets: { commentId: string; kind: "mention" | "asker" | "reply" }[],
+): void {
+  const askers = new Set<string>();
+  const move = (t: { commentId: string; kind: string }, from: string) =>
+    sql.exec(
+      "update comment_targets set state = 'withdrawn' where comment_id = ? and kind = ? and key = ? and thread_id = ? and state = ?",
+      t.commentId,
+      t.kind,
+      key,
+      threadId,
+      from,
+    ).rowsWritten > 0;
+  for (const t of targets) {
+    // A target the Worker already gave up on ("gone") was refunded then: it
+    // becomes withdrawn without a second refund.
+    if (!move(t, "queued")) {
+      move(t, "gone");
+      continue;
+    }
+    if (t.kind === "asker") askers.add(t.commentId);
+    else if (t.kind === "reply") {
+      const c = sql
+        .exec<{ at: string }>(
+          "select created_at as at from comments where id = ?",
+          t.commentId,
+        )
+        .toArray()[0];
+      if (c) refundThreadReply(sql, threadId, [key], c.at);
+    }
+  }
+  // After every target moved, so the order the hub names them in is moot.
+  for (const id of askers) refundAskerIfAllGone(sql, id);
 }
 
 /** Drops the ask and targets of comments (`commentId`, or every comment of `threadId`). */

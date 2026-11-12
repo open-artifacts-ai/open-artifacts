@@ -218,11 +218,13 @@ function Layout() {
           <MenuTrigger me={me} />
           <TopBar me={me} />
         </header>
-        {/* Focusable (not tabbable) so the keyboard can scroll it. */}
+        {/* Focusable (not tabbable) so the keyboard can scroll it. Positioned
+            from 768px, where it scrolls: an absolute .sr-only inside sits in
+            this scroller instead of stretching the document past it (#2191). */}
         <main
           id="oa-main"
           tabIndex={-1}
-          className="min-w-0 flex-1 outline-none md:min-h-0 md:overflow-auto md:rounded-b-[calc(var(--oa-radius-lg)-1px)] md:[scrollbar-gutter:stable]"
+          className="min-w-0 flex-1 outline-none md:relative md:min-h-0 md:overflow-auto md:rounded-b-[calc(var(--oa-radius-lg)-1px)] md:[scrollbar-gutter:stable]"
         >
           <QuotaBanner />
           <div className="oa-page">

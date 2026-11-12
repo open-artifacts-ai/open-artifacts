@@ -465,6 +465,11 @@ function withMarks(content: Fragment, marks: readonly Mark[]): Fragment {
   if (marks.length === 0) return content;
   const out: PMNode[] = [];
   content.forEach((node) => {
+    // A hardBreak carries no marks.
+    if (node.type === nodes.hardBreak) {
+      out.push(node);
+      return;
+    }
     let set = node.marks;
     for (const m of marks) {
       if (!set.some((s) => s.type === m.type)) set = m.addToSet(set);
@@ -504,6 +509,7 @@ function replace(
       deleteRange(tr, from, to);
       return;
     }
+    checkBreaks($from.parent, inline);
     tr.replaceWith(from, to, withMarks(inline, commonMarks(tr.doc, from, to)));
     return;
   }
@@ -591,6 +597,7 @@ function insert(
   const parsed = md(op.markdown);
   const inline = inlineOf(parsed, op.markdown);
   if (mid && inline !== null) {
+    checkBreaks($at.parent, inline);
     tr.insert(at, inline);
     return;
   }
@@ -620,7 +627,7 @@ function placeBlocks(tr: Transform, pos: number, blocks: Fragment): void {
     return;
   }
   // Spaces at the split would start or end a block; drop them.
-  const text = block.textContent;
+  const text = block.textBetween(0, block.content.size, "", "\n");
   const trail = off - text.slice(0, off).trimEnd().length;
   const lead = text.slice(off).length - text.slice(off).trimStart().length;
   if (trail + lead > 0) {
@@ -679,7 +686,8 @@ function format({ tr }: OpContext, op: Extract<DocOp, { op: "format" }>): void {
     const type = docSchema.marks[mark];
     if (op.remove) tr.removeMark(from, to, type);
     else
-      tr.addMark(
+      addToText(
+        tr,
         from,
         to,
         type.create(mark === "link" ? { href: op.href } : null),
@@ -695,6 +703,7 @@ function format({ tr }: OpContext, op: Extract<DocOp, { op: "format" }>): void {
     case "heading1":
     case "heading2":
     case "heading3":
+      refuseBreaksInHeading(tr.doc, from, to);
       setBlocks(tr, from, to, nodes.heading, {
         level: Number(mark.slice(-1)),
       });
@@ -715,6 +724,47 @@ function format({ tr }: OpContext, op: Extract<DocOp, { op: "format" }>): void {
       toList(tr, $from, $to, nodes[mark]);
       return;
   }
+}
+
+// A heading is one line: turning a block with a line break into one would
+// silently lose the break.
+function refuseBreaksInHeading(doc: PMNode, from: number, to: number): void {
+  doc.nodesBetween(from, to, (node) => {
+    if (!node.isTextblock) return true;
+    node.descendants((n) => {
+      if (n.type === nodes.hardBreak) {
+        throw invalid(
+          "A heading is one line, so a block with a line break cannot become one. Delete the line break first, or keep the block a paragraph.",
+        );
+      }
+    });
+    return false;
+  });
+}
+
+// Markdown with a line break ("\\" at the end of a line) cannot go in a heading.
+function checkBreaks(parent: PMNode, inline: Fragment): void {
+  if (parent.type !== nodes.heading) return;
+  inline.descendants((n) => {
+    if (n.type === nodes.hardBreak) {
+      throw invalid(
+        "A heading is one line, so a line break cannot go in it. Remove the line break from the Markdown, or replace the whole heading.",
+      );
+    }
+  });
+}
+
+// Add a mark to the text between from and to, not to a hardBreak in it: a
+// break carries no marks, and the mark continues on both sides.
+function addToText(tr: Transform, from: number, to: number, mark: Mark): void {
+  const runs: [number, number][] = [];
+  tr.doc.nodesBetween(from, to, (node, pos) => {
+    if (node.isText) {
+      runs.push([Math.max(pos, from), Math.min(pos + node.nodeSize, to)]);
+    }
+    return true;
+  });
+  for (const [a, b] of runs) tr.addMark(a, b, mark);
 }
 
 function setBlocks(

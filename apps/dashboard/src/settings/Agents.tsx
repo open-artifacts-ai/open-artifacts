@@ -28,10 +28,10 @@ import {
 import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { Modal } from "../layout/Modal";
+import { TabStrip } from "../layout/TabStrip";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
-import { TabStrip } from "../viewer/panels/SidePanel";
 import { AgentRow } from "./AgentRow";
 import {
   AgentSetupCard,
