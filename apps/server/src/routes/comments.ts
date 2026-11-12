@@ -422,6 +422,7 @@ export function mountComments(app: AppType): void {
         key,
         { ...viewer, owner: level === "owner" },
         removed,
+        execCtx(c),
       );
       return c.body(null, 204);
     });

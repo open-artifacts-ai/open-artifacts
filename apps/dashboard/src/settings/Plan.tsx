@@ -27,7 +27,7 @@ import { muted, SettingsCard, STACK } from "./ui";
 /** The public docs page on leaving hosted (#2108). */
 const LEAVE_HOSTED_URL = "https://open-artifacts.com/docs/hosted/";
 
-type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
+type Buy = Pick<BillingCheckoutInput, "tier" | "interval" | "seats">;
 
 const NAME: Record<BillingTier, string> = {
   free: "Solo",
@@ -289,7 +289,18 @@ export function Plan() {
             : // A paid plan changes in the billing portal, never a second checkout.
               portal
               ? () => go.mutate("portal")
-              : (tier) => go.mutate({ tier })
+              : // Seats come only from the yearly step; the schema needs them with year.
+                (tier, seats) =>
+                  go.mutate(
+                    seats === undefined
+                      ? { tier }
+                      : { tier, interval: "year", seats },
+                  )
+        }
+        seatsDefault={
+          operatorPlan || lapsedPaid || portal
+            ? undefined
+            : Math.max(1, billing.creatorsThisMonth ?? 1)
         }
       />
     </div>

@@ -121,6 +121,13 @@ const abortable = <T>(p: Promise<T>, signal?: AbortSignal): Promise<T> =>
       ])
     : p;
 
+/** What a finished upload leaves for the create call; a retry reuses it. */
+export type Uploaded = {
+  reserved: string | undefined;
+  files: Record<string, { uploadId: string }>;
+  entry: string | undefined;
+};
+
 /**
  * Uploads each file to its signed URL, then publishes once, reusing the artifact id
  * the first upload reserved.
@@ -130,6 +137,16 @@ export async function uploadArtifact(
   onProgress: (p: Progress) => void,
   signal?: AbortSignal,
 ): Promise<PublishResult> {
+  const uploaded = await uploadFiles(input, onProgress, signal);
+  return createArtifact(input, uploaded, signal);
+}
+
+/** Validates and uploads every file; no artifact exists until `createArtifact`. */
+export async function uploadFiles(
+  input: UploadInput,
+  onProgress: (p: Progress) => void,
+  signal?: AbortSignal,
+): Promise<Uploaded> {
   const paths = validateUpload(input.files);
   if (!input.title.trim())
     throw new UploadValidationError("A title is required");
@@ -183,6 +200,15 @@ export async function uploadArtifact(
     files[path] = { uploadId: created.uploadId };
     onProgress({ done: i + 1, total });
   }
+  return { reserved, files, entry };
+}
+
+/** The create call alone, over files already uploaded. */
+export function createArtifact(
+  input: UploadInput,
+  { reserved, files, entry }: Uploaded,
+  signal?: AbortSignal,
+): Promise<PublishResult> {
   signal?.throwIfAborted();
   const message = input.message?.trim() || undefined;
   const body = { files, entry, message };
