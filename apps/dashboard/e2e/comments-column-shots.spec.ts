@@ -35,8 +35,17 @@ for (const w of [1280, 390]) {
       const note = page.getByRole("textbox", {
         name: "Comment on the whole page",
       });
+      await shot(page, `${w}-${theme}-composer-empty`);
       await note.fill("Looks good to me");
       await shot(page, `${w}-${theme}-composer`);
+      const one = (await note.boundingBox())?.height ?? 0;
+      await note.fill(
+        Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n"),
+      );
+      const grown = (await note.boundingBox())?.height ?? 0;
+      expect(grown).toBeGreaterThan(one);
+      expect(grown).toBeLessThanOrEqual(241);
+      await shot(page, `${w}-${theme}-composer-max`);
       await note.fill("");
       // The frame's runtime says "comment.select" for a selection: replay it
       // from the frame with the nonce in its src.

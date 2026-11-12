@@ -538,6 +538,11 @@ describe("comments: layouts", () => {
     await wait(30);
     expect(card.contains(row)).toBe(false);
     expect(outlet.contains(row)).toBe(true);
+    expect(
+      within(card)
+        .getByRole("textbox", { name: "Reply" })
+        .hasAttribute("data-oa-field"),
+    ).toBe(true);
     fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
       target: { value: "Floats" },
     });
@@ -946,6 +951,10 @@ describe("comments: actions", () => {
     const card = box.parentElement as HTMLElement;
     expect(card.firstElementChild?.textContent).toBe("Landing");
     expect(card.querySelectorAll("textarea")).toHaveLength(1);
+    // #2234: the quote composer's field is the outlined, growing one.
+    expect(box.hasAttribute("data-oa-field")).toBe(true);
+    expect(box.className).toContain("border-input");
+    expect(box.className).toContain("max-h-");
     expect(
       c.querySelectorAll('textarea[aria-label="Add a comment"]'),
     ).toHaveLength(1);

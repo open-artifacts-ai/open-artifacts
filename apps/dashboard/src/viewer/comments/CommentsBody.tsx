@@ -211,6 +211,26 @@ function QuoteBar({
   );
 }
 
+/**
+ * #2234: the outlined field. One line when empty, then it grows a line at a
+ * time up to ~10 lines (240px; ~6 on a phone) and scrolls inside its own edge.
+ */
+const FIELD =
+  "min-h-[42px] max-h-36 md:max-h-60 resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+export const FIELD_MAX = 240;
+export const FIELD_MAX_PHONE = 144;
+
+/** Fallback for browsers without `field-sizing: content`: size to the text, capped. */
+export function growField(el: HTMLTextAreaElement | null) {
+  if (!el) return;
+  if (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))
+    return;
+  const phone = !!window.matchMedia?.("(max-width: 767px)").matches;
+  const max = phone ? FIELD_MAX_PHONE : FIELD_MAX;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -328,8 +348,10 @@ function Composer({
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
-    if (autoFocus) ref.current?.focus();
+    if (autoFocus) ref.current?.focus({ preventScroll: true });
   }, [autoFocus]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: text is what changes the height.
+  useLayoutEffect(() => growField(ref.current), [text]);
   const body = text.trim();
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
@@ -369,7 +391,7 @@ function Composer({
     <div
       className={
         card
-          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3 focus-within:border-ring focus-within:ring-1 focus-within:ring-ring"
+          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3"
           : "flex flex-col gap-2"
       }
       data-oa-composing={composing ? "" : undefined}
@@ -385,12 +407,9 @@ function Composer({
         }
         value={text}
         maxLength={COMMENT_BODY_MAX}
-        rows={open ? 3 : 1}
-        className={
-          card
-            ? `${CTXT} border-0 bg-transparent p-0 shadow-none focus-visible:outline-none`
-            : CTXT
-        }
+        rows={1}
+        data-oa-field=""
+        className={`${CTXT} ${FIELD}`}
         onFocus={() => {
           setOpen(true);
           retryAgents();
