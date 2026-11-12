@@ -297,6 +297,43 @@ describe("Settings → Profile", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
+  const HIDDEN = (who: string) =>
+    `Others see your ${who} instead of this name, because it looks like an agent's name. Pick a different display name to show it.`;
+
+  it("says others see the email when the name reads as an agent's (#2277)", async () => {
+    serveMe(
+      needsName({
+        needsDisplayName: false,
+        displayName: "Ada's agent",
+        nameHiddenAs: "email",
+      }),
+    );
+    mount("/settings/profile");
+    const input = await field();
+    const hint = await screen.findByText(HIDDEN("email"));
+    expect(input.getAttribute("aria-describedby")).toContain(hint.id);
+  });
+
+  it("says others see the sign-in name when that shows instead (#2277)", async () => {
+    serveMe(
+      needsName({
+        needsDisplayName: false,
+        displayName: "Ada's agent",
+        nameHiddenAs: "sso",
+      }),
+    );
+    mount("/settings/profile");
+    await field();
+    expect(await screen.findByText(HIDDEN("sign-in name"))).toBeInTheDocument();
+  });
+
+  it("shows no hint when the name passes", async () => {
+    serveMe(needsName({ needsDisplayName: false, nameHiddenAs: null }));
+    mount("/settings/profile");
+    await field();
+    expect(screen.queryByText(/looks like an agent/)).toBeNull();
+  });
+
   it("disables Save until the name changes", async () => {
     serveMe(needsName({ needsDisplayName: false, displayName: "Ada" }));
     mount("/settings/profile");

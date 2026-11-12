@@ -41,6 +41,7 @@ function ProfileForm({ me }: { me: Me }) {
   const trimmed = name.trim();
   const dirty = trimmed !== saved;
   const tooLong = nameLength(trimmed) > NAME_MAX;
+  const hidden = me.nameHiddenAs ?? null;
   const problem = error ?? (tooLong ? TOO_LONG : null);
   return (
     <section className="max-w-[460px]" aria-label="Profile">
@@ -76,11 +77,13 @@ function ProfileForm({ me }: { me: Me }) {
                 placeholder="Your full name"
                 autoComplete="name"
                 aria-invalid={Boolean(problem) || undefined}
-                aria-describedby={
-                  problem
-                    ? "oa-profile-name-err oa-profile-name-help"
-                    : "oa-profile-name-help"
-                }
+                aria-describedby={[
+                  problem && "oa-profile-name-err",
+                  hidden && "oa-profile-name-hidden",
+                  "oa-profile-name-help",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 onChange={(e) => {
                   setDraft(e.target.value);
                   setError(null);
@@ -94,6 +97,16 @@ function ProfileForm({ me }: { me: Me }) {
                   className="text-sm text-destructive"
                 >
                   {problem}
+                </p>
+              )}
+              {hidden && (
+                <p
+                  id="oa-profile-name-hidden"
+                  className="text-xs text-muted-foreground"
+                >
+                  Others see your {hidden === "sso" ? "sign-in name" : "email"}{" "}
+                  instead of this name, because it looks like an agent's name.
+                  Pick a different display name to show it.
                 </p>
               )}
               <p
