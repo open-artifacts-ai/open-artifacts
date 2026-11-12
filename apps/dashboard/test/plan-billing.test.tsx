@@ -1094,6 +1094,16 @@ describe("hosted install with no billing answer", () => {
     expect(screen.queryByTestId("plan-card-team")).toBeNull();
   });
 
+  it("hosted without billing still has the Plan and billing tab", async () => {
+    mountHosted("/settings/profile", true, (m) => {
+      const { billing: _, ...instance } = m.instance;
+      return { ...m, instance };
+    });
+    expect(
+      await screen.findByRole("link", { name: "Plan and billing" }),
+    ).toBeVisible();
+  });
+
   it("self-hosted keeps its own line", async () => {
     mountHosted("/settings/plan", { selfHosted: true });
     expect(
