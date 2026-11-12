@@ -15,7 +15,11 @@ const monthName = (month: string, withYear: boolean) => {
   const [y, m] = month.split("-").map(Number);
   return new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, 1)).toLocaleString(
     "en-US",
-    { month: "long", timeZone: "UTC", ...(withYear ? { year: "numeric" } : {}) },
+    {
+      month: "long",
+      timeZone: "UTC",
+      ...(withYear ? { year: "numeric" } : {}),
+    },
   );
 };
 
