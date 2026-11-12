@@ -5,7 +5,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@oa/ui/shadcn";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   commentError,
   useCommentErrorCtx,
@@ -178,16 +184,37 @@ export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
 export function RemovalNotices({
   rm,
   api,
+  fallback,
 }: {
   rm: ReturnType<typeof useAgentRemoval>;
   api: CommentsApi;
+  /** Where focus goes after Undo when the restored row's × is not there. */
+  fallback?: RefObject<HTMLElement | null>;
 }) {
-  const { errCtx, undo, gone, err, run } = rm;
+  const { set, errCtx, undo, gone, err, run } = rm;
   // The × that removed the chip is gone; Undo is the next stop.
   const key = gone?.key;
+  const prev = useRef<{ key: string; scope: Element | Document } | null>(null);
   useEffect(() => {
-    if (key) undo.current?.focus();
-  }, [key, undo]);
+    if (key) {
+      undo.current?.focus();
+      prev.current = {
+        key,
+        scope: undo.current?.closest("[data-thread]") ?? document,
+      };
+      return;
+    }
+    // Undo unmounted with the focus: give it back to the restored ×, or the fallback.
+    const was = prev.current;
+    prev.current = null;
+    if (!was) return;
+    const a = document.activeElement;
+    if (a && a !== document.body) return;
+    const x = was.scope.querySelector<HTMLElement>(
+      `[data-agent-x="${CSS.escape(was.key)}"]`,
+    );
+    (x ?? fallback?.current)?.focus({ preventScroll: true });
+  }, [key, undo, fallback]);
   return (
     <>
       {gone && (
@@ -197,6 +224,7 @@ export function RemovalNotices({
             ref={undo}
             type="button"
             className="cursor-pointer border-0 bg-transparent p-0 text-[var(--oa-accent-fg)] underline"
+            disabled={set.isPending}
             onClick={() => run(gone, false)}
           >
             Undo
@@ -214,8 +242,8 @@ export function RemovalNotices({
 
 /**
  * #2035: "Notifying" and a chip for each agent the thread already tells on a
- * reply. The agent's person and the artifact's owner can take one out ; everyone else sees the chip with a tooltip that says who can.
- * Removal is for the whole thread and lasts until someone @-mentions the agent.
+ * reply. The agent's person and the artifact's owner can take one out;
+ * everyone else sees the chip with a tooltip that says who can. Removal is for the whole thread and lasts until someone @-mentions the agent.
  */
 export function ThreadAgents({
   t,
@@ -225,7 +253,7 @@ export function ThreadAgents({
   api: CommentsApi;
 }) {
   const rm = useAgentRemoval(t, api);
-  const { run, gone, agents } = rm;
+  const { run, set, gone, agents } = rm;
   const [all, setAll] = useState(false);
   const { row, ghost, fit } = useFit(
     agents.length,
@@ -261,6 +289,8 @@ export function ThreadAgents({
                     type="button"
                     aria-label={`Stop notifying ${a.name}`}
                     className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+                    data-agent-x={a.key}
+                    disabled={set.isPending}
                     onClick={() => run(a, true)}
                   >
                     ×

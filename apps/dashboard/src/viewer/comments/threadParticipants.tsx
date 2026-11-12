@@ -76,7 +76,7 @@ export function ThreadParticipants({
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => {
-      // A target the render already removed (a × that just removed its row) was inside.
+      // A target the render already removed (an unmounted Undo) was inside.
       const t = e.target as Node;
       if (t.isConnected && !box.current?.contains(t)) setOpen(false);
     };
@@ -235,6 +235,8 @@ export function ThreadParticipants({
                         aria-label={`Stop notifying ${a.name} in this thread`}
                         title={`Stop notifying ${a.name} in this thread`}
                         className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        data-agent-x={a.key}
+                        disabled={rm.set.isPending}
                         onClick={() => run(a, true)}
                       >
                         ×
@@ -256,7 +258,7 @@ export function ThreadParticipants({
               })}
             </>
           )}
-          <RemovalNotices rm={rm} api={api} />
+          <RemovalNotices rm={rm} api={api} fallback={trigger} />
         </div>
       )}
     </div>

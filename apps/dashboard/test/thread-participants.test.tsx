@@ -165,6 +165,30 @@ describe("ThreadParticipants", () => {
     expect(document.querySelector("[data-off]")).toBeNull();
   });
 
+  it("after Undo the list stays open and focus returns to the restored ×", () => {
+    render(
+      <ThreadParticipants
+        t={thread([agent("OA Billing", true)])}
+        api={api()}
+      />,
+    );
+    fireEvent.focus(trigger());
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Stop notifying OA Billing in this thread",
+      }),
+    );
+    act(() => mutate.mock.calls[0]?.[1].onSuccess());
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    act(() => mutate.mock.calls[1]?.[1].onSuccess());
+    expect(list()).not.toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", {
+        name: "Stop notifying OA Billing in this thread",
+      }),
+    );
+  });
+
   it("canRemove false shows no ×", () => {
     render(
       <ThreadParticipants t={thread([agent("OA Bus", false)])} api={api()} />,
