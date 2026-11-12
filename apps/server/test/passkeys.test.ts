@@ -167,6 +167,7 @@ describe("registering a passkey", () => {
   });
 
   it("refuses a registration with a replayed or missing challenge", async () => {
+    const u = await mk("reg-ch");
     const a = await FakeAuthenticator.create();
     const { options } = await json<PasskeyChallenge>(
       await api(app, R.passkeyRegisterBegin, u.fresh, { method: "POST" }),
@@ -194,6 +195,7 @@ describe("registering a passkey", () => {
   });
 
   it("refuses an attestation for another origin", async () => {
+    const u = await mk("reg-ch2");
     const a = await FakeAuthenticator.create();
     const { options } = await json<PasskeyChallenge>(
       await api(app, R.passkeyRegisterBegin, u.fresh, { method: "POST" }),
@@ -626,21 +628,42 @@ describe("adding a passkey when one is already usable", () => {
     expect((await begin(u, { assertion })).status).toBe(410);
   });
 
-  it("an assertion from a passkey that has not cleared 24 h does not count, and a cooling-only account needs just a re-auth", async () => {
+  it("a cooling-only account is refused too (409 passkey_cooling), challenge included", async () => {
     const u = await mk("reg4");
-    await addPasskey(u, u.fresh, false); // cooling: not an approver
-    expect((await begin(u)).status).toBe(200);
-    // No approver needed: the challenge route says so.
+    await addPasskey(u, u.fresh, false); // cooling: cannot approve yet
+    const r = await begin(u);
+    expect(r.status).toBe(409);
+    expect((await errOf(r)).code).toBe("passkey_cooling");
     const ch = await api(app, R.passkeyRegisterChallenge, u.fresh, {
       method: "POST",
     });
     expect(ch.status).toBe(409);
+    expect((await errOf(ch)).code).toBe("passkey_cooling");
   });
 
-  it("a passkey pending removal is not an approver", async () => {
+  it("schedule-then-add is refused: a pending removal still counts until its time", async () => {
     const u = await mk("reg5");
+    const { a, passkey } = await addPasskey(u);
+    await api(app, R.passkey(passkey.id), u.fresh, { method: "DELETE" });
+    const r = await begin(u);
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("passkey_required");
+    // The pending passkey itself can still approve.
+    const ch = await json<PasskeyChallenge>(
+      await api(app, R.passkeyRegisterChallenge, u.fresh, { method: "POST" }),
+    );
+    expect((await begin(u, { assertion: await assertFor(a, ch) })).status).toBe(
+      200,
+    );
+  });
+
+  it("recovery: once the removal time has passed, a re-auth alone adds one", async () => {
+    const u = await mk("reg7");
     const { passkey } = await addPasskey(u);
     await api(app, R.passkey(passkey.id), u.fresh, { method: "DELETE" });
+    await E.DB.prepare("update passkeys set removal_at = ? where id = ?")
+      .bind(Date.now() - 1, passkey.id)
+      .run();
     expect((await begin(u)).status).toBe(200);
   });
 
