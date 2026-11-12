@@ -146,6 +146,15 @@ const col = async () => {
     fireEvent.click(b);
   return screen.findByRole("complementary", { name: "Comments" });
 };
+// #2179: a one-reply thread has no replies button; its quote opens it.
+const openReplied = async (c: HTMLElement) => {
+  const card = (
+    await within(c).findByText("Agreed, shorter is better.")
+  ).closest("[data-thread]") as HTMLElement;
+  fireEvent.click(
+    within(card).getByRole("button", { name: /^Show (in page|pin)/ }),
+  );
+};
 const threadIds = () =>
   [...document.querySelectorAll("[data-thread]")].map((e) =>
     e.getAttribute("data-thread"),
@@ -995,7 +1004,7 @@ describe("comments: actions", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     // Two comments: collapsed to a count until the card is selected.
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     // #1657: in the phone sheet's short height the action row stays on screen.
     const actions = within(c)
       .getByRole("button", { name: "Reply" })
@@ -1055,7 +1064,7 @@ describe("comments: actions", () => {
     const patches = calls("PATCH");
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     const mine = (
       await within(c).findByText("Agreed, shorter is better.")
     ).closest("li") as HTMLElement;
@@ -1083,7 +1092,7 @@ describe("comments: actions", () => {
     const dels = calls("DELETE");
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     const reply = (
       await within(c).findByText("Agreed, shorter is better.")
     ).closest("li") as HTMLElement;
@@ -1588,7 +1597,7 @@ describe("comments: contract edges", () => {
   it("shows the conflict copy when a reply is refused", async () => {
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     server.use(
       http.post("*/api/v1/artifacts/:id/comments/:tid/replies", () =>
         HttpResponse.json(
@@ -1885,7 +1894,7 @@ describe("comments: review round 1", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await hello();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     fireEvent.change(within(c).getByRole("textbox", { name: "Reply" }), {
       target: { value: "typing a reply" },
     });
@@ -1922,7 +1931,7 @@ describe("comments: review round 1", () => {
   it("B1: an edit in progress and a pending draft count as writing too", async () => {
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     const mine = (
       await within(c).findByText("Agreed, shorter is better.")
     ).closest("li") as HTMLElement;

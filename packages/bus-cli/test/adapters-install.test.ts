@@ -202,7 +202,92 @@ describe("installAdapters", () => {
     expect(readFileSync(p.oc(h), "utf8")).toBe(oc);
     expect(readFileSync(p.cli(h), "utf8")).toBe(cli);
     expect(readJ(p.cli(h)).plugins).toEqual(["./a", p.plugin(h)]);
+    // #2105: the rerun changed nothing, so OpenCode is not restarted again.
+    expect(calls.filter((c) => c.join() === OC_RESTART.join())).toHaveLength(1);
+    expect(again.opencodeRestarted).toBe(false);
+  });
+
+  it("restarts OpenCode again when its plugin changed (#2105)", async () => {
+    const { h, deps, calls } = setup(["opencode"]);
+    await installAdapters(deps);
+    deps.assets = { ...deps.assets, opencodePlugin: "PLUGIN_V2" };
+    const out = await installAdapters(deps);
+    expect(out.opencodeRestarted).toBe(true);
     expect(calls.filter((c) => c.join() === OC_RESTART.join())).toHaveLength(2);
+    expect(existsSync(p.plugin(h))).toBe(true);
+  });
+
+  it("never restarts OpenCode from inside OpenCode; the user is told (#2105)", async () => {
+    const { deps, calls } = setup(["opencode"]);
+    deps.env = { OPENCODE: "1" };
+    const out = await installAdapters(deps);
+    expect(out.installed).toContain("opencode");
+    expect(out.opencodeRestarted).toBe(false);
+    expect(out.opencodeRestartByUser).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+    const gone = await uninstallAdapters(deps);
+    expect(gone.opencodeRestartByUser).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+  });
+
+  it("a second uninstall does not report Claude Code as removed (#2106)", async () => {
+    const { h, deps, calls } = setup(["claude"]);
+    put(p.claude(h), { mcpServers: { oa_bus: { type: "stdio" } } });
+    expect((await uninstallAdapters(deps)).removed).toEqual(["claude"]);
+    put(p.claude(h), {});
+    calls.length = 0;
+    // A stub CLI exits 0 even with nothing to remove.
+    expect((await uninstallAdapters(deps)).removed).toEqual([]);
+    expect(calls).not.toContainEqual(CLAUDE_RM);
+  });
+
+  it("OPENCODE_SESSION_ID also marks an OpenCode shell; OPENCODE_PID does not", async () => {
+    const a = setup(["opencode"]);
+    a.deps.env = { OPENCODE_SESSION_ID: "ses_1" };
+    expect((await installAdapters(a.deps)).opencodeRestartByUser).toBe(true);
+    const t = setup(["opencode"]);
+    t.deps.env = { OPENCODE_TERMINAL: "1" };
+    expect((await installAdapters(t.deps)).opencodeRestartByUser).toBe(true);
+    const b = setup(["opencode"]);
+    b.deps.env = { OPENCODE_PID: "1" };
+    const out = await installAdapters(b.deps);
+    expect(out.opencodeRestartByUser).toBe(false);
+    expect(out.opencodeRestarted).toBe(true);
+  });
+
+  it("a malformed ~/.claude.json still gets the CLI's remove (#2106)", async () => {
+    const { h, deps, calls } = setup(["claude"]);
+    put(p.claude(h), "{ not json");
+    const out = await uninstallAdapters(deps);
+    expect(calls).toContainEqual(CLAUDE_RM);
+    expect(out.removed).toEqual(["claude"]);
+  });
+
+  it("an isolated install never runs opencode, install or uninstall; the user is told", async () => {
+    const { deps, calls } = setup(["opencode"]);
+    deps.isolated = true;
+    const out = await installAdapters(deps);
+    expect(out.opencodeRestartByUser).toBe(true);
+    expect(out.opencodeIsolated).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+    const gone = await uninstallAdapters(deps);
+    expect(gone.opencodeIsolated).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+  });
+
+  it("an OPENCODE_CONFIG_DIR outside the home counts as isolated", async () => {
+    const { h, deps, calls } = setup(["opencode"]);
+    deps.env = { OPENCODE_CONFIG_DIR: mkdtempSync(join(tmpdir(), "ob-oc-")) };
+    const out = await installAdapters(deps);
+    expect(out.opencodeIsolated).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+    expect(h).toBeTruthy();
+  });
+
+  it("an uninstall with nothing to remove does not restart OpenCode (#2105)", async () => {
+    const { deps, calls } = setup(["opencode"]);
+    await uninstallAdapters(deps);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
   });
 
   it("honours XDG_CONFIG_HOME, OPENCODE_CONFIG_DIR, PI_CODING_AGENT_DIR and busHome", async () => {
@@ -370,6 +455,8 @@ describe("uninstallAdapters", () => {
     await installAdapters(deps);
     calls.length = 0;
 
+    // The fake `claude mcp add` writes nothing; a real one leaves the entry here.
+    put(p.claude(h), { mcpServers: { oa_bus: { type: "stdio" } } });
     const out = await uninstallAdapters(deps);
 
     expect(out.removed).toEqual(["claude", "opencode", "pi"]);
@@ -917,6 +1004,7 @@ describe("a non-default bus home reaches every harness entry (#1443)", () => {
     const { h, deps } = setup(["claude", "opencode", "pi"]);
     deps.busHome = moved(h);
     await installAdapters(deps);
+    put(p.claude(h), { mcpServers: { oa_bus: { type: "stdio" } } });
     const out = await uninstallAdapters(deps);
     expect(out.removed).toEqual(["claude", "opencode", "pi"]);
     expect(existsSync(p.pi(h))).toBe(false);
