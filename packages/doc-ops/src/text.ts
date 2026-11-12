@@ -2,7 +2,9 @@ import type { Node as PMNode } from "prosemirror-model";
 
 /**
  * The text a person sees in a doc, with no Markdown symbols: every non-empty
- * textblock's text in document order, one line break between blocks. Kept as
+ * textblock's text in document order, one line break between blocks. A
+ * hardBreak inside a block is also "\n" and sits on a real position, so a quote
+ * can span it; a break between blocks is BREAK. Kept as
  * one string plus a small table per block (not one entry per character), so
  * building it for a doc at the size cap takes a few milliseconds.
  */
@@ -38,9 +40,10 @@ export function visibleText(doc: PMNode): VisibleText {
       if (node.isBlock && node.isLeaf) hidden = true;
       return true;
     }
-    // Slice-1 textblocks hold only text nodes, so character i sits at pos+1+i.
-    const text = node.textContent;
-    if (text.length === 0) {
+    // Character i sits at pos+1+i: a text character and a hardBreak (shown
+    // as "\n", #2178) each take one position.
+    const text = node.textBetween(0, node.content.size, "", "\n");
+    if (!/[^\n]/.test(text)) {
       hidden = true;
       return false;
     }

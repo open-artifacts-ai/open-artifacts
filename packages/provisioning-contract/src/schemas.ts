@@ -4,6 +4,7 @@ import {
   TEST_HOOK_REFUSALS,
 } from "@oa/shared";
 import { z } from "zod";
+import { SIGNUPS_ENABLED_VALUES } from "./constants.js";
 import {
   ALERT_KEYS,
   AuthProviderSchema,
@@ -450,6 +451,6 @@ export const WorldSchema = z.object({
   prodClean: z
     .object({ at: z.number(), ok: z.boolean(), code: z.string() })
     .nullable(),
-  signups: z.enum(["false", "true", "test-users"]),
+  signups: z.enum(SIGNUPS_ENABLED_VALUES),
 });
 export type World = z.infer<typeof WorldSchema>;

@@ -33,7 +33,8 @@ export async function uninstall(
   const machine = readMachine(ctx.home);
 
   const removed = await ctx.service.remove();
-  if (removed.unit) say(ctx, c.serviceRemoved(removed.unit));
+  if (removed.skipped) say(ctx, c.serviceOtherHome(removed.skipped, true));
+  else if (removed.unit) say(ctx, c.serviceRemoved(removed.unit));
   else if (removed.stopped) say(ctx, c.daemonStopped());
   else if (removed.running === undefined) say(ctx, c.noService());
   if (removed.running !== undefined)

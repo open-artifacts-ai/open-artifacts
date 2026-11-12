@@ -57,6 +57,7 @@ import {
   deleteExtras,
   getComment,
   getThread,
+  heldTargets,
   insertComment,
   insertExtras,
   insertThread,
@@ -86,6 +87,7 @@ import {
   threadExists,
   threadStatus,
   touchThread,
+  withdrawTargets,
 } from "./comments-store.js";
 import {
   INDEX_REPORT_MS,
@@ -2305,6 +2307,28 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return ok;
   }
 
+  /** #2175: this thread's targets for `key` still held. */
+  commentsHeldTargets(a: {
+    threadId: string;
+    key: string;
+  }): { commentId: string; kind: "mention" | "asker" | "reply" }[] {
+    this.ensureSchema();
+    return heldTargets(this.sql, a.threadId, a.key);
+  }
+
+  /** #2175: marks the targets the hub withdrew and gives back their spends. */
+  commentsTargetsWithdraw(a: {
+    threadId: string;
+    key: string;
+    targets: { commentId: string; kind: "mention" | "asker" | "reply" }[];
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      withdrawTargets(this.sql, a.threadId, a.key, a.targets),
+    );
+    this.broadcastComments();
+  }
+
   /** #2035: records who a person's reply also told, and how it went; returns the comment. */
   commentsReplyTargets(a: {
     threadId: string;
@@ -2530,6 +2554,8 @@ type RpcMethods =
   | "commentsThreadReplyRefund"
   | "commentsParticipants"
   | "commentsParticipantSet"
+  | "commentsHeldTargets"
+  | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
   | "commentsStatus"
   | "commentsEdit"

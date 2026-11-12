@@ -71,14 +71,18 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     ? `${name} is ${OFFLINE}`
     : d === "gone"
       ? `${name} is gone · mention another agent`
-      : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
+      : d === "withdrawn"
+        ? `${name}: Removed before delivery`
+        : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
 /** #2035: how a reply reached an agent the thread already notifies. */
 const notifiedWord = (d: CommentMention["delivery"]) =>
   d === "queued"
     ? "Held until it's back"
     : d === "gone"
       ? "Expired"
-      : "Delivered";
+      : d === "withdrawn"
+        ? "Removed before delivery"
+        : "Delivered";
 
 /** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
 export function Delivery({
