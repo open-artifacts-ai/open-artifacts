@@ -35,6 +35,7 @@ import {
   actor,
   asksForMe,
   Delivery,
+  DeliveryFaces,
   type Extras,
   extrasBody,
   MentionChips,
@@ -43,6 +44,7 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  newProblems,
   nextAskFor,
   removeMention,
 } from "./asks";
@@ -598,6 +600,9 @@ function CommentRow({
   const [mode, setMode] = useState<"view" | "edit" | "delete">("view");
   const [delError, setDelError] = useState<unknown>(null);
   const any = c.can.edit || c.can.delete;
+  // #2229: marks sit on people's comments, for members; an agent's own reply has none.
+  const marks = !api.guest && c.author.kind !== "agent";
+  const problems = newProblems(thread.comments).get(c.id);
   return (
     <li
       className="flex flex-col gap-1"
@@ -606,17 +611,22 @@ function CommentRow({
     >
       <div className="flex items-start justify-between gap-2">
         <Who a={c.author} at={c.createdAt} edited={c.editedAt !== null} />
-        {any && mode === "view" && (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Comment actions"
-            aria-expanded={menu}
-            onClick={() => setMenu((m) => !m)}
-          >
-            •••
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-1">
+          {marks && c.notified?.length ? (
+            <DeliveryFaces told={c.notified} when={versionDate(c.createdAt)} />
+          ) : null}
+          {any && mode === "view" && (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Comment actions"
+              aria-expanded={menu}
+              onClick={() => setMenu((m) => !m)}
+            >
+              •••
+            </Button>
+          )}
+        </div>
       </div>
       {/* #2118: the face hangs in its own column; the text lines up with the name. */}
       <div className="flex flex-col gap-1 pl-8" data-comment-body="">
@@ -684,10 +694,15 @@ function CommentRow({
               body={c.body}
               mentions={c.mentions}
               guest={api.guest}
+              marks={marks ? { when: versionDate(c.createdAt) } : undefined}
             />
           </p>
         )}
-        <Delivery c={c} guest={api.guest} />
+        <Delivery
+          c={c}
+          guest={api.guest}
+          problems={api.guest ? [] : (problems ?? [])}
+        />
         {mode === "delete" && (
           <div
             role="alertdialog"

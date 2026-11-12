@@ -87,6 +87,6 @@ for (const [width, theme] of [
       .getByLabel("Reply", { exact: true })
       .fill("Thanks, also fix the footer link");
     await card.getByRole("button", { name: "Reply", exact: true }).click();
-    await expect(page.locator("[data-notified]").first()).toBeVisible();
+    await expect(page.locator("[data-delivery-faces]").first()).toBeVisible();
     await shot("8-delivery");
   });

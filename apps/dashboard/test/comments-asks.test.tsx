@@ -743,7 +743,7 @@ describe("@mentions in the composer", () => {
       (e) => e.textContent,
     );
     expect(chips).toEqual(["@C++ Bot", "@OA Design"]);
-    const p = c.querySelector("[data-mention-chip]")?.parentElement;
+    const p = c.querySelector("[data-mention-chip]")?.closest("p");
     expect(p?.textContent).toBe(
       "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby",
     );
@@ -762,10 +762,11 @@ describe("@mentions in the composer", () => {
     expect(c.querySelector("[data-mention-chip]")).toBeNull();
   });
 
-  it("renders each mention's delivery", async () => {
+  it("renders each mention's delivery as a mark in its chip, and the problem once", async () => {
     const t = askThread();
     const root = t.comments[0] as Record<string, unknown>;
     delete root.ask;
+    root.body = "cc @OA Product and @OA Design";
     root.mentions = [
       { key: "agent:a", name: "OA Product", delivery: "queued" },
       { key: "agent:b", name: "OA Design", delivery: "seen" },
@@ -774,17 +775,79 @@ describe("@mentions in the composer", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     expect(
-      await within(c).findByText(
-        /OA Product is offline · it will get this when it's back/,
-      ),
+      await within(c).findByText("OA Product: offline. Held until it's back."),
     ).toBeInTheDocument();
+    const chip = (n: string) =>
+      [...c.querySelectorAll("[data-mention-chip]")].find((e) =>
+        e.textContent?.includes(n),
+      ) as HTMLElement;
     expect(
-      within(c).getByText(
-        "OA Product is offline · it will get this when it's back",
-      ),
-    ).toBeInTheDocument();
-    expect(within(c).getByText("OA Design: Seen")).toBeInTheDocument();
+      chip("OA Product").querySelector('[data-mark="wait"]'),
+    ).not.toBeNull();
+    expect(chip("OA Design").querySelector('[data-mark="ok"]')).not.toBeNull();
+    expect(within(c).queryByText(/OA Design: Seen/)).toBeNull();
     expect(within(c).queryByText(/Assigned to/)).toBeNull();
+  });
+});
+
+describe("#2229 delivery marks in a thread", () => {
+  const person = (id: string, over: object) => ({
+    id,
+    body: "plain reply",
+    author: { kind: "user", id: "u", name: "Leo", me: false },
+    createdAt: "2026-11-05T10:00:00Z",
+    editedAt: null,
+    typed: false,
+    can: { edit: false, delete: false },
+    ...over,
+  });
+  const told = (d: string) => [
+    {
+      key: "agent:s",
+      name: "Sirius",
+      linked: true,
+      animal: { id: "fox", color: 1 },
+      delivery: d,
+    },
+    {
+      key: "agent:v",
+      name: "Vega",
+      linked: true,
+      animal: { id: "fox", color: 2 },
+      delivery: "delivered",
+    },
+  ];
+  it("faces and a summary on a person's reply, the sentence once, none on an agent's reply", async () => {
+    const t = askThread();
+    t.comments = [
+      person("c1", { notified: told("queued") }),
+      person("c2", { notified: told("queued") }),
+      person("c3", {
+        author: {
+          kind: "agent",
+          id: "a",
+          name: "Vega",
+          me: false,
+          linked: true,
+        },
+        notified: told("queued"),
+      }),
+    ] as never;
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("plain reply");
+    const rows = [...c.querySelectorAll("[data-comment]")];
+    const faces = rows.map((r) => r.querySelector("[data-delivery-faces]"));
+    expect(faces[0]).not.toBeNull();
+    expect(faces[1]).not.toBeNull();
+    expect(faces[2]).toBeNull();
+    expect(
+      within(c).getAllByText("Sirius: offline. Held until it's back."),
+    ).toHaveLength(1);
+    expect(rows[0]?.querySelector("[data-summary]")?.textContent).toBe(
+      "1 of 2",
+    );
   });
 });
 

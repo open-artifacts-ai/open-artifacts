@@ -6,6 +6,7 @@ import type {
   KeyRef,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
+import { CheckCheck, Clock } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import {
   answerError,
@@ -63,55 +64,240 @@ export function nextAskFor(
   );
 }
 
-const OFFLINE = "offline · it will get this when it's back";
+type DState = CommentMention["delivery"];
+const isWait = (d: DState) => d === "queued" || d === "gone";
 
-/** "Codex is offline · it will get this when it's back", "Claude Code: Delivered". */
-const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
+/** #2229: the details a mark opens, "Delivered to Sirius, 5 hours ago". */
+export const markText = (name: string, d: DState, when: string) =>
   d === "queued"
-    ? `${name} is ${OFFLINE}`
+    ? `${name}: held until it's back`
     : d === "gone"
-      ? `${name} is gone · mention another agent`
-      : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-/** #2035: how a reply reached an agent the thread already notifies. */
-const notifiedWord = (d: CommentMention["delivery"]) =>
-  d === "queued"
-    ? "Held until it's back"
-    : d === "gone"
-      ? "Expired"
-      : "Delivered";
+      ? `${name}: expired`
+      : `${d === "seen" ? "Seen by" : "Delivered to"} ${name}, ${when}`;
 
-/** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
+/** Two ticks for delivered or seen, a clock for held or expired. */
+export function DeliveryIcon({ d }: { d: DState }) {
+  return isWait(d) ? (
+    <Clock
+      aria-hidden="true"
+      data-mark="wait"
+      className="size-3.5 text-[var(--oa-warning)]"
+    />
+  ) : (
+    <CheckCheck
+      aria-hidden="true"
+      data-mark="ok"
+      className="size-3.5 text-[var(--oa-success)]"
+    />
+  );
+}
+
+/** Open on hover and focus, toggle on tap or click, close on Escape or leaving. */
+function useDetail() {
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [tap, setTap] = useState(false);
+  return {
+    open: hover || focus || tap,
+    props: {
+      onMouseEnter: () => setHover(true),
+      onMouseLeave: () => {
+        setHover(false);
+        setTap(false);
+      },
+      onFocus: () => setFocus(true),
+      onBlur: () => {
+        setFocus(false);
+        setTap(false);
+      },
+      onClick: () => setTap((t) => !t),
+      onKeyDown: (e: React.KeyboardEvent) => {
+        if (e.key === "Escape") {
+          setHover(false);
+          setFocus(false);
+          setTap(false);
+        }
+      },
+    },
+  };
+}
+
+const FLOAT =
+  "absolute top-full z-20 mt-1 flex min-w-max flex-col gap-1 rounded-md border bg-popover px-2 py-1.5 text-popover-foreground shadow-md";
+
+/** A mention chip with its delivery mark inside, details floating over the thread. */
+function MarkedChip({
+  text,
+  face,
+  p,
+  when,
+  guest,
+}: {
+  text: string;
+  face: Parameters<typeof PartyFace>[0]["p"] & {
+    name: string;
+    delivery: DState;
+  };
+  p: Parameters<typeof PartyFace>[0]["p"];
+  when: string;
+  guest: boolean;
+}) {
+  const { open, props } = useDetail();
+  const detail = markText(face.name, face.delivery, when);
+  return (
+    <span className="relative inline-block align-middle">
+      <button
+        type="button"
+        data-mention-chip=""
+        data-delivery={face.delivery}
+        aria-label={`${text}: ${detail}`}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-full border-0 bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)] font-[inherit] text-[length:inherit]"
+        {...props}
+      >
+        <PartyFace p={p} guest={guest} />
+        {text}
+        <DeliveryIcon d={face.delivery} />
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          data-delivery-detail=""
+          className={`${FLOAT} left-0 ${TXT}`}
+        >
+          {detail}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** #2229: a problem's sentence, shown on the first comment it happens in. */
+const problemLine = (name: string, d: DState, notified: boolean) =>
+  d === "queued"
+    ? `${name}: offline. Held until it's back.`
+    : notified
+      ? `${name}: expired.`
+      : `${name} is gone · mention another agent`;
+
+type Problem = { id: string; m: CommentMention; notified: boolean };
+
+/** Per comment, the problems that are new in it: an agent held or expired in an
+    earlier comment of the thread is not told again, only marked. */
+export function newProblems(comments: readonly CommentT[]) {
+  const seen = new Set<string>();
+  const out = new Map<string, Problem[]>();
+  for (const c of comments) {
+    const list: Problem[] = [];
+    const add = (m: CommentMention, notified: boolean) => {
+      if (!isWait(m.delivery)) return;
+      const id = `${m.key}:${m.delivery}`;
+      if (seen.has(id)) return;
+      seen.add(id);
+      list.push({ id: `${notified ? "n" : "m"}-${m.key}`, m, notified });
+    };
+    for (const m of c.mentions ?? []) add(m, false);
+    for (const m of c.notified ?? []) add(m, true);
+    if (list.length) out.set(c.id, list);
+  }
+  return out;
+}
+
+/** The sentence for each new problem. Marks live on the chip and in the header. Names are text, never HTML. */
 export function Delivery({
   c,
   guest = false,
+  problems,
 }: {
   c: CommentT;
   guest?: boolean;
+  /** What is new in this comment; by default whatever is wrong in it. */
+  problems?: readonly Problem[];
 }) {
-  if (!c.mentions?.length && !c.notified?.length) return null;
+  const list = problems ?? newProblems([c]).get(c.id) ?? [];
+  if (!list.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
-      {c.mentions?.map((m) => (
+      {list.map(({ id, m, notified }) => (
         <li
-          key={m.key}
-          data-mention={m.key}
+          key={id}
+          {...(notified
+            ? { "data-notified": m.key }
+            : { "data-mention": m.key })}
           className="flex items-center gap-1"
         >
           <PartyFace p={m} guest={guest} />
-          {deliveryLine(m.name, m.delivery)}
-        </li>
-      ))}
-      {c.notified?.map((m) => (
-        <li
-          key={`n-${m.key}`}
-          data-notified={m.key}
-          className="flex items-center gap-1"
-        >
-          <PartyFace p={m} guest={guest} />
-          {m.name}: {notifiedWord(m.delivery)}
+          {problemLine(m.name, m.delivery, notified)}
         </li>
       ))}
     </ul>
+  );
+}
+
+/** #2229: agents told without a mention, as up to three faces and one summary mark in the header. */
+export function DeliveryFaces({
+  told,
+  when,
+}: {
+  told: readonly CommentMention[];
+  when: string;
+}) {
+  const { open, props } = useDetail();
+  if (!told.length) return null;
+  const sorted = [...told].sort(
+    (a, b) => Number(isWait(b.delivery)) - Number(isWait(a.delivery)),
+  );
+  const ok = told.filter((m) => !isWait(m.delivery)).length;
+  const held = told.length - ok;
+  const label =
+    held === 0
+      ? `${ok} of ${told.length} delivered`
+      : `${ok} of ${told.length} delivered, ${held} held`;
+  return (
+    <span className="relative inline-flex shrink-0" data-delivery-faces="">
+      <button
+        type="button"
+        aria-label={label}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent p-0.5 text-muted-foreground"
+        {...props}
+      >
+        <span className="inline-flex -space-x-1">
+          {sorted.slice(0, 3).map((m) => (
+            <PartyFace key={m.key} p={m} />
+          ))}
+        </span>
+        {told.length > 3 && (
+          <span className={TXT} data-more="">
+            +{told.length - 3}
+          </span>
+        )}
+        <DeliveryIcon d={held ? "queued" : "delivered"} />
+        {held > 0 && (
+          <span className={TXT} data-summary="">
+            {ok} of {told.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          data-delivery-detail=""
+          className={`${FLOAT} right-0 ${TXT}`}
+        >
+          {sorted.map((m) => (
+            <span
+              key={m.key}
+              data-told={m.key}
+              className="flex items-center gap-1.5"
+            >
+              <PartyFace p={m} />
+              {markText(m.name, m.delivery, when)}
+            </span>
+          ))}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -485,13 +671,17 @@ export function MentionedText({
   body,
   mentions,
   guest = false,
+  marks,
 }: {
   body: string;
   mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
     key: string;
     name: string;
+    delivery?: DState;
   })[];
   guest?: boolean;
+  /** #2229: show each mention's delivery in its chip; `when` is the comment's time. */
+  marks?: { when: string };
 }) {
   if (!mentions?.length) return <>{linked(body, 0)}</>;
   const names = [...new Set(mentions.map((m) => m.name))]
@@ -510,6 +700,20 @@ export function MentionedText({
     );
     const face = same.length === 1 ? same[0] : undefined;
     if (at > last) out.push(...linked(body.slice(last, at), last));
+    if (marks && !guest && face?.delivery) {
+      out.push(
+        <MarkedChip
+          key={at}
+          text={body.slice(at, end)}
+          face={face as typeof face & { delivery: DState }}
+          p={face}
+          when={marks.when}
+          guest={guest}
+        />,
+      );
+      last = end;
+      continue;
+    }
     out.push(
       <span
         key={at}
