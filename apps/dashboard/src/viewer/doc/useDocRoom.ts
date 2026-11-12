@@ -84,6 +84,17 @@ export const showsNote = (e: VersionEvent): boolean =>
 export const BUSY_BASE_MS = 1000;
 export const BUSY_MAX_MS = 30_000;
 export const BUSY_STABLE_MS = 10_000;
+/**
+ * The jitter's source. Mock mode only: an e2e sets window.__oaJitter (0 to 1)
+ * so its timing does not depend on chance. Real builds always use Math.random.
+ */
+const jitterSource = (): number => {
+  if (import.meta.env.VITE_MOCK === "1") {
+    const j = (window as unknown as { __oaJitter?: number }).__oaJitter;
+    if (typeof j === "number") return j;
+  }
+  return Math.random();
+};
 export const busyDelay = (
   attempt: number,
   random: () => number = Math.random,
@@ -383,9 +394,12 @@ export function createDocRoom(
         // Take over from y-websocket's backoff (disconnect() stops its retry).
         provider.disconnect?.();
         clearTimeout(busyTimer);
-        busyTimer = setTimeout(() => {
-          if (!destroyed) provider.connect?.();
-        }, busyDelay(busyCloses++));
+        busyTimer = setTimeout(
+          () => {
+            if (!destroyed) provider.connect?.();
+          },
+          busyDelay(busyCloses++, jitterSource),
+        );
       } else if (ev.code === 1007) {
         if (++badFrames > 1) stop("bad_frame");
         else

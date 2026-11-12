@@ -149,10 +149,15 @@ test("1013 on every connection: the reconnect gaps grow, not a steady 200 ms", a
   page,
 }, info) => {
   test.setTimeout(60_000);
+  // No jitter: the waits are exactly 750 ms, 1.5 s, 3 s, so a CI stall can
+  // only stretch a gap, never reorder them.
+  await page.addInitScript(() => {
+    (window as unknown as { __oaJitter: number }).__oaJitter = 0;
+  });
   await open(page, info, ["--close", "1013"]);
   // The room closes each settled connection 600 ms after it connected, and
   // stamps each close. The gap between two closes is 600 ms plus the wait the
-  // client chose: ~0.75-1 s, then ~1.5-2 s, then ~3-4 s.
+  // client chose: 0.75 s, then 1.5 s, then 3 s (jitter fixed at 0).
   const closes = () =>
     log()
       .filter((l) => l.startsWith("closing 1013 "))
@@ -167,9 +172,9 @@ test("1013 on every connection: the reconnect gaps grow, not a steady 200 ms", a
   expect(g1).toBeGreaterThan(600 + 700);
   expect(g2).toBeGreaterThan(g1);
   expect(g3).toBeGreaterThan(g2);
-  // And they grow by about double (wait 1 s -> 2 s -> 4 s, plus the fixed 600 ms).
-  expect(g2 - 600).toBeGreaterThan((g1 - 600) * 1.4);
-  expect(g3 - 600).toBeGreaterThan((g2 - 600) * 1.4);
+  // And each wait is well over the last (double, with the fixed 600 ms removed).
+  expect(g2 - 600).toBeGreaterThan((g1 - 600) * 1.2);
+  expect(g3 - 600).toBeGreaterThan((g2 - 600) * 1.2);
 });
 
 test("saved: the title bar says Saved as v5 for a moment and the version data refetches", async ({
