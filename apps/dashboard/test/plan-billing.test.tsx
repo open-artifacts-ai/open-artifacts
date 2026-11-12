@@ -389,6 +389,108 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
       ).toBe("Suspended");
     });
   });
+  describe("the price a paying plan pays and its renewal (#2135)", () => {
+    const RENEWS = "2027-12-01T00:00:00.000Z";
+    const priceRow = () => screen.getByText("Price").nextElementSibling;
+    it("a paid Solo on the yearly interval", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...PAID,
+          soloCheckedOut: true,
+          interval: "year",
+          renewsAt: RENEWS,
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent("$10 a year, renews Dec 1, 2027");
+    });
+    it("a paid Solo on the monthly interval", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...PAID,
+          soloCheckedOut: true,
+          interval: "month",
+          renewsAt: "2026-12-01T00:00:00.000Z",
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent("$1 a month, renews Dec 1, 2026");
+    });
+    it("a free-month Solo with a card on file (soloCheckedOut)", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TRIAL,
+          hasCustomer: true,
+          soloCheckedOut: true,
+          interval: "year",
+          renewsAt: RENEWS,
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent("$10 a year");
+      expect(screen.queryByText(/renews/)).toBeNull();
+      expect(screen.getByText("First charge on Dec 1, 2026.")).toBeVisible();
+    });
+    it("a Team row with a future soloTrialEndsAt still shows renews", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TEAM,
+          hasCustomer: true,
+          soloTrialEndsAt: "2026-12-01T00:00:00.000Z",
+          interval: "year",
+          renewsAt: RENEWS,
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent(
+        "$100 per creator per year, renews Dec 1, 2027",
+      );
+    });
+    it("a no-card Solo trial shows no renewal, whatever billing sends", async () => {
+      mountHosted("/settings/plan", {
+        billing: { ...TRIAL, interval: "month", renewsAt: RENEWS },
+      });
+      await payShown();
+      expect(priceRow()).toHaveTextContent("$1 a month or $10 a year");
+      expect(screen.queryByText(/renews/)).toBeNull();
+    });
+    it("Team and Business show the per-creator price and interval", async () => {
+      for (const [tier, interval, text] of [
+        ["team", "month", "$10 per creator per month, renews Dec 1, 2027"],
+        ["team", "year", "$100 per creator per year, renews Dec 1, 2027"],
+        ["business", "month", "$25 per creator per month, renews Dec 1, 2027"],
+        ["business", "year", "$250 per creator per year, renews Dec 1, 2027"],
+      ] as const) {
+        cleanup();
+        mountHosted("/settings/plan", {
+          billing: {
+            ...TEAM,
+            tier,
+            hasCustomer: true,
+            interval,
+            renewsAt: RENEWS,
+          },
+        });
+        await screen.findByRole("button", { name: "Manage billing" });
+        expect(priceRow(), `${tier} ${interval}`).toHaveTextContent(text);
+      }
+    });
+    it("without renewsAt or interval (a cancel, an older answer) the price row is unchanged", async () => {
+      for (const extra of [
+        {},
+        { interval: "year" as const, renewsAt: null },
+        { interval: null, renewsAt: RENEWS },
+      ]) {
+        cleanup();
+        mountHosted("/settings/plan", {
+          billing: { ...TEAM, hasCustomer: true, ...extra },
+        });
+        await screen.findByRole("button", { name: "Manage billing" });
+        expect(priceRow()).toHaveTextContent("$10 per creator per month");
+        expect(screen.queryByText(/renews/)).toBeNull();
+      }
+    });
+  });
   it("a paid Solo past its free month shows no charge date", async () => {
     mountHosted("/settings/plan", { billing: PAID });
     await screen.findByRole("button", { name: "Manage billing" });

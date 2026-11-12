@@ -62,6 +62,22 @@ type Status = {
 const cancelsInFuture = (b: PlanView): boolean =>
   !!b.cancelsAt && Date.parse(b.cancelsAt) > Date.now();
 
+/** What each tier bills per interval (#2135); Team and Business are per creator. */
+const PRICE_BY_INTERVAL: Record<
+  "solo" | "team" | "business",
+  Record<"month" | "year", string>
+> = {
+  solo: { month: "$1 a month", year: "$10 a year" },
+  team: {
+    month: "$10 per creator per month",
+    year: "$100 per creator per year",
+  },
+  business: {
+    month: "$25 per creator per month",
+    year: "$250 per creator per year",
+  },
+};
+
 /** The warning under a plan set to cancel. */
 const CANCEL_NOTE = (b: PlanView): string =>
   `Your plan ends on ${date(b.cancelsAt as string)}. After that you can still read everything, but nothing new can be published or edited. To keep it, resume in Manage billing.`;
@@ -213,6 +229,24 @@ export function Plan() {
     // Still in the free days, but a Checkout already put a card on file (#2138):
     // a second Pay would only replace that subscription.
     (!soloTrialing || billing.soloCheckedOut === true || cancelling);
+  // The price a paying plan pays and when it renews (#2135): a paid tier, or a
+  // Solo with a card on file. A no-card Solo trial cancels at its end with no
+  // charge, so it never shows a renewal. Billing sends renewsAt null while a
+  // cancel is scheduled, which leaves the plain price.
+  const pays =
+    paid ||
+    (billing.tier === "solo" && (billing.soloCheckedOut === true || soloPaid));
+  const tierKey = billing.tier === "free" ? "solo" : billing.tier;
+  const priceText =
+    pays &&
+    billing.interval &&
+    billing.renewsAt &&
+    (tierKey === "solo" || tierKey === "team" || tierKey === "business")
+      ? billing.tier === "solo" && soloTrialing
+        ? // A free month with a card on file: "First charge on" gives the date.
+          PRICE_BY_INTERVAL[tierKey][billing.interval]
+        : `${PRICE_BY_INTERVAL[tierKey][billing.interval]}, renews ${date(billing.renewsAt)}`
+      : PRICE[billing.tier];
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -235,7 +269,7 @@ export function Plan() {
           {!ended && !operatorPlan && (
             <>
               <dt className={muted}>Price</dt>
-              <dd className="m-0">{PRICE[billing.tier]}</dd>
+              <dd className="m-0">{priceText}</dd>
             </>
           )}
         </dl>

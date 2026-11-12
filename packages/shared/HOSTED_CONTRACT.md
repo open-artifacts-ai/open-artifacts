@@ -416,6 +416,12 @@ Absent or false: Pay stays. Owner and admins only, like `hasCustomer`.
 period end) takes effect, from billing's `cancelsAt` (ms). null or absent: none.
 Owner and admins only. While it is in the future the dashboard shows an "Ends <date>"
 pill and a warning, and keeps Manage billing so the plan can be resumed.
+`interval` ("month" | "year" | null) and `renewsAt` (ISO string or null), optional:
+the interval a paying subscription bills on and when the current period ends and
+the next charge is due; from billing's `interval` and `renewsAt` (ms), `renewsAt`
+null while a cancel is scheduled. The Price row shows "$10 a year, renews Dec 1,
+2027" for a paid plan, or a Solo with `soloCheckedOut`, when both are set. Owner
+and admins only.
 `overageDue` (`{ amountCents, months }`, optional): the extra-creator charges
 that failed and are unpaid (#2246), total in cents and months as `YYYY-MM`,
 oldest first. Billing sends null for none; the server passes it on only when

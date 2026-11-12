@@ -169,6 +169,20 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // A paying Team on the yearly interval (billing.interval, renewsAt).
+  "team-yearly-renews": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      interval: "year",
+      renewsAt: "2027-12-01T00:00:00.000Z",
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
   "solo-no-customer": {
     billing: {
       tier: "solo",
