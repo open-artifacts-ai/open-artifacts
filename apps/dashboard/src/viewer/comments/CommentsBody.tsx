@@ -60,6 +60,7 @@ import {
   holdAnchor,
   NewReplyPill,
   scrollerOf,
+  scrollWithin,
   useKeepScroll,
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
@@ -438,7 +439,7 @@ function Composer({
     const at = pickedAt.current;
     if (at === null) return;
     pickedAt.current = null;
-    ref.current?.focus();
+    ref.current?.focus({ preventScroll: true });
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
@@ -589,7 +590,8 @@ function Composer({
             e.preventDefault();
             void go();
           }
-          if (e.key === "Escape" && keepOnEsc) {
+          // An empty field lets Esc through (the phone sheet closes on it).
+          if (e.key === "Escape" && keepOnEsc && text !== "") {
             e.stopPropagation();
             return;
           }
@@ -1062,7 +1064,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
     if (!isActive) return;
-    el.current?.scrollIntoView?.({ block: "nearest" });
+    if (el.current) scrollWithin(el.current, "nearest");
     // #1783: in the short pin sheet a thread with 2+ replies shows its last
     // reply just above the floating action row, not the card's top.
     const card = el.current;
@@ -1090,13 +1092,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
         // One measure is enough: later size changes (typing) don't re-scroll.
         watch?.disconnect();
-        const reduce =
-          window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
-          true;
-        reply.scrollIntoView?.({
-          block: "end",
-          behavior: reduce ? "auto" : "smooth",
-        });
+        scrollWithin(reply, "end", true);
       };
       frame = requestAnimationFrame(go);
       if (typeof ResizeObserver !== "undefined") {

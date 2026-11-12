@@ -136,8 +136,8 @@ export function CommentsDialog({
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
   useEffect(() => {
-    ref.current?.focus();
-    return () => opener?.focus?.();
+    ref.current?.focus({ preventScroll: true });
+    return () => opener?.focus?.({ preventScroll: true });
   }, [opener]);
   return (
     <>
@@ -145,6 +145,9 @@ export function CommentsDialog({
         data-sheet-backdrop=""
         aria-hidden="true"
         className="fixed inset-0 z-20 bg-black/40 min-[601px]:hidden"
+        // Keep the field's focus through the press: a blur lowers the
+        // keyboard, the sheet drops with it, and the tap's click is lost.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onClose}
       />
       <section
@@ -213,6 +216,8 @@ export function CommentsDialog({
             variant="ghost"
             size="icon-sm"
             aria-label="Close comments"
+            // As the backdrop: a press must not blur the field first.
+            onMouseDown={(e) => e.preventDefault()}
             onClick={onClose}
           >
             <X aria-hidden="true" />

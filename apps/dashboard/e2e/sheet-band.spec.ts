@@ -14,6 +14,17 @@ test.use({
   launchOptions: { args: ["--disable-features=LocalNetworkAccessChecks"] },
 });
 
+test.beforeEach(({ page }) =>
+  page.addInitScript(() => {
+    (window as unknown as { __siv: number }).__siv = 0;
+    const was = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (...a) {
+      (window as unknown as { __siv: number }).__siv++;
+      return was.apply(this, a as []);
+    };
+  }),
+);
+
 const keyboard = (page: Page, px: number) =>
   page.evaluate((px) => {
     const vv = window.visualViewport as VisualViewport;
@@ -136,27 +147,6 @@ test("390: a keyboard that closes without a viewport resize leaves no band", asy
   await expectFlush(page, "stale keyboard");
 });
 
-test("390: a draft left focused when the keyboard closes silently heals", async ({
-  page,
-}) => {
-  await open(page);
-  await field(page).focus();
-  await keyboard(page, 320);
-  await page.waitForTimeout(150);
-  // The keyboard goes away with the field still focused and no event heard.
-  await page.evaluate(() => {
-    const vv = window.visualViewport as VisualViewport;
-    Object.defineProperty(vv, "height", {
-      configurable: true,
-      get: () => window.innerHeight,
-    });
-  });
-  await expect
-    .poll(async () => (await gap(page)).kb, { timeout: 2000 })
-    .toBe("0px");
-  await expectFlush(page, "draft stuck");
-});
-
 test("390: a field focused with a toolbar gap and no keyboard does not lift", async ({
   page,
 }) => {
@@ -174,4 +164,102 @@ test("390: a field focused with a toolbar gap and no keyboard does not lift", as
   // A real keyboard on top of the chrome still lifts.
   await keyboard(page, 190 + 320);
   await expect.poll(async () => (await gap(page)).kb).toBe("320px");
+});
+
+const sheets = (page: Page) => page.locator("[data-sheet-height]");
+
+test("390: × closes the sheet with a field focused and the keyboard up", async ({
+  page,
+}) => {
+  await open(page);
+  await field(page).focus();
+  await keyboard(page, 320);
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "Close comments" }).click();
+  await expect(sheets(page)).toHaveCount(0);
+});
+
+test("390: a backdrop tap closes the sheet with an empty field focused", async ({
+  page,
+}) => {
+  await open(page);
+  await field(page).focus();
+  await keyboard(page, 320);
+  await page.waitForTimeout(300);
+  await page.mouse.click(20, 6);
+  await expect(sheets(page)).toHaveCount(0);
+});
+
+test("390: Esc closes the sheet with an empty field, and keeps a draft with text", async ({
+  page,
+}) => {
+  await open(page);
+  await field(page).focus();
+  await page.keyboard.press("Escape");
+  await expect(sheets(page)).toHaveCount(0);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await field(page).fill("half a thought");
+  await page.keyboard.press("Escape");
+  await expect(sheets(page)).toHaveCount(1);
+  // × still closes it.
+  await page.getByRole("button", { name: "Close comments" }).click();
+  await expect(sheets(page)).toHaveCount(0);
+});
+
+/** Nothing panned: the document and the visual viewport are at the origin. */
+async function expectNoPan(page: Page, name: string) {
+  const p = await page.evaluate(() => ({
+    y: window.scrollY,
+    x: window.scrollX,
+    top: window.visualViewport?.offsetTop ?? 0,
+  }));
+  expect(p, name).toEqual({ y: 0, x: 0, top: 0 });
+  // scrollIntoView pans the document and, on iOS, the visual viewport (which
+  // Chromium does not): the sheet moves only its own scroller.
+  expect(
+    await page.evaluate(() => (window as unknown as { __siv: number }).__siv),
+    `${name}: scrollIntoView calls`,
+  ).toBe(0);
+  await expectFlush(page, name);
+}
+
+const reply = (page: Page, body: string, last: boolean) =>
+  page.evaluate(
+    async ({ id, body, last }) => {
+      const list = (await (
+        await fetch(`/api/v1/artifacts/${id}/comments`)
+      ).json()) as { threads: { id: string; status: string }[] };
+      const open = list.threads.filter((t) => t.status === "open");
+      const t = last ? open.at(-1) : open[0];
+      await fetch(`/api/v1/artifacts/${id}/comments/${t?.id}/replies`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-mock-as": "agent" },
+        body: JSON.stringify({ body }),
+      });
+    },
+    { id: ID, body, last },
+  );
+
+for (const last of [false, true]) {
+  test(`390: a live reply ${last ? "below" : "above"} pans nothing`, async ({
+    page,
+  }) => {
+    await open(page);
+    await reply(page, "Arrived live", last);
+    await expect(page.getByText("Arrived live")).toHaveCount(1);
+    await page.waitForTimeout(500);
+    await expectNoPan(page, `live reply ${last ? "below" : "above"}`);
+  });
+}
+
+test("390: tapping '1 ask for you' with the sheet open pans nothing", async ({
+  page,
+}) => {
+  await page.goto(`/a/${ID}?mock=asks`);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await expect(sheets(page)).toBeVisible();
+  const ask = page.getByRole("button", { name: /asks? for you$/ }).first();
+  await ask.evaluate((el) => (el as HTMLElement).click());
+  await page.waitForTimeout(600);
+  await expectNoPan(page, "ask jump");
 });

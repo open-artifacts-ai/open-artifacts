@@ -198,7 +198,7 @@ export function RemovalNotices({
             if (e.key === "Escape") {
               e.stopPropagation();
               setConfirm(null);
-              back.current?.focus();
+              back.current?.focus({ preventScroll: true });
             }
           }}
         >
@@ -225,7 +225,7 @@ export function RemovalNotices({
               variant="outline"
               onClick={() => {
                 setConfirm(null);
-                back.current?.focus();
+                back.current?.focus({ preventScroll: true });
               }}
             >
               Keep
