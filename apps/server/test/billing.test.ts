@@ -91,6 +91,7 @@ type Row = {
   soloTrialEndsAt?: number | null;
   hasCustomer?: boolean;
   yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
   graceUntil: number | null;
   version: number;
 };
@@ -1732,6 +1733,30 @@ describe("Me.instance.billing and the billing routes", () => {
     await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
     expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
       "yearlyTeamBusiness",
+    );
+  });
+
+  it("soloCheckedOut: a GET /tier answer reaches the owner through the parse, never a member; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ version: 50, soloCheckedOut: true });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      true,
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
+    );
+    await read({ version: 51, soloCheckedOut: false });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      false,
+    );
+    const { soloCheckedOut: _, ...without } = row;
+    row = { ...without, version: 52 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
     );
   });
 

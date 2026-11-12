@@ -183,7 +183,8 @@ export function Plan() {
   const operatorPlan = portal && !solo && billing.hasCustomer === false;
   // A paying Solo (a Stripe customer, active or past_due, past its free month)
   // manages its plan in the portal and sees no Pay buttons. During the free
-  // month the Pay buttons stay: they are the way to start paying or pick yearly.
+  // month the Pay buttons stay: they are the way to start paying or pick yearly,
+  // unless billing says a card is already on file (soloCheckedOut).
   const soloTrialing =
     !!billing.soloTrialEndsAt &&
     Date.parse(billing.soloTrialEndsAt) > Date.now();
@@ -191,7 +192,9 @@ export function Plan() {
     billing.tier === "solo" &&
     billing.hasCustomer === true &&
     (billing.status === "active" || billing.status === "past_due") &&
-    !soloTrialing;
+    // Still in the free days, but a Checkout already put a card on file (#2138):
+    // a second Pay would only replace that subscription.
+    (!soloTrialing || billing.soloCheckedOut === true);
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -247,6 +250,11 @@ export function Plan() {
                 <Button disabled={busy} onClick={() => go.mutate("portal")}>
                   Manage billing
                 </Button>
+              )}
+              {column === "solo" && soloPaid && soloTrialing && (
+                <span className={muted}>
+                  First charge on {date(billing.soloTrialEndsAt as string)}.
+                </span>
               )}
               {column === "solo" && !soloPaid && (
                 <>

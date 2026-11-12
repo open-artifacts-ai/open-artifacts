@@ -87,6 +87,12 @@ export const PlanViewSchema = z.object({
    * Owner and admins only.
    */
   yearlyTeamBusiness: z.boolean().optional(),
+  /**
+   * Billing says a Checkout already put a card on file (a Solo that paid during
+   * its free days: it is charged when the trial ends). Absent (an older answer)
+   * or false: the Pay buttons stay. Owner and admins only.
+   */
+  soloCheckedOut: z.boolean().optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

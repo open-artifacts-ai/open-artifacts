@@ -285,6 +285,32 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
     expect(screen.queryByRole("button", { name: "Pay $10/year" })).toBeNull();
     expect(screen.queryByText(/set up this plan for you/)).toBeNull();
   });
+  it("a Solo in its free month with soloCheckedOut: Manage billing and the first charge date, no Pay", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, hasCustomer: true, soloCheckedOut: true },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    ).toBeVisible();
+    expect(screen.getByText("First charge on Dec 1, 2026.")).toBeVisible();
+    expect(pay()).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay $10/year" })).toBeNull();
+  });
+  it("a free-month Solo with soloCheckedOut false or absent keeps Pay and no charge date", async () => {
+    for (const extra of [{ soloCheckedOut: false }, {}]) {
+      cleanup();
+      mountHosted("/settings/plan", {
+        billing: { ...TRIAL, hasCustomer: true, ...extra },
+      });
+      await payShown();
+      expect(screen.queryByText(/First charge on/)).toBeNull();
+    }
+  });
+  it("a paid Solo past its free month shows no charge date", async () => {
+    mountHosted("/settings/plan", { billing: PAID });
+    await screen.findByRole("button", { name: "Manage billing" });
+    expect(screen.queryByText(/First charge on/)).toBeNull();
+  });
   it("a Solo whose free month has passed counts as paid", async () => {
     pinNovember();
     mountHosted("/settings/plan", {

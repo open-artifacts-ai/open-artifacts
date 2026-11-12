@@ -408,6 +408,10 @@ billing's answer predates it (unknown: the dashboard keeps Manage billing).
 and Business prices are configured in this environment; absent or false hides
 yearly Team and Business in the dashboard. Owner and admins only, like
 `hasCustomer`; billing's `GET /tier` answer carries it and the server passes it on.
+`soloCheckedOut` (boolean, optional): billing sets it true once a Checkout has put
+a card on file for a Solo still in its free days (D1 `solo_checked_out`); the
+dashboard then shows Manage billing and the first charge date instead of Pay.
+Absent or false: Pay stays. Owner and admins only, like `hasCustomer`.
 
 | State | What it does | `reason` |
 |---|---|---|

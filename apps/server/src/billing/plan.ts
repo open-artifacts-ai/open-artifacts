@@ -80,6 +80,8 @@ export const TierAnswerSchema = z.object({
   hasCustomer: z.boolean().optional(),
   /** Yearly Team and Business prices are configured. Absent from an answer that predates it (off). */
   yearlyTeamBusiness: z.boolean().optional(),
+  /** A Checkout put a card on file. Absent from an answer that predates it (off). */
+  soloCheckedOut: z.boolean().optional(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -140,6 +142,7 @@ export type EffectivePlan = {
   hasCustomer?: boolean;
   /** Absent when billing's answer carried none (off). */
   yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -188,6 +191,9 @@ export function effectivePlan(
       : {}),
     ...("yearlyTeamBusiness" in base && base.yearlyTeamBusiness !== undefined
       ? { yearlyTeamBusiness: base.yearlyTeamBusiness }
+      : {}),
+    ...("soloCheckedOut" in base && base.soloCheckedOut !== undefined
+      ? { soloCheckedOut: base.soloCheckedOut }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",

@@ -157,6 +157,9 @@ async function toMe(
       ...(details && plan.yearlyTeamBusiness !== undefined
         ? { yearlyTeamBusiness: plan.yearlyTeamBusiness }
         : {}),
+      ...(details && plan.soloCheckedOut !== undefined
+        ? { soloCheckedOut: plan.soloCheckedOut }
+        : {}),
       graceUntil:
         details && plan.graceUntil !== null
           ? new Date(plan.graceUntil).toISOString()
