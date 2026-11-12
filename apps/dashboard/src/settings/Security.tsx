@@ -55,6 +55,7 @@ export const WAITING = "Waiting for your passkey…";
 // Adding a passkey needs a fresh sign-in: the server answers 401
 // reauth_required, and the sign-in returns to this page (next=).
 export const ADD_AFTER_REAUTH_KEY = "oa.passkey.addAfterReauth";
+const ADD_AFTER_REAUTH_MS = 10 * 60 * 1000;
 export const ADD_REAUTH_NOTE =
   "Adding a passkey asks you to sign in again first.";
 export const ADD_RETURN_LINE =
@@ -175,6 +176,8 @@ function PasskeyList({
   const [removing, setRemoving] = useState<Passkey | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const full = (keys?.length ?? 0) >= MAX_PASSKEYS;
+  // No usable passkey to assert with: removal goes by re-auth, 24 h out.
+  const reauthPath = !keys?.some((k) => k.usable);
   const addRef = useRef<HTMLButtonElement>(null);
   const [returned, setReturned] = useState(false);
   const [headingTick, setHeadingTick] = useState(0);
@@ -182,8 +185,12 @@ function PasskeyList({
   // Back from the sign-in that Add asked for: say so and focus Add. Never call
   // create() here: Safari wants a user click for it.
   useEffect(() => {
-    if (sessionStorage.getItem(ADD_AFTER_REAUTH_KEY) !== "1") return;
+    const mark = sessionStorage.getItem(ADD_AFTER_REAUTH_KEY);
+    if (mark === null) return;
     sessionStorage.removeItem(ADD_AFTER_REAUTH_KEY);
+    // The mark is the time we left; the sign-in is good for 10 minutes.
+    const age = Date.now() - Number(mark);
+    if (!(age >= 0 && age <= ADD_AFTER_REAUTH_MS)) return;
     setReturned(true);
     addRef.current?.focus({ preventScroll: true });
   }, []);
@@ -200,13 +207,18 @@ function PasskeyList({
     return () => clearTimeout(t);
   }, [headingTick]);
 
+  const [cancelling, setCancelling] = useState<string | null>(null);
   async function cancelRemoval(p: Passkey) {
+    if (cancelling) return; // aria-disabled keeps focus on the button
+    setCancelling(p.id);
     setNote(null);
     try {
       await api.send("POST", R.passkeyCancelRemoval(p.id), undefined);
       await refresh();
     } catch (e) {
       setNote({ id: p.id, text: failureLine(e, "changed") });
+    } finally {
+      setCancelling(null);
     }
   }
 
@@ -233,7 +245,9 @@ function PasskeyList({
       toast({ title: "Passkey added.", tone: "success" });
     } catch (e) {
       if (
-        followReauth(e, () => sessionStorage.setItem(ADD_AFTER_REAUTH_KEY, "1"))
+        followReauth(e, () =>
+          sessionStorage.setItem(ADD_AFTER_REAUTH_KEY, String(Date.now())),
+        )
       )
         return;
       setNote({ id: null, text: failureLine(e, "added") });
@@ -308,7 +322,7 @@ function PasskeyList({
           {ADD_RETURN_LINE}
         </p>
       )}
-      <p className={`m-0 ${muted}`}>{ADD_REAUTH_NOTE}</p>
+      {!returned && <p className={`m-0 ${muted}`}>{ADD_REAUTH_NOTE}</p>}
       {failed && <p className={errorText}>Couldn't load your passkeys.</p>}
       {keys?.length === 0 && <p className={`m-0 ${muted}`}>No passkeys yet.</p>}
       {keys && keys.length > 0 && (
@@ -328,8 +342,14 @@ function PasskeyList({
                       : "Never used"}
                   </small>
                   {p.removesAt && (
-                    <small className={`block ${muted}`}>
-                      Will be removed {coolingTime(p.removesAt)}
+                    <small
+                      className={`mt-[2px] flex items-start gap-[6px] text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]`}
+                    >
+                      <Clock
+                        aria-hidden="true"
+                        className="mt-[1px] size-3.5 flex-none"
+                      />
+                      <span>Will be removed {coolingTime(p.removesAt)}</span>
                     </small>
                   )}
                   {!p.usable && (
@@ -352,6 +372,8 @@ function PasskeyList({
                     variant="outline"
                     size="sm"
                     aria-label={`Cancel removal of ${p.label}`}
+                    aria-disabled={cancelling !== null || undefined}
+                    className="aria-disabled:opacity-50"
                     onClick={() => void cancelRemoval(p)}
                   >
                     Cancel removal
@@ -392,8 +414,11 @@ function PasskeyList({
         title={`Remove "${removing?.label ?? ""}"?`}
         body={
           <>
-            <p>You won't be able to approve picks with it.</p>
-            {!keys?.some((k) => k.usable) && <p>{REMOVAL_DELAY_LINE}</p>}
+            {reauthPath ? (
+              <p>{REMOVAL_DELAY_LINE}</p>
+            ) : (
+              <p>You won't be able to approve picks with it.</p>
+            )}
             {keys?.length === 1 && (
               <p>
                 It's your only passkey. Without one, approve risky actions in
@@ -404,7 +429,8 @@ function PasskeyList({
         }
         confirm="Remove"
         pending="Removing…"
-        danger
+        // Immediate removal is red; a removal that waits 24 hours is not.
+        danger={!reauthPath}
         busy={removeBusy}
         onConfirm={() => removing && void remove(removing)}
       />

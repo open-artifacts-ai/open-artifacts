@@ -72,7 +72,10 @@ for (const scheme of ["light", "dark"] as const)
 
       test("back from the sign-in Add asked for", async ({ page }) => {
         await page.addInitScript(() =>
-          sessionStorage.setItem("oa.passkey.addAfterReauth", "1"),
+          sessionStorage.setItem(
+            "oa.passkey.addAfterReauth",
+            String(Date.now()),
+          ),
         );
         await page.goto("/settings/security?mock=passkey-none");
         await expect(

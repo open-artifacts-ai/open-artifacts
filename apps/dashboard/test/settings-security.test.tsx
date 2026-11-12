@@ -255,6 +255,11 @@ describe("Settings › Security: passkeys", () => {
     expect(d).toHaveTextContent(
       "It's removed after 24 hours, so you can cancel if this wasn't you.",
     );
+    // The delayed path drops the immediate-removal line, and is not red.
+    expect(d).not.toHaveTextContent("You won't be able to approve picks");
+    expect(within(d).getByRole("button", { name: "Remove" }).className).toMatch(
+      /bg-primary/,
+    );
   });
 
   it("the remove dialog says nothing of it with two passkeys", async () => {
@@ -266,6 +271,10 @@ describe("Settings › Security: passkeys", () => {
     expect(d).not.toHaveTextContent("only passkey");
     // A usable passkey asserts: the removal is immediate, no delay line.
     expect(d).not.toHaveTextContent("removed after 24 hours");
+    expect(d).toHaveTextContent("You won't be able to approve picks with it.");
+    expect(within(d).getByRole("button", { name: "Remove" }).className).toMatch(
+      /bg-destructive/,
+    );
   });
 
   it("a failed remove shows its line under that passkey", async () => {
@@ -405,6 +414,7 @@ describe("Settings › Security: passkeys", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
     expect(await screen.findByText(/Nothing was added\.$/)).toBeVisible();
     expect(redirect).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBeNull();
   });
 });
 
@@ -460,7 +470,9 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
   it("marks the return before following the sign-in, only when it follows", async () => {
     use("none");
     const redirect = vi.spyOn(webauthn, "redirectTo").mockImplementation(() => {
-      expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBe("1");
+      // The mark is the time we left.
+      const at = Number(sessionStorage.getItem("oa.passkey.addAfterReauth"));
+      expect(Math.abs(Date.now() - at)).toBeLessThan(60_000);
     });
     server.use(
       http.post(`*${R.passkeyRegisterBegin}`, () =>
@@ -477,7 +489,7 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
 
   it("back from the sign-in: clears the mark, focuses Add, says so, does not call create", async () => {
     use("none");
-    sessionStorage.setItem("oa.passkey.addAfterReauth", "1");
+    sessionStorage.setItem("oa.passkey.addAfterReauth", String(Date.now()));
     mount("/settings/security");
     const add = await screen.findByRole("button", { name: "Add a passkey" });
     expect(
@@ -488,6 +500,44 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
     expect(add).toHaveFocus();
     expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBeNull();
     expect(create).not.toHaveBeenCalled();
+    // The green line replaces the "sign in again first" note.
+    expect(screen.queryByText(/asks you to sign in again first/)).toBeNull();
+  });
+
+  it("a mark older than 10 minutes is cleared and ignored", async () => {
+    use("none");
+    sessionStorage.setItem(
+      "oa.passkey.addAfterReauth",
+      String(Date.now() - 11 * 60_000),
+    );
+    mount("/settings/security");
+    await screen.findByText("No passkeys yet.");
+    expect(screen.queryByText(/signed in again\./)).toBeNull();
+    expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBeNull();
+    expect(
+      screen.getByText("Adding a passkey asks you to sign in again first."),
+    ).toBeVisible();
+  });
+
+  it("Cancel removal ignores a second click while it works", async () => {
+    use("pending");
+    let n = 0;
+    server.use(
+      http.post("*/api/v1/passkeys/:id/cancel-removal", async () => {
+        n += 1;
+        await new Promise((r) => setTimeout(r, 50));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    mount("/settings/security");
+    const b = await screen.findByRole("button", {
+      name: "Cancel removal of Phone",
+    });
+    fireEvent.click(b);
+    await waitFor(() => expect(b).toHaveAttribute("aria-disabled", "true"));
+    fireEvent.click(b);
+    await waitFor(() => expect(b).not.toHaveAttribute("aria-disabled"));
+    expect(n).toBe(1);
   });
 
   it("without the mark, no return line", async () => {
