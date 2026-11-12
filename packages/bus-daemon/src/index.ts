@@ -479,6 +479,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
+      ...(rec.nameChosen && hubNameChosen ? { name_chosen: true as const } : {}),
       // A /clear: the new ref takes over the old address and its mail (#1295).
       ...(rec.replaces !== undefined && hubMailbox
         ? { replaces: rec.replaces }
@@ -1187,6 +1188,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
           : {}),
         sessionName: s.name,
+        ...(s.nameChosen ? { nameChosen: true } : {}),
         cwd: s.cwd,
         live: true,
       });
@@ -1284,6 +1286,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  let hubNameChosen = false;
   /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
   let hubFollow = false;
   /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
@@ -1443,6 +1446,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubNameChosen = frame.caps?.includes(BUS_CAPS.nameChosen) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
           hubWaitingQuery =
@@ -1510,6 +1514,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubNameChosen = false;
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
@@ -1942,6 +1947,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
+          ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
           ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
             ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }

@@ -103,6 +103,13 @@ export const BUS_CAPS = {
    * accepted by the socket is delivered.
    */
   noticeAck: "notice_ack",
+  /**
+   * Chosen names (#2311): the client may send `agent_up.name_chosen: true`
+   * for a session whose harness says the user (or a peer) named it. The hub
+   * lists it in `hello_ok.caps`; a client sends the key only when it did (an
+   * older hub's strict decoder refuses it).
+   */
+  nameChosen: "name_chosen",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

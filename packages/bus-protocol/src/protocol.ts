@@ -86,6 +86,12 @@ const AgentUp = z.strictObject({
    */
   name_kind: NameKindSchema.optional(),
   /**
+   * #2311: the harness says a user or a peer named this session, so the name
+   * is never treated as a harness default (not expired, not hidden as
+   * unnamed). Sent only to a hub that listed `BUS_CAPS.nameChosen`.
+   */
+  name_chosen: z.literal(true).optional(),
+  /**
    * #1295: the agent_ref this one takes over from, after a /clear: the same
    * live process now reports a new session. The hub honours it only for a
    * socket whose hello listed `BUS_CAPS.mailbox`, when the old ref is an

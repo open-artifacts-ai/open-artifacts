@@ -77,6 +77,28 @@ describe("claude liveness", () => {
     expect(live()).toEqual([]);
   });
 
+  it("#2311: an sdk file is no session, cli and no entrypoint are, and nameSource user marks a chosen name", () => {
+    const d = dir();
+    const live = () =>
+      liveClaudeSessions({
+        dir: d,
+        procStart: () => "t0",
+        isRunning: () => true,
+      });
+    writeSession(d, 4242, { entrypoint: "sdk-cli" });
+    expect(live()).toEqual([]);
+    writeSession(d, 4242, { entrypoint: "cli", nameSource: "derived" });
+    expect(live().map((x) => [x.ref, x.nameChosen])).toEqual([
+      ["s4242", undefined],
+    ]);
+    writeSession(d, 4242, { nameSource: "user" });
+    expect(live().map((x) => [x.ref, x.nameChosen])).toEqual([
+      ["s4242", true],
+    ]);
+    writeSession(d, 4242, { nameSource: "peer", name: "pi-2" });
+    expect(live()[0]?.nameChosen).toBe(true);
+  });
+
   it("#2110: a failed key read is unknown; only an absent key is unreachable", () => {
     const d = dir();
     writeSession(d, 4242);
