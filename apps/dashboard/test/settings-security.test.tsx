@@ -390,6 +390,13 @@ describe("Settings › Security: passkeys", () => {
       ),
     ).toBeVisible();
     expect(next).toHaveFocus();
+    // One primary action: the header button steps back, the sign-in note goes.
+    const header = screen.getByRole("button", { name: "Add a passkey" });
+    expect(header).toHaveAttribute("aria-disabled", "true");
+    expect(header.className).not.toMatch(/bg-primary/);
+    expect(screen.queryByText(/asks you to sign in again first/)).toBeNull();
+    fireEvent.click(header);
+    expect(get).toHaveBeenCalledTimes(1);
     const paths = posts.map((c) => c.path);
     expect(paths.indexOf(R.passkeyRegisterChallenge)).toBeGreaterThanOrEqual(0);
     expect(paths.indexOf(R.passkeyRegisterChallenge)).toBeLessThan(

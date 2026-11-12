@@ -237,7 +237,8 @@ function PasskeyList({
   }
 
   async function add() {
-    if (adding || full || loading) return; // aria-disabled keeps focus on the button
+    // aria-disabled keeps focus on the button
+    if (adding || full || loading || approved) return;
     setAdding(true);
     setNote(null);
     setReturned(false);
@@ -373,8 +374,10 @@ function PasskeyList({
         <Button
           ref={addRef}
           size="sm"
+          // Once approved, "Add passkey" below is the one primary action.
+          variant={approved ? "outline" : "default"}
           onClick={add}
-          aria-disabled={adding || full || loading || undefined}
+          aria-disabled={adding || full || loading || !!approved || undefined}
           aria-busy={adding || undefined}
           className="flex-none aria-disabled:opacity-50"
         >
@@ -410,7 +413,9 @@ function PasskeyList({
           </Button>
         </div>
       )}
-      {!returned && <p className={`m-0 ${muted}`}>{ADD_REAUTH_NOTE}</p>}
+      {!returned && !approved && (
+        <p className={`m-0 ${muted}`}>{ADD_REAUTH_NOTE}</p>
+      )}
       {failed && <p className={errorText}>Couldn't load your passkeys.</p>}
       {keys?.length === 0 && <p className={`m-0 ${muted}`}>No passkeys yet.</p>}
       {keys && keys.length > 0 && (
