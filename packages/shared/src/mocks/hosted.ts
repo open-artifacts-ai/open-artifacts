@@ -1056,6 +1056,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       banner: unhealthy && isAdmin(),
       tokensUnverified: unhealthy && isAdmin(),
       state: isAdmin() ? sync.state : null,
+      // #2149: owners and admins learn whether a binding exists.
+      ...(isAdmin() && directoryMode !== "off"
+        ? { bound: sync.binding !== null }
+        : {}),
       staleAt: isAdmin() ? sync.staleAt : null,
       heldSweeps: isAdmin()
         ? sync.held.filter((h) => !snoozedNow(h)).length
