@@ -2,6 +2,7 @@ import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AGENT_LINE } from "../src/library/NewDoc";
+import { isFresh } from "../src/viewer/doc/fresh";
 import { calls, events, installHarness, mount, server } from "./harness";
 
 installHarness();
@@ -26,6 +27,15 @@ describe("New doc (#1100)", () => {
     await waitFor(() =>
       expect(router.state.location.pathname).toMatch(/^\/a\/.+/),
     );
+    // The creation toast, and the doc is marked new (its title opens selected).
+    expect(
+      await screen.findByText(
+        "Type a title, then press Enter to start writing.",
+      ),
+    ).toBeVisible();
+    expect(isFresh(router.state.location.pathname.slice("/a/".length))).toBe(
+      true,
+    );
     expect(posts[0]?.path).toBe("/api/v1/artifacts");
     expect(posts[0]?.body).toMatchObject({
       format: "doc",
@@ -43,7 +53,13 @@ describe("New doc (#1100)", () => {
     expect(screen.queryByText(AGENT_LINE)).toBeNull();
     expect(
       screen.getByRole("link", { name: "How to turn on Workers Paid" }),
-    ).toHaveAttribute("target", "_blank");
+    ).toHaveAttribute(
+      "href",
+      "https://open-artifacts.com/docs/self-hosting-costs",
+    );
+    expect(
+      screen.getByRole("link", { name: "See hosted plans" }),
+    ).toHaveAttribute("href", "https://open-artifacts.com");
     const posts = calls("POST");
     fireEvent.click(screen.getByRole("button", { name: "New doc" }));
     await waitFor(() => expect(note).toHaveFocus());

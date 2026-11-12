@@ -18,6 +18,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { CaretActivity, FLAG_MS, renderCaret } from "../src/viewer/doc/cursors";
 import { DocEditor } from "../src/viewer/doc/DocEditor";
+import { isFresh, markFresh } from "../src/viewer/doc/fresh";
+import { TITLE_SAVE_MS, TitleField } from "../src/viewer/doc/TitleField";
 import { isDocArtifact, setMockDoc } from "../src/viewer/doc/docMock";
 import {
   contentExtensions,
@@ -558,7 +560,7 @@ describe("DocEditor", () => {
     await waitFor(() => expect(empty()).toBeNull());
   });
 
-  it("a blank doc opens with the cursor in it, once synced", async () => {
+  it("an existing doc opens with the cursor in the body, once synced", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
     await screen.findByRole("toolbar");
@@ -567,6 +569,58 @@ describe("DocEditor", () => {
     await waitFor(() =>
       expect(document.querySelector(".ProseMirror")).toHaveFocus(),
     );
+  });
+
+  it("a new doc opens with the title focused and all of it selected", async () => {
+    const p = fakeProviders();
+    markFresh("A1");
+    render(<DocEditor {...base} canEdit fresh makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    act(() => p.made.last?.connect());
+    const title = screen.getByRole("textbox", { name: "Title" });
+    await waitFor(() => expect(title).toHaveFocus());
+    expect([title.selectionStart, title.selectionEnd]).toEqual([
+      0,
+      "Plan".length,
+    ]);
+    expect(document.querySelector(".ProseMirror")).not.toHaveFocus();
+    // Used up: a later open of this doc is not new.
+    expect(isFresh("A1")).toBe(false);
+  });
+
+  it("the title is the first line of the editing column", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    const page = document.querySelector(".oa-doc-page");
+    expect(page?.firstElementChild).toBe(
+      screen.getByRole("textbox", { name: "Title" }),
+    );
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveAttribute(
+      "placeholder",
+      "Untitled",
+    );
+  });
+
+  it("Enter and Down in the title move to the body", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    const title = screen.getByRole("textbox", { name: "Title" });
+    for (const key of ["Enter", "ArrowDown"]) {
+      act(() => title.focus());
+      fireEvent.keyDown(title, { key });
+      await waitFor(() =>
+        expect(document.querySelector(".ProseMirror")).toHaveFocus(),
+      );
+    }
+  });
+
+  it("a read-only viewer cannot edit the title", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit={false} makeProvider={p.make} />);
+    const title = await screen.findByRole("textbox", { name: "Title" });
+    expect(title).toHaveAttribute("readonly");
   });
 
   it("reports Saving, Saved and Offline for the title bar", async () => {
@@ -721,5 +775,85 @@ describe("isDocArtifact", () => {
     expect(isDocArtifact({ id: "m", format: "html" })).toBe(true);
     setMockDoc(null);
     expect(isDocArtifact({ id: "m", format: "html" })).toBe(false);
+  });
+});
+
+describe("TitleField saving", () => {
+  function field(title = "Plan") {
+    const onSave = vi.fn();
+    const ref = { current: null as HTMLInputElement | null };
+    const view = render(
+      <TitleField
+        title={title}
+        editable
+        onSave={onSave}
+        onEnter={() => {}}
+        inputRef={ref}
+      />,
+    );
+    return {
+      onSave,
+      input: screen.getByRole("textbox", { name: "Title" }),
+      view,
+    };
+  }
+  const type = (input: HTMLElement, text: string) =>
+    fireEvent.change(input, { target: { value: text } });
+
+  it("saves after a pause in typing, once", () => {
+    vi.useFakeTimers();
+    try {
+      const { onSave, input } = field();
+      type(input, "Launch");
+      type(input, "Launch plan");
+      vi.advanceTimersByTime(TITLE_SAVE_MS - 1);
+      expect(onSave).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onSave).toHaveBeenCalledExactlyOnceWith("Launch plan");
+      vi.advanceTimersByTime(5000);
+      expect(onSave).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("saves at once on blur, trimmed, and not again after the pause", () => {
+    vi.useFakeTimers();
+    try {
+      const { onSave, input } = field();
+      type(input, "  Roadmap  ");
+      fireEvent.blur(input);
+      expect(onSave).toHaveBeenCalledExactlyOnceWith("Roadmap");
+      vi.advanceTimersByTime(5000);
+      expect(onSave).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an empty title saves as Untitled", () => {
+    const { onSave, input } = field("Plan");
+    type(input, "   ");
+    fireEvent.blur(input);
+    expect(onSave).toHaveBeenCalledExactlyOnceWith("Untitled");
+  });
+
+  it("saves nothing when the title did not change", () => {
+    const { onSave, input } = field("Plan");
+    type(input, "Plan");
+    fireEvent.blur(input);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("a pending edit is saved when the field goes away", () => {
+    vi.useFakeTimers();
+    try {
+      const { onSave, input, view } = field();
+      type(input, "Gone soon");
+      view.unmount();
+      expect(onSave).toHaveBeenCalledExactlyOnceWith("Gone soon");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

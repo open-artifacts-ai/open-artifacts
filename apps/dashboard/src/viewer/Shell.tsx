@@ -12,7 +12,7 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
-import { useArtifact, useVersionInfo } from "../api/queries";
+import { useArtifact, usePatchArtifact, useVersionInfo } from "../api/queries";
 import { useCan } from "../auth/permissions";
 import { useLoginRedirect } from "../auth/redirect";
 import { useMe } from "../auth/useMe";
@@ -38,6 +38,7 @@ import {
 import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
 import { DocEditor, STATUS_TEXT } from "./doc/DocEditor";
 import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
+import { isFresh } from "./doc/fresh";
 import type { DocStatus } from "./doc/useDocRoom";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FsTip, FullScreenEscape } from "./FullScreenEscape";
@@ -388,6 +389,7 @@ function Viewer({
   // #1100: a collaborative doc is edited in place of the frame.
   const isDoc = isDocArtifact(artifact);
   const [docStatus, setDocStatus] = useState<DocStatus | null>(null);
+  const renameDoc = usePatchArtifact(artifact.id);
   useEffect(() => {
     // No frame to wait for: the layer is ready at once.
     if (isDoc) cbs.current.onReady?.();
@@ -736,6 +738,22 @@ function Viewer({
                 viewer={viewer}
                 outsider={!authed || role === "guest"}
                 onStatus={setDocStatus}
+                fresh={isFresh(artifact.id)}
+                onRename={(title) =>
+                  renameDoc.mutate(
+                    { title },
+                    {
+                      onError: (e) =>
+                        toast({
+                          title:
+                            e instanceof ApiClientError
+                              ? e.message
+                              : "Couldn't rename",
+                          tone: "danger",
+                        }),
+                    },
+                  )
+                }
               />
             </div>
           )}

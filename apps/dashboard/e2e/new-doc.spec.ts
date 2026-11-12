@@ -58,10 +58,39 @@ for (const [scheme, width] of [
       await page.getByRole("button", { name: "New doc" }).click();
       await expect(page).toHaveURL(/\/a\/[^/?]+/);
       const prose = page.locator(".ProseMirror");
+      const title = page.getByRole("textbox", { name: "Title", exact: true });
       await expect(prose).toBeVisible();
-      await expect(prose).toBeFocused();
+      // The title opens focused with its text selected, and the toast says so.
+      await expect(title).toBeFocused();
+      await expect(title).toHaveValue("Untitled");
+      expect(
+        await title.evaluate((el: HTMLInputElement) => [
+          el.selectionStart,
+          el.selectionEnd,
+        ]),
+      ).toEqual([0, "Untitled".length]);
+      await expect(
+        page.getByText("Type a title, then press Enter to start writing."),
+      ).toBeVisible();
       await expect(page.locator("p.oa-doc-empty")).toBeVisible();
       await shot(page, `new-doc-blank-${tag}.png`);
+      // Typing replaces it; Enter moves to the body; it saves as the title.
+      await page.keyboard.type("Launch plan");
+      await page.keyboard.press("Enter");
+      await expect(prose).toBeFocused();
+      await expect(page.locator(".oa-viewer h1").first()).toHaveText(
+        "Launch plan",
+      );
+      await page.keyboard.type("First line");
+      await expect(prose).toContainText("First line");
+      await shot(page, `new-doc-titled-${tag}.png`);
+    });
+
+    test("an existing doc opens with the cursor in the body", async ({
+      page,
+    }) => {
+      await page.goto("/a/Cd5fGhJkLm6nPqRs?mock=doc");
+      await expect(page.locator(".ProseMirror")).toBeFocused();
     });
 
     test("on a free self-host the note says why", async ({ page }) => {

@@ -4,11 +4,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { api } from "../api/client";
-import { PLANS_URL } from "../layout/cpu";
+import { markFresh } from "../viewer/doc/fresh";
 import { toast } from "../layout/toast";
 
 /** Where "See hosted plans" goes. */
-const HOSTED_URL = "https://open-artifacts.com/";
+const HOSTED_URL = "https://open-artifacts.com";
+/** Where "How to turn on Workers Paid" goes (Product). */
+const PAID_URL = "https://open-artifacts.com/docs/self-hosting-costs";
 
 /** The agent line under the tabs (Design, docs mockup step 1). */
 export const AGENT_LINE =
@@ -69,7 +71,12 @@ export function NewDocButton({
         PublishResultSchema,
       );
       void qc.invalidateQueries({ queryKey: ["artifacts"] });
+      markFresh(made.id);
       await navigate({ to: `/a/${made.id}` } as never);
+      toast({
+        title: "Type a title, then press Enter to start writing.",
+        tone: "neutral",
+      });
     } catch (e) {
       toast({
         title: "Couldn't create the doc.",
@@ -117,7 +124,7 @@ export function DocsGate({
       </p>
       <div className="flex flex-wrap gap-[var(--oa-space-2)]">
         <Button asChild size="sm">
-          <a href={PLANS_URL} target="_blank" rel="noopener noreferrer">
+          <a href={PAID_URL} target="_blank" rel="noopener noreferrer">
             How to turn on Workers Paid
           </a>
         </Button>

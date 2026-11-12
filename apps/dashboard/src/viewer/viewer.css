@@ -640,6 +640,26 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   color: var(--oa-text);
   min-height: 50vh;
 }
+.oa-doc-title {
+  display: block;
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  color: var(--oa-text);
+  text-overflow: ellipsis;
+}
+.oa-doc-title::placeholder {
+  color: var(--oa-text-2);
+  opacity: 1;
+}
 .oa-doc-prose p.oa-doc-empty::before {
   content: attr(data-placeholder);
   float: left;
@@ -932,7 +952,8 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   .oa-doc-page {
     padding: 28px 16px 64px;
   }
-  .oa-doc-prose h1 {
+  .oa-doc-prose h1,
+  .oa-doc-title {
     font-size: 26px;
   }
   .oa-doc-prose h2 {
