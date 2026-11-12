@@ -28,6 +28,7 @@ import {
   listComments,
   setThreadAgent,
 } from "../src/services/comments.js";
+import { withdrawTargets } from "../src/runtime/comments-store.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
@@ -834,6 +835,85 @@ describe("the thread's agents, removable (#2035)", () => {
       await post(s.id, owner, { mentions: [{ key: s.claude }] })
     ).json()) as Thread;
     expect((await stop(s.id, t.id, s.pi, owner)).status).toBe(404);
+  });
+
+  describe("a reply notice the hub refuses gives its spend back (#2197)", () => {
+    /** Fills the thread's reply cap with held notices; returns the last reply's comment id. */
+    const fill = async () => {
+      const s = await setup();
+      const t = (await (
+        await post(s.id, editor, { mentions: [{ key: s.claude }] })
+      ).json()) as Thread;
+      bus.clear();
+      bus.outcome = "held";
+      let last = "";
+      for (let i = 0; i < THREAD_REPLY_NOTICES_MAX; i++) {
+        if (i === THREAD_REPLY_NOTICES_MAX - 1) await age(s.id);
+        last = ((await (await reply(s.id, t.id, viewer)).json()) as Comment).id;
+      }
+      return { s, t, last };
+    };
+    const settle = (
+      id: string,
+      commentId: string,
+      key: string,
+      kind: "mention" | "asker" | "reply" = "reply",
+    ) =>
+      runtimeStub(E, id).commentsTargetSettle({
+        commentId,
+        kind,
+        key,
+        state: "gone",
+      });
+    const sql = <T>(id: string, f: (q: SqlStorage) => T) =>
+      runInDurableObject(
+        runtimeStub(E, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (_i, state) => f(state.storage.sql),
+      );
+
+    it("frees one unit of the cap, once", async () => {
+      const { s, t, last } = await fill();
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX);
+      expect(await settle(s.id, last, s.claude)).toBe(true);
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX - 1);
+      // A repeat settle moves nothing and refunds nothing more.
+      expect(await settle(s.id, last, s.claude)).toBe(false);
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX - 1);
+      await age(s.id);
+      bus.clear();
+      expect((await reply(s.id, t.id, viewer)).status).toBe(201);
+      expect(threadReplies()).toHaveLength(1);
+    });
+
+    it("gone then withdrawn does not refund again", async () => {
+      const { s, t, last } = await fill();
+      await settle(s.id, last, s.claude);
+      const before = await counts(s.id);
+      await sql(s.id, (q) =>
+        withdrawTargets(q, t.id, s.claude, [
+          { commentId: last, kind: "reply" },
+        ]),
+      );
+      expect(await counts(s.id)).toBe(before);
+      const st = await sql(
+        s.id,
+        (q) =>
+          q
+            .exec<{ state: string }>(
+              "select state from comment_targets where comment_id = ? and kind = 'reply'",
+              last,
+            )
+            .toArray()[0]?.state,
+      );
+      expect(st).toBe("withdrawn");
+    });
+
+    it("a mention going gone does not touch the reply bound", async () => {
+      const { s, t } = await fill();
+      const root = t.comments[0] as Comment;
+      await settle(s.id, root.id, s.claude, "mention");
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX);
+    });
   });
 
   it("the reply carries a delivery line per agent it told", async () => {
