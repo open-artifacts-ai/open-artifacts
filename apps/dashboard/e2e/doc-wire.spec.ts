@@ -153,6 +153,11 @@ test("a named save shows its name", async ({ page }, info) => {
   await expect(
     page.getByRole("status").filter({ hasText: "Saved as v6 (Before launch)" }),
   ).toBeVisible();
+  if (process.env.SHOTS_DIR)
+    await page.screenshot({
+      path: `${process.env.SHOTS_DIR}/doc-titlebar-saved-named-1280.png`,
+      clip: { x: 0, y: 0, width: 1280, height: 100 },
+    });
 });
 
 test("an auto-save is quiet but the version pill still ticks", async ({
