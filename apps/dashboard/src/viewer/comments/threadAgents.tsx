@@ -159,13 +159,18 @@ export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
     if (!listed) dropped.current = true;
     else if (dropped.current) setGone(null);
   }, [listed, gone]);
+  // Optimistic: the chip goes (and Undo shows) at once; a refusal puts it back
+  // and shows the error line.
   const run = (a: ThreadAgent, removed: boolean) => {
     setErr(null);
+    setGone(removed ? a : null);
     set.mutate(
       { thread: t.id, key: a.key, removed },
       {
-        onSuccess: () => setGone(removed ? a : null),
-        onError: setErr,
+        onError: (e) => {
+          setGone(removed ? null : a);
+          setErr(e);
+        },
       },
     );
   };
@@ -290,7 +295,7 @@ export function ThreadAgents({
                     aria-label={`Stop notifying ${a.name}`}
                     className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
                     data-agent-x={a.key}
-                    disabled={set.isPending}
+                    disabled={set.isPending && set.variables?.key === a.key}
                     onClick={() => run(a, true)}
                   >
                     ×

@@ -1,0 +1,270 @@
+// A post shows at once and rolls back on error; removing an agent too.
+import type { Comment, CommentList, CommentThread } from "@oa/shared";
+import { R, viewerPath } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
+import {
+  act,
+  configure,
+  fireEvent,
+  getConfig,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { delay, HttpResponse, http } from "msw";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { overlayPending } from "../src/api/comments";
+import { events, installHarness, mount, server } from "./harness";
+import { FIRST_LOAD_MS } from "./timeouts";
+
+vi.mock("../src/viewer/bridge", async () => {
+  const { loadArtifactFrame } = await import("../src/viewer/frame");
+  return {
+    createBridge: (o: { iframe: HTMLIFrameElement; url: string }) => {
+      loadArtifactFrame(o.iframe, o.url);
+      return {
+        dispose: () => {},
+        requestThumbnail: () => {},
+        setTheme: () => {},
+        setArtifact: () => {},
+        scrollTo: () => {},
+        setCommentsMode: vi.fn(),
+        setComments: vi.fn(),
+        focusComment: vi.fn(),
+        commentOnSelection: vi.fn(),
+      };
+    },
+  };
+});
+
+installHarness();
+const defaultAsyncTimeout = getConfig().asyncUtilTimeout;
+beforeAll(() => configure({ asyncUtilTimeout: FIRST_LOAD_MS }));
+afterAll(() => configure({ asyncUtilTimeout: defaultAsyncTimeout }));
+
+const OWNED = (
+  fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
+).id;
+
+beforeEach(() => {
+  vi.spyOn(window, "matchMedia").mockImplementation(
+    (q: string) =>
+      ({
+        matches: q === "(min-width: 960px)",
+        media: q,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }) as unknown as MediaQueryList,
+  );
+});
+afterEach(() => vi.restoreAllMocks());
+
+const col = async () => {
+  const b = await screen.findByRole("button", { name: /^Comments/ });
+  if (!screen.queryByRole("complementary", { name: "Comments" }))
+    fireEvent.click(b);
+  return screen.findByRole("complementary", { name: "Comments" });
+};
+
+const mine = (id: string, body: string): Comment => ({
+  id,
+  body,
+  author: { kind: "user", id: "u1", name: "Leo", me: true },
+  createdAt: "2026-11-12T10:00:00Z",
+  editedAt: null,
+  typed: true,
+  can: { edit: true, delete: true },
+});
+const note = (id: string, comments: Comment[]): CommentThread => ({
+  id,
+  anchor: { kind: "note" },
+  version: 1,
+  status: "open",
+  resolvedBy: null,
+  resolvedAt: null,
+  createdAt: "2026-11-12T10:00:00Z",
+  comments,
+});
+const list = (threads: CommentThread[]): CommentList => ({
+  threads,
+  open: threads.length,
+  truncated: false,
+});
+
+const send = async (c: HTMLElement, text: string) => {
+  const box = within(c).getByRole("textbox", {
+    name: "Comment on the whole page",
+  });
+  fireEvent.focus(box);
+  fireEvent.change(box, { target: { value: text } });
+  fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+  return box;
+};
+
+describe("posting shows at once (user request)", () => {
+  it("shows the comment and clears the box before the server answers, then swaps in the server comment once", async () => {
+    let threads: CommentThread[] = [];
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () => HttpResponse.json(list(threads))),
+      http.post(`*${R.comments(OWNED)}`, async () => {
+        await delay(400);
+        const t = note("srv1", [mine("srv1c", "Hello there")]);
+        threads = [t];
+        return HttpResponse.json(t, { status: 201 });
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await send(c, "Hello there");
+    // At once: shown, marked sending, and the box is empty.
+    const row = await within(c).findByText("Hello there");
+    expect(row.closest("[data-comment]")).toHaveAttribute("data-sending");
+    expect(box).toHaveValue("");
+    // Then the server's comment, still exactly one.
+    await waitFor(() =>
+      expect(c.querySelector("[data-comment='srv1c']")).not.toBeNull(),
+    );
+    expect(within(c).getAllByText("Hello there")).toHaveLength(1);
+    expect(c.querySelector("[data-sending]")).toBeNull();
+  });
+
+  it("does not show it twice when a refetch carries the comment before the post answers", async () => {
+    const t = note("srv1", [mine("srv1c", "Once only")]);
+    let landed = false;
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(list(landed ? [t] : [])),
+      ),
+      http.post(`*${R.comments(OWNED)}`, async () => {
+        landed = true;
+        await delay(500);
+        return HttpResponse.json(t, { status: 201 });
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await send(c, "Once only");
+    await within(c).findByText("Once only");
+    // A live event's refetch lands while the post is in flight.
+    await waitFor(() => expect(events.connections(OWNED)).toBeGreaterThan(0));
+    await act(async () => {
+      events.emitComments(OWNED, 9);
+    });
+    // The refetch carried it: still one row while the post is out.
+    await waitFor(() =>
+      expect(c.querySelector("[data-comment='srv1c']")).not.toBeNull(),
+    );
+    expect(within(c).getAllByText("Once only")).toHaveLength(1);
+    expect(c.querySelector("[data-sending]")).toBeNull();
+    // Let the post answer too: still one row, and nothing left pending.
+    await new Promise((r) => setTimeout(r, 650));
+    expect(within(c).getAllByText("Once only")).toHaveLength(1);
+    await waitFor(() =>
+      expect(c.querySelector("[data-comment='srv1c']")).not.toBeNull(),
+    );
+    expect(within(c).getAllByText("Once only")).toHaveLength(1);
+  });
+
+  it("rolls back on an error and puts the text back with the error line", async () => {
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(
+          list([
+            note("t0", [
+              {
+                ...mine("c0", "Earlier"),
+                author: { kind: "guest", name: "Pat", me: false },
+              },
+            ]),
+          ]),
+        ),
+      ),
+      http.post(`*${R.comments(OWNED)}`, async () => {
+        await delay(150);
+        return HttpResponse.json(
+          { error: { code: "rate_limited", message: "x" } },
+          { status: 429 },
+        );
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await send(c, "keep me");
+    await within(c).findByText("Too many comments. Try again in a minute.");
+    expect(box).toHaveValue("keep me");
+    expect(c.querySelectorAll("[data-comment]")).toHaveLength(1);
+  });
+
+  it("comments_off rolls back too", async () => {
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(
+          list([
+            note("t0", [
+              {
+                ...mine("c0", "Earlier"),
+                author: { kind: "guest", name: "Pat", me: false },
+              },
+            ]),
+          ]),
+        ),
+      ),
+      http.post(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(
+          { error: { code: "comments_off", message: "x" } },
+          { status: 403 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await send(c, "nope");
+    await within(c).findByText("Comments are off for this page.");
+    expect(box).toHaveValue("nope");
+  });
+});
+
+describe("overlayPending", () => {
+  const pend = (thread: string | null, body: string, known: string[]) => ({
+    tmp: `tmp-${body}`,
+    thread,
+    comment: {
+      ...mine(`tmp-${body}`, body),
+      can: { edit: false, delete: false },
+    },
+    tmpThread: thread === null ? note(`tmp-t-${body}`, []) : undefined,
+    known: new Set(known),
+  });
+  it("adds a pending reply after the thread's comments", () => {
+    const data = list([note("t1", [mine("c1", "root")])]);
+    const out = overlayPending(data, [pend("t1", "hi", ["t1", "c1"])]);
+    expect(out.threads[0]?.comments.map((c) => c.body)).toEqual(["root", "hi"]);
+  });
+  it("drops a pending reply once the list carries it, never both", () => {
+    const data = list([note("t1", [mine("c1", "root"), mine("c2", "hi")])]);
+    const out = overlayPending(data, [pend("t1", "hi", ["t1", "c1"])]);
+    expect(out).toBe(data);
+  });
+  it("two posts with the same words stay two until each is carried", () => {
+    const data = list([note("t1", [mine("c1", "root"), mine("c2", "same")])]);
+    const out = overlayPending(data, [
+      pend("t1", "same", ["t1", "c1"]),
+      { ...pend("t1", "same", ["t1", "c1"]), tmp: "tmp-b" },
+    ]);
+    expect(out.threads[0]?.comments).toHaveLength(3);
+  });
+  it("a new thread is laid over the list and counted open", () => {
+    const out = overlayPending(list([]), [pend(null, "new", [])]);
+    expect(out.threads).toHaveLength(1);
+    expect(out.open).toBe(1);
+  });
+});
