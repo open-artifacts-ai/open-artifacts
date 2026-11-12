@@ -164,6 +164,7 @@ for (const [w, h] of [
     await expect(
       page.getByRole("button", { name: /^\d+ asks? for you/ }).first(),
     ).toBeVisible();
+    await ask.scrollIntoViewIfNeeded();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/ask-sending-${w}.png` });
     await expect(ask.getByText(/You picked/)).toHaveCount(1, { timeout: 5000 });
     await expect(ask.locator("[data-sending]")).toHaveCount(0);
