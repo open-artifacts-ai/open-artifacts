@@ -5,6 +5,7 @@ import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import type { Fragment, Mark } from "@tiptap/pm/model";
 import { Plugin } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import StarterKit from "@tiptap/starter-kit";
 import type * as Y from "yjs";
 import {
@@ -69,6 +70,41 @@ const LinkGuard = Extension.create({
             if (found) return false;
           }
           return true;
+        },
+      }),
+    ];
+  },
+});
+
+/** The hint in an empty doc (Design's docs mockup). */
+export const DOC_PLACEHOLDER =
+  "Write something, or use the toolbar for headings, lists and more";
+
+/**
+ * Shows DOC_PLACEHOLDER (CSS ::before on data-placeholder) while the doc is one
+ * empty paragraph. A decoration only: nothing reaches the doc.
+ */
+export const Placeholder = Extension.create({
+  name: "docPlaceholder",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        props: {
+          decorations({ doc }) {
+            const first = doc.firstChild;
+            if (
+              doc.childCount !== 1 ||
+              first?.type.name !== "paragraph" ||
+              first.content.size > 0
+            )
+              return null;
+            return DecorationSet.create(doc, [
+              Decoration.node(0, first.nodeSize, {
+                class: "oa-doc-empty",
+                "data-placeholder": DOC_PLACEHOLDER,
+              }),
+            ]);
+          },
         },
       }),
     ];
@@ -209,6 +245,7 @@ export function collabExtensions(opts: {
 }): Extensions {
   const activity = new CaretActivity(opts.root ?? (() => document));
   return [
+    Placeholder,
     Collaboration.configure({ document: opts.ydoc, field: "default" }),
     CollaborationCaret.configure({
       provider: opts.provider,

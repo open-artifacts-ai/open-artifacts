@@ -34,6 +34,12 @@ globalThis.ResizeObserver ??= class {
   disconnect() {}
 };
 
+// jsdom has no layout: ProseMirror's focus scroll asks ranges for rects.
+const noRects = () => Object.assign([], { item: () => null });
+Range.prototype.getClientRects ??= noRects as never;
+Range.prototype.getBoundingClientRect ??= (() =>
+  new DOMRect(0, 0, 0, 0)) as never;
+
 const editors: Editor[] = [];
 afterEach(() => {
   for (const e of editors.splice(0)) e.destroy();
@@ -530,6 +536,26 @@ describe("DocEditor", () => {
     act(() => second.frame(frame));
     await new Promise((r) => setTimeout(r, 20));
     expect(p.made.last).toBe(second);
+  });
+
+  it("an empty doc shows the placeholder, and a typed one does not", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    const empty = () => document.querySelector("p.oa-doc-empty");
+    expect(empty()?.getAttribute("data-placeholder")).toMatch(
+      /^Write something/,
+    );
+    act(() => {
+      const para = new Y.XmlElement("paragraph");
+      const text = new Y.XmlText();
+      text.insert(0, "hi");
+      para.insert(0, [text]);
+      (p.made.last as NonNullable<typeof p.made.last>).doc
+        .getXmlFragment("default")
+        .insert(0, [para]);
+    });
+    await waitFor(() => expect(empty()).toBeNull());
   });
 
   it("a blank doc opens with the cursor in it, once synced", async () => {

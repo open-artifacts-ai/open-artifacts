@@ -640,6 +640,13 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   color: var(--oa-text);
   min-height: 50vh;
 }
+.oa-doc-prose p.oa-doc-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--oa-text-2);
+}
 .oa-doc-prose > :first-child {
   margin-top: 0;
 }

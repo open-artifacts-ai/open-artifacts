@@ -60,6 +60,7 @@ for (const [scheme, width] of [
       const prose = page.locator(".ProseMirror");
       await expect(prose).toBeVisible();
       await expect(prose).toBeFocused();
+      await expect(page.locator("p.oa-doc-empty")).toBeVisible();
       await shot(page, `new-doc-blank-${tag}.png`);
     });
 
