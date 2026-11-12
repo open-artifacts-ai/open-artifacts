@@ -28,7 +28,10 @@ import type { AppType } from "./index.js";
 function member(c: Context<AppEnv>) {
   const user = requireUser(c);
   if (!interactiveSession(c))
-    throw new ApiError("forbidden", "Use the web app, signed in in your browser");
+    throw new ApiError(
+      "forbidden",
+      "Use the web app, signed in in your browser",
+    );
   return user;
 }
 
@@ -83,17 +86,18 @@ export function mountPasskeys(app: AppType): void {
     return c.json(out, 201);
   });
 
-  app.post(R.passkeyChallenge(":id"), async (c) => {
+  app.post("/api/v1/passkeys/:id/challenge", async (c) => {
     const user = member(c);
     return c.json(await removeChallenge(c.env, user.id, idOf(c)));
   });
 
-  app.delete(R.passkey(":id"), async (c) => {
+  app.delete("/api/v1/passkeys/:id", async (c) => {
     const user = member(c);
     const id = idOf(c);
     const body = await c.req.json().catch(() => undefined);
     const parsed = PasskeyRemoveBodySchema.safeParse(body);
-    if (!parsed.success) throw new ApiError("bad_request", "Invalid request body");
+    if (!parsed.success)
+      throw new ApiError("bad_request", "Invalid request body");
     const assertion = parsed.data?.assertion;
     if (assertion !== undefined && assertion !== null) {
       await removePasskey(c.env, user.id, id, { assertion });

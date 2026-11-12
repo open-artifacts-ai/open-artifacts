@@ -66,9 +66,7 @@ const toPasskey = (r: PasskeyRow, now: number): Passkey => ({
 const SELECT = "select * from passkeys where user_id = ?1 order by created_at";
 
 async function rowsOf(env: Env, userId: string): Promise<PasskeyRow[]> {
-  const { results } = await stmt(env.DB, SELECT)
-    .bind(userId)
-    .all<PasskeyRow>();
+  const { results } = await stmt(env.DB, SELECT).bind(userId).all<PasskeyRow>();
   return results;
 }
 
@@ -97,7 +95,11 @@ async function requireUsable(
     throw new ApiError(
       "passkey_cooling",
       "A new passkey can approve 24 hours after it is added",
-      { usableAt: iso(Math.min(...rows.map((r) => r.created_at)) + PASSKEY_COOLING_MS) },
+      {
+        usableAt: iso(
+          Math.min(...rows.map((r) => r.created_at)) + PASSKEY_COOLING_MS,
+        ),
+      },
     );
   return ok;
 }
@@ -123,11 +125,7 @@ async function issue(
   now: number,
 ): Promise<{ challenge: string; expiresAt: number }> {
   const taken = await takeAll(env, [
-    [
-      `pk:ch:${userId}`,
-      CHALLENGE_BUDGET,
-      counterBucket("tenMin", now),
-    ],
+    [`pk:ch:${userId}`, CHALLENGE_BUDGET, counterBucket("tenMin", now)],
   ]);
   if (taken !== -1)
     throw new ApiError(
@@ -215,7 +213,12 @@ export async function verifyForScope(
     .first<ChallengeRow>();
   const expired = () =>
     new ApiError("challenge_expired", "Ask for a new passkey prompt");
-  if (!row || row.kind !== kind || row.used_at !== null || row.expires_at <= now)
+  if (
+    !row ||
+    row.kind !== kind ||
+    row.used_at !== null ||
+    row.expires_at <= now
+  )
     throw expired();
   if (row.binding !== binding) return failed("binding");
   const res = await stmt(
@@ -287,7 +290,10 @@ export async function registerBegin(
       challenge,
       rp: { id: rpIdOf(env), name },
       user: {
-        id: btoa(user.id).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+        id: btoa(user.id)
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/, ""),
         name: user.email,
         displayName: user.name || user.email,
       },
@@ -390,7 +396,8 @@ export async function registerFinish(
   const saved = await stmt(env.DB, "select * from passkeys where id = ?1")
     .bind(id)
     .first<PasskeyRow>();
-  if (!saved) throw new ApiError("conflict", `At most ${MAX_PASSKEYS} passkeys`);
+  if (!saved)
+    throw new ApiError("conflict", `At most ${MAX_PASSKEYS} passkeys`);
   const send = (async () => {
     const instance = (await getSettings(env)).name;
     await sendEmail(
@@ -433,6 +440,7 @@ export async function removeChallenge(
   id: string,
   now = Date.now(),
 ): Promise<PasskeyChallenge> {
+  await requireUsable(env, userId, now);
   await ownRow(env, userId, id);
   return requestOptions(env, userId, "remove", removeScope(id), id, now);
 }
@@ -447,7 +455,15 @@ export async function removePasskey(
 ): Promise<void> {
   await ownRow(env, userId, id);
   if ("assertion" in how)
-    await verifyForScope(env, userId, "remove", removeScope(id), id, how.assertion, now);
+    await verifyForScope(
+      env,
+      userId,
+      "remove",
+      removeScope(id),
+      id,
+      how.assertion,
+      now,
+    );
   await env.DB.batch([
     stmt(env.DB, "delete from passkeys where id = ?1 and user_id = ?2").bind(
       id,
@@ -663,9 +679,7 @@ export async function confirmFor(
   addressees: string[],
   options: Pick<AskOption, "action">[],
 ): Promise<"passkey" | undefined> {
-  const named = new Set(
-    options.flatMap((o) => (o.action ? [o.action] : [])),
-  );
+  const named = new Set(options.flatMap((o) => (o.action ? [o.action] : [])));
   if (addressees.length === 0) return undefined;
   const ids = JSON.stringify(addressees);
   const { results } = await stmt(

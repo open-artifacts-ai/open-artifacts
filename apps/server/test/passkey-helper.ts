@@ -11,8 +11,7 @@ function head(major: number, n: number): number[] {
 }
 type C = number | string | Uint8Array | C[] | Map<C, C>;
 function cbor(v: C): number[] {
-  if (typeof v === "number")
-    return v >= 0 ? head(0, v) : head(1, -1 - v);
+  if (typeof v === "number") return v >= 0 ? head(0, v) : head(1, -1 - v);
   if (typeof v === "string") {
     const b = enc.encode(v);
     return [...head(3, b.length), ...b];
@@ -72,9 +71,8 @@ export class FakeAuthenticator {
     )) as CryptoKeyPair;
     const jwk = await crypto.subtle.exportKey("jwk", keys.publicKey);
     const dec = (s: string) =>
-      Uint8Array.from(
-        atob(s.replace(/-/g, "+").replace(/_/g, "/")),
-        (c) => c.charCodeAt(0),
+      Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
+        c.charCodeAt(0),
       );
     return new FakeAuthenticator(
       keys,
@@ -87,7 +85,9 @@ export class FakeAuthenticator {
   private async authData(o: Opts, withKey: boolean): Promise<Uint8Array> {
     const rp = await sha256(enc.encode(o.rpIdOverride ?? o.rpId));
     const flags =
-      (o.up === false ? 0 : 1) | (o.uv === false ? 0 : 4) | (withKey ? 0x40 : 0);
+      (o.up === false ? 0 : 1) |
+      (o.uv === false ? 0 : 4) |
+      (withKey ? 0x40 : 0);
     const n = o.signCount ?? this.signCount;
     const base = [
       ...rp,
@@ -121,7 +121,7 @@ export class FakeAuthenticator {
     ]);
   }
 
-  private clientData(o: Opts, type: string): Uint8Array {
+  private clientData(o: Opts, type: string): Uint8Array<ArrayBuffer> {
     return enc.encode(
       JSON.stringify({
         type: o.type ?? type,

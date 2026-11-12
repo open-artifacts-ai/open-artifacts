@@ -14,7 +14,10 @@ export const REAUTH_FRESH_MS = BREAK_GLASS_MS;
  */
 export function freshReauth(c: Context<AppEnv>, now = Date.now()): boolean {
   const recent = (t: number | null | undefined) =>
-    t !== null && t !== undefined && t >= now - REAUTH_FRESH_MS && t <= now + 60_000;
+    t !== null &&
+    t !== undefined &&
+    t >= now - REAUTH_FRESH_MS &&
+    t <= now + 60_000;
   return recent(c.var.sessionIat) && recent(c.var.sessionAuthAt);
 }
 
@@ -34,9 +37,7 @@ export function requireFreshReauth(
   next = "/settings/security",
 ): void {
   if (!freshReauth(c))
-    throw new ApiError(
-      "reauth_required",
-      "Confirm it's you: sign in again",
-      { reauthUrl: reauthUrl(c, next) },
-    );
+    throw new ApiError("reauth_required", "Confirm it's you: sign in again", {
+      reauthUrl: reauthUrl(c, next),
+    });
 }

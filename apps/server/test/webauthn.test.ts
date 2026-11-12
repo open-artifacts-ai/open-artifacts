@@ -7,7 +7,11 @@ import {
 } from "../src/auth/webauthn.js";
 import { FakeAuthenticator } from "./passkey-helper.js";
 
-const want = { challenge: "chal-1", origin: "https://oa.test", rpId: "oa.test" };
+const want = {
+  challenge: "chal-1",
+  origin: "https://oa.test",
+  rpId: "oa.test",
+};
 const o = { ...want };
 
 const reason = async (p: Promise<unknown>) => {
@@ -43,11 +47,17 @@ describe("verifyRegistration", () => {
     ["type", { type: "webauthn.get" }],
   ])("refuses a bad %s", async (why, bad) => {
     const a = await FakeAuthenticator.create();
-    expect(await reason(verifyRegistration(await a.attest({ ...o, ...bad }), want))).toBe(why);
+    expect(
+      await reason(verifyRegistration(await a.attest({ ...o, ...bad }), want)),
+    ).toBe(why);
   });
 
   it("refuses garbage", async () => {
-    expect(await reason(verifyRegistration({ id: "x", rawId: "x", response: {} }, want))).not.toBe("ok");
+    expect(
+      await reason(
+        verifyRegistration({ id: "x", rawId: "x", response: {} }, want),
+      ),
+    ).not.toBe("ok");
     expect(await reason(verifyRegistration(null, want))).not.toBe("ok");
   });
 });
@@ -96,9 +106,21 @@ describe("verifyAssertion", () => {
   it("refuses a signCount that did not grow, and takes 0 with 0", async () => {
     const { a, r } = await registered();
     const stored = { publicKey: r.publicKey, signCount: 5 };
-    expect(await reason(verifyAssertion(await a.assert({ ...o, signCount: 5 }), want, stored))).toBe("sign_count");
-    expect(await reason(verifyAssertion(await a.assert({ ...o, signCount: 3 }), want, stored))).toBe("sign_count");
-    expect(await reason(verifyAssertion(await a.assert({ ...o, signCount: 6 }), want, stored))).toBe("ok");
+    expect(
+      await reason(
+        verifyAssertion(await a.assert({ ...o, signCount: 5 }), want, stored),
+      ),
+    ).toBe("sign_count");
+    expect(
+      await reason(
+        verifyAssertion(await a.assert({ ...o, signCount: 3 }), want, stored),
+      ),
+    ).toBe("sign_count");
+    expect(
+      await reason(
+        verifyAssertion(await a.assert({ ...o, signCount: 6 }), want, stored),
+      ),
+    ).toBe("ok");
     expect(
       await reason(
         verifyAssertion(await a.assert({ ...o, signCount: 0 }), want, {
@@ -113,8 +135,14 @@ describe("verifyAssertion", () => {
     const { a, r } = await registered();
     const cred = await a.assert(o);
     const res = cred.response as Record<string, string>;
-    res.authenticatorData = res.authenticatorData.replace(/.$/, (c) => (c === "A" ? "B" : "A"));
-    expect(await reason(verifyAssertion(cred, want, { publicKey: r.publicKey, signCount: 0 }))).not.toBe("ok");
+    res.authenticatorData = res.authenticatorData.replace(/.$/, (c) =>
+      c === "A" ? "B" : "A",
+    );
+    expect(
+      await reason(
+        verifyAssertion(cred, want, { publicKey: r.publicKey, signCount: 0 }),
+      ),
+    ).not.toBe("ok");
   });
 });
 

@@ -108,7 +108,9 @@ export const decodeCbor = (b: Uint8Array, at = 0) => decodeItem(b, at, 0);
 
 // ---- helpers ----
 
-const sha256 = async (d: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> =>
+const sha256 = async (
+  d: Uint8Array<ArrayBuffer>,
+): Promise<Uint8Array<ArrayBuffer>> =>
   new Uint8Array(await crypto.subtle.digest("SHA-256", d));
 
 const same = (a: Uint8Array, b: Uint8Array): boolean => {
@@ -338,7 +340,10 @@ export async function verifyAssertion(
   const authBytes = bytes(res.authenticatorData);
   const a = parseAuthData(authBytes);
   await checkAuthData(a, want);
-  if ((a.signCount > 0 || stored.signCount > 0) && a.signCount <= stored.signCount)
+  if (
+    (a.signCount > 0 || stored.signCount > 0) &&
+    a.signCount <= stored.signCount
+  )
     return fail("sign_count");
   const k = await importCose(bytes(stored.publicKey));
   if (!k) return fail("algorithm");
