@@ -24,7 +24,7 @@ export function keyboardInset(): number {
   // not hide it. The scale undoes pinch zoom, which is not a keyboard.
   const inset = window.innerHeight - vv.height * (vv.scale || 1);
   // Browser toolbars move by tens of pixels; a keyboard by hundreds.
-  return inset > 120 ? inset : 0;
+  return Math.max(0, inset > 120 ? inset : 0);
 }
 
 /**
@@ -53,6 +53,14 @@ export function onViewport(fn: () => void): () => void {
     vv.removeEventListener("resize", fn);
     vv.removeEventListener("scroll", fn);
   };
+}
+
+/** Calls `fn` when the visual viewport resizes (not when it pans); returns the unsubscribe. */
+export function onViewportResize(fn: () => void): () => void {
+  const vv = window.visualViewport;
+  if (!vv) return () => {};
+  vv.addEventListener("resize", fn);
+  return () => vv.removeEventListener("resize", fn);
 }
 
 /** True while the on-screen keyboard is open. */

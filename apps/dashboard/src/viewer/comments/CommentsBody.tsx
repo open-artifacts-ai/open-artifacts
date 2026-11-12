@@ -72,6 +72,7 @@ import {
   fieldCap,
   keyboardInset,
   onViewport,
+  onViewportResize,
   trackViewportVar,
   viewBottom,
 } from "./viewport";
@@ -265,6 +266,7 @@ export function focusField(el: HTMLElement | null) {
   if (!el) return;
   el.focus({ preventScroll: true });
   const adjust = () => {
+    if (document.activeElement !== el) return;
     const box = scrollerOf(el);
     if (!box || !el.isConnected) return;
     const head =
@@ -465,7 +467,7 @@ function Composer({
   }, []);
   // #2239: the keyboard changes the cap (40% of what is visible).
   useEffect(() => {
-    const off = onViewport(() => growField(ref.current));
+    const off = onViewportResize(() => growField(ref.current));
     const untrack = trackViewportVar();
     return () => {
       off();
