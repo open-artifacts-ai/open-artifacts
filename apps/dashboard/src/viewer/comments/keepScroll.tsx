@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useKeyboardOpen } from "./viewport";
 
 /** The nearest ancestor that scrolls: the column, the side panel or the sheet. */
 export function scrollerOf(el: HTMLElement | null): HTMLElement | null {
@@ -27,8 +28,8 @@ const headOf = (box: HTMLElement) =>
   box.querySelector<HTMLElement>("[data-comments-header]");
 
 /** The phone sheet's floating action row, stuck to the scroller's bottom. */
-const footOf = (box: HTMLElement) =>
-  box.querySelector<HTMLElement>("[data-oa-action-outlet]")?.offsetHeight ?? 0;
+const outletOf = (box: HTMLElement) =>
+  box.querySelector<HTMLElement>("[data-oa-action-outlet]");
 
 /** Where the scroller's visible area starts: under the sticky header. */
 const viewTop = (box: HTMLElement) =>
@@ -82,7 +83,9 @@ export function useKeepScroll(
   const [target, setTarget] = useState<string | null>(null);
   const [dir, setDir] = useState<PillDir | null>(null);
   // The floating action row's height: a down pill sits above it.
+  // #2239: kept current by a ResizeObserver on the outlet, below.
   const [foot, setFoot] = useState(0);
+  const keyboard = useKeyboardOpen();
   const record = useCallback(() => {
     const box = scroller.current;
     anchors.current = box ? pick(box) : [];
@@ -123,7 +126,30 @@ export function useKeepScroll(
       }
     }
     record();
+    // #2239: follow the action row (a composer opening, a wrapped hint).
+    const outlet = outletOf(box);
+    if (outlet !== watched.current) {
+      if (watched.current) outletRo.current?.unobserve(watched.current);
+      watched.current = outlet;
+      if (outlet) outletRo.current?.observe(outlet);
+      setFoot(outlet?.offsetHeight ?? 0);
+    }
   });
+  const watched = useRef<HTMLElement | null>(null);
+  const outletRo = useRef<ResizeObserver | null>(null);
+  useEffect(() => {
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const o = watched.current;
+      setFoot(o?.isConnected ? o.offsetHeight : 0);
+    });
+    outletRo.current = ro;
+    if (watched.current) ro.observe(watched.current);
+    return () => {
+      ro.disconnect();
+      outletRo.current = null;
+    };
+  }, []);
   // A scroller that only becomes one after the first commit (the side
   // panel's ScrollArea viewport is overflow-hidden until Radix measures):
   // look again for up to a second of frames.
@@ -186,18 +212,17 @@ export function useKeepScroll(
           return;
         }
         const top = e.rootBounds?.top ?? viewTop(box);
-        setFoot(footOf(box));
         setDir(e.boundingClientRect.bottom <= top ? "up" : "down");
       },
       {
         root: box,
         // Under the sticky header or the floating action row is not in view.
-        rootMargin: `-${headOf(box)?.offsetHeight ?? 0}px 0px -${footOf(box)}px 0px`,
+        rootMargin: `-${headOf(box)?.offsetHeight ?? 0}px 0px -${foot}px 0px`,
       },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [target, scrollerEl]);
+  }, [target, scrollerEl, foot]);
   const go = () => {
     const box = scroller.current;
     const el = target && box ? row(box, target) : null;
@@ -215,7 +240,9 @@ export function useKeepScroll(
     // that commit would undo this scroll.
     record();
   };
-  return { pill: target && dir ? dir : null, foot, go };
+  // #2239: a down pill would sit under the on-screen keyboard: hide it.
+  const hidden = keyboard && dir === "down";
+  return { pill: target && dir && !hidden ? dir : null, foot, go };
 }
 
 /** Focuses a comment row without scrolling anything. */
