@@ -263,7 +263,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
  * scope-missing, customer-mismatch, trial, solo, solo-paid (a paying Solo: customer, active,
  * Manage billing only), solo-trial-customer, solo-no-customer, solo-paused,
- * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
+ * overage-due, overage-due-months (failed extra-creator charges, #2246),
+ * plan-team-lapsed,plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one
  * guest owner has left), spaces-on, workspace-change (the confirm
