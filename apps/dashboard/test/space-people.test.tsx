@@ -1269,3 +1269,38 @@ it("Business frozen: an orphaned synced role is unchanged (kept, with Remove)", 
     }),
   ).toBeVisible();
 });
+
+// The tooltip follows the orphan part of the line, whatever else it says.
+const HINT =
+  "Added by directory sync. Their group no longer lists them, so they stay until you remove them.";
+for (const [name, extra, text] of [
+  [
+    "a guest orphan",
+    { cap: "guest" as const },
+    "olive@example.com · Guest · can only view · No longer in their group",
+  ],
+  [
+    "a suspended orphan",
+    { status: "suspended" as const },
+    "olive@example.com · No access while suspended · No longer in their group",
+  ],
+  [
+    "a removed orphan",
+    { status: "removed" as const },
+    "olive@example.com · No access · No longer in their group",
+  ],
+] as const) {
+  it(`${name} says No longer in their group, with the tooltip on that part only`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, asTier("team"), [
+      serve([person({ ...orphan, ...extra })]),
+    ]);
+    const olive = await row("Olive Gray");
+    expect(olive).toHaveTextContent(text);
+    expect(olive).not.toHaveTextContent("manually added");
+    const trigger = within(olive).getByRole("button", {
+      name: "No longer in their group",
+    });
+    trigger.focus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(HINT);
+  });
+}

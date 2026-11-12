@@ -149,7 +149,7 @@ const reason = (
     const lead =
       m.status === "suspended" ? "No access while suspended" : "No access";
     const why =
-      m.manualRole && !m.syncRole
+      m.manualRole && !m.syncRole && !m.orphan
         ? `${ROLE_LABEL[m.manualRole]} (manually added)`
         : source(m, frozen);
     return `${lead} · ${why}`;
@@ -319,6 +319,7 @@ function PersonRow({
                     button: "Remove",
                   }
                 : null;
+  const why = reason(m, frozen, restricted);
   const syncedOnly =
     canAct && !removal && !!m.syncRole && !frozen && !everyOnly(m);
   const manage = admin && !active;
@@ -361,22 +362,26 @@ function PersonRow({
           </b>
           <small className={`block ${muted}`}>
             {!isReleased(m.user) && `${m.user.email} · `}
-            {reason(m, frozen, restricted) === ORPHAN_LINE ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="cursor-help border-0 bg-transparent p-0 font-[inherit] text-[length:inherit] text-inherit underline decoration-dotted underline-offset-2"
-                    >
-                      {ORPHAN_LINE}
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>{ORPHAN_HINT}</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+            {why.includes(ORPHAN_LINE) && m.orphan ? (
+              <>
+                {why.slice(0, why.indexOf(ORPHAN_LINE))}
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="cursor-help border-0 bg-transparent p-0 font-[inherit] text-[length:inherit] text-inherit underline decoration-dotted underline-offset-2"
+                      >
+                        {ORPHAN_LINE}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{ORPHAN_HINT}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                {why.slice(why.indexOf(ORPHAN_LINE) + ORPHAN_LINE.length)}
+              </>
             ) : (
-              reason(m, frozen, restricted)
+              why
             )}
           </small>
         </div>
