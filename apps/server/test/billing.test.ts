@@ -91,6 +91,10 @@ type Row = {
   soloTrialEndsAt?: number | null;
   hasCustomer?: boolean;
   yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
+  interval?: "month" | "year" | null;
+  renewsAt?: number | null;
   overageDue?: { amountCents: number; months: string[] } | null;
   graceUntil: number | null;
   version: number;
@@ -1736,6 +1740,53 @@ describe("Me.instance.billing and the billing routes", () => {
     );
   });
 
+  it("soloCheckedOut: a GET /tier answer reaches the owner through the parse, never a member; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ version: 50, soloCheckedOut: true });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      true,
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
+    );
+    await read({ version: 51, soloCheckedOut: false });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      false,
+    );
+    const { soloCheckedOut: _, ...without } = row;
+    row = { ...without, version: 52 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
+    );
+  });
+
+  it("cancelsAt: ms from billing reaches the owner as an ISO date, never a member; null stays null; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const at = Date.UTC(2026, 11, 20);
+    await read({ version: 60, cancelsAt: at });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBe(
+      new Date(at).toISOString(),
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
+    );
+    await read({ version: 61, cancelsAt: null });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBeNull();
+    const { cancelsAt: _, ...without } = row;
+    row = { ...without, version: 62 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
+    );
+  });
+
   it("overageDue (#2246): reaches the owner, never a member; null and absent send nothing", async () => {
     const read = async (r: Partial<Row>) => {
       row = { ...row, ...r };
@@ -1764,6 +1815,31 @@ describe("Me.instance.billing and the billing routes", () => {
     expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
       "overageDue",
     );
+  });
+
+  it("interval and renewsAt: reach the owner (renewsAt as an ISO date), never a member; null stays null; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const at = Date.UTC(2027, 11, 1);
+    await read({ version: 70, interval: "year", renewsAt: at });
+    const b = (await getMe(owner.cookie)).instance.billing;
+    expect(b?.interval).toBe("year");
+    expect(b?.renewsAt).toBe(new Date(at).toISOString());
+    const m = (await getMe(member.cookie)).instance.billing;
+    expect(m).not.toHaveProperty("interval");
+    expect(m).not.toHaveProperty("renewsAt");
+    await read({ version: 71, interval: null, renewsAt: null });
+    const n = (await getMe(owner.cookie)).instance.billing;
+    expect(n?.interval).toBeNull();
+    expect(n?.renewsAt).toBeNull();
+    const { interval: _i, renewsAt: _r, ...without } = row;
+    row = { ...without, version: 72 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    const a2 = (await getMe(owner.cookie)).instance.billing;
+    expect(a2).not.toHaveProperty("interval");
+    expect(a2).not.toHaveProperty("renewsAt");
   });
 
   it("yearlyTeamBusiness rides the version rule: a later asOf at the same version updates it; an earlier or equal asOf or a lower version changes nothing; absent reads as off", async () => {

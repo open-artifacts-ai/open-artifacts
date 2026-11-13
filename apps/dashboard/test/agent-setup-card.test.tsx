@@ -25,7 +25,7 @@ import {
 installHarness();
 
 const INSTRUCTION = () =>
-  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt\nSign in through the browser. Never ask me to paste a token into this chat.`;
+  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt`;
 const none = http.get("*/api/v1/artifacts", () => page([], null));
 const empty = () => server.use(none);
 const clipboard = () => {

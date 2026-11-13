@@ -115,6 +115,8 @@ type Deps = {
   seedAsk?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
+  /** #2338: also seed an agent comment with every markdown feature, a hostile one and an ask with markdown. */
+  seedMarkdown?: boolean;
 };
 
 const iso = () => new Date().toISOString();
@@ -132,6 +134,7 @@ export function createCommentMock({
   contentHash,
   seedAsk,
   seedAgents,
+  seedMarkdown,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
@@ -405,6 +408,68 @@ export function createCommentMock({
         comments: nine,
         agents: THREAD_AGENTS.map((x) => ({ ...x })),
       });
+    }
+    if (seedMarkdown) {
+      const bot: CommentAuthor = {
+        kind: "agent",
+        name: "OA Product",
+        for: "Leo Urbina",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const rich = comment(
+        [
+          "## Review notes",
+          "I **checked** the *pricing* page with `pnpm test`. See https://example.com/docs or [the guide](https://example.com/guide).",
+          "- first point with **bold**",
+          "- second point with `code`",
+          "1. step one",
+          "2. step two",
+          "> A quoted line from the brief.",
+          '```ts\nconst total = items.reduce((a, b) => a + b, 0); // **not bold**\nconst long = [1, 2, 3].map((n) => n * 2).join(", "); // a long line that scrolls\n```',
+          "Raw HTML stays text: <img src=x onerror=alert(1)> and [x](javascript:alert(1)).",
+        ].join("\n\n"),
+        bot,
+      );
+      const hostile = comment(
+        '<script>alert(1)</script> <img src=x onerror="alert(1)"> ![pic](https://example.com/p.png) &lt;b&gt;',
+        bot,
+      );
+      const ask = comment(
+        "Steps:\n\n- Open the **pricing** page\n- Compare with [the spec](https://example.com/spec)\n\nThen pick below. Raw <b>html</b> stays text.",
+        bot,
+      );
+      ask.ask = {
+        question:
+          "Which `layout` should we **ship**? See https://example.com/spec",
+        options: [
+          {
+            id: "a",
+            label: "Wide",
+            detail: "Uses *full-bleed* image, see `hero.css`",
+          },
+          {
+            id: "b",
+            label: "Compact",
+            detail: "Loads faster; [details](https://example.com/b)",
+          },
+        ],
+        to: [mine()],
+        closed: false,
+      };
+      for (const c of [rich, hostile, ask])
+        faces.push({
+          id: newId(),
+          anchor: { kind: "note" },
+          version: 1,
+          status: "open",
+          resolvedBy: null,
+          resolvedAt: null,
+          createdAt: c.createdAt,
+          comments: [c],
+        });
     }
     return [
       {

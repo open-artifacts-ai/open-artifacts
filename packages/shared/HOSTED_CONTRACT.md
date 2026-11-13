@@ -408,6 +408,20 @@ billing's answer predates it (unknown: the dashboard keeps Manage billing).
 and Business prices are configured in this environment; absent or false hides
 yearly Team and Business in the dashboard. Owner and admins only, like
 `hasCustomer`; billing's `GET /tier` answer carries it and the server passes it on.
+`soloCheckedOut` (boolean, optional): billing sets it true once a Checkout has put
+a card on file for a Solo still in its free days (D1 `solo_checked_out`); the
+dashboard then shows Manage billing and the first charge date instead of Pay.
+Absent or false: Pay stays. Owner and admins only, like `hasCustomer`.
+`cancelsAt` (ISO string or null, optional): when a scheduled cancel (cancel at
+period end) takes effect, from billing's `cancelsAt` (ms). null or absent: none.
+Owner and admins only. While it is in the future the dashboard shows an "Ends <date>"
+pill and a warning, and keeps Manage billing so the plan can be resumed.
+`interval` ("month" | "year" | null) and `renewsAt` (ISO string or null), optional:
+the interval a paying subscription bills on and when the current period ends and
+the next charge is due; from billing's `interval` and `renewsAt` (ms), `renewsAt`
+null while a cancel is scheduled. The Price row shows "$10 a year, renews Dec 1,
+2027" for a paid plan, or a Solo with `soloCheckedOut`, when both are set. Owner
+and admins only.
 `overageDue` (`{ amountCents, months }`, optional): the extra-creator charges
 that failed and are unpaid (#2246), total in cents and months as `YYYY-MM`,
 oldest first. Billing sends null for none; the server passes it on only when
