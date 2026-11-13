@@ -78,6 +78,22 @@ export const TierAnswerSchema = z.object({
   graceUntil: z.number().int().nullable(),
   /** A Stripe customer exists for this install. Absent from an answer that predates it (unknown). */
   hasCustomer: z.boolean().optional(),
+  /** Yearly Team and Business prices are configured. Absent from an answer that predates it (off). */
+  yearlyTeamBusiness: z.boolean().optional(),
+  /** A Checkout put a card on file. Absent from an answer that predates it (off). */
+  soloCheckedOut: z.boolean().optional(),
+  /** When a scheduled cancel takes effect (ms), or null. Absent from an answer that predates it. */
+  cancelsAt: z.number().int().nullable().optional(),
+  /** The billing interval and the renewal date (ms). Absent from an answer that predates them. */
+  interval: z.enum(["month", "year"]).nullable().optional(),
+  renewsAt: z.number().int().nullable().optional(),
+  /** Unpaid extra-creator charges (#2246). Billing sends null for none; absent from an older answer. */
+  overageDue: z
+    .object({
+      amountCents: z.number().int().nonnegative(),
+      months: z.array(z.string().regex(/^\d{4}-\d{2}$/)).min(1),
+    })
+    .nullish(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -136,6 +152,14 @@ export type EffectivePlan = {
   soloTrialEndsAt?: number | null;
   /** Absent when billing's answer carried none (unknown). */
   hasCustomer?: boolean;
+  /** Absent when billing's answer carried none (off). */
+  yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
+  interval?: "month" | "year" | null;
+  renewsAt?: number | null;
+  /** Absent when billing's answer carried none or null (nothing due). */
+  overageDue?: { amountCents: number; months: string[] };
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -181,6 +205,24 @@ export function effectivePlan(
       : {}),
     ...("hasCustomer" in base && base.hasCustomer !== undefined
       ? { hasCustomer: base.hasCustomer }
+      : {}),
+    ...("yearlyTeamBusiness" in base && base.yearlyTeamBusiness !== undefined
+      ? { yearlyTeamBusiness: base.yearlyTeamBusiness }
+      : {}),
+    ...("soloCheckedOut" in base && base.soloCheckedOut !== undefined
+      ? { soloCheckedOut: base.soloCheckedOut }
+      : {}),
+    ...("cancelsAt" in base && base.cancelsAt !== undefined
+      ? { cancelsAt: base.cancelsAt }
+      : {}),
+    ...("interval" in base && base.interval !== undefined
+      ? { interval: base.interval }
+      : {}),
+    ...("renewsAt" in base && base.renewsAt !== undefined
+      ? { renewsAt: base.renewsAt }
+      : {}),
+    ...("overageDue" in base && base.overageDue
+      ? { overageDue: base.overageDue }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",

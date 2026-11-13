@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
   type Me,
+  type OAuthClientHookResult,
   type PublishInput,
   type PublishResult,
   R,
@@ -15,6 +16,7 @@ import {
   expect,
   type Page,
 } from "@playwright/test";
+import { type Agent, mcpWithToken } from "../../real/mcp-client";
 import { gate } from "../gate";
 import "../dispatcher";
 import {
@@ -80,13 +82,21 @@ export type Person = {
 };
 
 /** A signed-in person with their own browser context, named so the display-name prompt never opens. */
-export async function person(
+export const person = (
   browser: Browser,
   tag: string,
   role: Role,
   spaces?: TestSessionInput["spaces"],
+): Promise<Person> => personAt(browser, email(tag), tag, role, spaces);
+
+/** `person` for a fixed address: the OAuth hook's member (p5-oauth@TEST_DOMAIN), whose agent `oauthAgent` connects as. */
+export async function personAt(
+  browser: Browser,
+  who: string,
+  tag: string,
+  role: Role,
+  spaces?: TestSessionInput["spaces"],
 ): Promise<Person> {
-  const who = email(tag);
   const { cookie } = await hook<{ cookie: string }>(TEST_HOOKS.session, {
     email: who,
     role,
@@ -115,6 +125,22 @@ export async function person(
   for (const s of spaces ?? [])
     grantedHere().push({ spaceId: s.spaceId, userId: me.user.id });
   return { ...p, id: me.user.id, page: await ctx.newPage() };
+}
+
+/** The address the OAuth hook signs in as: one fixed member under TEST_DOMAIN (server test-hooks oauthHookEmail). */
+export const OAUTH_HOOK_EMAIL = `p5-oauth@${A.testDomain}`;
+
+/**
+ * An MCP agent for the OAuth hook's member: a real OAuth grant through
+ * TEST_HOOKS.oauthClient, connected to rl-a's /mcp. Its grant is unlinked (no
+ * bus identity), so it comments and asks but joins no thread and can't be
+ * mentioned. The caller closes it.
+ */
+export async function oauthAgent(name = "t19-agent"): Promise<Agent> {
+  const { accessToken } = await hook<OAuthClientHookResult>(
+    TEST_HOOKS.oauthClient,
+  );
+  return mcpWithToken(accessToken, name, `${A.app}/mcp`);
 }
 
 /**

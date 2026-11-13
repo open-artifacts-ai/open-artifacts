@@ -41,6 +41,8 @@ type Fixture = {
     createdAt: string;
     body?: string;
   }[];
+  /** package.json versions at main and at the PR head (default: differ). */
+  versions?: { main: string; head: string };
   release?: { tag_name: string; published_at: string } | null;
 };
 
@@ -100,6 +102,17 @@ function fake(f: Fixture) {
           data: {
             repository: { pullRequests: { nodes: pr }, mergeQueue: queue },
           },
+        }),
+      );
+    }
+    if (
+      args[0] === "api" &&
+      String(args[3]).includes("/contents/package.json")
+    ) {
+      const v = f.versions ?? { main: "0.5.0", head: "0.6.0" };
+      return ok(
+        JSON.stringify({
+          version: String(args[3]).endsWith("?ref=main") ? v.main : v.head,
         }),
       );
     }
@@ -301,6 +314,21 @@ describe("arm", () => {
       action: "none",
     });
     expect(g.wrote("pr merge")).toEqual([]);
+  });
+
+  it("never re-arms a release PR that already landed while GitHub still reads it open (#2379)", async () => {
+    const g = fake({
+      pr: { number: 2376, state: "SUCCESS" },
+      versions: { main: "0.168.0", head: "0.168.0" },
+    });
+    const l = logs();
+    expect(await arm({ exec: g.exec, repo: REPO, log: l.log })).toEqual({
+      action: "landed",
+      pr: 2376,
+    });
+    expect(g.wrote("pr merge")).toEqual([]);
+    expect(l.out.join("\n")).toContain("already landed");
+    expect(await willWrite({ exec: g.exec, repo: REPO })).toBe(false);
   });
 
   it("looks the release PR up by its head branch", async () => {

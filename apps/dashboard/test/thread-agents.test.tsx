@@ -45,26 +45,31 @@ describe("ThreadAgents", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("× opens the confirm; Keep closes it; Remove sends the removal", () => {
+  it("a removed agent is not a chip", () => {
+    const gone = { ...agent("OA Billing", true), removed: true };
+    const { container } = render(<ThreadAgents t={thread([gone])} api={api} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("× removes at once with no confirm; Undo restores and takes focus", () => {
+    mutate.mockImplementation(() => {});
     render(<ThreadAgents t={thread([agent("OA Billing", true)])} api={api} />);
     fireEvent.click(
       screen.getByRole("button", { name: "Stop notifying OA Billing" }),
     );
-    expect(
-      screen.getByText(
-        "Remove OA Billing from this thread? It won't get replies here until someone @-mentions it.",
-      ),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Keep" }));
-    expect(mutate).not.toHaveBeenCalled();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Stop notifying OA Billing" }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.queryByRole("button", { name: "Keep" })).toBeNull();
     expect(mutate.mock.calls[0]?.[0]).toEqual({
       thread: "t1",
       key: "k-OA Billing",
       removed: true,
+    });
+    const undo = screen.getByRole("button", { name: "Undo" });
+    expect(document.activeElement).toBe(undo);
+    fireEvent.click(undo);
+    expect(mutate.mock.calls[1]?.[0]).toEqual({
+      thread: "t1",
+      key: "k-OA Billing",
+      removed: false,
     });
   });
 
@@ -156,12 +161,11 @@ describe("ThreadAgents", () => {
   });
 
   it("Undo after a removal puts it back", () => {
-    mutate.mockImplementation((_v, o) => o.onSuccess());
+    mutate.mockImplementation(() => {});
     render(<ThreadAgents t={thread([agent("OA Billing", true)])} api={api} />);
     fireEvent.click(
       screen.getByRole("button", { name: "Stop notifying OA Billing" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(
       screen.getByText(/OA Billing won't get replies in this thread\./),
     ).toBeTruthy();

@@ -129,6 +129,14 @@ describe("ci.yml", () => {
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
   });
+  it("released-migrations-frozen runs the script on a full-history checkout", () => {
+    const job = w.jobs["released-migrations-frozen"];
+    expect(job.if).toBeUndefined();
+    expect(job.steps[0].with["fetch-depth"]).toBe(0);
+    expect(JSON.stringify(job.steps)).toContain(
+      "scripts/ci/released-migrations-frozen.sh",
+    );
+  });
   it("defines at least the five required jobs", () => {
     expect(Object.keys(w.jobs)).toEqual(
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
@@ -195,10 +203,22 @@ describe("ci.yml", () => {
     // -f stays: an HTTP error that outlasts the retries still fails the step.
     expect(curl).toMatch(/ -[a-zA-Z]*f/);
   });
-  it("public-only runs on the merge queue, not on pull requests, and needs nothing from it", () => {
+  // #2254: public-only always reports and decides inside the job; on a pull
+  // request it runs only for scripts/ci, scripts/test or ci.yml changes, and
+  // any diff error means run.
+  it("public-only runs on the merge queue, on PRs only for CI paths, and needs nothing from it", () => {
     const job = w.jobs["public-only"];
+    expect(job.if).toBeUndefined();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    const i = steps.findIndex((s) => s.id === "changed");
+    expect(steps[i].run).toMatch(/^run=true\n/);
+    expect(steps[i].run).toContain("scripts/ci/");
+    expect(steps[i].run).toContain("scripts/test/");
+    expect(steps[i].run).toContain("ci\\.yml");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(job.if).toBe("${{ github.event_name != 'pull_request' }}");
+    const gate = "${{ steps.changed.outputs.run == 'true' }}";
+    for (const s of steps.slice(i + 1)) expect(s.if).toBe(gate);
     // Nothing waits on it: a skipped job must not hold an aggregate.
     for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
       w.jobs,
@@ -366,7 +386,7 @@ describe("ci.yml", () => {
     // fails unless every test shard succeeded.
     it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
       const job = w.jobs.test;
-      expect(job.needs).toEqual(["test-shard"]);
+      expect(job.needs).toEqual(["test-shard", "released-migrations-frozen"]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       expect(steps("test")).toHaveLength(1);
@@ -375,7 +395,14 @@ describe("ci.yml", () => {
       expect(gate["continue-on-error"]).toBeUndefined();
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(gate.env.SHARDS).toBe("${{ needs.test-shard.result }}");
-      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+      // #2258: `test` is the required check, so the frozen-migrations job gates through it.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.FROZEN).toBe(
+        "${{ needs.released-migrations-frozen.result }}",
+      );
+      expect(gate.run).toMatch(
+        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \]$/m,
+      );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
@@ -883,6 +910,28 @@ describe("release-please", () => {
       // scripts/ci/release-kind.test.ts; this only proves the step calls it.
       expect(existsSync(join(root, "scripts/ci/release-kind.ts"))).toBe(true);
     });
+    it("an empty release commit is refused before the action can tag it (#2379)", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const g = steps.findIndex((s: any) =>
+        String(s.run ?? "").includes("release-commit-changed.ts"),
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.findIndex((s: any) => s.id === "rp");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const kind = steps.findIndex((s: any) => s.id === "kind");
+      expect(g).toBeGreaterThan(kind);
+      expect(g).toBeLessThan(rp);
+      expect(steps[g].if).toContain("steps.kind.outputs.is_release == 'true'");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const checkout = steps.find((s: any) =>
+        String(s.uses ?? "").startsWith("actions/checkout@"),
+      );
+      expect(checkout.with["fetch-depth"]).toBeGreaterThanOrEqual(2);
+      expect(
+        existsSync(join(root, "scripts/ci/release-commit-changed.ts")),
+      ).toBe(true);
+    });
     it("a release commit that ends with no release fails the run instead of going green", () => {
       const steps = rpSteps();
       // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
@@ -1328,7 +1377,9 @@ describe("prod and staging tokens never cross", () => {
       // that didn't run deploys nothing).
       for (const s of steps
         .slice(det + 1)
-        .filter((s) => s.run && !s.if?.startsWith("failure()")))
+        .filter(
+          (s) => s.run && !s.if?.startsWith("failure()") && s.id !== "held",
+        ))
         expect(s.if, s.name ?? s.run).toContain(
           "steps.migration.outputs.hold == 'false'",
         );

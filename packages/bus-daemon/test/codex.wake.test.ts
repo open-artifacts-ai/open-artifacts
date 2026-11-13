@@ -11,11 +11,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type ClientFrame, LIMITS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AgentRecord, AgentTable } from "../src/agents.ts";
-import { TakenWatch } from "../src/codex-taken.ts";
+import { AckTracker, replayAcks, TakenWatch } from "../src/codex-taken.ts";
 import { createDeliver, type Mail } from "../src/deliver.ts";
+import { FramePacer } from "../src/pacer.ts";
 import {
+  CODEX_QUEUE_TIMEOUT_MS,
   CODEX_TEXT_CAP,
   type CodexBin,
   CodexTransport,
@@ -119,7 +122,7 @@ function transport(
 ) {
   const home = over.home ?? tmp("ob-cxh-");
   const log = vi.fn();
-  const onTaken = vi.fn();
+  const onTaken = vi.fn((_id: string, _unsent: () => void) => true);
   const watch = new TakenWatch({
     home,
     file: over.takenFile ?? join(tmp("ob-cxp-"), "p.json"),
@@ -622,7 +625,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     writeRollout(home, [userItem(codexText(agent(), mail("hi")))], true);
     watch.check();
     watch.check();
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
     // Taken: a hub retry is delivered at once and runs nothing.
     await expect(t.deliver(agent(), mail("hi"))).resolves.toEqual({ ok: true });
     expect(f.runs()).toHaveLength(1);
@@ -645,7 +648,10 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       }),
     ]);
     watch.check();
-    expect(onTaken).toHaveBeenCalledWith("mmmmmmmmmmmmmmm1");
+    expect(onTaken).toHaveBeenCalledWith(
+      "mmmmmmmmmmmmmmm1",
+      expect.any(Function),
+    );
   });
 
   it("away, then a load: the thread is not re-queued while away, and the late take acks", async () => {
@@ -665,7 +671,10 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     expect(onTaken).not.toHaveBeenCalled();
     writeRollout(home, [userItem(codexText(agent(), mail("hi")))]);
     watch.check();
-    expect(onTaken).toHaveBeenCalledWith("mmmmmmmmmmmmmmm1");
+    expect(onTaken).toHaveBeenCalledWith(
+      "mmmmmmmmmmmmmmm1",
+      expect.any(Function),
+    );
   });
 
   it("a forged marker in a body acks nothing else", async () => {
@@ -690,7 +699,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       userItem(x),
     ]);
     watch.check();
-    expect(onTaken.mock.calls).toEqual([[ID2]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual([ID2]);
   });
 
   it("a restart keeps watching and reads the rollout again; a retry stays pending until taken", async () => {
@@ -701,11 +710,14 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     await one.t.deliver(agent(), mail("hi"));
     // Taken while the daemon is down.
     writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
-    const onTaken = vi.fn();
+    const onTaken = vi.fn((_id: string, _unsent: () => void) => true);
     const w2 = new TakenWatch({ home: one.home, file: takenFile, onTaken });
     expect(watching(w2, "mmmmmmmmmmmmmmm1")).toBe(true);
     w2.check();
-    expect(onTaken).toHaveBeenCalledWith("mmmmmmmmmmmmmmm1");
+    expect(onTaken).toHaveBeenCalledWith(
+      "mmmmmmmmmmmmmmm1",
+      expect.any(Function),
+    );
     expect(watching(w2, "mmmmmmmmmmmmmmm1")).toBe(false);
   });
 
@@ -726,7 +738,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const one = transport({ path: f.bin, from: "path" }, { takenFile });
     await one.t.deliver(agent(), mail("hi"));
     writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
-    const onTaken = vi.fn();
+    const onTaken = vi.fn((_id: string, _unsent: () => void) => true);
     const log = vi.fn();
     let now = Date.now();
     const w = new TakenWatch({
@@ -758,7 +770,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const w = new TakenWatch({
       home: one.home,
       file: takenFile,
-      onTaken: vi.fn(),
+      onTaken: () => true,
       log,
       now: () => now,
     });
@@ -787,7 +799,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     );
     await t.deliver(agent(), mail("hi"));
     expect(hit).toEqual(["checked"]);
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
   });
 
   it("a failed queue leaves no watch", async () => {
@@ -807,7 +819,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const w = new TakenWatch({
       home: one.home,
       file: takenFile,
-      onTaken: vi.fn(),
+      onTaken: () => true,
       now: () => now,
       ttlMs: 1000,
     });
@@ -833,7 +845,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       ...Array.from({ length: 20 }, () => pad),
       userItem(codexText(agent(), mail("one"))),
     ]);
-    const onTaken = vi.fn();
+    const onTaken = vi.fn((_id: string, _unsent: () => void) => true);
     const w = new TakenWatch({
       home: one.home,
       file: takenFile,
@@ -843,7 +855,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     w.check();
     expect(onTaken).not.toHaveBeenCalled();
     for (let i = 0; i < 6 && !onTaken.mock.calls.length; i++) w.check();
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
     // Read back after another restart: taken, so a retry acks and runs nothing.
     const two = transport({ path: f.bin, from: "path" }, { takenFile });
     await expect(two.t.deliver(agent(), mail("one"))).resolves.toEqual({
@@ -997,7 +1009,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       );
       await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
       r.watch.check();
-      expect(r.onTaken.mock.calls).toEqual([[ID]]);
+      expect(r.onTaken.mock.calls.map((c) => [c[0]])).toEqual([[ID]]);
     });
   });
 
@@ -1036,11 +1048,11 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const recs = JSON.parse(readFileSync(takenFile, "utf8"));
     recs.mmmmmmmmmmmmmmm1.state = "taken";
     writeFileSync(takenFile, JSON.stringify(recs));
-    const onTaken = vi.fn();
+    const onTaken = vi.fn((_id: string, _unsent: () => void) => true);
     const w = new TakenWatch({ home, file: takenFile, onTaken });
     w.check();
     w.check();
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
     new TakenWatch({ home, file: takenFile, onTaken }).check();
     expect(onTaken).toHaveBeenCalledTimes(1);
   });
@@ -1073,7 +1085,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const one = transport({ path: f.bin, from: "path" }, { takenFile });
     await one.t.deliver(agent(), mail("hi"));
     writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
-    const onTaken = vi.fn();
+    const onTaken = vi.fn((_id: string, _unsent: () => void) => true);
     const w = new TakenWatch({ home: one.home, file: takenFile, onTaken });
     chmodSync(dir, 0o500);
     try {
@@ -1084,7 +1096,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       chmodSync(dir, 0o700);
     }
     w.check();
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
   });
 
   it("two concurrent delivers of one id run `codex queue` once", async () => {
@@ -1115,7 +1127,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       new TakenWatch({
         home: one.home,
         file: takenFile,
-        onTaken: vi.fn(),
+        onTaken: () => true,
         scanBudget: 100_000,
       });
     const scanned = () =>
@@ -1137,7 +1149,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const crashed = new TakenWatch({
       home,
       file: takenFile,
-      onTaken: vi.fn(),
+      onTaken: () => true,
       scanBudget: 50_000,
     });
     expect(crashed.attempt("mmmmmmmmmmmmmmm1", THREAD, "head")).toBe(true);
@@ -1156,7 +1168,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const w = new TakenWatch({
       home,
       file: join(dir, "p.json"),
-      onTaken: vi.fn(),
+      onTaken: () => true,
     });
     expect(w.attempt("mmmmmmmmmmmmmmm1", THREAD, "[oa-bus] head")).toBe(true);
     writeRollout(home, [userItem("[oa-bus] head\n\nbody")]);
@@ -1215,7 +1227,9 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         { takenFile, home, scanBudget: 100_000 },
       );
       for (let i = 0; i < 10; i++) r.watch.check();
-      expect(r.onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+      expect(r.onTaken.mock.calls.map((c) => c[0])).toEqual([
+        "mmmmmmmmmmmmmmm1",
+      ]);
       await new Promise((res) => setTimeout(res, 100));
       expect(f.runs()).toHaveLength(0);
     });
@@ -1247,7 +1261,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       new TakenWatch({
         home,
         file: takenFile,
-        onTaken: vi.fn(),
+        onTaken: () => true,
         scanBudget: 100_000,
       });
     const rec = () =>
@@ -1272,21 +1286,21 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       const recs = JSON.parse(readFileSync(takenFile, "utf8"));
       Object.assign(recs.mmmmmmmmmmmmmmm1, { skip: true }, patch);
       writeFileSync(takenFile, JSON.stringify(recs));
-      const onTaken = vi.fn();
+      const onTaken = vi.fn((_id: string, _unsent: () => void) => true);
       new TakenWatch({ home, file: takenFile, onTaken }).check();
       return onTaken;
     };
 
     it("a truncated rollout restarts at 0 and reads its first line", () => {
-      expect(setup({ scannedTo: 99_999_999 }).mock.calls).toEqual([
-        ["mmmmmmmmmmmmmmm1"],
-      ]);
+      expect(
+        setup({ scannedTo: 99_999_999 }).mock.calls.map((c) => [c[0]]),
+      ).toEqual([["mmmmmmmmmmmmmmm1"]]);
     });
 
     it("a replaced rollout restarts at 0 and reads its first line", () => {
-      expect(setup({ scannedTo: 5, ino: 1 }).mock.calls).toEqual([
-        ["mmmmmmmmmmmmmmm1"],
-      ]);
+      expect(
+        setup({ scannedTo: 5, ino: 1 }).mock.calls.map((c) => [c[0]]),
+      ).toEqual([["mmmmmmmmmmmmmmm1"]]);
     });
   });
 
@@ -1318,7 +1332,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     rmSync(file);
     writeRollout(home, [userItem(codexText(agent(), mail("hi")))]);
     watch.check();
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
   });
 
   it("acks on the live three-line shape of a queued item: task_started (queue), the user item, item_completed", async () => {
@@ -1350,7 +1364,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       }),
     ]);
     watch.check();
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
   });
 
   it("a rollout rewritten in place (same inode, a 21 KB session_meta line) is read again from its start", async () => {
@@ -1373,6 +1387,249 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     // old offset would see only its tail.
     writeRollout(home, [meta("new"), userItem(codexText(agent(), mail("hi")))]);
     watch.check();
-    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    expect(onTaken.mock.calls.map((c) => c[0])).toEqual(["mmmmmmmmmmmmmmm1"]);
+  });
+});
+
+describe("a late ack is saved only once the hub has it (#2198)", () => {
+  const ID = "mmmmmmmmmmmmmmm1";
+  /** A queued item a turn already took, watched by a fresh TakenWatch. */
+  async function taken(onTaken: (id: string, unsent: () => void) => boolean) {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    await one.t.deliver(agent(), mail("hi"));
+    writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
+    const w = new TakenWatch({ home: one.home, file: takenFile, onTaken });
+    return { w, takenFile, home: one.home };
+  }
+  const acked = (file: string): unknown =>
+    JSON.parse(readFileSync(file, "utf8"))[ID]?.acked;
+
+  it("the hub is not up at the first scan: stays taken, acked on the pass after it is", async () => {
+    let up = false;
+    const onTaken = vi.fn((_id: string, _unsent: () => void) => up);
+    const { w, takenFile } = await taken(onTaken);
+    w.check();
+    expect(w.state(ID)).toBe("taken");
+    expect(acked(takenFile)).toBeUndefined();
+    w.check();
+    expect(onTaken).toHaveBeenCalledTimes(2);
+    expect(acked(takenFile)).toBeUndefined();
+    up = true;
+    w.check();
+    expect(acked(takenFile)).toBe(true);
+    w.check();
+    expect(onTaken).toHaveBeenCalledTimes(3); // acked: no more
+  });
+
+  it("a send that returns false leaves it taken and unacked, also across a restart", async () => {
+    const onTaken = vi.fn((_id: string, _unsent: () => void) => false);
+    const { w, takenFile, home } = await taken(onTaken);
+    w.check();
+    expect(acked(takenFile)).toBeUndefined();
+    const again = vi.fn((_id: string, _unsent: () => void) => true);
+    new TakenWatch({ home, file: takenFile, onTaken: again }).check();
+    expect(again).toHaveBeenCalledTimes(1);
+    expect(acked(takenFile)).toBe(true);
+  });
+
+  it("a queued ack the link drops is unacked and goes again after reconnect", async () => {
+    let unsent: () => void = () => {};
+    const onTaken = vi.fn((_id: string, u: () => void) => {
+      unsent = u;
+      return true;
+    });
+    const { w, takenFile } = await taken(onTaken);
+    w.check();
+    expect(acked(takenFile)).toBe(true);
+    unsent(); // the link dropped before the frame was written
+    expect(acked(takenFile)).toBeUndefined();
+    w.check();
+    expect(onTaken).toHaveBeenCalledTimes(2);
+    expect(acked(takenFile)).toBe(true);
+  });
+
+  it("delivered() reports whether the ack went out, and acks again for a seen id", () => {
+    const sends: { f: { type: string; msg_id?: string }; u?: () => void }[] =
+      [];
+    let open = false;
+    const d = createDeliver({
+      agents: new AgentTable(),
+      hub: {
+        send: (f, u) => {
+          if (!open) return false;
+          sends.push({ f: f as never, u });
+          return true;
+        },
+      },
+      transports: {},
+      onClosed: () => undefined,
+    });
+    const unsent = () => {};
+    expect(d.delivered(ID, unsent)).toBe(false);
+    expect(sends).toHaveLength(0);
+    open = true;
+    expect(d.delivered(ID, unsent)).toBe(true);
+    expect(d.delivered(ID, unsent)).toBe(true); // idempotent at the hub
+    expect(sends.map((s) => [s.f.type, s.f.msg_id, s.u])).toEqual([
+      ["ack", ID, unsent],
+      ["ack", ID, unsent],
+    ]);
+  });
+
+  it("an unconfirmed ack is resent after a restart while the target stays away; a confirmed one is not", async () => {
+    // The first daemon queued the ack (saved acked) and died before the hub confirmed it.
+    const { w, takenFile, home } = await taken(() => true);
+    w.check();
+    expect(acked(takenFile)).toBe(true);
+    const w2 = new TakenWatch({ home, file: takenFile, onTaken: () => true });
+    expect(w2.unconfirmedIds()).toEqual([ID]);
+    const sends: string[] = [];
+    const d = createDeliver({
+      agents: new AgentTable(),
+      hub: {
+        send: (f) => {
+          sends.push((f as { msg_id: string }).msg_id);
+          return true;
+        },
+      },
+      transports: {},
+      onClosed: () => undefined,
+    });
+    // hello_ok of the new link, with the cap.
+    replayAcks(
+      w2.unconfirmedIds(),
+      (id) => void d.delivered(id),
+      () => true,
+      () => 10,
+    );
+    expect(sends).toEqual([ID]);
+    // The hub answers `acked`: done, across another restart too.
+    w2.confirm(ID);
+    w2.flush(); // else one write after the tick
+    expect(w2.unconfirmedIds()).toEqual([]);
+    expect(
+      new TakenWatch({
+        home,
+        file: takenFile,
+        onTaken: () => true,
+      }).unconfirmedIds(),
+    ).toEqual([]);
+  });
+
+  it("unconfirmedIds: only taken records within retention", async () => {
+    const { w, home, takenFile } = await taken(() => true);
+    w.check();
+    expect(w.unconfirmedIds()).toEqual([ID]);
+    const late = new TakenWatch({
+      home,
+      file: takenFile,
+      onTaken: () => true,
+      ttlMs: 1,
+      now: () => Date.now() + 60_000,
+    });
+    expect(late.unconfirmedIds()).toEqual([]);
+  });
+
+  it("a replay waits for room, stops when the link closes, and sends the oldest too", () => {
+    const ids = Array.from({ length: 701 }, (_, n) => `id${n}`);
+    const sent: string[] = [];
+    const ticks: (() => void)[] = [];
+    let room = 0;
+    replayAcks(
+      ids,
+      (id) => sent.push(id),
+      () => true,
+      () => room,
+      (fn) => ticks.push(fn),
+    );
+    expect(sent).toEqual([]); // no room: nothing, one tick waits
+    room = 300;
+    while (ticks.length) ticks.shift()?.();
+    expect(sent).toEqual(ids);
+    const stopped: string[] = [];
+    let live = true;
+    replayAcks(
+      ids,
+      (id) => stopped.push(id),
+      () => live,
+      () => 100,
+      (fn) => ticks.push(fn),
+    );
+    live = false;
+    ticks.shift()?.();
+    expect(stopped).toHaveLength(100);
+    expect(ticks).toHaveLength(0);
+  });
+
+  it("a replay beyond the pacer's limit leaves live user frames alone and still sends every ack", () => {
+    vi.useFakeTimers();
+    try {
+      const wire: string[] = [];
+      const dropped: string[] = [];
+      const p = new FramePacer({
+        onDropped: (f) => dropped.push(f.id),
+        send: (data) => {
+          wire.push(data);
+          return true;
+        },
+        max: 100,
+      });
+      const user = (n: number) =>
+        ({ v: 1, id: `u${n}`, type: "send" }) as unknown as ClientFrame;
+      const ids = Array.from({ length: 450 }, (_, n) => `a${n}`);
+      replayAcks(
+        ids,
+        (id) =>
+          void p.push(
+            { v: 1, id, type: "ack", msg_id: id } as unknown as ClientFrame,
+            id,
+          ),
+        () => true,
+        () => p.headroom,
+        (fn) => {
+          setTimeout(fn, 1000);
+        },
+      );
+      expect(p.push(user(1), "u1")).toBe(true);
+      for (let t = 0; t < 120; t++) {
+        vi.advanceTimersByTime(1000);
+        if (t === 3) expect(p.push(user(2), "u2")).toBe(true);
+        expect(p.size).toBeLessThanOrEqual(100);
+      }
+      expect(dropped).toEqual([]);
+      expect(wire.filter((d) => d.startsWith("a"))).toEqual(ids);
+      expect(wire).toContain("u1");
+      expect(wire).toContain("u2");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the ack tracker is bounded: oldest evicted, expired dropped, each id taken once", () => {
+    let now = 0;
+    const t = new AckTracker(3, 1000, () => now);
+    for (const n of [1, 2, 3, 4]) t.track(`f${n}`, `m${n}`);
+    expect(t.size).toBe(3);
+    expect(t.take("f1")).toBeUndefined(); // evicted
+    expect(t.take("f2")).toBe("m2");
+    expect(t.take("f2")).toBeUndefined(); // once
+    now = 2000;
+    t.track("f5", "m5"); // drops the expired ones
+    expect(t.size).toBe(1);
+    expect(t.take("f5")).toBe("m5");
+    t.track("f6", "m6");
+    now = 4000;
+    expect(t.take("f6")).toBeUndefined(); // expired before its answer
+    const big = new AckTracker();
+    for (let n = 0; n < 5000; n++) big.track(`g${n}`, "m");
+    expect(big.size).toBe(1000);
+  });
+
+  it("the queue timeout is 30 s, under the hub's mail expiry", () => {
+    expect(CODEX_QUEUE_TIMEOUT_MS).toBe(30_000);
+    expect(CODEX_QUEUE_TIMEOUT_MS).toBeGreaterThan(LIMITS.ackTimeoutMs);
+    expect(CODEX_QUEUE_TIMEOUT_MS).toBeLessThan(LIMITS.mailTtlSec * 1000);
   });
 });

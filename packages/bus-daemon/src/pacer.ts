@@ -73,6 +73,11 @@ export class FramePacer {
     return n;
   }
 
+  /** How many more frames fit before the queue is half full: bulk work (an ack replay) feeds on this, so live traffic keeps the other half. */
+  get headroom(): number {
+    return Math.max(0, Math.floor(this.#max / 2) - this.size);
+  }
+
   /** False when the frame itself was dropped for space. */
   push(frame: ClientFrame, data: string, onUnsent?: () => void): boolean {
     const e: Entry = { frame, data, onUnsent };

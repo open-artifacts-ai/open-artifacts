@@ -2,6 +2,7 @@ import { join } from "node:path";
 import {
   askDaemon,
   type Ctx,
+  isolated,
   say,
   sayErr,
   tilde,
@@ -16,11 +17,19 @@ import {
 import { uninstallClaudePlugins } from "../steps/claude-plugins.ts";
 import { removeHabits } from "../steps/habits.ts";
 import { hermesHome } from "../steps/hermes.ts";
+import { readMade, removeMade } from "../steps/leftovers.ts";
 import { uninstallOutputStyle } from "../steps/output-style.ts";
 import { removeShim } from "../steps/path-shim.ts";
 import { purge } from "../steps/purge.ts";
 import { uninstallSkill } from "../steps/skill.ts";
-import { hostOf } from "./status.ts";
+
+const originOf = (hub: string) => {
+  try {
+    return new URL(hub.replace(/^ws(s?):/, "http$1:")).origin;
+  } catch {
+    return hub;
+  }
+};
 
 /** Transcript states 9 and 10. Exit 0. */
 export async function uninstall(
@@ -33,7 +42,8 @@ export async function uninstall(
   const machine = readMachine(ctx.home);
 
   const removed = await ctx.service.remove();
-  if (removed.unit) say(ctx, c.serviceRemoved(removed.unit));
+  if (removed.skipped) say(ctx, c.serviceOtherHome(removed.skipped, true));
+  else if (removed.unit) say(ctx, c.serviceRemoved(removed.unit));
   else if (removed.stopped) say(ctx, c.daemonStopped());
   else if (removed.running === undefined) say(ctx, c.noService());
   if (removed.running !== undefined)
@@ -49,6 +59,7 @@ export async function uninstall(
     which: ctx.which,
     exec: ctx.exec,
     codexApp: ctx.codexApp,
+    isolated: isolated(ctx),
   });
   if (r.removed.length > 0) say(ctx, c.removedFrom(r.removed));
   // The skill files go with the wiring: only the ones carrying our header.
@@ -132,11 +143,15 @@ export async function uninstall(
       ctx,
       c.couldNotRemove(s.harness, tildeReason(ctx, s.harness, s.reason)),
     );
-  if ([...r.removed, ...r.folderOnly].includes("opencode"))
-    say(
-      ctx,
-      r.opencodeRestarted ? c.restartedUnload() : c.opencodeNotRunningUnload(),
-    );
+  if ([...r.removed, ...r.folderOnly].includes("opencode")) {
+    if (r.opencodeRestartByUser)
+      say(ctx, c.opencodeRestartYourself(r.opencodeIsolated));
+    else if (r.opencodeRestarted) say(ctx, c.restartedUnload());
+    else if (
+      r.notes.some((n) => n.startsWith("opencode service restart failed"))
+    )
+      say(ctx, c.opencodeNotRunningUnload());
+  }
 
   if (!opts.purge) {
     say(ctx, "", c.kept(tilde(ctx, join(ctx.home, "machine.json"))));
@@ -149,6 +164,8 @@ export async function uninstall(
     sayErr(ctx, c.purgeDaemonRunning(home));
     return 1;
   } catch {}
+  // install.json goes with the purge, so its record of what install made is read first.
+  const made = readMade(join(ctx.home, "install.json"));
   const out = purge(ctx.home, {
     isDefault: ctx.home === join(ctx.userHome, ".oa-bus"),
   });
@@ -156,8 +173,16 @@ export async function uninstall(
     sayErr(ctx, c.purgeRefused(home));
     return 1;
   }
+  // Files and folders install made in the harnesses' configs, once empty again.
+  try {
+    removeMade(made);
+  } catch (e) {
+    say(ctx, [
+      `Could not remove the empty files install made: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
   say(ctx, out.leftDir ? c.purgeLeftDir(home) : c.deleted(home));
   if (machine.state === "ok")
-    say(ctx, "", c.stillListed(machine.label, hostOf(machine.hub)));
+    say(ctx, "", c.stillListed(machine.label, originOf(machine.hub)));
   return 0;
 }

@@ -56,6 +56,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           sparse-checkout: scripts/ci
+          # HEAD^1 for the empty-release-commit guard below (#2379).
+          fetch-depth: 2
           persist-credentials: false
           token: ${{ steps.app.outputs.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -68,6 +70,11 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: node --experimental-strip-types --no-warnings scripts/ci/release-kind.ts --repo "$REPO" --sha "$SHA" >> "$GITHUB_OUTPUT"
+      # Never tag an empty release commit (#2379): the merge queue once built
+      # one for an already-landed release PR. Fails red before the tag exists.
+      - name: The release commit changes the version
+        if: ${{ steps.kind.outputs.is_release == 'true' }}
+        run: node --experimental-strip-types --no-warnings scripts/ci/release-commit-changed.ts
       - id: rp
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:
@@ -206,6 +213,18 @@ jobs:
           PROD_VERSION="$(curl -fsS -m 20 "https://$PROD_APP_HOST/healthz" | jq -r '.version // empty')" || PROD_VERSION=""
           export PROD_VERSION
           bash scripts/ci/prod-migration-guard.sh detect
+      # #2257: a held deploy is not a green one. Prod did not get the release and
+      # a person must act (it sat on 0.157.0 through three releases, green).
+      # Failing the job reaches release-alert.yml (#1782), which opens the
+      # "release-please failed at <sha>" blocker issue.
+      - id: held
+        name: Fail the run when the deploy was held
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'true'
+        env:
+          REASON: ${{ steps.migration.outputs.reason }}
+        run: |
+          echo "::error title=Prod deploy held::${REASON:-held by the migration guard}"
+          exit 1
       # The release bundle must hold no /__test/* hooks; a failure stops the deploy.
       - name: Build the release bundle (buildBundle, dry run)
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'
@@ -275,6 +294,22 @@ jobs:
         run: |
           echo "::error title=Prod migration failed::not restored (not authorized for this run). Worker before: $WORKER_VERSION; D1 bookmark: $BOOKMARK"
           echo "**Not restored.** Worker before: \`$WORKER_VERSION\`; D1 bookmark: \`$BOOKMARK\`." >> "$GITHUB_STEP_SUMMARY"
+      # #2257: the deploy is only done when the instance says so.
+      - name: Check prod serves the released version
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true'
+        timeout-minutes: 5
+        env:
+          HOST: ${{ env.PROD_APP_HOST }}
+        run: |
+          want="${TAG#v}"
+          got=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            got="$(curl -fsS -m 15 "https://$HOST/healthz" | jq -r '.version // empty')" || got=""
+            [ "$got" = "$want" ] && { echo "$HOST serves $got"; exit 0; }
+            sleep 10
+          done
+          echo "::error title=Deploy not live::$HOST serves '${got:-nothing}', expected $want"
+          exit 1
       - name: Revoke leaked setup-ci tokens
         if: always() && steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed != 'false'
         timeout-minutes: 3
@@ -345,6 +380,22 @@ jobs:
           OA_ACCESS_TOKEN: ${{ secrets.DEMO_OA_ACCESS_TOKEN }}
           DEMO_PUBLIC_HOME: ${{ vars.DEMO_PUBLIC_HOME }}
         run: bash scripts/ci/prod-setup.sh demo-upgrade
+      # #2257: the deploy is only done when the instance says so.
+      - name: Check the demo serves the released version
+        if: steps.guard.outputs.deploy == 'true'
+        timeout-minutes: 5
+        env:
+          HOST: ${{ env.DEMO_APP_HOST }}
+        run: |
+          want="${TAG#v}"
+          got=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            got="$(curl -fsS -m 15 "https://$HOST/healthz" | jq -r '.version // empty')" || got=""
+            [ "$got" = "$want" ] && { echo "$HOST serves $got"; exit 0; }
+            sleep 10
+          done
+          echo "::error title=Deploy not live::$HOST serves '${got:-nothing}', expected $want"
+          exit 1
       - name: Revoke leaked setup-ci tokens
         if: always() && steps.guard.outputs.deploy == 'true'
         timeout-minutes: 3

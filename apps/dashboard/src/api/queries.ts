@@ -1091,13 +1091,15 @@ export const useUnsnoozeHeld = () =>
       ),
     "Couldn't cancel the snooze.",
   );
-export const useDisconnectDirectory = () =>
+export const useDisconnectDirectory = (
+  success = "Directory disconnected. Members are now managed here.",
+) =>
   useInvalidating(
     () => api.send("DELETE", R.directory, undefined),
     () => [qk.directory, qk.me],
     "Couldn't disconnect.",
     directoryInline,
-    "Directory disconnected. Members are now managed here.",
+    success,
   );
 /** Refreshes on failure too: a refused move may mean the page is stale. */
 /** `quiet`: the caller shows failures itself (the Move dialog does, inline). */

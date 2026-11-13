@@ -7,7 +7,11 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame } from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
-import { BusHub, OFFLINE_REAP_MS } from "../../src/bus/hub.js";
+import {
+  BusHub,
+  OFFLINE_REAP_MS,
+  PROOF_AWAY_GRACE_MS,
+} from "../../src/bus/hub.js";
 import { migrateHub } from "../../src/bus/schema.js";
 import {
   type Daemon,
@@ -224,12 +228,15 @@ describe("link_bind (#1822)", () => {
     expect(a?.identityId).not.toBe(b?.identityId);
   });
 
-  it("closing the session unlinks every proof, and a reopened ref does not revive them (#1984)", async () => {
+  it("closing the session unlinks every proof after the away grace, and a later reopen does not revive them (#1984, #2110)", async () => {
     const s = await scene();
+    const t0 = Date.now() + 3_600_000 + ++seq * 1000;
+    await setClock(s.m.userId, t0);
     await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("1"));
     await bind(s.d, "r1", hashOf("2"));
     await close(s.d, s.m.userId, "r1");
+    await setClock(s.m.userId, t0 + PROOF_AWAY_GRACE_MS);
     expect(await lookup(s.m.userId, hashOf("1"))).toBeNull();
     expect(await lookup(s.m.userId, hashOf("2"))).toBeNull();
     await reg(s.d, "r1", "Lead", s.ns);
@@ -238,21 +245,22 @@ describe("link_bind (#1822)", () => {
     expect(
       await rows(s.m.userId, "select count(*) as n from agent_proofs"),
     ).toEqual([{ n: 0 }]);
+    await setClock(s.m.userId, null);
   });
 
-  it("closing the session clears the hash", async () => {
+  it("closing the session clears the hash column; its proofs wait out the away grace (#2110)", async () => {
     const s = await scene();
     await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("3"));
     expect(await lookup(s.m.userId, hashOf("3"))).not.toBeNull();
     await close(s.d, s.m.userId, "r1");
-    expect(await lookup(s.m.userId, hashOf("3"))).toBeNull();
     expect(
       await rows(
         s.m.userId,
         "select proof_hash from agents where native_ref = 'r1'",
       ),
     ).toEqual([{ proof_hash: null }]);
+    expect(await lookup(s.m.userId, hashOf("3"))).not.toBeNull();
   });
 
   it("a rename keeps identity_id and the lookup shows the new name", async () => {
@@ -320,6 +328,9 @@ describe("identity_id and a reclaimed name (#1822, #1742)", () => {
   it("moves with the name to the restarted session on the same machine", async () => {
     const { s, before, after } = await restart(true);
     expect(after?.identityId).toBe(before?.identityId);
+    // #2110: the old row's identity is unlinked, so its proof ends inside
+    // the away grace too.
+    expect(await lookup(s.m.userId, hashOf("5"))).toBeNull();
     expect(
       await rows(
         s.m.userId,
@@ -584,5 +595,225 @@ describe("namesOf (#1889)", () => {
     expect(await namesOf(b.userId, [id])).toEqual([]);
     expect(await namesOf(a.m.userId, [])).toEqual([]);
     expect(await namesOf(a.m.userId, [42 as never, ""])).toEqual([]);
+  });
+});
+
+// #2110: a session closed into away (sessions{closed}: the daemon's liveness
+// close, a daemon restart) keeps its proofs for PROOF_AWAY_GRACE_MS, for its
+// own row only; a close for good ends them at once. Time is the test clock.
+describe("the away grace (#2110)", () => {
+  const count = (userId: string) =>
+    rows(userId, "select count(*) as n from agent_proofs");
+  /** A bound agent closed into away at t0; the clock stays at t0. */
+  async function away(caps: string[] = [BUS_CAPS.link]) {
+    const s = await scene(caps);
+    const t0 = Date.now() + 3_600_000 + ++seq * 1000;
+    await setClock(s.m.userId, t0);
+    const name = await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("e"));
+    const live = await lookup(s.m.userId, hashOf("e"));
+    expect(live).not.toBeNull();
+    await close(s.d, s.m.userId, "r1");
+    return { ...s, t0, name, live };
+  }
+
+  it("a daemon socket drop leaves the proof linked; a restart's close links within the grace, not after", async () => {
+    const s = await scene();
+    const t0 = Date.now() + 3_600_000 + ++seq * 1000;
+    await setClock(s.m.userId, t0);
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("e"));
+    const live = await lookup(s.m.userId, hashOf("e"));
+    s.d.close();
+    await s.d.closed;
+    expect(await lookup(s.m.userId, hashOf("e"))).toEqual(live);
+    // The restarted daemon reports the session closed (not yet re-read).
+    const d2 = await connect(s.mach.token, [BUS_CAPS.link]);
+    await close(d2, s.m.userId, "r1");
+    await setClock(s.m.userId, t0 + PROOF_AWAY_GRACE_MS - 1);
+    expect(await lookup(s.m.userId, hashOf("e"))).toEqual(live);
+    await setClock(s.m.userId, t0 + PROOF_AWAY_GRACE_MS);
+    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    await setClock(s.m.userId, null);
+  });
+
+  it("a re-register within the grace links, with its hash column back", async () => {
+    const s = await away();
+    await setClock(s.m.userId, s.t0 + PROOF_AWAY_GRACE_MS - 1);
+    expect(await reg(s.d, "r1", "Lead", s.ns)).toBe(s.name);
+    // Live again: no longer bound by the grace.
+    await setClock(s.m.userId, s.t0 + 10 * PROOF_AWAY_GRACE_MS);
+    expect(await lookup(s.m.userId, hashOf("e"))).toEqual(s.live);
+    expect(
+      await rows(
+        s.m.userId,
+        "select proof_hash as p from agents where native_ref = 'r1'",
+      ),
+    ).toEqual([{ p: hashOf("e") }]);
+    await setClock(s.m.userId, null);
+  });
+
+  it("a reopen after the grace does not revive the proof, and the alarm sweeps it", async () => {
+    const s = await away();
+    await setClock(s.m.userId, s.t0 + PROOF_AWAY_GRACE_MS);
+    await runInDurableObject(
+      await hubOf(s.m.userId),
+      async (_: BusHub, st: DurableObjectState) => {
+        if ((await st.storage.getAlarm()) === null)
+          await st.storage.setAlarm(s.t0 + PROOF_AWAY_GRACE_MS);
+      },
+    );
+    await runDurableObjectAlarm(await hubOf(s.m.userId));
+    expect(await count(s.m.userId)).toEqual([{ n: 0 }]);
+    // The read alone also refuses it, swept or not: a later reopen of a row
+    // whose proofs were left (no alarm yet) drops them first.
+    const t = await away();
+    await setClock(t.m.userId, t.t0 + PROOF_AWAY_GRACE_MS);
+    await reg(t.d, "r1", "Lead", t.ns);
+    expect(await lookup(t.m.userId, hashOf("e"))).toBeNull();
+    expect(await count(t.m.userId)).toEqual([{ n: 0 }]);
+    await setClock(s.m.userId, null);
+    await setClock(t.m.userId, null);
+  });
+
+  it("agent_down (a session closed for good) never links, even within the grace", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("f"));
+    s.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
+    for (;;) {
+      const r = await rows(
+        s.m.userId,
+        "select live, away_since as t from agents where native_ref = 'r1'",
+      );
+      if (r[0]?.live === 0) {
+        // Closed into away like a sessions close: only the drop ends it.
+        expect(typeof r[0]?.t).toBe("number");
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    expect(await lookup(s.m.userId, hashOf("f"))).toBeNull();
+    expect(await count(s.m.userId)).toEqual([{ n: 0 }]);
+  });
+
+  it("a sign-out (closeAll) ends an away session's link", async () => {
+    const s = await away();
+    expect(await lookup(s.m.userId, hashOf("e"))).toEqual(s.live);
+    await (await hubOf(s.m.userId)).closeAll("signed out");
+    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    expect(await count(s.m.userId)).toEqual([{ n: 0 }]);
+    await setClock(s.m.userId, null);
+  });
+
+  it("an unlinked identity (its name taken back by a new session) ends the link", async () => {
+    const s = await away();
+    expect(await reg(s.d, "r2", s.name, s.ns)).toBe(s.name);
+    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    // Even a proof row left on the unlinked row never resolves.
+    await rows(
+      s.m.userId,
+      "insert into agent_proofs (hash, agent_id, seq) select ?, id, 99 from agents where native_ref = 'r1'",
+      hashOf("e"),
+    );
+    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    await setClock(s.m.userId, null);
+  });
+
+  it("a revoked machine's away session never links", async () => {
+    const s = await away();
+    expect(await (await hubOf(s.m.userId)).revokeMachine(s.mach.id)).toBe(true);
+    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    expect(await count(s.m.userId)).toEqual([{ n: 0 }]);
+    // Even a proof row left behind never resolves on a revoked machine.
+    await rows(
+      s.m.userId,
+      "insert into agent_proofs (hash, agent_id, seq) select ?, id, 99 from agents where native_ref = 'r1'",
+      hashOf("e"),
+    );
+    await rows(
+      s.m.userId,
+      "update agents set away_since = ? where native_ref = 'r1' returning id",
+      s.t0,
+    );
+    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    await setClock(s.m.userId, null);
+  });
+
+  it("the migration replaces the old close trigger on an existing hub, idempotently", async () => {
+    const s = await scene();
+    const stub = await hubOf(s.m.userId);
+    const triggers = () =>
+      rows(
+        s.m.userId,
+        "select name from sqlite_master where type = 'trigger' and name like 'agent_proofs%' order by name",
+      );
+    await runInDurableObject(stub, (_: BusHub, st: DurableObjectState) => {
+      st.storage.sql.exec("drop trigger if exists agent_proofs_close_unaway");
+      st.storage.sql.exec(
+        "create trigger agent_proofs_close after update of live on agents when new.live = 0 begin delete from agent_proofs where agent_id = new.id; end",
+      );
+    });
+    for (let i = 0; i < 2; i++) {
+      await runInDurableObject(stub, (_: BusHub, st: DurableObjectState) =>
+        migrateHub(st.storage.sql),
+      );
+      expect(await triggers()).toEqual([
+        { name: "agent_proofs_close_unaway" },
+        { name: "agent_proofs_gone" },
+      ]);
+    }
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("9"));
+    await close(s.d, s.m.userId, "r1");
+    expect(await lookup(s.m.userId, hashOf("9"))).not.toBeNull();
+  });
+
+  it("a proof resolves only to its own row: two agents, one away, and a swap", async () => {
+    const s = await scene();
+    const t0 = Date.now() + 3_600_000 + ++seq * 1000;
+    await setClock(s.m.userId, t0);
+    await reg(s.d, "r1", "Lead", s.ns);
+    await reg(s.d, "r2", "Other", s.ns);
+    await bind(s.d, "r1", hashOf("1"));
+    await bind(s.d, "r2", hashOf("2"));
+    const own = async () =>
+      Object.fromEntries(
+        (
+          await rows(
+            s.m.userId,
+            "select p.hash as h, a.identity_id as i, a.name as n from agent_proofs p join agents a on a.id = p.agent_id",
+          )
+        ).map((r) => [r.h, { i: r.i, n: r.n }]),
+      );
+    const check = async () => {
+      const o = await own();
+      for (const h of [hashOf("1"), hashOf("2")]) {
+        const got = await lookup(s.m.userId, h);
+        expect(got?.identityId).toBe(o[h]?.i);
+        expect(got?.name).toBe(o[h]?.n);
+      }
+    };
+    await check();
+    await close(s.d, s.m.userId, "r1");
+    await check();
+    const a = await lookup(s.m.userId, hashOf("1"));
+    const b = await lookup(s.m.userId, hashOf("2"));
+    expect(a?.identityId).not.toBe(b?.identityId);
+    // r2 takes r1's proof: it moves to r2 and never resolves to away r1 again.
+    await bind(s.d, "r2", hashOf("1"));
+    expect((await lookup(s.m.userId, hashOf("1")))?.identityId).toBe(
+      b?.identityId,
+    );
+    await check();
+    // Another machine cannot bind a proof to the away r1.
+    const other = await machine("Other", s.m.userId);
+    const d2 = await connect(other.token, [BUS_CAPS.link]);
+    expect(await bind(d2, "r1", hashOf("3"))).toMatchObject({
+      type: "error",
+      code: "not_registered",
+    });
+    expect(await lookup(s.m.userId, hashOf("3"))).toBeNull();
+    await setClock(s.m.userId, null);
   });
 });

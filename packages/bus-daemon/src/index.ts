@@ -57,6 +57,7 @@ import {
 import {
   CODEX_REFUSALS,
   type CodexAttestDeps,
+  type CodexRestore,
   codexAttestor,
   codexHome,
   codexProxyNamespaces,
@@ -69,7 +70,7 @@ import {
   writeCodexAway,
 } from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
-import { TakenWatch } from "./codex-taken.ts";
+import { AckTracker, replayAcks, TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -236,6 +237,8 @@ export type DaemonDeps = {
   revokedFile?: string;
   /** How long status waits for each namespace's roster from the hub. */
   statusRosterMs?: number;
+  /** #2297: base delay for retrying a Codex restore after an unknown ps read; default 1 s, doubling, 5 tries. */
+  restoreRetryMs?: number;
   /** Retry delay for a rate-limited agent_up; default 5 min. */
   limitedRetryMs?: number;
   /** Test seams. */
@@ -476,6 +479,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
+      ...(rec.nameChosen && hubNameChosen
+        ? { name_chosen: true as const }
+        : {}),
       // A /clear: the new ref takes over the old address and its mail (#1295).
       ...(rec.replaces !== undefined && hubMailbox
         ? { replaces: rec.replaces }
@@ -690,11 +696,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   });
   /** Where Codex keeps its thread names (#1748). */
   const codexIndexHome = cx.home ?? codexHome();
+  /** Codex acks queued on the current link: ack frame id to msg_id. Only an `acked` echoing one of these confirms (#2198). */
+  const codexAckIds = new AckTracker();
+  const sendCodexAck = (id: string, unsent?: () => void): boolean =>
+    delivery.delivered(id, unsent, (fid) => {
+      // Only a hub that negotiated the cap ever answers.
+      if (hubAckConfirm) codexAckIds.track(fid, id);
+    });
   /** Queued Codex mail a turn has not taken yet (#2029): acked late, once it has. */
   const codexTaken = new TakenWatch({
     home: codexIndexHome,
     file: cx.takenFile ?? join(home(), "codex-pending.json"),
-    onTaken: (id) => delivery.delivered(id),
+    onTaken: (id, unsent) => sendCodexAck(id, unsent),
     log,
   });
   const codex = new CodexTransport({
@@ -985,7 +998,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * while the link or the agent's registration is not ready rides the next
    * agent_up (it carries proposedName).
    */
-  const renameIfChanged = (rec: AgentRecord, name: string, filePid: number) => {
+  const renameIfChanged = (
+    rec: AgentRecord,
+    name: string,
+    filePid: number,
+    chosen?: boolean,
+  ) => {
+    if (chosen !== undefined) rec.nameChosen = chosen;
     const was = rec.sessionName ?? rec.proposedName;
     // Never a name nobody chose: empty, or the file's own `claude-<pid>`
     // fallback (a file with no name, whichever process wrote it).
@@ -1053,6 +1072,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agent_ref: rec.ref,
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
+        // #2311: a re-derived Claude title is a rename, not a user's choice.
+        ...(hubNameChosen && rec.kind === "claude-code"
+          ? { name_chosen: rec.nameChosen === true }
+          : {}),
       })
     ) {
       rec.sentName = rec.proposedName;
@@ -1135,7 +1158,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
-        renameIfChanged(prev, s.name, s.pid);
+        renameIfChanged(prev, s.name, s.pid, s.nameChosen === true);
         continue;
       }
       // #2110: a record closed while its process and session file are still
@@ -1184,6 +1207,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
           : {}),
         sessionName: s.name,
+        ...(s.nameChosen ? { nameChosen: true } : {}),
         cwd: s.cwd,
         live: true,
       });
@@ -1253,7 +1277,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const delivery = createDeliver({
     agents,
     ...(cl.retryDelaysMs ? { retryDelaysMs: cl.retryDelaysMs } : {}),
-    hub: { send: (f) => hub.send(f) },
+    hub: { send: (f, unsent) => hub.send(f, unsent) },
     transports: {
       "claude-code": (agent, mail) => claude.deliver(agent, mail),
       opencode: (agent, mail) => opencode.deliver(agent, mail),
@@ -1281,6 +1305,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  let hubNameChosen = false;
   /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
   let hubFollow = false;
   /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
@@ -1289,6 +1314,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubLinkArg = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
+  /** The hub's last hello_ok listed BUS_CAPS.ackConfirm: it answers a mail ack with `acked` (#2198). */
+  let hubAckConfirm = false;
+  /** Which link's hello_ok started the current Codex ack replay (#2198). */
+  let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
@@ -1427,6 +1456,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        case "acked": {
+          // Only the answer to an ack sent on this link, from a hub that
+          // negotiated the cap; anything else is ignored.
+          if (!hubAckConfirm) return;
+          const sent = codexAckIds.take(frame.id);
+          if (sent !== undefined && sent === frame.msg_id)
+            codexTaken.confirm(sent);
+          return;
+        }
         case "waiting_counts":
           waitingAsks.get(frame.id)?.(frame.counts);
           return;
@@ -1440,19 +1478,39 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubNameChosen = frame.caps?.includes(BUS_CAPS.nameChosen) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
           hubWaitingQuery =
             frame.caps?.includes(BUS_CAPS.waitingQuery) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
+          hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
+          // #2311: agent_up went out in onOpen, before this hello_ok said the
+          // hub takes name_chosen: say it again for a session the user named.
+          if (hubNameChosen)
+            for (const rec of agents.all())
+              if (rec.live && rec.nameChosen && rec.replaces === undefined)
+                announceUp(rec);
           for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
+          // A hub that confirms acks gets every Codex ack it has not
+          // confirmed again, paced into the queue's spare half (#2198).
+          // Without the cap there is no replay: an ack queued is done.
+          if (hubAckConfirm) {
+            const link = ++codexReplayLink;
+            replayAcks(
+              codexTaken.unconfirmedIds(),
+              (id) => void sendCodexAck(id),
+              () => hubHelloed && link === codexReplayLink,
+              () => hub.headroom,
+            );
+          }
           return;
         // roster_changed has no local consumer yet (C6).
       }
@@ -1507,9 +1565,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubNameChosen = false;
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
+      hubAckConfirm = false;
+      codexAckIds.clear();
       hubWaitingQuery = false;
       hubHelloed = false;
       statusRelay.dropped();
@@ -1939,6 +2000,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
+          ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
           ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
             ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
@@ -2127,6 +2189,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** #1748: each live attested Codex thread, kept so a restart can take it back. */
   const codexAgentsFile = cx.agentsFile ?? join(home(), "codex-agents.json");
   let codexSaved: string | undefined;
+  /** #2297: rows whose restore awaits a ps answer; kept in the file until they restore or drop. */
+  const restorePending = new Map<string, CodexAgent>();
   const persistCodex = () => {
     const rows: CodexAgent[] = [];
     for (const a of agents.all()) {
@@ -2142,6 +2206,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         busName: a.busName,
       });
     }
+    for (const [ref, r] of restorePending)
+      if (!rows.some((x) => x.ref === ref)) rows.push(r);
     const text = JSON.stringify(rows);
     // Never touches the home until a thread has been attested.
     if (codexSaved === undefined ? rows.length === 0 : text === codexSaved)
@@ -2160,44 +2226,104 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * each only if its process is still the one pinned and still holds the
    * thread's lock. The next `agent_up` (hub open) announces them by name.
    */
+  const restoreTimers = new Set<ReturnType<typeof setTimeout>>();
+  const RESTORE_TRIES = 5;
   const restoreCodex = () => {
     if (deps.attest) return;
-    for (const r of readCodexAgents(codexAgentsFile)) {
-      if (agents.byRef(r.ref)) continue;
-      let proven: { cwd: string } | undefined;
-      try {
-        proven = codexCheck.restore({
-          thread: r.ref,
+    const attempt = (rows: CodexAgent[], tries: number) => {
+      const again: CodexAgent[] = [];
+      for (const r of rows) {
+        if (agents.byRef(r.ref)) {
+          restorePending.delete(r.ref);
+          continue;
+        }
+        const drop = (reason: string) =>
+          ev("codex_restore_dropped", { thread: r.ref, pid: r.pid, reason });
+        let res: CodexRestore | undefined;
+        try {
+          res = codexCheck.restore({
+            thread: r.ref,
+            pid: r.pid,
+            start: r.procStart,
+          });
+        } catch {}
+        if (!res) {
+          drop("error");
+          continue;
+        }
+        if ("unknown" in res) {
+          // ps gave no answer: not gone, not admitted. Try again later.
+          if (tries + 1 < RESTORE_TRIES) {
+            again.push(r);
+            restorePending.set(r.ref, r);
+          } else {
+            restorePending.delete(r.ref);
+            drop("ps_unknown");
+          }
+          continue;
+        }
+        restorePending.delete(r.ref);
+        if ("dropped" in res) {
+          drop(res.dropped);
+          continue;
+        }
+        const proven = res;
+        // Scope comes from the proven cwd and today's config, as at a hello.
+        let ns: Namespace;
+        try {
+          ns = resolveNs(proven.cwd, true);
+        } catch {
+          drop("no_namespace");
+          continue;
+        }
+        if (!WireNamespaceSchema.safeParse(ns.namespace).success) {
+          drop("no_namespace");
+          continue;
+        }
+        agents.up({
+          ref: r.ref,
+          kind: "codex",
+          proposedName: r.proposedName,
+          busName: r.busName,
+          namespace: ns.namespace,
+          namespaceSource: ns.source,
+          global: ns.global,
           pid: r.pid,
-          start: r.procStart,
+          procStart: r.procStart,
+          cwd: proven.cwd,
+          live: true,
+          ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
         });
-      } catch {}
-      if (!proven) continue;
-      // Scope comes from the proven cwd and today's config, as at a hello.
-      let ns: Namespace;
-      try {
-        ns = resolveNs(proven.cwd, true);
-      } catch {
-        continue;
+        seenAt.set(r.ref, ++seenSeq);
+        ev("codex_restored", { thread: r.ref, pid: r.pid });
+        // A retry that lands after the hub opened is announced here; at start,
+        // the hub's onOpen announces every live record.
+        const rec = agents.byRef(r.ref);
+        if (tries > 0 && rec?.live && hub.open) {
+          announceUp(rec);
+          tellOwed(r.ref);
+        }
+        if (debug)
+          log(`restored codex thread ${r.ref.slice(0, 8)} pid ${r.pid}`);
       }
-      if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
-      agents.up({
-        ref: r.ref,
-        kind: "codex",
-        proposedName: r.proposedName,
-        busName: r.busName,
-        namespace: ns.namespace,
-        namespaceSource: ns.source,
-        global: ns.global,
-        pid: r.pid,
-        procStart: r.procStart,
-        cwd: proven.cwd,
-        live: true,
-        ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
-      });
-      seenAt.set(r.ref, ++seenSeq);
-      if (debug) log(`restored codex thread ${r.ref.slice(0, 8)} pid ${r.pid}`);
-    }
+      if (again.length === 0) return;
+      for (const r of again)
+        if (tries === 0)
+          ev("codex_restore_retry", {
+            thread: r.ref,
+            pid: r.pid,
+            reason: "ps_unknown",
+          });
+      // Bounded backoff: 1x, 2x, 4x, 8x the base delay.
+      const delay = (deps.restoreRetryMs ?? 1000) * 2 ** tries;
+      const t = setTimeout(() => {
+        restoreTimers.delete(t);
+        attempt(again, tries + 1);
+      }, delay);
+      t.unref();
+      restoreTimers.add(t);
+    };
+    attempt(readCodexAgents(codexAgentsFile), 0);
   };
 
   /** #2029: each Codex thread proved here, kept so mail held for it can wake it. */
@@ -2250,6 +2376,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Decisions already logged, and the last hub roster read, per `thread:pid:start`. */
   const wakeLogged = new Set<string>();
   const wakeAsked = new Map<string, number>();
+  /** #2343: when a thread's "not loaded" skip was last logged; once an hour, dropped when the thread is no longer away. */
+  const wakeUnloadedLogged = new Map<string, number>();
   let waking = false;
   let wakeCheckedAt: number | undefined;
   /** Wakes sent and not yet answered by the thread's own call, and the mail count at each. */
@@ -2283,6 +2411,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Pruned for threads no longer away, or live.
       const away = new Set(rows.map((r) => r.ref));
       for (const [k, w] of wakeSent) if (!away.has(w.ref)) wakeSent.delete(k);
+      for (const k of wakeUnloadedLogged.keys())
+        if (!away.has(k)) wakeUnloadedLogged.delete(k);
       for (const m of [wakeAsked, wakeWaiting])
         for (const k of m.keys())
           if (!away.has(k.split(":")[1] ?? "")) m.delete(k);
@@ -2305,8 +2435,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // #2079: one frame for every held row, no live agent needed.
       let counts: Record<string, number> | undefined;
       if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
-        const refs = rows
-          .filter((r) => held.has(r.ref))
+        // Unloaded rows too (#2343): their count says whether the skip is worth a log line.
+        // Held rows first: should the rows ever outnumber the cap (AWAY_MAX equals it today), wakes win.
+        const refs = [
+          ...rows.filter((r) => held.has(r.ref)),
+          ...rows.filter((r) => !held.has(r.ref)),
+        ]
           .map((r) => r.ref)
           .slice(0, MAX_WAITING_QUERY);
         if (refs.length) {
@@ -2316,7 +2450,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       for (const r of rows) {
         const h = held.get(r.ref);
-        if (!h) continue;
+        if (!h) {
+          const last = wakeUnloadedLogged.get(r.ref);
+          if (
+            counts?.[r.ref] &&
+            (last === undefined || now - last >= 3_600_000)
+          ) {
+            wakeUnloadedLogged.set(r.ref, now);
+            ev("codex_wake_skipped", { thread: r.ref, reason: "not_loaded" });
+          }
+          continue;
+        }
         const key = `wake:${r.ref}:${h.pid}:${h.start.replace(/\s+/g, "_")}`;
         const who = `codex wake ${r.ref.slice(0, 8)} pid ${h.pid}`;
         let n = 1;
@@ -2541,7 +2685,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       outbox.stop();
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);
+      for (const t of restoreTimers) clearTimeout(t);
       hub.stop();
+      codexTaken.flush();
       // A send waiting for delivered is queued at the hub: it answers so, not as an error.
       receipts.release();
       await new Promise((r) => setImmediate(r));

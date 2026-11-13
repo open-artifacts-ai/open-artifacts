@@ -809,6 +809,11 @@ const ERASE_WIPES = [
   `delete from identities where user_id = ?1 and provider <> 'google'
     and ${ERASABLE}`,
   `delete from tokens where user_id = ?1 and ${ERASABLE}`,
+  // #2263: their passkeys, pending challenges and switches (the row stays, so
+  // the users cascade never fires).
+  `delete from passkeys where user_id = ?1 and ${ERASABLE}`,
+  `delete from pick_assertions where user_id = ?1 and ${ERASABLE}`,
+  `delete from passkey_settings where user_id = ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
   // #1291: their bus machines are revoked and emptied (labels are
   // client-chosen hostnames; the token hash goes too), not deleted: the row

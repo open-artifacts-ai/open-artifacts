@@ -49,6 +49,7 @@ import {
 } from "../services/thumbs.js";
 import {
   addParticipants,
+  askAuthors,
   askerNoticeDue,
   askRow,
   bodyOk,
@@ -57,6 +58,7 @@ import {
   deleteExtras,
   getComment,
   getThread,
+  heldTargets,
   insertComment,
   insertExtras,
   insertThread,
@@ -70,6 +72,7 @@ import {
   refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
+  refundThreadReplyCount,
   replyCount,
   rootId,
   type StoredActor,
@@ -86,6 +89,7 @@ import {
   threadExists,
   threadStatus,
   touchThread,
+  withdrawTargets,
 } from "./comments-store.js";
 import {
   INDEX_REPORT_MS,
@@ -569,6 +573,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "select name from pragma_table_info('comment_participants')",
         )
         .toArray();
+      // #2263: comment_asks.confirm, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "confirm")
+      )
+        sql.exec("alter table comment_asks add column confirm text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -2154,6 +2168,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     by: StoredActor;
     optionId: string;
     rate: string;
+    /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
+    verified?: "passkey";
   }): { comment: StoredComment; unchanged: boolean } {
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
@@ -2169,6 +2185,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
+      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
+      if (r.ask.confirm === "passkey") {
+        if (a.verified !== "passkey")
+          fail("passkey_required", "This pick needs your passkey");
+        if (r.ask.answer?.optionId === a.optionId)
+          fail("already_answered", "This ask is answered with that option");
+      }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
       const unchanged = r.ask.answer?.optionId === a.optionId;
       const now = this.iso();
@@ -2176,6 +2199,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         optionId: a.optionId,
         by: a.by,
         at: now,
+        ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
       });
       touchThread(this.sql, a.threadId, now);
       return {
@@ -2220,6 +2244,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // A refused asker notice gives the asker bound back (#1614).
       if (m && a.kind === "asker" && a.state === "gone")
         refundAskerIfAllGone(this.sql, a.commentId);
+      // A refused thread-reply notice gives its per-key spend back (#2197).
+      // Only queued->gone moves, so a repeat settle never refunds twice.
+      if (m && a.kind === "reply" && a.state === "gone") {
+        const c = this.sql
+          .exec<{ threadId: string; at: string }>(
+            "select thread_id as threadId, created_at as at from comments where id = ?",
+            a.commentId,
+          )
+          .toArray()[0];
+        if (c) refundThreadReplyCount(this.sql, c.threadId, a.key, c.at);
+      }
       return m;
     });
     if (moved) this.broadcastComments();
@@ -2303,6 +2338,37 @@ export class ArtifactRuntime extends DurableObject<Env> {
     );
     if (ok) this.broadcastComments();
     return ok;
+  }
+
+  /** #2175: this thread's targets for `key` still held. */
+  commentsHeldTargets(a: {
+    threadId: string;
+    key: string;
+  }): { commentId: string; kind: "mention" | "asker" | "reply" }[] {
+    this.ensureSchema();
+    return heldTargets(this.sql, a.threadId, a.key);
+  }
+
+  /** #2240: the ask comments of a thread with their authors. */
+  commentsAskAuthors(a: { threadId: string }): {
+    commentId: string;
+    author: StoredActor;
+  }[] {
+    this.ensureSchema();
+    return askAuthors(this.sql, a.threadId);
+  }
+
+  /** #2175: marks the targets the hub withdrew and gives back their spends. */
+  commentsTargetsWithdraw(a: {
+    threadId: string;
+    key: string;
+    targets: { commentId: string; kind: "mention" | "asker" | "reply" }[];
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      withdrawTargets(this.sql, a.threadId, a.key, a.targets),
+    );
+    this.broadcastComments();
   }
 
   /** #2035: records who a person's reply also told, and how it went; returns the comment. */
@@ -2530,6 +2596,9 @@ type RpcMethods =
   | "commentsThreadReplyRefund"
   | "commentsParticipants"
   | "commentsParticipantSet"
+  | "commentsHeldTargets"
+  | "commentsAskAuthors"
+  | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
   | "commentsStatus"
   | "commentsEdit"

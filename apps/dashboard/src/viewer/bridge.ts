@@ -9,7 +9,9 @@ import {
   LIMITS,
   METHOD_CAPABILITY,
   PageSchema,
+  PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
+  PROTOCOL_PIN_BADGE,
   PROTOCOL_PIN_CHANGED,
   parseArtifactMessage,
   R,
@@ -84,8 +86,12 @@ export interface BridgeOptions {
   /** A click in pin mode: x and y are 0..1 of the image or page. */
   onCommentEscape?: () => void;
   onCommentSelection?: (has: boolean, bottom: number) => void;
+  /** A pointer went down in the frame (outside the runtime's own button). */
+  onCommentAway?: () => void;
   onCommentPin?: (
     pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
+    /** #2019: where the click landed, in frame-viewport pixels. */
+    at?: { x: number; y: number },
   ) => void;
 }
 
@@ -560,8 +566,11 @@ export function createBridge(opts: BridgeOptions) {
       case "comment.selection":
         opts.onCommentSelection?.(m.has, m.bottom);
         break;
+      case "comment.away":
+        opts.onCommentAway?.();
+        break;
       case "comment.pin":
-        opts.onCommentPin?.(m.pin);
+        opts.onCommentPin?.(m.pin, m.at);
         break;
     }
   };
@@ -619,7 +628,15 @@ export function createBridge(opts: BridgeOptions) {
     },
     setComments(
       threads: Extract<ShellToArtifact, { type: "comments.set" }>["threads"],
-      ghost?: { x: number; y: number; page?: number },
+      ghost?: {
+        x: number;
+        y: number;
+        page?: number;
+        badge?: Extract<
+          ShellToArtifact,
+          { type: "comments.set" }
+        >["threads"][number]["badge"];
+      },
       /** The quote being written about, kept highlighted (#1834). */
       draft?: Extract<ShellToArtifact, { type: "comments.set" }>["draft"],
     ) {
@@ -629,11 +646,25 @@ export function createBridge(opts: BridgeOptions) {
         // #1698: a runtime older than this shell rejects the whole message
         // over one field it does not know, and every pin would vanish. Leave
         // out what that runtime cannot read; it draws the pins unmarked.
-        threads:
-          frameProtocol >= PROTOCOL_PIN_CHANGED
-            ? threads
-            : threads.map(({ changed: _, ...t }) => t),
-        ...(ghost ? { ghost } : {}),
+        threads: threads
+          .map((t) => {
+            if (frameProtocol >= PROTOCOL_PIN_BADGE) return t;
+            const { badge: _b, ...rest } = t;
+            return rest;
+          })
+          .map((t) => {
+            if (frameProtocol >= PROTOCOL_PIN_CHANGED) return t;
+            const { changed: _c, ...rest } = t;
+            return rest;
+          }),
+        ...(ghost
+          ? {
+              ghost:
+                frameProtocol >= PROTOCOL_PIN_BADGE
+                  ? ghost
+                  : { x: ghost.x, y: ghost.y, page: ghost.page },
+            }
+          : {}),
         // Same rule as `changed`: only for a runtime that knows the field.
         ...(draft && frameProtocol >= PROTOCOL_COMMENT_DRAFT ? { draft } : {}),
       });
@@ -641,6 +672,11 @@ export function createBridge(opts: BridgeOptions) {
     /** #1732: the reader tapped "Comment on selection"; the frame runs its own Comment path. */
     commentOnSelection() {
       reply({ oa: 1, type: "comments.comment" });
+    },
+    /** Clear the frame's live text selection; a runtime that predates it keeps its own. */
+    clearSelection() {
+      if (frameProtocol >= PROTOCOL_COMMENT_CLEAR)
+        reply({ oa: 1, type: "comments.clear" });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });

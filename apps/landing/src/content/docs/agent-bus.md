@@ -27,6 +27,8 @@ The install does four things, in order:
 
 Then it adds an `oa-bus` command to your PATH. Start a new session in your agent tool to pick up the bus.
 
+Apps built on the Agent SDK join the bus only when you give the session a name.
+
 ### Without the background service
 
 Add `--no-service` to skip step 3:

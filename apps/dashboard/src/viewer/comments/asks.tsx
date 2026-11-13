@@ -1,12 +1,15 @@
 import type {
   ArtifactAgent,
   CommentMention,
+  CommentNotified,
   Comment as CommentT,
   CommentThread,
   KeyRef,
+  MentionDelivery,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { useEffect, useId, useState } from "react";
+import { CheckCheck, Clock, Minus } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   answerError,
   useAnswerAsk,
@@ -15,7 +18,9 @@ import {
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
 import { PartyFace } from "./AuthorFace";
-import { linkify } from "./linkify";
+import { type Face, FaceStack } from "./FaceStack";
+import { lastWasTouch, useInputKind } from "./inputKind";
+import { Markdown, MarkdownInline } from "./Markdown";
 
 const MUTED = "text-muted-foreground";
 
@@ -26,13 +31,20 @@ export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
 });
 
+/** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
+export const isSendingAnswer = (a: object | undefined) =>
+  !!a && (a as { sending?: boolean }).sending === true;
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
     .filter((t) =>
       t.comments.some(
-        (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+        (c) =>
+          c.ask &&
+          (!c.ask.answer || isSendingAnswer(c.ask.answer)) &&
+          c.ask.to.some((a) => a.me),
       ),
     )
     .map((t) => t.id);
@@ -63,55 +75,379 @@ export function nextAskFor(
   );
 }
 
-const OFFLINE = "offline · it will get this when it's back";
+type DState = MentionDelivery;
+/** What a mark shows: a queued notice is "sending" until the comment is HELD_AFTER_MS old. */
+type Shown = DState | "sending";
+const isWait = (d: Shown) => d === "queued" || d === "gone";
 
-/** "Codex is offline · it will get this when it's back", "Claude Code: Delivered". */
-const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
-  d === "queued"
-    ? `${name} is ${OFFLINE}`
-    : d === "gone"
-      ? `${name} is gone · mention another agent`
-      : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-/** #2035: how a reply reached an agent the thread already notifies. */
-const notifiedWord = (d: CommentMention["delivery"]) =>
-  d === "queued"
-    ? "Held until it's back"
-    : d === "gone"
-      ? "Expired"
-      : "Delivered";
+/** A queued notice is delivered within moments; it is "held" only after this long. */
+export const HELD_AFTER_MS = 30_000;
 
-/** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
+/** Maps each state to what to show now; re-renders once when the oldest pending one turns held. */
+function useShown(createdAt: string | undefined, states: readonly DState[]) {
+  const [, tick] = useState(0);
+  const born = createdAt ? Date.parse(createdAt) : Number.NaN;
+  // The end of "sending", fixed on first sight and clamped: a client clock running
+  // behind cannot stretch it past HELD_AFTER_MS from now.
+  const until = useRef<number | null>(null);
+  if (until.current === null)
+    until.current = Number.isNaN(born)
+      ? 0
+      : Date.now() + Math.min(HELD_AFTER_MS, born + HELD_AFTER_MS - Date.now());
+  const end = until.current;
+  const sending = Date.now() < end;
+  const pending = sending && states.includes("queued");
+  useEffect(() => {
+    if (!pending) return;
+    const t = setTimeout(() => tick((n) => n + 1), end - Date.now() + 5);
+    return () => clearTimeout(t);
+  }, [pending, end]);
+  return (d: DState): Shown => (d === "queued" && sending ? "sending" : d);
+}
+
+/** #2229: the details a mark opens, always "<agent>: <state>". A mention's gone is its own word. */
+export const markText = (name: string, d: Shown, mention = false) =>
+  `${name}: ${
+    d === "sending"
+      ? "sending"
+      : d === "queued"
+        ? "held until it's back"
+        : d === "gone"
+          ? mention
+            ? "not on the bus"
+            : "expired, offline too long"
+          : d === "withdrawn"
+            ? "removed before delivery"
+            : d === "seen"
+              ? "seen"
+              : "delivered"
+  }`;
+
+/** Two ticks for delivered or seen, a clock for held or expired. */
+export function DeliveryIcon({ d }: { d: Shown }) {
+  if (d === "sending")
+    return (
+      <Clock
+        aria-hidden="true"
+        data-mark="sending"
+        className="size-3.5 text-muted-foreground"
+      />
+    );
+  if (d === "withdrawn")
+    return (
+      <Minus
+        aria-hidden="true"
+        data-mark="removed"
+        className="size-3.5 text-muted-foreground"
+      />
+    );
+  return isWait(d) ? (
+    <Clock
+      aria-hidden="true"
+      data-mark="wait"
+      className="size-3.5 text-[var(--oa-warning)]"
+    />
+  ) : (
+    <CheckCheck
+      aria-hidden="true"
+      data-mark="ok"
+      className="size-3.5 text-[var(--oa-success)]"
+    />
+  );
+}
+
+/**
+ * Open on hover and focus, toggle on tap or click, close on Escape or leaving.
+ * A touch tap toggles on its own (a second tap closes), whatever hover or focus
+ * the browser fakes after it; the next keydown or mouse move (a hybrid device)
+ * ends "touch", so the keyboard and the mouse open it again (#2247). Escape while open is swallowed, so it does not
+ * also close the panel, sheet or full screen behind it. `float` keeps the
+ * details inside the comment's column.
+ */
+function useDetail() {
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [tap, setTap] = useState(false);
+  useInputKind();
+  const float = useRef<HTMLSpanElement>(null);
+  const [shift, setShift] = useState(0);
+  const open = hover || focus || tap;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: measured once per opening
+  useLayoutEffect(() => {
+    const t = float.current;
+    const box = t?.closest("[data-comment]");
+    if (!open || !t || !box) {
+      setShift(0);
+      return;
+    }
+    const r = t.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    const left = r.left - shift;
+    const right = r.right - shift;
+    setShift(
+      right > b.right ? b.right - right : left < b.left ? b.left - left : 0,
+    );
+  }, [open]);
+  return {
+    open,
+    float: {
+      ref: float,
+      style: shift ? { transform: `translateX(${shift}px)` } : undefined,
+    },
+    props: {
+      onMouseEnter: () => {
+        if (!lastWasTouch()) setHover(true);
+      },
+      onMouseLeave: () => {
+        setHover(false);
+        setTap(false);
+      },
+      onFocus: () => {
+        if (!lastWasTouch()) setFocus(true);
+      },
+      onBlur: () => {
+        setFocus(false);
+        setTap(false);
+      },
+      onClick: () => setTap((t) => !t),
+      onKeyDown: (e: React.KeyboardEvent) => {
+        if (e.key === "Escape" && open) {
+          e.preventDefault();
+          e.stopPropagation();
+          setHover(false);
+          setFocus(false);
+          setTap(false);
+        }
+      },
+    },
+  };
+}
+
+const FLOAT =
+  "absolute top-full z-20 mt-1 flex min-w-max flex-col gap-1 rounded-md border bg-popover px-2 py-1.5 text-popover-foreground shadow-md";
+
+/** A mention chip with its delivery mark inside, details floating over the thread. */
+function MarkedChip({
+  text,
+  face,
+  p,
+  guest,
+  createdAt,
+}: {
+  text: string;
+  face: Parameters<typeof PartyFace>[0]["p"] & {
+    name: string;
+    delivery: DState;
+  };
+  p: Parameters<typeof PartyFace>[0]["p"];
+  guest: boolean;
+  createdAt?: string;
+}) {
+  const { open, props, float } = useDetail();
+  const shown = useShown(createdAt, [face.delivery])(face.delivery);
+  const detail = markText(face.name, shown, true);
+  const did = useId();
+  return (
+    <span className="relative inline-block align-middle">
+      {/* #2247: the name stays the chip's own text; the state is its description. */}
+      <span id={did} hidden>
+        {detail}
+      </span>
+      <button
+        type="button"
+        data-mention-chip=""
+        data-delivery={face.delivery}
+        aria-describedby={did}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-full border-0 bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)] font-[inherit] text-[length:inherit]"
+        {...props}
+      >
+        <PartyFace p={p} guest={guest} />
+        {text}
+        <DeliveryIcon d={shown} />
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          data-delivery-detail=""
+          className={`${FLOAT} left-0 ${TXT}`}
+          {...float}
+        >
+          {detail}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** #2229: a problem's sentence, shown on the first comment it happens in. */
+const problemLine = (name: string, d: DState, notified: boolean) =>
+  d === "queued"
+    ? `${name} is offline. Held until it's back.`
+    : notified
+      ? `${name} didn't get this: it was offline too long. @-mention it to try again.`
+      : `${name} isn't on the bus anymore. Mention another agent.`;
+
+type Problem = { id: string; m: CommentNotified; notified: boolean };
+
+/** Per comment, the problems that are new in it: an agent held or expired in an
+    earlier comment of the thread is not told again, only marked. */
+export function newProblems(comments: readonly CommentT[]) {
+  const seen = new Set<string>();
+  const out = new Map<string, Problem[]>();
+  for (const c of comments) {
+    const list: Problem[] = [];
+    const add = (m: CommentMention, notified: boolean) => {
+      if (!m.delivery || !isWait(m.delivery)) return;
+      const id = `${m.key}:${m.delivery}`;
+      if (seen.has(id)) return;
+      seen.add(id);
+      list.push({
+        id: `${notified ? "n" : "m"}-${m.key}`,
+        m: m as CommentNotified,
+        notified,
+      });
+    };
+    for (const m of c.mentions ?? []) add(m, false);
+    for (const m of c.notified ?? []) add(m, true);
+    if (list.length) out.set(c.id, list);
+  }
+  return out;
+}
+
+/** The sentence for each new problem. Marks live on the chip and in the header. Names are text, never HTML. */
 export function Delivery({
   c,
   guest = false,
+  problems,
 }: {
   c: CommentT;
   guest?: boolean;
+  /** What is new in this comment; by default whatever is wrong in it. */
+  problems?: readonly Problem[];
 }) {
-  if (!c.mentions?.length && !c.notified?.length) return null;
+  const all = problems ?? newProblems([c]).get(c.id) ?? [];
+  // A queued notice is only "held" once the comment is HELD_AFTER_MS old.
+  const shownOf = useShown(
+    c.createdAt,
+    all.map((p) => p.m.delivery),
+  );
+  const list = all.filter((p) => shownOf(p.m.delivery) !== "sending");
+  if (!list.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
-      {c.mentions?.map((m) => (
+      {list.map(({ id, m, notified }) => (
         <li
-          key={m.key}
-          data-mention={m.key}
+          key={id}
+          {...(notified
+            ? { "data-notified": m.key }
+            : { "data-mention": m.key })}
           className="flex items-center gap-1"
         >
           <PartyFace p={m} guest={guest} />
-          {deliveryLine(m.name, m.delivery)}
-        </li>
-      ))}
-      {c.notified?.map((m) => (
-        <li
-          key={`n-${m.key}`}
-          data-notified={m.key}
-          className="flex items-center gap-1"
-        >
-          <PartyFace p={m} guest={guest} />
-          {m.name}: {notifiedWord(m.delivery)}
+          {problemLine(m.name, m.delivery, notified)}
         </li>
       ))}
     </ul>
+  );
+}
+
+/** #2229: everyone a comment notified (the agents it @-mentions, then the thread agents told by a reply), as up to three faces and one summary mark in the header. */
+export function DeliveryFaces({
+  mentions = [],
+  told = [],
+  createdAt,
+  compact = false,
+}: {
+  mentions?: readonly CommentNotified[];
+  told?: readonly CommentNotified[];
+  /** The comment's createdAt: a queued notice reads "sending" until it is HELD_AFTER_MS old. */
+  createdAt?: string;
+  /** A tight header: the summary mark and its count, no faces. */
+  compact?: boolean;
+}) {
+  const { open, props, float } = useDetail();
+  const did = useId();
+  const seen = new Set<string>();
+  // A mention keeps its own wording for a gone agent ("not on the bus"), as its chip does.
+  const merged = [
+    ...mentions.map((m) => ({ ...m, mention: true })),
+    ...told.map((m) => ({ ...m, mention: false })),
+  ].filter((m) => !seen.has(m.key) && seen.add(m.key));
+  const shownOf = useShown(
+    createdAt,
+    merged.map((m) => m.delivery),
+  );
+  if (!merged.length) return null;
+  const all = merged.map((m) => ({ ...m, shown: shownOf(m.delivery) }));
+  // A removed notice was never sent: it is listed in the details, not counted.
+  const told2 = all.filter((m) => m.shown !== "withdrawn");
+  const rank = (d: Shown) => (isWait(d) ? 2 : d === "sending" ? 1 : 0);
+  const sorted = [...told2].sort((a, b) => rank(b.shown) - rank(a.shown));
+  const ok = told2.filter((m) => rank(m.shown) === 0).length;
+  const held = told2.filter((m) => isWait(m.shown)).length;
+  const sending = told2.length - ok - held;
+  const rows = [...sorted, ...all.filter((m) => m.shown === "withdrawn")];
+  const faces: Face[] = sorted.map((m) => ({
+    key: m.key,
+    round: false,
+    el: <PartyFace p={m} />,
+  }));
+  const label = !told2.length
+    ? "Removed before delivery"
+    : `${ok} of ${told2.length} delivered`;
+  return (
+    <span className="relative inline-flex shrink-0" data-delivery-faces="">
+      {/* #2247: the label is the name; each agent's state is the description. */}
+      <span id={did} hidden>
+        {rows.map((m) => markText(m.name, m.shown, m.mention)).join(". ")}
+      </span>
+      <button
+        type="button"
+        aria-label={label}
+        aria-describedby={did}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent p-0.5 text-muted-foreground"
+        {...props}
+      >
+        {!compact && <FaceStack faces={faces} moreClass={TXT} more />}
+        <DeliveryIcon
+          d={
+            !told2.length
+              ? "withdrawn"
+              : held
+                ? "queued"
+                : sending
+                  ? "sending"
+                  : "delivered"
+          }
+        />
+        {held + sending > 0 && (
+          <span className={TXT} data-summary="">
+            {ok} of {told2.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          data-delivery-detail=""
+          className={`${FLOAT} right-0 ${TXT}`}
+          {...float}
+        >
+          {rows.map((m) => (
+            <span
+              key={m.key}
+              data-told={m.key}
+              className="flex items-center gap-1.5"
+            >
+              <PartyFace p={m} />
+              {markText(m.name, m.shown, m.mention)}
+            </span>
+          ))}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -140,6 +476,11 @@ const showLetters = (opts: { id: string; label: string }[]) =>
     (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
   );
 
+const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+/** An ask's comment body is worth showing unless empty or just the question again. */
+export const showsAskBody = (body: string, question: string) =>
+  squash(body) !== "" && squash(body) !== squash(question);
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
@@ -149,8 +490,11 @@ export function AskBlock({
   reply,
   askQuestion,
   guest = false,
+  body,
 }: {
   artifactId: string;
+  /** The comment's own text (its steps), shown above the question; the caller renders it. */
+  body?: React.ReactNode;
   /** A guest sees the masked name and no tile (#1890). */
   guest?: boolean;
   thread: CommentThread;
@@ -170,9 +514,25 @@ export function AskBlock({
   const [changing, setChanging] = useState(false);
   const qid = useId();
   const picked = ask?.answer?.optionId;
+  const opts = useRef<HTMLUListElement>(null);
+  const [refocus, setRefocus] = useState<string | null>(null);
+  // Once the failed pick is rolled back and its option is enabled again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` changes when the rollback lands
+  useEffect(() => {
+    if (!refocus || answer.isPending) return;
+    const el = opts.current?.querySelector<HTMLButtonElement>(
+      `[data-option="${CSS.escape(refocus)}"]`,
+    );
+    if (!el || el.disabled) return;
+    el.focus({ preventScroll: true });
+    setRefocus(null);
+  }, [refocus, answer.isPending, picked]);
   // A later answer, even one made elsewhere, ends the old failure and the Change mode.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` is the trigger.
   useEffect(() => {
+    // The rollback after a failed pick (or a 409's refetch) sets it back to
+    // unanswered: that failure stays. A new answer ends the old one.
+    if (picked === undefined) return;
     setErr(null);
     setChanging(false);
   }, [picked]);
@@ -190,6 +550,7 @@ export function AskBlock({
     (o) => o.id === ask.recommended?.optionId,
   );
   const letters = showLetters(ask.options);
+  const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -233,10 +594,14 @@ export function AskBlock({
         <div
           // Amber only while it needs this reader: an ask for you with no pick yet.
           className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
-            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+            canAnswer && (!pickedOpt || sendingPick)
+              ? "ring-[var(--oa-warning)]"
+              : "ring-border"
           }`}
           data-ask=""
-          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
+          data-needs-you={
+            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
+          }
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
             {c.author.name}
@@ -253,11 +618,15 @@ export function AskBlock({
             )}{" "}
             asks{askedWho(ask.to, mine)}
           </p>
-          <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {linked(ask.question, 0)}
-          </p>
+          {body}
+          <div id={qid} className={`${TXT} font-semibold break-words`}>
+            <Markdown body={ask.question} />
+          </div>
           <ul
+            ref={opts}
             aria-labelledby={qid}
+            aria-busy={answer.isPending || undefined}
+            data-sending={answer.isPending ? "" : undefined}
             className="m-0 flex list-none flex-col gap-1 p-0"
           >
             {ask.options.map((o, i) => {
@@ -270,7 +639,7 @@ export function AskBlock({
                     size="sm"
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
-                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
+                        ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                         : ""
                     }`}
                     disabled={
@@ -282,7 +651,13 @@ export function AskBlock({
                       setErr(null);
                       answer.mutate(
                         { thread: thread.id, comment: c.id, optionId: o.id },
-                        { onError: setErr },
+                        {
+                          onError: (e) => {
+                            setErr(e);
+                            // Back to unanswered: focus returns to the option.
+                            setRefocus(o.id);
+                          },
+                        },
                       );
                     }}
                   >
@@ -298,7 +673,7 @@ export function AskBlock({
                       <b>{o.label}</b>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
-                          {o.detail}
+                          <MarkdownInline body={o.detail} links={false} />
                         </span>
                       )}
                     </span>
@@ -320,27 +695,30 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer && pickedOpt && (
-            <p className={`${TXT} font-medium`} data-ask-answer="">
-              {actor(ask.answer.by, "You")} picked{" "}
-              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-              {versionDate(ask.answer.at)}
-              {ask.closed ? " · closed" : ""}
-              {canAnswer && locked && (
-                <>
-                  {" · "}
-                  <Button
-                    size="xs"
-                    variant="link"
-                    className="h-auto p-0"
-                    onClick={() => setChanging(true)}
-                  >
-                    Change
-                  </Button>
-                </>
-              )}
-            </p>
-          )}
+          {ask.answer &&
+            pickedOpt &&
+            !isSendingAnswer(ask.answer) &&
+            !answer.isPending && (
+              <p className={`${TXT} font-medium`} data-ask-answer="">
+                {actor(ask.answer.by, "You")} picked{" "}
+                {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                {versionDate(ask.answer.at)}
+                {ask.closed ? " · closed" : ""}
+                {canAnswer && locked && (
+                  <>
+                    {" · "}
+                    <Button
+                      size="xs"
+                      variant="link"
+                      className="h-auto p-0"
+                      onClick={() => setChanging(true)}
+                    >
+                      Change
+                    </Button>
+                  </>
+                )}
+              </p>
+            )}
           {asked.length > 0 && (
             <p
               data-ask-to=""
@@ -427,8 +805,17 @@ export function mentionedKeys(
   text: string,
   agents: readonly ArtifactAgent[],
 ): string[] {
+  return mentionSpans(text, agents).map((s) => s.key);
+}
+
+/** Where each counted `@name` sits in the text (`start` at the "@", `end`
+    after the name), in the order `mentionedKeys` lists them. */
+export function mentionSpans(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { key: string; start: number; end: number }[] {
   let rest = text;
-  const keys: string[] = [];
+  const out: { key: string; start: number; end: number }[] = [];
   for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
     const re = new RegExp(
       `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
@@ -436,14 +823,46 @@ export function mentionedKeys(
     );
     const m = re.exec(rest);
     if (!m) continue;
-    keys.push(a.key);
     const at = m.index + (m[1]?.length ?? 0);
+    out.push({ key: a.key, start: at, end: at + a.name.length + 1 });
     rest =
       rest.slice(0, at) +
       " ".repeat(a.name.length + 1) +
       rest.slice(at + a.name.length + 1);
   }
-  return keys;
+  return out;
+}
+
+/** #2317: split the text into plain runs and counted mentions (the pills),
+    in text order. Joining the `text` of every segment gives the input back. */
+export function mentionSegments(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { text: string; key?: string }[] {
+  const spans = mentionSpans(text, agents).sort((x, y) => x.start - y.start);
+  const out: { text: string; key?: string }[] = [];
+  let last = 0;
+  for (const s of spans) {
+    if (s.start > last) out.push({ text: text.slice(last, s.start) });
+    out.push({ text: text.slice(s.start, s.end), key: s.key });
+    last = s.end;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+/** #2317: Backspace with the caret right after a pill: the range of the whole
+    `@name`, to select so the native delete removes it (and stays in the undo
+    stack). Null when the key should act normally. */
+export function atomicBackspace(
+  text: string,
+  start: number,
+  end: number,
+  agents: readonly ArtifactAgent[],
+): { start: number; end: number } | null {
+  if (start !== end) return null;
+  const s = mentionSpans(text, agents).find((m) => m.end === start);
+  return s ? { start: s.start, end: s.end } : null;
 }
 
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
@@ -479,21 +898,34 @@ export function removeMention(
   return atStart ? out.trimStart() : out;
 }
 
-/** A posted body with each `@name` from its mentions as a chip. Text spans only,
-    never HTML; a body with no mentions is the plain string. */
-export function MentionedText({
-  body,
-  mentions,
-  guest = false,
-}: {
+/** A posted body as the safe markdown subset (#2338), with each `@name` from its
+    mentions as a chip in its text. Text spans and elements only, never HTML. */
+export function MentionedText(props: MentionedProps) {
+  return (
+    <Markdown body={props.body} text={(s) => <>{mentioned(s, props)}</>} />
+  );
+}
+
+type MentionedProps = {
   body: string;
   mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
     key: string;
     name: string;
+    delivery?: DState;
   })[];
   guest?: boolean;
-}) {
-  if (!mentions?.length) return <>{linked(body, 0)}</>;
+  /** #2229: show each mention's delivery in its chip. */
+  marks?: boolean;
+  /** The comment's createdAt, for "sending" before a queued notice is held. */
+  createdAt?: string;
+};
+
+/** One run of plain text with its mention chips. Links were cut out by the parser. */
+function mentioned(
+  body: string,
+  { mentions, guest = false, marks, createdAt }: MentionedProps,
+): React.ReactNode[] {
+  if (!mentions?.length) return [body];
   const names = [...new Set(mentions.map((m) => m.name))]
     .sort((x, y) => y.length - x.length)
     .map(esc);
@@ -509,7 +941,21 @@ export function MentionedText({
       (x) => x.name.toLowerCase() === (m[2] ?? "").toLowerCase(),
     );
     const face = same.length === 1 ? same[0] : undefined;
-    if (at > last) out.push(...linked(body.slice(last, at), last));
+    if (at > last) out.push(body.slice(last, at));
+    if (marks && !guest && face?.delivery) {
+      out.push(
+        <MarkedChip
+          key={at}
+          text={body.slice(at, end)}
+          face={face as typeof face & { delivery: DState }}
+          p={face}
+          guest={guest}
+          createdAt={createdAt}
+        />,
+      );
+      last = end;
+      continue;
+    }
     out.push(
       <span
         key={at}
@@ -522,31 +968,9 @@ export function MentionedText({
     );
     last = end;
   }
-  if (last === 0) return <>{linked(body, 0)}</>;
-  if (last < body.length) out.push(...linked(body.slice(last), last));
-  return <>{out}</>;
-}
-
-/** Plain text with its http(s) URLs as links that open in a new tab. */
-function linked(text: string, base: number): React.ReactNode[] {
-  let at = base;
-  return linkify(text).map((p) => {
-    const key = at;
-    at += p.text.length;
-    return p.url ? (
-      <a
-        key={key}
-        href={p.text}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="break-all underline"
-      >
-        {p.text}
-      </a>
-    ) : (
-      p.text
-    );
-  });
+  if (last === 0) return [body];
+  if (last < body.length) out.push(body.slice(last));
+  return out;
 }
 
 /** Who gets notified: the mentioned agents. */

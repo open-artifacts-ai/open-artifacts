@@ -60,6 +60,7 @@ import {
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
+import { agentKey } from "../services/comment-agents.js";
 import {
   follow,
   following,
@@ -69,6 +70,7 @@ import {
   unfollow,
 } from "../services/follows.js";
 import { VERSION } from "../version.gen.js";
+import { isDefaultAgentName } from "./default-names.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
   decideLinkProposal,
@@ -343,6 +345,8 @@ const HUB_CAPS = [
   BUS_CAPS.waiting,
   BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
+  BUS_CAPS.nameChosen,
+  BUS_CAPS.ackConfirm,
 ];
 
 /**
@@ -359,6 +363,12 @@ const followGated = (ws: WebSocket): boolean => {
 const waitingQueryGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.waitingQuery);
+};
+
+/** #2198: `acked` goes only to a socket whose hello listed BUS_CAPS.ackConfirm. */
+const ackConfirmGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ackConfirm);
 };
 
 /** #1822: link_bind goes only to a socket whose hello listed BUS_CAPS.link. */
@@ -875,6 +885,23 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
 
 /** #1984: most proofs a live session holds; a newer bind evicts the oldest. */
 export const PROOFS_PER_SESSION = 4;
+
+/**
+ * #2110: how long a session closed into away (sessions{closed}: the daemon's
+ * liveness close, a daemon restart) keeps its proofs. Within it agentByProof
+ * still resolves them, to that row only, so a reconnect or a restart that
+ * re-registers the session never reads unlinked. A close for good drops them
+ * at once (dropProofs); the alarm sweeps the rest after it.
+ */
+export const PROOF_AWAY_GRACE_MS = 120_000;
+
+/** #2110: drops every proof of the agents in `ids` (a JSON array of ids). */
+function dropProofs(sql: SqlStorage, ids: string): void {
+  sql.exec(
+    "delete from agent_proofs where agent_id in (select value from json_each(?))",
+    ids,
+  );
+}
 
 /**
  * #1822: adds the hash of `agentId`'s proof to the session's proofs (at most
@@ -1933,6 +1960,17 @@ function agentUp(
   // there, read from its row before the update below rewrites it.
   if (wasLive && !sameScope)
     arms.push(holdNames(sql, JSON.stringify([id]), now));
+  // #2110: a reopen keeps the proofs only of a row that went away less than
+  // PROOF_AWAY_GRACE_MS ago; any other closed row's are dropped first; the
+  // kept ones show again as agents.proof_hash.
+  if (existing && existing.live !== 1)
+    sql.exec(
+      `delete from agent_proofs where agent_id = ? and exists (select 1 from agents
+        where id = ? and live = 0 and (away_since is null or away_since <= ?))`,
+      id,
+      id,
+      now - PROOF_AWAY_GRACE_MS,
+    );
   // A new session starts when the agent was not live (B11): its boundary is
   // the newest receipt's rowid (receipts rowids only grow: the retention
   // purge never deletes the newest), so the old session's mail is never
@@ -1961,6 +1999,14 @@ function agentUp(
       f.agent_ref,
       f.global ? 1 : 0,
       now,
+    );
+  // #2311: the harness says a user or a peer named this session. Never undone here.
+  if (f.name_chosen === true)
+    sql.exec("update agents set name_chosen = 1 where id = ?", id);
+  if (existing && existing.live !== 1)
+    sql.exec(
+      "update agents set proof_hash = (select hash from agent_proofs where agent_id = agents.id order by seq desc limit 1) where id = ?",
+      id,
     );
   // OpenBus #451: a namespace move or a global flip keeps the chosen former
   // names reserved in the old scope, where they resolve to no one.
@@ -2057,7 +2103,10 @@ function takeOver(
     oldRef,
     OWNER_ORG_ID,
   );
-  if (taken?.live !== 1) return;
+  if (!taken) return;
+  // The old session's proofs end here: the new session binds its own.
+  dropProofs(sql, JSON.stringify([taken.id]));
+  if (taken.live !== 1) return;
   sql.exec(
     `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR} where id = ?`,
     now,
@@ -2075,7 +2124,7 @@ function agentDown(
   now: number,
 ): { id: string; namespace: string; global: number } | null {
   // One statement (B11): the close is the hot path of sessions{closed}.
-  return one<{ id: string; namespace: string; global: number }>(
+  const a = one<{ id: string; namespace: string; global: number }>(
     sql,
     `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
     now,
@@ -2084,6 +2133,9 @@ function agentDown(
     ref,
     OWNER_ORG_ID,
   );
+  // #2110: agent_down is the session ending for good: no away grace.
+  if (a) dropProofs(sql, JSON.stringify([a.id]));
+  return a;
 }
 
 /**
@@ -2419,7 +2471,10 @@ function byNamespaceName(
 const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.kind,
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
-  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince`;
+  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
+  a.name_chosen as nameChosen,
+  exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
+  exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -3312,6 +3367,31 @@ function settle(
   return r.fromAgent;
 }
 
+/**
+ * Whether an ack from `machineId` for `msgId` could still settle later: its
+ * own mail, in this session, pending (or lost_body). False for a repeat, an
+ * unknown id, another machine's, or an old session's: the hub then answers
+ * the ack with the same frame as a settled one, revealing nothing (#2198).
+ */
+function canStillSettle(
+  sql: SqlStorage,
+  machineId: string,
+  msgId: string,
+): boolean {
+  return (
+    one<{ n: number }>(
+      sql,
+      `select 1 as n from receipts r join agents a on a.id = r.to_agent
+       where r.id = ? and r.org_id = ? and a.machine_id = ?
+         and (r.state = 'pending' or (r.state = 'expired' and r.reason = 'lost_body'))
+         and r.rowid > a.session_start_rowid`,
+      msgId,
+      OWNER_ORG_ID,
+      machineId,
+    ) !== null
+  );
+}
+
 // ------------------------------------------------------------------- expiry
 //
 // One alarm serves every deadline (B7). Each step touches at most BATCH rows
@@ -3419,6 +3499,18 @@ export const SEND_KEYS_MESSAGE = "Too many sends in flight";
  * that comes back after its row was purged gets a new id.
  */
 export const CLOSED_AGENT_RETAIN_MS = 24 * HOUR_MS;
+/**
+ * #2311: an away agent (live = 0) still carrying a harness default name
+ * (isDefaultAgentName) and with no work left (IDLE_INBOX_SQL, IDLE_OUTBOX_SQL)
+ * is deleted by the alarm this long after it closed, with its away
+ * reservation. Renamed and role-named agents keep CLOSED_AGENT_RETAIN_MS and
+ * the away reservation.
+ */
+export const DEFAULT_NAME_AWAY_MS = HOUR_MS;
+const DEFAULT_PURGE_KEY = "default_away_purge";
+const DEFAULT_PURGE_NEXT_KEY = "default_away_next";
+/** The gap between two default-name sweeps once one ended. */
+const DEFAULT_PURGE_GAP_MS = 10 * 60_000;
 /**
  * Final review M1: closed agents kept per machine. A new agent_up (a ref the
  * machine has no row for) at the cap first purges that machine's oldest idle
@@ -3533,12 +3625,33 @@ type NoticeRow = {
   foldN: number;
   foldRef: string | null;
   foldAcks: string | null;
+  /** #2238: the identity the notice is addressed to; null: by name only. */
+  toIdentity: string | null;
 };
 const NOTICE_COLS =
-  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks";
+  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks, to_identity as toIdentity";
 
 /** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
 const NOTICE_FOLD_MAX = 50;
+
+/** #2211: how long withdrawHeld remembers what it withdrew, for a retried call. */
+const WITHDRAW_RECORD_MS = 3_600_000;
+
+/** #2211: former names withdrawHeld reads for an agent found by identity. */
+const WITHDRAW_FORMER_MAX = 8;
+
+/**
+ * #2175: the text of a held notice whose own comment was withdrawn and a fold
+ * promoted. The promoted comment's header and ids are not stored, so a neutral
+ * line stands in; the URL (line 2) and the tier tail (last line) of the
+ * commentNoticeText format are kept when the old text has that shape.
+ */
+function promotedText(old: string, artifactId: string): string {
+  const line = `New comment on artifact ${artifactId}. Read it with list_comments.`;
+  const lines = old.split("\n");
+  if (lines.length < 3 || !/^https?:\/\//.test(lines[1] ?? "")) return line;
+  return [line, lines[1], lines[lines.length - 1]].join("\n");
+}
 
 type AckTarget = {
   a: string;
@@ -3629,7 +3742,23 @@ function wellFormedNotice(n: BusNotice): boolean {
     n.to.namespace.length > 0 &&
     typeof n.to.name === "string" &&
     n.to.name.length > 0 &&
-    (n.notBefore === undefined || Number.isFinite(n.notBefore))
+    (n.notBefore === undefined || Number.isFinite(n.notBefore)) &&
+    (n.toIdentity === undefined ||
+      (typeof n.toIdentity === "string" &&
+        n.toIdentity.length > 0 &&
+        n.toIdentity.length <= 128))
+  );
+}
+
+/** #2238: the identity the agent row holds now, or null. */
+function identityOfAgent(sql: SqlStorage, agentId: string): string | null {
+  return (
+    one<{ i: string | null }>(
+      sql,
+      "select identity_id as i from agents where org_id = ? and id = ?",
+      OWNER_ORG_ID,
+      agentId,
+    )?.i ?? null
   );
 }
 
@@ -3705,6 +3834,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from former_names)
             or exists (select 1 from notices)
             or exists (select 1 from notice_acks)
+            or exists (select 1 from notice_withdrawals)
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
@@ -4015,17 +4145,352 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
-   * #1822: the live session whose proof hashes to `hash`, or null. Reads this
+   * #2175: the notices still HELD for an agent removed from comment thread
+   * `threadId` on `artifactId` are withdrawn: every target of `commentIds`, and
+   * the thread's own coalesced rows (`asker` and `thread_reply`, whose targets
+   * are returned; a `thread_reply` from before #2059 has none and is just
+   * deleted) whatever `commentIds` lists. #2205: so is the held "ask
+   * answered" row (ckey `${artifactId}:${id}:answered`) of each id in
+   * `commentIds`, its target returned when it has one. A row left with no
+   * target is deleted, unless it still counts untargeted (legacy) folds: it
+   * then stays with a neutral line standing in (#2211). Only targets keyed to
+   * the removed agent (the roster key notifyAgent builds) go. Notices already
+   * sent (notice_acks) count as delivered and stay. Withdrawn targets are
+   * returned, never settled: the caller marks them. Rows are read at the
+   * passed address and at the agent's own: found by identity, else by
+   * namespace + name (live or away); in both, a live former name in grace
+   * counts. #2211: idempotent for about an hour: a repeat call for the same
+   * agent and thread also returns what an earlier one withdrew (for those
+   * `commentIds`, and the thread-wide rows), each target once. Worker only.
+   */
+  async withdrawHeld(a: {
+    namespace: string;
+    name: string;
+    identityId?: string;
+    artifactId: string;
+    threadId: string;
+    commentIds: string[];
+  }): Promise<{
+    withdrawn: Array<{ commentId: string; kind: string; key: string }>;
+  }> {
+    type Withdrawn = { commentId: string; kind: string; key: string };
+    let withdrawn: Withdrawn[] = [];
+    let rowsTouched = 0;
+    let fresh = 0;
+    try {
+      if (
+        typeof a?.namespace !== "string" ||
+        typeof a.name !== "string" ||
+        typeof a.artifactId !== "string" ||
+        typeof a.threadId !== "string" ||
+        a.threadId.length === 0 ||
+        !Array.isArray(a.commentIds)
+      )
+        return { withdrawn };
+      const ids = new Set(
+        a.commentIds.filter((c): c is string => typeof c === "string"),
+      );
+      const sql = this.ctx.storage.sql;
+      const now = this.#now();
+      const identityId =
+        typeof a.identityId === "string" && a.identityId.length > 0
+          ? a.identityId
+          : null;
+      const byIdentity = identityId !== null;
+      // Rows are keyed by lowercased name; the roster key hashes the name as
+      // shown, so both spellings are kept for the key check.
+      const addrs = new Map<string, [string, string]>();
+      const names: Array<{ namespace: string; name: string }> = [];
+      const add = (ns: string, name: string) => {
+        addrs.set(`${ns}\u0000${name.toLowerCase()}`, [ns, name.toLowerCase()]);
+        names.push({ namespace: ns, name });
+      };
+      add(a.namespace, a.name);
+      if (byIdentity) {
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          "select namespace, name from agents where org_id = ? and identity_id = ?",
+          OWNER_ORG_ID,
+          identityId,
+        ))
+          add(r.namespace, r.name);
+        // #2211: a notice held under a name this agent has left, in its grace
+        // (as liveFormer resolves one: live agent, still in that scope).
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          `select a.namespace as namespace, f.name as name from former_names f
+             join agents a on a.id = f.agent_id
+            where a.org_id = ? and a.identity_id = ? and a.live = 1
+              and f.org_id = a.org_id and f.expires_at > ? and f.kind not in ('held', 'away')
+              and f.global = a.global and (f.global = 1 or f.namespace = a.namespace)
+            limit ?`,
+          OWNER_ORG_ID,
+          identityId,
+          now,
+          WITHDRAW_FORMER_MAX,
+        ))
+          add(r.namespace, r.name);
+      } else {
+        const lname = a.name.toLowerCase();
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          "select namespace, name from agents where org_id = ? and namespace = ? and lower(name) = ? and live in (0, 1)",
+          OWNER_ORG_ID,
+          a.namespace,
+          lname,
+        ))
+          add(r.namespace, r.name);
+        for (const r of liveFormer(sql, lname, now, { ns: a.namespace }, 2))
+          add(r.namespace, r.name);
+      }
+      // The removed agent's roster keys (agentKey, as notifyAgent builds
+      // `to.key`): a target keyed to another agent is not this agent's. A hub
+      // not named for a member cannot derive them, and skips the check.
+      const userId = this.ctx.id.name?.startsWith("bus:")
+        ? this.ctx.id.name.slice(4)
+        : null;
+      const keys =
+        userId === null
+          ? null
+          : new Set(
+              await Promise.all(
+                names.map((n) => agentKey(a.artifactId, userId, n)),
+              ),
+            );
+      const keyOk = (k: string) => keys === null || keys.has(k);
+      const askerPrefix = `${a.artifactId}:${a.threadId}:asker:`;
+      const replyPrefix = `${a.artifactId}:${a.threadId}:thread_reply:`;
+      // A thread_reply ckey is `${replyPrefix}${to.key}:${tier}`.
+      const ownReply = (ckey: string) => {
+        if (!ckey.startsWith(replyPrefix)) return false;
+        const rest = ckey.slice(replyPrefix.length);
+        const cut = rest.lastIndexOf(":");
+        return cut > 0 && keyOk(rest.slice(0, cut));
+      };
+      // #2205: the "ask answered" row of a listed ask, and that ask's id.
+      const answeredPrefix = `${a.artifactId}:`;
+      const answeredOf = (ckey: string): string | null => {
+        if (!ckey.startsWith(answeredPrefix) || !ckey.endsWith(":answered"))
+          return null;
+        const c = ckey.slice(answeredPrefix.length, -":answered".length);
+        return ids.has(c) ? c : null;
+      };
+      type Held = {
+        toNs: string;
+        toLname: string;
+        ckey: string;
+        text: string;
+        ack: string | null;
+        foldN: number;
+        foldRef: string | null;
+        foldAcks: string | null;
+      };
+      const parse = (s: string | null): AckTarget | null => {
+        if (!s) return null;
+        try {
+          const t = JSON.parse(s) as AckTarget;
+          return typeof t?.a === "string" && typeof t.c === "string" ? t : null;
+        } catch {
+          return null;
+        }
+      };
+      const agent = byIdentity
+        ? `i:${identityId}`
+        : `n:${a.namespace}\u0000${a.name.toLowerCase()}`;
+      const found: Array<Withdrawn & { whole: number }> = [];
+      this.ctx.storage.transactionSync(() => {
+        for (const [ns, lname] of addrs.values()) {
+          const held = all<Held>(
+            sql,
+            `select ${NOTICE_COLS} from notices where to_ns = ? and to_lname = ?`,
+            ns,
+            lname,
+          );
+          for (const r of held) {
+            const del = () =>
+              sql.exec(
+                "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+                r.toNs,
+                r.toLname,
+                r.ckey,
+              );
+            const reply = ownReply(r.ckey);
+            const answered = answeredOf(r.ckey);
+            if (
+              (reply || answered !== null) &&
+              r.ack === null &&
+              r.foldAcks === null
+            ) {
+              // A thread reply queued before #2059, or an answered notice
+              // (none carries a target today): nothing to return or refund.
+              rowsTouched++;
+              del();
+              continue;
+            }
+            // The thread's asker and (since #2059, targeted) thread_reply rows
+            // go whole: every target of this agent's is returned. An answered
+            // row goes whole too, for its own ask only.
+            const wholeThread = reply || r.ckey.startsWith(askerPrefix);
+            const hit = (s: string | null) => {
+              const t = parse(s);
+              return t !== null &&
+                t.a === a.artifactId &&
+                keyOk(t.key) &&
+                (wholeThread ||
+                  (answered === null ? ids.has(t.c) : t.c === answered))
+                ? t
+                : null;
+            };
+            const whole = wholeThread ? 1 : 0;
+            const folds = parseAcks(r.foldAcks);
+            const keptFolds: string[] = [];
+            let removedFolds = 0;
+            for (const f of folds) {
+              const t = hit(f);
+              if (t) {
+                found.push({ commentId: t.c, kind: t.k, key: t.key, whole });
+                removedFolds++;
+              } else keptFolds.push(f);
+            }
+            const own = hit(r.ack);
+            if (own)
+              found.push({
+                commentId: own.c,
+                kind: own.k,
+                key: own.key,
+                whole,
+              });
+            if (!own && removedFolds === 0) continue;
+            rowsTouched++;
+            let foldN = Math.max(0, r.foldN - removedFolds);
+            let ack = r.ack;
+            let text: string | null = null;
+            if (own) {
+              const next = keptFolds.pop();
+              // A thread's own row (asker, thread_reply) or an answered row
+              // counts only folds of that thread or ask: with no targeted fold
+              // left it goes whatever fold_n says.
+              if (
+                next === undefined &&
+                (foldN === 0 || wholeThread || answered !== null)
+              ) {
+                del();
+                continue;
+              }
+              // #2211: a per-artifact row with no targeted fold left but
+              // untargeted ones still counted (they may be other threads')
+              // stays untargeted: a neutral line stands in for one of them
+              // and fold_n keeps the rest.
+              ack = next ?? null;
+              foldN = Math.max(0, foldN - 1);
+              text = promotedText(
+                r.text,
+                (next === undefined ? r.foldRef : parse(next)?.a) ??
+                  a.artifactId,
+              );
+            }
+            sql.exec(
+              `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?"}
+               where to_ns = ? and to_lname = ? and ckey = ?`,
+              ack,
+              foldN,
+              foldN > 0 ? r.foldRef : null,
+              keptFolds.length > 0 ? JSON.stringify(keptFolds) : null,
+              ...(text === null ? [] : [text]),
+              r.toNs,
+              r.toLname,
+              r.ckey,
+            );
+          }
+        }
+        // #2211: recorded in the same transaction, so a lost reply is
+        // answered by the retry; this call returns what it withdrew now, then
+        // what an earlier call recorded for these ids and the thread's rows.
+        for (const w of found)
+          sql.exec(
+            `insert into notice_withdrawals (agent, artifact_id, thread_id, comment_id, kind, key, whole, at)
+             values (?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing`,
+            agent,
+            a.artifactId,
+            a.threadId,
+            w.commentId,
+            w.kind,
+            w.key,
+            w.whole,
+            now,
+          );
+        const seen = new Set<string>();
+        const out: Withdrawn[] = [];
+        const push = (w: Withdrawn) => {
+          const k = `${w.commentId}\u0000${w.kind}\u0000${w.key}`;
+          if (seen.has(k)) return;
+          seen.add(k);
+          out.push({ commentId: w.commentId, kind: w.kind, key: w.key });
+        };
+        for (const w of found) push(w);
+        fresh = out.length;
+        for (const r of all<{
+          commentId: string;
+          kind: string;
+          key: string;
+          whole: number;
+        }>(
+          sql,
+          `select comment_id as commentId, kind, key, whole from notice_withdrawals
+            where agent = ? and artifact_id = ? and thread_id = ? and at > ?
+            order by rowid`,
+          agent,
+          a.artifactId,
+          a.threadId,
+          now - WITHDRAW_RECORD_MS,
+        ))
+          if (r.whole === 1 || ids.has(r.commentId)) push(r);
+        withdrawn = out;
+      });
+      if (found.length > 0) this.#arm(now + WITHDRAW_RECORD_MS);
+    } catch (e) {
+      logError("bus_withdraw_held_failed", e);
+      return { withdrawn: [] };
+    }
+    // #2211: outside the try: the transaction has committed, so a failing log
+    // must not hide what was withdrawn.
+    try {
+      logEvent("notice_withdrawn", {
+        rows: rowsTouched,
+        targets: fresh,
+        replayed: withdrawn.length - fresh,
+      });
+    } catch {
+      // Logging is best effort.
+    }
+    try {
+      await this.#commitArm();
+    } catch (e) {
+      logError("bus_withdraw_arm_failed", e);
+    }
+    return { withdrawn };
+  }
+
+  /**
+   * #1822: the session whose proof hashes to `hash`, or null. Reads this
    * member's own agents only (one hub per member), so a proof of another
-   * member never resolves here. Worker only.
+   * member never resolves here, and only the row the proof was bound to
+   * (agent_proofs.agent_id). #2110: that row is live, or closed into away
+   * (away_since set) less than PROOF_AWAY_GRACE_MS ago, linked (identity_id)
+   * and not of a revoked machine. Worker only.
    */
   async agentByProof(hash: string): Promise<AgentIdentity | null> {
     if (!LinkProofHashSchema.safeParse(hash).success) return null;
     return one<AgentIdentity>(
       this.ctx.storage.sql,
-      "select a.identity_id as identityId, a.namespace, a.name, a.kind from agent_proofs p join agents a on a.id = p.agent_id where p.hash = ? and a.live = 1 and a.identity_id is not null and a.org_id = ?",
+      `select a.identity_id as identityId, a.namespace, a.name, a.kind
+        from agent_proofs p join agents a on a.id = p.agent_id
+       where p.hash = ? and a.org_id = ? and a.identity_id is not null
+         and (a.live = 1 or (a.away_since is not null and a.away_since > ?))
+         and not exists (select 1 from machines m where m.id = a.machine_id and m.revoked_at is not null)`,
       hash,
       OWNER_ORG_ID,
+      this.#now() - PROOF_AWAY_GRACE_MS,
     );
   }
 
@@ -4455,6 +4920,11 @@ export class BusHub extends DurableObject<Env> {
       REVOKED_AT_KEY,
       String(now),
     );
+    // #2110: an access change ends the away grace: a closed session's proofs
+    // go now (a live one's stay, as before; it rebinds when it reconnects).
+    this.ctx.storage.sql.exec(
+      "delete from agent_proofs where agent_id in (select p.agent_id from agent_proofs p cross join agents a on a.id = p.agent_id where a.live = 0)",
+    );
     let n = 0;
     for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
       const m = machineOf(ws);
@@ -4550,6 +5020,11 @@ export class BusHub extends DurableObject<Env> {
     // #1295: agents already away hold mail too; the drain below expires it
     // `revoked`, and their reservations go with the names.
     ids.push(...releaseMachineNames(sql, id, ids, now));
+    // #2110: every proof of the machine's agents, away ones included.
+    sql.exec(
+      "delete from agent_proofs where agent_id in (select p.agent_id from agent_proofs p cross join agents a on a.id = p.agent_id where a.machine_id = ?)",
+      id,
+    );
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,
@@ -4942,7 +5417,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.noticeAck) ||
           hasCap(f, BUS_CAPS.link) ||
           hasCap(f, BUS_CAPS.waiting) ||
-          hasCap(f, BUS_CAPS.waitingQuery)
+          hasCap(f, BUS_CAPS.waitingQuery) ||
+          hasCap(f, BUS_CAPS.ackConfirm)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -5071,13 +5547,21 @@ export class BusHub extends DurableObject<Env> {
           )
         )
           return;
-        // No reply either way: anything but the recipient's own pending mail
-        // is silently ignored.
-        this.#settle(
-          machineId,
-          f.msg_id,
-          f.type === "ack" ? "delivered" : "refused",
-        );
+        // Anything but the recipient's own pending mail is ignored; only a
+        // socket with ackConfirm hears back (#2198), after the settle.
+        {
+          const settled = this.#settle(
+            machineId,
+            f.msg_id,
+            f.type === "ack" ? "delivered" : "refused",
+          );
+          if (
+            f.type === "ack" &&
+            ackConfirmGated(ws) &&
+            (settled || !canStillSettle(sql, machineId, f.msg_id))
+          )
+            sendFrame(ws, { v: 1, id: f.id, type: "acked", msg_id: f.msg_id });
+        }
         return;
       case "fetch":
         if (sender) this.#fetch(ws, f, sender, machineId);
@@ -5371,9 +5855,12 @@ export class BusHub extends DurableObject<Env> {
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
       this.#arm(t);
     sql.exec(
-      "update agents set name = ?, updated_at = ? where id = ?",
+      "update agents set name = ?, updated_at = ?, name_chosen = case ? when 2 then name_chosen else ? end where id = ?",
       name,
       now,
+      // A re-derived title (name_chosen false) leaves the flag; a default resets it.
+      f.name_kind !== "default" && f.name_chosen === false ? 2 : 0,
+      f.name_kind === "default" ? 0 : 1,
       agent.id,
     );
     commitName(sql, agent.id, assigned, at, now);
@@ -5603,6 +6090,8 @@ export class BusHub extends DurableObject<Env> {
       });
     }
     if (closed.length === 0) return false;
+    // #2110: offline for a day is long past the away grace.
+    dropProofs(sql, JSON.stringify(closed));
     // Their mail sent while offline ends with the reservation, not after it.
     this.#closeSessions(closed, true);
     notifyRoster(this.ctx, change);
@@ -5902,7 +6391,7 @@ export class BusHub extends DurableObject<Env> {
     machineId: string,
     msgId: string,
     outcome: "delivered" | "refused",
-  ): void {
+  ): boolean {
     const from = settle(
       this.ctx.storage.sql,
       machineId,
@@ -5910,9 +6399,10 @@ export class BusHub extends DurableObject<Env> {
       outcome,
       this.#now(),
     );
-    if (from === null) return;
+    if (from === null) return false;
     this.#release(msgId);
     this.#tell(msgId, from, outcome, outcome === "refused" ? "closed" : null);
+    return true;
   }
 
   /**
@@ -6208,6 +6698,132 @@ export class BusHub extends DurableObject<Env> {
         AGENT_PURGE_RETRY_KEY,
       );
     return false;
+  }
+
+  /**
+   * #2311: one bounded step of the sweep of away agents with a default name:
+   * up to BATCH closed agents older than DEFAULT_NAME_AWAY_MS, oldest first,
+   * from the persisted cursor; those with a default name and no work left
+   * are deleted with their away reservation (proofs go by trigger). A pass
+   * ends when a step finds fewer than BATCH; the next starts
+   * DEFAULT_PURGE_GAP_MS later. True while the pass has more.
+   */
+  #purgeDefaultNamed(now: number): boolean {
+    const sql = this.ctx.storage.sql;
+    const meta = (k: string) =>
+      one<{ value: string }>(
+        sql,
+        "select value from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        k,
+      )?.value;
+    const raw = meta(DEFAULT_PURGE_KEY);
+    const cur = raw === undefined ? null : parsePurgeCursor(raw);
+    if (cur === null) {
+      const next = parseDecimal(meta(DEFAULT_PURGE_NEXT_KEY) ?? "");
+      if (next !== null && next > now) return false;
+    }
+    const u = cur?.u ?? -1;
+    const r = cur?.r ?? 0;
+    const rows = all<{
+      rid: number;
+      id: string;
+      u: number;
+      name: string;
+      kind: string;
+      minted: number;
+      chosen: number;
+      holdsBusRole: number;
+      idle: number;
+    }>(
+      sql,
+      `select a.rowid as rid, a.id as id, a.updated_at as u, a.name as name, a.kind as kind, a.name_chosen as chosen,
+          exists (select 1 from roles r where r.org_id = a.org_id and r.agent_id = a.id) as holdsBusRole,
+          exists (select 1 from minted_names m where m.agent_id = a.id and m.lname = lower(a.name)) as minted,
+          (${IDLE_INBOX_SQL} and ${IDLE_OUTBOX_SQL}) as idle
+         from agents a indexed by agents_closed
+        where a.live = 0 and a.updated_at < ?
+          and (a.updated_at > ? or (a.updated_at = ? and a.rowid > ?))
+        order by a.updated_at, a.rowid limit ?`,
+      now - SEND_KEY_RETAIN_MS,
+      now - DEFAULT_NAME_AWAY_MS,
+      u,
+      u,
+      r,
+      BATCH,
+    );
+    const gone = rows.filter(
+      (x) =>
+        x.idle === 1 &&
+        x.chosen === 0 &&
+        x.holdsBusRole === 0 &&
+        isDefaultAgentName(x.name, x.kind, x.minted === 1),
+    );
+    if (gone.length > 0) {
+      const ids = JSON.stringify(gone.map((x) => x.id));
+      sql.exec(
+        "delete from former_names where kind = 'away' and agent_id in (select value from json_each(?))",
+        ids,
+      );
+      sql.exec(
+        "delete from agents where live = 0 and id in (select value from json_each(?))",
+        ids,
+      );
+      logEvent("default_named_purged", { n: gone.length });
+    }
+    const last = rows.at(-1);
+    if (rows.length >= BATCH && last) {
+      sql.exec(
+        "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+        OWNER_ORG_ID,
+        DEFAULT_PURGE_KEY,
+        JSON.stringify({ u: last.u, r: last.rid, kept: 0 }),
+      );
+      return true;
+    }
+    sql.exec(
+      "delete from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      DEFAULT_PURGE_KEY,
+    );
+    // A pass that saw no closed agent old enough needs no gap: its deadline is
+    // the oldest one's hour.
+    if (cur !== null || rows.length > 0)
+      sql.exec(
+        "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+        OWNER_ORG_ID,
+        DEFAULT_PURGE_NEXT_KEY,
+        String(now + DEFAULT_PURGE_GAP_MS),
+      );
+    return false;
+  }
+
+  /**
+   * #2311: when the default-name sweep next has work: a pass under way, else
+   * the later of the oldest closed agent's DEFAULT_NAME_AWAY_MS and the gap
+   * since the last pass (one index lookup). Null with no closed agent.
+   */
+  #defaultPurgeDeadline(): number | null {
+    const sql = this.ctx.storage.sql;
+    // One index lookup, like #purgeDeadline: never a scan of the closed
+    // history. The sweep itself decides which rows it can take (its pass gap
+    // keeps a closed agent that stays from waking the alarm in a loop).
+    const oldest = one<{ t: number | null }>(
+      sql,
+      "select min(updated_at) as t from agents indexed by agents_closed where live = 0",
+    )?.t;
+    if (oldest === null || oldest === undefined) return null;
+    const meta = (k: string) =>
+      one<{ value: string }>(
+        sql,
+        "select value from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        k,
+      )?.value;
+    if (meta(DEFAULT_PURGE_KEY) !== undefined) return this.#now() + 1;
+    const due = oldest + DEFAULT_NAME_AWAY_MS + 1;
+    const next = parseDecimal(meta(DEFAULT_PURGE_NEXT_KEY) ?? "");
+    return next === null ? due : Math.max(due, next);
   }
 
   /**
@@ -6723,10 +7339,24 @@ export class BusHub extends DurableObject<Env> {
     // notice can be in flight) reaches it by its live former name. The notice
     // is then kept at the resolved agent's address, so the flush paths find it.
     const sent = n.to.name.toLowerCase();
-    const byRole = resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
+    if (n.toIdentity !== undefined) {
+      // #2238: addressed to an identity: only the live agent at this very name
+      // that holds it. No role or former-name resolution. A mismatch (renamed,
+      // name reused, another member's id) drops the notice and touches no
+      // waiting row: the agent at the name is not who it was meant for.
+      const at = liveVisibleIn(sql, n.to.namespace, sent);
+      if (!at || identityOfAgent(sql, at.id) !== n.toIdentity) {
+        logEvent("notice_dropped", { reason: "identity" });
+        return "dropped";
+      }
+    }
+    const byRole =
+      n.toIdentity !== undefined
+        ? null
+        : resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
     const liveNamed = liveVisibleIn(sql, n.to.namespace, sent);
     const former =
-      byRole !== null || liveNamed !== null
+      byRole !== null || liveNamed !== null || n.toIdentity !== undefined
         ? []
         : liveFormer(sql, sent, now, { ns: n.to.namespace }, 2);
     const byAlias = byRole?.ok
@@ -6750,15 +7380,27 @@ export class BusHub extends DurableObject<Env> {
     // A socket that cannot decode a notice counts as offline (noticeGated).
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
-    const old = one<{
+    let old = one<{
       ack: string | null;
       foldN: number;
       foldAcks: string | null;
+      toIdentity: string | null;
     }>(
       sql,
-      "select ack, fold_n as foldN, fold_acks as foldAcks from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      "select ack, fold_n as foldN, fold_acks as foldAcks, to_identity as toIdentity from notices where to_ns = ? and to_lname = ? and ckey = ?",
       ...key,
     );
+    // #2238: a waiting notice for another identity than this address holds now
+    // is not this agent's: it settles as gone and never folds into this one.
+    if (old?.toIdentity && old.toIdentity !== identityOfAgent(sql, agent.id)) {
+      this.#settleGone([old.ack, ...parseAcks(old.foldAcks)]);
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      );
+      old = null;
+    }
+    const heldIdentity = n.toIdentity ?? old?.toIdentity ?? null;
     // #1752: the replaced notice's target and fold count move to the new one.
     const folds = old
       ? [...parseAcks(old.foldAcks), ...(old.ack ? [old.ack] : [])]
@@ -6782,6 +7424,7 @@ export class BusHub extends DurableObject<Env> {
         foldN,
         foldRef: foldN > 0 ? n.artifactId : null,
         foldAcks: folds.length > 0 ? JSON.stringify(folds) : null,
+        toIdentity: heldIdentity,
       };
       if (
         this.#sendNotice(
@@ -6827,8 +7470,8 @@ export class BusHub extends DurableObject<Env> {
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
     const foldRef = foldN > 0 ? n.artifactId : null;
     sql.exec(
-      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks, to_identity)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...key,
       n.id,
       n.text,
@@ -6839,10 +7482,30 @@ export class BusHub extends DurableObject<Env> {
       foldN,
       foldRef,
       folds.length > 0 ? JSON.stringify(folds) : null,
+      heldIdentity,
     );
     this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
     return "held";
+  }
+
+  /**
+   * #2238: a waiting notice addressed to an identity that the agent now at its
+   * address does not hold: it settles as gone and its row goes. True then.
+   */
+  #identityMismatch(r: NoticeRow, agent: AgentRow): boolean {
+    if (!r.toIdentity) return false;
+    const sql = this.ctx.storage.sql;
+    if (identityOfAgent(sql, agent.id) === r.toIdentity) return false;
+    this.#settleGone([r.ack, ...parseAcks(r.foldAcks)]);
+    sql.exec(
+      "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      r.toNs,
+      r.toLname,
+      r.ckey,
+    );
+    logEvent("notice_dropped", { reason: "identity" });
+    return true;
   }
 
   /**
@@ -6869,6 +7532,7 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      if (this.#identityMismatch(r, agent)) continue;
       if (!this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r)))
         break;
       sql.exec(
@@ -6937,7 +7601,14 @@ export class BusHub extends DurableObject<Env> {
       this.#settleAckRow(r.ack);
       sql.exec("delete from notice_acks where rowid = ?", r.rid);
     }
-    const gone = expired.length >= BATCH;
+    // #2211: withdrawal records past their hour go, BATCH per pass.
+    const records = all<{ rid: number }>(
+      sql,
+      "delete from notice_withdrawals where rowid in (select rowid from notice_withdrawals indexed by notice_withdrawals_at where at <= ? limit ?) returning rowid as rid",
+      now - WITHDRAW_RECORD_MS,
+      BATCH,
+    ).length;
+    const gone = expired.length >= BATCH || records >= BATCH;
     const due = all<NoticeRow>(
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
@@ -6953,6 +7624,7 @@ export class BusHub extends DurableObject<Env> {
         break;
       }
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
+      if (agent && this.#identityMismatch(r, agent)) continue;
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
       if (
@@ -7134,9 +7806,21 @@ export class BusHub extends DurableObject<Env> {
     // R393b: former names past their grace, rename windows that have ended.
     if (purge(sql, FORMER_PURGE_SQL, now)) more = true;
     if (purge(sql, RENAME_RL_PURGE_SQL, now - HOUR_MS)) more = true;
+    // #2110: proofs of rows closed past the away grace.
+    if (
+      all(
+        sql,
+        `delete from agent_proofs where rowid in (select p.rowid from agent_proofs p cross join agents a on a.id = p.agent_id
+          where a.live = 0 and (a.away_since is null or a.away_since <= ?) limit ?) returning rowid`,
+        now - PROOF_AWAY_GRACE_MS,
+        BATCH,
+      ).length >= BATCH
+    )
+      more = true;
     // M1: closed agents idle past CLOSED_AGENT_RETAIN_MS (after the sweeps
     // above, so work they just cleared counts).
     if (this.#purgeClosedAgents(now)) more = true;
+    if (this.#purgeDefaultNamed(now)) more = true;
 
     const want = this.#armWant;
     this.#armWant = null;
@@ -7179,11 +7863,13 @@ export class BusHub extends DurableObject<Env> {
         SEND_KEY_RETAIN_MS + 1,
       ),
       this.#purgeDeadline(),
+      this.#defaultPurgeDeadline(),
       nextStatusDue(sql),
       min("select min(expires_at) as t from former_names"),
       min("select min(not_before) as t from notices where parked = 0"),
       min("select min(expires_at) as t from notices"),
       min("select min(expires_at) as t from notice_acks"),
+      min("select min(at) as t from notice_withdrawals", WITHDRAW_RECORD_MS),
       min("select min(at) as t from rename_rl", HOUR_MS),
       this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);

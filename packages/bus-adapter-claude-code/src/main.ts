@@ -12,22 +12,26 @@ import {
   busHome,
   claudeProcStartOf,
   claudeSessionsDir,
-  findSession,
   hasClaudeAncestor,
+  lookupSession,
   sessionHello,
 } from "./session.ts";
 import { daemonSocketPath, socketDirProblem } from "./socket-path.ts";
 import { callTool, TOOLS } from "./tools.ts";
 
 const SESSIONS = claudeSessionsDir();
-const HOME = busHome();
-const SOCKET = daemonSocketPath(HOME);
 
-/** One connection per tool call: the daemon attests the session behind this process. */
-const connect = () =>
-  connectOutcome<DaemonClient>({
+/**
+ * One connection per tool call: the daemon attests the session behind this
+ * process. Home and socket path are resolved per call, never cached, so a
+ * daemon that restarted (even elsewhere) is found (#2364).
+ */
+const connect = () => {
+  const HOME = busHome();
+  const SOCKET = daemonSocketPath(HOME);
+  return connectOutcome<DaemonClient>({
     findSession: () =>
-      findSession(process.pid, {
+      lookupSession(process.pid, {
         sessionsDir: SESSIONS,
         ancestors: ancestorChain,
         procStart: claudeProcStartOf,
@@ -41,6 +45,7 @@ const connect = () =>
         hello: sessionHello(session, process.pid, process.cwd()),
       }),
   });
+};
 
 const server = new Server(
   { name: "oa_bus", version: "0.1.0" },

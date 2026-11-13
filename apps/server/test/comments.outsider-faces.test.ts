@@ -175,6 +175,28 @@ describe("outsiders get no face fields (REST)", () => {
     if (_n !== "restricted") expect(JSON.stringify(l)).not.toContain("Runner");
   });
 
+  it.each([
+    ["signed out", () => null],
+    ["guest role", () => guestV],
+    ["restricted", () => restrictedV],
+  ])("%s: a mention carries no delivery state (#2004)", async (_n, who) => {
+    const l = await rest(who());
+    const ms = l.threads.flatMap((t) =>
+      t.comments.flatMap((c) => c.mentions ?? []),
+    );
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m).not.toHaveProperty("delivery");
+  });
+
+  it("a member's mention keeps its delivery state", async () => {
+    const l = await rest(memberV);
+    const ms = l.threads.flatMap((t) =>
+      t.comments.flatMap((c) => c.mentions ?? []),
+    );
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m.delivery).toBeDefined();
+  });
+
   it("a member keeps the face on authors, mention and ask.to", async () => {
     const all = faces(await rest(memberV)).filter(
       (a) => a.kind !== "user" && a.kind !== "guest",
@@ -239,5 +261,47 @@ describe("MCP list_comments", () => {
     const all = faces(r.structuredContent as CommentList);
     expect(all.length).toBeGreaterThanOrEqual(3);
     for (const a of all) for (const k of FACE) expect(a).not.toHaveProperty(k);
+  });
+
+  // #2247 (from #2243's review): REST drops a mention's delivery for the
+  // capped; the MCP list is the other path, and had no test.
+  const mentionsOf = (l: CommentList) =>
+    l.threads.flatMap((t) => t.comments.flatMap((c) => c.mentions ?? []));
+
+  it("a member's mention keeps its delivery state over MCP", async () => {
+    const { token } = await createPat(env, memberV.userId, "ofd");
+    const client = await connect(token);
+    clients.push(client);
+    const r = await tool(client, "list_comments", { id });
+    expect(r.isError, textOf(r)).toBeFalsy();
+    const ms = mentionsOf(r.structuredContent as CommentList);
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m.delivery).toBeDefined();
+  });
+
+  it("a client capped after it connected gets mentions without delivery", async () => {
+    const u = await mk("of-late-d");
+    const { token } = await createPat(env, u.userId, "late-d");
+    const client = await connect(token);
+    clients.push(client);
+    const before = await tool(client, "list_comments", { id });
+    expect(before.isError, textOf(before)).toBeFalsy();
+    for (const m of mentionsOf(before.structuredContent as CommentList))
+      expect(m.delivery).toBeDefined();
+    await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(u.userId)
+      .run();
+    const capped = await tool(client, "list_comments", { id }).catch(
+      (e: unknown) => e,
+    );
+    if (capped instanceof Error) {
+      expect(capped.message).toContain("Only members can connect agents");
+      return;
+    }
+    const r = capped as Awaited<ReturnType<typeof tool>>;
+    expect(r.isError, textOf(r)).toBeFalsy();
+    const ms = mentionsOf(r.structuredContent as CommentList);
+    expect(ms.length).toBeGreaterThan(0);
+    for (const m of ms) expect(m).not.toHaveProperty("delivery");
   });
 });

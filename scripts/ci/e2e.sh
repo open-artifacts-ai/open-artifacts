@@ -44,6 +44,9 @@ case "${1:-}" in
   mock | real)
     suite=$1
     args=()
+    # The mock suite's pin-bubbles spec serves the built runtime in a stand-in
+    # frame (#2019): build it first, as the dist integration tests do.
+    [ "$suite" = mock ] && pnpm --filter @oa/shared --filter @oa/runtime build
     [ "$suite" = real ] && args+=(-c playwright.real.config.ts)
     if [ -n "${E2E_SHARD:-}" ]; then
       # One file per shard and suite, so the merge sees every shard.
