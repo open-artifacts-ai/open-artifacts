@@ -163,23 +163,27 @@ describe("GET /llms.txt", () => {
     expect(await guide(E({ HOSTED: "1", BUS_HUB: undefined }))).toBe(self);
   });
 
-  it("bus on: an Agent bus section between Verify and Troubleshoot, with the install command and docs link", async () => {
+  it("bus on: a numbered Setup steps section first, with connect then the bus install as one sequence", async () => {
     const txt = await guide(E({ HOSTED: undefined }));
     expect([...sections(txt).keys()]).toEqual([
+      "Setup steps",
       "Connect",
       "Restart",
       "Verify",
-      "Agent bus",
       "Troubleshoot",
     ]);
-    const bus = sections(txt).get("Agent bus") ?? "";
-    expect(bus).toContain(
+    const steps = sections(txt).get("Setup steps") ?? "";
+    expect(steps).toMatch(/1\. \*\*Connect\.\*\*/);
+    expect(steps).toMatch(/2\. \*\*Install the bus\.\*\*/);
+    expect(steps).toContain(
       `npx @open-artifacts/bus install --instance ${skillOrigin(HOST)}`,
     );
-    expect(bus).toContain("approves this machine once, in their browser");
-    expect(bus).toContain("Offer it to the person. If they say yes, run:");
-    expect(bus).not.toContain("Install it on this machine");
-    expect(bus).toContain("https://open-artifacts.com/docs/agent-bus/");
+    expect(steps).toContain("They approve this machine once, in their browser");
+    expect(steps).toContain("QUESTION FOR YOUR USER");
+    expect(steps).toMatch(/5\. \*\*Publish a first page\*\*/);
+    expect(steps).not.toMatch(/optional|offer/i);
+    expect(steps).not.toContain("\u2014");
+    expect(steps).toContain("https://open-artifacts.com/docs/agent-bus/");
   });
 
   it("bus off (no hub, or hosted without the bus feature): no Agent bus section", async () => {
@@ -188,7 +192,7 @@ describe("GET /llms.txt", () => {
       E({ HOSTED: "1", FEATURES: "" }),
     ]) {
       const txt = await guide(e);
-      expect(txt).not.toContain("Agent bus");
+      expect(txt).not.toContain("Setup steps");
       expect(txt).not.toContain("@open-artifacts/bus");
     }
   });

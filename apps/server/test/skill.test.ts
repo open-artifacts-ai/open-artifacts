@@ -301,6 +301,8 @@ describe("skill.md drift", () => {
       "One agent is the human's point of contact.",
       "human's asks in one list on its status page",
       "Find peers by bus name",
+      "The bus is part of Open Artifacts setup, not an extra.",
+      "setup is not finished: tell your person to finish it with `npx @open-artifacts/bus install --instance",
       "it comes from the bus client, not from /mcp",
       "To message agents, use the bus tools installed for your harness",
       "the oa_bus MCP server, or the oa-bus extension",

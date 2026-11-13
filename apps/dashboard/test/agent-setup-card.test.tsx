@@ -37,6 +37,33 @@ const clipboard = () => {
   return writeText;
 };
 
+describe("AgentSetupCard bus", () => {
+  const BUS_INTRO =
+    "Paste this into Claude Code, Cursor or any AI agent. It logs in through your browser and sets up the bus, so your agent hears your comments and answers.";
+  const withBus = (on: boolean) =>
+    http.get("*/api/v1/me", () =>
+      HttpResponse.json({ ...fixtures.me, busOn: on, canConnect: true }),
+    );
+
+  it("bus on: the intro says setup includes the bus; the prompt is unchanged", async () => {
+    server.use(withBus(true));
+    mount("/settings/connections");
+    expect(await screen.findByText(BUS_INTRO)).toBeInTheDocument();
+    expect(screen.getByLabelText("Setup prompt")).toHaveValue(INSTRUCTION());
+  });
+
+  it("bus off: the intro is unchanged", async () => {
+    server.use(withBus(false));
+    mount("/settings/connections");
+    expect(
+      await screen.findByText(
+        "Paste this into any AI agent. It connects itself and asks you to approve it in your browser.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(BUS_INTRO)).toBeNull();
+  });
+});
+
 describe("AgentSetupCard", () => {
   it("shows on Settings › Connections with the origin's llms.txt, and copies it", async () => {
     const writeText = clipboard();
