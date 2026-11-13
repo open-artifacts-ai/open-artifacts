@@ -180,8 +180,18 @@ export function effectivePlan(
   envTier: string | undefined,
   now: number,
 ): EffectivePlan {
-  const answer = last ?? {
-    tier: parseTier(envTier) ?? ("solo" as const),
+  // Billing's version 0 is "no row for this install" (solo, active): no
+  // information. It must not lower an install provisioned Team or Business:
+  // the plan follows TIER, as with no answer. `last` still counts for the
+  // 7-day clock below (billing was reachable).
+  const provisioned = parseTier(envTier);
+  const noRow =
+    last !== null &&
+    last.version === 0 &&
+    (provisioned === "team" || provisioned === "business");
+  const used = noRow ? null : last;
+  const answer = used ?? {
+    tier: provisioned ?? ("solo" as const),
     status: "active" as const,
     trialEndsAt: null,
     graceUntil: null,
@@ -191,7 +201,7 @@ export function effectivePlan(
   // passed is Solo now, with its status read as Solo's (lapsed or past due is
   // the unpaid view-only lock), until billing's next answer replaces it.
   const trialOver =
-    last !== null &&
+    used !== null &&
     answer.tier === "trial" &&
     answer.trialEndsAt !== null &&
     now > answer.trialEndsAt;
@@ -253,7 +263,7 @@ export function effectivePlan(
       // Grace runs until graceUntil; billing sets it with past_due. Fail
       // closed on a missing date: the grace is 7 days from the answer (past_due
       // only ever comes from a billing answer).
-      if (now > (base.graceUntil ?? (last?.asOf ?? now) + PLAN_STALE_MS))
+      if (now > (base.graceUntil ?? (used?.asOf ?? now) + PLAN_STALE_MS))
         return unpaidSolo
           ? out("solo_unpaid", "viewOnly")
           : out("payment_failed", "readOnly");
@@ -263,7 +273,7 @@ export function effectivePlan(
   // closed). Not the provisioned TIER fallback (`last` null): a trial
   // install provisioned before billing answered has no dates at all.
   // (A passed trial date is Solo, above.)
-  if (base.tier === "trial" && last !== null && base.trialEndsAt === null)
+  if (base.tier === "trial" && used !== null && base.trialEndsAt === null)
     return out("trial_ended", "readOnly");
   // free is the pre-Solo tier: the solo lock, as before Solo existed.
   if (base.tier === "free" || base.tier === "solo") return out("solo", "solo");
