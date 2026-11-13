@@ -365,7 +365,7 @@ render(true);
 /* ---- pause the animations when their section is off screen ---- */
 if ("IntersectionObserver" in window) {
   const seen = new Set<Element>();
-  const targets = ["header.hero", ".sc", "#story", "#pl"]
+  const targets = ["header.hero", ".sc", "#story", "#pl", "#bus"]
     .map((s) => lp.querySelector(s))
     .filter((e): e is Element => !!e);
   const io = new IntersectionObserver((es) => {
@@ -376,4 +376,24 @@ if ("IntersectionObserver" in window) {
     else lp.setAttribute("data-offscreen", "");
   });
   for (const t of targets) io.observe(t);
+}
+
+/* ---- bus: the 12s loop starts when the section scrolls into view and
+   restarts each time. Reduced motion: CSS shows the final state, no play. ---- */
+const bus = document.getElementById("bus");
+if (bus && !reduce && "IntersectionObserver" in window) {
+  bus.setAttribute("data-io", "");
+  new IntersectionObserver(
+    (es) => {
+      for (const e of es) {
+        if (e.isIntersecting) {
+          bus.classList.add("rst");
+          void bus.offsetWidth;
+          bus.classList.remove("rst");
+          bus.setAttribute("data-play", "");
+        } else bus.removeAttribute("data-play");
+      }
+    },
+    { threshold: 0.35 },
+  ).observe(bus);
 }
