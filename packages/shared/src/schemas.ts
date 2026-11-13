@@ -1026,6 +1026,16 @@ export const OnboardingSchema = z.strictObject({
     .optional(),
   /** The caller has posted at least one comment. */
   commented: z.boolean().optional(),
+  /** #2478 (all optional; absent on older servers). The caller has a bus agent with a chosen name or a role. */
+  agentNamed: z.boolean().optional(),
+  /** The name of that agent, read live and never stored; null when none or the bus can't be read. */
+  agentName: z.string().max(200).nullable().optional(),
+  /** One of the caller's own agents replied in a thread after the caller's comment that mentioned it. */
+  mentionReplied: z.boolean().optional(),
+  /** The caller mentioned their agent, 2 minutes passed and no reply came. */
+  mentionStalled: z.boolean().optional(),
+  /** The caller typed an answer on an ask one of their own agents posted. */
+  askAnswered: z.boolean().optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
 

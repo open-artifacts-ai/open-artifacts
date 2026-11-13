@@ -58,11 +58,11 @@ const trialLine = /30-day Team trial/;
 const heading = () => screen.findByRole("heading", { name: "Get started" });
 
 describe("Get started checklist", () => {
-  it("shows the three steps to the owner with the setup prompt", async () => {
+  it("shows the steps to the owner with the setup prompt", async () => {
     server.use(...none(), ...noTokens());
     mount("/");
     await heading();
-    expect(screen.getByText("0 of 3")).toBeInTheDocument();
+    expect(screen.getByText("0 of 5")).toBeInTheDocument();
     expect(screen.getByText("Connect your agent")).toBeInTheDocument();
     expect(screen.getByLabelText("Setup prompt")).toHaveValue(
       `Set up Open Artifacts for me: follow ${location.origin}/llms.txt`,
@@ -80,8 +80,8 @@ describe("Get started checklist", () => {
     );
     mount("/");
     await heading();
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
-    expect(screen.getByText("Your agent is connected.")).toBeInTheDocument();
+    expect(screen.getByText("1 of 5")).toBeInTheDocument();
+    expect(screen.getByText("Agent connected")).toBeInTheDocument();
     expect(
       screen.getByText("Waiting for the first artifact…"),
     ).toBeInTheDocument();
@@ -109,9 +109,9 @@ describe("Get started checklist", () => {
     );
     mount("/");
     await heading();
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("1 of 5")).toBeInTheDocument();
     expect(
-      screen.getByText("Your first artifact is in your Library."),
+      screen.getByText("Published: your first artifact"),
     ).toBeInTheDocument();
   });
 
@@ -132,7 +132,7 @@ describe("Get started checklist", () => {
     mount("/");
     await heading();
     expect(screen.getByText("Publish your first artifact")).toBeInTheDocument();
-    expect(screen.getByText("0 of 3")).toBeInTheDocument();
+    expect(screen.getByText("0 of 5")).toBeInTheDocument();
   });
 
   it("an older server still counts an own artifact that is not the Welcome", async () => {
@@ -153,7 +153,7 @@ describe("Get started checklist", () => {
     );
     mount("/");
     await heading();
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("1 of 5")).toBeInTheDocument();
   });
 
   it("firstArtifact decides: hasArtifacts counts Welcome, so it does not tick", async () => {
@@ -172,7 +172,7 @@ describe("Get started checklist", () => {
     );
     mount("/");
     await heading();
-    expect(screen.getByText("0 of 3")).toBeInTheDocument();
+    expect(screen.getByText("0 of 5")).toBeInTheDocument();
   });
 
   it("ticks from firstArtifact when the server gives one", async () => {
@@ -191,7 +191,7 @@ describe("Get started checklist", () => {
     );
     mount("/");
     await heading();
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("1 of 5")).toBeInTheDocument();
   });
 
   it("is not shown to invited members", async () => {
@@ -205,6 +205,104 @@ describe("Get started checklist", () => {
     expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
   });
 
+  describe("the five steps (#2478)", () => {
+    const withOnboarding = (o: Record<string, unknown>) =>
+      server.use(
+        http.get("*/api/v1/artifacts", () => page([], null)),
+        ...noTokens(),
+        http.get("*/api/v1/onboarding", () =>
+          HttpResponse.json({
+            dismissed: false,
+            completed: false,
+            firstArtifact: null,
+            ...o,
+          }),
+        ),
+      );
+
+    it("lists the five in order, then the optional invite, with Product's strings", async () => {
+      withOnboarding({});
+      mount("/");
+      await heading();
+      const titles = [...document.querySelectorAll("ol > li")].map((li) =>
+        (li.firstElementChild?.nextElementSibling?.textContent ?? "").replace(
+          " (current step)",
+          "",
+        ),
+      );
+      expect(titles).toEqual([
+        "Connect your agent",
+        "Name your agent",
+        "Publish your first artifact",
+        "Mention your agent",
+        "Answer your agent's ask",
+        "Invite your team (optional)",
+      ]);
+      expect(screen.getByText("0 of 5")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Your agent will suggest a name. It's what you'll type after @ in comments.",
+        ),
+      ).toBeInTheDocument();
+      // Before a name exists, {name} reads "your agent".
+      expect(
+        screen.getByText(
+          "Open your first page, type @ in a comment and pick your agent. It replies in the thread.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Your first page has a question from your agent. Pick an option.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Leave a comment/)).toBeNull();
+      expect(screen.queryByText(/No reply yet/)).toBeNull();
+    });
+
+    it("ticks each new step from the server, with the agent's name", async () => {
+      withOnboarding({
+        agentNamed: true,
+        agentName: "Atlas",
+        firstArtifact: { id: "Cd5fGhJkLm6nPqRs", title: "Q4 report" },
+        hasArtifacts: true,
+      });
+      mount("/");
+      await heading();
+      expect(screen.getByText("2 of 5")).toBeInTheDocument();
+      expect(screen.getByText("Named: Atlas")).toBeInTheDocument();
+      expect(screen.getByText("Published: Q4 report")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Open your first page, type @ in a comment and pick Atlas. It replies in the thread.",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("shows 4 done and 5 done", async () => {
+      withOnboarding({
+        agentNamed: true,
+        agentName: "Atlas",
+        mentionReplied: true,
+        askAnswered: true,
+      });
+      mount("/");
+      await heading();
+      expect(screen.getByText("Atlas replied")).toBeInTheDocument();
+      expect(screen.getByText("Answered")).toBeInTheDocument();
+    });
+
+    it("says the stalled line on step 4 only while it is stalled", async () => {
+      withOnboarding({ agentNamed: true, mentionStalled: true });
+      mount("/");
+      await heading();
+      expect(
+        screen.getByText(
+          'No reply yet. Your agent may not be listening. Ask it: "Check the bus."',
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("ticks the invite once someone else is a member", async () => {
     server.use(...none(), ...noTokens());
     server.use(
@@ -212,7 +310,7 @@ describe("Get started checklist", () => {
     );
     mount("/");
     await heading();
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("0 of 5")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Invite people" })).toBeNull();
   });
 
@@ -325,8 +423,8 @@ describe("Get started checklist", () => {
     );
     mount("/");
     await heading();
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
-    expect(screen.getByText("Your agent is connected.")).toBeInTheDocument();
+    expect(screen.getByText("1 of 5")).toBeInTheDocument();
+    expect(screen.getByText("Agent connected")).toBeInTheDocument();
   });
 
   it("stays gone once finished, even when a step later undoes", async () => {

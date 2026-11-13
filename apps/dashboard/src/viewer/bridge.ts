@@ -443,6 +443,11 @@ export function createBridge(opts: BridgeOptions) {
           agentConnected: o.agentConnected === true,
           firstArtifact: o.firstArtifact ?? null,
           commented: o.commented === true,
+          agentNamed: o.agentNamed === true,
+          agentName: o.agentName ?? null,
+          mentionReplied: o.mentionReplied === true,
+          mentionStalled: o.mentionStalled === true,
+          askAnswered: o.askAnswered === true,
         };
       }
       case "viewer.anonId":

@@ -115,7 +115,12 @@ export function GetStarted({
   );
   const ready =
     loaded && tokens.isSuccess && clients.isSuccess && members.isSuccess;
-  const done = [connected, hasArtifacts, invited];
+  // #2478: the five steps, then the optional invite.
+  const named = o?.agentNamed === true;
+  const replied = o?.mentionReplied === true;
+  const answered = o?.askAnswered === true;
+  const nm = o?.agentName || "your agent";
+  const done = [connected, named, hasArtifacts, replied, answered, invited];
   const all = ready && done.every(Boolean);
 
   // Every step done: the server keeps that, so removing a member or a token
@@ -139,18 +144,27 @@ export function GetStarted({
         void qc.invalidateQueries({ queryKey: qk.oauthClients });
       }
       if (!invited) void qc.invalidateQueries({ queryKey: qk.members });
-      if (!hasArtifacts) {
+      if (!hasArtifacts) void qc.invalidateQueries({ queryKey: ["artifacts"] });
+      if (!(hasArtifacts && named && replied && answered))
         void qc.invalidateQueries({ queryKey: qk.onboarding });
-        void qc.invalidateQueries({ queryKey: ["artifacts"] });
-      }
     }, BUS_POLL_MS);
     return () => clearInterval(t);
-  }, [live, all, qc, connected, invited, hasArtifacts]);
+  }, [
+    live,
+    all,
+    qc,
+    connected,
+    invited,
+    hasArtifacts,
+    named,
+    replied,
+    answered,
+  ]);
 
   if (!live || !ready || all || !me?.instance.mcpUrl) return null;
 
   const hide = () => save({ dismissed: true });
-  const count = done.filter(Boolean).length;
+  const count = done.slice(0, 5).filter(Boolean).length;
   const cur = done.indexOf(false);
   const st = (i: number) => (done[i] ? "done" : cur === i ? "cur" : "todo");
   // The trial line is true only when the server would start the Business
@@ -177,7 +191,7 @@ export function GetStarted({
           Get started
         </h2>
         <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
-          {count} of 3
+          {count} of 5
         </span>
         <Button
           variant="ghost"
@@ -191,7 +205,7 @@ export function GetStarted({
       <ol className="m-0 list-none p-0">
         <Step n={1} state={st(0)} title="Connect your agent">
           {connected ? (
-            <p className="m-0">Your agent is connected.</p>
+            <p className="m-0">Agent connected</p>
           ) : (
             <>
               <AgentSetupBody intro="Paste this into Claude Code, Cursor or any AI agent. It logs in through your browser." />
@@ -199,22 +213,60 @@ export function GetStarted({
             </>
           )}
         </Step>
-        <Step n={2} state={st(1)} title="Publish your first artifact">
+        <Step n={2} state={st(1)} title="Name your agent">
+          {named ? (
+            <p className="m-0">Named: {nm}</p>
+          ) : (
+            <p className="m-0">
+              Your agent will suggest a name. It's what you'll type after @ in
+              comments.
+            </p>
+          )}
+        </Step>
+        <Step n={3} state={st(2)} title="Publish your first artifact">
           {hasArtifacts ? (
-            <p className="m-0">Your first artifact is in your Library.</p>
+            <p className="m-0">
+              Published: {o?.firstArtifact?.title ?? "your first artifact"}
+            </p>
           ) : (
             <>
               <p className="m-0">
-                Ask it something like "summarize this repo as a page and publish
-                it".
+                Ask your agent: "Publish a page about what you're working on."
               </p>
               {connected && <Waiting>Waiting for the first artifact…</Waiting>}
             </>
           )}
         </Step>
+        <Step n={4} state={st(3)} title="Mention your agent">
+          {replied ? (
+            <p className="m-0">{nm} replied</p>
+          ) : (
+            <>
+              <p className="m-0">
+                Open your first page, type @ in a comment and pick {nm}. It
+                replies in the thread.
+              </p>
+              {o?.mentionStalled && (
+                <Waiting>
+                  No reply yet. Your agent may not be listening. Ask it: "Check
+                  the bus."
+                </Waiting>
+              )}
+            </>
+          )}
+        </Step>
+        <Step n={5} state={st(4)} title="Answer your agent's ask">
+          {answered ? (
+            <p className="m-0">Answered</p>
+          ) : (
+            <p className="m-0">
+              Your first page has a question from {nm}. Pick an option.
+            </p>
+          )}
+        </Step>
         <Step
-          n={3}
-          state={st(2)}
+          n={6}
+          state={st(5)}
           title={
             <>
               Invite your team{" "}
@@ -230,7 +282,7 @@ export function GetStarted({
               {keepsSolo && " Your Solo plan stays as it is."}
             </p>
           )}
-          {!invited && cur === 2 && (
+          {!invited && cur === 5 && (
             <div className="flex gap-[var(--oa-space-2)]">
               <Button
                 asChild

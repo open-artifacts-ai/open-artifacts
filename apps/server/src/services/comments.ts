@@ -20,7 +20,7 @@ import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logError, logInfo } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import {
   bodyOk,
   type NewExtras,
@@ -31,6 +31,7 @@ import {
   type StoredIdentity,
   type StoredParticipant,
   type StoredParty,
+  type StoredTarget,
   type StoredThread,
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
@@ -84,6 +85,11 @@ import {
   notifyCommented,
 } from "./follows.js";
 import { noteCommented } from "./onboarding.js";
+import {
+  noteAskAnswered,
+  noteMentioned,
+  noteMentionReplied,
+} from "./onboarding-firsts.js";
 import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
@@ -1785,6 +1791,18 @@ export async function answerAsk(
     }),
   );
   await indexAnswered(env, artifactId, commentId);
+  // #2478: the owner's own typed answer on an ask one of their own agents posted.
+  if (
+    !unchanged &&
+    who.kind === "user" &&
+    c.author.kind === "user" &&
+    c.author.ref === who.id &&
+    c.author.agent &&
+    c.ask?.answer &&
+    isTyped(c.ask.answer.by) &&
+    c.ask.answer.by.ref === who.id
+  )
+    await noteAskAnswered(env, who.id);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -2046,6 +2064,8 @@ export async function addThread(
   // Only the person's own comment counts, never one an agent posted for them.
   if (args[2].kind === "user" && !args[2].agent)
     await noteCommented(args[0], args[2].id);
+  if (args[4].mentions?.length)
+    await noteMentionActivity(args[0], args[1].id, t.id, args[2]);
   return t;
 }
 
@@ -2056,5 +2076,50 @@ export async function addReply(
   const c = await addReplyInner(...args);
   if (args[3].kind === "user" && !args[3].agent)
     await noteCommented(args[0], args[3].id);
+  if (args[3].kind === "user" && (args[3].agent || args[6]?.mentions?.length))
+    await noteMentionActivity(args[0], args[1], args[2], args[3]);
   return c;
+}
+
+/**
+ * #2478: after a comment lands, the two first-times that live in a thread.
+ * A person's comment that mentioned one of their own agents starts the
+ * "no reply yet" clock; one of the owner's own agents (a verified bus
+ * identity, #1822) commenting in a thread after the owner's comment that
+ * mentioned that exact agent is the step-4 reply. Never throws.
+ */
+async function noteMentionActivity(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  who: CommentWho,
+): Promise<void> {
+  if (who.kind !== "user") return;
+  try {
+    const { comments } = await call(() =>
+      stub(env, artifactId).commentsGet(threadId),
+    );
+    const own = (t: StoredTarget): boolean => t.owner === who.id;
+    if (!who.agent) {
+      if (comments.at(-1)?.mentions?.some(own))
+        await noteMentioned(env, who.id);
+      return;
+    }
+    const me = who.agent.identity?.identityId;
+    if (!me) return;
+    const asked = comments
+      .slice(0, -1)
+      .some(
+        (c) =>
+          c.author.kind === "user" &&
+          c.author.ref === who.id &&
+          !c.author.agent &&
+          c.mentions?.some((m) => own(m) && m.identity?.identityId === me),
+      );
+    if (asked) await noteMentionReplied(env, who.id);
+  } catch (e) {
+    logWarn("onboarding_mention_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
 }
