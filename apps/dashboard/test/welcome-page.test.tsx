@@ -111,7 +111,7 @@ describe("Welcome page", () => {
   });
 
   it("Copy copies the shown text and says Copied", async () => {
-    const writeText = vi.fn(async () => {});
+    const writeText = vi.fn(async (_t: string) => {});
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
       configurable: true,
@@ -129,7 +129,7 @@ describe("Welcome page", () => {
   });
 
   it("tabs switch the panel and Copy follows it", async () => {
-    const writeText = vi.fn(async () => {});
+    const writeText = vi.fn(async (_t: string) => {});
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
       configurable: true,
