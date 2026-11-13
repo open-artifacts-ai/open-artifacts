@@ -76,7 +76,7 @@ export const WORDS = {
       : `${money(yearly)} billed yearly`,
   selfHost: "Open source, MIT",
   waitlist:
-    "Hosted plans are invite-only during the beta. Join the waitlist and we'll email you when your instance is ready.",
+    "Hosted plans are invite-only during the beta. Join the waitlist and we'll email you when it's your turn.",
   note: "Solo is per account; Team and Business are per creator. A creator is someone who publishes or edits; viewers and commenters are free. Solo is free for 30 days, no card. Team starts with a 30-day trial when you invite someone.",
 };
 

@@ -26,7 +26,7 @@ describe("pricing", () => {
     expect(head).toMatch(/href="#self-host">Self-host it<\/a>/);
     // Beta: hosted plans are invite-only (Product's waitlist strings).
     expect(pricing).toMatch(
-      /Hosted plans are invite-only during the beta\. Join the waitlist and we(&#39;|')ll email you when your instance is ready\./,
+      /Hosted plans are invite-only during the beta\. Join the waitlist and we(&#39;|')ll email you when it(&#39;|')s your turn\./,
     );
   });
 
