@@ -1,12 +1,21 @@
-<!doctype html>
-<!--
-Welcome artifact (#2287). The server seeds this file as the "Welcome" html
-artifact. Before saving, replace EVERY occurrence of the token {{APP_ORIGIN}}
-with the instance's app origin (https://host, no trailing slash). The frame's
-own origin is the content host, so the page cannot learn it at runtime.
-Copy is Product's, final; no em dashes. The page asks the shell with
-openArtifacts.onboarding.get(), answered for this artifact's owner only.
--->
+// The Welcome artifact a new hosted instance is seeded with (#2287): a plain
+// html page, light and dark, readable at 390px. `origin` is this instance's app
+// origin, baked in: a sandboxed content frame cannot learn it at runtime. The
+// page asks the shell with openArtifacts.onboarding.get(), which answers for
+// this artifact's owner only. Copy is Product's, final: no em dashes.
+
+export const WELCOME_TITLE = "Welcome";
+
+const esc = (s: string) =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+export function welcomeHtml(origin: string): string {
+  const o = esc(origin.replace(/\/+$/, ""));
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -62,11 +71,11 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-si
 <h2>Connect your agent</h2>
 <p>Paste this into your agent. It connects to this instance and learns how to publish here.</p>
 <div role="tablist" aria-label="Your agent"><button role="tab" type="button" id="tab-any" aria-controls="panel-any" aria-selected="true" tabindex="0">Any agent</button><button role="tab" type="button" id="tab-claude" aria-controls="panel-claude" aria-selected="false" tabindex="-1">Claude Code</button><button role="tab" type="button" id="tab-codex" aria-controls="panel-codex" aria-selected="false" tabindex="-1">Codex</button><button role="tab" type="button" id="tab-cursor" aria-controls="panel-cursor" aria-selected="false" tabindex="-1">Cursor</button></div>
-<div class="panel" role="tabpanel" id="panel-any" aria-labelledby="tab-any"><pre>Set up Open Artifacts for me: follow {{APP_ORIGIN}}/llms.txt</pre></div><div class="panel" role="tabpanel" id="panel-claude" aria-labelledby="tab-claude" hidden><pre>claude mcp add --transport http -s user open-artifacts {{APP_ORIGIN}}/mcp</pre><p class="note">In a Claude Code session, run `/mcp`, pick open-artifacts and sign in with your browser. Claude Code then lists its tools.</p></div><div class="panel" role="tabpanel" id="panel-codex" aria-labelledby="tab-codex" hidden><p class="file">~/.codex/config.toml</p><pre>[mcp_servers.open-artifacts]
-url = &quot;{{APP_ORIGIN}}/mcp&quot;</pre><p class="note">Run `codex mcp login open-artifacts` to sign in with your browser. Then `codex mcp list` shows open-artifacts.</p></div><div class="panel" role="tabpanel" id="panel-cursor" aria-labelledby="tab-cursor" hidden><p class="file">~/.cursor/mcp.json</p><pre>{
+<div class="panel" role="tabpanel" id="panel-any" aria-labelledby="tab-any"><pre>Set up Open Artifacts for me: follow ${o}/llms.txt</pre></div><div class="panel" role="tabpanel" id="panel-claude" aria-labelledby="tab-claude" hidden><pre>claude mcp add --transport http -s user open-artifacts ${o}/mcp</pre><p class="note">In a Claude Code session, run \`/mcp\`, pick open-artifacts and sign in with your browser. Claude Code then lists its tools.</p></div><div class="panel" role="tabpanel" id="panel-codex" aria-labelledby="tab-codex" hidden><p class="file">~/.codex/config.toml</p><pre>[mcp_servers.open-artifacts]
+url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artifacts\` to sign in with your browser. Then \`codex mcp list\` shows open-artifacts.</p></div><div class="panel" role="tabpanel" id="panel-cursor" aria-labelledby="tab-cursor" hidden><p class="file">~/.cursor/mcp.json</p><pre>{
   &quot;mcpServers&quot;: {
     &quot;open-artifacts&quot;: {
-      &quot;url&quot;: &quot;{{APP_ORIGIN}}/mcp&quot;
+      &quot;url&quot;: &quot;${o}/mcp&quot;
     }
   }
 }</pre><p class="note">Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.</p></div>
@@ -84,7 +93,7 @@ url = &quot;{{APP_ORIGIN}}/mcp&quot;</pre><p class="note">Run `codex mcp login o
 
 <footer>You can delete this page any time. Nothing else depends on it.</footer>
 </main>
-<script type="application/json" id="oa-welcome-data">{"host":"{{APP_ORIGIN}}","publishHint":"Ask your agent: \"Publish a page about what you're working on.\"","commentHint":"Select the highlighted sentence below and comment on it."}</script>
+<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","commentHint":"Select the highlighted sentence below and comment on it."}</script>
 <script>
 (function(){
   var D = JSON.parse(document.getElementById("oa-welcome-data").textContent);
@@ -207,3 +216,5 @@ url = &quot;{{APP_ORIGIN}}/mcp&quot;</pre><p class="note">Run `codex mcp login o
 </script>
 </body>
 </html>
+`;
+}

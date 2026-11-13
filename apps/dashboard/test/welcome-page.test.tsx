@@ -1,14 +1,10 @@
 // #2287: the Welcome page's own script, run in jsdom against a stand-in runtime.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { welcomeHtml } from "../../server/src/onboarding/welcome";
 
 const HOST = "https://oa.example.com";
-const FILE = join(__dirname, "../../server/src/onboarding/welcome.html");
-const TOKEN = "{{APP_ORIGIN}}";
-/** What the server seeds: the file with the token replaced by the app origin. */
-const welcomeHtml = (host: string) =>
-  readFileSync(FILE, "utf8").replaceAll(TOKEN, host);
+
 type Progress = {
   agentConnected: boolean;
   firstArtifact: { id: string; title: string } | null;
@@ -156,7 +152,7 @@ describe("Welcome page", () => {
 });
 
 describe("welcome.html", () => {
-  const raw = readFileSync(FILE, "utf8");
+  const raw = welcomeHtml("{{x}}");
   const html = welcomeHtml(HOST);
 
   it("has Product's copy, verbatim, and no em dashes", () => {
@@ -178,11 +174,11 @@ describe("welcome.html", () => {
     expect(raw).not.toContain("\u2014");
   });
 
-  it("takes the app origin only through the token", () => {
-    expect(raw).toContain(TOKEN);
-    expect(html).not.toContain("{{");
+  it("bakes in the origin it is given", () => {
     expect(html).toContain(`follow ${HOST}/llms.txt`);
     expect(html).toContain(`${HOST}/mcp`);
+    expect(welcomeHtml(`${HOST}/`)).toContain(`follow ${HOST}/llms.txt`);
+    expect(welcomeHtml('https://x"><script>')).not.toContain("<script>alert");
     expect(raw).not.toContain("fetch(");
   });
 

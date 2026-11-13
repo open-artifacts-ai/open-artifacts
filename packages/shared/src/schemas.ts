@@ -1013,22 +1013,18 @@ export const OnboardingSchema = z.strictObject({
   completed: z.boolean(),
   /** The caller owns at least one artifact not in the trash (#1832; absent on older servers). */
   hasArtifacts: z.boolean().optional(),
-  /**
-   * #2287 (PROPOSED names, server half pending): the Welcome artifact seeded
-   * for the owner, or null when seeding failed or it was deleted; absent on
-   * older servers.
-   */
-  welcomeId: IdSchema.nullable().optional(),
-  /** The owner has been taken to Welcome once. */
+  /** #2287 (all optional; absent on older servers). The seeded Welcome's id, for the user it was seeded for only; null if never seeded, deleted or trashed. */
+  welcomeId: z.string().nullable().optional(),
+  /** The Welcome's first open was recorded (PUT welcomeOpened). */
   welcomeOpened: z.boolean().optional(),
-  /** Welcome's ticks: an agent has connected (a token or OAuth client exists). */
+  /** The caller has connected an agent (an OAuth grant or access token that was used). */
   agentConnected: z.boolean().optional(),
-  /** The owner's first artifact other than Welcome, or null. */
+  /** The caller's oldest artifact outside the trash that is not the Welcome. */
   firstArtifact: z
-    .strictObject({ id: IdSchema, title: z.string() })
+    .strictObject({ id: z.string(), title: z.string() })
     .nullable()
     .optional(),
-  /** The owner has left a comment. */
+  /** The caller has posted at least one comment. */
   commented: z.boolean().optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
@@ -1037,7 +1033,7 @@ export type Onboarding = z.infer<typeof OnboardingSchema>;
 export const OnboardingPatchSchema = z.strictObject({
   dismissed: z.literal(true).optional(),
   completed: z.literal(true).optional(),
-  /** #2287: the owner was taken to Welcome (PROPOSED name). */
+  /** #2287: the first open of the Welcome happened; a no-op for anyone but its user. */
   welcomeOpened: z.literal(true).optional(),
 });
 export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;

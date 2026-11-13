@@ -398,7 +398,15 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const clients = f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
   // R.onboarding: install-wide, the owner only (anyone else 404).
-  const onboarding: Onboarding = { dismissed: false, completed: false };
+  const onboarding: Onboarding = {
+    dismissed: false,
+    completed: false,
+    welcomeId: null,
+    welcomeOpened: false,
+    agentConnected: false,
+    firstArtifact: null,
+    commented: false,
+  };
   if (opts.welcome) {
     const w = opts.welcome === true ? {} : opts.welcome;
     const wf = welcomeFixture();

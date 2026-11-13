@@ -4,13 +4,10 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { welcomeHtml } from "../../server/src/onboarding/welcome";
 
 const ID = "WmCnEfGhJk4mNpQr"; // the mock's Welcome (?mock=welcome)
 const DIST = join(process.cwd(), "../../packages/runtime/dist");
-const PAGE = readFileSync(
-  join(process.cwd(), "../server/src/onboarding/welcome.html"),
-  "utf8",
-);
 const OUT = process.env.WELCOME_SHOTS_DIR;
 
 test.use({
@@ -44,7 +41,7 @@ async function serveFrame(page: Page, host: string) {
     // The server injects the runtime first in <head>; so does this.
     return r.fulfill({
       contentType: "text/html",
-      body: PAGE.replaceAll("{{APP_ORIGIN}}", host).replace(
+      body: welcomeHtml(host).replace(
         "<head>",
         '<head><meta name="oa-format" content="html"><script src="/_oa/runtime.js"></script>',
       ),
