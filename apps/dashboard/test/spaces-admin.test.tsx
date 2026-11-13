@@ -5,13 +5,7 @@ import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
-import {
-  calls,
-  findVisibleToast,
-  installHarness,
-  mount,
-  mountHosted,
-} from "./harness";
+import { calls, installHarness, mount, mountHosted } from "./harness";
 
 installHarness();
 
@@ -620,9 +614,10 @@ it("no copy contains an em dash", async () => {
   expect(document.body.textContent).not.toContain("—");
 });
 
-// #2472: Spaces on Solo refused a create with no way forward. The toast now
-// links where the owner can act: Invite people and See plans with the trial
-// offer, See plans alone without it.
+// #2472: Spaces on Solo refused a create with no way forward. The dialog now
+// says why and links where the owner can act: Invite people and See plans
+// with the trial offer, See plans alone without it. In the dialog, not a
+// toast: the dialog's overlay keeps a toast's links out of reach.
 const soloPlan = (trialEndsAt: string | null) => ({
   billing: {
     tier: "solo" as const,
@@ -653,8 +648,10 @@ const createRefused = async () => {
     target: { value: "Design" },
   });
   fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
-  const line = await findVisibleToast(/^Spaces are a team feature\./);
-  return line.closest("[data-sonner-toast]") as HTMLElement;
+  const t = await within(d).findByRole("alert");
+  // One message, in the dialog: no toast as well.
+  expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  return t;
 };
 
 it("a Solo owner whose trial never ran: the refusal links Invite people and See plans (#2472)", async () => {
@@ -671,6 +668,18 @@ it("a Solo owner whose trial never ran: the refusal links Invite people and See 
     ["Invite people", "/settings/members"],
     ["See plans", "/settings/plan"],
   ]);
+});
+
+it("Invite people opens Members from the dialog (#2472)", async () => {
+  const router = mountHosted("/settings/spaces", soloPlan(null), undefined, [
+    refuseCreate,
+  ]);
+  const t = await createRefused();
+  fireEvent.click(within(t).getByRole("link", { name: "Invite people" }));
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/members"),
+  );
+  expect(screen.queryByRole("dialog", { name: "New space" })).toBeNull();
 });
 
 it("a Solo owner after a trial: the refusal links See plans only (#2472)", async () => {

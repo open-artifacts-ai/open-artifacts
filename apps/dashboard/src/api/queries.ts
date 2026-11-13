@@ -77,7 +77,6 @@ import {
   type ErrorContext,
   errorCopy,
   errorLink,
-  planLinks,
 } from "./errorCopy";
 
 const failToast = (e: unknown, fallback: string) =>
@@ -424,11 +423,9 @@ const failureToast = (
   const ctx = errorContext(qc);
   const description = errorCopy(e, fallback, ctx);
   const link = errorLink(e, ctx);
-  const links = planLinks(e, ctx);
   toast({
     title,
     ...(description ? { description } : {}),
-    ...(links.length ? { links } : {}),
     tone: "danger",
     // Hooks sit outside the router, so the link is a page load.
     ...(link
@@ -698,8 +695,9 @@ export const useCreateSpace = () =>
     (input: SpaceCreateInput) => api.send("POST", R.spaces, input, SpaceSchema),
     () => [["spaces"], qk.me],
     "Couldn't create the space.",
-    // A refused name shows under the field.
-    (e) => e.status === 400,
+    // A refused name shows under the field; a plan refusal in the dialog,
+    // with its links (#2472): a toast's can't be reached past the dialog.
+    (e) => e.status === 400 || e.code === "plan_required",
   );
 /** Trash: the caller's deleted artifacts and those in spaces they manage, newest first. */
 export const useTrash = (spaceId?: string) =>
