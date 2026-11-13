@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.174.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.173.0...v0.174.0) (2026-11-13)
+
+
+### Features
+
+* llms.txt tells agents about the bus ([#2424](https://github.com/open-artifacts-ai/open-artifacts/issues/2424)) ([#2429](https://github.com/open-artifacts-ai/open-artifacts/issues/2429)) ([0838952](https://github.com/open-artifacts-ai/open-artifacts/commit/0838952c739f3ccabf8c97519bd0f19b72247db3))
+
 ## [0.173.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.172.0...v0.173.0) (2026-11-13)
 
 
