@@ -144,7 +144,7 @@ describe("GET /llms.txt", () => {
   });
 
   it("has Connect, Restart, Verify and Troubleshoot, in order, for this instance", async () => {
-    const txt = await guide();
+    const txt = await guide(E({ BUS_HUB: undefined }));
     expect(txt.startsWith(`# Open Artifacts at ${HOST}\n`)).toBe(true);
     expect([...sections(txt).keys()]).toEqual([
       "Connect",
@@ -159,8 +159,36 @@ describe("GET /llms.txt", () => {
   });
 
   it("works the same on hosted and self-hosted", async () => {
-    const self = await guide(E({ HOSTED: undefined }));
-    expect(await guide(E({ HOSTED: "1" }))).toBe(self);
+    const self = await guide(E({ HOSTED: undefined, BUS_HUB: undefined }));
+    expect(await guide(E({ HOSTED: "1", BUS_HUB: undefined }))).toBe(self);
+  });
+
+  it("bus on: an Agent bus section between Verify and Troubleshoot, with the install command and docs link", async () => {
+    const txt = await guide(E({ HOSTED: undefined }));
+    expect([...sections(txt).keys()]).toEqual([
+      "Connect",
+      "Restart",
+      "Verify",
+      "Agent bus",
+      "Troubleshoot",
+    ]);
+    const bus = sections(txt).get("Agent bus") ?? "";
+    expect(bus).toContain(
+      `npx @open-artifacts/bus install --instance ${skillOrigin(HOST)}`,
+    );
+    expect(bus).toContain("approves this machine once in their browser");
+    expect(bus).toContain("https://open-artifacts.com/docs/agent-bus/");
+  });
+
+  it("bus off (no hub, or hosted without the bus feature): no Agent bus section", async () => {
+    for (const e of [
+      E({ BUS_HUB: undefined }),
+      E({ HOSTED: "1", FEATURES: "" }),
+    ]) {
+      const txt = await guide(e);
+      expect(txt).not.toContain("Agent bus");
+      expect(txt).not.toContain("@open-artifacts/bus");
+    }
   });
 
   it("SKILL_MD=off: still served, without the /skill.md step", async () => {
@@ -255,7 +283,7 @@ describe("Claude Code plugin switch", () => {
   it("is off by default, and the served guide omits the block", async () => {
     expect(CLAUDE_PLUGIN_ENABLED).toBe(false);
     const txt = await guide();
-    expect(txt).toBe(renderLlms(HOST, { plugin: false }));
+    expect(txt).toBe(renderLlms(HOST, { plugin: false, bus: true }));
     expect(txt).not.toContain("claude plugin");
     expect(txt).not.toContain("prefer the plugin");
     expect(txt).not.toContain(CLAUDE_PLUGIN.option);
