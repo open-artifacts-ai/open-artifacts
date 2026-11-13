@@ -94,6 +94,7 @@ describe("a taken Codex record and the hub's confirmation (#2198)", () => {
       msg_id: "nnnnnnnnnnnnnnnn",
     });
     await helloOk([BUS_CAPS.ackConfirm]); // both handled before this sentinel
+    await stopAll(); // flushes the coalesced record write (#2332)
     expect(record().confirmed).toBeUndefined();
   });
 
@@ -108,6 +109,7 @@ describe("a taken Codex record and the hub's confirmation (#2198)", () => {
     await reconnect();
     await helloOk([BUS_CAPS.ackConfirm]);
     await vi.waitFor(() => expect(acks().length).toBeGreaterThan(sent), WAIT);
+    await stopAll(); // flushes the coalesced record write (#2332)
     expect(record().confirmed).toBeUndefined();
   });
 
