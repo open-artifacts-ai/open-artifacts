@@ -39,7 +39,7 @@ describe("landing sections", () => {
 
   it("has the title and OA Product's description", () => {
     expect(index).toContain(
-      "<title>Open Artifacts: stop reading transcripts</title>",
+      "<title>Open Artifacts: where people and agents do their best work</title>",
     );
     const desc =
       index.match(/<meta name="description" content="([^"]*)"/)?.[1] ?? "";
@@ -47,8 +47,12 @@ describe("landing sections", () => {
       "Your agents put their work in an artifact. Your team reads it, comments and decides. Open source, works with any agent.",
     );
     expect(index).toContain(
-      '<meta property="og:title" content="Open Artifacts: stop reading transcripts"',
+      '<meta property="og:title" content="Open Artifacts: where people and agents do their best work"',
     );
+    expect(index).toContain(
+      '<meta name="twitter:title" content="Open Artifacts: where people and agents do their best work"',
+    );
+    expect(index).not.toContain("stop reading transcripts</title>");
     expect(desc.length).toBeLessThanOrEqual(160);
     expect(desc).not.toContain("Google Docs");
   });
@@ -66,7 +70,7 @@ describe("landing sections", () => {
     expect(meta("property", "og:image:width")).toBe("1200");
     expect(meta("property", "og:image:height")).toBe("630");
     const alt =
-      "Stop reading transcripts. The same work in a transcript and in an artifact.";
+      "Open Artifacts. Where people and agents do their best work. A launch plan artifact with a decision, comments and an ask.";
     expect(meta("property", "og:image:alt")).toBe(alt);
     expect(meta("name", "twitter:image:alt")).toBe(alt);
     const png = readFileSync(

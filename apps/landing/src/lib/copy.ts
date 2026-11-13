@@ -10,11 +10,12 @@ export const HERO_COPY = {
   cue: "Scroll to see the same work in a transcript and in an artifact.",
 };
 
-export const HOME_TITLE = "Open Artifacts: stop reading transcripts";
+export const HOME_TITLE =
+  "Open Artifacts: where people and agents do their best work";
 export const HOME_DESCRIPTION =
   "Your agents put their work in an artifact. Your team reads it, comments and decides. Open source, works with any agent.";
 export const OG_ALT =
-  "Stop reading transcripts. The same work in a transcript and in an artifact.";
+  "Open Artifacts. Where people and agents do their best work. A launch plan artifact with a decision, comments and an ask.";
 
 /**
  * Whether Gemini's mark shows next to "coming soon". A logo can read as support
