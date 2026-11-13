@@ -4,6 +4,7 @@ import {
   type BlockHint,
   createTextAnchor,
   createTextResolver,
+  type PinBadge,
   type Resolution,
   type ShellToArtifact,
   type TextAnchor,
@@ -18,8 +19,11 @@ import {
 } from "./text-range.js";
 
 // The frame half of comments (#682). Loaded with the schemas chunk, not the
-// entry. Hard rule: comment text and author names never enter the frame. The
-// shell sends anchors, opaque ids, pin numbers and flags; the frame sends
+// entry. Hard rule: comment text and author names never enter the frame, with
+// one exception (#2019): image and pdf pins carry a badge (initials or an
+// agent's face) and the author's name as the bubble's accessible label (those
+// frames hold no author script). The shell sends anchors, opaque ids, pin
+// numbers and flags; the frame sends
 // anchors it built from the page's own text, ids, states and pixel offsets.
 // Nothing here adds a node to the page tree except one overlay host under
 // <html> (its UI sits in a shadow root), and highlights use the CSS Custom
@@ -80,9 +84,22 @@ const OVERLAY_CSS = `
 .pin.flip-y{margin:0;border-radius:3px 15px 15px 15px}
 .pin.flip-x{margin:-30px 0 0 -30px;border-radius:15px 15px 3px 15px}
 .pin.flip-x.flip-y{margin:0 0 0 -30px;border-radius:15px 3px 15px 15px}
+.pin.initials{font-size:12px;letter-spacing:-.02em}
+.pin.face{display:flex;align-items:center;justify-content:center;border-radius:9px 9px 9px 3px;background:var(--face,#1f5fbf)}
+.pin.face.flip-y{border-radius:3px 9px 9px 9px}
+.pin.face.flip-x{border-radius:9px 9px 3px 9px}
+.pin.face.flip-x.flip-y{border-radius:9px 3px 9px 9px}
+.pin.face.dashed{background:#fff;color:#5f6670;box-shadow:0 0 0 2px #fff,0 3px 8px rgba(0,0,0,.3);outline:1.5px dashed #5f6670;outline-offset:-4px}
+.pin.face.dashed svg{stroke:#5f6670}
+.pin svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.pin:focus-visible{outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 4px #1f5fbf}
+/* A resolved thread opened from the list: its bubble shows faded, so the spot can be found. */
+.pin.resolved{opacity:.55;filter:grayscale(.6)}
 .pin.on{z-index:1;box-shadow:0 0 0 2px #fff,0 0 0 4.5px #e0a000,0 3px 8px rgba(0,0,0,.3)}
 /* Placing: a translucent accent bubble with a dashed edge. */
-.pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
+.pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none;color:#1f5fbf;line-height:26px}
+button.pin{border:0;padding:0}
+.pin.ghost.initials{background:#1f5fbf;color:#fff;border:0;line-height:30px;box-shadow:0 0 0 2px #fff,0 0 0 4px #1f5fbf,0 3px 8px rgba(0,0,0,.3)}
 /* A pin whose page changed: a dashed outline outside the ring, not a colour alone, plus a title. */
 .pin.changed{outline:2px dashed #8a5a00;outline-offset:4px}
 /* Open and changed: the dashed outline sits past the 4.5px amber ring, so both read. */
@@ -116,6 +133,97 @@ const SELECTION_MS = 100;
 /** How long a collapsed selection stays usable for the shell's command. */
 const KEPT_MS = 1500;
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICON_TAGS = new Set([
+  "path",
+  "circle",
+  "ellipse",
+  "line",
+  "polyline",
+  "polygon",
+  "rect",
+  "g",
+]);
+const ICON_ATTRS = new Set([
+  "d",
+  "cx",
+  "cy",
+  "r",
+  "rx",
+  "ry",
+  "x",
+  "y",
+  "x1",
+  "y1",
+  "x2",
+  "y2",
+  "points",
+  "width",
+  "height",
+  "transform",
+]);
+/** #2388: the rebuilt icon per icon string (null: refused), so a re-measure does not reparse. */
+const ICON_CACHE = new Map<string, SVGSVGElement | null>();
+const ICON_MAX_NODES = 64;
+
+function buildIcon(icon: string): SVGSVGElement | null {
+  const doc = new DOMParser().parseFromString(
+    `<svg xmlns="${SVG_NS}">${icon}</svg>`,
+    "image/svg+xml",
+  );
+  const root = doc.documentElement;
+  if (
+    root.localName !== "svg" ||
+    root.namespaceURI !== SVG_NS ||
+    doc.querySelector("parsererror")
+  )
+    return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  let nodes = 0;
+  const copy = (from: Element, to: Element, depth: number) => {
+    if (depth > 4) return;
+    for (const c of Array.from(from.children)) {
+      if (nodes >= ICON_MAX_NODES) return;
+      if (c.namespaceURI !== SVG_NS || !ICON_TAGS.has(c.localName)) continue;
+      nodes++;
+      const n = document.createElementNS(SVG_NS, c.localName);
+      for (const a of Array.from(c.attributes))
+        if (ICON_ATTRS.has(a.name)) n.setAttribute(a.name, a.value);
+      to.append(n);
+      copy(c, n, depth + 1);
+    }
+  };
+  copy(root, svg, 0);
+  return svg;
+}
+
+/**
+ * Build the badge into a pin: initials as text, or an icon rebuilt from the
+ * shell's markup. Only the allowlisted shapes and attributes are copied, so
+ * nothing in the markup can run or load anything.
+ */
+function fillBadge(el: HTMLElement, badge: PinBadge): void {
+  if ("initials" in badge) {
+    el.classList.add("initials");
+    el.textContent = badge.initials;
+    return;
+  }
+  let svg = ICON_CACHE.get(badge.icon);
+  if (svg === undefined) {
+    svg = buildIcon(badge.icon);
+    // Bounded: a page cannot grow it without limit.
+    if (ICON_CACHE.size >= 64) ICON_CACHE.clear();
+    ICON_CACHE.set(badge.icon, svg);
+  }
+  if (!svg) return;
+  el.classList.add("face");
+  if (badge.dashed) el.classList.add("dashed");
+  el.style.setProperty("--face", badge.color);
+  el.append(svg.cloneNode(true));
+}
+
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
   signal?: AbortSignal,
@@ -140,7 +248,9 @@ export function createComments(
     range: Range | null;
   } | null = null;
   let threads: Thread[] = [];
-  let ghost: { x: number; y: number; page?: number } | undefined;
+  let ghost:
+    | { x: number; y: number; page?: number; badge?: PinBadge }
+    | undefined;
   /** Text index of the body, rebuilt when the text version or the body changes. */
   let index: TextIndex | null = null;
   let indexVer = -1;
@@ -150,6 +260,8 @@ export function createComments(
   /** Resolved threads for the current text and thread set; null = stale. */
   let slots: Slot[] | null = null;
   let lastReport = "";
+  /** Where compute() last drew the new-pin flag, in viewport pixels. */
+  let ghostAt: { x: number; y: number } | null = null;
   let painted: { id: string; range: Range }[] = [];
   let flashId: string | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
@@ -347,12 +459,29 @@ export function createComments(
     paint();
     const out: Pos[] = [];
     const marks: HTMLElement[] = [];
-    const mark = (cls: string, x: number, y: number, label?: string) => {
-      const d = document.createElement("div");
+    const mark = (
+      cls: string,
+      x: number,
+      y: number,
+      label?: string,
+      badgeIn?: PinBadge,
+      id?: string,
+    ) => {
+      // #2388: a badge only belongs on image and pdf pins, here as well as in the shell.
+      const badge = hasPins ? badgeIn : undefined;
+      // A real pin with a badge is a button: keyboard reachable, named.
+      const live = badge !== undefined && !cls.includes("ghost");
+      const d = document.createElement(live ? "button" : "div");
+      if (d instanceof HTMLButtonElement) {
+        d.type = "button";
+        if (badge?.label) d.setAttribute("aria-label", badge.label);
+      }
       d.className = cls;
+      if (id) d.dataset.id = id;
       d.style.left = `${x}px`;
       d.style.top = `${y}px`;
-      if (label) d.textContent = label;
+      if (badge) fillBadge(d, badge);
+      else if (label) d.textContent = label;
       marks.push(d);
       return d;
     };
@@ -368,16 +497,25 @@ export function createComments(
         const x = box.left + scrollX + th.anchor.x * box.width;
         const y = box.top + scrollY + th.anchor.y * box.height;
         out.push({ id: th.id, state: "pin", top: clampTop(y) });
-        if (!th.resolved) {
+        // A resolved thread is drawn (faded) only while it is the open one.
+        if (!th.resolved || isActive) {
           const cls = [
             "pin",
             isActive ? "on" : "",
+            th.resolved ? "resolved" : "",
             th.changed ? "changed" : "",
             flips(x, clampTop(y)),
           ]
             .filter(Boolean)
             .join(" ");
-          const d = mark(cls, x, clampTop(y), String(th.n ?? ""));
+          const d = mark(
+            cls,
+            x,
+            clampTop(y),
+            String(th.n ?? ""),
+            th.badge,
+            th.id,
+          );
           if (th.changed) d.title = "Changed since this was placed.";
           d.addEventListener("click", () => open(th.id));
         }
@@ -402,19 +540,42 @@ export function createComments(
         d.addEventListener("click", () => open(th.id));
       }
     }
+    ghostAt = null;
     if (ghost) {
       const box = pinBox({ kind: "pin", page: ghost.page } as Extract<
         Anchor,
         { kind: "pin" }
       >);
       if (box) {
+        ghostAt = {
+          x: box.left + ghost.x * box.width,
+          y: box.top + ghost.y * box.height,
+        };
         const gx = box.left + scrollX + ghost.x * box.width;
         const gy = clampTop(box.top + scrollY + ghost.y * box.height);
-        mark(["pin ghost", flips(gx, gy)].filter(Boolean).join(" "), gx, gy);
+        mark(
+          ["pin ghost", flips(gx, gy)].filter(Boolean).join(" "),
+          gx,
+          gy,
+          undefined,
+          ghost.badge,
+        );
       }
     }
-    if (marks.length || layer)
-      overlay().replaceChildren(...marks, ...(btn?.isConnected ? [btn] : []));
+    if (marks.length || layer) {
+      // A re-measure rebuilds the pins; keyboard focus stays on the same one.
+      const lay = overlay();
+      const focused = (lay.getRootNode() as ShadowRoot).activeElement;
+      const keep =
+        focused instanceof HTMLElement && lay.contains(focused)
+          ? focused.dataset.id
+          : undefined;
+      lay.replaceChildren(...marks, ...(btn?.isConnected ? [btn] : []));
+      if (keep)
+        marks
+          .find((m) => m.dataset.id === keep)
+          ?.focus({ preventScroll: true });
+    }
     return out;
   }
 
@@ -423,10 +584,17 @@ export function createComments(
     const positions = compute();
     lastPositions.clear();
     for (const p of positions) lastPositions.set(p.id, p);
-    const key = JSON.stringify(positions);
+    // #2386: the new-pin flag's place, so the shell's box follows a scroll.
+    const at = ghostAt as { x: number; y: number } | null;
+    const key = JSON.stringify([positions, at]);
     if (!force && key === lastReport) return;
     lastReport = key;
-    bridge.send({ oa: 1, type: "comment.positions", positions });
+    bridge.send({
+      oa: 1,
+      type: "comment.positions",
+      positions,
+      ...(at ? { ghost: at } : {}),
+    });
   }
 
   // One animation frame batches what the page events asked for: scroll
@@ -679,6 +847,8 @@ export function createComments(
         oa: 1,
         type: "comment.pin",
         pin: pg >= 1 ? { x, y, page: pg } : { x, y },
+        // #2019: where the click landed, so the shell can open the box beside it.
+        at: { x: Math.max(0, e.clientX), y: Math.max(0, e.clientY) },
       });
       return;
     }
@@ -730,6 +900,14 @@ export function createComments(
     bridge.send({ oa: 1, type: "comment.escape" });
   }
 
+  // A pointer down anywhere in the page but our own overlay: the shell drops
+  // an unsent draft (the browser collapses the selection itself).
+  function onPointerDown(e: PointerEvent) {
+    if (mode === "off") return;
+    if (host && e.composedPath().includes(host)) return;
+    bridge.send({ oa: 1, type: "comment.away" });
+  }
+
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
@@ -765,6 +943,13 @@ export function createComments(
       draftCache = null;
       slots = null;
       report(true);
+    } else if (m.type === "comments.clear") {
+      // The reader clicked elsewhere in the shell: a live selection ends here.
+      getSelection()?.removeAllRanges();
+      kept = null;
+      clearTimeout(selTimer);
+      reportSelection();
+      hideButton();
     } else if (m.type === "comments.comment") {
       if (mode === "select") onCommentClick();
     } else if (m.type === "comments.focus") {
@@ -840,6 +1025,7 @@ export function createComments(
   sizer?.observe(document.documentElement);
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("click", onClick, true);
+  document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("keydown", onKey, true);
   addEventListener("resize", onResize, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
@@ -854,6 +1040,7 @@ export function createComments(
     sizer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
+    document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("keydown", onKey, true);
     removeEventListener("resize", onResize);
     removeEventListener("scroll", onScroll);

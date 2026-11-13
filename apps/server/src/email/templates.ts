@@ -136,12 +136,12 @@ export function signInSentence(
   },
 ): string {
   const parts = orderSignInMethods(methods).map((m) => METHOD_PHRASE[m](to));
-  if (parts.length > 0) return `You'll sign in with ${parts.join(" or ")}.`;
+  if (parts.length > 0) return `You'll log in with ${parts.join(" or ")}.`;
   const instance = oneLine(p.instance, NAME_MAX);
   // Design's final copy (review #799).
   return p.cantSignIn === "needs_invite"
-    ? `You can't sign in to ${instance} yet. Ask an admin there to invite you, then open this link again.`
-    : `This address can't sign in to ${instance}. Ask ${oneLine(p.inviter, NAME_MAX)} to share it with an address that can.`;
+    ? `You can't log in to ${instance} yet. Ask an admin there to invite you, then open this link again.`
+    : `This address can't log in to ${instance}. Ask ${oneLine(p.inviter, NAME_MAX)} to share it with an address that can.`;
 }
 
 type Common = {
@@ -233,28 +233,28 @@ export function shareEmail(
   );
 }
 
-const CODE_TXT = `Your {{instanceName}} sign-in code is {{code}}
+const CODE_TXT = `Your {{instanceName}} login code is {{code}}
 
-Enter it on the sign-in page. It expires in {{minutes}} minutes and works once.
+Enter it on the login page. It expires in {{minutes}} minutes and works once.
 
-If you didn't ask for this, ignore this email: nobody can sign in without the code.
+If you didn't ask for this, ignore this email: nobody can log in without the code.
 
 {{appHost}}
 `;
 
 const CODE_HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Sign-in code</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Login code</title></head>
 <body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-<p>Your {{instanceName}} sign-in code is</p>
+<p>Your {{instanceName}} login code is</p>
 <p style="font:600 28px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px">{{code}}</p>
-<p>Enter it on the sign-in page. It expires in {{minutes}} minutes and works once.</p>
-<p style="color:#5d636e">If you didn't ask for this, ignore this email: nobody can sign in without the code.</p>
+<p>Enter it on the login page. It expires in {{minutes}} minutes and works once.</p>
+<p style="color:#5d636e">If you didn't ask for this, ignore this email: nobody can log in without the code.</p>
 <p style="color:#5d636e">{{appHost}}</p>
 </body></html>
 `;
 
 /**
- * A sign-in code, shown as "1234 5678" (Design). No link carries the code,
+ * A login code, shown as "1234 5678" (Design). No link carries the code,
  * and the subject never contains it (subjects show up in notifications).
  */
 export function loginCodeEmail(p: {
@@ -275,7 +275,7 @@ export function loginCodeEmail(p: {
   return render(
     CODE_HTML,
     CODE_TXT,
-    "Your {{instanceName}} sign-in code",
+    "Your {{instanceName}} login code",
     values,
   );
 }
@@ -332,6 +332,92 @@ export function spaceSelfAddEmail(p: {
   );
 }
 
+const PASSKEY_ADDED_TXT = `A passkey was added to your {{instanceName}} account{{labelPart}}.
+
+It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and log out of other sessions: {{securityUrl}}
+
+{{appHost}}
+`;
+
+const PASSKEY_ADDED_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Passkey added</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>A passkey was added to your {{instanceName}} account{{labelPart}}.</p>
+<p>It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and log out of other sessions.</p>
+<p><a href="{{securityUrl}}">Open security settings</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/** To a member when a passkey is added to their account (#2263). */
+export function passkeyAddedEmail(p: {
+  instance: string;
+  recipient: string;
+  appHost: string;
+  label: string;
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.instance });
+  const label = oneLine(p.label, NAME_MAX);
+  return render(
+    PASSKEY_ADDED_HTML,
+    PASSKEY_ADDED_TXT,
+    "A passkey was added to your account",
+    {
+      ...values,
+      labelPart: label ? ` (${label})` : "",
+      securityUrl: linkOn(origin, "/settings/security"),
+    },
+  );
+}
+
+const PASSKEY_REMOVED_TXT = `{{headline}}
+
+{{detail}} Open your security settings: {{securityUrl}}
+
+{{appHost}}
+`;
+
+const PASSKEY_REMOVED_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Passkey removed</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p><strong>{{headline}}</strong></p>
+<p>{{detail}}</p>
+<p><a href="{{securityUrl}}">Open security settings</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/** To a member when a passkey is removed, or scheduled to be (a re-auth alone: it goes in 24 hours unless cancelled). */
+export function passkeyRemovedEmail(p: {
+  instance: string;
+  recipient: string;
+  appHost: string;
+  label: string;
+  pending: boolean;
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.instance });
+  const label = oneLine(p.label, NAME_MAX);
+  const name = label ? `The passkey (${label})` : "A passkey";
+  const inst = oneLine(p.instance, NAME_MAX);
+  return render(
+    PASSKEY_REMOVED_HTML,
+    PASSKEY_REMOVED_TXT,
+    p.pending
+      ? "A passkey will be removed from your account"
+      : "A passkey was removed from your account",
+    {
+      ...values,
+      headline: p.pending
+        ? `${name} on your ${inst} account will be removed in 24 hours.`
+        : `${name} was removed from your ${inst} account.`,
+      detail: p.pending
+        ? "It still works until then. If this was not you, cancel the removal in your security settings and log out of other sessions."
+        : "If this was not you, log out of other sessions and add a passkey again.",
+      securityUrl: linkOn(origin, "/settings/security"),
+    },
+  );
+}
+
 /** Why the directory alert went out (P3 T13). */
 export type DirectoryAlert =
   | "unhealthy"
@@ -345,7 +431,7 @@ const DIRECTORY_ALERT_LINE: Record<DirectoryAlert, string> = {
   unhealthy:
     "Google directory sync has been failing for 24 hours. People keep the access they had at the last successful sync until it recovers.",
   customer_mismatch:
-    "Directory sync is paused and people synced from Google can't sign in: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Sign in with Google and reconnect the directory to restore their access.",
+    "Directory sync is paused and people synced from Google can't log in: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Sign in with Google and reconnect the directory to restore their access.",
   scope_missing:
     "Google directory sync stopped: a permission it needs was removed. Reconnect the directory and grant every permission.",
   break_glass:

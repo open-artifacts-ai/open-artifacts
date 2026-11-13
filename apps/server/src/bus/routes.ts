@@ -40,7 +40,7 @@ import {
   pageResponse,
   sessionUser,
 } from "../http/pages.js";
-import { logError, logInfo } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
@@ -64,6 +64,7 @@ import {
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
+import { isSuspended, pausedResponse } from "../services/suspend.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
 import { renderApprove, renderApproved, renderEntry } from "./approve-page.js";
@@ -95,6 +96,8 @@ export const RL_KEYS = {
   codeIp: "bus-code:ip:",
   /** PUT and DELETE of roles and links (#1358), per signed-in member. */
   write: "bus-write:u:",
+  /** GET /bus/connect, per client IP (IPv6 per /64), before the token lookup (#2359). */
+  connect: "bus-conn:ip:",
 } as const;
 
 /** Outstanding (unexpired) device codes per install; a new code past it is 429. */
@@ -163,8 +166,9 @@ async function limited(
   env: Env,
   key: string,
   retryAfterSec = 60,
+  binding: RateLimit | undefined = env.RL_ANON,
 ): Promise<Response | null> {
-  const rl = env.RL_ANON as RateLimit | undefined;
+  const rl = binding;
   if (!rl)
     return env.ENVIRONMENT === "dev"
       ? null
@@ -478,8 +482,8 @@ async function postApprove(c: Context<AppEnv>): Promise<Response> {
   const user = sessionUser(c);
   if (!user)
     return messagePage(
-      "Signed out",
-      `Your session ended. Sign in, then open ${APPROVE_PATH} again.`,
+      "Logged out",
+      `Your session ended. Log in, then open ${APPROVE_PATH} again.`,
       401,
     );
   const len = Number(c.req.header("content-length") ?? Number.NaN);
@@ -616,6 +620,14 @@ const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 const unauthorized = () =>
   errorJson(401, "unauthorized", "A valid machine token is required");
 
+let warnedNoConnectIp = false;
+/** Logs once per isolate that /bus/connect arrived with no client IP. */
+function noConnectIp(): void {
+  if (warnedNoConnectIp) return;
+  warnedNoConnectIp = true;
+  logWarn("bus_connect_no_ip");
+}
+
 /**
  * GET /bus/connect: a WebSocket upgrade with `Authorization: Bearer
  * oa_machine_...`. The token must be a live bus_machines row (never a PAT or
@@ -628,6 +640,49 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
   if (!busOn(env) || !env.BUS_HUB) throw notFound();
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
     return errorJson(426, "bad_request", "Expected a WebSocket upgrade");
+  // Per IP, before the sha256 and the D1 lookup: any string would cost both.
+  // RL_ANON_WRITES (120/min, RL_ANON if unbound) so a few daemons behind one
+  // NAT reconnecting with backoff never trip it.
+  // Hosted always has cf-connecting-ip (the Cloudflare edge sets it), so
+  // hosted behaviour is unchanged. A self-host behind a proxy that doesn't
+  // set it has no IP: skip this limit rather than put every machine in one
+  // shared bucket. The token's per-machine and per-member limits still apply.
+  const ip = ipKey(c.req.header("cf-connecting-ip") ?? "");
+  if (ip === null) {
+    // Hosted tightens: the edge always sets the client IP, so a request
+    // without it is refused rather than left unthrottled.
+    if (env.HOSTED === "1")
+      return errorJson(400, "bad_request", "Missing client address");
+    noConnectIp();
+  }
+  const rl =
+    ip === null
+      ? null
+      : await limited(
+          env,
+          RL_KEYS.connect + ip,
+          60,
+          env.RL_ANON_WRITES ?? env.RL_ANON,
+        );
+  if (rl) return rl;
+  // Hosted suspend (cloud #228): refuse at once from the install's own D1,
+  // before the token lookup, as dispatch's paused answer would.
+  // A failed marker read answers 503 try again (the daemon retries 503), not
+  // a 500: never 101 and never on to the token lookup.
+  let suspended: boolean;
+  try {
+    suspended = await isSuspended(env);
+  } catch {
+    logWarn("bus_suspend_read_failed");
+    return errorJson(
+      503,
+      "storage_unavailable",
+      "Try again in a few seconds",
+      undefined,
+      { "retry-after": "5" },
+    );
+  }
+  if (suspended) return pausedResponse();
   // Stamped by the route gate before any read (enforcePolicy).
   const authzAt = c.var.authzAt ?? Date.now();
   const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";

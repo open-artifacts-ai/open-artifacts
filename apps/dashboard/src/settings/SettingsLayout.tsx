@@ -40,6 +40,11 @@ const TABS: {
     label: "Notifications",
     roles: ["owner", "admin", "member"],
   },
+  {
+    to: "/settings/security",
+    label: "Security",
+    roles: ["owner", "admin", "member"],
+  },
   { to: "/settings/members", label: "Members", roles: ["owner", "admin"] },
   {
     to: "/settings/spaces",
@@ -107,7 +112,8 @@ export function SettingsLayout() {
             t.roles.includes(role) &&
             // #2009: no tab while directory sync is off (Solo, or Team that never synced).
             (!t.directory || (directory && shownDirectoryMode(me) !== "off")) &&
-            (!t.plan || me?.instance.billing) &&
+            // A hosted install with no billing answer still shows the tab: Plan says paid plans open soon (#2326).
+            (!t.plan || me?.instance.billing || me?.instance.hosted) &&
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || machines === "full" || machines === "revoke") &&
             (t.to !== "/settings/connections" || !noAgents),

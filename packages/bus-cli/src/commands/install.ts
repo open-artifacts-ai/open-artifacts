@@ -34,6 +34,7 @@ import { hermesEnabled } from "../steps/hermes.ts";
 import { noteMade, pruneMade } from "../steps/leftovers.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
 import { installShim } from "../steps/path-shim.ts";
+import { isDefaultHome } from "../steps/service.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import {
@@ -45,8 +46,11 @@ import { LoginFailed, login } from "./login.ts";
 
 /** Transcript state 6: four attempts, waiting 2, 4 and 8 s between them. */
 export const CODE_RETRY_MS = [2000, 4000, 8000];
-export const DAEMON_WAIT_MS = 10_000;
+export const DAEMON_WAIT_MS = 60_000;
 const DAEMON_POLL_MS = 250;
+const DAEMON_POLL_MAX_MS = 2000;
+/** Before this, a daemon that is not up yet may still be spawning. */
+const DAEMON_GONE_AFTER_MS = 10_000;
 const ROSTER_ROWS = 20;
 
 export type InstallOpts = {
@@ -56,6 +60,8 @@ export type InstallOpts = {
   label?: string;
   /** Skip the launchd or systemd step: the user runs the daemon. */
   noService?: boolean;
+  /** --alongside (needs a non-default --home): set up this bus only, no harness settings. */
+  alongside?: boolean;
   /** --habits, --no-habits or --show-habits: only the always-on block, nothing else reruns. */
   habits?: HabitsMode;
   /** The result as one JSON line on stdout; the human lines go to stderr. */
@@ -309,17 +315,36 @@ function shownSocket(ctx: Ctx): string {
   );
 }
 
-/** Polls the daemon socket until it answers or `DAEMON_WAIT_MS` passes. */
+/**
+ * Polls the daemon socket, backing off, until it answers or `DAEMON_WAIT_MS`
+ * passes. `gone`: the process exited or the service manager says it failed;
+ * `gone` is also true when liveness is unknown; a live but silent daemon at the bound is not gone (#2358).
+ */
 export async function waitForDaemon(
   ctx: Ctx,
-): Promise<StatusReply | undefined> {
+): Promise<{ st?: StatusReply; gone: boolean }> {
   const start = ctx.now();
+  let poll = DAEMON_POLL_MS;
+  let down = 0;
   for (;;) {
     try {
-      return await askDaemon(ctx, { cwd: ctx.cwd, timeoutMs: 1000 });
+      return {
+        st: await askDaemon(ctx, { cwd: ctx.cwd, timeoutMs: 1000 }),
+        gone: false,
+      };
     } catch {}
-    if (ctx.now() - start >= DAEMON_WAIT_MS) return undefined;
-    await ctx.sleep(DAEMON_POLL_MS);
+    const waited = ctx.now() - start;
+    if (waited >= DAEMON_GONE_AFTER_MS) {
+      const alive = await ctx.service.alive?.().catch(() => undefined);
+      down = alive === false ? down + 1 : 0;
+      if (down >= 3) return { gone: true };
+    }
+    if (waited >= DAEMON_WAIT_MS) {
+      const alive = await ctx.service.alive?.().catch(() => undefined);
+      return { gone: alive !== true };
+    }
+    await ctx.sleep(poll);
+    poll = Math.min(poll * 2, DAEMON_POLL_MAX_MS);
   }
 }
 
@@ -348,10 +373,19 @@ async function daemonStep(ctx: Ctx, noService = false): Promise<boolean> {
     return false;
   }
   const unsafe = socketFolderLines(ctx);
-  const st = unsafe ? undefined : await waitForDaemon(ctx);
-  if (!st) {
-    sayErr(ctx, unsafe ?? c.daemonTimeout());
+  if (unsafe) {
+    sayErr(ctx, unsafe);
     return false;
+  }
+  const { st, gone } = await waitForDaemon(ctx);
+  if (!st) {
+    if (gone) {
+      sayErr(ctx, c.daemonTimeout(DAEMON_WAIT_MS / 1000));
+      return false;
+    }
+    // Alive but silent: a busy machine. Not a failure.
+    say(ctx, c.daemonStarting());
+    return true;
   }
   say(ctx, c.daemonRunning(st.pid, ctx.service.kind, ctx.service.fallback), "");
   say(ctx, roster(ctx, st), "", c.statusHint());
@@ -457,6 +491,7 @@ export async function harnessStates(
 export const installSteps = (
   opts: InstallOpts,
   bus: string = BUS_CMD,
+  secondHome = false,
 ): Step<Ctx>[] => [
   {
     name: "login",
@@ -469,17 +504,7 @@ export const installSteps = (
     },
     apply: (ctx) => loginStep(ctx, opts),
   },
-  {
-    name: "harnesses",
-    label: "Harnesses configured",
-    failed: "Harnesses not configured",
-    action: `Run ${bus} to configure them.`,
-    check: async (ctx) => {
-      const states = await harnessStates(ctx);
-      return Object.values(states).some((st) => BAD.has(st)) ? "todo" : "done";
-    },
-    apply: (ctx) => harnessesStep(ctx, opts.hub),
-  },
+  ...(secondHome ? [] : [harnessesStepDef(opts, bus)]),
   {
     name: "daemon",
     label: "Daemon answering",
@@ -496,6 +521,20 @@ export const installSteps = (
     apply: (ctx) => daemonStep(ctx, opts.noService),
   },
 ];
+
+function harnessesStepDef(opts: InstallOpts, bus: string): Step<Ctx> {
+  return {
+    name: "harnesses",
+    label: "Harnesses configured",
+    failed: "Harnesses not configured",
+    action: `Run ${bus} to configure them.`,
+    check: async (ctx) => {
+      const states = await harnessStates(ctx);
+      return Object.values(states).some((st) => BAD.has(st)) ? "todo" : "done";
+    },
+    apply: (ctx) => harnessesStep(ctx, opts.hub),
+  };
+}
 
 /** #1626: `oa-bus` on PATH. Never fails the install: a note at most. */
 function reportShim(ctx: Ctx): void {
@@ -552,12 +591,28 @@ async function installRun(
   opts: InstallOpts & { check?: boolean },
   realCtx: Ctx,
 ): Promise<number> {
+  // A second bus home sets up only itself: the harness configs are global.
+  const second = Boolean(opts.alongside);
+  if (second && isDefaultHome(realCtx.home, realCtx.userHome)) {
+    sayErr(realCtx, [
+      "--alongside sets up a second bus, so it needs --home <dir> for a folder other than the main one.",
+      `Run ${realCtx.busCmd} install --alongside --home <dir> --instance <url>.`,
+    ]);
+    return 2;
+  }
+  if (opts.habits && second) {
+    sayErr(realCtx, [
+      "The always-on habits are one setting for every session, so they belong to your first bus.",
+      `Run ${realCtx.busCmd} install --habits without --alongside.`,
+    ]);
+    return 1;
+  }
   if (opts.habits) return habitsCommand(opts.habits, realCtx);
   const json = Boolean(opts.json && !opts.check);
   const ctx: Ctx = json ? { ...realCtx, stdout: realCtx.stderr } : realCtx;
   const c = ctx.copy;
   say(ctx, c.header(ctx.version), "");
-  const steps = installSteps(opts, ctx.busCmd);
+  const steps = installSteps(opts, ctx.busCmd, second);
   if (opts.check) {
     const results = await checkSteps(steps, ctx);
     for (const { step, state } of results) {
@@ -575,7 +630,8 @@ async function installRun(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
-  if (ok) {
+  if (ok && second) say(ctx, "", c.secondBus(ctx.home));
+  else if (ok) {
     reportShim(ctx);
     // The shim now exists: what is printed from here on can name oa-bus.
     useBusCmd(ctx);
@@ -583,7 +639,8 @@ async function installRun(
   const skillFailed = reportSkillFailure(ctx);
   // The always-on habits come last, once everything else is done: a person is
   // asked, an agent gets a question for its user. Nothing is written unasked.
-  const habits = ok ? await habitsAfterInstall(ctx, json) : undefined;
+  const habits =
+    ok && !second ? await habitsAfterInstall(ctx, json) : undefined;
   const code = ok && !skillFailed ? 0 : 1;
   if (json)
     realCtx.stdout.write(

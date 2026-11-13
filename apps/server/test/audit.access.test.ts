@@ -16,7 +16,7 @@ const auditRows = async (id: string) =>
       .all<{ action: string; actor_id: string; detail: string }>()
   ).results;
 
-it("an Access sign-in is audited as auth.signin (provider access)", async () => {
+it("an Access login is audited as auth.signin (provider access)", async () => {
   const email = uniq("accessaudit");
   const id = await seedUser(email, "member");
   const r = await accessSignIn(email);
@@ -31,7 +31,7 @@ it("an Access sign-in is audited as auth.signin (provider access)", async () => 
   ]);
 });
 
-it("a first Access sign-in by an invited guest is audited in the same batch", async () => {
+it("a first Access login by an invited guest is audited in the same batch", async () => {
   const email = uniq("accessguest", "out.com");
   await seedShare(email);
   expect((await accessSignIn(email)).status).toBe(302);
@@ -41,7 +41,7 @@ it("a first Access sign-in by an invited guest is audited in the same batch", as
   expect(await auditRows(u?.id ?? "")).toHaveLength(1);
 });
 
-it("a refused Access sign-in writes no audit row", async () => {
+it("a refused Access login writes no audit row", async () => {
   const email = uniq("accessnone", "out.com");
   expect((await accessSignIn(email)).status).toBe(302);
   expect(
@@ -65,7 +65,7 @@ describe("a failing audit insert", () => {
     await env.DB.prepare("drop trigger if exists audit_fail_access").run();
   });
 
-  it("leaves an existing user unchanged and fails the sign-in", async () => {
+  it("leaves an existing user unchanged and fails the login", async () => {
     const email = uniq("accessatomic");
     const id = await seedUser(email, "member");
     await env.DB.prepare(

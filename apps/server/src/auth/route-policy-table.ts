@@ -49,8 +49,8 @@ const art = (
     planSharing?: true;
   } = {},
 ): Policy => ({ artifact: action, ...extra });
-const SAVE = "Sign in to save changes";
-const COMMENT = "Sign in to comment";
+const SAVE = "Log in to save changes";
+const COMMENT = "Log in to comment";
 const ARTS = "/api/v1/artifacts/:id";
 const SPACES = "/api/v1/spaces/:id";
 const signedIn = { signedIn: true } as const;
@@ -266,6 +266,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     "comments.write",
     { anon401: COMMENT },
   ),
+  // #2263: the passkey challenge for a pick; the same rule as the answer.
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/answer/challenge`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
   [`GET ${ARTS}/agents`]: art("comments.read"),
   // #2035: stop (or undo) a thread's reply notices to one agent. The floor is
   // comments.write (never a guest or restricted cap); the service allows only
@@ -278,6 +283,19 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   }),
   [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`]:
     art("comments.read"),
+  // #2263: passkeys; the handlers refuse anything but a browser session.
+  "GET /api/v1/passkeys": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/register/begin": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/register/challenge": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/register/finish": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/:id/challenge": { user: "the caller's passkeys" },
+  "DELETE /api/v1/passkeys/:id": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/:id/cancel-removal": { user: "the caller's passkeys" },
+  "GET /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
+  "PATCH /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
+  "POST /api/v1/passkeys/settings/challenge": {
+    user: "the caller's passkey settings",
+  },
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
   "PATCH /api/v1/tokens/:id": { user: "the caller's tokens" },

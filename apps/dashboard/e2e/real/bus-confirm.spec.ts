@@ -34,7 +34,7 @@ const KINDS = [
 ] as const;
 
 for (const k of KINDS) {
-  test(`${k.kind}: open the fragment link signed out, sign in, confirm; the secret stays out of every request`, async ({
+  test(`${k.kind}: open the fragment link logged out, log in, confirm; the secret stays out of every request`, async ({
     page,
     browser,
   }, info) => {

@@ -1,0 +1,91 @@
+/** Passkey approval of dangerous asks (#2263): WebAuthn helpers and the card's error states. */
+import { ApiClientError } from "../../api/client";
+
+export type PasskeyFailure =
+  | { kind: "cancelled" }
+  | { kind: "failed" }
+  | { kind: "expired" }
+  | { kind: "no_passkey" }
+  | { kind: "cooling"; usableAt: string | null }
+  | { kind: "required" }
+  | { kind: "too_many" }
+  /** The ask already has an answer: the refetch shows it. */
+  | { kind: "answered" }
+  | { kind: "other" };
+
+/** Which card state an error from the passkey flow belongs to. */
+export function passkeyFailure(e: unknown): PasskeyFailure {
+  if (e instanceof ApiClientError) {
+    if (e.code === "no_passkey") return { kind: "no_passkey" };
+    if (e.code === "passkey_cooling") {
+      const u = (e.details as { usableAt?: unknown } | undefined)?.usableAt;
+      return { kind: "cooling", usableAt: typeof u === "string" ? u : null };
+    }
+    if (e.code === "passkey_failed") return { kind: "failed" };
+    if (e.code === "passkey_required") return { kind: "required" };
+    if (e.code === "challenge_expired") return { kind: "expired" };
+    if (e.code === "already_answered") return { kind: "answered" };
+    if (e.code === "rate_limited") return { kind: "too_many" };
+    return { kind: "other" };
+  }
+  const name = (e as { name?: string } | null)?.name;
+  if (
+    name === "NotAllowedError" ||
+    name === "AbortError" ||
+    name === "PasskeyCancelled" ||
+    name === "InvalidStateError" ||
+    name === "ConstraintError"
+  )
+    return { kind: "cancelled" };
+  if (name === "NotSupportedError" || name === "SecurityError")
+    return { kind: "failed" };
+  return { kind: "other" };
+}
+
+const WEEK = 7 * 24 * 3600_000;
+
+/** When a cooling passkey can approve, in the viewer's local time: weekday and time under 7 days, else the date. `title` is always the full date. */
+export function coolingTime(
+  usableAt: string | null,
+  now = Date.now(),
+): { text: string; title: string } | null {
+  const t = usableAt ? new Date(usableAt) : null;
+  if (!t || Number.isNaN(t.getTime())) return null;
+  const title = t.toLocaleString([], { dateStyle: "full", timeStyle: "short" });
+  const text =
+    t.getTime() - now < WEEK
+      ? `${t.toLocaleDateString([], { weekday: "short" })} ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`
+      : t.toLocaleDateString([], { dateStyle: "medium" });
+  return { text, title };
+}
+
+/** The inline line for a passkey failure (role=alert), or null for the box states and ordinary errors. */
+export function passkeyLine(
+  f: PasskeyFailure,
+): { text: string; danger: boolean } | null {
+  switch (f.kind) {
+    case "cancelled":
+      return { text: "Nothing was approved.", danger: false };
+    case "failed":
+      return {
+        text: "Passkey check failed. Nothing was approved.",
+        danger: true,
+      };
+    case "expired":
+      return {
+        text: "That approval timed out. Nothing was approved.",
+        danger: true,
+      };
+    case "required":
+      return {
+        text: "This now needs your passkey. Pick again.",
+        danger: false,
+      };
+    case "too_many":
+      return { text: "Too many tries. Wait a moment.", danger: true };
+    case "answered":
+      return { text: "This ask was already answered.", danger: false };
+    default:
+      return null;
+  }
+}

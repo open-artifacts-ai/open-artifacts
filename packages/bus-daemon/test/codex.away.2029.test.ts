@@ -232,13 +232,14 @@ function fdinfo(
   fd: string,
   file: string,
   held: boolean,
+  kind = "FLOCK",
 ): void {
   const st = statSync(file, { bigint: true });
   const { major, minor } = devParts(st.dev);
   mkdirSync(join(proc, String(pid), "fdinfo"), { recursive: true });
   writeFileSync(
     join(proc, String(pid), "fdinfo", fd),
-    `pos:\t0\nflags:\t0100002\n${held ? `lock:\t1: FLOCK  ADVISORY  WRITE ${pid} ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n` : ""}`,
+    `pos:\t0\nflags:\t0100002\n${held ? `lock:\t1: ${kind}  ADVISORY  WRITE ${pid} ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n` : ""}`,
   );
 }
 
@@ -770,6 +771,40 @@ function answerQueries(
 }
 
 describe("the wake needs no live asker and no lsof (#2079)", () => {
+  it("logs codex_wake_skipped once when mail waits and nobody holds the lock; no wake is tried (#2343)", async () => {
+    const w = world();
+    const evs: string[] = [];
+    const { two } = await restarted(
+      w,
+      { holdersOf: (fs: string[]) => new Map(fs.map((f) => [f, []])) },
+      {
+        events: (e: string, f?: Record<string, unknown>) =>
+          evs.push(`${e} ${JSON.stringify(f)}`),
+      },
+    );
+    const stop = answerQueries(two, (refs) =>
+      Object.fromEntries(refs.map((r) => [r, 2])),
+    );
+    await waitFor(() =>
+      expect(evs.filter((e) => e.startsWith("codex_wake_skipped"))).toContain(
+        `codex_wake_skipped ${JSON.stringify({ thread: THREAD, reason: "not_loaded" })}`,
+      ),
+    );
+    await waitFor(() =>
+      expect(two.of("waiting_query").length).toBeGreaterThan(2),
+    );
+    expect(
+      evs.filter(
+        (e) =>
+          e.includes(`"thread":"${THREAD}"`) &&
+          e.startsWith("codex_wake_skipped"),
+      ),
+    ).toHaveLength(1);
+    expect(w.runs()).toHaveLength(0);
+    expect(evs.some((e) => e.startsWith("codex_wake "))).toBe(false);
+    stop();
+  });
+
   it("a machine with no other live agent: one frame by its own away refs wakes the thread", async () => {
     const w = world();
     // The only other thread drops its lock: nobody is live to ask through.
@@ -802,7 +837,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     await waitFor(() => expect(w.runs()).toHaveLength(1));
     expect(two.of("list")).toHaveLength(0);
     for (const q of two.of("waiting_query"))
-      expect(q.agent_refs).toEqual([THREAD]);
+      expect(q.agent_refs).toEqual([THREAD, ASKER]); // #2343: unloaded rows ride along
     stop();
   });
 
@@ -929,6 +964,15 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     // The holder filtered out (no lock on any fd): no candidate.
     fdinfo(proc, 100, "7", locked, false);
     expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([]);
+    // #2307: a lease or delegation line is no lock; POSIX and OFDLCK are.
+    for (const kind of ["LEASE", "DELEG"]) {
+      fdinfo(proc, 100, "7", locked, true, kind);
+      expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([]);
+    }
+    for (const kind of ["POSIX", "OFDLCK"]) {
+      fdinfo(proc, 100, "7", locked, true, kind);
+      expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([100]);
+    }
     // fdinfo unreadable: fail closed.
     fdinfo(proc, 100, "7", locked, true);
     rmSync(join(proc, "100", "fdinfo"), { recursive: true });

@@ -210,7 +210,7 @@ describe("bus page templates", () => {
 });
 
 describe("GET /bus: who loads it", () => {
-  it("no session: 302 to sign-in with next, and no hub read", async () => {
+  it("no session: 302 to login with next, and no hub read", async () => {
     const { deps, calls } = doubles();
     const r = await get(deps, "/bus?done=saved", null);
     expect(r.status).toBe(302);
@@ -804,7 +804,7 @@ describe("every POST: cross-site, size, CSRF", () => {
       expect(loc(ok)).toMatch(/done=/);
     });
 
-    it(`${path}: cross-site 403, oversized body 400, Bearer 401, signed out 401; no write`, async () => {
+    it(`${path}: cross-site 403, oversized body 400, Bearer 401, logged out 401; no write`, async () => {
       const m = await login(email("xs"), "member");
       const good = await formCsrf(env, scope, m.userId, handle);
       const { deps, calls } = doubles();

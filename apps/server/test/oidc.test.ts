@@ -801,7 +801,7 @@ describe("resilient OIDC state", () => {
     expect(r2.headers.get("location")).toBeNull();
     const html = await r2.text();
     expect(html).toContain(
-      "Sign-in took too long or was opened in another tab. Try again.",
+      "Login took too long or was opened in another tab. Try again.",
     );
     expect(html).toContain('href="/auth/login?next=%2Fa%2Fq"');
     expect(html).toContain(`${FAVICON_TAGS}\n</head>`);
@@ -1005,7 +1005,7 @@ describe("Access refusals in direct mode", () => {
     );
   });
 
-  it("unknown email: sign-in page with error and next, no session, no row", async () => {
+  it("unknown email: login page with error and next, no session, no row", async () => {
     const email = `dn-${newId().slice(0, 6)}@x.com`;
     const b = await begin({ email }, "/a/keep", direct, undefined, {
       via: true,
@@ -1033,7 +1033,7 @@ describe("Access refusals in direct mode", () => {
     expect(cookieVal(r, SESSION)).toBeUndefined();
   });
 
-  it("a suspended member: sign-in page with error and next, no session", async () => {
+  it("a suspended member: login page with error and next, no session", async () => {
     const email = `ds-${newId().slice(0, 6)}@x.com`;
     const { userId } = await login(email, "member");
     await env.DB.prepare("update users set status = 'suspended' where id = ?")

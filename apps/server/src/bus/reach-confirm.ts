@@ -75,7 +75,7 @@ const REFUSED: Record<
   unknown: {
     title: "This link doesn't work",
     message:
-      "No reach change waits behind this link for you. Check that you're signed in as the right person, or ask the agent again.",
+      "No reach change waits behind this link for you. Check that you're logged in as the right person, or ask the agent again.",
     status: 404,
   },
   used: {

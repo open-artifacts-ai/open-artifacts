@@ -386,7 +386,7 @@ describe("ci.yml", () => {
     // fails unless every test shard succeeded.
     it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
       const job = w.jobs.test;
-      expect(job.needs).toEqual(["test-shard"]);
+      expect(job.needs).toEqual(["test-shard", "released-migrations-frozen"]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       expect(steps("test")).toHaveLength(1);
@@ -395,7 +395,14 @@ describe("ci.yml", () => {
       expect(gate["continue-on-error"]).toBeUndefined();
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(gate.env.SHARDS).toBe("${{ needs.test-shard.result }}");
-      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+      // #2258: `test` is the required check, so the frozen-migrations job gates through it.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.FROZEN).toBe(
+        "${{ needs.released-migrations-frozen.result }}",
+      );
+      expect(gate.run).toMatch(
+        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \]$/m,
+      );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
@@ -902,6 +909,28 @@ describe("release-please", () => {
       // The behaviour (stale list, look-alike, newer, two pending) is tested in
       // scripts/ci/release-kind.test.ts; this only proves the step calls it.
       expect(existsSync(join(root, "scripts/ci/release-kind.ts"))).toBe(true);
+    });
+    it("an empty release commit is refused before the action can tag it (#2379)", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const g = steps.findIndex((s: any) =>
+        String(s.run ?? "").includes("release-commit-changed.ts"),
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.findIndex((s: any) => s.id === "rp");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const kind = steps.findIndex((s: any) => s.id === "kind");
+      expect(g).toBeGreaterThan(kind);
+      expect(g).toBeLessThan(rp);
+      expect(steps[g].if).toContain("steps.kind.outputs.is_release == 'true'");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const checkout = steps.find((s: any) =>
+        String(s.uses ?? "").startsWith("actions/checkout@"),
+      );
+      expect(checkout.with["fetch-depth"]).toBeGreaterThanOrEqual(2);
+      expect(
+        existsSync(join(root, "scripts/ci/release-commit-changed.ts")),
+      ).toBe(true);
     });
     it("a release commit that ends with no release fails the run instead of going green", () => {
       const steps = rpSteps();
@@ -1667,6 +1696,20 @@ describe("release cadence", () => {
         // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
         "${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}",
       );
+    });
+    it("skips the landing check when deploy-landing did not succeed, in both run lines", () => {
+      expect(v.env.SKIP_LANDING).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ needs.deploy-landing.result != 'success' && '--skip-landing' || '' }}",
+      );
+      expect(v.needs).toContain("deploy-landing");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const runs = v.steps.filter((s: any) =>
+        String(s.run ?? "").includes("verify-release.ts"),
+      );
+      expect(runs).toHaveLength(2);
+      for (const r of runs)
+        expect(r.run).toContain('${SKIP_LANDING:+"$SKIP_LANDING"}');
     });
   });
 });

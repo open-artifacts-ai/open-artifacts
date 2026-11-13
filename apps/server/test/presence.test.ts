@@ -503,7 +503,7 @@ describe("UserPresence", () => {
     later.ws.close();
   });
 
-  it("a signed-in socket without an authorization time is refused", async () => {
+  it("a logged-in socket without an authorization time is refused", async () => {
     const art = await pub();
     const r = await runtimeStub(env, art).fetch(
       "https://runtime.invalid/subscribe?collection=c",

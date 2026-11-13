@@ -99,7 +99,7 @@ export function createEventLog(
         again.ino !== st.ino
       )
         throw new Error("folder changed");
-      await dh.chmod(0o700);
+      if ((st.mode & 0o777) !== 0o700) await dh.chmod(0o700);
       return { dev: st.dev, ino: st.ino };
     } finally {
       await dh.close();
@@ -120,7 +120,8 @@ export function createEventLog(
     try {
       // A symlink, a FIFO or a device is never used.
       if (!(await fh.stat()).isFile()) throw new Error("not a regular file");
-      await fh.chmod(0o600);
+      // Only when wrong: fchmod bumps ctime on every call.
+      if (((await fh.stat()).mode & 0o777) !== 0o600) await fh.chmod(0o600);
       return fh;
     } catch (e) {
       await fh.close();
@@ -149,6 +150,10 @@ export function createEventLog(
         await rename(file, `${file}.1`);
         size = 0;
       }
+      // Accepted residual (#2304): a same-user double swap of the logs folder
+      // (to a symlink and back) around this open can still land a line in the
+      // target. It needs same-user write access to ~/.oa-bus, so it is not
+      // closed here.
       const fh = await openChecked(
         file,
         constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT,

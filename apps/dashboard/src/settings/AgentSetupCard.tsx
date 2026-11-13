@@ -8,11 +8,15 @@ import { toast } from "../layout/toast";
 import { muted, SettingsCard } from "./ui";
 
 /** The prompt a member pastes into any AI agent, written to the agent. The
-    origin is the app host, which serves /llms.txt. The URL ends its line, so
-    no punctuation can read as part of it. */
+    origin is the app host, which serves /llms.txt. One line, and the URL ends
+    it, so no punctuation can read as part of it. */
 export const setupPrompt = () =>
-  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt
-Sign in through the browser. Never ask me to paste a token into this chat.`;
+  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt`;
+
+/** The line above the prompt where the bus is on for the instance: the bus is
+    part of setup. OA Product edits this; plain words, no em dashes. */
+export const SETUP_INTRO_BUS =
+  "Paste this into Claude Code, Cursor or any AI agent. It logs in through your browser and sets up the bus, so your agent hears your comments and answers.";
 
 /** Whoever the server lets connect an agent (its canConnect): not a guest,
     not capped. The role covers an older server, whose /me has no auth.
@@ -58,6 +62,9 @@ export function AgentSetupBody({
   intro?: string;
 } = {}) {
   const id = useId();
+  const me = useMe();
+  // The server's own busOn from /me, as the bus pages use it (#1293).
+  const bus = me.status === "authed" && me.me.busOn === true;
   const text = setupPrompt();
   const [copied, setCopied] = useState(false);
   // The plan lock (Design, #863): connecting is refused, so the copy is off.
@@ -80,7 +87,8 @@ export function AgentSetupBody({
   };
   return (
     <div className="grid min-w-0 gap-[var(--oa-space-2)] text-left">
-      <p className={`m-0 ${muted}`}>{intro}</p>
+      {/* Intended: with the bus on, the setup intro wins over a caller's `intro` (the first-run checklist). */}
+      <p className={`m-0 ${muted}`}>{bus ? SETUP_INTRO_BUS : intro}</p>
       <Textarea
         id={id}
         readOnly

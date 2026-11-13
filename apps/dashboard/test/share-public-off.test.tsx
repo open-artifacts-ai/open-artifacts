@@ -177,7 +177,7 @@ it("hosted help text names the space on Private and the org on Team (D6 section 
   fireEvent.click(within(g).getByRole("radio", { name: "Team" }));
   expect(screen.getByText("Everyone at Acme Artifacts")).toBeVisible();
   fireEvent.click(within(g).getByRole("radio", { name: "Public" }));
-  expect(screen.getByText("Anyone with the link, no sign-in")).toBeVisible();
+  expect(screen.getByText("Anyone with the link, no login")).toBeVisible();
 });
 
 it("self-hosted help text is unchanged", async () => {

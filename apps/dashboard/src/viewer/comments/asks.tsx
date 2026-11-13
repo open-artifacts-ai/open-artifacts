@@ -8,19 +8,29 @@ import type {
   MentionDelivery,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { CheckCheck, Clock, Minus } from "lucide-react";
+import {
+  CheckCheck,
+  Clock,
+  KeyRound,
+  Loader2,
+  Minus,
+  ShieldCheck,
+} from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
+  usePasskeyAnswer,
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
 import { PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
-import { linkify } from "./linkify";
+import { Markdown, MarkdownInline } from "./Markdown";
+import { PasskeyBlocked } from "./PasskeyParts";
+import { passkeyFailure, passkeyLine } from "./passkey";
 
 const MUTED = "text-muted-foreground";
 
@@ -31,13 +41,20 @@ export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
 });
 
+/** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
+export const isSendingAnswer = (a: object | undefined) =>
+  !!a && (a as { sending?: boolean }).sending === true;
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
     .filter((t) =>
       t.comments.some(
-        (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+        (c) =>
+          c.ask &&
+          (!c.ask.answer || isSendingAnswer(c.ask.answer)) &&
+          c.ask.to.some((a) => a.me),
       ),
     )
     .map((t) => t.id);
@@ -469,6 +486,11 @@ const showLetters = (opts: { id: string; label: string }[]) =>
     (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
   );
 
+const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+/** An ask's comment body is worth showing unless empty or just the question again. */
+export const showsAskBody = (body: string, question: string) =>
+  squash(body) !== "" && squash(body) !== squash(question);
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
@@ -478,8 +500,11 @@ export function AskBlock({
   reply,
   askQuestion,
   guest = false,
+  body,
 }: {
   artifactId: string;
+  /** The comment's own text (its steps), shown above the question; the caller renders it. */
+  body?: React.ReactNode;
   /** A guest sees the masked name and no tile (#1890). */
   guest?: boolean;
   thread: CommentThread;
@@ -492,21 +517,46 @@ export function AskBlock({
   askQuestion?: () => void;
 }) {
   const ask = c.ask;
-  const answer = useAnswerAsk(artifactId);
+  const plain = useAnswerAsk(artifactId);
+  const passkey = usePasskeyAnswer(artifactId);
+  // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
+  const answer = ask?.confirm === "passkey" ? passkey : plain;
+  const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
   const picked = ask?.answer?.optionId;
+  const opts = useRef<HTMLUListElement>(null);
+  const [refocus, setRefocus] = useState<string | null>(null);
+  // Once the failed pick is rolled back and its option is enabled again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` changes when the rollback lands
+  useEffect(() => {
+    if (!refocus || answer.isPending) return;
+    const el = opts.current?.querySelector<HTMLButtonElement>(
+      `[data-option="${CSS.escape(refocus)}"]`,
+    );
+    if (!el || el.disabled) return;
+    el.focus({ preventScroll: true });
+    setRefocus(null);
+  }, [refocus, answer.isPending, picked]);
   // A later answer, even one made elsewhere, ends the old failure and the Change mode.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` is the trigger.
   useEffect(() => {
+    // The rollback after a failed pick (or a 409's refetch) sets it back to
+    // unanswered: that failure stays. A new answer ends the old one.
+    if (picked === undefined) return;
     setErr(null);
     setChanging(false);
   }, [picked]);
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me);
+  // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
+  const pk = ask.confirm === "passkey";
+  const pkErr = pk && err != null ? passkeyFailure(err) : null;
+  const pkLine = pkErr ? passkeyLine(pkErr) : null;
+  const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
@@ -515,10 +565,29 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const slot = answer.isPending ? (
+    <p role="status" data-passkey-verifying="" className={`m-0 ${MUTED}`}>
+      Waiting for your passkey…
+    </p>
+  ) : pkErr && (pkLine || pkErr.kind === "other") ? (
+    <p
+      role="alert"
+      data-passkey-error={pkErr.kind}
+      className={`m-0 ${pkLine?.danger || !pkLine ? "text-destructive" : MUTED}`}
+    >
+      {pkLine?.text ?? answerError(err, errCtx)}
+    </p>
+  ) : !pickedOpt && !blocked ? (
+    <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
+      <KeyRound aria-hidden="true" className="size-3.5" />
+      Approving this needs your passkey.
+    </p>
+  ) : null;
   const recIdx = ask.options.findIndex(
     (o) => o.id === ask.recommended?.optionId,
   );
   const letters = showLetters(ask.options);
+  const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -562,10 +631,14 @@ export function AskBlock({
         <div
           // Amber only while it needs this reader: an ask for you with no pick yet.
           className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
-            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+            canAnswer && (!pickedOpt || sendingPick)
+              ? "ring-[var(--oa-warning)]"
+              : "ring-border"
           }`}
           data-ask=""
-          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
+          data-needs-you={
+            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
+          }
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
             {c.author.name}
@@ -582,11 +655,22 @@ export function AskBlock({
             )}{" "}
             asks{askedWho(ask.to, mine)}
           </p>
-          <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {linked(ask.question, 0)}
-          </p>
+          {body}
+          <div id={qid} className={`${TXT} font-semibold break-words`}>
+            <Markdown body={ask.question} />
+          </div>
+          {pk && slot && (
+            // One slot for the idle line, the wait and the failure; absent when empty.
+            <div className={`min-h-5 ${TXT}`} data-passkey-slot="">
+              {slot}
+            </div>
+          )}
+          {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
           <ul
+            ref={opts}
             aria-labelledby={qid}
+            aria-busy={answer.isPending || undefined}
+            data-sending={answer.isPending ? "" : undefined}
             className="m-0 flex list-none flex-col gap-1 p-0"
           >
             {ask.options.map((o, i) => {
@@ -599,19 +683,30 @@ export function AskBlock({
                     size="sm"
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
-                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
+                        ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                         : ""
-                    }`}
+                    } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
-                      !canAnswer || answer.isPending || sel || (locked && !sel)
+                      !canAnswer ||
+                      answer.isPending ||
+                      sel ||
+                      (locked && !sel) ||
+                      blocked
                     }
                     aria-pressed={sel}
                     data-option={o.id}
                     onClick={() => {
                       setErr(null);
+                      setLastPick(o.id);
                       answer.mutate(
                         { thread: thread.id, comment: c.id, optionId: o.id },
-                        { onError: setErr },
+                        {
+                          onError: (e) => {
+                            setErr(e);
+                            // Back to unanswered: focus returns to the option.
+                            setRefocus(o.id);
+                          },
+                        },
                       );
                     }}
                   >
@@ -627,10 +722,31 @@ export function AskBlock({
                       <b>{o.label}</b>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
-                          {o.detail}
+                          <MarkdownInline body={o.detail} links={false} />
                         </span>
                       )}
                     </span>
+                    {pk && !sel && (
+                      <span
+                        data-passkey-hint=""
+                        role="img"
+                        aria-label={
+                          answer.isPending && lastPick === o.id
+                            ? "Waiting for your passkey"
+                            : "Needs a passkey"
+                        }
+                        className={`ml-auto shrink-0 ${MUTED}`}
+                      >
+                        {answer.isPending && lastPick === o.id ? (
+                          <Loader2
+                            aria-hidden="true"
+                            className="size-3.5 animate-spin motion-reduce:animate-none"
+                          />
+                        ) : (
+                          <KeyRound aria-hidden="true" className="size-3.5" />
+                        )}
+                      </span>
+                    )}
                     {rec && (
                       <span
                         className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
@@ -649,27 +765,41 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer && pickedOpt && (
-            <p className={`${TXT} font-medium`} data-ask-answer="">
-              {actor(ask.answer.by, "You")} picked{" "}
-              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-              {versionDate(ask.answer.at)}
-              {ask.closed ? " · closed" : ""}
-              {canAnswer && locked && (
-                <>
-                  {" · "}
-                  <Button
-                    size="xs"
-                    variant="link"
-                    className="h-auto p-0"
-                    onClick={() => setChanging(true)}
+          {ask.answer &&
+            pickedOpt &&
+            !isSendingAnswer(ask.answer) &&
+            !answer.isPending && (
+              <>
+                <p className={`${TXT} font-medium`} data-ask-answer="">
+                  {actor(ask.answer.by, "You")} picked{" "}
+                  {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                  {versionDate(ask.answer.at)}
+                  {ask.closed ? " · closed" : ""}
+                  {canAnswer && locked && (
+                    <>
+                      {" · "}
+                      <Button
+                        size="xs"
+                        variant="link"
+                        className="h-auto p-0"
+                        onClick={() => setChanging(true)}
+                      >
+                        Change
+                      </Button>
+                    </>
+                  )}
+                </p>
+                {ask.answer.verified === "passkey" && (
+                  <span
+                    data-ask-verified=""
+                    className={`inline-flex w-fit items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
                   >
-                    Change
-                  </Button>
-                </>
-              )}
-            </p>
-          )}
+                    <ShieldCheck aria-hidden="true" className="size-3" />
+                    Verified with passkey
+                  </span>
+                )}
+              </>
+            )}
           {asked.length > 0 && (
             <p
               data-ask-to=""
@@ -692,7 +822,7 @@ export function AskBlock({
               Only the people asked can answer.
             </p>
           )}
-          {err != null && (
+          {err != null && !pk && (
             <p role="alert" className={`${TXT} text-destructive`}>
               {answerError(err, errCtx)}
             </p>
@@ -756,8 +886,17 @@ export function mentionedKeys(
   text: string,
   agents: readonly ArtifactAgent[],
 ): string[] {
+  return mentionSpans(text, agents).map((s) => s.key);
+}
+
+/** Where each counted `@name` sits in the text (`start` at the "@", `end`
+    after the name), in the order `mentionedKeys` lists them. */
+export function mentionSpans(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { key: string; start: number; end: number }[] {
   let rest = text;
-  const keys: string[] = [];
+  const out: { key: string; start: number; end: number }[] = [];
   for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
     const re = new RegExp(
       `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
@@ -765,14 +904,46 @@ export function mentionedKeys(
     );
     const m = re.exec(rest);
     if (!m) continue;
-    keys.push(a.key);
     const at = m.index + (m[1]?.length ?? 0);
+    out.push({ key: a.key, start: at, end: at + a.name.length + 1 });
     rest =
       rest.slice(0, at) +
       " ".repeat(a.name.length + 1) +
       rest.slice(at + a.name.length + 1);
   }
-  return keys;
+  return out;
+}
+
+/** #2317: split the text into plain runs and counted mentions (the pills),
+    in text order. Joining the `text` of every segment gives the input back. */
+export function mentionSegments(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { text: string; key?: string }[] {
+  const spans = mentionSpans(text, agents).sort((x, y) => x.start - y.start);
+  const out: { text: string; key?: string }[] = [];
+  let last = 0;
+  for (const s of spans) {
+    if (s.start > last) out.push({ text: text.slice(last, s.start) });
+    out.push({ text: text.slice(s.start, s.end), key: s.key });
+    last = s.end;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+/** #2317: Backspace with the caret right after a pill: the range of the whole
+    `@name`, to select so the native delete removes it (and stays in the undo
+    stack). Null when the key should act normally. */
+export function atomicBackspace(
+  text: string,
+  start: number,
+  end: number,
+  agents: readonly ArtifactAgent[],
+): { start: number; end: number } | null {
+  if (start !== end) return null;
+  const s = mentionSpans(text, agents).find((m) => m.end === start);
+  return s ? { start: s.start, end: s.end } : null;
 }
 
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
@@ -808,15 +979,15 @@ export function removeMention(
   return atStart ? out.trimStart() : out;
 }
 
-/** A posted body with each `@name` from its mentions as a chip. Text spans only,
-    never HTML; a body with no mentions is the plain string. */
-export function MentionedText({
-  body,
-  mentions,
-  guest = false,
-  marks,
-  createdAt,
-}: {
+/** A posted body as the safe markdown subset (#2338), with each `@name` from its
+    mentions as a chip in its text. Text spans and elements only, never HTML. */
+export function MentionedText(props: MentionedProps) {
+  return (
+    <Markdown body={props.body} text={(s) => <>{mentioned(s, props)}</>} />
+  );
+}
+
+type MentionedProps = {
   body: string;
   mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
     key: string;
@@ -828,8 +999,14 @@ export function MentionedText({
   marks?: boolean;
   /** The comment's createdAt, for "sending" before a queued notice is held. */
   createdAt?: string;
-}) {
-  if (!mentions?.length) return <>{linked(body, 0)}</>;
+};
+
+/** One run of plain text with its mention chips. Links were cut out by the parser. */
+function mentioned(
+  body: string,
+  { mentions, guest = false, marks, createdAt }: MentionedProps,
+): React.ReactNode[] {
+  if (!mentions?.length) return [body];
   const names = [...new Set(mentions.map((m) => m.name))]
     .sort((x, y) => y.length - x.length)
     .map(esc);
@@ -845,7 +1022,7 @@ export function MentionedText({
       (x) => x.name.toLowerCase() === (m[2] ?? "").toLowerCase(),
     );
     const face = same.length === 1 ? same[0] : undefined;
-    if (at > last) out.push(...linked(body.slice(last, at), last));
+    if (at > last) out.push(body.slice(last, at));
     if (marks && !guest && face?.delivery) {
       out.push(
         <MarkedChip
@@ -872,31 +1049,9 @@ export function MentionedText({
     );
     last = end;
   }
-  if (last === 0) return <>{linked(body, 0)}</>;
-  if (last < body.length) out.push(...linked(body.slice(last), last));
-  return <>{out}</>;
-}
-
-/** Plain text with its http(s) URLs as links that open in a new tab. */
-function linked(text: string, base: number): React.ReactNode[] {
-  let at = base;
-  return linkify(text).map((p) => {
-    const key = at;
-    at += p.text.length;
-    return p.url ? (
-      <a
-        key={key}
-        href={p.text}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="break-all underline"
-      >
-        {p.text}
-      </a>
-    ) : (
-      p.text
-    );
-  });
+  if (last === 0) return [body];
+  if (last < body.length) out.push(body.slice(last));
+  return out;
 }
 
 /** Who gets notified: the mentioned agents. */

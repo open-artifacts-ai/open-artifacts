@@ -530,7 +530,7 @@ describe("MCP auth: OAuth", () => {
     expect(page.r.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
 
-  it("no session → redirect to sign-in, back to the authorize URL", async () => {
+  it("no session → redirect to login, back to the authorize URL", async () => {
     const clientId = await register();
     const url = authorizeUrl(clientId, (await pkce()).challenge);
     const r = await callWorker(new Request(url));

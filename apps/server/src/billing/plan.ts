@@ -80,6 +80,20 @@ export const TierAnswerSchema = z.object({
   hasCustomer: z.boolean().optional(),
   /** Yearly Team and Business prices are configured. Absent from an answer that predates it (off). */
   yearlyTeamBusiness: z.boolean().optional(),
+  /** A Checkout put a card on file. Absent from an answer that predates it (off). */
+  soloCheckedOut: z.boolean().optional(),
+  /** When a scheduled cancel takes effect (ms), or null. Absent from an answer that predates it. */
+  cancelsAt: z.number().int().nullable().optional(),
+  /** The billing interval and the renewal date (ms). Absent from an answer that predates them. */
+  interval: z.enum(["month", "year"]).nullable().optional(),
+  renewsAt: z.number().int().nullable().optional(),
+  /** Unpaid extra-creator charges (#2246). Billing sends null for none; absent from an older answer. */
+  overageDue: z
+    .object({
+      amountCents: z.number().int().nonnegative(),
+      months: z.array(z.string().regex(/^\d{4}-\d{2}$/)).min(1),
+    })
+    .nullish(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -140,6 +154,12 @@ export type EffectivePlan = {
   hasCustomer?: boolean;
   /** Absent when billing's answer carried none (off). */
   yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
+  interval?: "month" | "year" | null;
+  renewsAt?: number | null;
+  /** Absent when billing's answer carried none or null (nothing due). */
+  overageDue?: { amountCents: number; months: string[] };
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -160,8 +180,18 @@ export function effectivePlan(
   envTier: string | undefined,
   now: number,
 ): EffectivePlan {
-  const answer = last ?? {
-    tier: parseTier(envTier) ?? ("solo" as const),
+  // Billing's version 0 is "no row for this install" (solo, active): no
+  // information. It must not lower an install provisioned Team or Business:
+  // the plan follows TIER, as with no answer. `last` still counts for the
+  // 7-day clock below (billing was reachable).
+  const provisioned = parseTier(envTier);
+  const noRow =
+    last !== null &&
+    last.version === 0 &&
+    (provisioned === "team" || provisioned === "business");
+  const used = noRow ? null : last;
+  const answer = used ?? {
+    tier: provisioned ?? ("solo" as const),
     status: "active" as const,
     trialEndsAt: null,
     graceUntil: null,
@@ -171,7 +201,7 @@ export function effectivePlan(
   // passed is Solo now, with its status read as Solo's (lapsed or past due is
   // the unpaid view-only lock), until billing's next answer replaces it.
   const trialOver =
-    last !== null &&
+    used !== null &&
     answer.tier === "trial" &&
     answer.trialEndsAt !== null &&
     now > answer.trialEndsAt;
@@ -188,6 +218,21 @@ export function effectivePlan(
       : {}),
     ...("yearlyTeamBusiness" in base && base.yearlyTeamBusiness !== undefined
       ? { yearlyTeamBusiness: base.yearlyTeamBusiness }
+      : {}),
+    ...("soloCheckedOut" in base && base.soloCheckedOut !== undefined
+      ? { soloCheckedOut: base.soloCheckedOut }
+      : {}),
+    ...("cancelsAt" in base && base.cancelsAt !== undefined
+      ? { cancelsAt: base.cancelsAt }
+      : {}),
+    ...("interval" in base && base.interval !== undefined
+      ? { interval: base.interval }
+      : {}),
+    ...("renewsAt" in base && base.renewsAt !== undefined
+      ? { renewsAt: base.renewsAt }
+      : {}),
+    ...("overageDue" in base && base.overageDue
+      ? { overageDue: base.overageDue }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",
@@ -228,7 +273,7 @@ export function effectivePlan(
   // closed). Not the provisioned TIER fallback (`last` null): a trial
   // install provisioned before billing answered has no dates at all.
   // (A passed trial date is Solo, above.)
-  if (base.tier === "trial" && last !== null && base.trialEndsAt === null)
+  if (base.tier === "trial" && used !== null && base.trialEndsAt === null)
     return out("trial_ended", "readOnly");
   // free is the pre-Solo tier: the solo lock, as before Solo existed.
   if (base.tier === "free" || base.tier === "solo") return out("solo", "solo");

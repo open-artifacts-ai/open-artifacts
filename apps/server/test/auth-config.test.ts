@@ -38,7 +38,7 @@ describe("authConfig", () => {
     const c = authConfig(base({ AUTH_PROVIDERS: "saml" }));
     expect(c.providers.size).toBe(0);
     expect(c.problems).toContain(
-      `AUTH_PROVIDERS lists "saml", which isn't a sign-in method, so it's ignored. Use access, google or email.`,
+      `AUTH_PROVIDERS lists "saml", which isn't a login method, so it's ignored. Use access, google or email.`,
     );
   });
 
@@ -140,7 +140,7 @@ describe("authConfig", () => {
     const hostedDirect = authConfig(direct({ HOSTED: "1" }));
     expect(hostedDirect.google).toBeNull();
     expect(hostedDirect.problems).toContain(
-      "Google sign-in is on, but a hosted install needs the broker transport and AUTH_BROKER_URL isn't set, so Google isn't offered. Set AUTH_BROKER_URL to the sign-in broker.",
+      "Google login is on, but a hosted install needs the broker transport and AUTH_BROKER_URL isn't set, so Google isn't offered. Set AUTH_BROKER_URL to the login broker.",
     );
 
     // A tenant-supplied shared secret is never accepted on a hosted install:
@@ -222,7 +222,7 @@ describe("authConfig", () => {
     const off = authConfig(direct({ EMAIL: undefined, EMAIL_FROM: undefined }));
     expect(off.emailCodes).toBe(false);
     expect(off.problems).toContain(
-      "Email sign-in is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so sign-in codes aren't offered. Set up email sending, or turn email sign-in off.",
+      "Email login is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so login codes aren't offered. Set up email sending, or turn email login off.",
     );
     // Guests stay read-only and the mode stays direct: fail closed.
     expect(off.guestsReadOnly).toBe(true);
@@ -236,7 +236,7 @@ describe("authConfig", () => {
   // A4: Turnstile stays optional on self-host; codes without it warn owners.
   test("codes with no Turnstile keys: the bot-check problem, verbatim; codes still offered", () => {
     expect(NO_BOT_CHECK).toBe(
-      "Sign-in codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.",
+      "Login codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.",
     );
     const c = authConfig(direct());
     expect(c.emailCodes).toBe(true);

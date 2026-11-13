@@ -86,6 +86,12 @@ const AgentUp = z.strictObject({
    */
   name_kind: NameKindSchema.optional(),
   /**
+   * #2311: the harness says a user or a peer named this session, so the name
+   * is never treated as a harness default (not expired, not hidden as
+   * unnamed). Sent only to a hub that listed `BUS_CAPS.nameChosen`.
+   */
+  name_chosen: z.literal(true).optional(),
+  /**
    * #1295: the agent_ref this one takes over from, after a /clear: the same
    * live process now reports a new session. The hub honours it only for a
    * socket whose hello listed `BUS_CAPS.mailbox`, when the old ref is an
@@ -205,6 +211,13 @@ const Rename = z.strictObject({
   proposed_name: WellFormedText.pipe(z.string().min(1).max(256)),
   /** A tool rename is `chosen`; a harness reverting to its fallback is `default`. Absent means `chosen`. */
   name_kind: NameKindSchema.optional(),
+  /**
+   * #2311: false when the harness re-derived the title (not a user's or a
+   * peer's choice): the hub then leaves `name_chosen` as it is. Absent or
+   * true marks the name chosen. Sent only to a hub that listed
+   * `BUS_CAPS.nameChosen`.
+   */
+  name_chosen: z.boolean().optional(),
 });
 
 /**
@@ -295,6 +308,16 @@ const WaitingCounts = z.strictObject({
   counts: z
     .record(AgentRefSchema, z.number().int().min(1).max(100))
     .refine((c) => Object.keys(c).length <= MAX_WAITING_QUERY, "too many refs"),
+});
+
+/**
+ * The hub has settled the mail ack for `msg_id`, or it can no longer settle
+ * (`BUS_CAPS.ackConfirm`). One shape for both, so it says nothing about the id.
+ */
+const Acked = z.strictObject({
+  ...base,
+  type: z.literal("acked"),
+  msg_id: MsgIdSchema,
 });
 
 /**
@@ -519,6 +542,7 @@ export const SERVER_FRAMES = [
   "follows",
   "link_bound",
   "waiting_counts",
+  "acked",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -555,6 +579,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   Follows,
   LinkBound,
   WaitingCounts,
+  Acked,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -588,6 +613,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Follows,
   LinkBound,
   WaitingCounts,
+  Acked,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;

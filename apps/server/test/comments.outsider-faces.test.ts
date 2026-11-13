@@ -160,7 +160,7 @@ const rest = async (u: U | null) =>
 
 describe("outsiders get no face fields (REST)", () => {
   it.each([
-    ["signed out", () => null],
+    ["logged out", () => null],
     ["guest role", () => guestV],
     ["restricted", () => restrictedV],
   ])("%s: authors and every party are stripped", async (_n, who) => {
@@ -176,7 +176,7 @@ describe("outsiders get no face fields (REST)", () => {
   });
 
   it.each([
-    ["signed out", () => null],
+    ["logged out", () => null],
     ["guest role", () => guestV],
     ["restricted", () => restrictedV],
   ])("%s: a mention carries no delivery state (#2004)", async (_n, who) => {

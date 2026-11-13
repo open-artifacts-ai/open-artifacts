@@ -1,13 +1,19 @@
 ---
-import Landing from "../components/Landing.astro";
+import Home from "../components/home/Home.astro";
 import Base from "../layouts/Base.astro";
+import { HOME_DESCRIPTION, HOME_TITLE, OG_ALT } from "../lib/copy";
+import { loginHref } from "../lib/hero";
 import { gatesFor } from "../lib/release";
 ---
 
 <Base
   fallbacks={gatesFor("index")}
-  title="Open Artifacts: bring any agent, keep every artifact"
-  description="Open Artifacts is one home for the pages, docs, code and PDFs any AI agent makes. Share them, keep every version, and build live pages."
+  homeNav
+  loginHref={loginHref(import.meta.env.HOSTED_SIGNUP_URL)}
+  ogPath="/og-home.png"
+  ogAlt={OG_ALT}
+  title={HOME_TITLE}
+  description={HOME_DESCRIPTION}
 >
-  <Landing />
+  <Home />
 </Base>

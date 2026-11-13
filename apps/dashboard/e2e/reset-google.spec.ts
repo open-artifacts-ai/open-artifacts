@@ -30,7 +30,7 @@ for (const scheme of ["light", "dark"] as const)
         // Google-linked, so he has signed in (the shared fixture, #496).
         const bob = page.locator("li", { hasText: "Bob Builder" });
         await expect(bob).toContainText(/Active .+ ago/);
-        await expect(bob).not.toContainText("Never signed in");
+        await expect(bob).not.toContainText("Never logged in");
         const menu = await menuFor(page, "Bob Builder");
         await settle(page);
         await shot(page, info.outputPath(`reset-menu-${scheme}-${width}.png`));
@@ -47,7 +47,7 @@ for (const scheme of ["light", "dark"] as const)
         await d.getByRole("button", { name: "Reset link" }).click();
         await expect(
           page.getByText(
-            "Google link reset for Bob Builder. They're signed out and link again at their next Google sign-in.",
+            "Google link reset for Bob Builder. They're logged out and link again at their next Google login.",
           ),
         ).toBeVisible();
         await expect(page.getByRole("alertdialog")).toHaveCount(0);

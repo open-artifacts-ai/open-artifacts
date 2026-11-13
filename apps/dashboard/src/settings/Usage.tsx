@@ -41,7 +41,7 @@ const LABELS: Record<Metric["key"], { name: string; what: string }> = {
     what: "Requests stopped by the CPU limit",
   },
   cpu_p99_ms: { name: "CPU time p99 (ms)", what: "Slowest 1% of requests" },
-  kv_writes: { name: "KV writes", what: "Agent sign-ins and token refreshes" },
+  kv_writes: { name: "KV writes", what: "Agent logins and token refreshes" },
 };
 /** The old @oa/ui Badge tones, on shadcn's Badge. */
 const BADGE: Record<Tone, string> = {

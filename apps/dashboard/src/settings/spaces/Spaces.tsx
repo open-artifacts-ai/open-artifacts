@@ -508,7 +508,7 @@ function General({ space }: { space: Space }) {
             Public links
           </b>
           <small id="oa-space-public-hint" className={muted}>
-            Anyone with the link can view, no sign-in.
+            Anyone with the link can view, no login.
           </small>
         </div>
         <WriteLock>

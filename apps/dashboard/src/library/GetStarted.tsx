@@ -78,11 +78,11 @@ const Waiting = ({ children }: { children: string }) => (
  * (R.onboarding), so every browser agrees and a finished list stays gone.
  */
 export function GetStarted({
-  hasArtifacts: inLibrary,
+  ownIds,
   loaded,
 }: {
-  /** An own artifact is on the Library pages already loaded. */
-  hasArtifacts: boolean;
+  /** Ids of the own artifacts on the Library pages already loaded. */
+  ownIds: string[];
   loaded: boolean;
 }) {
   const state = useMe();
@@ -99,7 +99,15 @@ export function GetStarted({
   const clients = useOAuthClients(live);
   const members = useMembers(undefined, live);
   // The server says so even when the own artifact is past the loaded pages (#1832).
-  const hasArtifacts = inLibrary || onboarding.data?.hasArtifacts === true;
+  // firstArtifact is the oldest own artifact that is not the seeded Welcome
+  // (the server's hasArtifacts counts Welcome and the self-test page, so it
+  // can't tick this). A server without it: hasArtifacts, else the loaded own
+  // artifacts minus the Welcome.
+  const o = onboarding.data;
+  const hasArtifacts =
+    o?.firstArtifact !== undefined
+      ? o.firstArtifact !== null
+      : (o?.hasArtifacts ?? ownIds.some((id) => id !== o?.welcomeId));
   const connected =
     (tokens.data?.length ?? 0) > 0 || (clients.data?.length ?? 0) > 0;
   const invited = (members.data ?? []).some(
@@ -186,7 +194,7 @@ export function GetStarted({
             <p className="m-0">Your agent is connected.</p>
           ) : (
             <>
-              <AgentSetupBody intro="Paste this into Claude Code, Cursor or any AI agent. It signs in through your browser." />
+              <AgentSetupBody intro="Paste this into Claude Code, Cursor or any AI agent. It logs in through your browser." />
               <Waiting>Waiting for your agent…</Waiting>
             </>
           )}

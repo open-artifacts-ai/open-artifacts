@@ -23,6 +23,7 @@ import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
 import {
   commentError,
+  isSending,
   TooManyMentions,
   useArtifactAgents,
   useCommentErrorCtx,
@@ -41,6 +42,7 @@ import {
   AskBlock,
   actor,
   asksForMe,
+  atomicBackspace,
   Delivery,
   DeliveryFaces,
   type Extras,
@@ -54,20 +56,31 @@ import {
   newProblems,
   nextAskFor,
   removeMention,
+  showsAskBody,
 } from "./asks";
 import {
   focusRow,
   holdAnchor,
   NewReplyPill,
   scrollerOf,
+  scrollWithin,
   useKeepScroll,
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
-import { numbering, pinChanged, pinNumbering } from "./model";
+import {
+  dropLost,
+  lostKey,
+  putLost,
+  useLostDrafts,
+  useLostPost,
+} from "./lostPosts";
+import { MentionMirror } from "./MentionMirror";
+import { numbering, pinChanged } from "./model";
+import { besideWidth, placeBeside } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
-import { type CommentsApi, useCommentsApi } from "./useComments";
+import { type CommentsApi, type Lost, useCommentsApi } from "./useComments";
 import {
   fieldCap,
   keyboardInset,
@@ -81,9 +94,9 @@ const touch = () =>
   typeof window !== "undefined" &&
   window.matchMedia?.("(pointer: coarse)").matches === true;
 
-/** "Click to place a pin" on a pointer device, "Tap to place a pin" on touch. */
+/** "Click where you want to comment" on a pointer device, "Tap where you want to comment" on touch. */
 export const pinHint = () =>
-  touch() ? "Tap to place a pin" : "Click to place a pin";
+  touch() ? "Tap where you want to comment" : "Click where you want to comment";
 
 /** "Esc to cancel", on a device with a keyboard only: touch has the Select button. */
 function EscHint({ esc }: { esc: boolean }) {
@@ -109,6 +122,7 @@ function Tools({ api }: { api: CommentsApi }) {
           size="xs"
           variant={api.mode === "pin" ? "default" : "outline"}
           aria-pressed={api.mode === "pin"}
+          title="Comment on a spot"
           onClick={() => api.setMode("pin")}
         >
           Pin
@@ -189,7 +203,7 @@ function SignInLink({ box = false }: { box?: boolean }) {
       target={isEmbed() ? "_blank" : undefined}
       rel="noopener noreferrer"
     >
-      {box ? "Sign in to comment" : "Sign in"}
+      {box ? "Log in to comment" : "Log in"}
     </a>
   );
 }
@@ -325,6 +339,63 @@ export function keepCardClear(el: HTMLElement | null) {
   box.scrollTop += Math.max(0, Math.min(over, room));
 }
 
+/** A failed post's text for a composer that has closed, kept outside this component (lostPosts) until a box takes it or the reader posts again. */
+function useLost(key: string) {
+  const lost = useLostPost(key);
+  return {
+    lost: lost ?? null,
+    onLost: (l: Lost) => putLost(key, l),
+    clear: () => dropLost(key),
+  };
+}
+
+/** "Your reply wasn't posted. Restore": a failed post whose box is not on screen. */
+function LostLine({
+  what,
+  onRestore,
+  disabled,
+}: {
+  what: string;
+  onRestore: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <p role="alert" className={`${TXT} text-destructive`} data-lost="">
+      Your {what} wasn&apos;t posted.{" "}
+      <button
+        type="button"
+        disabled={disabled}
+        className="cursor-pointer border-0 bg-transparent p-0 underline disabled:cursor-default disabled:no-underline disabled:opacity-60"
+        onClick={onRestore}
+      >
+        Restore
+      </button>
+    </p>
+  );
+}
+
+/** New comments that failed while another draft was open. Restore reopens one once that draft is done. */
+function LostDrafts({ api }: { api: CommentsApi }) {
+  const items = useLostDrafts(api.artifactId);
+  if (!items.length) return null;
+  return (
+    <>
+      {items.map(([key, l]) => (
+        <LostLine
+          key={key}
+          what="comment"
+          disabled={!!api.draft}
+          onRestore={() => {
+            if (!l.draft) return;
+            dropLost(key);
+            api.reopenDraft(l.draft, l);
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -335,6 +406,8 @@ function Composer({
   onSubmit,
   onCancel,
   initial = "",
+  restore,
+  onText,
   autoFocus = false,
   alwaysOpen = true,
   failure,
@@ -345,11 +418,26 @@ function Composer({
   buttonsRight = false,
   lead,
   card = false,
+  flat = false,
   keepOnEsc = false,
   quote,
+  instant = false,
+  seed,
+  onLost,
 }: {
+  /**
+   * Posting is optimistic: the box clears at once and the text comes back if
+   * `onSubmit` rejects. Off for an edit, which the server may refuse.
+   */
+  instant?: boolean;
+  /** Text (and the error that sent it back) to start with: a post that failed after this box had closed. */
+  seed?: Lost | null;
+  /** The post failed and this box is gone: the owner keeps the text and the error. */
+  onLost?: (lost: Lost) => void;
   /** The composer as a card: quote on top, hint and button always visible (#2118). */
   card?: boolean;
+  /** A card with no border of its own, inside a surface that has one (#2019). */
+  flat?: boolean;
   /** Esc is swallowed here and the draft stays (the box never closes). */
   keepOnEsc?: boolean;
   /** Shown at the top of the card, under an amber bar. */
@@ -365,7 +453,7 @@ function Composer({
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
   /** Called when the box gains or loses text the reader typed. */
-  onDirty?: (dirty: boolean) => void;
+  onDirty?: (dirty: boolean, unmounting?: boolean) => void;
   placeholder: string;
   /** The placeholder for someone who can mention agents here. */
   mentionPlaceholder?: string;
@@ -375,6 +463,9 @@ function Composer({
   onSubmit: (body: string, extras: Extras) => Promise<unknown>;
   onCancel?: () => void;
   initial?: string;
+  /** Text kept by the owner of the draft across the box unmounting, and where to keep it. */
+  restore?: string;
+  onText?: (text: string) => void;
   autoFocus?: boolean;
   /** Collapsed to one line until focused. */
   alwaysOpen?: boolean;
@@ -383,9 +474,30 @@ function Composer({
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
   const errCtx = useCommentErrorCtx();
-  const [text, setText] = useState(initial);
+  const [text, setText] = useState(seed?.text ?? restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
-  const [error, setError] = useState<unknown>(null);
+  const [error, setError] = useState<unknown>(seed?.error ?? null);
+  const mounted = useRef(true);
+  // A seed is used up when a box takes it: at mount it is the starting text; a
+  // later one (the post failed while this box was already on screen again)
+  // goes in front of whatever is typed, never over it.
+  const seeded = useRef(seed);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the seed
+  useEffect(() => {
+    if (!seed) return;
+    if (seed !== seeded.current) {
+      seeded.current = seed;
+      setText((cur) => (cur.trim() ? `${seed.text}\n${cur}` : seed.text));
+      setError(seed.error);
+    }
+    seed.clear?.();
+  }, [seed]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [busy, setBusy] = useState(false);
   const once = useRef(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -438,7 +550,7 @@ function Composer({
     const at = pickedAt.current;
     if (at === null) return;
     pickedAt.current = null;
-    ref.current?.focus();
+    ref.current?.focus({ preventScroll: true });
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
@@ -484,19 +596,41 @@ function Composer({
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
   useEffect(() => {
+    onText?.(text);
+  }, [text, onText]);
+  useEffect(() => {
     onDirty?.(body !== "");
-    return () => onDirty?.(false);
+    return () => onDirty?.(false, true);
   }, [body, onDirty]);
   const go = async () => {
     if (!body || once.current) return;
     once.current = true;
-    setBusy(true);
     setError(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
       const keys = mentionedKeys(body, agents ?? []);
       if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
       const mentions = keys.map((key) => ({ key }));
+      if (instant) {
+        // Clear now; the empty box is what stops a double submit, so the next
+        // post can start while this one is on its way.
+        setText("");
+        setBusy(false);
+        setTimeout(() => {
+          once.current = false;
+        }, 0);
+        try {
+          await onSubmit(body, { mentions });
+        } catch (e) {
+          // Never lose typed text: it goes back in front of anything typed since.
+          if (mounted.current) {
+            setText((cur) => (cur.trim() ? `${body}\n${cur}` : body));
+            setError(e);
+          } else onLost?.({ text: body, error: e });
+        }
+        return;
+      }
+      setBusy(true);
       await onSubmit(body, {
         mentions,
       });
@@ -505,8 +639,10 @@ function Composer({
     } catch (e) {
       setError(e);
     } finally {
-      once.current = false;
-      setBusy(false);
+      if (!instant) {
+        once.current = false;
+        setBusy(false);
+      }
     }
   };
   const cancel = () => {
@@ -519,86 +655,115 @@ function Composer({
     <div
       className={
         card
-          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3"
+          ? `flex flex-col gap-2 rounded-lg bg-card p-3${flat ? "" : " border border-input"}`
           : "flex flex-col gap-2"
       }
       data-oa-composing={composing ? "" : undefined}
     >
       {quote}
-      <Textarea
-        ref={ref}
-        aria-label={label}
-        placeholder={
-          mentionable && canMention && api.canComment && mentionPlaceholder
-            ? mentionPlaceholder
-            : placeholder
-        }
-        value={text}
-        maxLength={COMMENT_BODY_MAX}
-        rows={1}
-        data-oa-field=""
-        className={`${CTXT} ${FIELD}`}
-        onFocus={() => {
-          setOpen(true);
-          retryAgents();
-        }}
-        onChange={(e) => {
-          setText(e.target.value);
-          setCaret(e.target.selectionStart);
-          setMenuOff(false);
-          setActiveOpt(0);
-        }}
-        aria-describedby={card && !coarse ? hintId : undefined}
-        aria-controls={menuOpen ? menuId : undefined}
-        aria-activedescendant={menuOpen ? `${menuId}-${activeOpt}` : undefined}
-        onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-        onKeyDown={(e) => {
-          if (menuOpen) {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              e.preventDefault();
-              const n = matches.length;
-              setActiveOpt(
-                (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
-              );
-              return;
-            }
+      <div className="relative rounded-md bg-card">
+        <Textarea
+          ref={ref}
+          aria-label={label}
+          placeholder={
+            mentionable && canMention && api.canComment && mentionPlaceholder
+              ? mentionPlaceholder
+              : placeholder
+          }
+          value={text}
+          maxLength={COMMENT_BODY_MAX}
+          rows={1}
+          data-oa-field=""
+          className={`${CTXT} ${FIELD} relative z-[1] bg-transparent`}
+          onFocus={() => {
+            setOpen(true);
+            retryAgents();
+          }}
+          onChange={(e) => {
+            setText(e.target.value);
+            setCaret(e.target.selectionStart);
+            setMenuOff(false);
+            setActiveOpt(0);
+          }}
+          aria-describedby={card && !coarse ? hintId : undefined}
+          aria-controls={menuOpen ? menuId : undefined}
+          aria-activedescendant={
+            menuOpen ? `${menuId}-${activeOpt}` : undefined
+          }
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+          onKeyDown={(e) => {
             if (
-              (e.key === "Enter" || e.key === "Tab") &&
+              e.key === "Backspace" &&
               !e.nativeEvent.isComposing &&
               !e.shiftKey &&
               !e.metaKey &&
-              !e.ctrlKey
+              !e.ctrlKey &&
+              !e.altKey &&
+              agents &&
+              agents.length > 0
+            ) {
+              const t = e.currentTarget;
+              const cut = atomicBackspace(
+                t.value,
+                t.selectionStart,
+                t.selectionEnd,
+                agents,
+              );
+              // Select the name and let the native delete remove it: the
+              // edit stays in the browser's undo stack.
+              if (cut) t.setSelectionRange(cut.start, cut.end);
+            }
+            if (menuOpen) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const n = matches.length;
+                setActiveOpt(
+                  (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
+                );
+                return;
+              }
+              if (
+                (e.key === "Enter" || e.key === "Tab") &&
+                !e.nativeEvent.isComposing &&
+                !e.shiftKey &&
+                !e.metaKey &&
+                !e.ctrlKey
+              ) {
+                e.preventDefault();
+                const a = matches[activeOpt];
+                if (a) pick(a);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setMenuOff(true);
+                return;
+              }
+            }
+            if (
+              e.key === "Enter" &&
+              (e.metaKey || e.ctrlKey) &&
+              !e.nativeEvent.isComposing
             ) {
               e.preventDefault();
-              const a = matches[activeOpt];
-              if (a) pick(a);
-              return;
+              void go();
             }
-            if (e.key === "Escape") {
-              e.preventDefault();
+            // An empty field lets Esc through (the phone sheet closes on it).
+            if (e.key === "Escape" && keepOnEsc && text !== "") {
               e.stopPropagation();
-              setMenuOff(true);
               return;
             }
-          }
-          if (
-            e.key === "Enter" &&
-            (e.metaKey || e.ctrlKey) &&
-            !e.nativeEvent.isComposing
-          ) {
-            e.preventDefault();
-            void go();
-          }
-          if (e.key === "Escape" && keepOnEsc) {
-            e.stopPropagation();
-            return;
-          }
-          if (e.key === "Escape" && (onCancel || !alwaysOpen)) {
-            e.stopPropagation();
-            cancel();
-          }
-        }}
-      />
+            if (e.key === "Escape" && (onCancel || !alwaysOpen)) {
+              e.stopPropagation();
+              cancel();
+            }
+          }}
+        />
+        {agents && agents.length > 0 && (
+          <MentionMirror field={ref} text={text} agents={agents} />
+        )}
+      </div>
       {!canMention &&
         !guest &&
         !capped &&
@@ -836,8 +1001,10 @@ function CommentRow({
   const roving = useRoving<HTMLParagraphElement>();
   return (
     <li
-      className="flex flex-col gap-1"
+      className={`flex flex-col gap-1 transition-opacity${isSending(c.id) ? " opacity-60" : ""}`}
       data-comment={c.id}
+      data-sending={isSending(c.id) ? "" : undefined}
+      aria-busy={isSending(c.id) || undefined}
       data-live={api.live.tint.has(c.id) ? "" : undefined}
     >
       <div
@@ -932,9 +1099,26 @@ function CommentRow({
             }
             askQuestion={askQuestion}
             guest={api.guest}
+            body={
+              showsAskBody(c.body, c.ask.question) ? (
+                <div
+                  className={`break-words ${CTXT}`}
+                  data-ask-body=""
+                  {...roving}
+                >
+                  <MentionedText
+                    body={c.body}
+                    mentions={c.mentions}
+                    guest={api.guest}
+                    marks={marks}
+                    createdAt={c.createdAt}
+                  />
+                </div>
+              ) : undefined
+            }
           />
         ) : (
-          <p className={`whitespace-pre-wrap break-words ${CTXT}`} {...roving}>
+          <div className={`break-words ${CTXT}`} {...roving}>
             <MentionedText
               body={c.body}
               mentions={c.mentions}
@@ -942,7 +1126,7 @@ function CommentRow({
               marks={marks}
               createdAt={c.createdAt}
             />
-          </p>
+          </div>
         )}
         <Delivery
           c={c}
@@ -1004,13 +1188,12 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
       </p>
     );
   if (a.kind === "pin") {
-    const n = pinNumbering(api.threads).get(t.id) ?? 1;
     // Only when both hashes are known and differ (a pdf's hash covers the whole file, so the note says file).
     const changed = pinChanged(a.contentHash, api.contentHash);
     return (
       <div className="flex flex-col gap-1">
         <p className={`${TXT} font-medium ${MUTED}`}>
-          {a.page ? `Page ${a.page} · ` : ""}Pin {n}
+          {a.page ? `Page ${a.page}` : "Pinned spot"}
         </p>
         {changed && api.pinFormat && (
           <p className={`${TXT} ${MUTED}`}>
@@ -1048,6 +1231,8 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
+  const lostReply = useLost(lostKey.reply(api.artifactId, t.id));
+  const lostAsk = useLost(lostKey.ask(api.artifactId, t.id));
   // The agent a question goes to, kept while the box is open so a pick
   // elsewhere doesn't swap the draft away (the server then says why).
   const [asking, setAsking] = useState<string | null>(null);
@@ -1057,6 +1242,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const el = useRef<HTMLLIElement>(null);
   const navigate = useNavigate();
   const resolved = t.status === "resolved";
+  // A thread still on its way has no id the server knows: no reply or resolve yet.
+  const canAct = api.canComment && !isSending(t.id);
   const [first, ...rest] = t.comments;
   const allProblems = useMemo(() => newProblems(t.comments), [t.comments]);
   const expanded = isActive || rest.length === 0;
@@ -1076,7 +1263,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
     if (!isActive) return;
-    el.current?.scrollIntoView?.({ block: "nearest" });
+    if (el.current) scrollWithin(el.current, "nearest");
     // #1783: in the short pin sheet a thread with 2+ replies shows its last
     // reply just above the floating action row, not the card's top.
     const card = el.current;
@@ -1104,13 +1291,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
         // One measure is enough: later size changes (typing) don't re-scroll.
         watch?.disconnect();
-        const reduce =
-          window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
-          true;
-        reply.scrollIntoView?.({
-          block: "end",
-          behavior: reduce ? "auto" : "smooth",
-        });
+        scrollWithin(reply, "end", true);
       };
       frame = requestAnimationFrame(go);
       if (typeof ResizeObserver !== "undefined") {
@@ -1149,7 +1330,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     first.author.kind === "agent" &&
     !first.ask.answer &&
     !first.ask.closed &&
-    api.canComment
+    canAct
       ? first.author.name
       : null;
   const toggle = () => {
@@ -1174,7 +1355,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             className="min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left"
             aria-label={
               t.anchor.kind === "pin"
-                ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
+                ? "Show pin in page"
                 : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
             }
             aria-pressed={isActive}
@@ -1267,6 +1448,19 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {commentError(statusErr, api.capped, errCtx)}
           </p>
         )}
+        {/* A post that failed after its box closed, with no box on screen to take it back. */}
+        {canAct && lostReply.lost && !(isActive && !(asking && isActive)) && (
+          <LostLine what="reply" onRestore={() => api.select(t.id, true)} />
+        )}
+        {canAct && asker && lostAsk.lost && !(asking && isActive) && (
+          <LostLine
+            what="question"
+            onRestore={() => {
+              setAsking(asker);
+              api.select(t.id, true);
+            }}
+          />
+        )}
         {asking && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
@@ -1276,6 +1470,13 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               actions={ACTIONS_PLAIN}
               placeholder={`Ask ${asking} a question`}
               submit="Send"
+              instant
+              seed={lostAsk.lost}
+              onLost={(l) => {
+                // Kept outside this card; if the card is still here, the box reopens with it.
+                lostAsk.onLost(l);
+                setAsking(asking);
+              }}
               autoFocus
               buttonsRight
               onCancel={() => setAsking(null)}
@@ -1284,18 +1485,21 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                   To {asking}, the agent that asked
                 </span>
               }
-              onSubmit={async (body) => {
-                await reply.mutateAsync({
+              onSubmit={(body) => {
+                lostAsk.clear();
+                const done = reply.mutateAsync({
                   thread: t.id,
                   body,
                   toAsker: true,
                   ...(api.guest ? { guestName: api.guestName.trim() } : {}),
                 });
+                // The question shows at once; the box closes with it.
                 setAsking(null);
+                return done;
               }}
             />
           </>
-        ) : api.canComment && isActive ? (
+        ) : canAct && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
             {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}
@@ -1307,14 +1511,18 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               submit="Reply"
               mentionable
               float
-              onSubmit={(body, x) =>
-                reply.mutateAsync({
+              instant
+              seed={lostReply.lost}
+              onLost={lostReply.onLost}
+              onSubmit={(body, x) => {
+                lostReply.clear();
+                return reply.mutateAsync({
                   thread: t.id,
                   body,
                   ...extrasBody(x),
                   ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-                })
-              }
+                });
+              }}
               extra={
                 <Button
                   size="xs"
@@ -1328,7 +1536,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             />
           </>
         ) : (
-          api.canComment && (
+          canAct && (
             <div className="flex gap-2 pl-8">
               <Button
                 size="xs"
@@ -1353,9 +1561,68 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   );
 }
 
-function NewThread({ api }: { api: CommentsApi }) {
+/**
+ * #2019: on a wide screen the box for a new pin opens right beside its flag,
+ * where the reader clicked, over the page. It is the same box the list shows
+ * (the list leaves it out while this is up). `frame` places it: the click is in
+ * the frame's viewport pixels.
+ */
+export function PinBeside({ frame }: { frame: HTMLElement | null }) {
+  const api = useCommentsApi();
+  const at = api.pinBeside;
+  const ref = useRef<HTMLElement>(null);
+  const [h, setH] = useState(200);
+  // The box grows as the reader types: keep it in view at its real height.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the box mounts when a pin is placed (`at`)
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => el.offsetHeight && setH(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [at]);
+  if (!at || !frame || !api.draft || !api.canComment) return null;
+  const w = besideWidth(frame.clientWidth);
+  const { left, top } = placeBeside(
+    at,
+    { w: frame.clientWidth, h: frame.clientHeight },
+    { w, h },
+  );
+  return (
+    <section
+      ref={ref}
+      aria-label="New comment"
+      data-oa-keep-selection=""
+      data-pin-beside=""
+      style={{
+        left: frame.offsetLeft + left,
+        top: frame.offsetTop + top,
+        width: w,
+      }}
+      className="absolute z-20 max-h-[calc(100%-16px)] overflow-y-auto rounded-xl border border-border bg-card shadow-xl"
+    >
+      <NewThread
+        flat
+        key={JSON.stringify("pin" in api.draft ? api.draft.pin : null)}
+        api={api}
+      />
+    </section>
+  );
+}
+
+function NewThread({
+  api,
+  flat = false,
+}: {
+  api: CommentsApi;
+  flat?: boolean;
+}) {
   const create = useCreateThread(api.artifactId, api.guest);
   const last = useRef("");
+  const lastDraft = useRef<NonNullable<typeof api.draft> | null>(null);
   const draft = api.draft;
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
@@ -1375,23 +1642,31 @@ function NewThread({ api }: { api: CommentsApi }) {
         autoFocus
         buttonsRight
         card
+        flat={flat}
         actions={ACTIONS_PLAIN}
         quote={
           "pin" in draft ? (
-            <p className={`${TXT} font-medium ${MUTED}`}>
-              {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
-            </p>
+            <p className={`${TXT} font-medium ${MUTED}`}>New comment</p>
           ) : (
             <QuoteBar>{draft.anchor.exact}</QuoteBar>
           )
         }
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
+        instant
+        seed={api.draftSeed}
+        // The box closed with the post and the post failed: open it again with the text and the error.
+        onLost={(l) =>
+          lastDraft.current && api.reopenDraft(lastDraft.current, l)
+        }
         onDirty={api.setDraftDirty}
+        restore={api.draftText.current}
+        onText={api.setDraftText}
         onCancel={api.cancelDraft}
-        onSubmit={async (body, x) => {
+        onSubmit={(body, x) => {
           last.current = body;
-          await create.mutateAsync({
+          lastDraft.current = draft;
+          const done = create.mutateAsync({
             anchor:
               "pin" in draft
                 ? { kind: "pin", version: api.version, ...draft.pin }
@@ -1399,10 +1674,13 @@ function NewThread({ api }: { api: CommentsApi }) {
             body,
             ...extrasBody(x),
             ...guest,
+            contentHash: api.contentHash,
           });
-          // Posted: keep the quote painted until the list carries the thread
-          // (#1834), so the draft highlight becomes the thread's, no gap.
+          // The thread shows at once, so the draft closes now. Keep the quote
+          // painted until the list carries the thread (#1834), so the draft
+          // highlight becomes the thread's, no gap.
           api.cancelDraft(true);
+          return done;
         }}
         failure={(e) =>
           e instanceof ApiClientError && e.code === "anchor_not_in_version" ? (
@@ -1415,7 +1693,7 @@ function NewThread({ api }: { api: CommentsApi }) {
                   void create
                     .mutateAsync({
                       anchor: { kind: "note" },
-                      body: last.current,
+                      body: last.current || api.draftSeed?.text || "",
                       ...guest,
                     })
                     .then(
@@ -1436,6 +1714,7 @@ function NewThread({ api }: { api: CommentsApi }) {
 
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
+  const lost = useLost(lostKey.note(api.artifactId));
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -1450,14 +1729,18 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
-        onSubmit={(body, x) =>
-          create.mutateAsync({
+        instant
+        seed={lost.lost}
+        onLost={lost.onLost}
+        onSubmit={(body, x) => {
+          lost.clear();
+          return create.mutateAsync({
             anchor: { kind: "note" },
             body,
             ...extrasBody(x),
             ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-          })
-        }
+          });
+        }}
       />
     </div>
   );
@@ -1575,7 +1858,8 @@ export function CommentsBody({
         </div>
       )}
       <Tools api={api} />
-      {api.draft && api.canComment && (
+      <LostDrafts api={api} />
+      {api.draft && api.canComment && !api.pinBeside && (
         <NewThread
           key={JSON.stringify(
             "pin" in api.draft ? api.draft.pin : api.draft.anchor,

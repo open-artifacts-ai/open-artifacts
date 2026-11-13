@@ -125,6 +125,10 @@ type OwnAgents = {
   known: boolean;
 };
 
+/** #2311: an offline agent still on a harness default name is no mention target. */
+const hiddenUnnamed = (a: BusAgent): boolean =>
+  !a.running && a.unnamed === true;
+
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
 /**
@@ -146,9 +150,12 @@ export async function viewerAgents(
   const view = await busView(env, viewerId, { away: true });
   const sessions = sessionsOf(view.agents);
   const addresses: BusAddress[] = [];
-  const ordered = [...sessions.values()].sort(
-    (x, y) => Number(y.running) - Number(x.running),
-  );
+  // #2309, #2311: running first, then offline named agents, most recently
+  // active first; an offline agent still on a harness default name is left out.
+  const when = (x: BusAgent) => Date.parse(x.since ?? x.updatedAt) || 0;
+  const ordered = [...sessions.values()]
+    .filter((a) => !hiddenUnnamed(a))
+    .sort((x, y) => Number(y.running) - Number(x.running) || when(y) - when(x));
   for (const a of ordered) {
     // An address the bus would refuse a follow for (a reserved name) is no mention target.
     const ok = BusAddressSchema.safeParse({
@@ -242,7 +249,7 @@ export async function agentRoster(
     const owner = mine ? "" : ` (${shownName(user)})`;
     for (const address of addresses) {
       const a = sessions?.get(addrKey(address));
-      if (sessions && !a) continue;
+      if (sessions && (!a || hiddenUnnamed(a))) continue;
       out.push({
         key: await agentKey(artifactId, userId, address),
         name: `${a?.name ?? address.name}${owner}`,

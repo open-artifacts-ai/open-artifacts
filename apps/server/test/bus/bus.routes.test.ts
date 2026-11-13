@@ -360,7 +360,7 @@ describe("device flow", () => {
 });
 
 describe("approval page: the person types the code (RFC 8628 5.4)", () => {
-  it("no session redirects to sign-in with the page as next", async () => {
+  it("no session redirects to login with the page as next", async () => {
     const r = await page(null);
     expect(r.status).toBe(302);
     expect(r.headers.get("location")).toBe(
@@ -382,7 +382,7 @@ describe("approval page: the person types the code (RFC 8628 5.4)", () => {
     expect(html).toContain('spellcheck="false"');
     expect(html).toContain('autocapitalize="characters"');
     expect(html).toContain(">Continue<");
-    expect(html).toContain("Signed in as");
+    expect(html).toContain("Logged in as");
     expect(html).not.toContain("secret-host-name");
     expect(html).not.toContain(d.user_code);
     expect(r.headers.get("content-security-policy")).toContain(
@@ -786,6 +786,126 @@ describe("GET /bus/connect: the machine token and nothing else", () => {
       .bind(capped.userId)
       .run();
     expect((await upgrade(m4.token)).status).toBe(401);
+  });
+});
+
+describe("GET /bus/connect: rate limit per IP before the token lookup (#2359)", () => {
+  const withRl = (max: number) => {
+    const l = limiter(max);
+    const lookups: string[] = [];
+    const db = new Proxy(env.DB, {
+      get(t, k) {
+        if (k === "prepare")
+          return (sql: string) => {
+            if (sql.includes("bus_machines")) lookups.push(sql);
+            return t.prepare(sql);
+          };
+        const v = Reflect.get(t, k) as unknown;
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    return {
+      l,
+      lookups,
+      ev: {
+        ...env,
+        RL_ANON: l.RL_ANON,
+        RL_ANON_WRITES: l.RL_ANON,
+        DB: db,
+      },
+    };
+  };
+
+  it("over budget is 429 with Retry-After before any machine lookup", async () => {
+    const m = await machine("rl", alice.userId);
+    const { l, lookups, ev } = withRl(2);
+    const ip = "198.51.100.7";
+    for (let i = 0; i < 2; i++) {
+      const r = await upgrade(m.token, { "cf-connecting-ip": ip }, ev);
+      expect(r.status).toBe(101);
+      (r.webSocket as WebSocket).accept();
+      trackSocket(r.webSocket as WebSocket);
+    }
+    const before = lookups.length;
+    expect(before).toBeGreaterThan(0);
+    const over = await upgrade(m.token, { "cf-connecting-ip": ip }, ev);
+    expect(over.status).toBe(429);
+    expect(over.headers.get("retry-after")).toBe("60");
+    expect((await errOf(over)).code).toBe("rate_limited");
+    expect(lookups.length).toBe(before);
+    expect(l.counts.get(RL_KEYS.connect + ip)).toBe(3);
+  });
+
+  it("no cf-connecting-ip is not limited by the IP limiter", async () => {
+    const m = await machine("rl-noip", alice.userId);
+    const { l, ev } = withRl(1);
+    for (let i = 0; i < 3; i++) {
+      const r = await upgrade(m.token, { "cf-connecting-ip": "" }, ev);
+      expect(r.status).toBe(101);
+      (r.webSocket as WebSocket).accept();
+      trackSocket(r.webSocket as WebSocket);
+    }
+    expect(
+      [...l.counts.keys()].some((k) => k.startsWith(RL_KEYS.connect)),
+    ).toBe(false);
+  });
+
+  it("hosted refuses a connect without cf-connecting-ip", async () => {
+    const m = await machine("rl-noip-h", alice.userId);
+    const { ev } = withRl(1);
+    const r = await upgrade(
+      m.token,
+      { "cf-connecting-ip": "" },
+      { ...ev, HOSTED: "1", FEATURES: "bus" },
+    );
+    expect(r.status).toBe(400);
+  });
+
+  it("two addresses in one IPv6 /64 share a bucket", async () => {
+    const m = await machine("rl-v6", alice.userId);
+    const { l, ev } = withRl(1);
+    const a = await upgrade(
+      m.token,
+      { "cf-connecting-ip": "2001:db8:1:2::1" },
+      ev,
+    );
+    expect(a.status).toBe(101);
+    (a.webSocket as WebSocket).accept();
+    trackSocket(a.webSocket as WebSocket);
+    const b = await upgrade(
+      m.token,
+      { "cf-connecting-ip": "2001:db8:1:2:ffff::9" },
+      ev,
+    );
+    expect(b.status).toBe(429);
+    expect(l.counts.size).toBe(1);
+  });
+
+  it("a garbage token over budget is 429 with no lookup; under budget it is 401", async () => {
+    const { lookups, ev } = withRl(1);
+    const ip = "198.51.100.8";
+    const bad = "oa_machine_11111111111111111111111111111111";
+    expect((await upgrade(bad, { "cf-connecting-ip": ip }, ev)).status).toBe(
+      401,
+    );
+    const n = lookups.length;
+    expect(n).toBeGreaterThan(0);
+    expect((await upgrade(bad, { "cf-connecting-ip": ip }, ev)).status).toBe(
+      429,
+    );
+    expect(lookups.length).toBe(n);
+  });
+
+  it("a different IP is unaffected", async () => {
+    const { ev } = withRl(1);
+    const bad = "oa_machine_11111111111111111111111111111111";
+    await upgrade(bad, { "cf-connecting-ip": "198.51.100.9" }, ev);
+    expect(
+      (await upgrade(bad, { "cf-connecting-ip": "198.51.100.9" }, ev)).status,
+    ).toBe(429);
+    expect(
+      (await upgrade(bad, { "cf-connecting-ip": "198.51.100.10" }, ev)).status,
+    ).toBe(401);
   });
 });
 

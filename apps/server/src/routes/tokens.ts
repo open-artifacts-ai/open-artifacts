@@ -82,7 +82,7 @@ export function mountTokens(app: AppType): void {
       .bind(id, user.id, label, await sha256Hex(token), now, MAX_ACTIVE)
       .run();
     if (res.meta.changes === 0 && !(await isActive(c.env, user.id)))
-      throw new ApiError("unauthorized", "Sign in again");
+      throw new ApiError("unauthorized", "Log in again");
     if (res.meta.changes === 0)
       throw new ApiError(
         "bad_request",

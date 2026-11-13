@@ -8,8 +8,11 @@ import {
   type ErrorCode,
   LIMITS,
   METHOD_CAPABILITY,
+  OnboardingSchema,
   PageSchema,
+  PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
+  PROTOCOL_PIN_BADGE,
   PROTOCOL_PIN_CHANGED,
   parseArtifactMessage,
   R,
@@ -49,6 +52,13 @@ export interface BridgeOptions {
   /** This version's format; the artifact's own is only the current version's. */
   formatOf?: () => string | undefined;
   viewer: Viewer | null;
+  /**
+   * #2287: whether the viewer is the instance owner (read at each call).
+   * `onboarding.get` is answered only to the owner, for the Welcome artifact:
+   * the bridge reads R.onboarding itself and checks its `welcomeId` against
+   * this artifact's id, so no state from elsewhere has to be loaded first.
+   */
+  onboarding?: () => { owner: boolean };
   theme: Theme;
   onPdfText: (text: string) => void;
   onThumb: (blob: Blob) => void;
@@ -79,13 +89,18 @@ export interface BridgeOptions {
       ArtifactToShell,
       { type: "comment.positions" }
     >["positions"],
+    ghost?: { x: number; y: number },
   ) => void;
   onCommentOpen?: (id: string) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
   onCommentEscape?: () => void;
   onCommentSelection?: (has: boolean, bottom: number) => void;
+  /** A pointer went down in the frame (outside the runtime's own button). */
+  onCommentAway?: () => void;
   onCommentPin?: (
     pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
+    /** #2019: where the click landed, in frame-viewport pixels. */
+    at?: { x: number; y: number },
   ) => void;
 }
 
@@ -186,6 +201,12 @@ export function createBridge(opts: BridgeOptions) {
   let lostFired = false;
   let inFlight = 0;
   const abort = new AbortController();
+  const forbidden = () =>
+    new ApiClientError(
+      "forbidden",
+      "onboarding.get is for the Welcome page",
+      403,
+    );
 
   // The sandboxed frame has an opaque origin, so the only valid targetOrigin is "*".
   // Replies carry no secrets beyond what this frame is already entitled to, and the
@@ -414,6 +435,16 @@ export function createBridge(opts: BridgeOptions) {
         return null;
       case "viewer.get":
         return viewer();
+      case "onboarding.get": {
+        if (embed || !opts.onboarding?.().owner) throw forbidden();
+        const o = await http.get(R.onboarding, OnboardingSchema);
+        if (!o.welcomeId || o.welcomeId !== id) throw forbidden();
+        return {
+          agentConnected: o.agentConnected === true,
+          firstArtifact: o.firstArtifact ?? null,
+          commented: o.commented === true,
+        };
+      }
       case "viewer.anonId":
         // Only the per-artifact short id; the signed token stays here.
         // Cached per token id and artifact: the route is rate limited per IP,
@@ -454,7 +485,11 @@ export function createBridge(opts: BridgeOptions) {
     const method = m.method;
     if (inFlight >= MAX_IN_FLIGHT)
       return fail(m.id, "rate_limited", "Too many concurrent calls");
-    if (!artifact.capabilities[METHOD_CAPABILITY[method]])
+    // onboarding.get has its own, stricter gate in run(): Welcome and its owner.
+    if (
+      method !== "onboarding.get" &&
+      !artifact.capabilities[METHOD_CAPABILITY[method]]
+    )
       return fail(
         m.id,
         "capability_denied",
@@ -549,7 +584,7 @@ export function createBridge(opts: BridgeOptions) {
         opts.onCommentSelect?.(m.anchor);
         break;
       case "comment.positions":
-        opts.onCommentPositions?.(m.positions);
+        opts.onCommentPositions?.(m.positions, m.ghost);
         break;
       case "comment.open":
         opts.onCommentOpen?.(m.id);
@@ -560,8 +595,11 @@ export function createBridge(opts: BridgeOptions) {
       case "comment.selection":
         opts.onCommentSelection?.(m.has, m.bottom);
         break;
+      case "comment.away":
+        opts.onCommentAway?.();
+        break;
       case "comment.pin":
-        opts.onCommentPin?.(m.pin);
+        opts.onCommentPin?.(m.pin, m.at);
         break;
     }
   };
@@ -619,7 +657,15 @@ export function createBridge(opts: BridgeOptions) {
     },
     setComments(
       threads: Extract<ShellToArtifact, { type: "comments.set" }>["threads"],
-      ghost?: { x: number; y: number; page?: number },
+      ghost?: {
+        x: number;
+        y: number;
+        page?: number;
+        badge?: Extract<
+          ShellToArtifact,
+          { type: "comments.set" }
+        >["threads"][number]["badge"];
+      },
       /** The quote being written about, kept highlighted (#1834). */
       draft?: Extract<ShellToArtifact, { type: "comments.set" }>["draft"],
     ) {
@@ -629,11 +675,25 @@ export function createBridge(opts: BridgeOptions) {
         // #1698: a runtime older than this shell rejects the whole message
         // over one field it does not know, and every pin would vanish. Leave
         // out what that runtime cannot read; it draws the pins unmarked.
-        threads:
-          frameProtocol >= PROTOCOL_PIN_CHANGED
-            ? threads
-            : threads.map(({ changed: _, ...t }) => t),
-        ...(ghost ? { ghost } : {}),
+        threads: threads
+          .map((t) => {
+            if (frameProtocol >= PROTOCOL_PIN_BADGE) return t;
+            const { badge: _b, ...rest } = t;
+            return rest;
+          })
+          .map((t) => {
+            if (frameProtocol >= PROTOCOL_PIN_CHANGED) return t;
+            const { changed: _c, ...rest } = t;
+            return rest;
+          }),
+        ...(ghost
+          ? {
+              ghost:
+                frameProtocol >= PROTOCOL_PIN_BADGE
+                  ? ghost
+                  : { x: ghost.x, y: ghost.y, page: ghost.page },
+            }
+          : {}),
         // Same rule as `changed`: only for a runtime that knows the field.
         ...(draft && frameProtocol >= PROTOCOL_COMMENT_DRAFT ? { draft } : {}),
       });
@@ -641,6 +701,11 @@ export function createBridge(opts: BridgeOptions) {
     /** #1732: the reader tapped "Comment on selection"; the frame runs its own Comment path. */
     commentOnSelection() {
       reply({ oa: 1, type: "comments.comment" });
+    },
+    /** Clear the frame's live text selection; a runtime that predates it keeps its own. */
+    clearSelection() {
+      if (frameProtocol >= PROTOCOL_COMMENT_CLEAR)
+        reply({ oa: 1, type: "comments.clear" });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });

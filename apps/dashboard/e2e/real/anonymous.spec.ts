@@ -8,7 +8,7 @@ import {
   uniq,
 } from "./fixtures";
 
-test("a public artifact opens signed out", async ({ browser, member }) => {
+test("a public artifact opens logged out", async ({ browser, member }) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Open ${uniq()}`,
     format: "markdown",
@@ -25,7 +25,7 @@ test("a public artifact opens signed out", async ({ browser, member }) => {
   await anon.close();
 });
 
-test("a private artifact sends a signed-out visitor to sign in", async ({
+test("a private artifact sends a logged-out visitor to log in", async ({
   browser,
   member,
 }) => {

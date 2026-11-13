@@ -163,7 +163,8 @@ export type EmailKind =
   | "code"
   | "space"
   | "directory"
-  | "comment";
+  | "comment"
+  | "passkey";
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 class EmailTimeout extends Error {}

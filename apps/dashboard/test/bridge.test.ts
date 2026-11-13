@@ -383,18 +383,49 @@ describe("comments (#682)", () => {
     });
     expect(o.onCommentSelect).toHaveBeenCalledWith(sel);
     expect(o.onCommentOpen).toHaveBeenCalledWith("t1");
-    expect(o.onCommentPositions).toHaveBeenCalledWith([
-      { id: "t1", state: "exact", top: 5 },
-    ]);
+    expect(o.onCommentPositions).toHaveBeenCalledWith(
+      [{ id: "t1", state: "exact", top: 5 }],
+      undefined,
+    );
   });
 
   it("forwards a valid comment.pin and drops one that fails the schema", () => {
     const o = withCb();
     send({ oa: 1, type: "comment.pin", pin: { x: 0.5, y: 0.25, page: 2 } });
-    expect(o.onCommentPin).toHaveBeenCalledWith({ x: 0.5, y: 0.25, page: 2 });
+    expect(o.onCommentPin).toHaveBeenCalledWith(
+      { x: 0.5, y: 0.25, page: 2 },
+      undefined,
+    );
     send({ oa: 1, type: "comment.pin", pin: { x: 1.5, y: 0 } });
     send({ oa: 1, type: "comment.pin", pin: { x: 0, y: 0, text: "hi" } });
     send({ oa: 1, type: "comment.pin", pin: { x: 0, y: 0 } }, { raw: true });
+    expect(o.onCommentPin).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes where the pin was clicked (#2019) and drops a bad position", () => {
+    const o = withCb();
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: 120, y: 80 },
+    });
+    expect(o.onCommentPin).toHaveBeenCalledWith(
+      { x: 0.5, y: 0.25 },
+      { x: 120, y: 80 },
+    );
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: -1, y: 80 },
+    });
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: 1, y: 2, z: 3 },
+    });
     expect(o.onCommentPin).toHaveBeenCalledTimes(1);
   });
 
@@ -1081,7 +1112,7 @@ describe("anonymous id", () => {
     );
   });
 
-  it("no header when signed in, even with a stored token", async () => {
+  it("no header when logged in, even with a stored token", async () => {
     vi.stubGlobal("localStorage", okStorage);
     store.set(ANON_ID_KEY, TOKEN);
     fetchMock.mockImplementation(async () => withToken(TOKEN2));
@@ -1273,6 +1304,7 @@ describe("the frame can't change the bridge's artifact", () => {
     expect(typeof b.setArtifact).toBe("function");
     expect(Object.keys(b).sort()).toEqual(
       [
+        "clearSelection",
         "commentOnSelection",
         "dispose",
         "focusComment",

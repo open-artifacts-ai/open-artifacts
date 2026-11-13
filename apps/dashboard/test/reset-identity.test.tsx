@@ -76,7 +76,7 @@ it("offered on a member linked to Google: confirm, then DELETE, then the toast",
     }),
   ).toBeVisible();
   expect(d).toHaveTextContent(
-    "Carol Departed stays a member with the same roles but is signed out everywhere. Their next Google sign-in links their account again. Use this if they changed Google accounts or the link points to the wrong one.",
+    "Carol Departed stays a member with the same roles but is logged out everywhere. Their next Google login links their account again. Use this if they changed Google accounts or the link points to the wrong one.",
   );
   fireEvent.click(within(d).getByRole("button", { name: "Reset link" }));
   await waitFor(() =>
@@ -85,7 +85,7 @@ it("offered on a member linked to Google: confirm, then DELETE, then the toast",
     ),
   );
   await findVisibleToast(
-    "Google link reset for Carol Departed. They're signed out and link again at their next Google sign-in.",
+    "Google link reset for Carol Departed. They're logged out and link again at their next Google login.",
   );
 });
 
@@ -141,7 +141,7 @@ it("404: nothing to reset, named", async () => {
     }),
   );
   await findVisibleToast(
-    "No Google sign-in is linked to Bob Builder, so there's nothing to reset.",
+    "No Google login is linked to Bob Builder, so there's nothing to reset.",
   );
   expect(screen.queryByText("Not found")).toBeNull();
 });

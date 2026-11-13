@@ -181,7 +181,7 @@ function guard(c: Context<AppEnv>): void {
     .toLowerCase()
     .startsWith("application/json");
   if (!sameOrigin || c.req.header(CSRF_HEADER) !== "1" || !json)
-    throw new ApiError("csrf", "Cross-site or malformed sign-in request");
+    throw new ApiError("csrf", "Cross-site or malformed login request");
 }
 
 /** Codes are a sign-in method only where `email` is enabled. */
@@ -206,7 +206,7 @@ const rateLimited = (retryAfter: number, scope: "ip" | "email") =>
 
 const unauthorized = (details: CodeVerifyFailureDetails, cookies: string[]) => {
   logAuth({ provider: "code", outcome: "refused", stage: details.reason });
-  const res = errorJson(401, "unauthorized", "Sign-in failed", details);
+  const res = errorJson(401, "unauthorized", "Login failed", details);
   for (const k of cookies) res.headers.append("set-cookie", k);
   return res;
 };
@@ -224,7 +224,7 @@ async function authLimit(c: Context<AppEnv>, installKey: string, ip: string) {
     if (c.env.ENVIRONMENT === "dev") return true;
     throw new ApiError(
       "code_unavailable",
-      "Code sign-in is unavailable on this install",
+      "Code login is unavailable on this install",
     );
   }
   return (await rl.limit({ key: `${installKey}:${ip}` })).success;
@@ -268,7 +268,7 @@ export function mountCodes(app: AppType): void {
     // can't stop many networks), so hosted installs never run codes without it.
     // Self-hosted installs without Turnstile are weaker (docs/self-hosting).
     if (c.env.HOSTED === "1" && !cfg.turnstile)
-      throw new ApiError("code_unavailable", "Sign-in by code is unavailable");
+      throw new ApiError("code_unavailable", "Login by code is unavailable");
     await requireTurnstile(
       cfg,
       parsed.data.turnstileToken,

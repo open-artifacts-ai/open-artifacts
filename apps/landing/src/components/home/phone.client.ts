@@ -1,0 +1,282 @@
+// Phones: nothing pins. Each chapter is its own card with only its piece of the
+// artifact; the piece plays once when it scrolls into view, then takes taps.
+// With reduced motion every piece lands at once.
+import { footHtml, whoHtml } from "./who";
+
+export function initPhone(lp: HTMLElement, reduce: boolean) {
+  const $ = <T extends HTMLElement = HTMLElement>(
+    s: string,
+    r: ParentNode = lp,
+  ) => r.querySelector<T>(s) as T;
+  const $$ = <T extends HTMLElement = HTMLElement>(
+    s: string,
+    r: ParentNode = lp,
+  ) => [...r.querySelectorAll<T>(s)];
+  const mp = (k: string) => $(`.mp[data-mp="${k}"]`);
+  const bump = (el: HTMLElement, v: string) => {
+    if (el.textContent === v) return;
+    el.textContent = v;
+    if (reduce) return;
+    el.classList.remove("bump");
+    void el.offsetWidth;
+    el.classList.add("bump");
+  };
+
+  /* decide */
+  const askCard = mp("ask");
+  const options = $$(".mopt", askCard);
+  const card = $(".card.ask", askCard);
+  const done = $("[data-done]", askCard);
+  const picked = $(".picked", askCard);
+  const note = $(".anote", askCard);
+  const setAsks = (n: number) => {
+    $("[data-afy]", askCard).textContent =
+      `${n} ask${n === 1 ? "" : "s"} for you`;
+  };
+  for (const o of options)
+    o.addEventListener("click", () => {
+      const k = o.dataset.k as string;
+      for (const x of options) x.setAttribute("aria-pressed", String(x === o));
+      card.classList.remove("need");
+      card.classList.add("locked");
+      $("[data-askq]", card).classList.add("hide");
+      setAsks(1);
+      $(".why", askCard).classList.add("hide");
+      picked.classList.remove("hide");
+      picked.innerHTML = `${k === "x" ? "You answered in your own words" : `You picked ${k.toUpperCase()}`} · just now · <button type="button" class="alink" data-change>Change</button>`;
+      done.classList.remove("on");
+      $(".x", done).textContent =
+        k === "x"
+          ? "Done. The plan now follows your answer. That's v5."
+          : `Done. The plan now says the ${k === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
+      const show = () => {
+        if (!card.classList.contains("locked")) return;
+        done.hidden = false;
+        done.classList.add("on");
+      };
+      if (reduce) show();
+      else setTimeout(show, 500);
+    });
+  card.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("[data-change]")) {
+      for (const x of options) x.setAttribute("aria-pressed", "false");
+      card.classList.add("need");
+      card.classList.remove("locked");
+      $("[data-askq]", card).classList.remove("hide");
+      setAsks(2);
+      $(".why", askCard).classList.remove("hide");
+      picked.classList.add("hide");
+      done.classList.remove("on");
+      done.hidden = true;
+      note.classList.add("hide");
+    } else if (t.closest("[data-next]") || t.closest("[data-askq]")) {
+      note.textContent = t.closest("[data-next]")
+        ? "In the product, this jumps to your next open ask."
+        : "In the product, this opens a question to the agent that asked.";
+      note.classList.remove("hide");
+    }
+  });
+
+  /* team: who decides. You decide, or pass it to Sam; both can be undone. */
+  const team = mp("team");
+  const tOpts = $$(".mopt", team);
+  let tPassed = false;
+  let tSel: string | null = null;
+  let tDecided = false;
+  const tDraw = () => {
+    $("[data-who]", team).innerHTML = whoHtml(tPassed);
+    $("[data-foot]", team).innerHTML = footHtml(tPassed, tDecided, tSel);
+    for (const o of tOpts)
+      o.setAttribute("aria-pressed", String(o.dataset.k === tSel));
+  };
+  for (const o of tOpts)
+    o.addEventListener("click", () => {
+      tSel = o.dataset.k as string;
+      tDecided = false;
+      tDraw();
+    });
+  team.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("[data-pass]")) {
+      tPassed = true;
+      tDraw();
+    } else if (t.closest("[data-undo]")) {
+      tPassed = false;
+      tDecided = false;
+      tDraw();
+    } else if (t.closest("[data-decide]") && tSel) {
+      tDecided = true;
+      tDraw();
+    }
+  });
+  tDraw();
+
+  /* live checklist */
+  const live = mp("live");
+  const items = $$(".cl li", live);
+  const touchedItems: Record<number, boolean> = {};
+  const count = () => {
+    const n = items.filter((l) => l.classList.contains("ck")).length;
+    $("[data-cnt]", live).textContent = `${n} of 5`;
+    $("[data-bar]", live).style.width = `${n * 20}%`;
+  };
+  items.forEach((li, i) => {
+    const b = $("button", li);
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", () => {
+      touchedItems[i] = true;
+      const on = !li.classList.contains("ck");
+      li.classList.toggle("ck", on);
+      b.setAttribute("aria-pressed", String(on));
+      if (on) {
+        const who = document.createElement("span");
+        who.className = "pp you";
+        who.textContent = "You";
+        $(".who", li).replaceChildren(who);
+      }
+      count();
+    });
+  });
+
+  /* live poll: four votes arrive as the card plays, then a tap toggles yours */
+  const pollBtns = $$(".poll button", live);
+  const arrived = [0, 0, 0];
+  let myVote: number | null = null;
+  const drawPoll = () => {
+    const v = arrived.map((n, i) => n + (myVote === i ? 1 : 0));
+    const total = v[0] + v[1] + v[2];
+    pollBtns.forEach((b, i) => {
+      $("b", b).textContent = String(v[i]);
+      $("i", b).style.width = `${total ? (v[i] / total) * 100 : 0}%`;
+      b.setAttribute("aria-pressed", String(myVote === i));
+    });
+    $("[data-pcnt]", live).textContent =
+      `${total} ${total === 1 ? "vote" : "votes"}`;
+  };
+  pollBtns.forEach((b, i) => {
+    b.addEventListener("click", () => {
+      myVote = myVote === i ? null : i;
+      drawPoll();
+    });
+  });
+  drawPoll();
+
+  /* versions */
+  const ver = mp("ver");
+  const list = $(".vlist", ver);
+  // The newest version is the one marked Current in the list.
+  const current = list.querySelector<HTMLElement>("em:not(:empty)");
+  let top = Number(current?.closest<HTMLElement>("button")?.dataset.v);
+  let cur = top;
+  const view = (v: number) => {
+    cur = v;
+    for (const b of $$("button", list))
+      b.setAttribute("aria-pressed", String(Number(b.dataset.v) === v));
+    $("[data-ban]", ver).classList.toggle("on", v !== top);
+    $("[data-vb]", ver).textContent = `v${v}`;
+    $("[data-ver]", ver).textContent = `v${v}`;
+    $("[data-note]", ver).classList.add("hide");
+  };
+  list.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>("button[data-v]");
+    if (b) view(Number(b.dataset.v));
+  });
+  $("[data-restore]", ver).addEventListener("click", () => {
+    const from = cur;
+    top++;
+    for (const e of $$("em", list)) e.textContent = "";
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.v = String(top);
+    b.setAttribute("aria-pressed", "true");
+    const tag = document.createElement("b");
+    tag.textContent = `v${top}`;
+    const what = document.createElement("span");
+    what.append(`Restored from v${from}`);
+    const small = document.createElement("small");
+    small.textContent = "You, just now";
+    what.append(small);
+    const em = document.createElement("em");
+    em.textContent = "Current";
+    b.append(tag, what, em);
+    li.append(b);
+    list.prepend(li);
+    view(top);
+    bump($("[data-ver]", ver), `v${top}`);
+    const note = $("[data-note]", ver);
+    note.textContent = `Restored as v${top}. Every earlier version is still here.`;
+    note.classList.remove("hide");
+    b.focus({ preventScroll: true });
+  });
+
+  /* share */
+  const share = mp("share");
+  const sw = $("[data-sw]", share);
+  let swTouched = false;
+  const link = (on: boolean) => {
+    sw.setAttribute("aria-checked", String(on));
+    $(".tog", sw).classList.toggle("on", on);
+    $("[data-link]", share).classList.toggle("on", on);
+    const v = $("[data-vis]", share);
+    v.textContent = on ? "Public link" : "Shared with 4";
+    v.classList.toggle("pub", on);
+  };
+  sw.addEventListener("click", () => {
+    swTouched = true;
+    link(sw.getAttribute("aria-checked") !== "true");
+  });
+
+  /* play once when it scrolls into view */
+  const steps: Record<string, (m: HTMLElement, k: number) => void> = {
+    com: (m, k) => {
+      if (k !== 3) return;
+      const l = $("[data-ln]", m);
+      l.classList.remove("sel");
+      l.classList.add("sw", "chg");
+      bump($("[data-ver]", m), "v4");
+    },
+    live: (_m, k) => {
+      arrived[[1, 0, 1, 1][k - 1]]++;
+      drawPoll();
+      const i = k - 1;
+      if (touchedItems[i]) return;
+      items[i].classList.add("ck");
+      $("button", items[i]).setAttribute("aria-pressed", "true");
+      count();
+    },
+    share: (_m, k) => {
+      if (k === 2 && !swTouched) link(true);
+    },
+  };
+  const COUNT: Record<string, number> = { com: 3, live: 4, share: 2 };
+  const GAP: Record<string, number> = { com: 800, live: 550, share: 700 };
+  const play = (m: HTMLElement) => {
+    if (m.dataset.done) return;
+    m.dataset.done = "1";
+    const k = m.dataset.mp as string;
+    for (let i = 1; i <= (COUNT[k] ?? 0); i++) {
+      const f = () => {
+        for (const e of $$(`[data-s="${i}"]`, m)) e.classList.add("on");
+        steps[k]?.(m, i);
+      };
+      if (reduce) f();
+      else setTimeout(f, i * (GAP[k] ?? 650));
+    }
+  };
+  const all = $$(".mp");
+  if ("IntersectionObserver" in window) {
+    const io = new IntersectionObserver(
+      (es) => {
+        for (const e of es)
+          if (e.isIntersecting) {
+            play(e.target as HTMLElement);
+            io.unobserve(e.target);
+          }
+      },
+      { threshold: 0.3 },
+    );
+    for (const m of all) io.observe(m);
+  } else for (const m of all) play(m);
+}

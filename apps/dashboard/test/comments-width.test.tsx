@@ -46,17 +46,19 @@ beforeEach(() => {
 afterEach(() => localStorage.clear());
 
 describe("#1986 clamp math", () => {
-  it("max is the smaller of 560 and window - 600, never below min", () => {
-    expect(maxWidth(1280)).toBe(560);
-    expect(maxWidth(960)).toBe(360);
-    expect(maxWidth(1000)).toBe(400);
+  it("max is the smaller of 900 and window - 480, never below min", () => {
+    expect(maxWidth(1280)).toBe(800);
+    expect(maxWidth(960)).toBe(480);
+    expect(maxWidth(1000)).toBe(520);
     expect(maxWidth(700)).toBe(MIN_WIDTH);
+    expect(maxWidth(1440)).toBe(900);
+    expect(maxWidth(2000)).toBe(900);
   });
   it("clamps to [min, max]", () => {
     expect(clampWidth(100, 1280)).toBe(300);
-    expect(clampWidth(9999, 1280)).toBe(560);
+    expect(clampWidth(9999, 1280)).toBe(800);
     expect(clampWidth(450.4, 1280)).toBe(450);
-    expect(clampWidth(500, 960)).toBe(360);
+    expect(clampWidth(500, 960)).toBe(480);
   });
   it("a bad or missing stored value is the default", () => {
     expect(loadWidth()).toBe(DEFAULT_WIDTH);
@@ -101,7 +103,7 @@ describe("#1986 handle", () => {
     expect(h).toHaveAttribute("tabindex", "0");
     expect(val()).toBe(352);
     expect(h).toHaveAttribute("aria-valuemin", "300");
-    expect(h).toHaveAttribute("aria-valuemax", "560");
+    expect(h).toHaveAttribute("aria-valuemax", "800");
   });
   it("arrows move 16, shift 64: left widens, right narrows; limits hold", () => {
     render(<CommentsResizer />);
@@ -121,7 +123,7 @@ describe("#1986 handle", () => {
   it("Home and End jump to the limits; Enter and double-click reset", () => {
     render(<CommentsResizer />);
     fireEvent.keyDown(handle(), { key: "End" });
-    expect(val()).toBe(560);
+    expect(val()).toBe(800);
     fireEvent.keyDown(handle(), { key: "Home" });
     expect(val()).toBe(300);
     fireEvent.keyDown(handle(), { key: "Enter" });
@@ -149,9 +151,9 @@ describe("#1986 handle", () => {
     expect(val()).toBe(402);
     expect(localStorage.getItem(KEY)).toBeNull();
     fireEvent.pointerMove(h, { pointerId: 1, clientX: 0 });
-    expect(val()).toBe(560);
+    expect(val()).toBe(800);
     fireEvent.pointerUp(h, { pointerId: 1, clientX: 0 });
-    expect(localStorage.getItem(KEY)).toBe("560");
+    expect(localStorage.getItem(KEY)).toBe("800");
   });
   const bodyWith = () => {
     const body = document.createElement("div");
@@ -219,7 +221,7 @@ describe("#1986 handle", () => {
     render(<CommentsResizer />);
     expect(val()).toBe(550);
     setWin(1000);
-    expect(val()).toBe(400);
+    expect(val()).toBe(520);
     expect(localStorage.getItem(KEY)).toBe("550");
     setWin(1400);
     expect(val()).toBe(550);
@@ -243,6 +245,6 @@ describe("#1986 handle", () => {
     setWin(960);
     expect(handle()).toBeInTheDocument();
     expect(val()).toBe(352);
-    expect(handle()).toHaveAttribute("aria-valuemax", "360");
+    expect(handle()).toHaveAttribute("aria-valuemax", "480");
   });
 });

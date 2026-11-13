@@ -225,7 +225,7 @@ test("public links off in t19-exec: Public is disabled, and anonymous /full gets
     new RegExp(`/sign-in\\?next=${encodeURIComponent(`/a/${id}/full`)}$`),
   );
   await expect(
-    stranger.getByRole("heading", { level: 1, name: /^Sign in to / }),
+    stranger.getByRole("heading", { level: 1, name: /^Log in to / }),
   ).toBeVisible();
   await expect(stranger.getByText(title)).toHaveCount(0);
   await expect(stranger.locator("iframe.oa-vframe")).toHaveCount(0);

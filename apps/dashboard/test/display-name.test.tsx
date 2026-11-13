@@ -177,7 +177,7 @@ describe("display-name dialog", () => {
     );
   });
 
-  it("sign-out forgets Not now, so the next sign-in asks again", async () => {
+  it("sign-out forgets Not now, so the next login asks again", async () => {
     serveMe(needsName());
     sessionStorage.setItem("unrelated", "keep");
     mount("/");
@@ -187,7 +187,7 @@ describe("display-name dialog", () => {
     sessionStorage.setItem("oa:display-name-skipped:u_other", "1");
     const menu = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.keyDown(menu, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
     await waitFor(() =>
       expect(
         Object.keys(sessionStorage).filter((k) =>
@@ -214,8 +214,8 @@ describe("display-name dialog", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const menu = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.keyDown(menu, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByText("Couldn't sign out")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
+    expect(await screen.findByText("Couldn't log out")).toBeInTheDocument();
     expect(
       sessionStorage.getItem(`oa:display-name-skipped:${fixtures.me.user.id}`),
     ).toBe("1");
@@ -314,7 +314,7 @@ describe("Settings → Profile", () => {
     expect(input.getAttribute("aria-describedby")).toContain(hint.id);
   });
 
-  it("says others see the sign-in name when that shows instead (#2277)", async () => {
+  it("says others see the login name when that shows instead (#2277)", async () => {
     serveMe(
       needsName({
         needsDisplayName: false,
@@ -324,7 +324,7 @@ describe("Settings → Profile", () => {
     );
     mount("/settings/profile");
     await field();
-    expect(await screen.findByText(HIDDEN("sign-in name"))).toBeInTheDocument();
+    expect(await screen.findByText(HIDDEN("login name"))).toBeInTheDocument();
   });
 
   it("shows no hint when the name passes", async () => {

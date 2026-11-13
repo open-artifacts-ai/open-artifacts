@@ -196,6 +196,38 @@ const pointer = (coarse: boolean) =>
 const wait100 = () => new Promise((r) => setTimeout(r, 130));
 const sels = () => msgs().filter((m) => m.type === "comment.selection");
 
+describe("clicking away (Google Docs)", () => {
+  const down = (el: Element) =>
+    el.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  it("tells the shell a pointer went down on the page, in any mode but off", async () => {
+    await start("select");
+    down(document.body);
+    await flush();
+    expect(last("comment.away")).toMatchObject({ type: "comment.away" });
+  });
+
+  it("says nothing with comments off", async () => {
+    await start();
+    down(document.body);
+    await flush();
+    expect(last("comment.away")).toBeUndefined();
+  });
+
+  it("comments.clear collapses the live selection and reports it gone", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: true });
+    await send({ type: "comments.clear" });
+    expect(getSelection()?.isCollapsed).toBe(true);
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: false });
+    // and the stale quote is gone: the shell command finds nothing to comment on
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toBeUndefined();
+  });
+});
+
 describe("selection state for the shell (#1732)", () => {
   it("posts has and the last rect bottom, debounced, once per change", async () => {
     await start("select");
@@ -978,6 +1010,230 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ pin: { x: 0.5, y: 0.5 } });
   });
 
+  it("a pin click also says where it landed, so the box can open beside it (#2019)", async () => {
+    await start("pin");
+    document.querySelector("img")?.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 120,
+        clientY: 60,
+      }),
+    );
+    await flush();
+    expect(last("comment.pin")).toMatchObject({ at: { x: 120, y: 60 } });
+  });
+
+  it("reports where the new-pin flag is, and again when the page scrolls (#2386)", async () => {
+    await start("pin");
+    await send({
+      type: "comments.set",
+      threads: [],
+      ghost: { x: 0.5, y: 0.5 },
+    });
+    expect(last("comment.positions")).toMatchObject({
+      ghost: { x: 120, y: 60 },
+    });
+    // The image moves up 50px under the frame.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      top: -40,
+      left: 20,
+      right: 220,
+      bottom: 60,
+      width: 200,
+      height: 100,
+    } as DOMRect);
+    window.dispatchEvent(new Event("scroll"));
+    frames();
+    await flush();
+    expect(last("comment.positions")).toMatchObject({
+      ghost: { x: 120, y: 10 },
+    });
+  });
+
+  it("says nothing about a flag when none is placed (#2386)", async () => {
+    await start("pin");
+    await send({ type: "comments.set", threads: [] });
+    expect(last("comment.positions")).not.toHaveProperty("ghost");
+  });
+
+  describe("badges (#2019)", () => {
+    const base = (extra: object) => ({
+      id: "p1",
+      n: 1,
+      anchor: {
+        kind: "pin" as const,
+        version: 1,
+        x: 0.5,
+        y: 0.25,
+        contentHash: "h",
+      },
+      ...extra,
+    });
+    const pin = () => roots.at(-1)?.querySelector<HTMLElement>(".pin") ?? null;
+
+    it("a pin with initials is a named button showing them", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({ badge: { initials: "AL", label: "Comment by Ada L" } }),
+        ],
+      });
+      const p = pin();
+      expect(p?.tagName).toBe("BUTTON");
+      expect(p?.getAttribute("aria-label")).toBe("Comment by Ada L");
+      expect(p?.textContent).toBe("AL");
+      p?.click();
+      await flush();
+      expect(last("comment.open")).toMatchObject({ id: "p1" });
+    });
+
+    it("an agent's face is rebuilt from allowed shapes only", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({
+            badge: {
+              icon: '<path d="M1 1h4" onclick="x()"/><script>alert(1)</script><circle cx="3" cy="3" r="2" style="x"/><g><image href="https://e.test/a.png"/><rect x="1" y="1" width="2" height="2"/></g>',
+              color: "#2456c4",
+              label: "Comment by Claude Code",
+            },
+          }),
+        ],
+      });
+      const p = pin();
+      expect(p?.classList.contains("face")).toBe(true);
+      expect(p?.style.getPropertyValue("--face")).toBe("#2456c4");
+      const svg = p?.querySelector("svg");
+      expect(svg?.getAttribute("aria-hidden")).toBe("true");
+      expect(
+        Array.from(svg?.querySelectorAll("*") ?? []).map((n) => n.localName),
+      ).toEqual(["path", "circle", "g", "rect"]);
+      expect(svg?.querySelector("path")?.getAttribute("onclick")).toBeNull();
+      expect(svg?.querySelector("circle")?.getAttribute("style")).toBeNull();
+      expect(p?.querySelector("script, image")).toBeNull();
+    });
+
+    it("copies only SVG-namespace shapes (#2388)", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({
+            badge: {
+              icon: '<path xmlns="urn:evil" d="M1 1h4"/><circle cx="3" cy="3" r="2"/>',
+              color: "#2456c4",
+            },
+          }),
+        ],
+      });
+      const names = Array.from(
+        pin()?.querySelectorAll("svg *") ?? [],
+        (n) => n.localName,
+      );
+      expect(names).toEqual(["circle"]);
+    });
+
+    it("the same icon is parsed once, however often the pins are measured (#2388)", async () => {
+      const parse = vi.spyOn(DOMParser.prototype, "parseFromString");
+      await start("select");
+      const badge = {
+        icon: '<circle cx="3" cy="3" r="2"/><rect x="1" y="1" width="2" height="2"/>',
+        color: "#123456",
+      };
+      const before = parse.mock.calls.length;
+      for (let i = 0; i < 3; i++)
+        await send({
+          type: "comments.set",
+          threads: [base({ badge }), { ...base({ badge }), id: "p2", n: 2 }],
+        });
+      expect(parse.mock.calls.length - before).toBe(1);
+      expect(pin()?.querySelector("svg circle")).not.toBeNull();
+    });
+
+    it("ignores a badge when the page is not an image or a pdf (#2388)", async () => {
+      document.head
+        .querySelector<HTMLMetaElement>('meta[name="oa-format"]')
+        ?.setAttribute("content", "html");
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({ badge: { initials: "AL", label: "Comment by Ada L" } }),
+        ],
+      });
+      // No badge or button is ever built outside image and pdf.
+      expect(
+        roots.at(-1)?.querySelector(".initials, .face, button") ?? null,
+      ).toBeNull();
+    });
+
+    it("an agent with no face is the dashed robot mark, not initials", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({
+            badge: {
+              icon: '<path d="M12 8V4"/><rect x="4" y="8" width="16" height="12" rx="2"/>',
+              color: "#5f6670",
+              dashed: true,
+              label: "Comment by Claude Code",
+            },
+          }),
+        ],
+      });
+      const p = pin();
+      expect(p?.classList.contains("dashed")).toBe(true);
+      expect(p?.querySelector("svg")).not.toBeNull();
+      expect(p?.textContent).toBe("");
+    });
+
+    it("a resolved pin is hidden, and faded while it is the open thread", async () => {
+      await start("select");
+      const badge = { initials: "AL", label: "Comment by Ada L" };
+      await send({
+        type: "comments.set",
+        threads: [base({ badge, resolved: true })],
+      });
+      expect(pin()).toBeNull();
+      await send({
+        type: "comments.set",
+        threads: [base({ badge, resolved: true, active: true })],
+      });
+      expect(pin()?.classList.contains("resolved")).toBe(true);
+    });
+
+    it("the pin being placed shows the author's initials, dashed, and is not a button", async () => {
+      await start("pin");
+      await send({
+        type: "comments.set",
+        threads: [],
+        ghost: { x: 0.5, y: 0.5, badge: { initials: "AL" } },
+      });
+      const g = roots.at(-1)?.querySelector<HTMLElement>(".pin.ghost");
+      expect(g?.tagName).toBe("DIV");
+      expect(g?.textContent).toBe("AL");
+    });
+
+    it("keyboard focus stays on a pin through a re-measure", async () => {
+      await start("select");
+      const t = [
+        base({ badge: { initials: "AL", label: "Comment by Ada L" } }),
+      ];
+      await send({ type: "comments.set", threads: t });
+      pin()?.focus();
+      expect(roots.at(-1)?.activeElement).toBe(pin());
+      await send({ type: "comments.set", threads: t });
+      expect(roots.at(-1)?.activeElement).toBe(pin());
+      expect(roots.at(-1)?.activeElement?.getAttribute("aria-label")).toBe(
+        "Comment by Ada L",
+      );
+    });
+  });
+
   it("Esc in pin mode tells the shell, with no data; in other modes it does not", async () => {
     await start("pin");
     document.body.dispatchEvent(
@@ -1322,6 +1578,7 @@ describe("what the frame sends", () => {
       "comment.open": ["id", "oa", "type"],
       "comment.pin": ["oa", "pin", "type"],
       "comment.escape": ["oa", "type"],
+      "comment.away": ["oa", "type"],
     };
     const seen = msgs();
     expect(seen.map((m) => m.type).sort()).toEqual([

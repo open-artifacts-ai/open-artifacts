@@ -41,7 +41,7 @@ for (const theme of ["light", "dark"])
     const account = page.getByRole("button", { name: "Account menu" });
     await expect(account).toHaveCSS("cursor", "pointer");
     await account.click();
-    const signOut = page.getByRole("menuitem", { name: "Sign out" });
+    const signOut = page.getByRole("menuitem", { name: "Log out" });
     await expect(signOut).toBeVisible();
     await expect(signOut).toHaveCSS("cursor", "pointer");
     await page.keyboard.press("Escape");

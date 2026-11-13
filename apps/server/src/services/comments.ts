@@ -47,6 +47,8 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
+  addresseeOf,
+  addressees,
   askRows,
   indexAnswered,
   indexAsk,
@@ -81,6 +83,8 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
+import { noteCommented } from "./onboarding.js";
+import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -747,6 +751,7 @@ const commentOf = (
                 }
               : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
+            ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
             ...(c.ask.answer
               ? {
                   answer: {
@@ -754,8 +759,13 @@ const commentOf = (
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
+                    ...(c.ask.answer.verified
+                      ? { verified: c.ask.answer.verified }
+                      : {}),
                     yes:
                       viewer.userId !== null &&
+                      (c.ask.confirm !== "passkey" ||
+                        c.ask.answer.verified === "passkey") &&
                       isTyped(c.ask.answer.by) &&
                       c.ask.answer.by.ref === viewer.userId &&
                       c.author.kind === "user" &&
@@ -1052,7 +1062,7 @@ async function resolveExtras(
       "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
     );
   if (x.ask && who.kind !== "user")
-    throw new ApiError("forbidden", "Sign in to ask a question");
+    throw new ApiError("forbidden", "Log in to ask a question");
   const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
@@ -1107,11 +1117,16 @@ async function resolveExtras(
         throw unknownKey(key);
       to.push({ kind: "user", key: user.id });
     }
+    // #2263: the server decides, from the actions the options name and the
+    // addressees' switches. Whatever a client sent as `confirm` was stripped by
+    // the schema; an edit never touches the stored mark.
+    const confirm = await confirmFor(env, addressees(to), askIn.options);
     ask = {
       question: askIn.question,
       options: askIn.options,
       ...(askIn.recommended ? { recommended: askIn.recommended } : {}),
       to,
+      ...(confirm ? { confirm } : {}),
     };
   }
   const agents = new Map<string, Resolved["agents"][number]>();
@@ -1286,7 +1301,7 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
 }
 
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
-export async function addThread(
+async function addThreadInner(
   env: Env,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   who: CommentWho,
@@ -1567,7 +1582,7 @@ async function threadReply(
 }
 
 /** A reply. It does not reopen the thread. */
-export async function addReply(
+async function addReplyInner(
   env: Env,
   artifactId: string,
   threadId: string,
@@ -1644,11 +1659,76 @@ export async function addReply(
   return commentView(env, sent, viewer);
 }
 
+/** How the pick reached the server (#2263): only a browser session may carry a passkey. */
+export type PickAuth = { interactive: boolean; assertion?: unknown };
+
+/** The stored ask of a comment and its thread's status, or 404. */
+async function storedAsk(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+) {
+  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+  const ask = t.comments.find((c) => c.id === commentId)?.ask;
+  if (!ask) throw new ApiError("not_found", "Not found");
+  return { ask, status: t.status };
+}
+
+/** Whether `who` is one of the people the ask was put to (as the DO decides). */
+const isAsked = (ask: { to: StoredParty[] }, who: CommentWho): boolean =>
+  who.kind === "user" && ask.to.some((p) => addresseeOf(p) === who.id);
+
+/**
+ * #2263: a WebAuthn challenge for picking `optionId` on a confirm ask:
+ * 403 passkey_required for anything but a browser session (a token or MCP
+ * grant can never carry a passkey), 403 forbidden unless asked, 404 without an
+ * ask, 400 for an ask that needs no passkey or an unknown option, 409
+ * conflict once closed, 409 already_answered (that option is the answer already; another option is a change and needs a fresh assertion), then the passkey rules
+ * (no_passkey, passkey_cooling) and the challenge budget (429).
+ */
+export async function answerChallenge(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+  optionId: string,
+  interactive: boolean,
+) {
+  const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
+  if (!interactive || who.kind !== "user")
+    throw new ApiError(
+      "passkey_required",
+      "Only the web app can use a passkey",
+    );
+  if (!isAsked(ask, who))
+    throw new ApiError("forbidden", "Only the people asked can answer");
+  if (ask.confirm !== "passkey")
+    throw new ApiError("bad_request", "This ask does not need a passkey");
+  if (status === "resolved")
+    throw new ApiError("conflict", "This ask is closed");
+  if (!ask.options.some((o) => o.id === optionId))
+    throw new ApiError("bad_request", "Unknown option");
+  if (ask.answer?.optionId === optionId)
+    throw new ApiError(
+      "already_answered",
+      "This ask is answered with that option",
+    );
+  return pickChallenge(env, who.id, artifactId, commentId, optionId);
+}
+
 /**
  * Answers an ask (#1535): 404 without one, 403 unless the caller is asked,
  * 409 once the thread is resolved, 400 for an option the ask lacks. The
  * answer may change until then. `who` is the caller as an author (a guest is
  * never asked).
+ *
+ * #2263: on an ask marked `confirm: "passkey"` the pick is one answer and
+ * needs a verified passkey assertion for a challenge issued for this exact
+ * (artifact, comment, option, member): 403 passkey_required without one, and
+ * always for a token or MCP grant; 409 already_answered; then the challenge
+ * rules of verifyPick (410 challenge_expired, 400 passkey_failed).
  */
 export async function answerAsk(
   env: Env,
@@ -1659,8 +1739,41 @@ export async function answerAsk(
   viewer: CommentViewer,
   optionId: string,
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
-  after?: Announce,
+  after: Announce | undefined,
+  pick: PickAuth,
 ): Promise<Comment> {
+  const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
+  let verified: "passkey" | undefined;
+  // Strangers, closed asks and unknown options fall through to the DO's own
+  // refusals (forbidden, conflict, bad_request) without touching a challenge.
+  if (
+    ask.confirm === "passkey" &&
+    isAsked(ask, who) &&
+    status !== "resolved" &&
+    ask.options.some((o) => o.id === optionId)
+  ) {
+    if (!pick.interactive || who.kind !== "user")
+      throw new ApiError(
+        "passkey_required",
+        "This pick needs your passkey, in the web app",
+      );
+    if (ask.answer?.optionId === optionId)
+      throw new ApiError(
+        "already_answered",
+        "This ask is answered with that option",
+      );
+    if (pick.assertion === undefined || pick.assertion === null)
+      throw new ApiError("passkey_required", "This pick needs your passkey");
+    await verifyPick(
+      env,
+      who.id,
+      artifactId,
+      commentId,
+      optionId,
+      pick.assertion,
+    );
+    verified = "passkey";
+  }
   const { comment: c, unchanged } = await call(() =>
     stub(env, artifactId).commentsAnswer({
       threadId,
@@ -1668,6 +1781,7 @@ export async function answerAsk(
       by: actorOf(who),
       optionId,
       rate: rateKeyOf(who),
+      ...(verified ? { verified } : {}),
     }),
   );
   await indexAnswered(env, artifactId, commentId);
@@ -1922,4 +2036,25 @@ export async function deleteComment(
     }),
   );
   await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
+}
+
+/** A new thread; records the commenter for the first-run checklist (#2287). */
+export async function addThread(
+  ...args: Parameters<typeof addThreadInner>
+): ReturnType<typeof addThreadInner> {
+  const t = await addThreadInner(...args);
+  // Only the person's own comment counts, never one an agent posted for them.
+  if (args[2].kind === "user" && !args[2].agent)
+    await noteCommented(args[0], args[2].id);
+  return t;
+}
+
+/** A reply; records the commenter for the first-run checklist (#2287). */
+export async function addReply(
+  ...args: Parameters<typeof addReplyInner>
+): ReturnType<typeof addReplyInner> {
+  const c = await addReplyInner(...args);
+  if (args[3].kind === "user" && !args[3].agent)
+    await noteCommented(args[0], args[3].id);
+  return c;
 }

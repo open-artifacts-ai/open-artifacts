@@ -245,6 +245,43 @@ export function useKeepScroll(
   return { pill: target && dir && !hidden ? dir : null, foot, go };
 }
 
+/**
+ * Brings `el` into the comments scroller's view by moving that scroller's own
+ * scrollTop, never its ancestors. `scrollIntoView` also scrolls the document
+ * and, on iOS, pans the visual viewport, which leaves the fixed phone sheet
+ * shifted up (header off-screen, a band below it) until a reload.
+ * "end" puts the element's bottom at the scroller's (less its
+ * `scroll-margin-bottom`); "nearest" scrolls only as far as needed, below the
+ * sticky header.
+ */
+export function scrollWithin(
+  el: HTMLElement,
+  block: "nearest" | "end",
+  smooth = false,
+) {
+  const box = scrollerOf(el);
+  if (!box) return;
+  const b = box.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const top = viewTop(box);
+  let delta = 0;
+  if (block === "end") {
+    const margin = Number.parseFloat(
+      getComputedStyle(el).scrollMarginBottom || el.style.scrollMarginBottom,
+    );
+    delta = r.bottom - (b.bottom - (Number.isFinite(margin) ? margin : 0));
+  } else if (r.top < top) delta = r.top - top;
+  else if (r.bottom > b.bottom)
+    delta = Math.min(r.bottom - b.bottom, r.top - top);
+  const to = Math.max(0, box.scrollTop + delta);
+  if (box.scrollTo) {
+    box.scrollTo({
+      top: to,
+      behavior: smooth && !reduced() ? "smooth" : "auto",
+    });
+  } else box.scrollTop = to;
+}
+
 /** Focuses a comment row without scrolling anything. */
 export function focusRow(el: HTMLElement) {
   if (!el.hasAttribute("tabindex")) el.tabIndex = -1;

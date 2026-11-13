@@ -28,13 +28,57 @@ import { utf8Exceeds } from "./utf8.js";
  * know (all of them, not the field): bump this when a shell message gains one,
  * and have the shell leave that field out for a runtime that said an earlier
  * number. #1698: 2 adds `changed` on `comments.set` threads. #1834: 3 adds
- * `draft` on `comments.set`.
+ * `draft` on `comments.set`. 4 adds `comments.clear`. #2019: 5 adds `badge`
+ * on `comments.set` pins and its ghost, and `at` on `comment.pin`.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 5;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
 export const PROTOCOL_PIN_CHANGED = 2;
 /** The first protocol whose runtime draws the quote being commented on (#1834). */
 export const PROTOCOL_COMMENT_DRAFT = 3;
+/** The first protocol whose runtime clears its selection on `comments.clear`. */
+export const PROTOCOL_COMMENT_CLEAR = 4;
+/** The first protocol whose runtime draws a pin's badge and reports where a pin was clicked (#2019). */
+export const PROTOCOL_PIN_BADGE = 5;
+
+/**
+ * #2019: what a pin's bubble shows, drawn by the shell's choice: one or two
+ * initials, or an agent's face as the inner markup of a 24px line icon. The
+ * frame parses `icon` against an element allowlist and never runs it. `label`
+ * is the bubble's accessible name ("Comment by Sam"). Image and pdf pages only,
+ * whose frame holds no author script: text comments carry no identity into the
+ * frame.
+ */
+export const PinBadgeSchema = z.union([
+  z.strictObject({
+    initials: z.string().min(1).max(4),
+    label: z.string().max(120).optional(),
+  }),
+  z.strictObject({
+    icon: z.string().min(1).max(6000),
+    label: z.string().max(120).optional(),
+    /** The agent's palette slot (0..PRESENCE_PALETTE_SIZE-1) as a CSS colour. */
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    /** An agent with no face the viewer may see: the dashed outline mark, as the card draws it. */
+    dashed: z.boolean().optional(),
+  }),
+]);
+export type PinBadge = z.infer<typeof PinBadgeSchema>;
+
+/**
+ * #2287: what the Welcome page ticks. `onboarding.get` is a new call, not a
+ * new field on a shell message, so PROTOCOL_VERSION stays: a runtime that
+ * knows it against an older shell gets no answer for it, and the page keeps
+ * its checklist unticked.
+ */
+export const OnboardingProgressSchema = z.strictObject({
+  agentConnected: z.boolean(),
+  firstArtifact: z
+    .strictObject({ id: z.string().max(64), title: z.string().max(500) })
+    .nullable(),
+  commented: z.boolean(),
+});
+export type OnboardingProgress = z.infer<typeof OnboardingProgressSchema>;
 
 export const RUNTIME_METHODS = [
   "db.get",
@@ -47,6 +91,7 @@ export const RUNTIME_METHODS = [
   "db.unsubscribe",
   "viewer.get",
   "viewer.anonId",
+  "onboarding.get",
   "storage.get",
   "storage.set",
   "storage.delete",
@@ -226,6 +271,13 @@ export const ArtifactToShellSchema = z.union([
         }),
       )
       .max(COMMENT_THREADS_MAX),
+    /** #2386: where the new-pin flag is now, in frame-viewport pixels, so the box beside it follows a scroll. */
+    ghost: z
+      .strictObject({
+        x: z.number().finite().min(-100_000).max(100_000),
+        y: z.number().finite().min(-100_000).max(100_000),
+      })
+      .optional(),
   }),
   /** The reader clicked a highlight, collapsed mark or pin. */
   z.strictObject({
@@ -256,6 +308,15 @@ export const ArtifactToShellSchema = z.union([
     has: z.boolean(),
     bottom: z.number().finite().min(-10_000_000).max(10_000_000),
   }),
+  /**
+   * A pointer went down in the frame outside the runtime's own button: the
+   * shell drops an unsent draft, as Google Docs does. Carries no data.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.away"),
+  }),
   /** A click in pin mode on an image or pdf page; x and y are 0..1 of the image or page. */
   z.strictObject({
     oa: z.literal(1),
@@ -266,6 +327,13 @@ export const ArtifactToShellSchema = z.union([
       y: z.number().min(0).max(1),
       page: z.number().int().min(1).max(100_000).optional(),
     }),
+    /** #2019: the click in frame-viewport pixels, so the shell can open the box beside it. */
+    at: z
+      .strictObject({
+        x: z.number().finite().min(0).max(100_000),
+        y: z.number().finite().min(0).max(100_000),
+      })
+      .optional(),
   }),
 ]);
 export type ArtifactToShell = z.infer<typeof ArtifactToShellSchema>;
@@ -361,6 +429,8 @@ export const ShellToArtifactSchema = z.union([
           resolved: z.boolean().optional(),
           /** #1657: a pin whose page changed since it was placed (the card says so too). */
           changed: z.boolean().optional(),
+          /** #2019: what the pin's bubble shows (pins on images and pdfs only). */
+          badge: PinBadgeSchema.optional(),
         }),
       )
       .max(COMMENT_THREADS_MAX),
@@ -370,6 +440,7 @@ export const ShellToArtifactSchema = z.union([
         x: z.number().min(0).max(1),
         y: z.number().min(0).max(1),
         page: z.number().int().min(1).max(100_000).optional(),
+        badge: PinBadgeSchema.optional(),
       })
       .optional(),
     /**
@@ -381,6 +452,8 @@ export const ShellToArtifactSchema = z.union([
   }),
   /** The reader tapped the shell's "Comment on selection": run the frame's Comment path (#1732). */
   z.strictObject({ oa: z.literal(1), type: z.literal("comments.comment") }),
+  /** Clear the frame's live text selection (the reader clicked elsewhere in the shell). */
+  z.strictObject({ oa: z.literal(1), type: z.literal("comments.clear") }),
   /** Scroll the thread's highlight or pin into view and flash it. */
   z.strictObject({
     oa: z.literal(1),
@@ -401,6 +474,8 @@ export const METHOD_CAPABILITY: Record<RuntimeMethod, keyof Capabilities> = {
   "db.unsubscribe": "db",
   "viewer.get": "viewer",
   "viewer.anonId": "viewer",
+  // The shell also answers only for the Welcome artifact and its owner (#2287).
+  "onboarding.get": "viewer",
   "storage.get": "storage",
   "storage.set": "storage",
   "storage.delete": "storage",
@@ -448,6 +523,7 @@ export const RUNTIME_PARAMS = {
   "db.unsubscribe": z.strictObject(col),
   "viewer.get": z.strictObject({}),
   "viewer.anonId": z.strictObject({}),
+  "onboarding.get": z.strictObject({}),
   "storage.get": z.strictObject({ key: StorageKeyNameSchema }),
   "storage.set": z.strictObject({
     key: StorageKeyNameSchema,
@@ -478,6 +554,7 @@ export const RUNTIME_RESULTS = {
     .object({ email: z.string(), name: z.string().nullable() })
     .nullable(),
   "viewer.anonId": AnonIdSchema.nullable(),
+  "onboarding.get": OnboardingProgressSchema,
   "storage.get": z.unknown(),
   "storage.set": z.null(),
   "storage.delete": z.null(),

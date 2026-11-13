@@ -63,7 +63,7 @@ const toLogin = (redirect: ReturnType<typeof vi.fn>) =>
   );
 
 // /me is still cached as authed (staleTime 60 s) when the session expires.
-describe("M1 401 mid-session sends the user to sign in", () => {
+describe("M1 401 mid-session sends the user to log in", () => {
   it("library list 401", async () => {
     server.use(http.get("*/api/v1/artifacts", unauthorized));
     const { redirect } = mount("/");

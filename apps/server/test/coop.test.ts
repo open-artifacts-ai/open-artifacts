@@ -37,7 +37,7 @@ describe("Cross-Origin-Opener-Policy", () => {
 
   // Web MCP clients run OAuth in a popup and get the result back through
   // window.opener; COOP on these pages would sever it. Exact paths only.
-  it("is absent on the sign-in popup pages, and only those", async () => {
+  it("is absent on the login popup pages, and only those", async () => {
     expect([...COOP_EXEMPT].sort()).toEqual([
       "/auth/callback",
       "/auth/callback/google",

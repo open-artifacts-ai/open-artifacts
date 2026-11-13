@@ -63,6 +63,14 @@ export const ERROR_CODES = [
   "comments_off",
   "comments_signed_in_only",
   "forbidden",
+  "business_contact_only",
+  // Passkey-confirmed picks (#2263).
+  "no_passkey",
+  "passkey_cooling",
+  "already_answered",
+  "passkey_failed",
+  "challenge_expired",
+  "passkey_required",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -178,6 +186,20 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   /** #2080: a signed-out caller wrote a comment where only signed-in people may. */
   comments_signed_in_only: 403,
   forbidden: 403,
+  /** #2404: Business has no self-serve checkout; a new Business checkout is refused. Contact us instead. */
+  business_contact_only: 409,
+  /** #2263: the caller has no passkey registered (a challenge cannot be issued). */
+  no_passkey: 409,
+  /** #2263: every passkey the caller has is younger than 24 hours. */
+  passkey_cooling: 409,
+  /** #2263: the passkey-confirmed ask already has an answer. */
+  already_answered: 409,
+  /** #2263: the assertion or attestation did not verify. */
+  passkey_failed: 400,
+  /** #2263: the challenge is missing, used, voided or older than its TTL; ask for a new one. */
+  challenge_expired: 410,
+  /** #2263: a passkey assertion is required (always so through MCP or an API token). */
+  passkey_required: 403,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */
@@ -237,9 +259,9 @@ export const INVITE_UNREACHABLE_MESSAGE: Record<
   string
 > = {
   outside_domains:
-    "This address can't sign in to this workspace. Share artifacts with them as a guest instead.",
+    "This address can't log in to this workspace. Share artifacts with them as a guest instead.",
   no_sign_in_method:
-    "This address can't sign in to this workspace with the sign-in methods it offers. Ask the owner to turn on one that admits it.",
+    "This address can't log in to this workspace with the login methods it offers. Ask the owner to turn on one that admits it.",
 };
 
 /** 400 unsupported_format message. */

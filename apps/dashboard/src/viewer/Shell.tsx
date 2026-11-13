@@ -30,7 +30,7 @@ import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
-import { CommentsBody, PinBar } from "./comments/CommentsBody";
+import { CommentsBody, PinBar, PinBeside } from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -271,12 +271,16 @@ function Viewer({
     contentHash: versionInfo?.contentHash ?? null,
     getBridge,
     openSurface: () => openSurface.current(),
+    // #2019: a new pin's box opens beside its flag, except on a phone or full screen.
+    besideOk: surface !== "dialog",
+    viewerName: viewer?.name ?? viewer?.email ?? null,
   });
   // The card being read is a pin's: the phone sheet shortens so its pin stays
   // in view (#1657).
+  // #2019: so is a pin being placed on a phone: the flag stays in view while the box is typed in.
   const pinCard =
     cmt.threads.find((t) => t.id === cmt.active && t.anchor.kind === "pin")
-      ?.id ?? null;
+      ?.id ?? (cmt.draft && "pin" in cmt.draft ? "new-pin" : null);
   // #1783: a pin with replies needs the half height to show one.
   const pinReplies =
     (cmt.threads.find((t) => t.id === pinCard)?.comments.length ?? 0) > 1;
@@ -317,12 +321,24 @@ function Viewer({
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
     else setColOpen(true);
   };
+  // Closing the list drops an unsent, empty draft with its selection; a typed
+  // one stays (hidden), as before.
+  const wasShown = useRef(false);
+  const { dropDraft } = cmt;
+  useEffect(() => {
+    if (wasShown.current && !listShown) dropDraft();
+    wasShown.current = listShown;
+  }, [listShown, dropDraft]);
   // Latest values for the effect: the parent's key remounts this on id/version change.
   const vformat = versionInfo?.format;
   const formatRef = useRef(vformat);
   formatRef.current = vformat;
   const latest = useRef({ artifact, viewer, theme });
   latest.current = { artifact, viewer, theme };
+  // #2287: the Welcome page may ask how far the checklist is; the bridge
+  // answers only the owner, and only on the Welcome artifact.
+  const gate = useRef({ owner: role === "owner" });
+  gate.current = { owner: role === "owner" };
   const fx = useArtifactSideEffects(
     artifact,
     version,
@@ -498,6 +514,7 @@ function Viewer({
       iframe: el,
       url: src,
       ...latest.current,
+      onboarding: () => gate.current,
       version,
       formatOf: () => formatRef.current,
       onHello: () => {
@@ -515,11 +532,12 @@ function Viewer({
         fs.current.engaged = on;
       },
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
-      onCommentPositions: (p) => cmtRef.current.onPositions(p),
+      onCommentPositions: (p, ghost) => cmtRef.current.onPositions(p, ghost),
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
-      onCommentPin: (p) => cmtRef.current.onPin(p),
+      onCommentPin: (p, at) => cmtRef.current.onPin(p, at),
       onCommentEscape: () => cmtRef.current.onEscape(),
       onCommentSelection: (has) => cmtRef.current.onSelection(has),
+      onCommentAway: () => cmtRef.current.onAway(),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -848,6 +866,7 @@ function Viewer({
                 referrerPolicy="no-referrer"
                 allow="clipboard-write"
               />
+              {commentsOn && <PinBeside frame={el} />}
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||
