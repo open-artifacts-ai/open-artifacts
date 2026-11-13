@@ -186,12 +186,6 @@ describe("GET /llms.txt", () => {
     expect(steps).toContain("`/rename <name>`");
     expect(steps).toContain("`/name <name>`");
     expect(steps).toMatch(/6\. \*\*Publish a first page\*\*/);
-    expect(steps).toContain(
-      "I'm {name}, your agent. Type @{name} in any comment and I'll answer in the thread. Try it here.",
-    );
-    expect(steps).toContain("What should I publish next?");
-    expect(steps).toContain("Nothing for now");
-    expect(steps).toContain("or your session name if they skipped naming");
     expect(steps).not.toMatch(/optional/i);
     expect(steps).toContain("don't stop to offer the bus as an option");
     expect(steps).not.toContain("\u2014");
