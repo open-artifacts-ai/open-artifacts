@@ -76,7 +76,7 @@ describe("probeSignup (release mode)", () => {
     expect(await detail(URL_, boom)).toContain("ENOTFOUND");
   });
   describe("probe mode fails the job when sign-ups are closed", () => {
-    const page = `<html><head><meta charset="utf-8"></head>${LOGIN}${SIGNUP}Join the waitlist</a>`;
+    const page = `<html><head><meta charset="utf-8"></head>${LOGIN}${SIGNUP}Sign up</a>`;
     const probeWith = async (f: typeof fetch) => {
       put("index.html", page);
       const logs: string[] = [];
@@ -113,16 +113,16 @@ describe("probeSignup (release mode)", () => {
   it("probes the URL the built page links to, not the environment", () => {
     put(
       "index.html",
-      `<html><head><meta charset="utf-8"></head>${LOGIN}${SIGNUP}Join the waitlist</a>`,
+      `<html><head><meta charset="utf-8"></head>${LOGIN}${SIGNUP}Sign up</a>`,
     );
     expect(signupUrlInDist(dir)).toBe("https://app.example.com/sign-up");
     // a dead (#pricing) link is not a sign-up URL
     put(
       "index.html",
-      '<a href="#pricing">Join the waitlist</a><a href="https://app.example.com/b">Join the waitlist</a>',
+      '<a href="#pricing">Sign up</a><a href="https://app.example.com/b">Sign up</a>',
     );
     expect(signupUrlInDist(dir)).toBe("https://app.example.com/b");
-    put("index.html", '<a href="#pricing">Join the waitlist</a>');
+    put("index.html", '<a href="#pricing">Sign up</a>');
     expect(signupUrlInDist(dir)).toBeUndefined();
     expect(signupUrlInDist(join(dir, "nope"))).toBeUndefined();
   });
@@ -177,7 +177,7 @@ describe("check-landing-dist", () => {
   it("passes on a clean dir", () => {
     put(
       "index.html",
-      `<html><head><meta charset="utf-8"></head><p>hi</p>${LOGIN}${SIGNUP}Join the waitlist</a>`,
+      `<html><head><meta charset="utf-8"></head><p>hi</p>${LOGIN}${SIGNUP}Sign up</a>`,
     );
     put("llms.txt", "setup");
     const r = run();
@@ -186,45 +186,45 @@ describe("check-landing-dist", () => {
   });
   const page = (links: string) =>
     `<html><head><meta charset="utf-8"></head><body>\n${links}\n</body></html>`;
-  it("fails when a Join the waitlist link goes to #pricing", () => {
+  it("fails when a Sign up link goes to #pricing", () => {
     put(
       "index.html",
       page(
-        '<a class="btn p" href="https://app.example.com/sign-up">Join the waitlist</a>\n<a class="btn p" href="#pricing">Join the waitlist</a>',
+        '<a class="btn p" href="https://app.example.com/sign-up">Sign up</a>\n<a class="btn p" href="#pricing">Sign up</a>',
       ),
     );
     const r = run();
     expect(r.code).toBe(1);
-    expect(r.out).toContain("Join the waitlist link without a sign-up URL");
+    expect(r.out).toContain("Sign up link without a sign-up URL");
     expect(r.out).toContain("HOSTED_SIGNUP_URL");
     expect(r.out).toContain(`${join(dir, "index.html")}:3`);
     expect(r.out).not.toContain(`${join(dir, "index.html")}:2`);
   });
-  it("fails when the home page has no Join the waitlist link at all", () => {
+  it("fails when the home page has no Sign up link at all", () => {
     put("index.html", page('<a href="#self-host">Self-host it</a>'));
     const r = run();
     expect(r.code).toBe(1);
-    expect(r.out).toContain('no "Join the waitlist" link on the home page');
+    expect(r.out).toContain('no "Sign up" link on the home page');
   });
   it("finds the label inside inner tags, and checks that link too", () => {
     put(
       "index.html",
       page(
-        '<a class="btn" href="#pricing"><span>Join the\n waitlist</span></a>',
+        '<a class="btn" href="#pricing"><span>Sign\n up</span></a>',
       ),
     );
     const r = run();
     expect(r.code).toBe(1);
-    expect(r.out).toContain("Join the waitlist link without a sign-up URL");
-    expect(r.out).not.toContain('no "Join the waitlist" link');
+    expect(r.out).toContain("Sign up link without a sign-up URL");
+    expect(r.out).not.toContain('no "Sign up" link');
     put(
       "index.html",
-      page(`${LOGIN}${SIGNUP}<span>Join the waitlist</span></a>`),
+      page(`${LOGIN}${SIGNUP}<span>Sign up</span></a>`),
     );
     expect(run().code).toBe(0);
   });
   it("a Log in link must point at the same sign-up URL as the buttons", () => {
-    const buttons = `${SIGNUP}Join the waitlist</a>`;
+    const buttons = `${SIGNUP}Sign up</a>`;
     put("index.html", page(`<a href="#pricing">Log in</a>${buttons}`));
     let r = run();
     expect(r.code).toBe(1);
@@ -246,22 +246,22 @@ describe("check-landing-dist", () => {
     expect(run().code).toBe(0);
   });
   it("fails when the buttons have a sign-up URL but the header has no Log in", () => {
-    put("index.html", page(`${SIGNUP}Join the waitlist</a>`));
+    put("index.html", page(`${SIGNUP}Sign up</a>`));
     const r = run();
     expect(r.code).toBe(1);
     expect(r.out).toContain('no "Log in" link in the home page header');
   });
-  it("fails when a Join the waitlist link has no href", () => {
-    put("index.html", page("<a>Join the waitlist</a>"));
+  it("fails when a Sign up link has no href", () => {
+    put("index.html", page("<a>Sign up</a>"));
     const r = run();
     expect(r.code).toBe(1);
-    expect(r.out).toContain("Join the waitlist link without a sign-up URL");
+    expect(r.out).toContain("Sign up link without a sign-up URL");
   });
-  it("passes when every Join the waitlist link goes to the sign-up URL", () => {
+  it("passes when every Sign up link goes to the sign-up URL", () => {
     put(
       "index.html",
       page(
-        `${LOGIN}<a class="btn" href="https://app.example.com/sign-up">Join the waitlist</a>\n<a href="#pricing">Pricing</a>`,
+        `${LOGIN}<a class="btn" href="https://app.example.com/sign-up">Sign up</a>\n<a href="#pricing">Pricing</a>`,
       ),
     );
     expect(run().code).toBe(0);
