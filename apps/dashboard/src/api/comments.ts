@@ -694,6 +694,9 @@ const wait = (s: number) =>
 const isPlanRefusal = (code: string | null) =>
   code === "plan_required" || code === "plan_read_only";
 
+/** The billing service is down: nothing about the caller's plan, so everyone reads the same copy. */
+const isBillingDown = (code: string | null) => code === "billing_unavailable";
+
 /** No Me (anonymous) or a capped account: billing details never reach them. */
 const planOutsider = (ctx?: ErrorContext) => !ctx || ctx.capped === true;
 
@@ -737,6 +740,8 @@ export function commentError(
     return planOutsider(ctx)
       ? cappedCopy("comment")
       : errorCopy(e, "Couldn't post your comment. Try again.", ctx);
+  if (isBillingDown(code))
+    return errorCopy(e, "Couldn't post your comment. Try again.", ctx);
   switch (code) {
     case "rate_limited":
       return e instanceof ApiClientError && e.retryAfter
@@ -768,6 +773,8 @@ export function commentError(
 
 /** Copy for a failed answer: 403 not asked, 409 closed, 400 unknown option. */
 export function answerError(e: unknown, ctx?: ErrorContext): string {
+  if (e instanceof ApiClientError && isBillingDown(e.code))
+    return errorCopy(e, "Couldn't send your answer. Try again.", ctx);
   if (e instanceof ApiClientError && isPlanRefusal(e.code))
     return planOutsider(ctx)
       ? cappedCopy("answer")
