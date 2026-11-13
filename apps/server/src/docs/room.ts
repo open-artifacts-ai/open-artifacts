@@ -266,7 +266,12 @@ export class DocRoom extends DurableObject<Env> {
     // Accepted (and tagged) before touch, so a closeActor that runs while
     // touch is in flight finds it; a touch after a revocation started is
     // refused and the socket closes here (as ArtifactRuntime.fetch does).
-    if (actor.startsWith("u:") && !(await this.touchPresence(actor, authzAt))) {
+    // u: and agent: actors are users (presence is keyed by user id); an ip:
+    // actor has no user, so only the access-change check above covers it.
+    if (
+      (actor.startsWith("u:") || actor.startsWith("agent:")) &&
+      !(await this.touchPresence(actor, authzAt))
+    ) {
       try {
         server.close(4403, "access_removed");
       } catch {
@@ -350,7 +355,7 @@ export class DocRoom extends DurableObject<Env> {
     authzAt: number,
   ): Promise<boolean> {
     const id = this.ctx.id.name;
-    const p = presenceStub(this.env, actor.slice(2));
+    const p = presenceStub(this.env, actor.slice(actor.indexOf(":") + 1));
     if (!p || !id) return true;
     try {
       return (await p.touch(`${DOC_PRESENCE_PREFIX}${id}`, authzAt)).ok;

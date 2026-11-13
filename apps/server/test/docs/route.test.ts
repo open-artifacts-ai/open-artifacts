@@ -249,12 +249,15 @@ describe("spoofed client headers are ignored", () => {
     expect(h.version).not.toBe(999);
     const ns = env.DOC_ROOM;
     if (!ns) throw new Error("DOC_ROOM unbound");
-    await runInDurableObject(ns.get(ns.idFromName(id)), (_r: DocRoom, state) => {
-      const held = (t: string) => state.getWebSockets(t).length;
-      expect(held("a:u:somebody-else")).toBe(0);
-      expect(held(`a:u:${viewer.userId}`)).toBe(1);
-      expect(held("role:edit")).toBe(0);
-    });
+    await runInDurableObject(
+      ns.get(ns.idFromName(id)),
+      (_r: DocRoom, state) => {
+        const held = (t: string) => state.getWebSockets(t).length;
+        expect(held("a:u:somebody-else")).toBe(0);
+        expect(held(`a:u:${viewer.userId}`)).toBe(1);
+        expect(held("role:edit")).toBe(0);
+      },
+    );
     s.ws.close();
   });
 });
@@ -420,5 +423,16 @@ describe("room full, TTL, access change, delete", () => {
     });
     const s = wrap(res.webSocket as WebSocket);
     expect((await s.closed).code).toBe(4403);
+  });
+  it("anonymous and PAT callers authorized before an access change are refused 4403", async () => {
+    const id = await mkDoc("public");
+    await runInDurableObject(roomOf(id), (r: DocRoom) => {
+      r.closeSockets("access changed");
+    });
+    // The route stamps authzAt = now, inside the skew window of the change.
+    for (const auth of [null, ownerPat, viewerPat]) {
+      const s = await sock(id, auth);
+      expect((await s.closed).code).toBe(4403);
+    }
   });
 });

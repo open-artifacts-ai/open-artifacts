@@ -593,6 +593,16 @@ export function mountRuntime(app: AppType): void {
   // The role is the server's: "edit" for who may publish, else "read". Every
   // header the DO trusts is set here and replaces anything the client sent
   // (the upgrade is rebuilt from scratch, never forwarded).
+  //
+  // Authorization: accessLevel() resolves the caller's level on this artifact
+  // (owner, share, team or public visibility); the socket exists only if that
+  // is non-null (else 404). The role is "edit" only for a signed-in caller
+  // whose level passes can(level, "publish"); everyone else (viewers, guests
+  // with view access, anonymous) reads. The actor is synthesized here from
+  // the verified caller: "u:{userId}" (a PAT or agent token acts as its user)
+  // or "ip:{key}"; the client never supplies one. Every principal gets the
+  // same authzAt stamped by enforcePolicy, and the room refuses any socket
+  // authorized before the doc's last access change, for all actors.
   app.get(DOC_SOCKET, async (c) => {
     const origin = c.req.header("origin");
     if (origin !== undefined && origin !== appOrigin(c.env))

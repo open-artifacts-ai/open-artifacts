@@ -1044,4 +1044,26 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
       expect(res.status).toBe(400);
     }
   });
+  it("closes ip:, ip:|anon and agent: actors authorized before an access change (4403)", async () => {
+    const stub = roomStub();
+    await runInDurableObject(stub, (r: DocRoom) => {
+      r.closeSockets("access changed");
+    });
+    for (const actor of ["ip:1.2.3.4", "ip:1.2.3.4|abcdefgh", "agent:bot-1"]) {
+      const res = await stub.fetch("https://room/ws", {
+        headers: {
+          Upgrade: "websocket",
+          [ACTOR_HEADER]: actor,
+          [DOC_ROLE_HEADER]: "read",
+          [AUTHZ_AT_HEADER]: String(Date.now() - 10_000),
+        },
+      });
+      const ws = res.webSocket as WebSocket;
+      const closed = new Promise<number>((r) =>
+        ws.addEventListener("close", (e) => r((e as CloseEvent).code)),
+      );
+      ws.accept();
+      expect(await closed).toBe(4403);
+    }
+  });
 });
