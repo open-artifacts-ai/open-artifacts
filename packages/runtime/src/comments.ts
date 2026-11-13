@@ -260,6 +260,8 @@ export function createComments(
   /** Resolved threads for the current text and thread set; null = stale. */
   let slots: Slot[] | null = null;
   let lastReport = "";
+  /** Where compute() last drew the new-pin flag, in viewport pixels. */
+  let ghostAt: { x: number; y: number } | null = null;
   let painted: { id: string; range: Range }[] = [];
   let flashId: string | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
@@ -538,12 +540,17 @@ export function createComments(
         d.addEventListener("click", () => open(th.id));
       }
     }
+    ghostAt = null;
     if (ghost) {
       const box = pinBox({ kind: "pin", page: ghost.page } as Extract<
         Anchor,
         { kind: "pin" }
       >);
       if (box) {
+        ghostAt = {
+          x: box.left + ghost.x * box.width,
+          y: box.top + ghost.y * box.height,
+        };
         const gx = box.left + scrollX + ghost.x * box.width;
         const gy = clampTop(box.top + scrollY + ghost.y * box.height);
         mark(
@@ -577,10 +584,17 @@ export function createComments(
     const positions = compute();
     lastPositions.clear();
     for (const p of positions) lastPositions.set(p.id, p);
-    const key = JSON.stringify(positions);
+    // #2386: the new-pin flag's place, so the shell's box follows a scroll.
+    const at = ghostAt as { x: number; y: number } | null;
+    const key = JSON.stringify([positions, at]);
     if (!force && key === lastReport) return;
     lastReport = key;
-    bridge.send({ oa: 1, type: "comment.positions", positions });
+    bridge.send({
+      oa: 1,
+      type: "comment.positions",
+      positions,
+      ...(at ? { ghost: at } : {}),
+    });
   }
 
   // One animation frame batches what the page events asked for: scroll

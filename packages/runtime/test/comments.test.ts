@@ -1024,6 +1024,39 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ at: { x: 120, y: 60 } });
   });
 
+  it("reports where the new-pin flag is, and again when the page scrolls (#2386)", async () => {
+    await start("pin");
+    await send({
+      type: "comments.set",
+      threads: [],
+      ghost: { x: 0.5, y: 0.5 },
+    });
+    expect(last("comment.positions")).toMatchObject({
+      ghost: { x: 120, y: 60 },
+    });
+    // The image moves up 50px under the frame.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      top: -40,
+      left: 20,
+      right: 220,
+      bottom: 60,
+      width: 200,
+      height: 100,
+    } as DOMRect);
+    window.dispatchEvent(new Event("scroll"));
+    frames();
+    await flush();
+    expect(last("comment.positions")).toMatchObject({
+      ghost: { x: 120, y: 10 },
+    });
+  });
+
+  it("says nothing about a flag when none is placed (#2386)", async () => {
+    await start("pin");
+    await send({ type: "comments.set", threads: [] });
+    expect(last("comment.positions")).not.toHaveProperty("ghost");
+  });
+
   describe("badges (#2019)", () => {
     const base = (extra: object) => ({
       id: "p1",
