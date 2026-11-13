@@ -21,10 +21,10 @@ export class FakeProvider implements RoomProvider {
     bufferedAmount: number;
     addEventListener: (
       type: "close",
-      cb: (e: { code: number }) => void,
+      cb: (e: { code: number; reason?: string }) => void,
     ) => void;
   } | null = null;
-  private closers: ((e: { code: number }) => void)[] = [];
+  private closers: ((e: { code: number; reason?: string }) => void)[] = [];
   sentUpdates: Uint8Array[] = [];
   sentAwareness: number[][] = [];
   destroyed = false;
@@ -44,6 +44,7 @@ export class FakeProvider implements RoomProvider {
     public doc: Y.Doc,
     public shouldReconnect: (e: {
       code: number;
+      reason?: string;
     }) => boolean = roomShouldReconnect,
   ) {
     this.awareness = new Awareness(doc);
@@ -92,14 +93,14 @@ export class FakeProvider implements RoomProvider {
     this.emit("status", { status: "disconnected" });
   }
   /** The server closes the socket with a code (the wire spec's 4401 ... 1013). */
-  close(code: number) {
-    for (const cb of [...this.closers]) cb({ code });
+  close(code: number, reason?: string) {
+    for (const cb of [...this.closers]) cb({ code, reason });
     this.wsconnected = false;
     this.synced = false;
     this.emit("status", { status: "disconnected" });
     // Like y-websocket: a close the policy allows is retried after a backoff
     // (a no-op if something already reconnected); one it does not is final.
-    if (!this.shouldReconnect({ code })) this.shouldConnect = false;
+    if (!this.shouldReconnect({ code, reason })) this.shouldConnect = false;
     else
       setTimeout(() => {
         if (this.shouldConnect && !this.wsconnected) this.connect();

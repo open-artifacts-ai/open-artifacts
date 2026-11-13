@@ -1,3 +1,4 @@
+import { accessChangedCloseReason } from "@oa/shared";
 import { act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
@@ -322,6 +323,18 @@ describe("the wire spec: hello and close codes", () => {
     room.destroy();
   });
 
+  it("4403 'access changed; retry after N ms' (#2154) reconnects after N ms, not final", () => {
+    const room = ready();
+    fake.close(4403, accessChangedCloseReason(1500));
+    expect(room.getSnapshot().ended).toBeNull();
+    vi.advanceTimersByTime(1499);
+    expect(fake.connects).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(fake.connects).toBe(2);
+    expect(room.getSnapshot().ended).toBeNull();
+    room.destroy();
+  });
+
   it("4404 not_found ends it with the gone copy", () => {
     const room = ready();
     fake.close(4404);
@@ -475,6 +488,12 @@ describe("the reconnect policy", () => {
       expect(roomShouldReconnect({ code }), String(code)).toBe(true);
     for (const code of [4403, 4404])
       expect(roomShouldReconnect({ code }), String(code)).toBe(false);
+    expect(
+      roomShouldReconnect({
+        code: 4403,
+        reason: accessChangedCloseReason(250),
+      }),
+    ).toBe(true);
   });
 
   it("defaultProvider hands the policy to y-websocket, which by default would stop at 4401", () => {
@@ -493,10 +512,13 @@ describe("the reconnect policy", () => {
     }
   });
 
-  it("rate_limited is ignored: no error, no alert copy", () => {
+  it("rate_limited and bad_update are ignored: no error, no alert copy", () => {
     const room = open();
     fake.connect();
     fake.frame(JSON.stringify({ type: "error", code: "rate_limited" }));
+    expect(room.getSnapshot().error).toBeNull();
+    // #2154 sends bad_update before its 1007 close; the close handler answers.
+    fake.frame(JSON.stringify({ type: "error", code: "bad_update" }));
     expect(room.getSnapshot().error).toBeNull();
     expect(errorCopy(room.getSnapshot().error)).toBeNull();
     // Other codes still show the generic message.

@@ -1,3 +1,4 @@
+import { retryAfterFromClose } from "@oa/shared";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { WebsocketProvider } from "y-websocket";
 import * as Y from "yjs";
@@ -143,7 +144,7 @@ export interface RoomProvider {
     bufferedAmount?: number;
     addEventListener?: (
       type: "close",
-      cb: (e: { code: number }) => void,
+      cb: (e: { code: number; reason?: string }) => void,
     ) => void;
   } | null;
   /** y-websocket's socket control: disconnect() also stops its reconnecting. */
@@ -203,10 +204,16 @@ export const roomName = (artifactId: string) => `${artifactId}/doc`;
  * 4400-4499 close as final, but the wire spec's 4401 auth_expired means "the
  * cookie re-authorizes: reconnect silently". Only 4403 (access removed) and
  * 4404 (doc deleted) are final; 1007 and 1013 reconnect (1007 once, see the
- * room), with the provider's backoff.
+ * room), with the provider's backoff. A 4403 whose reason is
+ * accessChangedCloseReason (the room, #2154: authorized just before an access
+ * change) is not final: the room reconnects after the wait it names.
  */
-export const roomShouldReconnect = (e: { code: number }): boolean =>
-  e.code !== 4403 && e.code !== 4404;
+export const roomShouldReconnect = (e: {
+  code: number;
+  reason?: string;
+}): boolean =>
+  (e.code !== 4403 || retryAfterFromClose(e.reason) !== null) &&
+  e.code !== 4404;
 
 export function defaultProvider(artifactId: string, ydoc: Y.Doc): RoomProvider {
   // disableBc: other tabs sync through the server, so "Saved" means saved.
@@ -388,7 +395,15 @@ export function createDocRoom(
         provider.disconnect?.();
         publish();
       };
-      if (ev.code === 4403) stop("access_removed");
+      const retry = ev.code === 4403 ? retryAfterFromClose(ev.reason) : null;
+      if (retry !== null) {
+        // Opened just as access changed (#2154): re-authorize after the wait.
+        provider.disconnect?.();
+        clearTimeout(busyTimer);
+        busyTimer = setTimeout(() => {
+          if (!destroyed) provider.connect?.();
+        }, retry);
+      } else if (ev.code === 4403) stop("access_removed");
       else if (ev.code === 4404) stop("not_found");
       else if (ev.code === 1013) {
         // Take over from y-websocket's backoff (disconnect() stops its retry).
@@ -455,9 +470,13 @@ export function createDocRoom(
         )
           for (const l of [...versionListeners])
             l({ kind: "restored", from: frame.from, version: frame.version });
-        // rate_limited (spec): cursor or sync frames were dropped; the client
-        // keeps its throttles and says nothing.
-        if (frame.type === "error" && frame.code !== "rate_limited") {
+        // rate_limited and bad_update (#2154) come just before a 1013 or 1007
+        // close, which the close handler answers; they say nothing themselves.
+        if (
+          frame.type === "error" &&
+          frame.code !== "rate_limited" &&
+          frame.code !== "bad_update"
+        ) {
           error = typeof frame.code === "string" ? frame.code : "error";
           publish();
           // The rejected edit is still in this Y.Doc: ask for a fresh room
