@@ -119,6 +119,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build landing
         if: steps.gate.outputs.present == 'true'
+        env:
+          HOSTED_SIGNUP_URL: https://signup.open-artifacts.app/
         run: pnpm --filter @oa/landing build
       # The release is already created by release-please above, so
       # failing here does not undo the release; it only blocks a not-ready landing.
@@ -126,6 +128,13 @@ jobs:
       - name: Check landing is release-ready
         if: steps.gate.outputs.present == 'true'
         run: node scripts/ops/check-landing-dist.ts apps/landing/dist
+      # Sign-ups closed (the URL the built page links to does not end on a 2xx)
+      # fails this job red with an annotation, so no dead sign-up buttons ship.
+      # The hosted deploys do not wait on deploy-landing (tag-passed-checks
+      # ignores it), so a red landing job does not block them.
+      - name: Probe the sign-up URL
+        if: steps.gate.outputs.present == 'true'
+        run: node scripts/ops/check-landing-dist.ts apps/landing/dist --probe-signup
       - name: Deploy landing to production (open-artifacts.com)
         if: steps.gate.outputs.present == 'true'
         run: cd apps/landing && pnpm exec wrangler deploy
@@ -424,6 +433,11 @@ jobs:
       # deploy-prod skipped itself (prod not installed) or the migration guard held
       # the release for a guarded dispatch: prod is not on this tag, so don't verify it.
       SKIP_PROD: ${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}
+      # deploy-landing did not succeed (it goes red on purpose while hosted
+      # sign-ups are closed, and alerts on its own), so open-artifacts.com still
+      # shows the old version: do not check it. This job must stay green so the
+      # hosted deploys are not blocked.
+      SKIP_LANDING: ${{ needs.deploy-landing.result != 'success' && '--skip-landing' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -434,10 +448,10 @@ jobs:
           node-version-file: .nvmrc
       - name: Verify the release is live
         if: ${{ vars.DEMO_ENABLED != 'true' }}
-        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" ${SKIP_PROD:+"$SKIP_PROD"}
+        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" ${SKIP_PROD:+"$SKIP_PROD"} ${SKIP_LANDING:+"$SKIP_LANDING"}
       - name: Verify the release is live (with the demo)
         if: ${{ vars.DEMO_ENABLED == 'true' }}
-        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" --demo-url https://demo.open-artifacts.com ${SKIP_PROD:+"$SKIP_PROD"}
+        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" --demo-url https://demo.open-artifacts.com ${SKIP_PROD:+"$SKIP_PROD"} ${SKIP_LANDING:+"$SKIP_LANDING"}
   # ---------- npm: @open-artifacts/bus (#1301) ----------
   # Stable releases only, from the release commit on main. The package's
   # version stays 0.0.0 (and "private": true) in the repository, so nothing

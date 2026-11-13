@@ -1697,6 +1697,20 @@ describe("release cadence", () => {
         "${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}",
       );
     });
+    it("skips the landing check when deploy-landing did not succeed, in both run lines", () => {
+      expect(v.env.SKIP_LANDING).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ needs.deploy-landing.result != 'success' && '--skip-landing' || '' }}",
+      );
+      expect(v.needs).toContain("deploy-landing");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const runs = v.steps.filter((s: any) =>
+        String(s.run ?? "").includes("verify-release.ts"),
+      );
+      expect(runs).toHaveLength(2);
+      for (const r of runs)
+        expect(r.run).toContain('${SKIP_LANDING:+"$SKIP_LANDING"}');
+    });
   });
 });
 

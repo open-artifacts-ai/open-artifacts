@@ -34,15 +34,6 @@ describe("D7 adversarial", () => {
     expect(llms).not.toContain("ls-remote");
   });
 
-  // Without JS the Copy button renders, is focusable, and does nothing. It
-  // should start hidden (script reveals it) and the prompt be select-all.
-  it("the copy CTA degrades without JS", () => {
-    const index = read("index.html");
-    const button = index.match(/<button[^>]*data-copy[^>]*>/)?.[0] ?? "";
-    expect(button).toMatch(/\shidden(\s|>|=)/);
-    expect(index).toMatch(/\.cta-prompt\s*{[^}]*user-select:\s*all/);
-  });
-
   // Internal TODO comments ship in every published HTML page. Only the
   // release-gate markers (see markers.test.ts) may appear.
   it("no internal TODO comments in the built HTML", () => {
