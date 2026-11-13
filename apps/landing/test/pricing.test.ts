@@ -21,7 +21,7 @@ describe("pricing", () => {
     for (const name of ["Solo", "Team", "Business", "Self-host"])
       expect(head).toContain(`<span class="pn">${name}</span>`);
     expect(head.match(/<a class="btn[^"]*" href="[^"]+">/g)).toHaveLength(4);
-    expect(head.match(/>Join the waitlist<\/a>/g)).toHaveLength(2);
+    expect(head.match(/>Sign up<\/a>/g)).toHaveLength(2);
     expect(head).toContain(
       'href="mailto:hello@open-artifacts.com?subject=Open%20Artifacts%20Business">Contact us</a>',
     );
@@ -29,7 +29,7 @@ describe("pricing", () => {
     expect(head).toMatch(/href="#self-host">Self-host it<\/a>/);
     // Beta: hosted plans are invite-only (Product's waitlist strings).
     expect(pricing).toMatch(
-      /Hosted plans are invite-only during the beta\. Join the waitlist and we(&#39;|')ll email you when it(&#39;|')s your turn\./,
+      /Hosted plans are invite-only during the beta\. Sign up to join the waitlist and we(&#39;|')ll email you when it(&#39;|')s your turn\./,
     );
   });
 
