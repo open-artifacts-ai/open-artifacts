@@ -50,6 +50,7 @@ import { CpuBanner } from "./CpuBanner";
 import { DisplayNamePrompt } from "./DisplayNamePrompt";
 import { GuestSharesBanner } from "./GuestSharesBanner";
 import { PlanBanner } from "./PlanBanner";
+import { PlanChip } from "./PlanChip";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
@@ -547,6 +548,7 @@ function TopBar({ me }: { me: Me | null }) {
           alignItems: "center",
         }}
       >
+        <PlanChip me={me} />
         {/* Below 640px the avatar alone (it opens the account menu), so the
             search and its space chip get the room. */}
         <span data-header-email="" className="max-[640px]:hidden">

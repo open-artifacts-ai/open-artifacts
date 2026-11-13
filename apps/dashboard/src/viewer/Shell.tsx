@@ -319,6 +319,10 @@ function Viewer({
   formatRef.current = vformat;
   const latest = useRef({ artifact, viewer, theme });
   latest.current = { artifact, viewer, theme };
+  // #2287: the Welcome page may ask how far the checklist is; the bridge
+  // answers only the owner, and only on the Welcome artifact.
+  const gate = useRef({ owner: role === "owner" });
+  gate.current = { owner: role === "owner" };
   const fx = useArtifactSideEffects(
     artifact,
     version,
@@ -466,6 +470,7 @@ function Viewer({
       iframe: el,
       url: src,
       ...latest.current,
+      onboarding: () => gate.current,
       version,
       formatOf: () => formatRef.current,
       onHello: () => {

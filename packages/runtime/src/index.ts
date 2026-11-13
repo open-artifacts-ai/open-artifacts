@@ -3,6 +3,7 @@ import {
   type DataQueryInput,
   type Format,
   NAVIGATE_PATH_RE,
+  type OnboardingProgress,
   type Page,
   type ShellToArtifact,
 } from "@oa/shared";
@@ -20,6 +21,7 @@ export { RuntimeError, type RuntimeErrorCode } from "./bridge.js";
 
 export type Theme = "light" | "dark";
 export type Viewer = { email: string; name: string | null };
+export type { OnboardingProgress };
 /**
  * A subscribe() delivery. `resync: true` (with empty docs/deleted) means the
  * live connection was re-established and changes may have been missed:
@@ -65,6 +67,12 @@ export interface OpenArtifacts {
      */
     anonId(): Promise<string | null>;
   };
+  /**
+   * The first-run checklist's progress, for the Welcome page only (#2287):
+   * the shell refuses it (forbidden) on any other artifact and for anyone but
+   * the owner.
+   */
+  onboarding: { get(): Promise<OnboardingProgress> };
   db: { collection(name: string): Collection };
   storage: {
     get(key: string): Promise<unknown>;
@@ -487,6 +495,7 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
       get: () => bridge.call("viewer.get", {}),
       anonId: () => bridge.call("viewer.anonId", {}),
     },
+    onboarding: { get: () => bridge.call("onboarding.get", {}) },
     db: { collection },
     storage: {
       get: (key) => bridge.call("storage.get", { key }),
