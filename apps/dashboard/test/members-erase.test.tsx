@@ -73,9 +73,9 @@ const openErase = async (name = "Gus Gone", title = `Erase ${name}?`) => {
   return screen.findByRole("dialog", { name: title });
 };
 const BODY = [
-  "This deletes what's left of Gus's account: their name and email, sign-ins, agent connections and tokens, the shares they received, and their space roles. It can't be undone, and they can't be restored afterwards.",
+  "This deletes what's left of Gus's account: their name and email, logins, agent connections and tokens, the shares they received, and their space roles. It can't be undone, and they can't be restored afterwards.",
   "What stays: work they published, shown as from a former member; shares they created; and the audit log.",
-  "They can still come back as a new, empty account if your sign-in rules let them in. A Google account they used stays blocked until an admin resets its link.",
+  "They can still come back as a new, empty account if your login rules let them in. A Google account they used stays blocked until an admin resets its link.",
 ];
 
 describe("Erase on the Removed list", () => {
@@ -183,7 +183,7 @@ describe("Erase on the Removed list", () => {
     ).toBeNull();
     expect(
       within(d).getByText(
-        "This deletes what's left of a former member's account: their name and email, sign-ins, agent connections and tokens, the shares they received, and their space roles. It can't be undone, and they can't be restored afterwards.",
+        "This deletes what's left of a former member's account: their name and email, logins, agent connections and tokens, the shares they received, and their space roles. It can't be undone, and they can't be restored afterwards.",
       ),
     ).toBeVisible();
     expect(within(d).getByText(BODY[1] as string)).toBeVisible();

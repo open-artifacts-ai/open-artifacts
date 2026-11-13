@@ -137,7 +137,7 @@ export function caller(c: Context<AppEnv>): Caller {
 /** The signed-in user, or 401. */
 export function requireUser(c: Context<AppEnv>): Member {
   const user = c.var.user;
-  if (!user) throw new ApiError("unauthorized", "Sign in required");
+  if (!user) throw new ApiError("unauthorized", "Login required");
   return user;
 }
 
@@ -719,7 +719,7 @@ export async function publishTarget(
   spaceId: string,
   purpose: "create" | "move",
 ): Promise<TargetSpace> {
-  if (c.kind !== "user") throw new ApiError("unauthorized", "Sign in required");
+  if (c.kind !== "user") throw new ApiError("unauthorized", "Login required");
   const [row] = await getDb(env)
     .select({
       kind: spaces.kind,

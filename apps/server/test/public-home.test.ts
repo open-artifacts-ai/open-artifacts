@@ -81,7 +81,7 @@ describe("PUBLIC_HOME", () => {
     await expectShell(await get("/", ""));
   });
 
-  it("public + signed out: 302 to /a/<id>/full, no-store", async () => {
+  it("public + logged out: 302 to /a/<id>/full, no-store", async () => {
     const id = await mk("public");
     const r = await get("/", id);
     expect(r.status).toBe(302);
@@ -92,7 +92,7 @@ describe("PUBLIC_HOME", () => {
     expect(h.headers.get("location")).toBe(`/a/${id}/full`);
   });
 
-  it("an invalid session cookie counts as signed out", async () => {
+  it("an invalid session cookie counts as logged out", async () => {
     const id = await mk("public");
     const r = await get("/", id, {
       cookie: `${cookie.split("=")[0]}=forged.sig`,
@@ -100,7 +100,7 @@ describe("PUBLIC_HOME", () => {
     expect(r.status).toBe(302);
   });
 
-  it("signed in: the dashboard, no D1 read", async () => {
+  it("logged in: the dashboard, no D1 read", async () => {
     const id = await mk("public");
     const { DB, n } = homeDb();
     await expectShell(await get("/", id, { cookie, DB }));
@@ -163,7 +163,7 @@ describe("PUBLIC_HOME", () => {
     expect(n.reads).toBe(2);
   });
 
-  it("many signed-out requests within 60 s do one D1 read", async () => {
+  it("many logged-out requests within 60 s do one D1 read", async () => {
     const id = await mk("public");
     const { DB, n } = homeDb();
     for (let i = 0; i < 5; i++)

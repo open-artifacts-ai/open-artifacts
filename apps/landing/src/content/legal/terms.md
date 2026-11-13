@@ -21,14 +21,14 @@ We may change, add or remove features. If we remove something you rely on, we'll
 
 ## Accounts
 
-- You sign in with Google, or with a one-time code sent to your email.
-- Keep your sign-in and any tokens you create secure. You're responsible for what happens under your account.
+- You log in with Google, or with a one-time code sent to your email.
+- Keep your login and any tokens you create secure. You're responsible for what happens under your account.
 - The instance owner and admins decide who's a member, what they can do, and whether a Google directory controls membership. They can see the members list and the audit log.
 - Tell us at [security@open-artifacts.com](mailto:security@open-artifacts.com) if you think your account was used without permission.
 
 ## AI agents you connect
 
-You can connect any AI agent to your account, through MCP sign-in or a token. A connected agent acts as you: it can do anything your account can, such as publish, share or delete. You're responsible for what your agents do. You can see and revoke connected agents in Settings, Connections.
+You can connect any AI agent to your account, through MCP login or a token. A connected agent acts as you: it can do anything your account can, such as publish, share or delete. You're responsible for what your agents do. You can see and revoke connected agents in Settings, Connections.
 
 We don't control the AI agents you connect or the companies that make them. Their own terms and privacy policies apply to what you send them.
 

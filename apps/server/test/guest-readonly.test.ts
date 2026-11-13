@@ -96,7 +96,7 @@ const WRITES = (id: string) =>
     ["POST", R.uploads, { path: "a.txt", size: 1, contentType: "text/plain" }],
   ] as const;
 
-describe("guest read cap (direct sign-in)", () => {
+describe("guest read cap (direct login)", () => {
   it("a guest with an editor share can read, but every write is refused", async () => {
     const email = uniq("g", "x.com");
     const id = await sharedArtifact(email);
@@ -287,7 +287,7 @@ describe("guest read cap (direct sign-in)", () => {
     ).toBe(404);
   });
 
-  it("members are untouched under direct sign-in", async () => {
+  it("members are untouched under direct login", async () => {
     const email = uniq("m");
     const id = await sharedArtifact(email);
     const m = await sessionFor(email, "member", "access");
@@ -524,7 +524,7 @@ describe("guest read cap (Access-only install, parity 2)", () => {
     ).toBe(200);
   });
 
-  it("a signed-in guest is refused on a public viewers artifact; anonymous passes", async () => {
+  it("a logged-in guest is refused on a public viewers artifact; anonymous passes", async () => {
     const o = await login(uniq("own"));
     const owner = await getUser(env, o.userId);
     const { id } = await publish(

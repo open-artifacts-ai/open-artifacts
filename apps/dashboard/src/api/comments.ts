@@ -800,7 +800,7 @@ export function commentError(
       return "That comment couldn't be found.";
     case "unauthorized":
     case "comments_signed_in_only":
-      return "Sign in to comment.";
+      return "Log in to comment.";
     default:
       return "Couldn't post your comment. Try again.";
   }

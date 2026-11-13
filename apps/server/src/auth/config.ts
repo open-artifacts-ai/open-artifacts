@@ -47,7 +47,7 @@ export type AuthConfig = {
 
 /** Me.instance.signIn.problems when email codes run with no Turnstile keys (self-host). */
 export const NO_BOT_CHECK =
-  "Sign-in codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
+  "Login codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
 
 const PROVIDERS: readonly SignInProvider[] = ["access", "google", "email"];
 const CODE_EMAILS_DEFAULT = 200;
@@ -90,7 +90,7 @@ function parseProviders(
       out.add(p as SignInProvider);
     else
       problems.push(
-        `AUTH_PROVIDERS lists "${p}", which isn't a sign-in method, so it's ignored. Use access, google or email.`,
+        `AUTH_PROVIDERS lists "${p}", which isn't a login method, so it's ignored. Use access, google or email.`,
       );
   }
   return out;
@@ -104,14 +104,14 @@ function googleConfig(
   // "Google sign-in is on, but <why>, so Google isn't offered. <todo>."
   const fail = (why: string, todo: string) => {
     problems.push(
-      `Google sign-in is on, but ${why}, so Google isn't offered. ${todo}.`,
+      `Google login is on, but ${why}, so Google isn't offered. ${todo}.`,
     );
     return null;
   };
   if (!nonEmpty(env.GOOGLE_CLIENT_ID))
     return fail(
       "GOOGLE_CLIENT_ID isn't set",
-      "Set it, or turn Google sign-in off",
+      "Set it, or turn Google login off",
     );
   // An empty AUTH_DOMAINS is valid: admission is then by OWNER_EMAIL and
   // invites only (domainJoin is forced to "invite" below). It never means
@@ -123,7 +123,7 @@ function googleConfig(
   if (env.HOSTED === "1" && !nonEmpty(env.AUTH_BROKER_URL))
     return fail(
       "a hosted install needs the broker transport and AUTH_BROKER_URL isn't set",
-      "Set AUTH_BROKER_URL to the sign-in broker",
+      "Set AUTH_BROKER_URL to the login broker",
     );
   if (nonEmpty(env.AUTH_BROKER_URL)) {
     let url: URL;
@@ -166,7 +166,7 @@ function googleConfig(
   if (!nonEmpty(env.GOOGLE_CLIENT_SECRET))
     return fail(
       "GOOGLE_CLIENT_SECRET isn't set",
-      "Set it, or turn Google sign-in off",
+      "Set it, or turn Google login off",
     );
   return {
     clientId,
@@ -230,7 +230,7 @@ function build(env: Env): AuthConfig {
   const canSend = !!env.EMAIL && !!env.EMAIL_FROM;
   if (providers.has("email") && !canSend)
     problems.push(
-      "Email sign-in is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so sign-in codes aren't offered. Set up email sending, or turn email sign-in off.",
+      "Email login is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so login codes aren't offered. Set up email sending, or turn email login off.",
     );
 
   // A4: Turnstile stays optional on self-host, but codes without it let bots

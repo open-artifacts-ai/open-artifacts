@@ -186,7 +186,7 @@ export function GetStarted({
             <p className="m-0">Your agent is connected.</p>
           ) : (
             <>
-              <AgentSetupBody intro="Paste this into Claude Code, Cursor or any AI agent. It signs in through your browser." />
+              <AgentSetupBody intro="Paste this into Claude Code, Cursor or any AI agent. It logs in through your browser." />
               <Waiting>Waiting for your agent…</Waiting>
             </>
           )}

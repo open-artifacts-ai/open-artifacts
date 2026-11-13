@@ -129,7 +129,7 @@ async function cross(
   );
 }
 
-describe("sign-in ID-token cases across installs (fake Google)", () => {
+describe("login ID-token cases across installs (fake Google)", () => {
   it("an ID token with hd of A at B's callback: no session", async () => {
     // A's own identity, for B's client: only the tenant differs.
     await cross({ ...own(A), aud: CID_B, azp: CID_B }, "tenant");

@@ -482,8 +482,8 @@ async function postApprove(c: Context<AppEnv>): Promise<Response> {
   const user = sessionUser(c);
   if (!user)
     return messagePage(
-      "Signed out",
-      `Your session ended. Sign in, then open ${APPROVE_PATH} again.`,
+      "Logged out",
+      `Your session ended. Log in, then open ${APPROVE_PATH} again.`,
       401,
     );
   const len = Number(c.req.header("content-length") ?? Number.NaN);

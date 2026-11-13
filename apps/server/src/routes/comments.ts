@@ -114,7 +114,7 @@ async function open(
   // #2080: where only signed-in people may comment, a signed-out caller
   // (anonymous id header included) may read but never write.
   if (write && artifact.commentAccess === "signed-in" && !c.var.user)
-    throw new ApiError("comments_signed_in_only", "Sign in to comment.");
+    throw new ApiError("comments_signed_in_only", "Log in to comment.");
   return { id, who, level, artifact };
 }
 
@@ -238,7 +238,7 @@ export function mountComments(app: AppType): void {
     const moderator = modOf(cw, level, artifact);
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
-    if (!who) throw new ApiError("unauthorized", "Sign in to comment");
+    if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const named = raw.data.guestName;
     const w: CommentWho =
       who.kind === "guest" && named !== undefined
@@ -272,7 +272,7 @@ export function mountComments(app: AppType): void {
       );
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
-    if (!who) throw new ApiError("unauthorized", "Sign in to comment");
+    if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const w: CommentWho =
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }

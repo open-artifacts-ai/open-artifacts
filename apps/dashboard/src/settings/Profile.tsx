@@ -104,7 +104,7 @@ function ProfileForm({ me }: { me: Me }) {
                   id="oa-profile-name-hidden"
                   className="text-xs text-muted-foreground"
                 >
-                  Others see your {hidden === "sso" ? "sign-in name" : "email"}{" "}
+                  Others see your {hidden === "sso" ? "login name" : "email"}{" "}
                   instead of this name, because it looks like an agent's name.
                   Pick a different display name to show it.
                 </p>

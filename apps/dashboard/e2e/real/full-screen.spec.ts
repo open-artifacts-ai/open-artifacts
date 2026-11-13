@@ -56,7 +56,7 @@ test("a live-data artifact reads and writes chromeless", async ({
   await expect(out).toHaveText("loaded:hello");
 });
 
-test("private: signed out goes to sign-in back to /full; a share grants access", async ({
+test("private: logged out goes to login back to /full; a share grants access", async ({
   browser,
   member,
 }) => {
@@ -97,7 +97,7 @@ test("private: signed out goes to sign-in back to /full; a share grants access",
   await ctx.close();
 });
 
-test("a public artifact works signed out", async ({ browser, member }) => {
+test("a public artifact works logged out", async ({ browser, member }) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Full open ${uniq()}`,
     format: "markdown",
@@ -111,6 +111,6 @@ test("a public artifact works signed out", async ({ browser, member }) => {
     artifactFrame(page).getByRole("heading", { name: "Open to all" }),
   ).toBeVisible();
   await expect(page).toHaveURL(`${APP}${full(id)}`);
-  await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Log in" })).toHaveCount(0);
   await anon.close();
 });

@@ -289,7 +289,7 @@ describe("ThreadParticipants", () => {
     expect(screen.queryByRole("button", { name: /Stop notifying/ })).toBeNull();
   });
 
-  it("a signed-in caller with no agent list sees people only", () => {
+  it("a logged-in caller with no agent list sees people only", () => {
     render(<ThreadParticipants t={thread(undefined)} api={api()} />);
     expect(count()).toBe("2");
   });

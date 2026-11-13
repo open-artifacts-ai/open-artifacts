@@ -130,7 +130,7 @@ describe("/bus on the real app", () => {
     expect((await get("/bus", m.cookie)).status).toBe(200);
   });
 
-  it("signed out: GET /bus is 302 to sign-in with next", async () => {
+  it("logged out: GET /bus is 302 to login with next", async () => {
     const r = await get("/bus", null);
     expect(r.status).toBe(302);
     expect(loc(r)).toBe(`/auth/login?next=${encodeURIComponent("/bus")}`);
@@ -277,7 +277,7 @@ describe("/bus on the real app", () => {
     expect(loc(r)).toBe(`/bus?done=revoked&m=${old.id}`);
   });
 
-  it("share notices take an interactive sign-in: a dev session's valid-token save is 404 and stores nothing", async () => {
+  it("share notices take an interactive login: a dev session's valid-token save is 404 and stores nothing", async () => {
     const m = await member();
     const dev = `${sessionCookieName(env)}=${await signSession(
       env,
@@ -304,7 +304,7 @@ describe("/bus on the real app", () => {
     );
   });
 
-  it("embed requests are 404 on every page route (no sign-in redirect loop), and revoke nothing", async () => {
+  it("embed requests are 404 on every page route (no login redirect loop), and revoke nothing", async () => {
     const m = await member();
     const { id } = await machine("embed-box", m.userId);
     const H = { "X-OA-Embed": "1" };

@@ -127,12 +127,12 @@ const errorCopy = (
       return via === "access"
         ? "Your organization's single sign-on didn't let you in. Ask your admin for access, then try again."
         : via === "google"
-          ? "This Google account doesn't have access here yet. Ask an admin to invite you, or sign in with another Google account."
+          ? "This Google account doesn't have access here yet. Ask an admin to invite you, or log in with another Google account."
           : "You don't have access here yet. Ask an admin to invite you, then try again.";
     case "expired":
-      return "Sign-in took too long. Try again.";
+      return "Login took too long. Try again.";
     default:
-      return "Sign-in didn't work. Try again.";
+      return "Login didn't work. Try again.";
   }
 };
 
@@ -172,10 +172,10 @@ function AccessSignIn({ failed }: { failed: boolean }) {
   const name = useInstanceName();
   return (
     <>
-      <h1>Sign in</h1>
+      <h1>Log in</h1>
       <p className="oa-split-sub">Use your work email to open {name}.</p>
       {failed && (
-        <Notice tone="danger" title="Sign-in didn't finish.">
+        <Notice tone="danger" title="Login didn't finish.">
           The login link expired or was cancelled. Try again.
         </Notice>
       )}
@@ -256,7 +256,7 @@ function HostedSignIn({
   if (!google && !email && accessButton)
     return (
       <>
-        <h1>Sign in to {name}</h1>
+        <h1>Log in to {name}</h1>
         {banner}
         <p className="oa-split-sub">Use your work email to open {name}.</p>
         {accessButton}
@@ -266,10 +266,8 @@ function HostedSignIn({
   if (!google && !email)
     return (
       <>
-        <h1>Sign in to {name}</h1>
-        <p className="oa-split-sub">
-          Sign-in isn't set up yet. Ask your admin.
-        </p>
+        <h1>Log in to {name}</h1>
+        <p className="oa-split-sub">Login isn't set up yet. Ask your admin.</p>
       </>
     );
 
@@ -277,12 +275,10 @@ function HostedSignIn({
   if (!google && email)
     return (
       <>
-        <h1>Sign in to {name}</h1>
+        <h1>Log in to {name}</h1>
         {banner}
         {step === "email" && (
-          <p className="oa-split-sub">
-            We'll email you an 8-digit sign-in code.
-          </p>
+          <p className="oa-split-sub">We'll email you an 8-digit login code.</p>
         )}
         <CodeSignIn
           next={next}
@@ -293,7 +289,7 @@ function HostedSignIn({
         {step === "email" && (
           <p className="oa-note">
             {name} is trying Open Artifacts. Codes go to work addresses and
-            invited guests. Once your admin connects Google, you'll sign in with
+            invited guests. Once your admin connects Google, you'll log in with
             Google instead.
           </p>
         )}
@@ -313,9 +309,7 @@ function HostedSignIn({
             </Link>
           </p>
         )}
-        <h1>
-          {step === "email" ? "Get a sign-in code" : `Sign in to ${name}`}
-        </h1>
+        <h1>{step === "email" ? "Get a login code" : `Log in to ${name}`}</h1>
         {banner}
         {step === "email" && (
           <p className="oa-split-sub">
@@ -346,7 +340,7 @@ function HostedSignIn({
   // Google only: one button; guests get their own row.
   return (
     <>
-      <h1>Sign in to {name}</h1>
+      <h1>Log in to {name}</h1>
       {banner}
       <p className="oa-split-sub">
         {domain
@@ -371,7 +365,7 @@ function HostedSignIn({
           </p>
           <Button asChild variant="outline" className="oa-split-btn">
             <Link to={SIGN_IN_PAGE as string} search={{ method: "code", next }}>
-              Get a sign-in code
+              Get a login code
             </Link>
           </Button>
         </div>
@@ -396,7 +390,7 @@ export function SignIn({
   method?: string;
   via?: "access" | "google";
 }) {
-  useDocumentTitle("Sign in");
+  useDocumentTitle("Log in");
   const providers = useAuthProviders();
   const parsed =
     error !== undefined ? SignInErrorSchema.safeParse(error) : null;

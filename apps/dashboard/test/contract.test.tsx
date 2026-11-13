@@ -129,7 +129,7 @@ test("hosted param tokens", () => {
   );
 });
 
-test("no features: no hosted request from signed-in pages", async () => {
+test("no features: no hosted request from logged-in pages", async () => {
   const seen = calls();
   mount("/");
   await screen.findAllByText("Landing page");

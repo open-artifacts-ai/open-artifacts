@@ -26,7 +26,7 @@ Element.prototype.scrollIntoView ??= () => {};
 const HOSTED = "Hosted by Open Artifacts";
 const SELF = "Self-hosted on Cloudflare";
 
-describe("sign-in hosting line", () => {
+describe("login hosting line", () => {
   it("hosted: Hosted by Open Artifacts", async () => {
     mountHosted("/sign-in");
     expect(await screen.findByText(HOSTED)).toBeVisible();
@@ -67,7 +67,7 @@ describe("sign-in hosting line", () => {
     ],
     [
       "google",
-      "This Google account doesn't have access here yet. Ask an admin to invite you, or sign in with another Google account.",
+      "This Google account doesn't have access here yet. Ask an admin to invite you, or log in with another Google account.",
     ],
     [
       "",
@@ -117,7 +117,7 @@ describe("invite reachability", () => {
     mountHosted("/settings/members", { providers: ["email"] });
     const dialog = await invite("pat@elsewhere.org");
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "pat@elsewhere.org can't sign in here. Only addresses at your sign-in domains can. Use one of those addresses.",
+      "pat@elsewhere.org can't log in here. Only addresses at your login domains can. Use one of those addresses.",
     );
     expect(within(dialog).getByLabelText("Email")).toHaveAttribute(
       "aria-invalid",
@@ -146,7 +146,7 @@ describe("invite reachability", () => {
     ]);
     const dialog = await invite("pat@example.com");
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "No sign-in method here fits pat@example.com. Use another address, or ask the owner to add a sign-in method.",
+      "No login method here fits pat@example.com. Use another address, or ask the owner to add a login method.",
     );
     expect(screen.queryByText("server text")).toBeNull();
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
@@ -188,12 +188,12 @@ describe("invite reachability", () => {
       await within(dialog).findByText("Invite sent to pat@elsewhere.org"),
     ).toBeVisible();
     expect(dialog).toHaveTextContent(
-      "pat@elsewhere.org is outside example.com, so they may not be able to sign in. If they can't, invite an address at example.com.",
+      "pat@elsewhere.org is outside example.com, so they may not be able to log in. If they can't, invite an address at example.com.",
     );
     expect(
-      within(dialog).getByRole("textbox", { name: "Sign-in link" }),
+      within(dialog).getByRole("textbox", { name: "Login link" }),
     ).toBeVisible();
-    expect(screen.queryByText("pat@elsewhere.org can now sign in")).toBeNull();
+    expect(screen.queryByText("pat@elsewhere.org can now log in")).toBeNull();
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 });
@@ -223,12 +223,12 @@ const noLink = (box: HTMLElement) => {
 const asMember = (m: Me): Me => ({ ...m, user: { ...m.user, role: "member" } });
 const PANEL = `${viewerPath(LANDING)}?panel=open&tab=share`;
 
-describe("share box when the recipient can't sign in", () => {
+describe("share box when the recipient can't log in", () => {
   it("needs_invite, as an org owner: links to Members", async () => {
     mountHosted(PANEL);
     const box = await share("pat@example.com");
     expect(box).toHaveTextContent(
-      "Shared with pat@example.com.pat@example.com can't sign in until they're a member. Invite them",
+      "Shared with pat@example.com.pat@example.com can't log in until they're a member. Invite them",
     );
     expect(
       within(box).getByRole("link", { name: "Invite them" }),
@@ -240,7 +240,7 @@ describe("share box when the recipient can't sign in", () => {
     mountHosted(PANEL, true, asMember);
     const box = await share("pat@example.com");
     expect(box).toHaveTextContent(
-      "pat@example.com can't sign in until they're a member. Ask an admin to invite them.",
+      "pat@example.com can't log in until they're a member. Ask an admin to invite them.",
     );
     expect(within(box).queryByRole("link")).toBeNull();
     noLink(box);
@@ -251,7 +251,7 @@ describe("share box when the recipient can't sign in", () => {
     mountHosted(PANEL, { providers: ["google"] });
     const box = await share("pat@elsewhere.org");
     expect(box).toHaveTextContent(
-      "pat@elsewhere.org can't sign in here, so they can't open this. Share with an address at example.com instead.",
+      "pat@elsewhere.org can't log in here, so they can't open this. Share with an address at example.com instead.",
     );
     noLink(box);
   });
@@ -283,21 +283,21 @@ describe("share box when the recipient can't sign in", () => {
     ]);
     const box = await share("pat@example.com");
     expect(box).toHaveTextContent(
-      "No sign-in method here fits pat@example.com, so they can't open this. Share with another address.",
+      "No login method here fits pat@example.com, so they can't open this. Share with another address.",
     );
     noLink(box);
   });
 
-  it("a recipient who can sign in gets the success box, its link, and how they sign in", async () => {
+  it("a recipient who can log in gets the success box, its link, and how they log in", async () => {
     mountHosted(PANEL);
     const box = await share("guest@elsewhere.org");
-    expect(box).not.toHaveTextContent("can't sign in");
+    expect(box).not.toHaveTextContent("can't log in");
     expect(
       within(box).getByRole("textbox", { name: "Artifact link" }),
     ).toBeVisible();
     // The mock's signInMethods for an outside guest: codes.
     expect(box).toHaveTextContent(
-      "They'll sign in with a one-time code sent to that address.",
+      "They'll log in with a one-time code sent to that address.",
     );
   });
 
@@ -308,7 +308,7 @@ describe("share box when the recipient can't sign in", () => {
       screen.getByRole("button", { name: "Remove pat@example.com" }),
     );
     await waitFor(() =>
-      expect(screen.queryByText(/can't sign in until/)).toBeNull(),
+      expect(screen.queryByText(/can't log in until/)).toBeNull(),
     );
   });
 });

@@ -1112,7 +1112,7 @@ describe("anonymous id", () => {
     );
   });
 
-  it("no header when signed in, even with a stored token", async () => {
+  it("no header when logged in, even with a stored token", async () => {
     vi.stubGlobal("localStorage", okStorage);
     store.set(ANON_ID_KEY, TOKEN);
     fetchMock.mockImplementation(async () => withToken(TOKEN2));

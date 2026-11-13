@@ -160,7 +160,7 @@ describe("GET/PATCH /api/v1/me", () => {
   });
 });
 
-describe("sign-in", () => {
+describe("login", () => {
   it("refreshes the IdP name but never overwrites a chosen display name", async () => {
     const email = `dn-login-${tag}@x.com`;
     const owner = await login(email);

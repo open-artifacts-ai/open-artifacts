@@ -248,7 +248,7 @@ describe("agent faces (#1822)", () => {
     expect(x?.author.animal).toEqual(y?.author.animal);
   });
 
-  it("a name that collides: signed-in sees a member tag, a guest sees A member's agent", async () => {
+  it("a name that collides: logged-in sees a member tag, a guest sees A member's agent", async () => {
     // "Leo" with a Cyrillic o, and a case and width variant.
     const real = await mk("f-real", `Leo Urbina ${tag}`);
     const fake = await mk("f-fake", `LEО  URBINA ${tag}`);

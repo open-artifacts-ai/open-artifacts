@@ -391,7 +391,7 @@ describe("Google through the broker", () => {
     ).toBe(false);
   });
 
-  it("a broker refusal (401) is a failed sign-in", async () => {
+  it("a broker refusal (401) is a failed login", async () => {
     const e = installEnv(async () =>
       Response.json({ error: "unauthorized" }, { status: 401 }),
     );
@@ -436,7 +436,7 @@ describe("Google through the broker", () => {
     });
   });
 
-  it("a broker state from another flow (hash mismatch) is a failed sign-in", async () => {
+  it("a broker state from another flow (hash mismatch) is a failed login", async () => {
     const e = installEnv();
     const victim = await begin(e);
     const other = await begin(e);
@@ -519,7 +519,7 @@ describe("hosted: the redeem through the dispatch props (AUTH_BROKER)", () => {
       .map((c) => new Request(c[0] as RequestInfo, c[1]).url)
       .filter((u) => u.startsWith(BROKER));
 
-  it("signs in with only POST /google/redeem through the capability, never HTTPS", async () => {
+  it("logs in with only POST /google/redeem through the capability, never HTTPS", async () => {
     const e = hosted();
     const b = await begin(e);
     const search = await toInstall(b);

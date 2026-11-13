@@ -259,9 +259,9 @@ export const INVITE_UNREACHABLE_MESSAGE: Record<
   string
 > = {
   outside_domains:
-    "This address can't sign in to this workspace. Share artifacts with them as a guest instead.",
+    "This address can't log in to this workspace. Share artifacts with them as a guest instead.",
   no_sign_in_method:
-    "This address can't sign in to this workspace with the sign-in methods it offers. Ask the owner to turn on one that admits it.",
+    "This address can't log in to this workspace with the login methods it offers. Ask the owner to turn on one that admits it.",
 };
 
 /** 400 unsupported_format message. */

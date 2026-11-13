@@ -129,9 +129,7 @@ for (const scheme of ["light", "dark"] as const) {
       // Content is vertically centred in the right column.
       const box = (await page.locator(".oa-split-formbox").boundingBox())!;
       expect(Math.abs(box.y + box.height / 2 - 400)).toBeLessThan(8);
-      await expect(
-        page.getByRole("heading", { name: "Sign in" }),
-      ).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Log in" })).toBeVisible();
       await page.screenshot({
         path: info.outputPath(`signin-${scheme}-1280.png`),
       });

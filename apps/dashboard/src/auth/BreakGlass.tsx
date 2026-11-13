@@ -24,13 +24,13 @@ import { useSignOut } from "./signOut";
  * where it has some.
  */
 export const BREAK_GLASS_COPY = {
-  title: "Sign-in is paused for your team",
+  title: "Login is paused for your team",
   body: (instance: string) =>
-    `Your Google directory now belongs to a different Google Workspace than the one ${instance} was connected to. To protect your data, people who sign in through it can't sign in until you reconnect the directory.`,
+    `Your Google directory now belongs to a different Google Workspace than the one ${instance} was connected to. To protect your data, people who log in through it can't log in until you reconnect the directory.`,
   reauth: "Sign in with Google again",
-  reauthNote: "To keep this safe, sign in again first.",
+  reauthNote: "To keep this safe, log in again first.",
   open: "Open directory settings",
-  signOut: "Sign out",
+  signOut: "Log out",
   audit:
     "You can only use directory settings here. Each use is recorded in the audit log, and we email you when this access starts.",
   // The minimal directory screen.
@@ -44,7 +44,7 @@ export const BREAK_GLASS_COPY = {
   expired:
     "This confirmation expired after 24 hours. Connect again to see the current count.",
   doneTitle: "Directory reconnected",
-  doneBody: "Your team can sign in with Google again.",
+  doneBody: "Your team can log in with Google again.",
   continue: (instance: string) => `Continue to ${instance}`,
   loadFailed: "Couldn't load the directory.",
   retry: "Try again",
@@ -79,7 +79,7 @@ export function BreakGlass({
   // Not useInstanceName: a second /me observer would refetch the failed /me on mount.
   const name = metaInstanceName();
   useEffect(() => {
-    document.title = `Sign-in is paused · ${name}`;
+    document.title = `Login is paused · ${name}`;
   }, [name]);
   const [open, setOpen] = useState(fresh && DIRECTORY.test(path));
   // The fresh window (10 min) can lapse while the screen is open.
@@ -118,7 +118,7 @@ function Step({ title, children }: { title: string; children: ReactNode }) {
   // `.oa-panel p` sets paragraph margins; the gaps here come from the grids.
   return (
     <div className="oa-edge flex-col gap-[var(--oa-space-5)]">
-      {/* The brand row above the card, as on sign-in. */}
+      {/* The brand row above the card, as on login. */}
       <div
         data-testid="break-glass-brand"
         className="flex items-center gap-[var(--oa-space-2)] text-[var(--oa-text)]"
@@ -262,7 +262,7 @@ function Minimal({
         <p>
           This adds {capped ? "more than 500 people" : people(n)}
           {domain ? ` from ${domain}` : ""} as{" "}
-          {!capped && n === 1 ? "a member" : "members"}. They can sign in with
+          {!capped && n === 1 ? "a member" : "members"}. They can log in with
           Google right away.
         </p>
         {sync.pendingExpiresAt && (

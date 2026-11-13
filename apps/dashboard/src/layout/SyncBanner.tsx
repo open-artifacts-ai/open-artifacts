@@ -132,7 +132,7 @@ export function SyncBanner({
       >
         <p>
           {c.body}
-          {dayOld(d.unhealthySince) && " Sign-ins now last at most 24 hours."}
+          {dayOld(d.unhealthySince) && " Logins now last at most 24 hours."}
           {!owner && " The owner can fix it."}
         </p>
         <div className="oa-cpu-acts">

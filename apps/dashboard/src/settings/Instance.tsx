@@ -49,7 +49,7 @@ export function Instance() {
     <div className={STACK}>
       <ReadOnlyNote />
       {problems.length > 0 && (
-        <Notice tone="warning" title="Sign-in needs attention.">
+        <Notice tone="warning" title="Login needs attention.">
           <ul className="m-0 grid gap-[var(--oa-space-1)] pl-[18px]">
             {problems.map((p) => (
               <li key={p}>{p}</li>
@@ -135,7 +135,7 @@ function InstanceSettings() {
                   Instance name
                 </Label>
                 <p className={muted}>
-                  Shown in the sidebar, page titles, and on the sign-in page.
+                  Shown in the sidebar, page titles, and on the login page.
                 </p>
               </div>
               <div className="grid min-w-0 gap-[var(--oa-space-1)]">

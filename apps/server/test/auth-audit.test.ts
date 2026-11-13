@@ -78,7 +78,7 @@ async function google(e: Env, claims: Record<string, unknown>) {
 }
 
 describe("auth events", () => {
-  it("each sign-in outcome logs exactly one auth event, with no email or code anywhere", async () => {
+  it("each login outcome logs exactly one auth event, with no email or code anywhere", async () => {
     const cap = capture();
     const e = direct();
     const ok = uniq("ok");
@@ -185,7 +185,7 @@ describe("auth events", () => {
     ]);
   });
 
-  it("sign-in warnings go through logAuth and log.ts redaction", async () => {
+  it("login warnings go through logAuth and log.ts redaction", async () => {
     const { logAuth } = await import("../src/auth/audit.js");
     const cap = capture();
     logAuth({

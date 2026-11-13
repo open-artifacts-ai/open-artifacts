@@ -59,7 +59,7 @@ describe("the tick never starts the Business trial", () => {
     expect(trialStarts()).toBe(0);
   });
 
-  it("posts none for a guest promoted to member (Google sign-in) or for a domain-joined member or admin", async () => {
+  it("posts none for a guest promoted to member (Google login) or for a domain-joined member or admin", async () => {
     const g = await login(`p${++seq}-${tag}@a.com`, "guest");
     await env.DB.prepare("update users set role = 'member' where id = ?")
       .bind(g.userId)

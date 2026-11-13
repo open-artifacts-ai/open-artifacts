@@ -792,7 +792,7 @@ describe("directory sync after erase", () => {
   });
 });
 
-describe("Google sign-in after erase, and the way back (reset the Google link)", () => {
+describe("Google login after erase, and the way back (reset the Google link)", () => {
   const SESSION = sessionCookieName(env);
   const D = direct();
   const raw = (path: string, cookie: string | null) =>
@@ -852,7 +852,7 @@ describe("Google sign-in after erase, and the way back (reset the Google link)",
     return { email, id };
   }
 
-  it("the kept link refuses that Google account on sign-in; no new row at the address", async () => {
+  it("the kept link refuses that Google account on login; no new row at the address", async () => {
     const g = await fakeGoogle();
     const { email, id } = await erasedGoogleUser(g);
     expect(await googleSignIn(g, email)).toBe(false);
@@ -863,7 +863,7 @@ describe("Google sign-in after erase, and the way back (reset the Google link)",
     });
   });
 
-  it("an admin resets the erased row's Google link: the next Google sign-in makes a new, empty row; the erased row stays erased", async () => {
+  it("an admin resets the erased row's Google link: the next Google login makes a new, empty row; the erased row stays erased", async () => {
     const g = await fakeGoogle();
     const { email, id } = await erasedGoogleUser(g);
     const before = await userRow(id);

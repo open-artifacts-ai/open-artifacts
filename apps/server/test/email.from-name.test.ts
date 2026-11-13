@@ -468,7 +468,7 @@ describe("every caller sends the install name", () => {
     expect(m.sent.map((s) => s.from)).toEqual([ACME, ACME]);
   });
 
-  it("sign-in code", async () => {
+  it("login code", async () => {
     await setName("Acme");
     const addr = uniq("g", "x.com");
     await seedUser(addr, "guest");
