@@ -42,7 +42,7 @@ async function open(
   page: Page,
   kind: "image" | "pdf",
   w: number,
-  theme = "light",
+  theme = process.env.PINS_THEME ?? "light",
 ) {
   const manifest = JSON.parse(
     readFileSync(join(DIST, "runtime.manifest.json"), "utf8"),
@@ -79,7 +79,8 @@ async function shot(page: Page, name: string) {
   if (!OUT) return;
   mkdirSync(OUT, { recursive: true });
   await page.waitForTimeout(300);
-  await page.screenshot({ path: `${OUT}/${name}.png` });
+  const sfx = process.env.PINS_THEME === "dark" ? "-dark" : "";
+  await page.screenshot({ path: `${OUT}/${name}${sfx}.png` });
 }
 
 test.beforeAll(() => {
