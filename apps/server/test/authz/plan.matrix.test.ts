@@ -31,6 +31,10 @@ const users: Partial<Record<Exclude<Who, "anonymous">, U>> = {};
 /** Each signed-in caller's own personal artifact (db, public, viewers write). */
 const own: Partial<Record<Who, string>> = {};
 let spaceId = "";
+/** #682: an artifact in the shared space, and a thread on each commented artifact (made before any lock). */
+let spaceArt = "";
+const thread = { own: "", space: "" };
+const comment = { own: "", space: "" };
 let departedId = "";
 let seq = 0;
 const uniq = () => `${tag}${++seq}`;
@@ -240,6 +244,56 @@ const SURFACES: Surface[] = [
         body: { title: "t", ...html, spaceId },
       }),
   },
+  // #682 comments: on the owner's own page a comment is the owner's own write
+  // (kept); in a shared space it is a team write (refused for the owner too).
+  ...(["own", "space"] as const).flatMap((k): Surface[] => {
+    const aid = () => (k === "own" ? (own.owner as string) : spaceArt);
+    const t = k === "space" ? { team: true as const } : {};
+    const n = k === "own" ? "the owner's page" : "a shared-space page";
+    const who3: readonly Who[] = ["owner", "admin", "member"];
+    return [
+      {
+        name: `post a comment on ${n}`,
+        base: who3,
+        ...t,
+        run: (w) =>
+          send(props, R.comments(aid()), cred(w), {
+            method: "POST",
+            body: { anchor: { kind: "note" }, body: "hi" },
+          }),
+      },
+      {
+        name: `reply to a thread on ${n}`,
+        base: who3,
+        ...t,
+        run: (w) =>
+          send(props, R.commentReplies(aid(), thread[k]), cred(w), {
+            method: "POST",
+            body: { body: "again" },
+          }),
+      },
+      {
+        name: `resolve a thread on ${n}`,
+        base: who3,
+        ...t,
+        run: (w) =>
+          send(props, R.commentThread(aid(), thread[k]), cred(w), {
+            method: "PATCH",
+            body: { status: "resolved" },
+          }),
+      },
+      {
+        name: `edit a comment on ${n}`,
+        base: ["owner"],
+        ...t,
+        run: (w) =>
+          send(props, R.comment(aid(), thread[k], comment[k]), cred(w), {
+            method: "PATCH",
+            body: { body: uniq() },
+          }),
+      },
+    ];
+  }),
   {
     name: "live-data write on the owner's public page (viewers write)",
     base: ["owner", "admin", "member", "anonymous"],
@@ -306,6 +360,24 @@ beforeAll(async () => {
   });
   expect(sp.status).toBe(201);
   spaceId = ((await sp.json()) as { id: string }).id;
+  const sa = await send(props, R.artifacts, cred("owner"), {
+    method: "POST",
+    body: { title: "in space", ...html, visibility: "team", spaceId },
+  });
+  expect(sa.status).toBe(201);
+  spaceArt = ((await sa.json()) as { id: string }).id;
+  for (const k of ["own", "space"] as const) {
+    const r = await send(
+      props,
+      R.comments(k === "own" ? (own.owner as string) : spaceArt),
+      cred("owner"),
+      { method: "POST", body: { anchor: { kind: "note" }, body: "seed" } },
+    );
+    expect(r.status).toBe(201);
+    const j = (await r.json()) as { id: string; comments: { id: string }[] };
+    thread[k] = j.id;
+    comment[k] = j.comments[0]?.id as string;
+  }
   for (const w of ["admin", "member"] as const)
     await env.DB.prepare(
       "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', 1)",

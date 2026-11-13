@@ -8,12 +8,20 @@ import type {
   MentionDelivery,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { CheckCheck, Clock, Minus } from "lucide-react";
+import {
+  CheckCheck,
+  Clock,
+  KeyRound,
+  Loader2,
+  Minus,
+  ShieldCheck,
+} from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
+  usePasskeyAnswer,
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
@@ -21,6 +29,8 @@ import { PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
+import { PasskeyBlocked } from "./PasskeyParts";
+import { passkeyFailure, passkeyLine } from "./passkey";
 
 const MUTED = "text-muted-foreground";
 
@@ -507,7 +517,11 @@ export function AskBlock({
   askQuestion?: () => void;
 }) {
   const ask = c.ask;
-  const answer = useAnswerAsk(artifactId);
+  const plain = useAnswerAsk(artifactId);
+  const passkey = usePasskeyAnswer(artifactId);
+  // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
+  const answer = ask?.confirm === "passkey" ? passkey : plain;
+  const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
@@ -538,6 +552,11 @@ export function AskBlock({
   }, [picked]);
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me);
+  // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
+  const pk = ask.confirm === "passkey";
+  const pkErr = pk && err != null ? passkeyFailure(err) : null;
+  const pkLine = pkErr ? passkeyLine(pkErr) : null;
+  const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
@@ -546,6 +565,24 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const slot = answer.isPending ? (
+    <p role="status" data-passkey-verifying="" className={`m-0 ${MUTED}`}>
+      Waiting for your passkey…
+    </p>
+  ) : pkErr && (pkLine || pkErr.kind === "other") ? (
+    <p
+      role="alert"
+      data-passkey-error={pkErr.kind}
+      className={`m-0 ${pkLine?.danger || !pkLine ? "text-destructive" : MUTED}`}
+    >
+      {pkLine?.text ?? answerError(err, errCtx)}
+    </p>
+  ) : !pickedOpt && !blocked ? (
+    <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
+      <KeyRound aria-hidden="true" className="size-3.5" />
+      Approving this needs your passkey.
+    </p>
+  ) : null;
   const recIdx = ask.options.findIndex(
     (o) => o.id === ask.recommended?.optionId,
   );
@@ -622,6 +659,13 @@ export function AskBlock({
           <div id={qid} className={`${TXT} font-semibold break-words`}>
             <Markdown body={ask.question} />
           </div>
+          {pk && slot && (
+            // One slot for the idle line, the wait and the failure; absent when empty.
+            <div className={`min-h-5 ${TXT}`} data-passkey-slot="">
+              {slot}
+            </div>
+          )}
+          {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
           <ul
             ref={opts}
             aria-labelledby={qid}
@@ -641,14 +685,19 @@ export function AskBlock({
                       sel
                         ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                         : ""
-                    }`}
+                    } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
-                      !canAnswer || answer.isPending || sel || (locked && !sel)
+                      !canAnswer ||
+                      answer.isPending ||
+                      sel ||
+                      (locked && !sel) ||
+                      blocked
                     }
                     aria-pressed={sel}
                     data-option={o.id}
                     onClick={() => {
                       setErr(null);
+                      setLastPick(o.id);
                       answer.mutate(
                         { thread: thread.id, comment: c.id, optionId: o.id },
                         {
@@ -677,6 +726,27 @@ export function AskBlock({
                         </span>
                       )}
                     </span>
+                    {pk && !sel && (
+                      <span
+                        data-passkey-hint=""
+                        role="img"
+                        aria-label={
+                          answer.isPending && lastPick === o.id
+                            ? "Waiting for your passkey"
+                            : "Needs a passkey"
+                        }
+                        className={`ml-auto shrink-0 ${MUTED}`}
+                      >
+                        {answer.isPending && lastPick === o.id ? (
+                          <Loader2
+                            aria-hidden="true"
+                            className="size-3.5 animate-spin motion-reduce:animate-none"
+                          />
+                        ) : (
+                          <KeyRound aria-hidden="true" className="size-3.5" />
+                        )}
+                      </span>
+                    )}
                     {rec && (
                       <span
                         className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
@@ -699,25 +769,36 @@ export function AskBlock({
             pickedOpt &&
             !isSendingAnswer(ask.answer) &&
             !answer.isPending && (
-              <p className={`${TXT} font-medium`} data-ask-answer="">
-                {actor(ask.answer.by, "You")} picked{" "}
-                {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-                {versionDate(ask.answer.at)}
-                {ask.closed ? " · closed" : ""}
-                {canAnswer && locked && (
-                  <>
-                    {" · "}
-                    <Button
-                      size="xs"
-                      variant="link"
-                      className="h-auto p-0"
-                      onClick={() => setChanging(true)}
-                    >
-                      Change
-                    </Button>
-                  </>
+              <>
+                <p className={`${TXT} font-medium`} data-ask-answer="">
+                  {actor(ask.answer.by, "You")} picked{" "}
+                  {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                  {versionDate(ask.answer.at)}
+                  {ask.closed ? " · closed" : ""}
+                  {canAnswer && locked && (
+                    <>
+                      {" · "}
+                      <Button
+                        size="xs"
+                        variant="link"
+                        className="h-auto p-0"
+                        onClick={() => setChanging(true)}
+                      >
+                        Change
+                      </Button>
+                    </>
+                  )}
+                </p>
+                {ask.answer.verified === "passkey" && (
+                  <span
+                    data-ask-verified=""
+                    className={`inline-flex w-fit items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                  >
+                    <ShieldCheck aria-hidden="true" className="size-3" />
+                    Verified with passkey
+                  </span>
                 )}
-              </p>
+              </>
             )}
           {asked.length > 0 && (
             <p
@@ -741,7 +822,7 @@ export function AskBlock({
               Only the people asked can answer.
             </p>
           )}
-          {err != null && (
+          {err != null && !pk && (
             <p role="alert" className={`${TXT} text-destructive`}>
               {answerError(err, errCtx)}
             </p>

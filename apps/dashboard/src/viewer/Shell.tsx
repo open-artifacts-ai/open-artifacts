@@ -488,7 +488,7 @@ function Viewer({
         fs.current.engaged = on;
       },
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
-      onCommentPositions: (p) => cmtRef.current.onPositions(p),
+      onCommentPositions: (p, ghost) => cmtRef.current.onPositions(p, ghost),
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
       onCommentPin: (p, at) => cmtRef.current.onPin(p, at),
       onCommentEscape: () => cmtRef.current.onEscape(),

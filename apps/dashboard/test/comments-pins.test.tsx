@@ -26,7 +26,7 @@ type Opts = {
   onHello: () => void;
   onInteracted: () => void;
   onCommentSelect: (a: unknown) => void;
-  onCommentPositions: (p: unknown[]) => void;
+  onCommentPositions: (p: unknown[], ghost?: { x: number; y: number }) => void;
   onCommentOpen: (id: string) => void;
   onCommentEscape: () => void;
   onCommentPin: (
@@ -737,6 +737,47 @@ describe("bubble pins and click-to-comment (#2019)", () => {
     await waitFor(() =>
       expect(document.querySelector("[data-pin-beside]")).toBeNull(),
     );
+  });
+
+  it("the box beside the flag follows it when the page scrolls (#2386)", async () => {
+    // jsdom has no layout: give the frame a size so the box is not clamped to the margin.
+    for (const [k, v] of [
+      ["clientWidth", 1000],
+      ["clientHeight", 800],
+    ] as const)
+      vi.spyOn(HTMLElement.prototype, k, "get").mockReturnValue(v);
+    asFormat("image", H1);
+    mount(viewerPath(OWNED));
+    await hello();
+    await tool("Comments");
+    await onPinAt({ x: 0.25, y: 0.75 }, { x: 300, y: 400 });
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    const beside = () => box.closest("[data-pin-beside]") as HTMLElement;
+    const before = Number.parseFloat(beside().style.top);
+    // The frame reports the flag 100px higher.
+    await act(async () =>
+      opts.at(-1)?.onCommentPositions([], { x: 300, y: 300 }),
+    );
+    await waitFor(() =>
+      expect(Number.parseFloat(beside().style.top)).toBe(before - 100),
+    );
+    // Typed words are kept while it moves.
+    fireEvent.change(box, { target: { value: "kept" } });
+    await act(async () =>
+      opts.at(-1)?.onCommentPositions([], { x: 300, y: 250 }),
+    );
+    expect((box as HTMLTextAreaElement).value).toBe("kept");
+  });
+
+  it("a flag position with no pin box open does nothing (#2386)", async () => {
+    asFormat("image", H1);
+    mount(viewerPath(OWNED));
+    await hello();
+    await tool("Comments");
+    await act(async () =>
+      opts.at(-1)?.onCommentPositions([], { x: 300, y: 300 }),
+    );
+    expect(document.querySelector("[data-pin-beside]")).toBeNull();
   });
 
   it("Cancel in the box beside the flag drops the flag", async () => {

@@ -2,7 +2,11 @@
 // view-only lock in the dashboard. The owner carries no cap under that lock,
 // so useCan and the Library read the billing reason.
 
-import type { ArtifactSummary, Me } from "@oa/shared";
+import {
+  type ArtifactSummary,
+  BUSINESS_CONTACT_URL,
+  type Me,
+} from "@oa/shared";
 import {
   act,
   cleanup,
@@ -192,9 +196,14 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
   // Solo is a flat price per instance: no creator count.
   expect(screen.queryByText("Creators this month")).toBeNull();
   expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeVisible();
+  // #2404: Business is by contact only.
+  expect(screen.getByRole("link", { name: "Contact us" })).toHaveAttribute(
+    "href",
+    BUSINESS_CONTACT_URL,
+  );
   expect(
-    screen.getByRole("button", { name: "Upgrade to Business" }),
-  ).toBeVisible();
+    screen.queryByRole("button", { name: "Upgrade to Business" }),
+  ).toBeNull();
   expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
 });
 
@@ -609,7 +618,7 @@ it("Plan and billing: Upgrade starts Checkout for the chosen tier", async () => 
 it("Plan and billing: a 503 billing_unavailable toasts and stays", async () => {
   mountHosted("/settings/plan", { billing: TRIAL, billingDown: true });
   fireEvent.click(
-    await screen.findByRole("button", { name: "Upgrade to Business" }),
+    await screen.findByRole("button", { name: "Upgrade to Team" }),
   );
   await findVisibleToast(
     "Billing isn't reachable right now. Try again in a minute.",
@@ -670,9 +679,7 @@ it("owners and admins reach Plan and billing while the instance is locked at the
     await screen.findByRole("heading", { name: "Plan and billing" }),
   ).toBeVisible();
   // The tab is in the settings nav and the buttons are live, not locked.
-  expect(
-    screen.getByRole("button", { name: "Upgrade to Business" }),
-  ).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeEnabled();
 });
 
 it("a member is sent away from Plan and billing", async () => {
@@ -717,9 +724,11 @@ it("Plan and billing: Pay $1/month is the primary button, the rest are outline",
   mountHosted("/settings/plan", { billing: TRIAL });
   const month = await screen.findByRole("button", { name: "Pay $1/month" });
   const cls = (n: string) =>
-    screen.getByRole("button", { name: n }).getAttribute("data-variant");
+    screen
+      .getByRole(n === "Contact us" ? "link" : "button", { name: n })
+      .getAttribute("data-variant");
   expect(month.getAttribute("data-variant")).toBe("default");
-  for (const n of ["Pay $10/year", "Upgrade to Business"])
+  for (const n of ["Pay $10/year", "Contact us"])
     expect(cls(n)).toBe("outline");
   // #2007: Team is the plan for most teams, so its card's button leads.
   expect(cls("Upgrade to Team")).toBe("default");
@@ -746,11 +755,15 @@ it("Plan and billing: a lapsed Team restarts through Checkout, its own tier prim
   });
   const restart = await screen.findByRole("button", { name: "Restart Team" });
   expect(restart.getAttribute("data-variant")).toBe("default");
+  // #2404: Business has no checkout, even to switch to.
   expect(
     screen
-      .getByRole("button", { name: "Switch to Business" })
+      .getByRole("link", { name: "Contact us" })
       .getAttribute("data-variant"),
   ).toBe("outline");
+  expect(
+    screen.queryByRole("button", { name: "Switch to Business" }),
+  ).toBeNull();
   expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
   fireEvent.click(restart);
   await waitFor(() =>
@@ -1004,14 +1017,15 @@ describe("plan cards and comparison (#2007)", () => {
       within(card("team")).getByRole("button", { name: "Current plan" }),
     ).toBeDisabled();
     expect(within(card("solo")).queryByRole("button")).toBeNull();
-    fireEvent.click(
-      within(card("business")).getByRole("button", {
+    // #2404: Business is a Contact us link, not a portal or checkout trip.
+    expect(
+      within(card("business")).getByRole("link", { name: "Contact us" }),
+    ).toHaveAttribute("href", BUSINESS_CONTACT_URL);
+    expect(
+      within(card("business")).queryByRole("button", {
         name: "Upgrade to Business",
       }),
-    );
-    await waitFor(() =>
-      expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true),
-    );
+    ).toBeNull();
     expect(posts.some((c) => c.path.endsWith("/billing/checkout"))).toBe(false);
   });
 
@@ -1044,10 +1058,8 @@ describe("plan cards and comparison (#2007)", () => {
       within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
     ).toBeEnabled();
     expect(
-      within(card("business")).getByRole("button", {
-        name: "Upgrade to Business",
-      }),
-    ).toBeEnabled();
+      within(card("business")).getByRole("link", { name: "Contact us" }),
+    ).toHaveAttribute("href", BUSINESS_CONTACT_URL);
     expect(screen.queryByRole("button", { name: "Current plan" })).toBeNull();
   });
 
@@ -1139,22 +1151,18 @@ describe("yearly Team and Business seat step", () => {
     );
   });
 
-  it("Business prices at $250 and Enter submits", async () => {
+  it("Business opens no seat step: Contact us is a link (#2404)", async () => {
     const posts = calls("POST");
     mountHosted("/settings/plan", {
       billing: { ...TEAM, yearlyTeamBusiness: true, tier: "trial" },
     });
-    await screen.findByTestId("plan-card-business");
-    const input = await open("Business");
-    expect(screen.getByText("4 creators × $250 = $1,000 a year")).toBeVisible();
-    fireEvent.submit(input.closest("form") as HTMLFormElement);
-    await waitFor(() =>
-      expect(checkout(posts)).toEqual({
-        tier: "business",
-        interval: "year",
-        seats: 4,
-      }),
-    );
+    const link = await within(
+      await screen.findByTestId("plan-card-business"),
+    ).findByRole("link", { name: "Contact us" });
+    expect(link).toHaveAttribute("href", BUSINESS_CONTACT_URL);
+    expect(link).not.toHaveAttribute("target");
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    expect(checkout(posts)).toBeUndefined();
   });
 
   it("defaults to at least 1 creator", async () => {
@@ -1255,15 +1263,12 @@ describe("yearly Team and Business seat step", () => {
       billing: { ...TEAM, yearlyTeamBusiness: true },
     });
     await screen.findByTestId("plan-card-team");
+    // #2404: Business is Contact us; no seat step, no portal, no checkout.
     fireEvent.click(
-      within(card("business")).getByRole("button", {
-        name: "Upgrade to Business",
-      }),
+      within(card("business")).getByRole("link", { name: "Contact us" }),
     );
     expect(screen.queryByLabelText("Creators")).toBeNull();
-    await waitFor(() =>
-      expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true),
-    );
+    expect(posts.length).toBe(0);
   });
 
   it("yearlyTeamBusiness absent: sends only the tier and shows no seat step", async () => {
