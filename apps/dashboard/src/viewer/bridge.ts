@@ -81,6 +81,7 @@ export interface BridgeOptions {
       ArtifactToShell,
       { type: "comment.positions" }
     >["positions"],
+    ghost?: { x: number; y: number },
   ) => void;
   onCommentOpen?: (id: string) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
@@ -555,7 +556,7 @@ export function createBridge(opts: BridgeOptions) {
         opts.onCommentSelect?.(m.anchor);
         break;
       case "comment.positions":
-        opts.onCommentPositions?.(m.positions);
+        opts.onCommentPositions?.(m.positions, m.ghost);
         break;
       case "comment.open":
         opts.onCommentOpen?.(m.id);
