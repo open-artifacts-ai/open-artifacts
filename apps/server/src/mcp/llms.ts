@@ -106,11 +106,11 @@ Then run \`claude plugin configure ${name}\` and check \`${option}\` shows ${ori
 /** The bus step: only when the bus is on for this instance (busOn). */
 const busBlock = (origin: string) => `## Agent bus
 
-The bus lets any AI agent on the person's machines message each other, and get a notice when someone comments or asks on their pages. Install it on this machine:
+The bus lets any AI agent on the person's machines message each other, and get a notice when someone comments or asks on their pages. Offer it to the person. If they say yes, run:
 \`\`\`bash
 npx @open-artifacts/bus install --instance ${origin}
 \`\`\`
-The person approves this machine once in their browser. More: https://open-artifacts.com/docs/agent-bus/
+The person approves this machine once, in their browser. More: https://open-artifacts.com/docs/agent-bus/
 
 `;
 

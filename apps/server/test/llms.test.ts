@@ -176,7 +176,9 @@ describe("GET /llms.txt", () => {
     expect(bus).toContain(
       `npx @open-artifacts/bus install --instance ${skillOrigin(HOST)}`,
     );
-    expect(bus).toContain("approves this machine once in their browser");
+    expect(bus).toContain("approves this machine once, in their browser");
+    expect(bus).toContain("Offer it to the person. If they say yes, run:");
+    expect(bus).not.toContain("Install it on this machine");
     expect(bus).toContain("https://open-artifacts.com/docs/agent-bus/");
   });
 
