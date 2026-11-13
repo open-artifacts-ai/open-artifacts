@@ -387,7 +387,7 @@ Sketch; the full design lands with the fast follow.
 ## MCP surface
 
 - `/mcp`: unchanged but for one tool, `bus_role_propose` (#1372, see Role
-  addresses), offered only while the bus is on (never hosted until #1299).
+  addresses), offered only while the bus is on (hosted too since #1299).
   No instructions text, no resource. The shared memory design's rule holds:
   people who don't use a feature pay nothing.
 - Local stdio client: the bus tools above. Its own short server

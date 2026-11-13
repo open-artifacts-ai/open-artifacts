@@ -6,9 +6,8 @@
 // machines are refused at connect too (401) and their share notices stop. The owner, an uncapped member and a
 // self-hosted install (no plan at all) are unchanged.
 //
-// The bus is off on hosted until the gate lift (busOn needs HOSTED != "1" or
-// FEATURES with "bus"), so these tests run a hosted install with the bus
-// feature on, which is how the routes will behave after the lift.
+// The gate lift (#1299) makes the bus on wherever BUS_HUB is bound, hosted
+// included, so these tests run a hosted install.
 import { env } from "cloudflare:workers";
 import {
   BUS_ROUTES,
@@ -55,11 +54,8 @@ import {
   waitFor,
 } from "./helpers.js";
 
-/** A hosted install with the bus feature on (FEATURES "bus"). */
-const H = {
-  ...HOSTED_H,
-  FEATURES: `${HOSTED_H.FEATURES},bus`,
-} as typeof HOSTED_H;
+/** A hosted install (the bus is on wherever BUS_HUB is bound, #1299). */
+const H = HOSTED_H;
 const app = createApp();
 const APP = "http://app.localhost";
 const { s: fake, props } = fakeBilling();
@@ -705,32 +701,13 @@ describe("who the gate leaves alone", () => {
   });
 });
 
-// ---- the flag: off on hosted is still a 404 on every bus route
+// ---- hosted answers on the bus routes (the gate lift)
 
-describe("FEATURES bus", () => {
-  it("hosted without the flag answers 404 on every bus route; with it, they answer", async () => {
+describe("hosted bus", () => {
+  it("hosted answers on the bus entry points, with no FEATURES flag", async () => {
     await lockTo(PAID);
-    const off = { ...HOSTED_H } as typeof HOSTED_H;
     const on = H;
     const who = member;
-    // (The REST list GETs under /api/v1/bus answer an empty list when the bus is off: unchanged.)
-    const reqs: [string, string][] = [
-      ["POST", BUS_ROUTES.device],
-      ["POST", BUS_ROUTES.deviceToken],
-      ["GET", "/bus/approve"],
-      ["POST", "/bus/approve"],
-      ["GET", BUS_ROUTES.connect],
-      ["GET", "/bus"],
-      ["POST", "/bus/share-notices"],
-      ["GET", "/bus/roles/confirm"],
-      ["POST", "/bus/roles/confirm"],
-      ["GET", "/bus/links/confirm"],
-      ["POST", "/bus/links/confirm"],
-      ["POST", R.busLinkProposals],
-      ["GET", "/bus/reach/confirm"],
-      ["POST", "/bus/reach/confirm"],
-      ["POST", R.busReachProposals],
-    ];
     const hit = (e: typeof HOSTED_H, m: string, path: string) =>
       fetchAndWait(
         app,
@@ -747,30 +724,15 @@ describe("FEATURES bus", () => {
         e,
         props,
       );
-    for (const [m, path] of reqs) {
-      const r = await hit(off, m, path);
-      expect(r.status, `${m} ${path} hosted, flag off`).toBe(404);
-    }
-    // Flag on: at least the entry points answer (not the bus-off 404).
     expect((await hit(on, "GET", "/bus")).status).toBe(200);
     expect((await hit(on, "GET", "/bus/approve")).status).toBe(200);
     await lockTo(LOCKS.lapsed as BillingRow);
   });
 
-  it("self-host ignores the flag: the bus is on without it and with BUS_HUB unbound it is off", async () => {
+  it("the bus is on wherever BUS_HUB is bound, hosted or not, and FEATURES does not matter", async () => {
     const { busOn } = await import("../../src/services/bus.js");
-    expect(
-      busOn({ BUS_HUB: env.BUS_HUB, HOSTED: undefined, FEATURES: "" }),
-    ).toBe(true);
-    expect(
-      busOn({ BUS_HUB: undefined, HOSTED: undefined, FEATURES: "bus" }),
-    ).toBe(false);
-    expect(
-      busOn({ BUS_HUB: env.BUS_HUB, HOSTED: "1", FEATURES: "spaces" }),
-    ).toBe(false);
-    expect(
-      busOn({ BUS_HUB: env.BUS_HUB, HOSTED: "1", FEATURES: "spaces, bus" }),
-    ).toBe(true);
+    expect(busOn({ BUS_HUB: env.BUS_HUB })).toBe(true);
+    expect(busOn({ BUS_HUB: undefined })).toBe(false);
   });
 });
 

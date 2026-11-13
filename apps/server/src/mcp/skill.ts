@@ -63,7 +63,7 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
 
 /**
  * The skill's lines on the bus, or "" without the bus. The caller passes
- * busOn (BUS_HUB bound and not hosted, the routes' own switch), so the skill
+ * busOn (BUS_HUB bound, the routes' own switch), so the skill
  * can never teach the bus with the hub off, or hide it with the hub on. The
  * tools it names come from the harness, not from /mcp.
  */

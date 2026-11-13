@@ -930,7 +930,7 @@ describe("role proposals over MCP (#1372)", () => {
     d.close();
   });
 
-  it("no bus: no_bus before a machine connected; bus off or hosted: no tool and no confirm page", async () => {
+  it("no bus: no_bus before a machine connected; bus off: no tool and no confirm page; hosted lists the tool (#1299)", async () => {
     const m = await member();
     const pat = (await createPat(env, m.userId, "agent")).token;
     const r = await propose(pat, {
@@ -940,7 +940,7 @@ describe("role proposals over MCP (#1372)", () => {
       agent: "x",
     });
     expect(textOf(r)).toMatch(/^conflict: Connect a machine/);
-    for (const over of [{ BUS_HUB: undefined }, { HOSTED: "1" }]) {
+    for (const over of [{ BUS_HUB: undefined }]) {
       const c = await connect(pat, { env: E(over) });
       expect((await c.listTools()).tools.map((t) => t.name)).not.toContain(
         "bus_role_propose",
@@ -955,6 +955,11 @@ describe("role proposals over MCP (#1372)", () => {
       );
       expect(page.status).toBe(404);
     }
+    const h = await connect(pat, { env: E({ HOSTED: "1" }) });
+    expect((await h.listTools()).tools.map((t) => t.name)).toContain(
+      "bus_role_propose",
+    );
+    await h.close();
   });
 });
 

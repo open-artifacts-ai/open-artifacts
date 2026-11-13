@@ -819,13 +819,9 @@ describe("a machine token is bus-only", () => {
   });
 });
 
-describe("the bus is off: unbound, or hosted (until #1299)", () => {
+describe("the bus is off: unbound; hosted serves like self-host (#1299)", () => {
   const unbound = { ...env, BUS_HUB: undefined };
-  const hosted = { ...env, HOSTED: "1" };
-  for (const [name, ev] of [
-    ["unbound", unbound],
-    ["hosted", hosted],
-  ] as const) {
+  for (const [name, ev] of [["unbound", unbound]] as const) {
     it(`${name}: every /bus route answers 404`, async () => {
       expect((await post(BUS_ROUTES.device, {}, nextIp(), ev)).status).toBe(
         404,
@@ -855,6 +851,13 @@ describe("the bus is off: unbound, or hosted (until #1299)", () => {
 
   it("self-host (bound, not hosted) serves", async () => {
     expect((await post(BUS_ROUTES.device, {})).status).toBe(201);
+  });
+
+  it("hosted (bound) serves: no FEATURES bus needed", async () => {
+    const hosted = { ...env, HOSTED: "1" };
+    expect((await post(BUS_ROUTES.device, {}, nextIp(), hosted)).status).toBe(
+      201,
+    );
   });
 
   it("agents are an empty, not-live list (never 404) when the hub isn't bound", async () => {
@@ -939,7 +942,7 @@ describe("dashboard REST", () => {
     expect(await me(guest.cookie, "PATCH")).toBe(false);
   });
 
-  it("/me says busOn: true with BUS_HUB bound, false unbound or hosted (#1293)", async () => {
+  it("/me says busOn: true with BUS_HUB bound (hosted too), false unbound (#1293)", async () => {
     const busOnFor = async (e: unknown) => {
       const r = await fetchAndWait(
         app,
@@ -953,7 +956,7 @@ describe("dashboard REST", () => {
     };
     expect(await busOnFor(env)).toBe(true);
     expect(await busOnFor({ ...env, BUS_HUB: undefined })).toBe(false);
-    expect(await busOnFor({ ...env, HOSTED: "1" })).toBe(false);
+    expect(await busOnFor({ ...env, HOSTED: "1" })).toBe(true);
   });
 
   it("a capped (restricted) member can still list and revoke their own machines", async () => {
@@ -1136,19 +1139,25 @@ describe("GET /api/v1/bus/ping (#1299)", () => {
     };
   };
 
-  it("is 404 while the bus is off, before any hub is touched: unbound, or hosted without FEATURES bus", async () => {
+  it("is 404 while the bus is off, before any hub is touched: unbound", async () => {
     const m = await member();
     const pat = (await createPat(env, m.userId, "ping-off")).token;
     const auth = { authorization: `Bearer ${pat}` };
-    const names: string[] = [];
     const un = await ping(auth, { ...env, BUS_HUB: undefined });
     expect(un.status).toBe(404);
-    const ho = await ping(auth, spied(names, { HOSTED: "1" }));
-    expect(ho.status).toBe(404);
-    expect(((await ho.json()) as { error: { code: string } }).error.code).toBe(
+    expect(((await un.json()) as { error: { code: string } }).error.code).toBe(
       "not_found",
     );
-    expect(names).toEqual([]);
+  });
+
+  it("answers on a hosted install with BUS_HUB bound, no FEATURES bus needed", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping-hosted")).token;
+    const r = await ping(
+      { authorization: `Bearer ${pat}` },
+      { ...env, HOSTED: "1" },
+    );
+    expect(r.status).toBe(200);
   });
 
   it("uses the reserved hub name, never the caller's hub", async () => {

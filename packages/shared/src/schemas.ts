@@ -772,7 +772,7 @@ export const MeSchema = z.object({
    */
   canConnect: z.boolean().optional(),
   /**
-   * #1293: whether this install's bus answers (BUS_HUB bound, not hosted;
+   * #1293: whether this install's bus answers (BUS_HUB bound, hosted or not;
    * the server's busOn). The dashboard's Machines and Agents pages need it
    * and canConnect. Optional: older servers omit it (bus off).
    */
