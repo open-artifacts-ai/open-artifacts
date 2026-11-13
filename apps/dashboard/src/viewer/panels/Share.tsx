@@ -76,7 +76,11 @@ const writersHint = (w: DataWriters, v: Visibility) =>
 const CAPS = [
   ["db", "Database", "Lets the page store shared data."],
   ["viewer", "Viewer identity", "Lets the page see who is viewing."],
-  ["storage", "File storage", "Lets the page keep uploaded files."],
+  [
+    "storage",
+    "Viewer's own data",
+    "Lets the page save data for each logged-in viewer, such as their own ticked boxes.",
+  ],
 ] as const;
 
 const fail = (e: unknown, fallback: string) =>
