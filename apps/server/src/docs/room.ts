@@ -51,13 +51,21 @@ const MAX_FRAME_BYTES = DOC_MAX_BYTES + 64;
 const MAX_SV_BYTES = 64 * 1024;
 /**
  * Full-state budget per ACTOR per room, across reconnects: a token bucket.
- * A socket upgrade costs one token and each full-state reply one more.
- * Anonymous (ip:) actors share one stricter bucket.
+ * A socket upgrade costs one token and each full-state reply one more; an
+ * admission reserves both up front, so an admitted socket's first sync reply
+ * can never fail. Anonymous (ip:) actors share one stricter bucket and each
+ * IP also has its own, so one IP cannot drain the shared one.
  */
 const BUDGET_CAP = 6;
 const BUDGET_REFILL_MS = 60_000;
 const ANON_BUDGET_CAP = 10;
 const ANON_BUDGET_KEY = "ip:*";
+/** One anonymous IP's share of the anonymous bucket (a key per IP). */
+const ANON_IP_BUDGET_CAP = 6;
+/** The "|{anonShort}" suffix of an anonymous actor with a verified anonId. */
+const ANON_SUFFIX_RE = /\|[A-Za-z0-9_-]{8}$/;
+/** Tokens an admission reserves: the upgrade and the first full-state reply. */
+const ADMISSION_TOKENS = 2;
 /** Awareness frames larger than this are dropped. */
 const MAX_AWARENESS_BYTES = 8 * 1024;
 
@@ -90,6 +98,8 @@ interface Attachment {
   actor: string;
   /** Awareness [clientId, clock] pairs this socket announced (for removal). */
   aw: [number, number][];
+  /** Admission reserved the token for this socket's first full-state reply. */
+  reserved?: boolean;
 }
 
 const EMPTY_UPDATE_LEN = 2;
@@ -197,7 +207,7 @@ export class DocRoom extends DurableObject<Env> {
     )
       return new Response("Too many subscriptions", { status: 429 });
 
-    if (!this.takeToken(actor))
+    if (!this.takeTokens(actor, ADMISSION_TOKENS))
       return new Response("Try again shortly", {
         status: 429,
         headers: { "Retry-After": "10" },
@@ -213,6 +223,7 @@ export class DocRoom extends DurableObject<Env> {
       write: role === "edit",
       actor,
       aw: [],
+      reserved: true,
     } satisfies Attachment);
     // Authorized before this doc's last access change: the check may have
     // seen the old access, so refuse (any actor), as ArtifactRuntime does.
@@ -316,7 +327,15 @@ export class DocRoom extends DurableObject<Env> {
       } catch {
         throw new BadFrame("bad state vector");
       }
-      if (this.takeToken(att.actor)) {
+      if (!this.synced.has(ws) && att.reserved) {
+        // The token for this first reply was reserved at admission.
+        ws.serializeAttachment({
+          ...att,
+          reserved: false,
+        } satisfies Attachment);
+        this.synced.add(ws);
+        this.sendState(ws);
+      } else if (this.takeTokens(att.actor, 1)) {
         this.synced.add(ws);
         this.sendState(ws);
       } else if (!this.synced.has(ws)) {
@@ -394,27 +413,42 @@ export class DocRoom extends DurableObject<Env> {
   /** Bucket size for non-anonymous actors (tests may widen it). */
   budgetCap = BUDGET_CAP;
 
-  private takeToken(actor: string): boolean {
+  /**
+   * Takes `n` tokens from every bucket the actor draws on, or none: anonymous
+   * actors draw on their IP's bucket and the shared anonymous one.
+   */
+  private takeTokens(actor: string, n: number): boolean {
     const anon = actor.startsWith("ip:");
-    const key = anon ? ANON_BUDGET_KEY : actor;
-    const cap = anon
-      ? Math.min(ANON_BUDGET_CAP, this.budgetCap)
-      : this.budgetCap;
+    const buckets: [string, number][] = anon
+      ? [
+          [
+            actor.replace(ANON_SUFFIX_RE, ""),
+            Math.min(ANON_IP_BUDGET_CAP, this.budgetCap),
+          ],
+          [
+            ANON_BUDGET_KEY,
+            // Tests shrink budgetCap; the default 6 must not squash the pool
+            // below the sum of a few IPs' shares.
+            this.budgetCap < BUDGET_CAP ? this.budgetCap : ANON_BUDGET_CAP,
+          ],
+        ]
+      : [[actor, this.budgetCap]];
     const t = this.now();
+    const keep = new Set(buckets.map(([k]) => k));
     for (const [k, b] of this.budgets)
-      if (k !== key && t - b.at >= BUDGET_REFILL_MS) this.budgets.delete(k);
-    const cur = this.budgets.get(key);
-    let tokens = cap;
-    if (cur) {
+      if (!keep.has(k) && t - b.at >= BUDGET_REFILL_MS) this.budgets.delete(k);
+    const level = buckets.map(([k, cap]) => {
+      const cur = this.budgets.get(k);
+      if (!cur) return cap;
       const refill = (Math.max(0, t - cur.at) / BUDGET_REFILL_MS) * cap;
-      tokens = Math.min(cap, cur.tokens + refill);
-    }
-    if (tokens < 1) {
-      this.budgets.set(key, { tokens, at: t });
-      return false;
-    }
-    this.budgets.set(key, { tokens: tokens - 1, at: t });
-    return true;
+      return Math.min(cap, cur.tokens + refill);
+    });
+    const ok = level.every((tokens) => tokens >= n);
+    buckets.forEach(([k], i) => {
+      const tokens = level[i] as number;
+      this.budgets.set(k, { tokens: ok ? tokens - n : tokens, at: t });
+    });
+    return ok;
   }
 
   private armAlarmLogged(at: number) {

@@ -870,46 +870,94 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
     expect((await rawOpen(stub, actor)).opened).toBe(true);
   });
 
-  it("a refused first step 1 closes 1013 and never reports synced", async () => {
+  const rawOpenAs = async (
+    stub: Stub,
+    actor: string,
+    role: "read" | "edit" = "read",
+  ) =>
+    stub.fetch("https://room/ws", {
+      headers: {
+        Upgrade: "websocket",
+        [ACTOR_HEADER]: actor,
+        [DOC_ROLE_HEADER]: role,
+        [AUTHZ_AT_HEADER]: String(Date.now()),
+      },
+    });
+
+  it("one token left refuses the upgrade with 429 (no half-admission)", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      r.budgetCap = 1; // fewer than the two an admission reserves
+      (r as unknown as { now: () => number }).now = () => 9_000_000;
+    });
+    const res = await rawOpenAs(stub, "u:starved");
+    expect(res.status).toBe(429);
+    expect(res.webSocket).toBeNull();
+    expect(
+      await inRoom(
+        stub,
+        (r) =>
+          (r as unknown as { ctx: DurableObjectState }).ctx.getWebSockets()
+            .length,
+      ),
+    ).toBe(0);
+  });
+
+  it("an admitted socket's first sync reply survives other sockets draining the bucket", async () => {
     const stub = roomStub();
     const w = await connect(stub);
     type(w, "stored");
     await w.ping();
     await runDurableObjectAlarm(stub);
     await inRoom(stub, (r) => {
-      r.budgetCap = 1; // the upgrade takes the only token
+      r.budgetCap = 2; // exactly one admission
       (r as unknown as { now: () => number }).now = () => 9_000_000;
     });
-    const res = await stub.fetch("https://room/ws", {
-      headers: {
-        Upgrade: "websocket",
-        [ACTOR_HEADER]: "u:starved",
-        [DOC_ROLE_HEADER]: "read",
-        [AUTHZ_AT_HEADER]: String(Date.now()),
-      },
-    });
+    const res = await rawOpenAs(stub, "u:reserved");
+    expect(res.status).toBe(101);
     const ws = res.webSocket as WebSocket;
     ws.accept();
+    // Another socket of the same actor is refused: the bucket is empty.
+    expect((await rawOpenAs(stub, "u:reserved")).status).toBe(429);
+    const doc = new Y.Doc();
     const subs: number[] = [];
     let code = 0;
-    const closed = new Promise<void>((r) =>
-      ws.addEventListener("close", (e) => {
-        code = e.code;
-        r();
+    ws.addEventListener("close", (e) => {
+      code = e.code;
+    });
+    const got = new Promise<void>((resolve) =>
+      ws.addEventListener("message", (e) => {
+        if (typeof e.data === "string") return;
+        const dec = decoding.createDecoder(
+          new Uint8Array(e.data as ArrayBuffer),
+        );
+        if (decoding.readVarUint(dec) !== 0) return;
+        subs.push(decoding.peekVarUint(dec));
+        syncProtocol.readSyncMessage(dec, encoding.createEncoder(), doc, "r");
+        if (subs.includes(1)) resolve();
       }),
     );
-    ws.addEventListener("message", (e) => {
-      if (typeof e.data === "string") return;
-      const d = decoding.createDecoder(new Uint8Array(e.data as ArrayBuffer));
-      if (decoding.readVarUint(d) === 0) subs.push(decoding.readVarUint(d));
-    });
     const enc = encoding.createEncoder();
     encoding.writeVarUint(enc, 0);
     syncProtocol.writeSyncStep1(enc, new Y.Doc());
     ws.send(encoding.toUint8Array(enc));
-    await closed;
-    expect(code).toBe(1013);
-    expect(subs).not.toContain(1);
+    await got;
+    expect(code).toBe(0);
+    expect(doc.getText("t").toString()).not.toBe("");
+  });
+
+  it("one anonymous IP exhausting its budget does not block another IP", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 9_200_000;
+    });
+    // Per-IP cap 6 = three admissions; the shared anonymous cap (10) is not hit.
+    for (let i = 0; i < 3; i++)
+      expect((await rawOpenAs(stub, "ip:203.0.113.7")).status).toBe(101);
+    expect((await rawOpenAs(stub, "ip:203.0.113.7")).status).toBe(429);
+    // A verified anonId suffix is the same IP.
+    expect((await rawOpenAs(stub, "ip:203.0.113.7|abcdefgh")).status).toBe(429);
+    expect((await rawOpenAs(stub, "ip:198.51.100.9")).status).toBe(101);
   });
 
   it("surplus step 1s on a synced socket are ignored", async () => {
