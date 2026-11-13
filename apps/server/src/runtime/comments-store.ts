@@ -33,9 +33,15 @@ create index if not exists comments_thread on comments (thread_id, created_at);
 create table if not exists comment_asks (
   comment_id text primary key, thread_id text not null, question text not null,
   options text not null, recommended text, addressees text not null, answer text,
-  confirm text
+  confirm text, decider text
 );
 create index if not exists comment_asks_thread on comment_asks (thread_id);
+create table if not exists comment_ask_picks (
+  seq integer primary key autoincrement, comment_id text not null,
+  option_id text not null, by text not null, at text not null,
+  verified text, guest integer not null default 0
+);
+create index if not exists comment_ask_picks_comment on comment_ask_picks (comment_id, seq);
 create table if not exists comment_targets (
   comment_id text not null, thread_id text not null, kind text not null,
   key text not null, name text not null, state text not null, owner text, identity text,
@@ -113,6 +119,15 @@ export type MentionState =
   | "gone"
   | "withdrawn";
 
+/** #2381: one pick, kept for good. `guest`: the picker was a guest-role member then. */
+export type StoredPick = {
+  optionId: string;
+  by: StoredActor;
+  at: string;
+  verified?: "passkey";
+  guest?: boolean;
+};
+
 export type StoredAsk = {
   question: string;
   options: AskOption[];
@@ -127,6 +142,10 @@ export type StoredAsk = {
   };
   /** #2263: a pick needs the picker's passkey. Set by the server when the ask is created; never changes. */
   confirm?: "passkey";
+  /** #2381: the user id who decides when the asker named someone else; absent: the asker's own user. Taking the decision back clears it. */
+  decider?: string;
+  /** #2381: every pick in order, append-only (a change is a new entry); a legacy ask's lone answer reads as one. */
+  history?: StoredPick[];
   /** The thread is resolved. */
   closed: boolean;
 };
@@ -155,7 +174,7 @@ export type StoredComment = {
 /** What a new comment carries besides its text (#1535). */
 export type StoredAgent = Extract<StoredParty, { kind: "agent" }>;
 export type NewExtras = {
-  ask?: Omit<StoredAsk, "answer" | "closed">;
+  ask?: Omit<StoredAsk, "answer" | "closed" | "history">;
   mentions?: StoredAgent[];
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
@@ -339,6 +358,7 @@ type AskRow = {
   addressees: string;
   answer: string | null;
   confirm: string | null;
+  decider: string | null;
   status: string;
 };
 type TargetRow = {
@@ -350,6 +370,25 @@ type TargetRow = {
   owner: string | null;
   identity: string | null;
 };
+
+type PickRow = {
+  comment_id: string;
+  option_id: string;
+  by: string;
+  at: string;
+  verified: string | null;
+  guest: number;
+};
+const pickOf = (r: PickRow): StoredPick => ({
+  optionId: r.option_id,
+  by: JSON.parse(r.by) as StoredActor,
+  at: r.at,
+  ...(r.verified === "passkey" ? { verified: "passkey" as const } : {}),
+  ...(r.guest ? { guest: true } : {}),
+});
+/** An ask answered before #2381 has no pick rows: its answer is its one pick. */
+const withLegacy = (ask: StoredAsk, rows: StoredPick[]): StoredPick[] =>
+  rows.length || !ask.answer ? rows : [{ ...ask.answer }];
 
 const askOf = (r: AskRow): StoredAsk => ({
   question: r.question,
@@ -364,6 +403,7 @@ const askOf = (r: AskRow): StoredAsk => ({
     : {}),
   to: JSON.parse(r.addressees) as StoredParty[],
   ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
+  ...(r.decider ? { decider: r.decider } : {}),
   ...(r.answer
     ? { answer: JSON.parse(r.answer) as NonNullable<StoredAsk["answer"]> }
     : {}),
@@ -380,13 +420,28 @@ function attachExtras(
   const ids = JSON.stringify(threadIds);
   const byId = new Map(comments.map((c) => [c.id, c]));
   for (const r of sql.exec<AskRow>(
-    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, t.status
+    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, t.status
      from comment_asks a join comment_threads t on t.id = a.thread_id
      where a.thread_id in (select value from json_each(?))`,
     ids,
   )) {
     const c = byId.get(r.comment_id);
     if (c) c.ask = askOf(r);
+  }
+  const asked = comments.filter((c) => c.ask).map((c) => c.id);
+  if (asked.length) {
+    const hist = new Map<string, StoredPick[]>();
+    for (const r of sql.exec<PickRow>(
+      `select comment_id, option_id, by, at, verified, guest from comment_ask_picks
+       where comment_id in (select value from json_each(?)) order by seq`,
+      JSON.stringify(asked),
+    )) {
+      const l = hist.get(r.comment_id) ?? [];
+      l.push(pickOf(r));
+      hist.set(r.comment_id, l);
+    }
+    for (const c of comments)
+      if (c.ask) c.ask.history = withLegacy(c.ask, hist.get(c.id) ?? []);
   }
   for (const r of sql.exec<TargetRow>(
     `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity
@@ -429,8 +484,8 @@ export function insertExtras(
 ): void {
   if (x.ask)
     sql.exec(
-      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees, confirm)
-       values (?, ?, ?, ?, ?, ?, ?)`,
+      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees, confirm, decider)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
       commentId,
       threadId,
       x.ask.question,
@@ -438,6 +493,7 @@ export function insertExtras(
       x.ask.recommended ? JSON.stringify(x.ask.recommended) : null,
       JSON.stringify(x.ask.to),
       x.ask.confirm === "passkey" ? "passkey" : null,
+      x.ask.decider ?? null,
     );
   const put = (kind: "mention" | "asker", p: StoredAgent) =>
     sql.exec(
@@ -936,6 +992,10 @@ export function deleteExtras(
     "threadId" in by
       ? (["thread_id", by.threadId] as const)
       : (["comment_id", by.commentId] as const);
+  sql.exec(
+    `delete from comment_ask_picks where comment_id in (select comment_id from comment_asks where ${col} = ?)`,
+    v,
+  );
   sql.exec(`delete from comment_asks where ${col} = ?`, v);
   sql.exec(`delete from comment_targets where ${col} = ?`, v);
 }
@@ -953,6 +1013,36 @@ export function setAnswer(
   );
 }
 
+/** Appends a pick to an ask's history (#2381). */
+export function addPick(
+  sql: SqlStorage,
+  commentId: string,
+  p: StoredPick,
+): void {
+  sql.exec(
+    "insert into comment_ask_picks (comment_id, option_id, by, at, verified, guest) values (?, ?, ?, ?, ?, ?)",
+    commentId,
+    p.optionId,
+    JSON.stringify(p.by),
+    p.at,
+    p.verified ?? null,
+    p.guest ? 1 : 0,
+  );
+}
+
+/** Sets or clears (null) the decider (#2381). */
+export function setDecider(
+  sql: SqlStorage,
+  commentId: string,
+  decider: string | null,
+): void {
+  sql.exec(
+    "update comment_asks set decider = ? where comment_id = ?",
+    decider,
+    commentId,
+  );
+}
+
 /** A comment's ask row with its thread's status, or null when it has no ask. */
 export function askRow(
   sql: SqlStorage,
@@ -961,14 +1051,24 @@ export function askRow(
 ): { ask: StoredAsk; status: string } | null {
   const r = sql
     .exec<AskRow & { status: string }>(
-      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, t.status
+      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, t.status
        from comment_asks a join comment_threads t on t.id = a.thread_id
        where a.comment_id = ? and a.thread_id = ?`,
       commentId,
       threadId,
     )
     .toArray()[0];
-  return r ? { ask: askOf(r), status: r.status } : null;
+  if (!r) return null;
+  const ask = askOf(r);
+  const rows = sql
+    .exec<PickRow>(
+      "select comment_id, option_id, by, at, verified, guest from comment_ask_picks where comment_id = ? order by seq",
+      commentId,
+    )
+    .toArray()
+    .map(pickOf);
+  ask.history = withLegacy(ask, rows);
+  return { ask, status: r.status };
 }
 
 /** One comment with its extras, or null. */

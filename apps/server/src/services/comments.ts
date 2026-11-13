@@ -2,6 +2,7 @@ import {
   type Anchor,
   type AnchorInput,
   type ArtifactAgent,
+  ASK_TO_MAX,
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
@@ -16,7 +17,12 @@ import {
   type ThreadAgent,
 } from "@oa/shared";
 import { canConnect } from "../auth/agents.js";
-import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
+import {
+  type ArtifactRow,
+  accessLevel,
+  callerOf,
+  meetsLevel,
+} from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -27,10 +33,12 @@ import {
   type ParticipantRow,
   type StoredActor,
   type StoredAgent,
+  type StoredAsk,
   type StoredComment,
   type StoredIdentity,
   type StoredParticipant,
   type StoredParty,
+  type StoredPick,
   type StoredThread,
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
@@ -591,7 +599,35 @@ function userIds(c: StoredComment, into: Set<string>): void {
   if (!c.ask) return;
   for (const p of c.ask.to) into.add(p.kind === "user" ? p.key : p.owner);
   if (c.ask.answer?.by.kind === "user") into.add(c.ask.answer.by.ref);
+  if (c.ask.decider) into.add(c.ask.decider);
+  for (const p of c.ask.history ?? [])
+    if (p.by.kind === "user") into.add(p.by.ref);
 }
+
+/** #2381: the latest pick of each person, oldest first by their last change. */
+const latestPicks = (h: readonly StoredPick[]): StoredPick[] => {
+  const last = new Map<string, StoredPick>();
+  for (const p of h) {
+    last.delete(p.by.ref);
+    last.set(p.by.ref, p);
+  }
+  return [...last.values()];
+};
+
+/** The viewer's part in an ask (#2381): decides, weighs in, or neither. Agents are neither. */
+const roleOf = (
+  c: StoredComment,
+  ask: StoredAsk,
+  viewer: CommentViewer,
+): "decide" | "weigh" | undefined => {
+  if (viewer.userId === null || viewer.agent !== undefined) return undefined;
+  if ((ask.decider ?? c.author.ref) === viewer.userId) return "decide";
+  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const asked = ask.to.some(
+    (p) => (p.kind === "user" ? p.key : p.owner) === viewer.userId,
+  );
+  return asked && !risky ? "weigh" : undefined;
+};
 
 /** Someone an ask names, as an author: a person by name, an agent by its roster name (`me` when it is the viewer's). */
 const partyView = (
@@ -684,6 +720,38 @@ export const maskBody = (body: string, pairs: [string, string][]): string => {
 const isTyped = (a: StoredActor): boolean =>
   a.kind === "user" && a.typed === true && !a.agent;
 
+/** #2381: who decides, who chose them, the viewer's part and everyone's latest pick. */
+const deciderFields = (
+  c: StoredComment,
+  ask: StoredAsk,
+  viewer: CommentViewer,
+  users: Ctx,
+) => {
+  const who = ask.decider ?? c.author.ref;
+  const role = roleOf(c, ask, viewer);
+  const named = ask.decider !== undefined && ask.decider !== c.author.ref;
+  return {
+    decider: authorView({ kind: "user", ref: who }, viewer, users),
+    ...(named ? { chosenBy: authorView(c.author, viewer, users) } : {}),
+    ...(role ? { role } : {}),
+    ...(named &&
+    !ask.answer &&
+    !ask.closed &&
+    viewer.userId === c.author.ref &&
+    viewer.agent === undefined
+      ? { canTakeBack: true }
+      : {}),
+    picks: latestPicks(ask.history ?? []).map((p) => ({
+      by: authorView(p.by, viewer, users),
+      optionId: p.optionId,
+      at: p.at,
+      typed: isTyped(p.by),
+      ...(p.verified && !outsider(viewer) ? { verified: p.verified } : {}),
+      ...(p.guest ? { guest: true } : {}),
+    })),
+  };
+};
+
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
@@ -751,6 +819,7 @@ const commentOf = (
               : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
             ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
+            ...deciderFields(c, c.ask, viewer, users),
             ...(c.ask.answer
               ? {
                   answer: {
@@ -1116,6 +1185,35 @@ async function resolveExtras(
         throw unknownKey(key);
       to.push({ kind: "user", key: user.id });
     }
+    // #2381: who decides. Default: the asker's own user (nothing stored). Naming
+    // someone else needs a member who can edit the page, and never on an ask
+    // that names an action; the asker's own user stays on the ask to take it back.
+    let decider: string | undefined;
+    const askerId = who.kind === "user" ? who.id : "";
+    if (askIn.decider && askIn.decider.key !== askerId) {
+      if (askIn.options.some((o) => o.action))
+        throw new ApiError(
+          "bad_request",
+          "An ask that names an action is decided by you: drop `decider`",
+        );
+      const dk = askIn.decider.key;
+      const du = isId(dk) ? await getUser(env, dk) : null;
+      const dl = du ? await accessLevel(env, callerOf(du), artifactId) : null;
+      if (!du || !dl || !meetsLevel(dl.level, "editor"))
+        throw new ApiError(
+          "bad_request",
+          "A decider must be a member who can edit this page",
+        );
+      decider = du.id;
+      const addressed = (id: string) => to.some((p) => addresseeOf(p) === id);
+      if (!addressed(du.id)) to.push({ kind: "user", key: du.id });
+      if (!addressed(askerId)) to.push({ kind: "user", key: askerId });
+      if (to.length > ASK_TO_MAX)
+        throw new ApiError(
+          "bad_request",
+          `An ask names at most ${ASK_TO_MAX} people, the decider and you included`,
+        );
+    }
     // #2263: the server decides, from the actions the options name and the
     // addressees' switches. Whatever a client sent as `confirm` was stripped by
     // the schema; an edit never touches the stored mark.
@@ -1126,6 +1224,7 @@ async function resolveExtras(
       ...(askIn.recommended ? { recommended: askIn.recommended } : {}),
       to,
       ...(confirm ? { confirm } : {}),
+      ...(decider ? { decider } : {}),
     };
   }
   const agents = new Map<string, Resolved["agents"][number]>();
@@ -1669,14 +1768,25 @@ async function storedAsk(
   commentId: string,
 ) {
   const t = await call(() => stub(env, artifactId).commentsGet(threadId));
-  const ask = t.comments.find((c) => c.id === commentId)?.ask;
-  if (!ask) throw new ApiError("not_found", "Not found");
-  return { ask, status: t.status };
+  const c = t.comments.find((x) => x.id === commentId);
+  const ask = c?.ask;
+  if (!c || !ask) throw new ApiError("not_found", "Not found");
+  return { ask, status: t.status, author: c.author.ref };
 }
 
 /** Whether `who` is one of the people the ask was put to (as the DO decides). */
-const isAsked = (ask: { to: StoredParty[] }, who: CommentWho): boolean =>
-  who.kind === "user" && ask.to.some((p) => addresseeOf(p) === who.id);
+const isAsked = (
+  ask: { to: StoredParty[]; decider?: string },
+  who: CommentWho,
+  author: string,
+): boolean =>
+  who.kind === "user" &&
+  (ask.to.some((p) => addresseeOf(p) === who.id) ||
+    (ask.decider ?? author) === who.id);
+
+/** #2381: the ask's decider: the person the asker named, else the asker's own user. */
+const deciderOf = (ask: { decider?: string }, author: string): string =>
+  ask.decider ?? author;
 
 /**
  * #2263: a WebAuthn challenge for picking `optionId` on a confirm ask:
@@ -1695,13 +1805,18 @@ export async function answerChallenge(
   optionId: string,
   interactive: boolean,
 ) {
-  const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
+  const { ask, status, author } = await storedAsk(
+    env,
+    artifactId,
+    threadId,
+    commentId,
+  );
   if (!interactive || who.kind !== "user")
     throw new ApiError(
       "passkey_required",
       "Only the web app can use a passkey",
     );
-  if (!isAsked(ask, who))
+  if (!isAsked(ask, who, author))
     throw new ApiError("forbidden", "Only the people asked can answer");
   if (ask.confirm !== "passkey")
     throw new ApiError("bad_request", "This ask does not need a passkey");
@@ -1740,14 +1855,26 @@ export async function answerAsk(
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
   after: Announce | undefined,
   pick: PickAuth,
+  /** #2381: the caller may edit the page (the decider must), and is a guest-role member. */
+  caps: { canDecide: boolean; guest: boolean } = {
+    canDecide: true,
+    guest: false,
+  },
 ): Promise<Comment> {
-  const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
+  const { ask, status, author } = await storedAsk(
+    env,
+    artifactId,
+    threadId,
+    commentId,
+  );
   let verified: "passkey" | undefined;
   // Strangers, closed asks and unknown options fall through to the DO's own
   // refusals (forbidden, conflict, bad_request) without touching a challenge.
   if (
     ask.confirm === "passkey" &&
-    isAsked(ask, who) &&
+    isAsked(ask, who, author) &&
+    who.kind === "user" &&
+    deciderOf(ask, author) === who.id &&
     status !== "resolved" &&
     ask.options.some((o) => o.id === optionId)
   ) {
@@ -1773,7 +1900,11 @@ export async function answerAsk(
     );
     verified = "passkey";
   }
-  const { comment: c, unchanged } = await call(() =>
+  const {
+    comment: c,
+    unchanged,
+    decided,
+  } = await call(() =>
     stub(env, artifactId).commentsAnswer({
       threadId,
       commentId,
@@ -1781,9 +1912,12 @@ export async function answerAsk(
       optionId,
       rate: rateKeyOf(who),
       ...(verified ? { verified } : {}),
+      canDecide: caps.canDecide,
+      guest: caps.guest,
     }),
   );
-  await indexAnswered(env, artifactId, commentId);
+  // Only the decision is "answered"; a weigh-in is input (#2381).
+  if (decided) await indexAnswered(env, artifactId, commentId);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -1798,11 +1932,38 @@ export async function answerAsk(
         c.author.ref,
         await askingAddress(env, artifactId, threadId, c.author),
         // Only an answer the asker picked themselves in the web app.
-        c.ask?.answer !== undefined &&
+        decided &&
+          c.ask?.answer !== undefined &&
           isTyped(c.ask.answer.by) &&
           c.ask.answer.by.ref === c.author.ref,
       ),
     );
+  return commentView(env, c, viewer);
+}
+
+/**
+ * #2381: the asker's own user takes the decision back from the person the
+ * asking agent named: 404 without an ask, 403 unless the caller is the ask's
+ * own user, 409 once closed or decided, 400 when they decide already.
+ */
+export async function takeBackAsk(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+  viewer: CommentViewer,
+): Promise<Comment> {
+  if (who.kind !== "user")
+    throw new ApiError("forbidden", "Only the person who asked can do this");
+  const c = await call(() =>
+    stub(env, artifactId).commentsTakeBack({
+      threadId,
+      commentId,
+      by: actorOf(who),
+      rate: rateKeyOf(who),
+    }),
+  );
   return commentView(env, c, viewer);
 }
 

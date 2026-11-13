@@ -541,6 +541,8 @@ export const useAnswerAsk = (id: string) =>
             c.id !== v.comment ||
             !c.ask ||
             c.ask.closed ||
+            // #2381: a weigh-in is not the decision; it shows when the server confirms.
+            c.ask.role === "weigh" ||
             (c.ask as { confirm?: unknown }).confirm
               ? c
               : {
@@ -575,6 +577,19 @@ export const useAnswerAsk = (id: string) =>
         }));
       },
     },
+  );
+
+/** #2381: the asker's own user takes the decision back ("I'll decide this"). */
+export const useTakeBackAsk = (id: string) =>
+  useRefetching(id, false, false, (v: { thread: string; comment: string }, x) =>
+    api.send(
+      "POST",
+      R.commentAskDecider(id, v.thread, v.comment),
+      { takeBack: true },
+      CommentSchema,
+      undefined,
+      x,
+    ),
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>
@@ -780,6 +795,8 @@ export function answerError(e: unknown, ctx?: ErrorContext): string {
       ? cappedCopy("answer")
       : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
   const status = e instanceof ApiClientError ? e.status : 0;
+  if (e instanceof ApiClientError && e.code === "not_decider")
+    return "You can't decide this any more: you can't edit this page. The person who asked can take it back.";
   if (status === 403)
     return "Only the people this ask is addressed to can answer.";
   if (status === 409)

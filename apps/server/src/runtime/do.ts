@@ -49,6 +49,7 @@ import {
 } from "../services/thumbs.js";
 import {
   addParticipants,
+  addPick,
   askAuthors,
   askerNoticeDue,
   askRow,
@@ -81,6 +82,7 @@ import {
   type StoredParticipant,
   type StoredThread,
   setAnswer,
+  setDecider,
   setParticipantRemoved,
   setTargetState,
   settleTarget,
@@ -583,6 +585,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "confirm")
       )
         sql.exec("alter table comment_asks add column confirm text");
+      // #2381: comment_asks.decider, for DOs created before it (the picks table is in the schema).
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "decider")
+      )
+        sql.exec("alter table comment_asks add column decider text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -2170,21 +2182,42 @@ export class ArtifactRuntime extends DurableObject<Env> {
     rate: string;
     /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
     verified?: "passkey";
-  }): { comment: StoredComment; unchanged: boolean } {
+    /** #2381: the caller may edit the page (a decider must still). */
+    canDecide: boolean;
+    /** #2381: the caller is a guest-role member (marked on a weigh-in). */
+    guest: boolean;
+  }): { comment: StoredComment; unchanged: boolean; decided: boolean } {
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       this.countComment(a.rate, false);
       const r = askRow(this.sql, a.threadId, a.commentId);
       if (!r) fail("not_found", "Not found");
+      const author = this.askAuthor(a.commentId);
+      const decider = r.ask.decider ?? author;
+      const isDecider = a.by.kind === "user" && a.by.ref === decider;
       const asked =
         a.by.kind === "user" &&
         r.ask.to.some(
           (p) => (p.kind === "user" ? p.key : p.owner) === a.by.ref,
         );
-      if (!asked) fail("forbidden", "Only the people asked can answer");
+      if (!asked && !isDecider)
+        fail("forbidden", "Only the people asked can answer");
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
+      // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
+      const risky =
+        r.ask.confirm === "passkey" || r.ask.options.some((o) => o.action);
+      if (risky && !isDecider)
+        fail(
+          "forbidden",
+          "Only the person this was asked of can answer a risky ask",
+        );
+      if (isDecider && !a.canDecide)
+        fail(
+          "not_decider",
+          "You can no longer decide this: you cannot edit the page",
+        );
       // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
       if (r.ask.confirm === "passkey") {
         if (a.verified !== "passkey")
@@ -2193,19 +2226,77 @@ export class ArtifactRuntime extends DurableObject<Env> {
           fail("already_answered", "This ask is answered with that option");
       }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
-      const unchanged = r.ask.answer?.optionId === a.optionId;
+      const mine = [...(r.ask.history ?? [])]
+        .reverse()
+        .find((p) => p.by.ref === a.by.ref);
+      const unchanged = mine?.optionId === a.optionId;
       const now = this.iso();
-      setAnswer(this.sql, a.commentId, {
-        optionId: a.optionId,
-        by: a.by,
-        at: now,
-        ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
-      });
-      touchThread(this.sql, a.threadId, now);
+      if (!unchanged)
+        addPick(this.sql, a.commentId, {
+          optionId: a.optionId,
+          by: a.by,
+          at: now,
+          ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
+          ...(a.guest ? { guest: true } : {}),
+        });
+      if (isDecider)
+        setAnswer(this.sql, a.commentId, {
+          optionId: a.optionId,
+          by: a.by,
+          at: now,
+          ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
+        });
+      if (!unchanged) touchThread(this.sql, a.threadId, now);
       return {
         comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
-        unchanged,
+        unchanged: unchanged && (!isDecider || !!r.ask.answer),
+        decided: isDecider,
       };
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /** The user id of the ask comment's author (a person's own comment, or the member an agent acts for). */
+  private askAuthor(commentId: string): string {
+    const row = this.sql
+      .exec<{ author: string }>(
+        "select author from comments where id = ?",
+        commentId,
+      )
+      .toArray()[0];
+    return row ? (JSON.parse(row.author) as StoredActor).ref : "";
+  }
+
+  /**
+   * #2381: the asker's own user takes the decision back from the person the
+   * asking agent named. Not found without an ask; forbidden unless the caller
+   * is the ask's own user; conflict once closed; already_decided once the
+   * decider picked; bad_request when the asker already decides.
+   */
+  commentsTakeBack(a: {
+    threadId: string;
+    commentId: string;
+    by: StoredActor;
+    rate: string;
+  }): StoredComment {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      this.countComment(a.rate, false);
+      const r = askRow(this.sql, a.threadId, a.commentId);
+      if (!r) fail("not_found", "Not found");
+      if (a.by.kind !== "user" || a.by.ref !== this.askAuthor(a.commentId))
+        fail(
+          "forbidden",
+          "Only the person who asked can take the decision back",
+        );
+      if (r.status === "resolved") fail("conflict", "This ask is closed");
+      if (!r.ask.decider || r.ask.decider === a.by.ref)
+        fail("bad_request", "You already decide this");
+      if (r.ask.answer) fail("already_decided", "This is already decided");
+      setDecider(this.sql, a.commentId, null);
+      touchThread(this.sql, a.threadId, this.iso());
+      return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
     });
     this.broadcastComments();
     return out;
@@ -2587,6 +2678,7 @@ type RpcMethods =
   | "commentsAdd"
   | "commentsReply"
   | "commentsAnswer"
+  | "commentsTakeBack"
   | "commentsTargetStates"
   | "commentsTargetSettle"
   | "commentsAskerRefund"

@@ -490,6 +490,8 @@ async function startMocks() {
       events,
       // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
       commentAsks: params.get("mock") === "asks",
+      // ?mock=deciders (#2381): asks in each decider state.
+      commentDeciders: params.get("mock") === "deciders",
       // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
       passkeys:
         params.get("mock") === "passkey-cooling"

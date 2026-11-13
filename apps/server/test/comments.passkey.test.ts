@@ -79,7 +79,7 @@ async function artifactFor(...us: U[]): Promise<string> {
     shared.add(`${artifactId}:${u.userId}`);
     await api(app, R.shares(artifactId), owner.cookie, {
       method: "PUT",
-      body: { email: (await member(u)).email, role: "viewer" },
+      body: { email: (await member(u)).email, role: "editor" },
     });
   }
   return artifactId;
@@ -97,8 +97,14 @@ async function ask(
   const t = (await addThread(
     E,
     { id: artifactId, format: "html", currentVersion: 1 } as never,
-    ownerWho(),
-    { userId: owner.userId, short: null, moderator: true },
+    // #2381: a risky ask is decided by its asker's own user, so the person asked asks it.
+    {
+      kind: "user",
+      id: to.userId,
+      agent: null,
+      typed: true,
+    } as never,
+    { userId: to.userId, short: null, moderator: true },
     {
       anchor: NOTE as never,
       body: "Merge?",
@@ -213,7 +219,7 @@ describe("the server marks asks confirm: passkey", () => {
     const r = await api(
       app,
       R.comment(k.artifactId, k.threadId, k.commentId),
-      owner.cookie,
+      alice.cookie,
       {
         method: "PATCH",
         body: { body: "Merge, please?" },

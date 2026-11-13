@@ -107,6 +107,19 @@ const recommendedMsg = {
   path: ["recommended", "optionId"],
 };
 
+/** #2381: one person's current pick on an ask: a weigh-in, or the decision when `by` is the decider. */
+export const AskPickSchema = z.object({
+  by: CommentAuthorSchema,
+  optionId: key,
+  at: z.string(),
+  /** Picked in the web app (a browser session). */
+  typed: z.boolean(),
+  verified: z.literal("passkey").optional(),
+  /** The picker is a guest-role member: input only, never a decider. Outsiders see the mark, not the role. */
+  guest: z.boolean().optional(),
+});
+export type AskPick = z.infer<typeof AskPickSchema>;
+
 /** An ask on a comment (#1535). `closed` means the thread is resolved. */
 export const CommentAskSchema = z
   .object({
@@ -114,6 +127,17 @@ export const CommentAskSchema = z
     options: askOptions,
     recommended: askRecommended,
     to: z.array(CommentAuthorSchema),
+    /** #2381: who decides. Absent on a client built before it: read the asker's own user. */
+    decider: CommentAuthorSchema.optional(),
+    /** #2381: set when the asker named someone other than its own user as decider: the asker, as an author. */
+    chosenBy: CommentAuthorSchema.optional(),
+    /** #2381: the viewer's part: they decide, weigh in, or neither (absent). */
+    role: z.enum(["decide", "weigh"]).optional(),
+    /** #2381: the asker's own user may say "I'll decide this" (decider is someone else, no decision yet). */
+    canTakeBack: z.boolean().optional(),
+    /** #2381: the latest pick of each person, oldest first. The decider's is the decision's source. */
+    picks: z.array(AskPickSchema).optional(),
+    /** The decision: the decider's pick (before #2381, the last pick of anyone asked). */
     answer: z
       .object({
         optionId: key,
@@ -258,6 +282,8 @@ export const AskInputSchema = z
     options: optionRules(AskInputOptionSchema),
     recommended: askRecommended,
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
+    /** #2381: a person (member who can edit the page) who decides. Default: the asker's own user. Never on an ask that names an action. */
+    decider: KeyRefSchema.optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
@@ -298,6 +324,10 @@ export const AnswerBodySchema = z.object({
   assertion: PasskeyAssertionSchema.optional(),
 });
 export type AnswerBody = z.infer<typeof AnswerBodySchema>;
+
+/** POST R.commentAskDecider body (#2381): the asker's own user takes the decision back. */
+export const TakeBackBodySchema = z.object({ takeBack: z.literal(true) });
+export type TakeBackBody = z.infer<typeof TakeBackBodySchema>;
 
 /** GET R.artifactAgents: the agents that follow or publish to the artifact. */
 export const ArtifactAgentSchema = z.object({

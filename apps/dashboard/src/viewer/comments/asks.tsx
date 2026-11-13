@@ -14,6 +14,7 @@ import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
+  useTakeBackAsk,
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
@@ -35,18 +36,25 @@ export const extrasBody = (x: Extras) => ({
 export const isSendingAnswer = (a: object | undefined) =>
   !!a && (a as { sending?: boolean }).sending === true;
 
+type AskT = NonNullable<CommentT["ask"]>;
+
+/** #2381: the viewer's own current pick on an ask, if they have weighed in. */
+const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
+
+/** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
+const needsMe = (ask: AskT): boolean => {
+  if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
+  if (ask.role === "weigh") return !myPickOf(ask) && !ask.answer;
+  return (
+    (!ask.answer || isSendingAnswer(ask.answer)) && ask.to.some((a) => a.me)
+  );
+};
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
-    .filter((t) =>
-      t.comments.some(
-        (c) =>
-          c.ask &&
-          (!c.ask.answer || isSendingAnswer(c.ask.answer)) &&
-          c.ask.to.some((a) => a.me),
-      ),
-    )
+    .filter((t) => t.comments.some((c) => c.ask && needsMe(c.ask)))
     .map((t) => t.id);
 }
 
@@ -481,6 +489,60 @@ const squash = (t: string) => t.replace(/\s+/g, " ").trim();
 export const showsAskBody = (body: string, question: string) =>
   squash(body) !== "" && squash(body) !== squash(question);
 
+/**
+ * #2381: who weighed in on an option, as names (3 people or fewer) or a bar and
+ * a count (4 or more), and the decider's tick on the chosen one. No vote total.
+ */
+function OptionViews({
+  views,
+  total,
+  bars,
+  decided,
+}: {
+  views: NonNullable<AskT["picks"]>;
+  total: number;
+  bars: boolean;
+  decided: string | null;
+}) {
+  if (views.length === 0 && !decided && !bars) return null;
+  return (
+    <div
+      data-option-views=""
+      className={`flex flex-col gap-0.5 px-2 pt-0.5 ${TXT} ${MUTED}`}
+    >
+      {decided && (
+        <span className="font-medium text-[var(--oa-success-fg)]">
+          ✓ {decided} decided
+        </span>
+      )}
+      {bars ? (
+        <span className="flex items-center gap-2" data-option-bar="">
+          <span
+            aria-hidden="true"
+            className="h-1.5 rounded bg-[var(--oa-accent)]"
+            style={{
+              width: `${total ? Math.max(4, (views.length / total) * 60) : 4}%`,
+              opacity: views.length ? 1 : 0.25,
+            }}
+          />
+          <span className="font-medium text-foreground">{views.length}</span>
+        </span>
+      ) : (
+        views.map((p) => (
+          <span
+            key={`${p.by.id ?? p.by.name}`}
+            data-view-by={p.by.id ?? p.by.name}
+            className="inline-flex items-center gap-1"
+          >
+            {p.by.me ? "You" : p.by.name}
+            {p.guest ? " (guest)" : ""} weighed in
+          </span>
+        ))
+      )}
+    </div>
+  );
+}
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
@@ -508,12 +570,16 @@ export function AskBlock({
 }) {
   const ask = c.ask;
   const answer = useAnswerAsk(artifactId);
+  const takeBack = useTakeBackAsk(artifactId);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
-  const picked = ask?.answer?.optionId;
+  // #2381: what the viewer's own controls show: their weigh-in, or the decision.
+  const myPick = ask ? myPickOf(ask) : undefined;
+  const picked =
+    ask?.role === "weigh" ? myPick?.optionId : ask?.answer?.optionId;
   const opts = useRef<HTMLUListElement>(null);
   const [refocus, setRefocus] = useState<string | null>(null);
   // Once the failed pick is rolled back and its option is enabled again.
@@ -537,7 +603,7 @@ export function AskBlock({
     setChanging(false);
   }, [picked]);
   if (!ask) return null;
-  const mine = ask.to.some((a) => a.me);
+  const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
@@ -546,13 +612,33 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  // The decision itself (the decider's pick), for the closed line and the tick.
+  const decisionIdx = ask.options.findIndex(
+    (o) => o.id === ask.answer?.optionId,
+  );
+  const decisionOpt = ask.options[decisionIdx];
+  const weighing = ask.role === "weigh";
+  const decider = ask.decider;
+  const deciderLine = !decider
+    ? null
+    : ask.role === "decide"
+      ? "You decide"
+      : ask.chosenBy
+        ? `${ask.chosenBy.me ? "You" : ask.chosenBy.name} asked ${decider.name} to decide`
+        : `${decider.name} decides`;
+  // Weighing in: everyone's latest view but the decider's own pick (that is the decision).
+  const views = (ask.picks ?? []).filter((p) => p.by.id !== decider?.id);
+  const people = ask.to.filter(
+    (p) => p.kind !== "agent" && p.id !== decider?.id,
+  ).length;
+  const bars = people >= 4;
   const recIdx = ask.options.findIndex(
     (o) => o.id === ask.recommended?.optionId,
   );
   const letters = showLetters(ask.options);
   const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
-  const decided = ask.closed && pickedOpt;
+  const decided = ask.closed && decisionOpt;
   const line = decided && (
     <>
       <button
@@ -566,8 +652,8 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {letters ? `${letter(pickedIdx)}, ` : ""}
-          {pickedOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
+          {letters ? `${letter(decisionIdx)}, ` : ""}
+          {decisionOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -618,10 +704,47 @@ export function AskBlock({
             )}{" "}
             asks{askedWho(ask.to, mine)}
           </p>
+          {deciderLine && (
+            <p
+              data-ask-decider=""
+              className={`flex flex-wrap items-center gap-x-2 ${TXT} ${MUTED}`}
+            >
+              <span className="font-medium text-foreground">{deciderLine}</span>
+              {ask.canTakeBack && (
+                <Button
+                  size="xs"
+                  variant="link"
+                  className="h-auto p-0"
+                  disabled={takeBack.isPending}
+                  onClick={() => {
+                    setErr(null);
+                    takeBack.mutate(
+                      { thread: thread.id, comment: c.id },
+                      { onError: setErr },
+                    );
+                  }}
+                >
+                  I'll decide this
+                </Button>
+              )}
+            </p>
+          )}
           {body}
           <div id={qid} className={`${TXT} font-semibold break-words`}>
             <Markdown body={ask.question} />
           </div>
+          {ask.role && !ask.closed && !pickedOpt && (
+            <p data-ask-verb="" className={`${TXT} ${MUTED}`}>
+              {weighing
+                ? `Pick an option to weigh in. ${decider?.name ?? "The decider"} decides.`
+                : "Pick an option to decide."}
+            </p>
+          )}
+          {bars && (
+            <p data-ask-tally="" className={`${TXT} ${MUTED}`}>
+              {views.length} of {people} weighed in. The tally decides nothing.
+            </p>
+          )}
           <ul
             ref={opts}
             aria-labelledby={qid}
@@ -685,6 +808,17 @@ export function AskBlock({
                       </span>
                     )}
                   </Button>
+                  <OptionViews
+                    views={views.filter((p) => p.optionId === o.id)}
+                    total={views.length}
+                    bars={bars}
+                    decided={
+                      ask.answer?.optionId === o.id &&
+                      !isSendingAnswer(ask.answer)
+                        ? actor(ask.answer.by, "You")
+                        : null
+                    }
+                  />
                 </li>
               );
             })}
@@ -695,12 +829,32 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer &&
+          {weighing && myPick && !answer.isPending && (
+            <p className={`${TXT} font-medium`} data-ask-answer="">
+              Your view is in. {decider?.name ?? "The decider"} decides.
+              {canAnswer && locked && (
+                <>
+                  {" · "}
+                  <Button
+                    size="xs"
+                    variant="link"
+                    className="h-auto p-0"
+                    onClick={() => setChanging(true)}
+                  >
+                    Change
+                  </Button>
+                </>
+              )}
+            </p>
+          )}
+          {!weighing &&
+            ask.answer &&
             pickedOpt &&
             !isSendingAnswer(ask.answer) &&
             !answer.isPending && (
               <p className={`${TXT} font-medium`} data-ask-answer="">
-                {actor(ask.answer.by, "You")} picked{" "}
+                {actor(ask.answer.by, "You")}{" "}
+                {ask.decider ? "decided" : "picked"}{" "}
                 {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
                 {versionDate(ask.answer.at)}
                 {ask.closed ? " · closed" : ""}
@@ -736,7 +890,7 @@ export function AskBlock({
               ))}
             </p>
           )}
-          {!mine && !ask.closed && (
+          {!mine && !ask.closed && !ask.role && (
             <p className={`${TXT} ${MUTED}`}>
               Only the people asked can answer.
             </p>

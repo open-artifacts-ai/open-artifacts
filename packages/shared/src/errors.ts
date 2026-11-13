@@ -70,6 +70,9 @@ export const ERROR_CODES = [
   "passkey_failed",
   "challenge_expired",
   "passkey_required",
+  // Ask deciders (#2381).
+  "not_decider",
+  "already_decided",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -197,6 +200,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   challenge_expired: 410,
   /** #2263: a passkey assertion is required (always so through MCP or an API token). */
   passkey_required: 403,
+  /** #2381: the picker is the ask's decider but can no longer edit the page; the asker's own user takes it back. */
+  not_decider: 403,
+  /** #2381: the decider already picked, so the decision cannot be taken back. */
+  already_decided: 409,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */
