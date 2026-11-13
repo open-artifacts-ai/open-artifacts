@@ -131,8 +131,47 @@ describe("R.onboarding", () => {
         visibility: string;
       }>();
 
+    it("seeds nothing on an instance that already has artifacts, now or later", async () => {
+      await clear();
+      await env.DB.prepare("delete from artifacts").run();
+      const o = await owner();
+      const a = await api(app, R.artifacts, o.cookie, {
+        method: "POST",
+        body: { title: "old", format: "html", content: "<p>x</p>" },
+      });
+      const { id } = (await a.json()) as { id: string };
+      await seedWelcome(HOSTED_ENV, o.user);
+      expect((await welcomeRows()).results).toHaveLength(0);
+      await api(app, R.artifact(id), o.cookie, { method: "DELETE" });
+      await env.DB.prepare("delete from artifacts").run();
+      await seedWelcome(HOSTED_ENV, o.user);
+      expect((await welcomeRows()).results).toHaveLength(0);
+      expect((await get(o.cookie)).body?.welcomeId).toBeNull();
+    });
+
+    it("keeps the claim when publish succeeded but the record update fails", async () => {
+      await clear();
+      await env.DB.prepare("delete from artifacts").run();
+      const o = await owner();
+      const db = new Proxy(env.DB, {
+        get: (t, k) =>
+          k === "prepare"
+            ? (q: string) => {
+                if (q.startsWith("update settings set value"))
+                  throw new Error("boom");
+                return t.prepare(q);
+              }
+            : (Reflect.get(t, k).bind?.(t) ?? Reflect.get(t, k)),
+      });
+      await seedWelcome({ ...HOSTED_ENV, DB: db } as typeof env, o.user);
+      expect((await welcomeRows()).results).toHaveLength(1);
+      await seedWelcome(HOSTED_ENV, o.user);
+      expect((await welcomeRows()).results).toHaveLength(1);
+    });
+
     it("seeds one private html Welcome for the hosted owner, once", async () => {
       await clear();
+      await env.DB.prepare("delete from artifacts").run();
       const o = await owner();
       await seedWelcome(HOSTED_ENV, o.user);
       await seedWelcome(HOSTED_ENV, o.user);
@@ -167,6 +206,7 @@ describe("R.onboarding", () => {
 
     it("does not reseed after the owner deletes it, and welcomeId goes null", async () => {
       await clear();
+      await env.DB.prepare("delete from artifacts").run();
       const o = await owner();
       await seedWelcome(HOSTED_ENV, o.user);
       const id = (await get(o.cookie)).body?.welcomeId as string;
@@ -183,6 +223,7 @@ describe("R.onboarding", () => {
 
     it("a failed seed resolves, leaves nothing, and a later one can retry", async () => {
       await clear();
+      await env.DB.prepare("delete from artifacts").run();
       const o = await owner();
       const ghost = { ...o.user, id: newId() };
       await expect(seedWelcome(HOSTED_ENV, ghost)).resolves.toBeUndefined();
@@ -197,6 +238,7 @@ describe("R.onboarding", () => {
 
     it("records the first open once, for its user only", async () => {
       await clear();
+      await env.DB.prepare("delete from artifacts").run();
       const o = await owner();
       await seedWelcome(HOSTED_ENV, o.user);
       const other = await login(`own2-${tag()}@example.com`, "owner");
@@ -217,6 +259,7 @@ describe("R.onboarding", () => {
 
     it("reports the caller's first other artifact, connected agent and comment", async () => {
       await clear();
+      await env.DB.prepare("delete from artifacts").run();
       const o = await owner();
       await seedWelcome(HOSTED_ENV, o.user);
       expect((await get(o.cookie)).body).toMatchObject({

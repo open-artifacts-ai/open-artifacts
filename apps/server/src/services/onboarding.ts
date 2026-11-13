@@ -125,36 +125,54 @@ export async function noteCommented(env: Env, userId: string): Promise<void> {
 export async function seedWelcome(env: Env, user: Member): Promise<void> {
   if (env.HOSTED !== "1" || user.role !== "owner") return;
   try {
-    const claim = await stmt(env.DB, SET)
-      .bind(WELCOME_KEY, JSON.stringify({ userId: user.id, artifactId: "" }))
+    // One atomic claim. An instance that already has any artifact row (deleted
+    // ones too) is not fresh: a "skipped" claim (no user, no artifact) is kept
+    // so Welcome never appears later, after its artifacts are deleted.
+    const claim = await stmt(
+      env.DB,
+      `insert into settings (key, value)
+       select ?1, case when exists (select 1 from artifacts) then ?2 else ?3 end
+       on conflict (key) do nothing`,
+    )
+      .bind(
+        WELCOME_KEY,
+        JSON.stringify({ userId: "", artifactId: "" }),
+        JSON.stringify({ userId: user.id, artifactId: "" }),
+      )
       .run();
     if (!claim.meta.changes) return;
+    const held = await stmt(env.DB, "select value from settings where key = ?1")
+      .bind(WELCOME_KEY)
+      .first<{ value: string }>();
+    if (parseWelcome(held?.value)?.userId !== user.id) return;
+    let id: string;
     try {
-      const out = await publish(
-        env,
-        user,
-        {
-          title: WELCOME_TITLE,
-          format: "html",
-          content: welcomeHtml(appOrigin(env)),
-          visibility: "private",
-        },
-        null,
-        undefined,
-        "create",
-      );
-      await stmt(env.DB, "update settings set value = ?2 where key = ?1")
-        .bind(
-          WELCOME_KEY,
-          JSON.stringify({ userId: user.id, artifactId: out.id }),
+      id = (
+        await publish(
+          env,
+          user,
+          {
+            title: WELCOME_TITLE,
+            format: "html",
+            content: welcomeHtml(appOrigin(env)),
+            visibility: "private",
+          },
+          null,
+          undefined,
+          "create",
         )
-        .run();
+      ).id;
     } catch (e) {
+      // Nothing was published: release the claim so the next sign-in retries.
       await stmt(env.DB, "delete from settings where key = ?1")
         .bind(WELCOME_KEY)
         .run();
       throw e;
     }
+    // Published: keep the claim whatever happens (a retry would seed twice).
+    await stmt(env.DB, "update settings set value = ?2 where key = ?1")
+      .bind(WELCOME_KEY, JSON.stringify({ userId: user.id, artifactId: id }))
+      .run();
   } catch (e) {
     logWarn("welcome_seed_failed", {
       code: e instanceof Error ? e.name : "error",
