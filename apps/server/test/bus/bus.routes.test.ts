@@ -850,6 +850,17 @@ describe("GET /bus/connect: rate limit per IP before the token lookup (#2359)", 
     ).toBe(false);
   });
 
+  it("hosted refuses a connect without cf-connecting-ip", async () => {
+    const m = await machine("rl-noip-h", alice.userId);
+    const { ev } = withRl(1);
+    const r = await upgrade(
+      m.token,
+      { "cf-connecting-ip": "" },
+      { ...ev, HOSTED: "1", FEATURES: "bus" },
+    );
+    expect(r.status).toBe(400);
+  });
+
   it("two addresses in one IPv6 /64 share a bucket", async () => {
     const m = await machine("rl-v6", alice.userId);
     const { l, ev } = withRl(1);

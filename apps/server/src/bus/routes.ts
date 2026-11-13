@@ -648,7 +648,13 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
   // set it has no IP: skip this limit rather than put every machine in one
   // shared bucket. The token's per-machine and per-member limits still apply.
   const ip = ipKey(c.req.header("cf-connecting-ip") ?? "");
-  if (ip === null) noConnectIp();
+  if (ip === null) {
+    // Hosted tightens: the edge always sets the client IP, so a request
+    // without it is refused rather than left unthrottled.
+    if (env.HOSTED === "1")
+      return errorJson(400, "bad_request", "Missing client address");
+    noConnectIp();
+  }
   const rl =
     ip === null
       ? null
