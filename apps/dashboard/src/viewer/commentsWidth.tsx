@@ -13,9 +13,9 @@ import {
 export const KEY = "oa.comments.width";
 export const DEFAULT_WIDTH = 352;
 export const MIN_WIDTH = 300;
-const MAX_WIDTH = 560;
+const MAX_WIDTH = 900;
 /** The artifact always keeps this much room. */
-const KEEP = 600;
+const KEEP = 480;
 /** Below this window width the layout is the old fixed one. */
 export const RESIZE_FROM = 960;
 const STEP = 16;
@@ -45,7 +45,7 @@ let win = 1280;
 let snap: Snap = {
   width: DEFAULT_WIDTH,
   min: MIN_WIDTH,
-  max: 560,
+  max: MAX_WIDTH,
   enabled: true,
 };
 const subs = new Set<() => void>();

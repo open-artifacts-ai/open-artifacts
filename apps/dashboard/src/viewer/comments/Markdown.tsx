@@ -72,7 +72,8 @@ function inline(
   });
 }
 
-const P = "m-0 whitespace-pre-wrap break-words";
+/** Text lines stay readable in a wide pane; code, quotes and cards use the full width. */
+const P = "m-0 max-w-[72ch] whitespace-pre-wrap break-words";
 
 function blocks(bs: Block[], text: TextFn, key: string): ReactNode[] {
   return bs.map((b, i) => {
@@ -114,7 +115,7 @@ function blocks(bs: Block[], text: TextFn, key: string): ReactNode[] {
           <Tag
             key={k}
             start={b.ordered && b.start !== 1 ? b.start : undefined}
-            className={`m-0 pl-5 ${b.ordered ? "list-decimal" : "list-disc"}`}
+            className={`m-0 max-w-[72ch] pl-5 ${b.ordered ? "list-decimal" : "list-disc"}`}
           >
             {b.items.map((it, j) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static parse output
