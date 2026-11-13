@@ -548,6 +548,8 @@ export const pickAssertions = sqliteTable(
     expiresAt: integer("expires_at").notNull(),
     usedAt: integer("used_at"),
     createdAt: integer("created_at").notNull(),
+    /** #1958: the hash of the permission request a pick challenge was issued for; null for any other challenge. */
+    reqHash: text("req_hash"),
   },
   (t) => [
     uniqueIndex("pick_assertions_scope_idx").on(t.userId, t.scope),
@@ -556,6 +558,28 @@ export const pickAssertions = sqliteTable(
       sql`${t.kind} in ('register', 'pick', 'settings', 'remove')`,
     ),
   ],
+);
+
+/**
+ * #1958: one row per permission ask (an agent asking to run a command), for
+ * the caps that span artifacts: at most 3 pending and 20 created an hour per
+ * agent. The artifact's Durable Object holds the ask itself; `done_at` is set
+ * when it is consumed or withdrawn. `id` is the reservation, kept on the ask.
+ */
+export const permissionAsks = sqliteTable(
+  "permission_asks",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentKey: text("agent_key").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    doneAt: integer("done_at"),
+  },
+  (t) => [index("permission_asks_agent_idx").on(t.agentKey, t.createdAt)],
 );
 
 // #2263 a member's "ask for a passkey to approve" switches. No row: the

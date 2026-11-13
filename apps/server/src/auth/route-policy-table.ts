@@ -271,6 +271,16 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     "comments.write",
     { anon401: COMMENT },
   ),
+  // #1958: the agent that posted a permission ask uses or withdraws it; the
+  // service refuses a browser session and any other agent.
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/consume`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
   [`GET ${ARTS}/agents`]: art("comments.read"),
   // #2035: stop (or undo) a thread's reply notices to one agent. The floor is
   // comments.write (never a guest or restricted cap); the service allows only

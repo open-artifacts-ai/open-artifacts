@@ -12,6 +12,12 @@ import {
   isId,
   type KeyRef,
   type MentionDelivery,
+  newId,
+  PERMISSION_OPTIONS,
+  PERMISSION_TTL_MS,
+  type PermissionAskInput,
+  PermissionAskInputSchema,
+  type PermissionRequest,
   type CommentThread as Thread,
   type ThreadAgent,
 } from "@oa/shared";
@@ -28,6 +34,7 @@ import {
   type StoredActor,
   type StoredAgent,
   type StoredComment,
+  type StoredPermission,
   type StoredIdentity,
   type StoredParticipant,
   type StoredParty,
@@ -84,6 +91,14 @@ import {
   notifyCommented,
 } from "./follows.js";
 import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
+import {
+  agentKeysOf,
+  isSoleReader,
+  permissionReqHash,
+  refuseUnsafe,
+  releaseSlot,
+  reserveSlot,
+} from "./permission.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -684,6 +699,34 @@ export const maskBody = (body: string, pairs: [string, string][]): string => {
 const isTyped = (a: StoredActor): boolean =>
   a.kind === "user" && a.typed === true && !a.agent;
 
+/** #1958: only the person a permission ask is for sees what it asks. */
+const permissionFor = (c: StoredComment, viewer: CommentViewer): boolean => {
+  const to = c.ask?.to[0];
+  return (
+    to?.kind === "user" && viewer.userId !== null && viewer.userId === to.key
+  );
+};
+
+const permissionQuestion = (c: StoredComment, viewer: CommentViewer): string =>
+  permissionFor(c, viewer)
+    ? (c.ask?.question ?? "")
+    : "a permission request";
+
+/** The permission fields of an ask's view; the request itself only for the addressee. */
+const permissionView = (c: StoredComment, viewer: CommentViewer) => {
+  const p = c.ask?.permission;
+  if (!p) return {};
+  return {
+    kind: "permission" as const,
+    ...(permissionFor(c, viewer) ? { request: p.request } : {}),
+    expiresAt: new Date(p.expiresAtMs).toISOString(),
+    ...(p.consumedAtMs !== undefined
+      ? { consumedAt: new Date(p.consumedAtMs).toISOString() }
+      : {}),
+    ...(p.withdrawnAtMs !== undefined ? { withdrawn: true } : {}),
+  };
+};
+
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
@@ -733,7 +776,10 @@ const commentOf = (
     ...(c.ask
       ? {
           ask: {
-            question: maskBody(c.ask.question, pairs),
+            question: c.ask.permission
+              ? permissionQuestion(c, viewer)
+              : maskBody(c.ask.question, pairs),
+            ...permissionView(c, viewer),
             options: c.ask.options.map((o) => ({
               ...o,
               label: maskBody(o.label, pairs),
@@ -921,7 +967,7 @@ const emailPeople = (
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
-  ask?: AskInput;
+  ask?: AskInput | PermissionAskInput;
   /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
   toAsker?: boolean;
 };
@@ -1032,6 +1078,79 @@ const unknownKey = (key: string) =>
   new ApiError("bad_request", `Unknown agent or person: ${key}`);
 
 /**
+ * #1958: a permission ask, checked and built. Only an agent (a bus session,
+ * grant or token, never a browser session) may post it, only to its own
+ * user, only on a page nobody else can read. The options are fixed, the
+ * request hash is computed here, `confirm` is forced to "passkey", and the
+ * ask lives 10 minutes by the server's clock. 403 forbidden, 400 bad_request
+ * (unknown key, client-sent hash, bad options) or unsafe_characters, 429
+ * rate_limited past 3 pending or 20 an hour.
+ */
+async function resolvePermission(
+  env: Env,
+  artifactId: string,
+  who: Extract<CommentWho, { kind: "user" }>,
+  raw: unknown,
+): Promise<Resolved> {
+  const keys = agentKeysOf(who.id, who.agent);
+  if (who.typed === true || keys.length === 0)
+    throw new ApiError(
+      "forbidden",
+      "Only an agent can ask for permission to run a command",
+    );
+  const parsed = PermissionAskInputSchema.safeParse(raw);
+  if (!parsed.success)
+    throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
+  const { request, question, to } = parsed.data;
+  if (to[0]?.key !== who.id)
+    throw new ApiError(
+      "forbidden",
+      "A permission request goes only to the agent's own user",
+    );
+  refuseUnsafe(request, question);
+  if (!(await isSoleReader(env, artifactId, who.id)))
+    throw new ApiError(
+      "forbidden",
+      "A permission request can only be posted on a private page nobody else can read",
+    );
+  const now = Date.now();
+  const reservation = newId();
+  const agentKey = keys[0] as string;
+  await reserveSlot(
+    env,
+    reservation,
+    who.id,
+    agentKey,
+    artifactId,
+    now,
+    PERMISSION_TTL_MS,
+  );
+  return {
+    extras: {
+      ask: {
+        question: question ?? "Run this command once?",
+        options: PERMISSION_OPTIONS.map((o) => ({ ...o })),
+        to: [{ kind: "user", key: who.id }],
+        confirm: "passkey",
+        permission: {
+          request,
+          reqHash: await permissionReqHash(request),
+          reservation,
+          agentKey,
+          createdAtMs: now,
+          expiresAtMs: now + PERMISSION_TTL_MS,
+        },
+      },
+    },
+    agents: [],
+    follow: [],
+    mentions: [],
+    mentionKind: "mention",
+    participants: [],
+  };
+}
+
+/**
  * Checks and resolves mentions and ask. 403 forbidden unless the
  * caller is the owner or an editor (mentions) or a signed-in person
  * (ask); 400 bad_request for a key that is no agent following the artifact
@@ -1062,6 +1181,8 @@ async function resolveExtras(
     );
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");
+  if (x.ask && who.kind === "user" && x.ask.kind === "permission")
+    return resolvePermission(env, artifactId, who, x.ask);
   const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
@@ -1678,6 +1799,21 @@ async function storedAsk(
 const isAsked = (ask: { to: StoredParty[] }, who: CommentWho): boolean =>
   who.kind === "user" && ask.to.some((p) => addresseeOf(p) === who.id);
 
+/** #1958: 409 expired, consumed or withdrawn for a permission ask that takes no answer (the DO decides again). */
+function permissionLive(
+  ask: { permission?: StoredPermission },
+  now = Date.now(),
+): void {
+  const p = ask.permission;
+  if (!p) return;
+  if (p.consumedAtMs !== undefined)
+    throw new ApiError("consumed", "This permission was already used");
+  if (p.withdrawnAtMs !== undefined)
+    throw new ApiError("withdrawn", "The agent withdrew this request");
+  if (now >= p.expiresAtMs)
+    throw new ApiError("expired", "This request has expired");
+}
+
 /**
  * #2263: a WebAuthn challenge for picking `optionId` on a confirm ask:
  * 403 passkey_required for anything but a browser session (a token or MCP
@@ -1709,12 +1845,22 @@ export async function answerChallenge(
     throw new ApiError("conflict", "This ask is closed");
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
+  permissionLive(ask);
   if (ask.answer?.optionId === optionId)
     throw new ApiError(
       "already_answered",
       "This ask is answered with that option",
     );
-  return pickChallenge(env, who.id, artifactId, commentId, optionId);
+  // #1958: a permission ask's challenge is bound to its request hash too.
+  return pickChallenge(
+    env,
+    who.id,
+    artifactId,
+    commentId,
+    optionId,
+    undefined,
+    ask.permission?.reqHash,
+  );
 }
 
 /**
@@ -1756,6 +1902,7 @@ export async function answerAsk(
         "passkey_required",
         "This pick needs your passkey, in the web app",
       );
+    permissionLive(ask);
     if (ask.answer?.optionId === optionId)
       throw new ApiError(
         "already_answered",
@@ -1770,6 +1917,8 @@ export async function answerAsk(
       commentId,
       optionId,
       pick.assertion,
+      undefined,
+      ask.permission?.reqHash,
     );
     verified = "passkey";
   }
@@ -1804,6 +1953,72 @@ export async function answerAsk(
       ),
     );
   return commentView(env, c, viewer);
+}
+
+/** The agent keys of a caller that may use a permission ask, or 403: a browser session or a bare credential is no agent. */
+function permissionCaller(who: CommentWho): string[] {
+  const keys = who.kind === "user" ? agentKeysOf(who.id, who.agent) : [];
+  if (who.kind !== "user" || who.typed === true || keys.length === 0)
+    throw new ApiError(
+      "forbidden",
+      "Only the agent that asked can use this permission",
+    );
+  return keys;
+}
+
+/**
+ * #1958: the agent that posted a permission ask uses its approval, once. The
+ * request comes again (never a hash); the server recomputes the hash and the
+ * DO sets `consumedAt` in one compare-and-set. 403 for another agent, 409
+ * consume_refused with details { reason } (not_approved, expired, mismatch,
+ * consumed, withdrawn), 400 unsafe_characters.
+ */
+export async function consumePermission(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+  request: PermissionRequest,
+): Promise<{ consumed: true }> {
+  const callerKeys = permissionCaller(who);
+  refuseUnsafe(request);
+  const reqHash = await permissionReqHash(request);
+  let out: { reservation: string };
+  try {
+    out = await call(() =>
+      stub(env, artifactId).commentsConsume({
+        threadId,
+        commentId,
+        callerKeys,
+        reqHash,
+      }),
+    );
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "consume_refused")
+      throw new ApiError("consume_refused", "This permission cannot be used", {
+        reason: e.message,
+      });
+    throw e;
+  }
+  await releaseSlot(env, out.reservation);
+  return { consumed: true };
+}
+
+/** #1958: the posting agent takes back a permission ask not yet used. 403 for another agent, 409 consumed. */
+export async function withdrawPermission(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+): Promise<{ withdrawn: true }> {
+  const callerKeys = permissionCaller(who);
+  const out = await call(() =>
+    stub(env, artifactId).commentsWithdraw({ threadId, commentId, callerKeys }),
+  );
+  await releaseSlot(env, out.reservation);
+  return { withdrawn: true };
 }
 
 /**

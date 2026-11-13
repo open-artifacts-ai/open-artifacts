@@ -250,6 +250,17 @@ export const R = {
    */
   commentAnswerChallenge: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer/challenge`,
+  /**
+   * POST ConsumeBody (the permission request again, never a hash) -> 200
+   * { consumed: true } (#1958). The agent that posted a permission ask uses
+   * its passkey-approved "run" exactly once. 409 with `reason` (not_approved,
+   * expired, mismatch, consumed, withdrawn); 403 for another agent.
+   */
+  commentConsume: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/consume`,
+  /** POST {} -> 200 { withdrawn: true } (#1958): the posting agent takes back a pending permission ask. */
+  commentWithdraw: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/withdraw`,
   /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */
   artifactAgents: (id: string) => `${A}/${seg(id)}/agents`,
   /** GET Upgrade: websocket; frames are DataChange */

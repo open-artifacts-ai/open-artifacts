@@ -3,6 +3,7 @@ import {
   ANON_ID_HEADER,
   AnswerBodySchema,
   COMMENT_KEY_RE,
+  ConsumeBodySchema,
   isId,
   NewThreadBodySchema,
   ReplyBodySchema,
@@ -37,6 +38,7 @@ import {
   answerAsk,
   answerChallenge,
   artifactAgents,
+  consumePermission,
   type CommentViewer,
   type CommentWho,
   deleteComment,
@@ -44,6 +46,7 @@ import {
   listComments,
   setStatus,
   setThreadAgent,
+  withdrawPermission,
 } from "../services/comments.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
@@ -62,6 +65,8 @@ const REPLIES = `${THREAD}/replies`;
 const COMMENT = `${THREAD}/comments/:commentId`;
 const ANSWER = `${COMMENT}/answer`;
 const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
+const CONSUME = `${COMMENT}/consume`;
+const WITHDRAW = `${COMMENT}/withdraw`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -415,6 +420,32 @@ export function mountComments(app: AppType): void {
         raw.data.optionId,
         interactiveSession(c),
       ),
+    );
+  });
+
+  // #1958: the agent that asked uses its approval once, or takes the ask back.
+  // The service refuses anything but that agent.
+  app.post(CONSUME, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const raw = ConsumeBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    const { who } = await identity(c, id, false, modOf(cw, level, artifact));
+    if (!who) throw new ApiError("forbidden", "Only the agent that asked");
+    return c.json(
+      await consumePermission(c.env, id, threadId, commentId, who, raw.data),
+    );
+  });
+
+  app.post(WITHDRAW, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const { who } = await identity(c, id, false, modOf(cw, level, artifact));
+    if (!who) throw new ApiError("forbidden", "Only the agent that asked");
+    return c.json(
+      await withdrawPermission(c.env, id, threadId, commentId, who),
     );
   });
 

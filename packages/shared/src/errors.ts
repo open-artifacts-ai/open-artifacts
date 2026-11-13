@@ -70,6 +70,12 @@ export const ERROR_CODES = [
   "passkey_failed",
   "challenge_expired",
   "passkey_required",
+  // Permission asks (#1958).
+  "unsafe_characters",
+  "expired",
+  "consumed",
+  "withdrawn",
+  "consume_refused",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -197,6 +203,16 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   challenge_expired: 410,
   /** #2263: a passkey assertion is required (always so through MCP or an API token). */
   passkey_required: 403,
+  /** #1958: a permission request field holds a control, bidi, zero-width or other invisible character. */
+  unsafe_characters: 400,
+  /** #1958: the permission ask is past its 10 minutes; it can no longer be answered or used. */
+  expired: 409,
+  /** #1958: the permission was already used; its answer can no longer change. */
+  consumed: 409,
+  /** #1958: the agent withdrew the permission ask. */
+  withdrawn: 409,
+  /** #1958: POST R.commentConsume refused; details { reason: "not_approved" | "expired" | "mismatch" | "consumed" | "withdrawn" }. */
+  consume_refused: 409,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */

@@ -253,6 +253,13 @@
       "when": 1794484047768,
       "tag": "0035_passkeys_pick_assertions_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1794541692182,
+      "tag": "0036_permission_asks",
+      "breakpoints": true
     }
   ]
 }
