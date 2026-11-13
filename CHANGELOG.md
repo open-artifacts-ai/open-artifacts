@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.175.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.174.0...v0.175.0) (2026-11-13)
+
+
+### Features
+
+* setup installs and connects the bus as one step ([#2437](https://github.com/open-artifacts-ai/open-artifacts/issues/2437)) ([#2439](https://github.com/open-artifacts-ai/open-artifacts/issues/2439)) ([919c4d9](https://github.com/open-artifacts-ai/open-artifacts/commit/919c4d972289948a340cee9efbffb1ee34be3900))
+
+
+### Bug Fixes
+
+* **bus:** the event log fixes its mode only when it's wrong ([#2304](https://github.com/open-artifacts-ai/open-artifacts/issues/2304)) ([#2431](https://github.com/open-artifacts-ai/open-artifacts/issues/2431)) ([923e33f](https://github.com/open-artifacts-ai/open-artifacts/commit/923e33fed7296e367d2deb83822c0c964514e6db))
+* **bus:** the Linux lock check counts only real lock types ([#2307](https://github.com/open-artifacts-ai/open-artifacts/issues/2307)) ([#2432](https://github.com/open-artifacts-ai/open-artifacts/issues/2432)) ([8e96cf2](https://github.com/open-artifacts-ai/open-artifacts/commit/8e96cf2a234177d29a78746b9ee9f5ea4814ac23))
+* **share:** the storage permission is the viewer's own data ([#2441](https://github.com/open-artifacts-ai/open-artifacts/issues/2441)) ([#2442](https://github.com/open-artifacts-ai/open-artifacts/issues/2442)) ([06d37e7](https://github.com/open-artifacts-ai/open-artifacts/commit/06d37e71bff8eed03aa7d309019308101c9e3c0d))
+
 ## [0.174.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.173.0...v0.174.0) (2026-11-13)
 
 
