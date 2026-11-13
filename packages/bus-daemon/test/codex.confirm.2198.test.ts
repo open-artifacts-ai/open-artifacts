@@ -121,10 +121,13 @@ describe("a taken Codex record and the hub's confirmation (#2198)", () => {
     // Even an `acked` that echoes the ack is ignored without the cap.
     h.toDaemon({ id: acks()[0]?.id, type: "acked", msg_id: ID });
     await helloOk([]);
-    expect(record().confirmed).toBeUndefined();
     const sent = acks().length;
     await reconnect();
     await helloOk([]);
     expect(acks()).toHaveLength(sent);
+    // The record file is written coalesced (250 ms): stopping the daemon
+    // flushes it, so a wrongly confirmed record cannot still be pending (#2332).
+    await stopAll();
+    expect(record().confirmed).toBeUndefined();
   });
 });
