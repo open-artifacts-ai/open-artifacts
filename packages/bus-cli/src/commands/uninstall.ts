@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { wiredTo } from "../bus-cmd.ts";
 import {
   askDaemon,
   type Ctx,
@@ -31,24 +32,9 @@ const originOf = (hub: string) => {
   }
 };
 
-/** Transcript states 9 and 10. Exit 0. */
-export async function uninstall(
-  opts: { purge: boolean },
-  ctx: Ctx,
-): Promise<number> {
+/** Takes this bus out of the harness configs, the skill, the plugins, the habits and the shim. */
+async function unwire(ctx: Ctx): Promise<void> {
   const c = ctx.copy;
-  say(ctx, c.header(ctx.version), "");
-  // Read before anything is deleted: the closing lines name them.
-  const machine = readMachine(ctx.home);
-
-  const removed = await ctx.service.remove();
-  if (removed.skipped) say(ctx, c.serviceOtherHome(removed.skipped, true));
-  else if (removed.unit) say(ctx, c.serviceRemoved(removed.unit));
-  else if (removed.stopped) say(ctx, c.daemonStopped());
-  else if (removed.running === undefined) say(ctx, c.noService());
-  if (removed.running !== undefined)
-    say(ctx, c.daemonStillRunning(removed.running));
-
   const r = await uninstallAdapters({
     home: ctx.userHome,
     busHome: ctx.home,
@@ -152,6 +138,29 @@ export async function uninstall(
     )
       say(ctx, c.opencodeNotRunningUnload());
   }
+}
+
+/** Transcript states 9 and 10. Exit 0. */
+export async function uninstall(
+  opts: { purge: boolean },
+  ctx: Ctx,
+): Promise<number> {
+  const c = ctx.copy;
+  say(ctx, c.header(ctx.version), "");
+  // Read before anything is deleted: the closing lines name them.
+  const machine = readMachine(ctx.home);
+
+  const removed = await ctx.service.remove();
+  if (removed.skipped) say(ctx, c.serviceOtherHome(removed.skipped, true));
+  else if (removed.unit) say(ctx, c.serviceRemoved(removed.unit));
+  else if (removed.stopped) say(ctx, c.daemonStopped());
+  else if (removed.running === undefined) say(ctx, c.noService());
+  if (removed.running !== undefined)
+    say(ctx, c.daemonStillRunning(removed.running));
+
+  // A second bus set up with --alongside never wired a harness: leave the configs
+  // unless one points at this home, which is then the only bus (#1443).
+  if (wiredTo(ctx)) await unwire(ctx);
 
   if (!opts.purge) {
     say(ctx, "", c.kept(tilde(ctx, join(ctx.home, "machine.json"))));
