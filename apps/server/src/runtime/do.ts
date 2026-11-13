@@ -2184,6 +2184,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     rate: string;
     /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
     verified?: "passkey";
+    /** #2381: the caller's own switches ask for a passkey on this ask though it carries no `confirm` (an older ask, or a switch turned on later): a decider's pick needs one. */
+    needsPasskey?: boolean;
     /** #2381: the caller may edit the page (a decider must still). */
     canDecide: boolean;
     /** #2381: the caller is a guest-role member (marked on a weigh-in). */
@@ -2194,7 +2196,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       this.countComment(a.rate, false);
       const r = askRow(this.sql, a.threadId, a.commentId);
       if (!r) fail("not_found", "Not found");
-      const author = this.askAuthor(a.commentId);
+      const author = r.author;
       const decider = r.ask.decider ?? author;
       const isDecider = a.by.kind === "user" && a.by.ref === decider;
       const asked =
@@ -2221,7 +2223,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "You can no longer decide this: you cannot edit the page",
         );
       // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
-      if (r.ask.confirm === "passkey") {
+      if (r.ask.confirm === "passkey" || (isDecider && a.needsPasskey)) {
         if (a.verified !== "passkey")
           fail("passkey_required", "This pick needs your passkey");
         if (r.ask.answer?.optionId === a.optionId)
@@ -2231,7 +2233,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       const mine = [...(r.ask.history ?? [])]
         .reverse()
         .find((p) => p.by.ref === a.by.ref);
-      const unchanged = mine?.optionId === a.optionId;
+      const typedNow =
+        a.by.kind === "user" && a.by.typed === true && !a.by.agent;
+      // The decider's repeat is a no-op only when it would change neither the pick
+      // nor the decision (same option, same typed and verified): else both are written.
+      const unchanged = isDecider
+        ? mine?.optionId === a.optionId &&
+          r.ask.answer?.optionId === a.optionId &&
+          (r.ask.answer.by.kind === "user" &&
+            r.ask.answer.by.typed === true) === typedNow &&
+          (r.ask.answer.verified ?? null) === (a.verified ?? null)
+        : mine?.optionId === a.optionId;
       const now = this.iso();
       if (
         !unchanged &&
@@ -2239,7 +2251,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         pickCount(this.sql, a.commentId, a.by.ref) >= PICKS_PER_PERSON_MAX
       )
         fail("rate_limited", "Too many picks on this ask. Try again later.");
-      if (!unchanged)
+      if (!unchanged) {
+        // An answer from before deciders becomes the first pick on record.
+        if (r.legacy && r.ask.history?.[0])
+          addPick(this.sql, a.commentId, r.ask.history[0]);
         addPick(this.sql, a.commentId, {
           optionId: a.optionId,
           by: a.by,
@@ -2247,33 +2262,25 @@ export class ArtifactRuntime extends DurableObject<Env> {
           ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
           ...(a.guest ? { guest: true } : {}),
         });
-      if (isDecider)
-        setAnswer(this.sql, a.commentId, {
-          optionId: a.optionId,
-          by: a.by,
-          at: now,
-          ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
-        });
+        if (isDecider)
+          setAnswer(this.sql, a.commentId, {
+            optionId: a.optionId,
+            by: a.by,
+            at: now,
+            ...(a.verified === "passkey"
+              ? { verified: "passkey" as const }
+              : {}),
+          });
+      }
       if (!unchanged) touchThread(this.sql, a.threadId, now);
       return {
         comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
-        unchanged: unchanged && (!isDecider || !!r.ask.answer),
+        unchanged,
         decided: isDecider,
       };
     });
     this.broadcastComments();
     return out;
-  }
-
-  /** The user id of the ask comment's author (a person's own comment, or the member an agent acts for). */
-  private askAuthor(commentId: string): string {
-    const row = this.sql
-      .exec<{ author: string }>(
-        "select author from comments where id = ?",
-        commentId,
-      )
-      .toArray()[0];
-    return row ? (JSON.parse(row.author) as StoredActor).ref : "";
   }
 
   /**
@@ -2293,7 +2300,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       this.countComment(a.rate, false);
       const r = askRow(this.sql, a.threadId, a.commentId);
       if (!r) fail("not_found", "Not found");
-      if (a.by.kind !== "user" || a.by.ref !== this.askAuthor(a.commentId))
+      if (a.by.kind !== "user" || a.by.ref !== r.author)
         fail(
           "forbidden",
           "Only the person who asked can take the decision back",

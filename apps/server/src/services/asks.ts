@@ -68,6 +68,22 @@ export const indexAnswered = (
       .run(),
   );
 
+/** #2381: a weigh-in closes the ask for the person who weighed in, not for the others. */
+export const indexWeighed = (
+  env: Env,
+  artifactId: string,
+  commentId: string,
+  userId: string,
+) =>
+  guarded("weigh", artifactId, () =>
+    stmt(
+      env.DB,
+      "update artifact_asks set answered = 1, open = 0 where artifact_id = ? and comment_id = ? and addressee = ?",
+    )
+      .bind(artifactId, commentId, userId)
+      .run(),
+  );
+
 /** Resolving closes every ask of the thread; reopening reopens those not answered. */
 export const indexStatus = (
   env: Env,
@@ -154,9 +170,13 @@ export const reconcileAsks = (
     for (const t of threads)
       for (const c of t.comments) {
         if (!c.ask) continue;
-        const answered = c.ask.answer ? 1 : 0;
-        const open = t.status === "open" && !answered ? 1 : 0;
-        for (const who of addressees(c.ask.to))
+        for (const who of addressees(c.ask.to)) {
+          // The decision closes it for all; a weigh-in only for the one who made it (#2381).
+          const answered =
+            c.ask.answer || c.ask.history?.some((p) => p.by.ref === who)
+              ? 1
+              : 0;
+          const open = t.status === "open" && !answered ? 1 : 0;
           want.set(`${c.id}|${who}`, {
             thread_id: t.id,
             comment_id: c.id,
@@ -164,6 +184,7 @@ export const reconcileAsks = (
             open,
             answered,
           });
+        }
       }
     const have = new Map(
       results.map((r) => [`${r.comment_id}|${r.addressee}`, r]),

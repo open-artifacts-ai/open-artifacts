@@ -178,6 +178,7 @@ describe("asksForYou", () => {
       "a",
       undefined,
       { interactive: true },
+      { canDecide: true, guest: false },
     );
     expect(await countFor(reader, id)).toBeUndefined();
     expect(await rows(id)).toEqual([
@@ -199,6 +200,7 @@ describe("asksForYou", () => {
       "b",
       undefined,
       { interactive: true },
+      { canDecide: true, guest: false },
     );
     await setStatus(E, id, t.id, who(owner), view(owner), "resolved");
     await setStatus(E, id, t2.id, who(owner), view(owner), "resolved");
@@ -387,8 +389,9 @@ describe("a failing index write", () => {
       "a",
       undefined,
       { interactive: true },
+      { canDecide: true, guest: false },
     );
-    expect(c.ask?.answer?.optionId).toBe("a");
+    expect(c.ask?.picks?.[0]?.optionId).toBe("a");
     // Stale: still open in the index until it is repaired.
     expect(await countFor(reader, id)).toBe(1);
     await listComments(E, id, "all", view(owner));

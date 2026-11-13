@@ -388,8 +388,18 @@ const pickOf = (r: PickRow): StoredPick => ({
   ...(r.guest ? { guest: true } : {}),
 });
 /** An ask answered before #2381 has no pick rows: its answer is its one pick. */
-const withLegacy = (ask: StoredAsk, rows: StoredPick[]): StoredPick[] =>
-  rows.length || !ask.answer ? rows : [{ ...ask.answer }];
+const withLegacy = (
+  ask: StoredAsk,
+  rows: StoredPick[],
+  author: string,
+): StoredPick[] => {
+  if (rows.length || !ask.answer) return rows;
+  const pick = { ...ask.answer };
+  // Before deciders anyone asked could answer: only the asker's own user's
+  // answer is the decision now; another person's reads as their weigh-in.
+  if (ask.answer.by.ref !== (ask.decider ?? author)) delete ask.answer;
+  return [pick];
+};
 
 const askOf = (r: AskRow): StoredAsk => ({
   question: r.question,
@@ -442,7 +452,8 @@ function attachExtras(
       hist.set(r.comment_id, l);
     }
     for (const c of comments)
-      if (c.ask) c.ask.history = withLegacy(c.ask, hist.get(c.id) ?? []);
+      if (c.ask)
+        c.ask.history = withLegacy(c.ask, hist.get(c.id) ?? [], c.author.ref);
   }
   for (const r of sql.exec<TargetRow>(
     `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity
@@ -1071,11 +1082,11 @@ export function askRow(
   sql: SqlStorage,
   threadId: string,
   commentId: string,
-): { ask: StoredAsk; status: string } | null {
+): { ask: StoredAsk; status: string; author: string; legacy: boolean } | null {
   const r = sql
-    .exec<AskRow & { status: string }>(
-      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, t.status
-       from comment_asks a join comment_threads t on t.id = a.thread_id
+    .exec<AskRow & { status: string; author: string }>(
+      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, t.status, c.author
+       from comment_asks a join comment_threads t on t.id = a.thread_id join comments c on c.id = a.comment_id
        where a.comment_id = ? and a.thread_id = ?`,
       commentId,
       threadId,
@@ -1090,8 +1101,14 @@ export function askRow(
     )
     .toArray()
     .map(pickOf);
-  ask.history = withLegacy(ask, rows);
-  return { ask, status: r.status };
+  const author = (JSON.parse(r.author) as StoredActor).ref;
+  ask.history = withLegacy(ask, rows, author);
+  return {
+    ask,
+    status: r.status,
+    author,
+    legacy: rows.length === 0 && ask.history.length > 0,
+  };
 }
 
 /** One comment with its extras, or null. */

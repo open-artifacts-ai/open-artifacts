@@ -5,6 +5,7 @@ import {
   ASK_TO_MAX,
   type AskInput,
   AskInputSchema,
+  type AskOption,
   anchorInputSchema,
   BusAddressSchema,
   type Comment,
@@ -62,6 +63,7 @@ import {
   indexAsk,
   indexDeleted,
   indexStatus,
+  indexWeighed,
   reconcileAsks,
 } from "./asks.js";
 import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
@@ -1214,10 +1216,26 @@ async function resolveExtras(
           `An ask names at most ${ASK_TO_MAX} people, the decider and you included`,
         );
     }
+    // A risky ask goes to the asker's own user only: nobody else's pick or
+    // passkey settings can stand in for theirs.
+    if (
+      askIn.options.some((o) => o.action) &&
+      addressees(to).some((id) => id !== askerId)
+    )
+      throw new ApiError(
+        "bad_request",
+        "An ask that names an action goes to you only: drop the other people",
+      );
     // #2263: the server decides, from the actions the options name and the
-    // addressees' switches. Whatever a client sent as `confirm` was stripped by
-    // the schema; an edit never touches the stored mark.
-    const confirm = await confirmFor(env, addressees(to), askIn.options);
+    // switches of the people it reaches and of its decider (#2381: the decider
+    // picks, so their settings count even when they are not in `to`). Whatever
+    // a client sent as `confirm` was stripped by the schema; an edit never
+    // touches the stored mark.
+    const confirm = await confirmFor(
+      env,
+      [...new Set([...addressees(to), decider ?? askerId])].filter(Boolean),
+      askIn.options,
+    );
     ask = {
       question: askIn.question,
       options: askIn.options,
@@ -1784,6 +1802,21 @@ const isAsked = (
   (ask.to.some((p) => addresseeOf(p) === who.id) ||
     (ask.decider ?? author) === who.id);
 
+/**
+ * #2381: the pick needs this person's passkey though the ask carries no
+ * `confirm`: they are its decider and their switches cover it now (an ask from
+ * before deciders, or a switch turned on after the ask was posted).
+ */
+const needsOwnPasskey = async (
+  env: Env,
+  ask: { decider?: string; options: { action?: AskOption["action"] }[] },
+  who: CommentWho,
+  author: string,
+): Promise<boolean> =>
+  who.kind === "user" &&
+  deciderOf(ask, author) === who.id &&
+  (await confirmFor(env, [who.id], ask.options)) === "passkey";
+
 /** #2381: the ask's decider: the person the asker named, else the asker's own user. */
 const deciderOf = (ask: { decider?: string }, author: string): string =>
   ask.decider ?? author;
@@ -1818,7 +1851,10 @@ export async function answerChallenge(
     );
   if (!isAsked(ask, who, author))
     throw new ApiError("forbidden", "Only the people asked can answer");
-  if (ask.confirm !== "passkey")
+  if (
+    ask.confirm !== "passkey" &&
+    !(await needsOwnPasskey(env, ask, who, author))
+  )
     throw new ApiError("bad_request", "This ask does not need a passkey");
   if (status === "resolved")
     throw new ApiError("conflict", "This ask is closed");
@@ -1856,10 +1892,7 @@ export async function answerAsk(
   after: Announce | undefined,
   pick: PickAuth,
   /** #2381: the caller may edit the page (the decider must), and is a guest-role member. */
-  caps: { canDecide: boolean; guest: boolean } = {
-    canDecide: true,
-    guest: false,
-  },
+  caps: { canDecide: boolean; guest: boolean },
 ): Promise<Comment> {
   const { ask, status, author } = await storedAsk(
     env,
@@ -1868,10 +1901,12 @@ export async function answerAsk(
     commentId,
   );
   let verified: "passkey" | undefined;
+  const needsPasskey =
+    ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));
   // Strangers, closed asks and unknown options fall through to the DO's own
   // refusals (forbidden, conflict, bad_request) without touching a challenge.
   if (
-    ask.confirm === "passkey" &&
+    needsPasskey &&
     isAsked(ask, who, author) &&
     who.kind === "user" &&
     deciderOf(ask, author) === who.id &&
@@ -1914,10 +1949,13 @@ export async function answerAsk(
       ...(verified ? { verified } : {}),
       canDecide: caps.canDecide,
       guest: caps.guest,
+      ...(needsPasskey ? { needsPasskey: true } : {}),
     }),
   );
   // Only the decision is "answered"; a weigh-in is input (#2381).
   if (decided) await indexAnswered(env, artifactId, commentId);
+  else if (who.kind === "user")
+    await indexWeighed(env, artifactId, commentId, who.id);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -1954,8 +1992,12 @@ export async function takeBackAsk(
   who: CommentWho,
   viewer: CommentViewer,
 ): Promise<Comment> {
-  if (who.kind !== "user")
-    throw new ApiError("forbidden", "Only the person who asked can do this");
+  // The person's own browser session: never an agent or a token.
+  if (who.kind !== "user" || who.agent || who.typed !== true)
+    throw new ApiError(
+      "forbidden",
+      "Only the person who asked can do this, in the web app",
+    );
   const c = await call(() =>
     stub(env, artifactId).commentsTakeBack({
       threadId,

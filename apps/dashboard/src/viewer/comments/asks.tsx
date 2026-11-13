@@ -528,9 +528,10 @@ function OptionViews({
           <span className="font-medium text-foreground">{views.length}</span>
         </span>
       ) : (
-        views.map((p) => (
+        views.map((p, i) => (
           <span
-            key={`${p.by.id ?? p.by.name}`}
+            // biome-ignore lint/suspicious/noArrayIndexKey: two guests can share a name and have no id
+            key={`${p.by.id ?? p.by.name}-${i}`}
             data-view-by={p.by.id ?? p.by.name}
             className="inline-flex items-center gap-1"
           >
@@ -628,9 +629,12 @@ export function AskBlock({
         : `${decider.name} decides`;
   // Weighing in: everyone's latest view but the decider's own pick (that is the decision).
   const views = (ask.picks ?? []).filter((p) => p.by.id !== decider?.id);
-  const people = ask.to.filter(
-    (p) => p.kind !== "agent" && p.id !== decider?.id,
-  ).length;
+  // Someone asked through their agent, or a pick kept from someone no longer
+  // asked, still counts: never "5 of 3 weighed in".
+  const people = Math.max(
+    ask.to.filter((p) => p.kind !== "agent" && p.id !== decider?.id).length,
+    views.length,
+  );
   const bars = people >= 4;
   const recIdx = ask.options.findIndex(
     (o) => o.id === ask.recommended?.optionId,

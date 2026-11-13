@@ -92,19 +92,21 @@ async function ask(
   to: U,
   options: object[] = OPTS,
   extra: object = {},
+  /** Who posts it: by default the person asked (a risky ask goes to its asker only). */
+  from: U = to,
 ): Promise<K & { comment: Comment }> {
-  const artifactId = await artifactFor(to);
+  const artifactId = await artifactFor(to, from);
   const t = (await addThread(
     E,
     { id: artifactId, format: "html", currentVersion: 1 } as never,
     // #2381: a risky ask is decided by its asker's own user, so the person asked asks it.
     {
       kind: "user",
-      id: to.userId,
+      id: from.userId,
       agent: null,
       typed: true,
     } as never,
-    { userId: to.userId, short: null, moderator: true },
+    { userId: from.userId, short: null, moderator: true },
     {
       anchor: NOTE as never,
       body: "Merge?",
@@ -595,5 +597,60 @@ describe("POST answer on a confirm ask", () => {
     expect((await answer(k, alice.cookie, { optionId: "nope" })).status).toBe(
       400,
     );
+  });
+});
+
+describe("the decider's own passkey settings (#2381)", () => {
+  const plain = [
+    { id: "a", label: "A" },
+    { id: "b", label: "B" },
+  ];
+  const on = {
+    merge: true,
+    deploy: true,
+    delete: true,
+    share: true,
+    public: true,
+    command: true,
+  };
+
+  it("an ask with an action goes to its asker only: asking someone else is refused", async () => {
+    const a = await mkUser("pk-dec-a");
+    await addPasskey(app, a);
+    await expect(ask(bob, OPTS, {}, a)).rejects.toMatchObject({
+      code: "bad_request",
+    });
+  });
+
+  it("every pick: the asker's passkey is asked for though only someone else is addressed", async () => {
+    const a = await mkUser("pk-dec-b");
+    await addPasskey(app, a);
+    expect((await settings(a, { actions: on, everyPick: true })).status).toBe(
+      200,
+    );
+    const k = await ask(bob, plain, {}, a);
+    expect(k.comment.ask?.confirm).toBe("passkey");
+    // The decider (the asker) cannot pick without it; the addressee cannot weigh in on it.
+    const r = await answer(k, a.cookie, { optionId: "a" });
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("passkey_required");
+    expect((await answer(k, bob.cookie, { optionId: "a" })).status).toBe(403);
+  });
+
+  it("a switch turned on after the ask, or an older ask: the decider's pick still needs the passkey", async () => {
+    const a = await mkUser("pk-dec-c");
+    const { a: key } = await addPasskey(app, a);
+    const k = await ask(bob, plain, {}, a);
+    expect(k.comment.ask?.confirm).toBeUndefined();
+    expect((await settings(a, { actions: on, everyPick: true })).status).toBe(
+      200,
+    );
+    const r = await answer(k, a.cookie, { optionId: "a" });
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("passkey_required");
+    expect(await read(k, a.cookie).then((c) => c.ask?.answer)).toBeUndefined();
+    // The addressee's own weigh-in is still plain input.
+    expect((await answer(k, bob.cookie, { optionId: "b" })).status).toBe(200);
+    expect(key).toBeDefined();
   });
 });
