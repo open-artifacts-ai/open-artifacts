@@ -51,6 +51,8 @@ export interface Bridge {
   readonly raw: boolean;
   /** This load's nonce from the frame URL (`#oa=`), sent on every message. */
   readonly nonce: string | undefined;
+  /** #2408: the shell's own protocol, or 0 until it says (an older shell never does). */
+  shellProtocol(): number;
   call<M extends RuntimeMethod>(
     method: M,
     params: RuntimeParams<M>,
@@ -87,6 +89,7 @@ export function createBridge(loadSchemas: () => Promise<Schemas>): Bridge {
   const nonce = shellNonce();
   /** Set by the first shell message; a late shell is still accepted. */
   let shell = false;
+  let shellProto = 0;
   /** The first data_editors_only refusal has been logged. */
   let editorsWarned = false;
   const noShell = () => new RuntimeError("no_shell", RAW_VIEW_MESSAGE);
@@ -113,6 +116,7 @@ export function createBridge(loadSchemas: () => Promise<Schemas>): Bridge {
     const m = s?.parseShellMessage(data);
     if (!s || !m) return;
     shell = true;
+    if (m.type === "shell.protocol") shellProto = m.protocol;
     if (m.type !== "result") {
       for (const l of [...listeners]) {
         try {
@@ -154,6 +158,7 @@ export function createBridge(loadSchemas: () => Promise<Schemas>): Bridge {
   return {
     raw,
     nonce,
+    shellProtocol: () => shellProto,
     call(method, params) {
       if (raw) return Promise.reject(noShell());
       const id = newCallId();

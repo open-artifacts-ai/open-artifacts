@@ -1,4 +1,10 @@
-import { ANON_ID_HEADER, type ArtifactSummary, LIMITS, R } from "@oa/shared";
+import {
+  ANON_ID_HEADER,
+  type ArtifactSummary,
+  LIMITS,
+  PROTOCOL_VERSION,
+  R,
+} from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ANON_ID_KEY,
@@ -155,6 +161,14 @@ describe("hello / welcome", () => {
       }),
       "*",
     );
+  });
+
+  it("announces its own protocol after welcome (#2408)", () => {
+    mk();
+    send({ oa: 1, type: "hello", protocol: 1, kind: "html" });
+    const types = post.mock.calls.map((c) => c[0].type);
+    expect(types.slice(0, 2)).toEqual(["welcome", "shell.protocol"]);
+    expect(post.mock.calls[1]?.[0].protocol).toBe(PROTOCOL_VERSION);
   });
 
   it("viewer is null when capabilities.viewer is false", () => {
@@ -388,6 +402,40 @@ describe("comments (#682)", () => {
     ]);
   });
 
+  it("a newer runtime's extra top-level field no longer drops the message (#2408)", () => {
+    const o = withCb();
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: 10, y: 20 },
+      someFutureField: { a: 1 },
+    });
+    expect(o.onCommentPin).toHaveBeenCalledWith(
+      { x: 0.5, y: 0.25 },
+      {
+        x: 10,
+        y: 20,
+      },
+    );
+    send({
+      oa: 1,
+      type: "comment.positions",
+      positions: [{ id: "t1", state: "exact", top: 5 }],
+      someFutureField: 1,
+    });
+    expect(o.onCommentPositions).toHaveBeenCalledTimes(1);
+    // Still strict where it counts: a bad value, or a key inside a nested object.
+    send({ oa: 1, type: "comment.pin", pin: { x: 9, y: 0 }, future: 1 });
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0, y: 0, text: "hi" },
+      future: 1,
+    });
+    expect(o.onCommentPin).toHaveBeenCalledTimes(1);
+  });
+
   it("forwards a valid comment.pin and drops one that fails the schema", () => {
     const o = withCb();
     send({ oa: 1, type: "comment.pin", pin: { x: 0.5, y: 0.25, page: 2 } });
@@ -431,7 +479,6 @@ describe("comments (#682)", () => {
   it("drops comment messages that fail the shared schemas, or lack the nonce", () => {
     const o = withCb();
     send({ oa: 1, type: "comment.open", id: "not valid!" });
-    send({ oa: 1, type: "comment.open", id: "t1", extra: "<b>" });
     send({ oa: 1, type: "comment.select", anchor: { ...sel, body: "text" } });
     send({ oa: 1, type: "comment.select", anchor: { ...sel, exact: "" } });
     send({ oa: 1, type: "comment.open", id: "t1" }, { raw: true });
