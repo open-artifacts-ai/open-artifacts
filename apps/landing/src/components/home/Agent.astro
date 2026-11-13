@@ -1,8 +1,13 @@
 ---
-// The small agent badge used across the demos. Decorative.
+// The small agent badge used across the demos (#2471): the product's agent
+// tile, an animal on its presence colour. Decorative.
+import { type Animal, agentBadge } from "../../lib/agents";
+
 interface Props {
+  animal: Animal;
+  color: number;
   class?: string;
 }
-const { class: cls = "" } = Astro.props;
+const { animal, color, class: cls = "" } = Astro.props;
 ---
-<span class:list={["ag", cls]}><svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><path d="M2 2l3 2h4l3-2v6a5 5 0 0 1-10 0z"></path></svg></span>
+<Fragment set:html={agentBadge(animal, color, cls)} />
