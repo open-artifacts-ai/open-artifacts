@@ -1,7 +1,7 @@
 ---
 title: Privacy Policy
 description: What data hosted Open Artifacts and this website collect, why, and how long we keep it.
-updated: "October 28, 2026"
+updated: "November 13, 2026"
 ---
 
 This policy explains what **Leo Urbina Consulting LLC** ("we", "us") collects when you use:
@@ -53,6 +53,10 @@ We don't keep your IP address or full browser details for this. For personal acc
 - An **audit log** of changes to the instance: who did what (for example, changed a role or a space), recorded with account ids.
 - **Service logs** for running and fixing the Service. They contain ids and event types. We remove email addresses, links and tokens from error messages, and we don't log IP addresses.
 - To limit abuse, we count login code requests per email and per network. These counters use one-way hashes, and they're deleted after a day.
+
+### Billing
+
+Payments are processed by Stripe. You type your card, billing email and address into Stripe's own checkout, so Stripe holds them and we never see your card. On our side we keep your plan and its dates, the ids Stripe gives us for your account and subscription, which accounts counted as creators each month (as internal ids, not names or emails), and whether each invoice was paid.
 
 ### Cookies and browser storage
 
@@ -125,6 +129,7 @@ The providers that process data for us:
 | Provider | What for |
 |---|---|
 | Cloudflare | Hosting and storage; service logs; sending email; Turnstile, a bot check on login code requests, which receives your IP address; and Browser Run, which renders artifacts in a remote browser to make thumbnails |
+| Stripe | Payments: it receives your card details, billing email and address, and creates your invoices |
 | Google | Login, and the Google Workspace directory if your organization connects it |
 | GitHub | Checking for new Open Artifacts releases; no personal data is sent |
 
@@ -145,6 +150,7 @@ Fonts are served by us, not by a third party.
 | Service logs | The hosted services that route requests and handle login keep no request logs. Each instance keeps only the app's own log lines, with no record per request, for at most 7 days. |
 | Database backups | Cloudflare keeps a 30-day restore window for the database, so deleted database records can be restored for up to 30 days. Files and live data aren't backed up. |
 | The owner's email after an instance is deleted | 30 days |
+| Billing records | The plan and invoice records above are kept for as long as tax and accounting law requires, also after an instance is deleted. Stripe keeps its own records under its privacy policy. |
 | An instance's former address | Kept, reserved, so nobody else can reuse it |
 
 ## Removing people, and deleting an instance
