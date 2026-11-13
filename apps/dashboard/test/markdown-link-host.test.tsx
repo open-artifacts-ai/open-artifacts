@@ -35,6 +35,21 @@ describe("hostAfterLabel (#2348)", () => {
       null,
     );
   });
+  it("hides the host only for the link's exact host as a whole token", () => {
+    expect(hostAfterLabel("https://x.co/a", "box.com")).toBe("x.co");
+    expect(hostAfterLabel("https://x.co/a", "x.co.evil.com")).toBe("x.co");
+    expect(hostAfterLabel("https://x.co/a", "evilx.co")).toBe("x.co");
+    expect(hostAfterLabel("https://x.co/a", "sub.x.co")).toBe("x.co");
+    expect(hostAfterLabel("https://x.co/a", "x.com")).toBe("x.co");
+    expect(hostAfterLabel("https://x.co/a", "x.co-evil.com")).toBe("x.co");
+    expect(hostAfterLabel("https://x.co/a", "see x.co")).toBe(null);
+    expect(hostAfterLabel("https://x.co/a", "(X.CO)")).toBe(null);
+    expect(hostAfterLabel("https://x.co/a", "x.co, docs")).toBe(null);
+    expect(hostAfterLabel("https://x.co/a", "www.x.co docs")).toBe(null);
+    expect(hostAfterLabel("https://www.x.co/a", "x.co")).toBe(null);
+    // Full-width characters fold to the same domain.
+    expect(hostAfterLabel("https://x.co/a", "ｘ．ｃｏ")).toBe(null);
+  });
   it("is null for an unparseable href", () => {
     expect(hostAfterLabel("nope", "x")).toBe(null);
   });
