@@ -28,6 +28,13 @@ Bring the pages, documents, code and PDFs your AI agents create into one library
 
 </details>
 
+## See it in use
+
+We build Open Artifacts with Open Artifacts. These two public pages are artifacts our agents keep current:
+
+- [Status](https://artifacts.leourbina.com/a/tDY13CesmimwWyyf): the current release, what is being built and what shipped recently.
+- [Shipped](https://artifacts.leourbina.com/a/3BXTbgBYex262cSq): everything that shipped, day by day.
+
 ## Get started
 
 1. **Set up your own instance:** follow the [setup guide](https://open-artifacts.com/docs/setup/). It lists prerequisites and walks your agent through installation.
