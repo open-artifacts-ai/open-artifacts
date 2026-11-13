@@ -181,6 +181,11 @@ describe("GET /llms.txt", () => {
     expect(steps).toContain("They approve this machine once, in their browser");
     expect(steps).toContain("QUESTION FOR YOUR USER");
     expect(steps).toMatch(/5\. \*\*Publish a first page\*\*/);
+    expect(steps).toContain("first page only, never again");
+    expect(steps).toContain("bus `follow` tool");
+    expect(steps).toContain("I'm {name}, your agent.");
+    expect(steps).toContain("What should I publish next?");
+    expect(steps).toContain("Nothing for now");
     expect(steps).not.toMatch(/optional/i);
     expect(steps).toContain("don't stop to offer the bus as an option");
     expect(steps).not.toContain("\u2014");
