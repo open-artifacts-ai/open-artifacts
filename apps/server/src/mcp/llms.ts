@@ -18,6 +18,7 @@ import {
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
+import { busOn } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { SKILL_PATH, skillEnabled } from "./skill.js";
 import { skillOrigin } from "./skill-common.js";
@@ -40,7 +41,7 @@ export const CLAUDE_PLUGIN = {
 /** The MCP server name every client snippet registers. */
 const SERVER_NAME = "open-artifacts";
 
-type LlmsEnv = Pick<Env, "APP_HOST" | "SKILL_MD">;
+type LlmsEnv = Pick<Env, "APP_HOST" | "SKILL_MD"> & Parameters<typeof busOn>[0];
 
 /** The guide's inputs for one instance. */
 export const llmsInputs = (host: string) => {
@@ -99,13 +100,25 @@ Then run \`claude plugin configure ${name}\` and check \`${option}\` shows ${ori
 `;
 };
 
+/** The bus step: only when the bus is on for this instance (busOn). */
+const busBlock = (origin: string) => `## Agent bus
+
+The bus lets any AI agent on the person's machines message each other, and get a notice when someone comments or asks on their pages. Offer it to the person. If they say yes, run:
+\`\`\`bash
+npx @open-artifacts/bus install --instance ${origin}
+\`\`\`
+The person approves this machine once, in their browser. More: https://open-artifacts.com/docs/agent-bus/
+
+`;
+
 /** The guide for `host`. `plugin` and `skill` default to the live settings. */
 export function renderLlms(
   host: string,
-  opts: { plugin?: boolean; skill?: boolean } = {},
+  opts: { plugin?: boolean; skill?: boolean; bus?: boolean } = {},
 ): string {
   const plugin = opts.plugin ?? CLAUDE_PLUGIN_ENABLED;
   const skill = opts.skill ?? true;
+  const bus = opts.bus ?? false;
   const { origin, mcpUrl, tokenFile, clients, tokens } = llmsInputs(host);
   const verifySteps = [
     "List the server's tools. You should see tools such as `publish_artifact` and `list_artifacts`. If the list is empty or you get 401, see Troubleshoot.",
@@ -149,7 +162,7 @@ ${verifySteps.map((s, i) => `${i + 1}. ${s}`).join("\n")}
 
 Tell the person: "${PRODUCT_NAME} is connected." Include the address ${origin}.
 
-## Troubleshoot
+${bus ? busBlock(origin) : ""}## Troubleshoot
 
 - The browser sign-in never opened: start it from the client (for example \`claude mcp login ${SERVER_NAME}\` or \`codex mcp login ${SERVER_NAME}\`), then ask the person to approve it in the browser.
 - 401 or "unauthorized" after it worked before: the sign-in expired or was revoked. Sign in again the same way. Don't switch to a token unless the person asks.
@@ -171,10 +184,11 @@ const sha8 = async (s: string): Promise<string> => {
 /** The body and its ETag (version plus the body's hash), memoized per isolate. */
 export function llmsDoc(env: LlmsEnv): Promise<{ body: string; etag: string }> {
   const skill = skillEnabled(env);
-  const key = `${env.APP_HOST}|${skill ? "s" : ""}`;
+  const bus = busOn(env);
+  const key = `${env.APP_HOST}|${skill ? "s" : ""}${bus ? "b" : ""}`;
   let p = memo.get(key);
   if (!p) {
-    const body = renderLlms(env.APP_HOST, { skill });
+    const body = renderLlms(env.APP_HOST, { skill, bus });
     p = sha8(body).then((h) => ({ body, etag: `"${VERSION}-llms-${h}"` }));
     // A failure is not memoized: the next request tries again.
     p = p.catch((e: unknown) => {
