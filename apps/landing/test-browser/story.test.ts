@@ -20,7 +20,7 @@ afterAll(async () => {
 });
 
 describe("wide story", () => {
-  it("the rail's Decide button lands on the Decide chapter with the ask open", async () => {
+  it("the rail's Ask button lands on the Decide chapter with the ask open", async () => {
     const page = await browser.newPage({
       viewport: { width: 1280, height: 800 },
     });
@@ -31,7 +31,7 @@ describe("wide story", () => {
     await page.waitForFunction(
       () =>
         document.querySelector(".chs .ch.cur h2")?.textContent ===
-        "Decide with one click.",
+        "Your agent asks. You decide.",
       undefined,
       { timeout: 8000 },
     );

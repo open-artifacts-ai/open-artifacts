@@ -3393,6 +3393,199 @@ centred */
       display: none;
     }
   }
+
+  /* asks: who decides, and the record of decisions */
+  .whol {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--oa-sunken);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 14px;
+    color: var(--oa-text-2);
+  }
+  .whol .wl {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .whol .wl b {
+    font-weight: 600;
+    color: var(--oa-text);
+  }
+  .pp.sm {
+    width: 22px;
+    height: 22px;
+    font-size: 10.5px;
+  }
+  .pp.sm + .pp.sm {
+    margin-left: -10px;
+    box-shadow: 0 0 0 2px var(--oa-sunken);
+  }
+  .vt {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    color: var(--oa-text-muted);
+    padding-left: 4px;
+  }
+  .tmf {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 14px;
+    color: var(--oa-text);
+    min-height: 36px;
+  }
+  .tmf .st {
+    font-weight: 500;
+  }
+  .tmf .abtn {
+    min-height: 36px;
+  }
+  .dtabs {
+    display: flex;
+    gap: 16px;
+    border-bottom: 1px solid var(--oa-divider);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--oa-text-muted);
+  }
+  .dtab {
+    padding: 2px 0 8px;
+    margin-bottom: -1px;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .dtab small {
+    font: 500 11px var(--oa-font-mono);
+    margin-left: 3px;
+  }
+  .dtab.on {
+    color: var(--oa-text);
+    border-bottom-color: var(--oa-accent);
+  }
+  .drows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .drows li {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--oa-divider);
+  }
+  .drows li:last-child {
+    border-bottom: 0;
+  }
+  .dq {
+    font-size: 14px;
+    color: var(--oa-text-muted);
+    line-height: 1.35;
+  }
+  .da {
+    font-weight: 600;
+    font-size: 15.5px;
+    margin: 2px 0 3px;
+    line-height: 1.3;
+  }
+  .dm {
+    font-size: 13.5px;
+    color: var(--oa-text-muted);
+    line-height: 1.4;
+  }
+  .opill {
+    display: inline-block;
+    font: 500 12px var(--oa-font-sans);
+    border: 1px solid var(--oa-border);
+    border-radius: 99px;
+    padding: 0 6px;
+    color: var(--oa-text-2);
+  }
+  .dpane {
+    background: var(--oa-surface);
+    border: 1px solid var(--oa-divider);
+    border-radius: 10px;
+    padding: 12px 12px 4px;
+  }
+  .ask .opt:not(:has(.k)),
+  .ask .mopt:not(:has(.k)) {
+    padding-left: 12px;
+  }
+
+  /* on the desktop stage: the ask as a team sees it, and the record tab */
+  .stage .whol {
+    display: none;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+  .stage .pp.sm {
+    width: 18px;
+    height: 18px;
+    font-size: 9px;
+  }
+  .stage .pp.sm + .pp.sm {
+    margin-left: -8px;
+  }
+  .stage .vt,
+  .stage .tmf {
+    display: none;
+    font-size: 12.5px;
+    min-height: 0;
+  }
+  .stage .vt {
+    padding-left: 4px;
+  }
+  .stage .tmf .abtn {
+    min-height: 26px;
+  }
+  .stage[data-team] #ask .la,
+  .stage[data-team] #ask .why,
+  .stage[data-team] #ask .picked,
+  .stage[data-team] #ask .aact,
+  .stage[data-team] #ask #adone,
+  .stage[data-team] #ask .opt[data-k="x"] {
+    display: none !important;
+  }
+  .stage[data-team] #ask .whol,
+  .stage[data-team] #ask .vt,
+  .stage[data-team] #ask .tmf {
+    display: flex;
+  }
+  .stage .dtabs {
+    font-size: 13px;
+  }
+  .stage .dq {
+    font-size: 12.5px;
+  }
+  .stage .da {
+    font-size: 14px;
+  }
+  .stage .dm {
+    font-size: 12px;
+  }
+  .stage .opill {
+    font-size: 11px;
+  }
+  .sin > .dtabs,
+  #decs {
+    display: none;
+  }
+  .stage[data-dec] .sin > .dtabs {
+    display: flex;
+  }
+  .stage[data-dec] #decs {
+    display: block;
+  }
+  .stage[data-dec] #ask,
+  .stage[data-dec] #thread,
+  .stage[data-dec] #tcol,
+  .stage[data-dec] .sh {
+    display: none !important;
+  }
 }
 @keyframes plin {
   from {

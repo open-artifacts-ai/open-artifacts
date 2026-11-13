@@ -7,7 +7,7 @@
 // scripted.
 
 /** How many steps the whole story has: four moments here, five chapters below. */
-export const STORY_STEPS = 9;
+export const STORY_STEPS = 11;
 
 /** Progress marks for step n of the story: one segment per step, no text. */
 export function marksHtml(n: number): string {

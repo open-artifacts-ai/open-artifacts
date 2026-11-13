@@ -1,6 +1,7 @@
 ---
 import { marksHtml } from "../../lib/scene";
 import Agent from "./Agent.astro";
+import { footHtml, whoHtml } from "./who";
 ---
 <div class="wrap story" id="story">
   <div class="stage" id="stage" data-step="0" role="group" aria-label="An artifact, shown changing as you scroll">
@@ -13,7 +14,7 @@ import Agent from "./Agent.astro";
           <span class="t">Launch plan</span>
           <span class="chip" id="vis">Shared with 4</span>
           <span class="sp"></span>
-          <span class="avs" id="avs" aria-hidden="true"><span class="pp">MC</span><span class="pp">JW</span><Agent class="b" /><span class="more">Shared with 12</span></span>
+          <span class="avs" id="avs" aria-hidden="true"><span class="pp">SR</span><span class="pp">MC</span><Agent class="b" /><span class="more">Shared with 12</span></span>
           <span class="chip ver rev" id="ver" data-on="13">v3</span>
           <span class="sbtn" aria-hidden="true">Share</span>
         </div>
@@ -47,6 +48,7 @@ import Agent from "./Agent.astro";
 
           <aside class="side" aria-label="Comments"><div class="sin">
             <div class="sh"><span>Comments</span><span id="sopen">1 open</span></div>
+            <div class="dtabs"><span class="dtab">Comments <small>12</small></span><span class="dtab on">Decisions <small>3</small></span></div>
             <div class="card col hide" id="tcol">Maya and OA Product, 2 comments, resolved</div>
             <div class="card" id="thread">
               <div class="q">First-week review: Thursday, Dec 11</div>
@@ -54,22 +56,32 @@ import Agent from "./Agent.astro";
               <div class="cm rev" data-on="22"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Friday, Dec 12. The timeline is updated in v4.</div></div></div>
             </div>
             <div class="card ask need hide" id="ask">
-              <div class="lab">OA Product <span class="x-tag">agent</span> asks you and Sam Rivera</div>
+              <div class="lab">OA Product <span class="x-tag">agent</span> asks<span class="la"> you and Sam Rivera</span></div>
               <div class="qq">Which channel goes first on launch day?</div>
+              <div class="whol" id="whol"></div>
               <button type="button" class="opt" data-k="a" aria-pressed="false"><span class="k">A</span><b>Hacker News post</b></button>
+              <div class="vt"><span class="pp sm">P</span>Priya</div>
               <button type="button" class="opt" data-k="b" aria-pressed="false"><span class="k">B</span><b>Email list</b><span class="rec">Recommended</span></button>
+              <div class="vt"><span class="pp sm">S</span>Sam</div>
+              <button type="button" class="opt" data-k="x" aria-pressed="false"><b>Something else</b></button>
+              <div class="tmf" id="tmf"></div>
               <div class="why" id="why">Why B: the list converts best, and it gives us a day to fix surprises.</div>
               <div class="picked hide" id="picked"></div>
               <div class="aact"><button type="button" class="abtn" data-askq>Ask a question</button><button type="button" class="abtn" data-next>Next ask ↓</button></div>
               <p class="anote hide" role="status">In the product, this jumps to your next open ask.</p>
               <div class="cm rev" id="adone"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x" id="adonex"></div></div></div>
             </div>
+          <ul class="drows" id="decs">
+<li><div class="dq">Which channel goes first on launch day?</div><div class="da">B: Email list</div><div class="dm">You decided · asked by OA Product · Today</div></li>
+<li><div class="dq">Monthly or yearly shown first?</div><div class="da">Yearly first</div><div class="dm">Sam decided · passed on by Maya · 1 weighed in</div></li>
+<li><div class="dq">Ship the beta Friday?</div><div class="da">Yes, with the waitlist capped at 20 a day</div><div class="dm">Maya decided · <span class="opill">Own words</span> · Nov 12</div></li>
+</ul>
           </div></aside>
 
           <div class="pop" id="pop" aria-hidden="true">
             <h5>Share "Launch plan"</h5>
             <div class="prow rev" data-on="61"><span class="pp">MC</span>Maya Chen<span class="r">Can view</span></div>
-            <div class="prow rev" data-on="61"><span class="pp">JW</span>Jonas Weber<span class="r">Can edit</span></div>
+            <div class="prow rev" data-on="61"><span class="pp">SR</span>Sam Rivera<span class="r">Can edit</span></div>
             <div class="sw">Anyone with the link<span class="tog" id="tog"></span></div>
             <div class="plink rev" data-on="62">acme.open-artifacts.app/a/launch-plan</div>
           </div>
@@ -79,7 +91,7 @@ import Agent from "./Agent.astro";
     </div>
 
     <div class="rail" id="rail" role="group" aria-label="Chapters">
-      <button type="button">Comment</button><button type="button">Decide</button><button type="button">Live</button><button type="button">Versions</button><button type="button">Share</button>
+      <button type="button">Comment</button><button type="button">Ask</button><button type="button">Team</button><button type="button">Record</button><button type="button">Live</button><button type="button">Versions</button><button type="button">Share</button>
     </div>
   </div>
 
@@ -91,22 +103,41 @@ import Agent from "./Agent.astro";
 <div class="cm rev" data-s="1"><span class="pp">MC</span><div><div class="w">Maya Chen</div><div class="x">Can this be Friday? I'm out on Thursday. <span class="men">@OA Product</span></div></div></div>
 <div class="cm rev" data-s="2"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Friday, Dec 12. The timeline is updated in v4.</div></div></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(6)} /></span><h2>Decide with one click.</h2><p>When your agent needs a call, it asks in the artifact, with options and its recommendation. You pick one and it carries on.</p><span class="try">Try it: pick an option</span><div class="mp" data-mp="ask">
+    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(6)} /></span><h2>Your agent asks. You decide.</h2><p data-short="Your agent asks on the page, with options. Pick one, or answer in your own words.">When your agent needs a call, it asks on the page, with options and its recommendation. You pick one, or answer in your own words, and it carries on.</p><span class="try">Try it: pick an option</span><div class="mp" data-mp="ask">
 <div class="mrow"><span class="asksfy" data-afy>2 asks for you</span></div>
 <div class="card ask need"><div class="lab">OA Product <span class="x-tag">agent</span> asks you and Sam Rivera</div>
 <div class="qq">Which channel goes first on launch day?</div>
 <button type="button" class="mopt" data-k="a" aria-pressed="false"><span class="k">A</span><b>Hacker News post</b></button>
 <button type="button" class="mopt" data-k="b" aria-pressed="false"><span class="k">B</span><b>Email list</b><span class="rec">Recommended</span></button>
+<button type="button" class="mopt" data-k="x" aria-pressed="false"><b>Something else</b></button>
 <div class="why">Why B: the list converts best, and it gives us a day to fix surprises.</div>
 <div class="picked hide" role="status"></div>
 <div class="aact"><button type="button" class="abtn" data-askq>Ask a question</button><button type="button" class="abtn" data-next>Next ask ↓</button></div>
 <p class="anote hide" role="status">In the product, this jumps to your next open ask.</p>
 <div class="cm rev" data-done hidden><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x"></div></div></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(7)} /></span><h2>Work on it together, live.</h2><p>Checklists, polls and trackers update for everyone, as people and agents use them.</p><span class="try">Try it: vote, or tick an item</span><div class="mp" data-mp="live" data-steps="4">
+    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(7)} /></span><h2>The right person decides.</h2><p data-short="Each ask names who decides. Others weigh in, or you pass it on.">On a team, each ask names who decides. Everyone else can weigh in, and if it isn't yours to call, you pass it on.</p><span class="try">Try it: pass it to Sam</span><div class="mp" data-mp="team">
+<div class="card ask need" data-tcard><div class="lab">OA Product <span class="x-tag">agent</span> asks</div>
+<div class="qq">Which channel goes first on launch day?</div>
+<div class="whol" data-who><Fragment set:html={whoHtml(false)} /></div>
+<button type="button" class="mopt" data-k="a" aria-pressed="false"><span class="k">A</span><b>Hacker News post</b></button>
+<div class="vt"><span class="pp sm">P</span>Priya</div>
+<button type="button" class="mopt" data-k="b" aria-pressed="false"><span class="k">B</span><b>Email list</b><span class="rec">Recommended</span></button>
+<div class="vt"><span class="pp sm">S</span>Sam</div>
+<div class="tmf" data-foot><Fragment set:html={footHtml(false, false, null)} /></div></div>
+</div></div></section>
+    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(8)} /></span><h2>Every decision, on the record.</h2><p data-short="Answered asks stay with the page: what, who and when.">Answered asks stay with the page: what was asked, who decided and when. Nobody digs through a chat to find out why.</p><div class="mp" data-mp="dec">
+<div class="dpane"><div class="dtabs"><span class="dtab">Comments <small>12</small></span><span class="dtab on">Decisions <small>3</small></span></div>
+<ul class="drows">
+<li><div class="dq">Which channel goes first on launch day?</div><div class="da">B: Email list</div><div class="dm">You decided · asked by OA Product · Today</div></li>
+<li><div class="dq">Monthly or yearly shown first?</div><div class="da">Yearly first</div><div class="dm">Sam decided · passed on by Maya · 1 weighed in</div></li>
+<li><div class="dq">Ship the beta Friday?</div><div class="da">Yes, with the waitlist capped at 20 a day</div><div class="dm">Maya decided · <span class="opill">Own words</span> · Nov 12</div></li>
+</ul></div>
+</div></div></section>
+    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(9)} /></span><h2>Work on it together, live.</h2><p>Checklists, polls and trackers update for everyone, as people and agents use them.</p><span class="try">Try it: vote, or tick an item</span><div class="mp" data-mp="live" data-steps="4">
 <div class="mcard"><div class="mbody"><h4>Which feature leads the demo? <span class="live">Live</span><span class="cnt" data-pcnt>4 votes</span></h4><div class="poll"><button type="button" aria-pressed="false"><i style="width:25%"></i><span class="lb">Comments</span><span class="you">Your vote</span><b>1</b></button><button type="button" aria-pressed="false"><i style="width:75%"></i><span class="lb">Live checklists</span><span class="you">Your vote</span><b>3</b></button><button type="button" aria-pressed="false"><i style="width:0%"></i><span class="lb">Versions</span><span class="you">Your vote</span><b>0</b></button></div><h4>Launch checklist <span class="live">Live</span><span class="cnt" data-cnt>0 of 5</span></h4><div class="bar"><i data-bar></i></div><ul class="cl"><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Pricing page reviewed</span></button><span class="who"><span class="pp">SR</span><span class="nm">Sam</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Docs links checked</span></button><span class="who"><Agent class="b" /><span class="nm">OA Docs</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Press note drafted</span></button><span class="who"><span class="pp">MC</span><span class="nm">Maya</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Status page ready</span></button><span class="who"><Agent class="" /><span class="nm">OA Product</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Go or no-go call</span></button><span class="who"><span class="pp you">You</span></span></li></ul></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(8)} /></span><h2>Every publish is a version.</h2><p>The link never changes. Look back at any version, and restore one if a change went wrong.</p><span class="try m">Try it: open an older version</span><div class="mp" data-mp="ver">
+    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(10)} /></span><h2>Every publish is a version.</h2><p>The link never changes. Look back at any version, and restore one if a change went wrong.</p><span class="try m">Try it: open an older version</span><div class="mp" data-mp="ver">
 <div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="sp"></span><span class="chip ver" data-ver>v5</span></div>
 <div class="vban" data-ban><span>Viewing <b data-vb>v4</b>, an older version</span><button type="button" class="r" data-restore>Restore</button></div>
 <ul class="vlist" aria-label="Versions">
@@ -117,11 +148,11 @@ import Agent from "./Agent.astro";
 <li><button type="button" data-v="1" aria-pressed="false"><b>v1</b><span>First version<small>OA Product</small></span><em></em></button></li>
 </ul><div class="vnote hide" data-note role="status"></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(9)} /></span><h2>Share it with anyone.</h2><p>Add people as viewers or editors, share with your team, or turn on a public link. Viewers are free.</p><span class="try m">Try it: turn on the public link</span><div class="mp" data-mp="share">
+    <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(11)} /></span><h2>Share it with anyone.</h2><p>Add people as viewers or editors, share with your team, or turn on a public link. Viewers are free.</p><span class="try m">Try it: turn on the public link</span><div class="mp" data-mp="share">
 <div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="chip" data-vis>Shared with 4</span><span class="sp"></span></div>
 <div class="mbody"><h5>Share "Launch plan"</h5>
 <div class="prow rev" data-s="1"><span class="pp">MC</span>Maya Chen<span class="r">Can view</span></div>
-<div class="prow rev" data-s="1"><span class="pp">JW</span>Jonas Weber<span class="r">Can edit</span></div>
+<div class="prow rev" data-s="1"><span class="pp">SR</span>Sam Rivera<span class="r">Can edit</span></div>
 <button type="button" class="sw msw" role="switch" aria-checked="false" data-sw>Anyone with the link<span class="tog"></span></button>
 <div class="plink rev" data-link>acme.open-artifacts.app/a/launch-plan</div></div></div>
 </div></div></section>

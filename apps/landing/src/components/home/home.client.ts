@@ -5,6 +5,7 @@
 import { initPhone } from "./phone.client";
 import { initPhoneLock } from "./phonelock.client";
 import { initScene } from "./scene.client";
+import { footHtml, whoHtml } from "./who";
 
 const lp = document.getElementById("lp") as HTMLElement;
 const $ = <T extends HTMLElement = HTMLElement>(s: string) =>
@@ -81,6 +82,9 @@ let userVote: number | null = null;
 // A tiny helper: the first matching element inside a parent.
 const $in = (s: string, r: HTMLElement) => r.querySelector(s) as HTMLElement;
 let userPick: string | null = null,
+  passed = false,
+  tSel: string | null = null,
+  tDec = false,
   T = -1,
   lastVer = "";
 const user: Record<number, boolean> = {};
@@ -104,28 +108,37 @@ function read() {
       p = Math.min(0.999, (y - r.top) / r.height);
     }
   });
-  if (reduce) return Math.max(23, step * 10 + (step === 5 ? 1 : 3));
+  // step here counts chapters: comment 2, ask 3, team 4, record 5, live 6,
+  // versions 7, share 8.
+  if (reduce) return Math.max(23, step * 10 + (step === 7 ? 1 : 3));
   return Math.max(23, step * 10 + Math.floor(p * 4));
 }
 function render(force = false) {
   // At 820px and under the stage is hidden and the chapters are cards.
   if (narrow()) return;
-  const t = read();
-  if (t === T && !force) return;
-  T = t;
-  const step = Math.floor(t / 10);
+  const raw = read();
+  if (raw === T && !force) return;
+  T = raw;
+  const ns = Math.floor(raw / 10);
+  // The stage's own steps (ask 3, live 4, versions 5, share 6) drive the
+  // existing logic; the team and record chapters hold the ask as it was.
+  const step = ns <= 3 ? ns : ns <= 5 ? 3 : ns - 2;
+  const t = ns <= 3 ? raw : ns <= 5 ? 39 : step * 10 + (raw % 10);
+  const teamV = ns === 4;
   stage.dataset.step = String(step);
+  flag("data-team", teamV);
+  flag("data-dec", ns === 5);
   for (const e of ons) e.classList.toggle("on", t >= Number(e.dataset.on));
   // The poll and checklist are out of reach until they have appeared.
   for (const id of ["#poll", "#cl"])
     ($(id) as HTMLElement & { inert: boolean }).inert =
       !$(id).classList.contains("on");
   chs.forEach((c, i) => {
-    c.classList.toggle("cur", i + 2 === step || (step <= 1 && i === 0));
+    c.classList.toggle("cur", i + 2 === ns || (ns <= 1 && i === 0));
   });
   rail.forEach((b, i) => {
-    b.classList.toggle("done", i + 2 < step);
-    if (i + 2 === step) b.setAttribute("aria-current", "step");
+    b.classList.toggle("done", i + 2 < ns);
+    if (i + 2 === ns) b.setAttribute("aria-current", "step");
     else b.removeAttribute("aria-current");
   });
   flag("data-past1", step >= 2);
@@ -136,28 +149,49 @@ function render(force = false) {
   ln.classList.toggle("chg", t >= 23 && t < 30);
   const pick = userPick || (t >= 32 ? "b" : null);
   const done = !!pick && (!!userPick || t >= 33) && t >= 30;
+  // The team chapter shows the ask undecided, with its own pick and who decides.
+  const vp = teamV ? null : pick;
+  const vd = teamV ? false : done;
   $("#thread").classList.toggle("hide", t >= 30);
   $("#tcol").classList.toggle("hide", t < 30);
   $("#ask").classList.toggle("hide", t < 30);
   $("#sopen").textContent =
-    t >= 30 ? (done ? "All resolved" : "1 ask for you") : "1 open";
-  for (const o of opts) press(o, o.dataset.k === pick);
-  $("#ask").classList.toggle("need", !pick);
-  $("#ask [data-askq]").classList.toggle("hide", !!pick);
-  const name = pick === "a" ? "Hacker News post" : "Email list";
-  $("#why").classList.toggle("hide", !!pick);
+    t >= 30 ? (vd ? "All resolved" : "1 ask for you") : "1 open";
+  for (const o of opts) press(o, o.dataset.k === (teamV ? tSel : vp));
+  $("#ask").classList.toggle("need", !vp);
+  $("#ask [data-askq]").classList.toggle("hide", !!vp);
+  const name =
+    pick === "a"
+      ? "Hacker News post"
+      : pick === "x"
+        ? "Your answer"
+        : "Email list";
+  $("#why").classList.toggle("hide", !!vp);
   const picked = $("#picked");
-  picked.classList.toggle("hide", !pick);
+  picked.classList.toggle("hide", !vp);
   picked.replaceChildren();
-  if (pick) {
+  if (vp) {
     const who = document.createElement("span");
     who.className = userPick ? "pp you" : "pp";
     who.textContent = userPick ? "You" : "SR";
-    picked.append(who, `${userPick ? "You" : "Sam Rivera"} picked ${name}`);
+    picked.append(
+      who,
+      userPick
+        ? vp === "x"
+          ? "You answered in your own words"
+          : `You picked ${vp.toUpperCase()}`
+        : `Sam Rivera picked ${vp.toUpperCase()}`,
+    );
   }
-  $("#adone").classList.toggle("on", done);
+  $("#adone").classList.toggle("on", vd);
   $("#adonex").textContent =
-    `Done. The plan now says the ${pick === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
+    pick === "x"
+      ? "Done. The plan now follows your answer. That's v5."
+      : `Done. The plan now says the ${pick === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
+  if (teamV) {
+    $("#whol").innerHTML = whoHtml(passed);
+    $("#tmf").innerHTML = footHtml(passed, tDec, tSel);
+  }
   $("#chanv").textContent = name;
   const viewOld = t >= 51 && t < 53;
   chan.classList.toggle("on", done && !viewOld);
@@ -223,13 +257,28 @@ addEventListener("scroll", tick, { passive: true });
 addEventListener("resize", () => render(true));
 for (const o of opts)
   o.addEventListener("click", () => {
-    userPick = o.dataset.k as string;
+    if (stage.hasAttribute("data-team")) {
+      tSel = o.dataset.k as string;
+      tDec = false;
+    } else userPick = o.dataset.k as string;
     render(true);
   });
 $("#ask").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
   const note = $("#ask .anote");
-  if (t.closest("[data-next]") || t.closest("[data-askq]")) {
+  if (t.closest("[data-pass]")) {
+    passed = true;
+    render(true);
+  } else if (t.closest("[data-undo]")) {
+    passed = false;
+    tDec = false;
+    render(true);
+  } else if (t.closest("[data-decide]")) {
+    if (tSel) {
+      tDec = true;
+      render(true);
+    }
+  } else if (t.closest("[data-next]") || t.closest("[data-askq]")) {
     note.textContent = t.closest("[data-next]")
       ? "In the product, this jumps to your next open ask."
       : "In the product, this opens a question to the agent that asked.";

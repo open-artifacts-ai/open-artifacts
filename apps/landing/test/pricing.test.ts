@@ -90,6 +90,32 @@ describe("pricing", () => {
     );
   });
 
+  it("has the ask and decision rows, and the renamed comments row", () => {
+    const row = (label: string) => {
+      const at = pricing.indexOf(`<th scope="row">${label}</th>`);
+      expect(at, label).toBeGreaterThan(-1);
+      return [
+        ...pricing
+          .slice(at, pricing.indexOf("</tr>", at))
+          .matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g),
+      ].map((m) =>
+        m[1]
+          .replace(/<span class="sr-only">[\s\S]*?<\/span>/, "")
+          .replace(/<[^>]+>/g, ""),
+      );
+    };
+    expect(row("Comments and @-mentions")).toEqual(["✓", "✓", "✓", "✓"]);
+    expect(row("Asks: your agent asks, you pick")).toEqual([
+      "✓",
+      "✓",
+      "✓",
+      "✓",
+    ]);
+    expect(row("Decisions kept on every page")).toEqual(["✓", "✓", "✓", "✓"]);
+    expect(row("Teammates decide and weigh in")).toEqual(["–", "✓", "✓", "✓"]);
+    expect(pricing).not.toContain("Comments, @-mentions and asks");
+  });
+
   it("keeps the trial wording in the footnote", () => {
     expect(pricing).toContain(
       "Solo is free for 30 days, no card. Team starts with a 30-day trial when you invite someone.",

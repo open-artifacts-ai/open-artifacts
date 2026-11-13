@@ -53,7 +53,10 @@ export function initPhoneLock(lp: HTMLElement, reduce: boolean) {
     const unit = (steps.firstElementChild as HTMLElement).offsetHeight || 1;
     const p = Math.max(
       0,
-      Math.min(9.999, -pl.getBoundingClientRect().top / unit),
+      Math.min(
+        steps.children.length - 0.001,
+        -pl.getBoundingClientRect().top / unit,
+      ),
     );
     const beat = Math.floor(p);
     const sub = Math.floor((p - beat) * 4);
@@ -71,7 +74,9 @@ export function initPhoneLock(lp: HTMLElement, reduce: boolean) {
       } else {
         const c = chs[beat - 5] as HTMLElement;
         title = c.querySelector("h2")?.textContent ?? "";
-        cap = c.querySelector(".ci > p")?.textContent ?? "";
+        // phones read the short form of a caption, where there is one
+        const p2 = c.querySelector<HTMLElement>(".ci > p");
+        cap = p2?.dataset.short ?? p2?.textContent ?? "";
       }
       head.innerHTML = `${marksHtml(beat < 4 ? beat + 1 : beat === 4 ? 4 : beat)}<b></b><p></p>`;
       (head.children[1] as HTMLElement).textContent = title;

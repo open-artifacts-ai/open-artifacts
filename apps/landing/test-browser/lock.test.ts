@@ -69,10 +69,10 @@ describe("phone locked story", () => {
     await ctx.close();
   });
 
-  it("stays pinned to the top of the screen through all ten beats", async () => {
+  it("stays pinned to the top of the screen through all twelve beats", async () => {
     const { ctx, page } = await phone();
     const titles: string[] = [];
-    for (let b = 0; b < 10; b++) {
+    for (let b = 0; b < 12; b++) {
       await toBeat(page, b);
       const p = await pinTop(page);
       expect(p.top).toBe(0);
@@ -82,9 +82,9 @@ describe("phone locked story", () => {
       );
       titles.push((await page.locator("#plhead b").textContent()) ?? "");
     }
-    expect(new Set(titles).size).toBe(10);
+    expect(new Set(titles).size).toBe(12);
     expect(titles[4]).toContain("last time you scroll");
-    expect(titles[9]).toBe("Share it with anyone.");
+    expect(titles[11]).toBe("Share it with anyone.");
     // past the end, the screen lets go and the page goes on
     await page.evaluate(() =>
       scrollBy({ top: innerHeight * 3, behavior: "instant" }),

@@ -1,6 +1,7 @@
 // Phones: nothing pins. Each chapter is its own card with only its piece of the
 // artifact; the piece plays once when it scrolls into view, then takes taps.
 // With reduced motion every piece lands at once.
+import { footHtml, whoHtml } from "./who";
 
 export function initPhone(lp: HTMLElement, reduce: boolean) {
   const $ = <T extends HTMLElement = HTMLElement>(
@@ -42,10 +43,12 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
       setAsks(1);
       $(".why", askCard).classList.add("hide");
       picked.classList.remove("hide");
-      picked.innerHTML = `You picked ${k.toUpperCase()} · just now · <button type="button" class="alink" data-change>Change</button>`;
+      picked.innerHTML = `${k === "x" ? "You answered in your own words" : `You picked ${k.toUpperCase()}`} · just now · <button type="button" class="alink" data-change>Change</button>`;
       done.classList.remove("on");
       $(".x", done).textContent =
-        `Done. The plan now says the ${k === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
+        k === "x"
+          ? "Done. The plan now follows your answer. That's v5."
+          : `Done. The plan now says the ${k === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
       const show = () => {
         if (!card.classList.contains("locked")) return;
         done.hidden = false;
@@ -74,6 +77,40 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
       note.classList.remove("hide");
     }
   });
+
+  /* team: who decides. You decide, or pass it to Sam; both can be undone. */
+  const team = mp("team");
+  const tOpts = $$(".mopt", team);
+  let tPassed = false;
+  let tSel: string | null = null;
+  let tDecided = false;
+  const tDraw = () => {
+    $("[data-who]", team).innerHTML = whoHtml(tPassed);
+    $("[data-foot]", team).innerHTML = footHtml(tPassed, tDecided, tSel);
+    for (const o of tOpts)
+      o.setAttribute("aria-pressed", String(o.dataset.k === tSel));
+  };
+  for (const o of tOpts)
+    o.addEventListener("click", () => {
+      tSel = o.dataset.k as string;
+      tDecided = false;
+      tDraw();
+    });
+  team.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("[data-pass]")) {
+      tPassed = true;
+      tDraw();
+    } else if (t.closest("[data-undo]")) {
+      tPassed = false;
+      tDecided = false;
+      tDraw();
+    } else if (t.closest("[data-decide]") && tSel) {
+      tDecided = true;
+      tDraw();
+    }
+  });
+  tDraw();
 
   /* live checklist */
   const live = mp("live");

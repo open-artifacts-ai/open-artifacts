@@ -23,7 +23,9 @@ describe("landing sections", () => {
     for (const h of [
       "Stop reading transcripts.",
       "Comment where it matters.",
-      "Decide with one click.",
+      "Your agent asks. You decide.",
+      "The right person decides.",
+      "Every decision, on the record.",
       "Work on it together, live.",
       "Every publish is a version.",
       "Share it with anyone.",
@@ -169,14 +171,14 @@ describe("landing sections", () => {
     );
   });
 
-  it("the story is chapters 5 to 9 of 9, without weekdays, in order, with a rail of real buttons", () => {
+  it("the story is chapters 5 to 11 of 11, without weekdays, in order, with a rail of real buttons", () => {
     const chapters = index.match(/<section class="ch">/g) ?? [];
-    expect(chapters).toHaveLength(5);
+    expect(chapters).toHaveLength(7);
     expect(text).not.toMatch(/\d of 9/);
     const marks =
       index.match(/<section class="ch">[\s\S]*?<\/span><\/span>/g) ?? [];
     expect(marks.map((m) => m.match(/<i class=on>/g)?.length)).toEqual([
-      5, 6, 7, 8, 9,
+      5, 6, 7, 8, 9, 10, 11,
     ]);
     expect(index).not.toMatch(
       /<span class="n">(Monday|Tuesday|Wednesday|Thursday|Friday|Launch day|After that)<\/span>/,
@@ -188,15 +190,30 @@ describe("landing sections", () => {
     const rail = index.slice(index.indexOf('id="rail"'));
     expect(
       rail.slice(0, rail.indexOf("</div>")).match(/<button type="button">/g),
-    ).toHaveLength(5);
+    ).toHaveLength(7);
+    // the rail says what each chapter is
+    const labels = [
+      ...rail
+        .slice(0, rail.indexOf("</div>"))
+        .matchAll(/<button type="button">([^<]+)<\/button>/g),
+    ].map((m) => m[1]);
+    expect(labels).toEqual([
+      "Comment",
+      "Ask",
+      "Team",
+      "Record",
+      "Live",
+      "Versions",
+      "Share",
+    ]);
   });
 
   it("has a card piece for each chapter on phones", () => {
     const pieces =
       index.match(
-        /<div class="mp[ "][^>]*data-mp="(com|ask|live|ver|share)"/g,
+        /<div class="mp[ "][^>]*data-mp="(com|ask|team|dec|live|ver|share)"/g,
       ) ?? [];
-    expect(pieces).toHaveLength(5);
+    expect(pieces).toHaveLength(7);
   });
 
   it("the wall is an ordinary section after the story, with Product's release tile", () => {

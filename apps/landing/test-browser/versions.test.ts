@@ -51,14 +51,14 @@ describe("phone versions card at 390px", () => {
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
     await page.goto(`${base}/`, { waitUntil: "load" });
-    // on a phone the story is locked: bring the versions beat (8) up
+    // on a phone the story is locked: bring the versions beat (10) up
     await page.evaluate(() => {
       const pl = document.getElementById("pl") as HTMLElement;
       const unit = (
         document.getElementById("plsteps") as HTMLElement
       ).firstElementChild?.getBoundingClientRect().height as number;
       scrollTo({
-        top: pl.getBoundingClientRect().top + scrollY + 8.5 * unit,
+        top: pl.getBoundingClientRect().top + scrollY + 10.5 * unit,
         behavior: "instant",
       });
     });
@@ -107,7 +107,7 @@ describe("phone versions card at 390px", () => {
           const bb = ban.getBoundingClientRect();
           const rb = btn.getBoundingClientRect();
           return (
-            document.getElementById("pl")?.dataset.beat === "8" &&
+            document.getElementById("pl")?.dataset.beat === "10" &&
             rb.height > 0 &&
             rb.top >= bb.top &&
             rb.bottom <= bb.bottom
