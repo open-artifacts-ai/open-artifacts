@@ -25,6 +25,7 @@ import {
   frameThreads,
   type Positions,
 } from "./model";
+import { draftBadge, threadBadge } from "./pinBadge";
 
 type Bridge = ReturnType<typeof createBridge>;
 
@@ -85,6 +86,11 @@ export type CommentsApi = {
   /** The last `revealed.tick` a card focused for: a remounted card must not focus again. */
   revealDone: { current: number };
   draft: Draft;
+  /**
+   * #2019: a pin being placed whose box opens beside its flag, where it was
+   * clicked, in frame-viewport pixels. Null: the box is in the comments list.
+   */
+  pinBeside: { x: number; y: number } | null;
   /** Close the draft. `posted`: keep its quote painted until the list carries the new thread (#1834). */
   cancelDraft: (posted?: boolean) => void;
   /** A new comment that failed after its box closed: the draft opens again with its text and the error. */
@@ -105,7 +111,7 @@ export type CommentsApi = {
     p: { id: string; state: FramePosition["state"]; top: number | null }[],
   ) => void;
   onOpen: (id: string) => void;
-  onPin: (p: PinPoint) => void;
+  onPin: (p: PinPoint, at?: { x: number; y: number }) => void;
   /** Esc in the frame: leaves pin mode (page code can send it; it only ever leaves). */
   onEscape: () => void;
   /** #1732: text is selected in the frame and the reader may comment on it (Select mode). */
@@ -170,7 +176,13 @@ export function useCommentsController({
   contentHash = null,
   getBridge,
   openSurface,
+  besideOk = false,
+  viewerName = null,
 }: {
+  /** #2019: the comment box may open beside the flag (not a phone sheet or full screen). */
+  besideOk?: boolean;
+  /** The signed-in viewer's name, for the initials on the flag being placed. */
+  viewerName?: string | null;
   pinFormat?: PinFormat | null;
   contentHash?: string | null;
   /** The address names this version (not following Current). */
@@ -215,6 +227,7 @@ export function useCommentsController({
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
   const [draftSeed, setDraftSeed] = useState<Lost | null>(null);
+  const [pinAt, setPinAt] = useState<{ x: number; y: number } | null>(null);
   // #1834: a draft that was just posted stays painted until the refetched list
   // carries its thread, so posting turns the draft highlight into the thread's
   // without a frame in between. Cancel drops it at once.
@@ -271,13 +284,30 @@ export function useCommentsController({
     // `?.`: older test doubles of the bridge have no comment methods.
     b.setCommentsMode?.(enabled ? (mayComment ? mode : "view") : "off");
     // A pin being composed is drawn as a ghost until it posts or is cancelled.
-    const pin = draft && "pin" in draft ? draft.pin : undefined;
+    const pin =
+      draft && "pin" in draft
+        ? {
+            ...draft.pin,
+            badge: draftBadge(
+              authed ? (viewerName ?? "") : guestName.trim() || "Guest",
+            ),
+          }
+        : undefined;
     // #1834: the quote being written about stays highlighted while the
     // composer takes the page's selection away.
     const quote: SelectionAnchor | undefined =
       (draft && "anchor" in draft ? draft.anchor : heldQuote) ?? undefined;
     if (enabled)
-      b.setComments?.(frameThreads(threads, active, contentHash), pin, quote);
+      b.setComments?.(
+        frameThreads(
+          threads,
+          active,
+          contentHash,
+          pinFormat ? threadBadge : undefined,
+        ),
+        pin,
+        quote,
+      );
   }, [
     enabled,
     mayComment,
@@ -289,6 +319,10 @@ export function useCommentsController({
     contentHash,
     hello,
     getBridge,
+    pinFormat,
+    authed,
+    viewerName,
+    guestName,
   ]);
 
   // #1834: the held quote goes as soon as its thread is in the list, which is
@@ -373,7 +407,9 @@ export function useCommentsController({
     setDraft({ anchor });
     surface.current();
   }, []);
-  const onPin = useCallback((pin: PinPoint) => {
+  const besideRef = useRef(besideOk);
+  besideRef.current = besideOk;
+  const onPin = useCallback((pin: PinPoint, at?: { x: number; y: number }) => {
     // Page code can send this any time: only a click in pin mode counts, and
     // only for a viewer who can comment.
     if (modeRef.current !== "pin" || !mayRef.current) return;
@@ -387,10 +423,12 @@ export function useCommentsController({
     typed.current = false;
     draftText.current = "";
     setDraft({ pin });
+    setPinAt(at ?? null);
     // #1698: a chosen pin mode holds for the view, so the next pin is one
     // click away; the default an image opens in falls back to Select.
     if (!chosenRef.current) setWantPin(false);
-    surface.current();
+    // #2019: beside the flag, the box needs no list; on a phone the sheet opens.
+    if (!(at && besideRef.current)) surface.current();
   }, []);
   const selectedRef = useRef(false);
   selectedRef.current = selected;
@@ -512,6 +550,7 @@ export function useCommentsController({
       revealed,
       revealDone,
       draft,
+      pinBeside: besideOk && draft && "pin" in draft ? pinAt : null,
       cancelDraft: (posted = false) => {
         dirty.current = false;
         typed.current = false;
@@ -530,6 +569,7 @@ export function useCommentsController({
         }
         setHeldQuote(null);
         setDraftSeed(lost);
+        setPinAt(null);
         setDraft(d);
         surface.current();
       },
@@ -582,6 +622,8 @@ export function useCommentsController({
       reveal,
       revealed,
       draft,
+      pinAt,
+      besideOk,
       draftSeed,
       showResolved,
       guestName,

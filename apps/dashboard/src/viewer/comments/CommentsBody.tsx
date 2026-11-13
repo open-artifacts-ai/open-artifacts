@@ -1557,6 +1557,47 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   );
 }
 
+/**
+ * #2019: on a wide screen the box for a new pin opens right beside its flag,
+ * where the reader clicked, over the page. It is the same box the list shows
+ * (the list leaves it out while this is up). `frame` places it: the click is in
+ * the frame's viewport pixels.
+ */
+export function PinBeside({ frame }: { frame: HTMLElement | null }) {
+  const api = useCommentsApi();
+  const at = api.pinBeside;
+  const ref = useRef<HTMLDivElement>(null);
+  const [h, setH] = useState(200);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && el.offsetHeight) setH(el.offsetHeight);
+  });
+  if (!at || !frame || !api.draft || !api.canComment) return null;
+  const W = Math.max(220, Math.min(320, frame.clientWidth - 16));
+  const x = at.x + 40;
+  const left = Math.max(8, x + W > frame.clientWidth - 8 ? at.x - W - 10 : x);
+  const top = Math.max(8, Math.min(at.y - 34, frame.clientHeight - h - 8));
+  return (
+    <section
+      ref={ref}
+      aria-label="New comment"
+      data-oa-keep-selection=""
+      data-pin-beside=""
+      style={{
+        left: frame.offsetLeft + left,
+        top: frame.offsetTop + top,
+        width: W,
+      }}
+      className="absolute z-20 max-h-[calc(100%-16px)] overflow-y-auto rounded-xl bg-card p-1.5 shadow-xl ring-1 ring-border"
+    >
+      <NewThread
+        key={JSON.stringify("pin" in api.draft ? api.draft.pin : null)}
+        api={api}
+      />
+    </section>
+  );
+}
+
 function NewThread({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   const last = useRef("");
@@ -1798,7 +1839,7 @@ export function CommentsBody({
       )}
       <Tools api={api} />
       <LostDrafts api={api} />
-      {api.draft && api.canComment && (
+      {api.draft && api.canComment && !api.pinBeside && (
         <NewThread
           key={JSON.stringify(
             "pin" in api.draft ? api.draft.pin : api.draft.anchor,
