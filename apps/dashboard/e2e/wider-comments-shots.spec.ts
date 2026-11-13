@@ -21,8 +21,10 @@ for (const theme of ["light", "dark"] as const) {
       expect(await col.evaluate((e) => e.getBoundingClientRect().width)).toBe(
         w,
       );
-      // Past the line's 0.12s fade.
-      await page.waitForTimeout(250);
+      // The resize line's fade has finished.
+      await page.evaluate(() =>
+        Promise.all(document.getAnimations().map((a) => a.finished)),
+      );
       if (!OUT) return;
       mkdirSync(OUT, { recursive: true });
       await page.screenshot({ path: `${OUT}/comments-${w}-${theme}.png` });
