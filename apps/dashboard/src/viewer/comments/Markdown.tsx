@@ -1,5 +1,4 @@
-import { Fragment, type ReactNode, useMemo } from "react";
-import { useCoarsePointer } from "./surfaces";
+import { Fragment, type ReactNode, useMemo, useSyncExternalStore } from "react";
 import {
   type Block,
   hostAfterLabel,
@@ -13,9 +12,18 @@ import {
     `text` returns for plain text, e.g. mention chips). Never HTML. */
 type TextFn = (s: string, key: string) => ReactNode;
 
+// Not surfaces.tsx's useCoarsePointer: that module imports asks, which imports this one.
+const COARSE = "(pointer: coarse)";
+const onCoarse = (cb: () => void) => {
+  const m = window.matchMedia?.(COARSE);
+  m?.addEventListener?.("change", cb);
+  return () => m?.removeEventListener?.("change", cb);
+};
+const isCoarse = () => window.matchMedia?.(COARSE).matches ?? false;
+
 /** #2348: with no hover (touch), the link's host after its label, muted. */
 function LinkHost({ href, label }: { href: string; label: string }) {
-  const coarse = useCoarsePointer();
+  const coarse = useSyncExternalStore(onCoarse, isCoarse, () => false);
   const host = coarse ? hostAfterLabel(href, label) : null;
   return host ? <span className="text-muted-foreground"> ({host})</span> : null;
 }
