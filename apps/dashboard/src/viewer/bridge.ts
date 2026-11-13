@@ -8,6 +8,7 @@ import {
   type ErrorCode,
   LIMITS,
   METHOD_CAPABILITY,
+  OnboardingSchema,
   PageSchema,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
@@ -51,6 +52,12 @@ export interface BridgeOptions {
   /** This version's format; the artifact's own is only the current version's. */
   formatOf?: () => string | undefined;
   viewer: Viewer | null;
+  /**
+   * #2287: who may ask `onboarding.get`. Read at each call. The call is
+   * answered only for the Welcome artifact (`welcomeId` equals this
+   * artifact's id) and only for its owner; anything else is forbidden.
+   */
+  onboarding?: () => { welcomeId: string | null | undefined; owner: boolean };
   theme: Theme;
   onPdfText: (text: string) => void;
   onThumb: (blob: Blob) => void;
@@ -420,6 +427,21 @@ export function createBridge(opts: BridgeOptions) {
         return null;
       case "viewer.get":
         return viewer();
+      case "onboarding.get": {
+        const gate = opts.onboarding?.();
+        if (embed || !gate?.owner || !gate.welcomeId || gate.welcomeId !== id)
+          throw new ApiClientError(
+            "forbidden",
+            "onboarding.get is for the Welcome page",
+            403,
+          );
+        const o = await http.get(R.onboarding, OnboardingSchema);
+        return {
+          agentConnected: o.agentConnected === true,
+          firstArtifact: o.firstArtifact ?? null,
+          commented: o.commented === true,
+        };
+      }
       case "viewer.anonId":
         // Only the per-artifact short id; the signed token stays here.
         // Cached per token id and artifact: the route is rate limited per IP,
@@ -460,7 +482,11 @@ export function createBridge(opts: BridgeOptions) {
     const method = m.method;
     if (inFlight >= MAX_IN_FLIGHT)
       return fail(m.id, "rate_limited", "Too many concurrent calls");
-    if (!artifact.capabilities[METHOD_CAPABILITY[method]])
+    // onboarding.get has its own, stricter gate in run(): Welcome and its owner.
+    if (
+      method !== "onboarding.get" &&
+      !artifact.capabilities[METHOD_CAPABILITY[method]]
+    )
       return fail(
         m.id,
         "capability_denied",

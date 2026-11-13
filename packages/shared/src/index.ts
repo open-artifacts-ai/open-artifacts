@@ -1,4 +1,5 @@
 export * from "./agent-clients.js";
+export * from "./welcome.js";
 export * from "./anchor.js";
 export * from "./bus-notices.js";
 export * from "./comment-email-copy.js";

@@ -1,3 +1,4 @@
+import { WELCOME_TITLE, welcomeHtml } from "../welcome.js";
 import type { BusLink, BusRole, BusRoleProposal } from "../bus-notices.js";
 import type {
   ArtifactSummary,
@@ -116,6 +117,21 @@ const members: Member[] = [
   { ...ada, role: "owner", lastSeenAt: "2026-01-03T10:00:00.000Z" },
   { ...bob, role: "member", lastSeenAt: null },
 ];
+
+/** #2287: the seeded Welcome artifact's id, in the mocks' `welcome` option. */
+export const WELCOME_MOCK_ID = "WlCmEfGhJk4mNpQr";
+
+/** The Welcome artifact, its one version and its html (the page the server seeds). */
+export function welcomeFixture(host: string) {
+  return {
+    artifact: art(WELCOME_MOCK_ID, WELCOME_TITLE, "html", {
+      createdAt: "2026-01-01T10:00:00.000Z",
+      updatedAt: "2026-01-01T10:00:00.000Z",
+    }),
+    version: ver(1, "index.html", "text/html"),
+    html: welcomeHtml(host),
+  };
+}
 
 /** The moment the bus fixtures describe; the mocks serve them shifted to now. */
 export const BUS_FIXTURE_NOW = "2026-01-03T10:00:00.000Z";

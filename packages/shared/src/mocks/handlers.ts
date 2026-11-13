@@ -73,6 +73,7 @@ import {
   MemberPatchSchema,
   MePatchSchema,
   OAuthClientPatchSchema,
+  type Onboarding,
   OnboardingPatchSchema,
   PublishInputSchema,
   resolveDataWriters,
@@ -98,7 +99,12 @@ import {
 } from "../sniff.js";
 import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
-import { BUS_FIXTURE_NOW, fakeHash, fixtures } from "./fixtures.js";
+import {
+  BUS_FIXTURE_NOW,
+  fakeHash,
+  fixtures,
+  welcomeFixture,
+} from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
 import { createPasskeyMock, type PasskeyMockState } from "./passkeys.js";
 
@@ -136,6 +142,20 @@ export type MockOptions = {
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
+  /**
+   * #2287: the Welcome artifact is seeded for the owner, first in the
+   * Library, and R.onboarding names it. The flags set how far the checklist
+   * is; `opened` marks the first open as done (default false: the Library
+   * redirects to it once).
+   */
+  welcome?:
+    | boolean
+    | {
+        agentConnected?: boolean;
+        published?: boolean;
+        commented?: boolean;
+        opened?: boolean;
+      };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
 };
@@ -378,7 +398,23 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const clients = f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
   // R.onboarding: install-wide, the owner only (anyone else 404).
-  const onboarding = { dismissed: false, completed: false };
+  const onboarding: Onboarding = { dismissed: false, completed: false };
+  if (opts.welcome) {
+    const w = opts.welcome === true ? {} : opts.welcome;
+    const wf = welcomeFixture("https://app.example.com");
+    artifacts.unshift(wf.artifact);
+    versions[wf.artifact.id] = [wf.version];
+    files.set(`${wf.artifact.id}/1/index.html`, wf.html);
+    const first = artifacts.find((x) => x.title === "Landing page");
+    Object.assign(onboarding, {
+      welcomeId: wf.artifact.id,
+      welcomeOpened: w.opened ?? false,
+      agentConnected: w.agentConnected ?? false,
+      firstArtifact:
+        w.published && first ? { id: first.id, title: first.title } : null,
+      commented: w.commented ?? false,
+    });
+  }
   if (opts.bus) {
     me.canConnect = true;
     me.busOn = true;

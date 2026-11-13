@@ -488,6 +488,17 @@ async function startMocks() {
       // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
       hosted: parseHostedParam(params.get("hosted")),
       events,
+      // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
+      // &ticks=connect,publish,comment sets how far it is; &opened=1 skips the first-open redirect.
+      welcome:
+        params.get("mock") === "welcome"
+          ? {
+              agentConnected: params.get("ticks")?.includes("connect"),
+              published: params.get("ticks")?.includes("publish"),
+              commented: params.get("ticks")?.includes("comment"),
+              opened: params.get("opened") === "1",
+            }
+          : false,
       // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
       commentAsks: params.get("mock") === "asks",
       // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.

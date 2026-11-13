@@ -40,6 +40,7 @@ import { useMe } from "../auth/useMe";
 import { canUseBus } from "../bus/access";
 import { isEmbed, isFullPath } from "../embed";
 import { SearchBox } from "../library/SearchBox";
+import { PlanChip } from "./PlanChip";
 import { EdgePanel } from "../pages/Edge";
 import { NotPublic } from "../pages/NotPublic";
 import { useDeparted } from "../settings/departed";
@@ -547,6 +548,7 @@ function TopBar({ me }: { me: Me | null }) {
           alignItems: "center",
         }}
       >
+        <PlanChip me={me} />
         {/* Below 640px the avatar alone (it opens the account menu), so the
             search and its space chip get the room. */}
         <span data-header-email="" className="max-[640px]:hidden">

@@ -35,6 +35,7 @@ import { LibraryIcon } from "./icons";
 import { ALERT, BAR, Empty, GRID, H1, LIST, PAGE } from "./ui";
 import { uniqueItems, useSentinel } from "./useInfinite";
 import { type Scope, useLibraryQuery } from "./useLibraryQuery";
+import { useWelcomeRedirect } from "./useWelcomeRedirect";
 
 const PATH: Record<Scope, string> = {
   all: "/",
@@ -148,6 +149,7 @@ export function Library({ scope }: { scope: Scope }) {
         : (TABS.find((t) => t.id === scope)?.label ?? null)),
   );
   const navigate = useNavigate();
+  useWelcomeRedirect(scope === "all");
   const s = useSearch({ strict: false }) as {
     format?: Format;
     agent?: string;

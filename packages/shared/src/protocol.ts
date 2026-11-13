@@ -65,6 +65,21 @@ export const PinBadgeSchema = z.union([
 ]);
 export type PinBadge = z.infer<typeof PinBadgeSchema>;
 
+/**
+ * #2287: what the Welcome page ticks. `onboarding.get` is a new call, not a
+ * new field on a shell message, so PROTOCOL_VERSION stays: a runtime that
+ * knows it against an older shell gets no answer for it, and the page keeps
+ * its checklist unticked.
+ */
+export const OnboardingProgressSchema = z.strictObject({
+  agentConnected: z.boolean(),
+  firstArtifact: z
+    .strictObject({ id: z.string().max(64), title: z.string().max(500) })
+    .nullable(),
+  commented: z.boolean(),
+});
+export type OnboardingProgress = z.infer<typeof OnboardingProgressSchema>;
+
 export const RUNTIME_METHODS = [
   "db.get",
   "db.list",
@@ -76,6 +91,7 @@ export const RUNTIME_METHODS = [
   "db.unsubscribe",
   "viewer.get",
   "viewer.anonId",
+  "onboarding.get",
   "storage.get",
   "storage.set",
   "storage.delete",
@@ -451,6 +467,8 @@ export const METHOD_CAPABILITY: Record<RuntimeMethod, keyof Capabilities> = {
   "db.unsubscribe": "db",
   "viewer.get": "viewer",
   "viewer.anonId": "viewer",
+  // The shell also answers only for the Welcome artifact and its owner (#2287).
+  "onboarding.get": "viewer",
   "storage.get": "storage",
   "storage.set": "storage",
   "storage.delete": "storage",
@@ -498,6 +516,7 @@ export const RUNTIME_PARAMS = {
   "db.unsubscribe": z.strictObject(col),
   "viewer.get": z.strictObject({}),
   "viewer.anonId": z.strictObject({}),
+  "onboarding.get": z.strictObject({}),
   "storage.get": z.strictObject({ key: StorageKeyNameSchema }),
   "storage.set": z.strictObject({
     key: StorageKeyNameSchema,
@@ -528,6 +547,7 @@ export const RUNTIME_RESULTS = {
     .object({ email: z.string(), name: z.string().nullable() })
     .nullable(),
   "viewer.anonId": AnonIdSchema.nullable(),
+  "onboarding.get": OnboardingProgressSchema,
   "storage.get": z.unknown(),
   "storage.set": z.null(),
   "storage.delete": z.null(),

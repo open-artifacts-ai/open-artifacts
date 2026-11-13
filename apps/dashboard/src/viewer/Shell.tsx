@@ -12,7 +12,7 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
-import { useArtifact, useVersionInfo } from "../api/queries";
+import { useArtifact, useOnboarding, useVersionInfo } from "../api/queries";
 import { useCan } from "../auth/permissions";
 import { useLoginRedirect } from "../auth/redirect";
 import { useMe } from "../auth/useMe";
@@ -319,6 +319,12 @@ function Viewer({
   formatRef.current = vformat;
   const latest = useRef({ artifact, viewer, theme });
   latest.current = { artifact, viewer, theme };
+  // #2287: the Welcome page may ask how far the checklist is; the bridge
+  // answers only for that artifact and its owner.
+  const owner = role === "owner";
+  const welcomeId = useOnboarding(owner).data?.welcomeId;
+  const gate = useRef({ welcomeId, owner });
+  gate.current = { welcomeId, owner };
   const fx = useArtifactSideEffects(
     artifact,
     version,
@@ -466,6 +472,7 @@ function Viewer({
       iframe: el,
       url: src,
       ...latest.current,
+      onboarding: () => gate.current,
       version,
       formatOf: () => formatRef.current,
       onHello: () => {

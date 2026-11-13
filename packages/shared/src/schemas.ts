@@ -1013,6 +1013,23 @@ export const OnboardingSchema = z.strictObject({
   completed: z.boolean(),
   /** The caller owns at least one artifact not in the trash (#1832; absent on older servers). */
   hasArtifacts: z.boolean().optional(),
+  /**
+   * #2287 (PROPOSED names, server half pending): the Welcome artifact seeded
+   * for the owner, or null when seeding failed or it was deleted; absent on
+   * older servers.
+   */
+  welcomeId: IdSchema.nullable().optional(),
+  /** The owner has been taken to Welcome once. */
+  welcomeOpened: z.boolean().optional(),
+  /** Welcome's ticks: an agent has connected (a token or OAuth client exists). */
+  agentConnected: z.boolean().optional(),
+  /** The owner's first artifact other than Welcome, or null. */
+  firstArtifact: z
+    .strictObject({ id: IdSchema, title: z.string() })
+    .nullable()
+    .optional(),
+  /** The owner has left a comment. */
+  commented: z.boolean().optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
 
@@ -1020,6 +1037,8 @@ export type Onboarding = z.infer<typeof OnboardingSchema>;
 export const OnboardingPatchSchema = z.strictObject({
   dismissed: z.literal(true).optional(),
   completed: z.literal(true).optional(),
+  /** #2287: the owner was taken to Welcome (PROPOSED name). */
+  welcomeOpened: z.literal(true).optional(),
 });
 export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
 
