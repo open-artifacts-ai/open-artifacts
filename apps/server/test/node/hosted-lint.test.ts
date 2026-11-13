@@ -20,6 +20,8 @@ const READS: Record<string, string> = {
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":
     "fail closed: hosted Google sign-in requires the broker transport",
+  "services/onboarding.ts: seedWelcome":
+    "#2287: only a hosted instance seeds the Welcome",
   "routes/codes.ts: (anonymous)":
     "fail closed: hosted code sign-in requires Turnstile",
   "routes/me.ts: toMe":

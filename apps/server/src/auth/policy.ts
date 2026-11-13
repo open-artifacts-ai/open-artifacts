@@ -165,6 +165,10 @@ export const capsReads = (cap: CapReason | null | undefined): boolean =>
  * Hosted billing: who a plan lock caps (read-only): everyone but the org
  * owner, whose own artifacts stay writable.
  */
+/** The instance owner (the one org owner), by role. */
+export const isInstanceOwner = (u: { role: Role }): boolean =>
+  u.role === "owner";
+
 export const planCapsRole = (role: Role): boolean => role !== "owner";
 
 /**
