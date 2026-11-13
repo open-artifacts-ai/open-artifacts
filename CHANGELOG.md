@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.169.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.168.0...v0.169.0) (2026-11-13)
+
+
+### Features
+
+* **bus:** sdk-cli sessions never register; harness-chosen names are kept ([#2311](https://github.com/open-artifacts-ai/open-artifacts/issues/2311)) ([#2315](https://github.com/open-artifacts-ai/open-artifacts/issues/2315)) ([cba4028](https://github.com/open-artifacts-ai/open-artifacts/commit/cba402865134a813d9c8e228280864de9de0e4b5))
+
+
+### Bug Fixes
+
+* **bus:** /bus/connect is rate-limited per IP before the token lookup ([#2359](https://github.com/open-artifacts-ai/open-artifacts/issues/2359)) ([#2362](https://github.com/open-artifacts-ai/open-artifacts/issues/2362)) ([2dd8c53](https://github.com/open-artifacts-ai/open-artifacts/commit/2dd8c53b56035ec24d498b4d93aa9b02b233a2e0))
+
 ## [0.168.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.167.0...v0.168.0) (2026-11-12)
 
 
