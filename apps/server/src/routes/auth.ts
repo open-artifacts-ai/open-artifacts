@@ -35,7 +35,6 @@ import { signInMode } from "../auth/sign-in.js";
 import { SignInRefused } from "../directory/signin.js";
 import { ApiError, toErrorResponse } from "../http/errors.js";
 import { FAVICON_TAGS } from "../http/head.js";
-import { BREAK_GLASS_MS } from "../http/middleware.js";
 import { onGoogleSignIn } from "../services/directory.js";
 import { admit } from "../services/identity.js";
 import { seedWelcome } from "../services/onboarding.js";
@@ -319,16 +318,14 @@ export function mountAuth(app: AppType): void {
         logAuth({ provider: "google", outcome: "error", stage: "no_user" });
         return toSignIn("failed", id.next, clear, "google");
       }
-      // Break-glass (T18) needs a forced re-authentication: asked for
-      // (?reauth=1, max_age=0) and confirmed by a recent auth_time.
+      // Break-glass (T18, #2470) needs a forced re-authentication. The flow
+      // asked for it (?reauth=1, flow-bound: `ra` rides the signed state cookie,
+      // never the callback URL) and it just completed interactively (account
+      // chooser, state/PKCE/nonce, inside the flow TTL), so the marker is now.
+      // Google ignores max_age=0 for a signed-in user, so auth_time can stay
+      // at their last real login: it is not consulted.
       const now = Date.now();
-      const authAt =
-        id.reauth &&
-        typeof id.authTime === "number" &&
-        id.authTime >= now - BREAK_GLASS_MS &&
-        id.authTime <= now + 60_000
-          ? id.authTime
-          : undefined;
+      const authAt = id.reauth ? now : undefined;
       // A silent result never replaces a session that belongs to someone else.
       if (id.silent) {
         const have = await readSession(
