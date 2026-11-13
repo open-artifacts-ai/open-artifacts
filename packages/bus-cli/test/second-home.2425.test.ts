@@ -96,7 +96,7 @@ describe("install --home <dir> for a second bus (#2425)", () => {
 
   it("refuses --habits for a second home", async () => {
     const ctx = make(true);
-    expect(await install({ habits: "on" }, ctx)).toBe(1);
+    expect(await install({ habits: "yes" }, ctx)).toBe(1);
     expect(ctx.err().join("\n")).toContain("belong to your first bus");
     expect(outside(ctx)).toEqual([]);
   });
