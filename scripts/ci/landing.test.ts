@@ -36,14 +36,14 @@ describe("check-landing-dist.ts (release gate)", () => {
   it("passes on a clean dist", () => {
     expect(
       check(
-        '<head><meta charset="utf-8"></head><h1>Open Artifacts</h1><a href="https://signup.example.com/">Log in</a><a href="https://signup.example.com/">Get started free</a>',
+        '<head><meta charset="utf-8"></head><h1>Open Artifacts</h1><a href="https://signup.example.com/">Log in</a><a href="https://signup.example.com/">Join the waitlist</a>',
       ).code,
     ).toBe(0);
   });
   it("fails when the home page has no sign-up link, or one that goes to #pricing", () => {
     const head = '<head><meta charset="utf-8"></head><h1>Open Artifacts</h1>';
     expect(check(head).code).toBe(1);
-    expect(check(`${head}<a href="#pricing">Get started free</a>`).code).toBe(
+    expect(check(`${head}<a href="#pricing">Join the waitlist</a>`).code).toBe(
       1,
     );
   });
