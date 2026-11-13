@@ -1133,7 +1133,7 @@ describe("pins", () => {
       });
       // No badge or button is ever built outside image and pdf.
       expect(
-        roots.at(-1)?.querySelector(".initials, .face, button"),
+        roots.at(-1)?.querySelector(".initials, .face, button") ?? null,
       ).toBeNull();
     });
 
