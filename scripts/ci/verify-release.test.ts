@@ -83,6 +83,41 @@ describe("verifyRelease", () => {
     expect(w.hits).toContain(SITE);
   });
 
+  it("skipLanding (deploy-landing did not succeed) never touches the landing and still checks prod", async () => {
+    const w = world({
+      prod: () => ({ body: { version: "0.5.0" } }),
+      site: () => new Error("must not be called"),
+    });
+    expect(
+      await verifyRelease({ tag: "v0.5.0", skipLanding: true, ...w.deps }),
+    ).toEqual({ ok: true, problems: [] });
+    expect(w.hits).toContain(`${PROD}/healthz`);
+    expect(w.hits).not.toContain(SITE);
+    // prod is still verified: a wrong prod version still fails
+    const bad = world({
+      prod: () => ({ body: { version: "0.4.0" } }),
+      site: () => new Error("must not be called"),
+    });
+    const r = await verifyRelease({
+      tag: "v0.5.0",
+      skipLanding: true,
+      timeoutMs: 1,
+      ...bad.deps,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(" ")).toMatch(/prod/);
+  });
+
+  it("without skipLanding an old landing still fails the check", async () => {
+    const w = world({
+      prod: () => ({ body: { version: "0.5.0" } }),
+      site: () => ({ body: page("0.4.0") }),
+    });
+    const r = await verifyRelease({ tag: "v0.5.0", timeoutMs: 1, ...w.deps });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(" ")).toMatch(/landing/);
+  });
+
   it("polls healthz until the version arrives (within 3 minutes)", async () => {
     const w = world({
       prod: (t) => ({ body: { version: t >= 60_000 ? "0.5.0" : "0.4.0" } }),

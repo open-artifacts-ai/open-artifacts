@@ -433,6 +433,11 @@ jobs:
       # deploy-prod skipped itself (prod not installed) or the migration guard held
       # the release for a guarded dispatch: prod is not on this tag, so don't verify it.
       SKIP_PROD: ${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}
+      # deploy-landing did not succeed (it goes red on purpose while hosted
+      # sign-ups are closed, and alerts on its own), so open-artifacts.com still
+      # shows the old version: do not check it. This job must stay green so the
+      # hosted deploys are not blocked.
+      SKIP_LANDING: ${{ needs.deploy-landing.result != 'success' && '--skip-landing' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -443,10 +448,10 @@ jobs:
           node-version-file: .nvmrc
       - name: Verify the release is live
         if: ${{ vars.DEMO_ENABLED != 'true' }}
-        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" ${SKIP_PROD:+"$SKIP_PROD"}
+        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" ${SKIP_PROD:+"$SKIP_PROD"} ${SKIP_LANDING:+"$SKIP_LANDING"}
       - name: Verify the release is live (with the demo)
         if: ${{ vars.DEMO_ENABLED == 'true' }}
-        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" --demo-url https://demo.open-artifacts.com ${SKIP_PROD:+"$SKIP_PROD"}
+        run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" --demo-url https://demo.open-artifacts.com ${SKIP_PROD:+"$SKIP_PROD"} ${SKIP_LANDING:+"$SKIP_LANDING"}
   # ---------- npm: @open-artifacts/bus (#1301) ----------
   # Stable releases only, from the release commit on main. The package's
   # version stays 0.0.0 (and "private": true) in the repository, so nothing
