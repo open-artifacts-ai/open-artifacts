@@ -73,6 +73,7 @@ import {
   MemberPatchSchema,
   MePatchSchema,
   OAuthClientPatchSchema,
+  type Onboarding,
   OnboardingPatchSchema,
   PublishInputSchema,
   resolveDataWriters,
@@ -380,7 +381,15 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const clients = f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
   // R.onboarding: install-wide, the owner only (anyone else 404).
-  const onboarding = { dismissed: false, completed: false };
+  const onboarding: Onboarding = {
+    dismissed: false,
+    completed: false,
+    welcomeId: null,
+    welcomeOpened: false,
+    agentConnected: false,
+    firstArtifact: null,
+    commented: false,
+  };
   if (opts.bus) {
     me.canConnect = true;
     me.busOn = true;
