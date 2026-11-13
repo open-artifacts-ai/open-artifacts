@@ -117,6 +117,13 @@ type Deps = {
   seedDeciders?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
+  /**
+   * #2263: with seedAsk, also seed a `confirm: "passkey"` ask. The mode picks what the
+   * server says to a pick: "ok" verifies, "none" 409 no_passkey, "cooling" 409
+   * passkey_cooling, "expired" 410 on the answer, "many" 429 on the challenge. Also seeds
+   * two answered dangerous asks: one the server marks verified, one for a viewer who gets no mark.
+   */
+  passkeyMode?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #2338: also seed an agent comment with every markdown feature, a hostile one and an ask with markdown. */
   seedMarkdown?: boolean;
   /** #2019: pins on the "Landing page" image (or pdf): a person, a linked agent, an unlinked agent and a resolved one. */
@@ -139,6 +146,7 @@ export function createCommentMock({
   seedAsk,
   seedDeciders,
   seedAgents,
+  passkeyMode,
   seedMarkdown,
   seedPins,
 }: Deps): {
@@ -210,8 +218,67 @@ export function createCommentMock({
       to: [other],
       closed: false,
     };
+    const f = comment("Merge the release PR?", mine());
+    f.ask = {
+      question: "Merge the release PR?",
+      options: [
+        { id: "merge", label: "Merge it" },
+        { id: "hold", label: "Hold" },
+      ],
+      to: [mine()],
+      confirm: "passkey",
+      closed: false,
+    };
+    const answered = (q: string, verified: boolean) => {
+      const x = comment(q, mine());
+      x.ask = {
+        question: q,
+        options: [
+          { id: "go", label: "Go" },
+          { id: "stop", label: "Stop" },
+        ],
+        to: [mine()],
+        ...(verified ? { confirm: "passkey" as const } : {}),
+        answer: {
+          optionId: "go",
+          by: mine(),
+          at: iso(),
+          typed: true,
+          yes: true,
+          ...(verified ? { verified: "passkey" as const } : {}),
+        },
+        closed: false,
+      };
+      return x;
+    };
+    const g = answered("Deploy to production?", true);
+    const h = answered("Delete the old build?", false);
     const asked: CommentThread[] = seedAsk
       ? [
+          ...(passkeyMode
+            ? [
+                {
+                  id: newId(),
+                  anchor: { kind: "note" as const },
+                  version: 1,
+                  status: "open" as const,
+                  resolvedBy: null,
+                  resolvedAt: null,
+                  createdAt: f.createdAt,
+                  comments: [f],
+                },
+                ...[g, h].map((x) => ({
+                  id: newId(),
+                  anchor: { kind: "note" as const },
+                  version: 1,
+                  status: "open" as const,
+                  resolvedBy: null,
+                  resolvedAt: null,
+                  createdAt: x.createdAt,
+                  comments: [x],
+                })),
+              ]
+            : []),
           {
             id: newId(),
             anchor: { kind: "note" },
@@ -762,7 +829,32 @@ export function createCommentMock({
   const rep = `${A}/:tid/replies`;
   const one = `${A}/:tid/comments/:cid`;
   const answer = `${A}/:tid/comments/:cid/answer`;
+  const challenge = `${A}/:tid/comments/:cid/answer/challenge`;
   const handlers = [
+    http.post(challenge, async ({ params }) => {
+      const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
+      if (bad) return bad;
+      if (passkeyMode === "many") return err("rate_limited", "Too many tries");
+      if (passkeyMode === "none")
+        return err("no_passkey", "Add a passkey to approve this");
+      if (passkeyMode === "cooling")
+        return HttpResponse.json(
+          {
+            error: {
+              code: "passkey_cooling",
+              message: "This passkey is new",
+              details: {
+                usableAt: new Date(Date.now() + 20 * 3600_000).toISOString(),
+              },
+            },
+          },
+          { status: 409 },
+        );
+      return HttpResponse.json({
+        options: { challenge: "bW9jay1jaGFsbGVuZ2U", rpId: "localhost" },
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      });
+    }),
     http.get("*/api/v1/artifacts/:id/agents", ({ params }) => {
       if (!art(params.id)) return err("not_found", "Not found");
       return HttpResponse.json(MOCK_AGENTS);
@@ -782,7 +874,16 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
+      if (c.ask.confirm === "passkey") {
+        if (!j.data.assertion)
+          return err("passkey_required", "This pick needs a passkey");
+        if (passkeyMode === "expired")
+          return err("challenge_expired", "That approval timed out");
+      }
       const pick = {
+        ...(c.ask.confirm === "passkey"
+          ? { verified: "passkey" as const }
+          : {}),
         by: mine(),
         optionId: j.data.optionId,
         at: iso(),

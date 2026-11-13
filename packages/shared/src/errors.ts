@@ -63,6 +63,7 @@ export const ERROR_CODES = [
   "comments_off",
   "comments_signed_in_only",
   "forbidden",
+  "business_contact_only",
   // Passkey-confirmed picks (#2263).
   "no_passkey",
   "passkey_cooling",
@@ -188,6 +189,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   /** #2080: a signed-out caller wrote a comment where only signed-in people may. */
   comments_signed_in_only: 403,
   forbidden: 403,
+  /** #2404: Business has no self-serve checkout; a new Business checkout is refused. Contact us instead. */
+  business_contact_only: 409,
   /** #2263: the caller has no passkey registered (a challenge cannot be issued). */
   no_passkey: 409,
   /** #2263: every passkey the caller has is younger than 24 hours. */

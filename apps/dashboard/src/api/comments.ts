@@ -1,5 +1,6 @@
 import {
   ANON_ID_HEADER,
+  AnswerChallengeSchema,
   type ArtifactAgent,
   ArtifactAgentSchema,
   COMMENT_BODY_MAX,
@@ -23,6 +24,7 @@ import {
 } from "@tanstack/react-query";
 import { useMemo, useSyncExternalStore } from "react";
 import { z } from "zod";
+import { getAssertion } from "../auth/webauthn";
 import {
   isAnonToken,
   loadAnonToken,
@@ -590,6 +592,39 @@ export const useTakeBackAsk = (id: string) =>
       undefined,
       x,
     ),
+  );
+
+/**
+ * #2263: pick an option on a `confirm: "passkey"` ask. Challenge, then the passkey
+ * prompt, then the answer; nothing is answered until the server verifies it.
+ */
+export const usePasskeyAnswer = (id: string) =>
+  useRefetching(
+    id,
+    false,
+    false,
+    async (v: { thread: string; comment: string; optionId: string }, x) => {
+      const ch = await api.send(
+        "POST",
+        R.commentAnswerChallenge(id, v.thread, v.comment),
+        { optionId: v.optionId },
+        AnswerChallengeSchema,
+        undefined,
+        x,
+      );
+      const assertion = await getAssertion(ch.options);
+      return api.send(
+        "POST",
+        R.commentAnswer(id, v.thread, v.comment),
+        {
+          optionId: v.optionId,
+          assertion,
+        },
+        CommentSchema,
+        undefined,
+        x,
+      );
+    },
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>

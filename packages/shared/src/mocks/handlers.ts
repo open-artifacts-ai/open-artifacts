@@ -73,6 +73,7 @@ import {
   MemberPatchSchema,
   MePatchSchema,
   OAuthClientPatchSchema,
+  type Onboarding,
   OnboardingPatchSchema,
   PublishInputSchema,
   resolveDataWriters,
@@ -115,6 +116,8 @@ export type MockOptions = {
   commentAsks?: boolean;
   /** #2381: seed asks in each decider state on "Landing page". */
   commentDeciders?: boolean;
+  /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
+  commentPasskey?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
   commentAgents?: boolean;
   /** #2019: the "Landing page" artifact is an image (or a pdf) with pins on it. */
@@ -380,7 +383,15 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const clients = f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
   // R.onboarding: install-wide, the owner only (anyone else 404).
-  const onboarding = { dismissed: false, completed: false };
+  const onboarding: Onboarding = {
+    dismissed: false,
+    completed: false,
+    welcomeId: null,
+    welcomeOpened: false,
+    agentConnected: false,
+    firstArtifact: null,
+    commented: false,
+  };
   if (opts.bus) {
     me.canConnect = true;
     me.busOn = true;
@@ -665,6 +676,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
     seedDeciders: opts.commentDeciders,
+    passkeyMode: opts.commentPasskey,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
     seedPins: opts.commentPins,

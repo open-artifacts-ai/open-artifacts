@@ -237,7 +237,7 @@ export const R = {
   /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
   comment: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
-  /** POST AnswerBody { optionId } -> Comment (#1535). Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
+  /** POST AnswerBody { optionId, assertion? } -> Comment (#1535). A `confirm: "passkey"` ask needs the assertion (#2263): 400 passkey_failed, 410 challenge_expired, 403 passkey_required. Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
   commentAnswer: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer`,
   /**

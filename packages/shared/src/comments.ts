@@ -328,6 +328,12 @@ export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 /** POST R.commentAskDecider body (#2381): the asker's own user takes the decision back. */
 export const TakeBackBodySchema = z.object({ takeBack: z.literal(true) });
 export type TakeBackBody = z.infer<typeof TakeBackBodySchema>;
+/** POST R.commentAnswerChallenge response (#2263): WebAuthn PublicKeyCredentialRequestOptionsJSON. */
+export const AnswerChallengeSchema = z.object({
+  options: z.object({ challenge: z.string() }).passthrough(),
+  expiresAt: z.string(),
+});
+export type AnswerChallenge = z.infer<typeof AnswerChallengeSchema>;
 
 /** GET R.artifactAgents: the agents that follow or publish to the artifact. */
 export const ArtifactAgentSchema = z.object({

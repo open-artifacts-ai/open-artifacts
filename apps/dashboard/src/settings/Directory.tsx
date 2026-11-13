@@ -3,7 +3,7 @@
 // access and offers the one fix; below it, held sweeps, restricted groups,
 // then the connection with Disconnect last. Copy: build spec t6cjQuskQ6zrZaJd
 // v5. Losing sync never cuts access, so `staleAt` is never shown.
-import { HELD_SNOOZE_REASON_MAX, R } from "@oa/shared";
+import { BUSINESS_CONTACT_URL, HELD_SNOOZE_REASON_MAX, R } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
   AlertDialog,
@@ -384,16 +384,16 @@ function UpgradeLine() {
       Google group sync is part of Business.{" "}
       {plan ? (
         <>
-          <AppLink
-            href="/settings/plan"
+          <a
+            href={BUSINESS_CONTACT_URL}
             className="underline underline-offset-2"
           >
-            Upgrade to Business
-          </AppLink>{" "}
+            Contact us about Business
+          </a>{" "}
           to sync again.
         </>
       ) : (
-        "Upgrade to Business to sync again."
+        "Contact us about Business to sync again."
       )}
     </p>
   );

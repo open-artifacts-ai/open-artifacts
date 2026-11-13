@@ -255,6 +255,13 @@ export const ArtifactToShellSchema = z.union([
         }),
       )
       .max(COMMENT_THREADS_MAX),
+    /** #2386: where the new-pin flag is now, in frame-viewport pixels, so the box beside it follows a scroll. */
+    ghost: z
+      .strictObject({
+        x: z.number().finite().min(-100_000).max(100_000),
+        y: z.number().finite().min(-100_000).max(100_000),
+      })
+      .optional(),
   }),
   /** The reader clicked a highlight, collapsed mark or pin. */
   z.strictObject({
