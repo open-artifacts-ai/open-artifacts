@@ -100,16 +100,27 @@ Then run \`claude plugin configure ${name}\` and check \`${option}\` shows ${ori
 `;
 };
 
-/** The bus step: only when the bus is on for this instance (busOn). */
-const busBlock = (origin: string) => `## Agent bus
-
-The bus lets any AI agent on the person's machines message each other, and get a notice when someone comments or asks on their pages. Offer it to the person. If they say yes, run:
-\`\`\`bash
-npx @open-artifacts/bus install --instance ${origin}
-\`\`\`
-The person approves this machine once, in their browser. More: https://open-artifacts.com/docs/agent-bus/
-
-`;
+/**
+ * The setup order when the bus is on for this instance (busOn). The bus is
+ * part of setup, not an add-on: one numbered sequence, agreed once. OA Product
+ * edits this wording; keep it plain, no em dashes.
+ */
+const SETUP_STEPS_TITLE = "## Setup steps";
+const SETUP_STEPS_INTRO =
+  "Do these in order. They are all part of setup, so don't stop to offer the bus as an option.";
+const setupSteps = (origin: string, mcpUrl: string): string[] => [
+  `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
+  `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
+  "**Habit lines.** If the installer prints QUESTION FOR YOUR USER, show it to them and run the command for their answer. Never answer it yourself.",
+  "**Check.** The bus tools load when your session restarts or reloads. If the installer says to restart, tell the person, and check after the restart: the bus `self` tool answers with your name. If it still doesn't, setup is not done: tell the person what failed and the exact fix.",
+  "**Publish a first page** and give them the link.",
+];
+const SETUP_FAILURE =
+  "If the bus step fails, tell the person: \"Open Artifacts is connected, but the bus isn't, so I won't see your comments unless you tell me. To fix it: <the installer's printed fix>.\"";
+const setupBlock = (origin: string, mcpUrl: string) =>
+  `${SETUP_STEPS_TITLE}\n\n${SETUP_STEPS_INTRO}\n\n${setupSteps(origin, mcpUrl)
+    .map((t, i) => `${i + 1}. ${t}`)
+    .join("\n")}\n\n${SETUP_FAILURE}\n\n`;
 
 /** The guide for `host`. `plugin` and `skill` default to the live settings. */
 export function renderLlms(
@@ -135,7 +146,7 @@ You are setting up ${PRODUCT_NAME} for the person you're working with. Do every 
 
 Server address (MCP, streamable HTTP): ${mcpUrl}
 
-## Connect
+${bus ? setupBlock(origin, mcpUrl) : ""}## Connect
 
 Use the section for the client you are running in: you know which one that is. Only if the person asks you to set up a different client, find it with \`which claude codex cursor opencode\`; if none fits, use Generic.
 
@@ -162,7 +173,7 @@ ${verifySteps.map((s, i) => `${i + 1}. ${s}`).join("\n")}
 
 Tell the person: "${PRODUCT_NAME} is connected." Include the address ${origin}.
 
-${bus ? busBlock(origin) : ""}## Troubleshoot
+## Troubleshoot
 
 - The browser sign-in never opened: start it from the client (for example \`claude mcp login ${SERVER_NAME}\` or \`codex mcp login ${SERVER_NAME}\`), then ask the person to approve it in the browser.
 - 401 or "unauthorized" after it worked before: the sign-in expired or was revoked. Sign in again the same way. Don't switch to a token unless the person asks.
