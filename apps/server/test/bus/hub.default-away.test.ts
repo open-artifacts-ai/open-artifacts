@@ -127,7 +127,7 @@ describe("default-named away agents (#2311)", () => {
     expect(left).toBe(0);
   });
 
-  it("the purge takes the agent's minted-name and rename-limit rows, not a live agent's (#2318)", async () => {
+  it("the purge takes the agent's rename-limit rows, keeps minted names, and spares a live agent (#2318)", async () => {
     const h = fresh();
     const t0 = Date.now();
     const gone = await seed(h, "claude-111", 0, t0);
@@ -157,7 +157,7 @@ describe("default-named away agents (#2311)", () => {
         (_, s) =>
           s.storage.sql
             .exec<{ n: number }>(
-              "select (select count(*) from minted_names where agent_id = ?) + (select count(*) from rename_rl where agent_id = ?) as n",
+              "select (select count(*) from minted_names where agent_id = ?) * 10 + (select count(*) from rename_rl where agent_id = ?) as n",
               id,
               id,
             )
@@ -166,8 +166,8 @@ describe("default-named away agents (#2311)", () => {
     await clock(h, t0 + DEFAULT_NAME_AWAY_MS + MIN);
     await alarms(h, 3);
     expect(await exists(h, gone)).toBe(false);
-    expect(await rows(gone)).toBe(0);
-    expect(await rows(live)).toBe(2);
+    expect(await rows(gone)).toBe(10); // minted stays, rename_rl gone
+    expect(await rows(live)).toBe(11);
   });
 
   it("a renamed away agent and a live default-named one are kept", async () => {

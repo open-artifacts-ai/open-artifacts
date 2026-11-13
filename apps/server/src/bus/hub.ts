@@ -6663,12 +6663,8 @@ export class BusHub extends DurableObject<Env> {
     const goneRows = rows.filter((x) => x.idle === 1);
     const gone = goneRows.map((x) => x.rid);
     if (gone.length > 0) {
-      // #2318: the agent's minted-name and rename-limit rows go with it.
+      // #2318: its rename-limit rows go with it; minted names stay (OpenBus #446).
       const ids = JSON.stringify(goneRows.map((x) => x.id));
-      sql.exec(
-        "delete from minted_names where agent_id in (select value from json_each(?))",
-        ids,
-      );
       sql.exec(
         "delete from rename_rl where agent_id in (select value from json_each(?))",
         ids,
@@ -6775,10 +6771,6 @@ export class BusHub extends DurableObject<Env> {
       const ids = JSON.stringify(gone.map((x) => x.id));
       sql.exec(
         "delete from former_names where kind = 'away' and agent_id in (select value from json_each(?))",
-        ids,
-      );
-      sql.exec(
-        "delete from minted_names where agent_id in (select value from json_each(?))",
         ids,
       );
       sql.exec(

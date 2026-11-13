@@ -334,7 +334,7 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
           .one(),
       )
     ).id;
-    // #2318: its minted-name and rename-limit rows go with it.
+    // #2318: its rename-limit rows go with it; its minted name stays (#446).
     await inHub(h, (_, s) => {
       s.storage.sql.exec(
         "insert into minted_names (org_id, lname, name, agent_id, lbase, created_at) values ('o', 'idle-7', 'Idle-7', ?, 'idle', 0)",
@@ -368,13 +368,13 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
         (_, s) =>
           s.storage.sql
             .exec<{ n: number }>(
-              "select (select count(*) from minted_names where agent_id = ?) + (select count(*) from rename_rl where agent_id = ?) as n",
+              "select (select count(*) from minted_names where agent_id = ?) * 10 + (select count(*) from rename_rl where agent_id = ?) as n",
               id,
               id,
             )
             .one().n,
       ),
-    ).toBe(0);
+    ).toBe(10); // minted row stays, rename_rl rows gone
     // The ref comes back with a new id: a purged id is never reused.
     d.send(up("u2", "ref_a", "Idle", n));
     await until(d, "agent_ok");
