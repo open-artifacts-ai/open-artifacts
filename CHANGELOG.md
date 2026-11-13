@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.176.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.0...v0.176.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **landing:** sample plan weekdays match their dates ([#2453](https://github.com/open-artifacts-ai/open-artifacts/issues/2453)) ([#2454](https://github.com/open-artifacts-ai/open-artifacts/issues/2454)) ([10de21e](https://github.com/open-artifacts-ai/open-artifacts/commit/10de21ea04fdc91dfd984bac4b3d15cd844b9455))
+
 ## [0.176.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.1...v0.176.0) (2026-11-13)
 
 
