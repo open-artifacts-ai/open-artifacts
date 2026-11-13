@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.169.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.169.0...v0.169.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **bus:** log when an away Codex thread can't be woken because the app unloaded it ([#2343](https://github.com/open-artifacts-ai/open-artifacts/issues/2343)) ([#2382](https://github.com/open-artifacts-ai/open-artifacts/issues/2382)) ([2b936ea](https://github.com/open-artifacts-ai/open-artifacts/commit/2b936eac2a33ccb480b96996e83559e37663a6a0))
+
 ## [0.169.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.168.0...v0.169.0) (2026-11-13)
 
 
