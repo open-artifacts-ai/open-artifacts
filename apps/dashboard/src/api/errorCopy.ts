@@ -211,6 +211,32 @@ export const errorCopy = (
   return (e.code !== "cpu_limit" && COPY[e.code]) || e.message || fallback;
 };
 
+export const MEMBERS_SETTINGS = "/settings/members";
+export const PLAN_SETTINGS = "/settings/plan";
+
+/**
+ * The links that go with plan_required's Spaces copy (#2472), for an owner or
+ * admin: the trial offer gets Invite people and See plans; the plain refusal,
+ * See plans. A member, a capped admin's trial and an invite refusal get none
+ * beyond what their copy says.
+ */
+export const planLinks = (
+  e: unknown,
+  ctx?: ErrorContext,
+): { label: string; to: string }[] => {
+  if (
+    !(e instanceof ApiClientError) ||
+    e.code !== "plan_required" ||
+    ctx?.owner !== true ||
+    ctx.refused === "invite"
+  )
+    return [];
+  const plans = { label: "See plans", to: PLAN_SETTINGS };
+  return ctx.trialNeverRan === true
+    ? [{ label: "Invite people", to: MEMBERS_SETTINGS }, plans]
+    : [plans];
+};
+
 /** A link to show with the copy: off the Directory page, `directory_sync_off` points there. */
 export const errorLink = (
   e: unknown,

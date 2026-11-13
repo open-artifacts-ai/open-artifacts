@@ -5,7 +5,13 @@ import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
-import { calls, installHarness, mount, mountHosted } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mount,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -612,4 +618,75 @@ it("no copy contains an em dash", async () => {
   mountHosted(`/settings/spaces?space=${ENG}`);
   await screen.findByRole("heading", { level: 2, name: "Engineering" });
   expect(document.body.textContent).not.toContain("—");
+});
+
+// #2472: Spaces on Solo refused a create with no way forward. The toast now
+// links where the owner can act: Invite people and See plans with the trial
+// offer, See plans alone without it.
+const soloPlan = (trialEndsAt: string | null) => ({
+  billing: {
+    tier: "solo" as const,
+    status: "active" as const,
+    trialEndsAt,
+    graceUntil: null,
+    creatorsThisMonth: 1,
+    readOnly: false,
+    reason: "solo" as const,
+  },
+});
+const refuseCreate = http.post("*/api/v1/spaces", () =>
+  HttpResponse.json(
+    {
+      error: {
+        code: "plan_required",
+        message: "server text",
+        details: { tier: "solo", reason: "solo" },
+      },
+    },
+    { status: 403 },
+  ),
+);
+const createRefused = async () => {
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Design" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  const line = await findVisibleToast(/^Spaces are a team feature\./);
+  return line.closest("[data-sonner-toast]") as HTMLElement;
+};
+
+it("a Solo owner whose trial never ran: the refusal links Invite people and See plans (#2472)", async () => {
+  mountHosted("/settings/spaces", soloPlan(null), undefined, [refuseCreate]);
+  const t = await createRefused();
+  expect(t).toHaveTextContent(
+    "Spaces are a team feature. Invite someone to start your free 30-day trial, or choose a plan.",
+  );
+  expect(
+    within(t)
+      .getAllByRole("link")
+      .map((l) => [l.textContent, l.getAttribute("href")]),
+  ).toEqual([
+    ["Invite people", "/settings/members"],
+    ["See plans", "/settings/plan"],
+  ]);
+});
+
+it("a Solo owner after a trial: the refusal links See plans only (#2472)", async () => {
+  mountHosted(
+    "/settings/spaces",
+    soloPlan("2026-10-01T00:00:00.000Z"),
+    undefined,
+    [refuseCreate],
+  );
+  const t = await createRefused();
+  expect(t).toHaveTextContent(
+    "Spaces are a team feature. Choose a plan to continue.",
+  );
+  expect(
+    within(t)
+      .getAllByRole("link")
+      .map((l) => [l.textContent, l.getAttribute("href")]),
+  ).toEqual([["See plans", "/settings/plan"]]);
 });

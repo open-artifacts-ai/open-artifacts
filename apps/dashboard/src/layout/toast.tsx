@@ -11,6 +11,11 @@ export type ToastOptions = {
   description?: ReactNode;
   /** "neutral": no icon. */
   tone?: "info" | "success" | "danger" | "warning" | "neutral";
+  /**
+   * Links under the description, e.g. See plans. Each is a page load: toasts
+   * can fire from hooks outside the router.
+   */
+  links?: { label: string; to: string }[];
   /** A button in the toast, e.g. Undo. Clicking it also dismisses. */
   action?: { label: string; onClick(): void };
   /** A toast with the same id replaces the one showing. */
@@ -26,6 +31,7 @@ const LONG = 8000;
 export function toast({
   title,
   description,
+  links,
   tone,
   action,
   id,
@@ -35,7 +41,24 @@ export function toast({
   const danger = tone === "danger";
   const opts = {
     id,
-    description,
+    description: links?.length ? (
+      <>
+        {description}
+        <span className="mt-[var(--oa-space-1)] flex flex-wrap gap-x-[var(--oa-space-3)]">
+          {links.map((l) => (
+            <a
+              key={l.to}
+              href={l.to}
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              {l.label}
+            </a>
+          ))}
+        </span>
+      </>
+    ) : (
+      description
+    ),
     duration: duration ?? (danger || action ? LONG : undefined),
     action: action && { label: action.label, onClick: () => action.onClick() },
     onDismiss: onClose,

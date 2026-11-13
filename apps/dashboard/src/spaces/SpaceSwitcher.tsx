@@ -15,6 +15,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type MouseEvent, useState } from "react";
 import { hasFeature } from "../api/contract";
 import { useMe } from "../auth/useMe";
+import { isOrgAdmin } from "../settings/spaces/access";
 import { sharedSpaceName } from "./label";
 
 const VISIBLE = 8;
@@ -66,7 +67,7 @@ export function SpaceSwitcher({ path }: { path: string }) {
     a.name.localeCompare(b.name),
   );
   const shown = all ? spaces : spaces.slice(0, VISIBLE);
-  const admin = me.user.role === "owner" || me.user.role === "admin";
+  const admin = isOrgAdmin(me);
   return (
     <nav aria-label="Spaces">
       <SidebarGroup>
@@ -104,8 +105,9 @@ export function SpaceSwitcher({ path }: { path: string }) {
             <div className="grid gap-[6px] px-[var(--oa-space-2)] pt-[var(--oa-space-1)] text-[length:var(--oa-text-xs)] text-muted-foreground">
               <b className="font-medium text-foreground">No spaces yet</b>
               <span>
-                Your admin hasn't set up spaces. What you publish stays in
-                Personal until they do.
+                {admin
+                  ? "You haven't set up spaces. What you publish stays in Personal until you do."
+                  : "Your admin hasn't set up spaces. What you publish stays in Personal until they do."}
               </span>
               {admin && (
                 <a

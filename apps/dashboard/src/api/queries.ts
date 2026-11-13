@@ -77,6 +77,7 @@ import {
   type ErrorContext,
   errorCopy,
   errorLink,
+  planLinks,
 } from "./errorCopy";
 
 const failToast = (e: unknown, fallback: string) =>
@@ -423,9 +424,11 @@ const failureToast = (
   const ctx = errorContext(qc);
   const description = errorCopy(e, fallback, ctx);
   const link = errorLink(e, ctx);
+  const links = planLinks(e, ctx);
   toast({
     title,
     ...(description ? { description } : {}),
+    ...(links.length ? { links } : {}),
     tone: "danger",
     // Hooks sit outside the router, so the link is a page load.
     ...(link
