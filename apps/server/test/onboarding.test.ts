@@ -183,6 +183,21 @@ describe("R.onboarding", () => {
       expect(st).not.toBe(st2);
     });
 
+    it("the seeded Welcome does not make hasArtifacts true; the user's own artifact does", async () => {
+      await clear();
+      await env.DB.prepare("delete from artifacts").run();
+      const o = await owner();
+      await seedWelcome(HOSTED_ENV, o.user);
+      const got = (await get(o.cookie)).body;
+      expect(got?.welcomeId).not.toBeNull();
+      expect(got?.hasArtifacts).toBe(false);
+      await api(app, R.artifacts, o.cookie, {
+        method: "POST",
+        body: { title: "mine", format: "html", content: "<p>x</p>" },
+      });
+      expect((await get(o.cookie)).body?.hasArtifacts).toBe(true);
+    });
+
     it("any other artifact next to the self-test page keeps the instance not fresh", async () => {
       await clear();
       await env.DB.prepare("delete from artifacts").run();
@@ -243,7 +258,7 @@ describe("R.onboarding", () => {
       expect(got?.welcomeOpened).toBe(false);
       // Welcome is not "the first artifact" the user published.
       expect(got?.firstArtifact).toBeNull();
-      expect(got?.hasArtifacts).toBe(true);
+      expect(got?.hasArtifacts).toBe(false);
     });
 
     it("seeds nothing off hosted, or for a non-owner", async () => {

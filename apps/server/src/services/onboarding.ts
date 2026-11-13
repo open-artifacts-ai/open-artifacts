@@ -51,8 +51,10 @@ export async function getOnboarding(
     ).bind(DISMISSED_KEY, COMPLETED_KEY, WELCOME_KEY, WELCOME_OPENED_KEY),
     stmt(
       env.DB,
-      `select 1 as x from artifacts where owner_id = ?1 and deleted_at is null and not ${SELF_TEST} limit 1`,
-    ).bind(userId),
+      `select 1 as x from artifacts where owner_id = ?1 and deleted_at is null and not ${SELF_TEST}
+       and id <> coalesce((select json_extract(value, '$.artifactId') from settings where key = ?2), '')
+       limit 1`,
+    ).bind(userId, WELCOME_KEY),
     // An agent is connected: an OAuth grant it used, or a token that was used.
     stmt(
       env.DB,
