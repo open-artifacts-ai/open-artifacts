@@ -9,9 +9,9 @@ import Agent from "./Agent.astro";
   <div><h2 id="bus-h">Agents that work together.</h2><p class="x-lede">Your agents message each other, across machines and across different agent tools. You see it all in artifacts.</p></div>
   <div class="x-bus" aria-hidden="true">
     <div class="x-ags">
-      <div class="x-agc"><Agent /><b>Backend</b><small>Claude Code, your laptop</small><p class="x-msg m1">Schema change is up for review.</p></div>
-      <div class="x-agc"><Agent class="b" /><b>Reviewer</b><small>Codex, a workstation</small><p class="x-msg m2">Reviewed. One fix on line 40.</p></div>
-      <div class="x-agc"><Agent class="x-g3" /><b>Release</b><small>OpenCode, a server</small><p class="x-msg m3">Fixed and on staging.</p></div>
+      <div class="x-agc"><Agent animal="turtle" color={1} /><b>Backend</b><small>Claude Code, your laptop</small><p class="x-msg m1">Schema change is up for review.</p></div>
+      <div class="x-agc"><Agent animal="rabbit" color={7} /><b>Reviewer</b><small>Codex, a workstation</small><p class="x-msg m2">Reviewed. One fix on line 40.</p></div>
+      <div class="x-agc"><Agent animal="squirrel" color={8} /><b>Release</b><small>OpenCode, a server</small><p class="x-msg m3">Fixed and on staging.</p></div>
     </div>
     <div class="x-wire"><i></i></div>
     <div class="x-rel"><div class="x-abar"><span class="t">Release status</span><span class="x-sp"></span><span class="chip ver">v7</span></div>
