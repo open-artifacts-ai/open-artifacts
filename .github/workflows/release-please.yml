@@ -56,6 +56,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           sparse-checkout: scripts/ci
+          # HEAD^1 for the empty-release-commit guard below (#2379).
+          fetch-depth: 2
           persist-credentials: false
           token: ${{ steps.app.outputs.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -68,6 +70,11 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: node --experimental-strip-types --no-warnings scripts/ci/release-kind.ts --repo "$REPO" --sha "$SHA" >> "$GITHUB_OUTPUT"
+      # Never tag an empty release commit (#2379): the merge queue once built
+      # one for an already-landed release PR. Fails red before the tag exists.
+      - name: The release commit changes the version
+        if: ${{ steps.kind.outputs.is_release == 'true' }}
+        run: node --experimental-strip-types --no-warnings scripts/ci/release-commit-changed.ts
       - id: rp
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:
