@@ -197,11 +197,13 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     all.hidden = !(p.agentConnected && p.firstArtifact && p.commented);
     return !all.hidden;
   }
-  var finished = false, busy = false;
+  var finished = false, busy = false, refused = false, started = Date.now();
   function poll(){
-    if (finished || busy || document.visibilityState === "hidden" || !oa || !oa.onboarding) return;
+    if (finished || refused || busy || document.visibilityState === "hidden" || !oa || !oa.onboarding) return;
     busy = true;
-    oa.onboarding.get().then(function(p){ finished = render(p); }, function(){}).then(function(){ busy = false; });
+    oa.onboarding.get().then(function(p){ finished = render(p); }, function(e){
+      if (e && e.code === "forbidden") refused = true;
+    }).then(function(){ busy = false; });
   }
   if (oa && oa.ready) oa.ready.then(function(){
     var set = function(t){ document.documentElement.setAttribute("data-theme", t); };
@@ -209,7 +211,13 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     oa.onTheme(set);
   }, function(){});
   if (oa && oa.ready) oa.ready.then(poll, function(){});
-  setInterval(poll, 5000);
+  // Every 5 s for the first minute, then every 15 s; never after a refusal.
+  function again(){
+    if (finished || refused) return;
+    poll();
+    setTimeout(again, Date.now() - started < 60000 ? 5000 : 15000);
+  }
+  setTimeout(again, 5000);
   document.addEventListener("visibilitychange", poll);
   window.addEventListener("focus", poll);
 })();

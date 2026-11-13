@@ -76,6 +76,32 @@ describe("first open of Welcome", () => {
     expect(second.state.location.pathname).toBe("/");
   });
 
+  it("does not pull them off a page they moved to while Welcome loaded", async () => {
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    server.use(
+      state(),
+      putOnboarding(),
+      http.get(`*/api/v1/artifacts/${WELCOME}`, async () => {
+        await held;
+        const { fixtures } = await import("@oa/shared/mocks");
+        return HttpResponse.json({
+          ...fixtures.artifacts[0],
+          id: WELCOME,
+          title: "Welcome",
+        });
+      }),
+    );
+    const router = mount("/");
+    await screen.findByRole("link", { name: "Landing page" });
+    await router.navigate({ to: "/mine" });
+    release();
+    await wait(300);
+    expect(router.state.location.pathname).toBe("/mine");
+  });
+
   it("leaves the Library alone once it has been opened", async () => {
     const puts = calls("PUT");
     server.use(state({ welcomeOpened: true }), welcomeArtifact());

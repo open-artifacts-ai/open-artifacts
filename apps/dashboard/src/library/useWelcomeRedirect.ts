@@ -3,7 +3,7 @@
 // (the server may also have cleared welcomeId) breaks nothing: the Library stays.
 import { ArtifactSummarySchema, R } from "@oa/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { api } from "../api/client";
 import { qk, useOnboarding, useSetOnboarding } from "../api/queries";
@@ -19,6 +19,7 @@ export function useWelcomeRedirect(enabled: boolean) {
   const { mutate: save } = useSetOnboarding();
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const router = useRouter();
   const o = onboarding.data;
   const welcomeId = o?.welcomeId;
   const unopened = o?.welcomeOpened === false;
@@ -35,12 +36,14 @@ export function useWelcomeRedirect(enabled: boolean) {
       staleTime: 0,
     }).then(
       (a) => {
-        if (a.deletedAt === null)
+        // Only if they are still on the Library: never pull them off a page
+        // they opened while this was loading.
+        if (a.deletedAt === null && router.state.location.pathname === "/")
           void navigate({ to: "/a/$id", params: { id: welcomeId } });
       },
       () => {},
     );
-  }, [enabled, owner, welcomeId, unopened, save, qc, navigate]);
+  }, [enabled, owner, welcomeId, unopened, save, qc, navigate, router]);
 }
 
 /** Test hook: forget what was handled. */

@@ -100,6 +100,26 @@ describe("Welcome page", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  it("stops asking once the shell refuses it", async () => {
+    get.mockRejectedValue(
+      Object.assign(new Error("no"), { code: "forbidden" }),
+    );
+    await load();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks every 5 s for the first minute, then every 15 s", async () => {
+    await load();
+    await vi.advanceTimersByTimeAsync(60000);
+    const first = get.mock.calls.length;
+    expect(first).toBeGreaterThanOrEqual(11);
+    await vi.advanceTimersByTimeAsync(60000);
+    const next = get.mock.calls.length - first;
+    expect(next).toBeGreaterThanOrEqual(3);
+    expect(next).toBeLessThanOrEqual(5);
+  });
+
   it("does not ask while the tab is hidden", async () => {
     await load();
     const vis = vi.spyOn(document, "visibilityState", "get");
