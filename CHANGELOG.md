@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.172.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.171.0...v0.172.0) (2026-11-13)
+
+
+### Features
+
+* **billing:** Business is contact-only; no self-serve Business checkout ([#2404](https://github.com/open-artifacts-ai/open-artifacts/issues/2404)) ([#2407](https://github.com/open-artifacts-ai/open-artifacts/issues/2407)) ([8161a47](https://github.com/open-artifacts-ai/open-artifacts/commit/8161a473bead470d92f34335404424d64fc67fc8))
+* **comments:** passkey approval on dangerous ask cards ([#2263](https://github.com/open-artifacts-ai/open-artifacts/issues/2263)) ([#2264](https://github.com/open-artifacts-ai/open-artifacts/issues/2264)) ([7d08f79](https://github.com/open-artifacts-ai/open-artifacts/commit/7d08f79a7ea15024d94ef21ade9ba75c4855b165))
+* **comments:** show a link's host after its label on touch ([#2348](https://github.com/open-artifacts-ai/open-artifacts/issues/2348)) ([#2399](https://github.com/open-artifacts-ai/open-artifacts/issues/2399)) ([d83064a](https://github.com/open-artifacts-ai/open-artifacts/commit/d83064a14b4e6e284ea09a23921c08755fe94901))
+* **docs:** the collaborative doc room Durable Object, core ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2154](https://github.com/open-artifacts-ai/open-artifacts/issues/2154)) ([641651c](https://github.com/open-artifacts-ai/open-artifacts/commit/641651c602b8d11ac61667a4c183ebc2a3b441de))
+* **onboarding:** a new hosted instance opens on a Welcome artifact ([#2287](https://github.com/open-artifacts-ai/open-artifacts/issues/2287)) ([#2403](https://github.com/open-artifacts-ai/open-artifacts/issues/2403)) ([80334cf](https://github.com/open-artifacts-ai/open-artifacts/commit/80334cf9855366c80931475151083531b2dad8b6))
+
+
+### Bug Fixes
+
+* **bus:** a purged agent's rename-limit rows go with it ([#2318](https://github.com/open-artifacts-ai/open-artifacts/issues/2318)) ([#2402](https://github.com/open-artifacts-ai/open-artifacts/issues/2402)) ([43a2ef0](https://github.com/open-artifacts-ai/open-artifacts/commit/43a2ef03bf8a42b6a22c3bf9b6b1669093adbed9))
+* **comments:** harden pin badges in the frame; the pin box follows its flag on scroll ([#2388](https://github.com/open-artifacts-ai/open-artifacts/issues/2388), [#2386](https://github.com/open-artifacts-ai/open-artifacts/issues/2386)) ([#2406](https://github.com/open-artifacts-ai/open-artifacts/issues/2406)) ([2bb3233](https://github.com/open-artifacts-ai/open-artifacts/commit/2bb3233720196689a581a58e0573bb39e90b9a93))
+* **comments:** plan-gate comment writes and show billing copy ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#2398](https://github.com/open-artifacts-ai/open-artifacts/issues/2398)) ([560c423](https://github.com/open-artifacts-ai/open-artifacts/commit/560c42363aae6b1567f29febb7dd1deec5db6047))
+
 ## [0.171.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.170.0...v0.171.0) (2026-11-13)
 
 
