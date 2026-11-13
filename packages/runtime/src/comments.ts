@@ -162,6 +162,43 @@ const ICON_ATTRS = new Set([
   "height",
   "transform",
 ]);
+/** #2388: the rebuilt icon per icon string (null: refused), so a re-measure does not reparse. */
+const ICON_CACHE = new Map<string, SVGSVGElement | null>();
+const ICON_MAX_NODES = 64;
+
+function buildIcon(icon: string): SVGSVGElement | null {
+  const doc = new DOMParser().parseFromString(
+    `<svg xmlns="${SVG_NS}">${icon}</svg>`,
+    "image/svg+xml",
+  );
+  const root = doc.documentElement;
+  if (
+    root.localName !== "svg" ||
+    root.namespaceURI !== SVG_NS ||
+    doc.querySelector("parsererror")
+  )
+    return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  let nodes = 0;
+  const copy = (from: Element, to: Element, depth: number) => {
+    if (depth > 4) return;
+    for (const c of Array.from(from.children)) {
+      if (nodes >= ICON_MAX_NODES) return;
+      if (c.namespaceURI !== SVG_NS || !ICON_TAGS.has(c.localName)) continue;
+      nodes++;
+      const n = document.createElementNS(SVG_NS, c.localName);
+      for (const a of Array.from(c.attributes))
+        if (ICON_ATTRS.has(a.name)) n.setAttribute(a.name, a.value);
+      to.append(n);
+      copy(c, n, depth + 1);
+    }
+  };
+  copy(root, svg, 0);
+  return svg;
+}
+
 /**
  * Build the badge into a pin: initials as text, or an icon rebuilt from the
  * shell's markup. Only the allowlisted shapes and attributes are copied, so
@@ -173,31 +210,18 @@ function fillBadge(el: HTMLElement, badge: PinBadge): void {
     el.textContent = badge.initials;
     return;
   }
-  const doc = new DOMParser().parseFromString(
-    `<svg xmlns="${SVG_NS}">${badge.icon}</svg>`,
-    "image/svg+xml",
-  );
-  const root = doc.documentElement;
-  if (root.localName !== "svg" || doc.querySelector("parsererror")) return;
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  const copy = (from: Element, to: Element, depth: number) => {
-    if (depth > 4) return;
-    for (const c of Array.from(from.children)) {
-      if (!ICON_TAGS.has(c.localName)) continue;
-      const n = document.createElementNS(SVG_NS, c.localName);
-      for (const a of Array.from(c.attributes))
-        if (ICON_ATTRS.has(a.name)) n.setAttribute(a.name, a.value);
-      to.append(n);
-      copy(c, n, depth + 1);
-    }
-  };
-  copy(root, svg, 0);
+  let svg = ICON_CACHE.get(badge.icon);
+  if (svg === undefined) {
+    svg = buildIcon(badge.icon);
+    // Bounded: a page cannot grow it without limit.
+    if (ICON_CACHE.size >= 64) ICON_CACHE.clear();
+    ICON_CACHE.set(badge.icon, svg);
+  }
+  if (!svg) return;
   el.classList.add("face");
   if (badge.dashed) el.classList.add("dashed");
   el.style.setProperty("--face", badge.color);
-  el.append(svg);
+  el.append(svg.cloneNode(true));
 }
 
 export function createComments(
@@ -438,9 +462,11 @@ export function createComments(
       x: number,
       y: number,
       label?: string,
-      badge?: PinBadge,
+      badgeIn?: PinBadge,
       id?: string,
     ) => {
+      // #2388: a badge only belongs on image and pdf pins, here as well as in the shell.
+      const badge = hasPins ? badgeIn : undefined;
       // A real pin with a badge is a button: keyboard reachable, named.
       const live = badge !== undefined && !cls.includes("ghost");
       const d = document.createElement(live ? "button" : "div");
