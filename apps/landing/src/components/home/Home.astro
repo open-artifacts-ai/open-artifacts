@@ -1,12 +1,13 @@
 ---
 // The landing page body (#1457): the hero with its scroll scene, the artifact's
-// chapters, the kinds of thing agents make, the agents it works with, pricing,
+// chapters, agents working together (the bus), the kinds of thing agents make, the agents it works with, pricing,
 // self-host and the close. Everything renders in its landed state in HTML;
 // home.client.ts enhances it.
 import { REPO_URL } from "@oa/shared";
 import { HERO_COPY } from "../../lib/copy";
 import { signupHref } from "../../lib/hero";
 import Agents from "./Agents.astro";
+import Bus from "./Bus.astro";
 import Pricing from "./Pricing.astro";
 import Scene from "./Scene.astro";
 import Story from "./Story.astro";
@@ -39,6 +40,8 @@ const [promptLead, promptUrl] = prompt.split(/(?<=: )/);
   </div>
 
   <Story />
+
+  <Bus />
 
   <Wall />
 

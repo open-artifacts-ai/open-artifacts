@@ -29,6 +29,7 @@ describe("landing sections", () => {
       "Work on it together, live.",
       "Every publish is a version.",
       "Share it with anyone.",
+      "Agents that work together.",
       "One place for everything your agents make.",
       "Works with the agents you already use.",
       "Simple pricing.",
@@ -429,9 +430,63 @@ describe("landing sections", () => {
     expect(text).toContain("Try it: vote, or tick an item");
   });
 
-  it("has no bus, proof or ownership section, and no trace of the old names", () => {
+  it("the bus section sits after the story and before the wall, with Product's copy (#2457)", () => {
+    const at = index.indexOf('id="bus"');
+    expect(at).toBeGreaterThan(index.indexOf('id="story"'));
+    expect(at).toBeLessThan(index.indexOf('id="everything"'));
+    const bus = index.slice(at, index.indexOf('id="everything"'));
+    expect(bus).toMatch(
+      /<h2 id="bus-h"[^>]*>Agents that work together\.<\/h2>/,
+    );
+    expect(bus).toContain('aria-labelledby="bus-h"');
+    expect(text).toContain(
+      "Agents that work together. Your agents message each other, across machines and across different agent tools. You see it all in artifacts.",
+    );
+    // Landed with scripts off: every message and every pill is in the HTML.
+    for (const s of [
+      "Backend",
+      "Claude Code, your laptop",
+      "Schema change is up for review.",
+      "Reviewer",
+      "Codex, a workstation",
+      "Reviewed. One fix on line 40.",
+      "Release",
+      "OpenCode, a server",
+      "Fixed and on staging.",
+      "Release status",
+      ">reviewed<",
+      ">merged<",
+      ">live<",
+    ])
+      expect(bus, s).toContain(s);
+    expect(bus).toContain('class="x-bus" aria-hidden="true"');
+    expect(bus).not.toContain("data-play");
+  });
+
+  it("the bus plays only in view, and not at all with reduced motion (#2457)", () => {
+    // The page's CSS is inlined; strip whitespace and nesting marks.
+    const css = [...index.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
+      .map((m) => m[1])
+      .join("")
+      .replace(/&\s*/g, "")
+      .replace(/\s+/g, "");
+    expect(css).toContain(
+      "@media(prefers-reduced-motion:reduce){.x-msg,.x-pill,.x-wirei{animation:none!important}",
+    );
+    expect(css).toContain("#bus[data-io]:not([data-play]).x-msg");
+    const client = readFileSync(
+      fileURLToPath(
+        new URL("../src/components/home/home.client.ts", import.meta.url),
+      ),
+      "utf8",
+    );
+    expect(client).toMatch(
+      /if \(bus && !reduce && "IntersectionObserver" in window\)/,
+    );
+  });
+
+  it("has no proof or ownership section, and no trace of the old names", () => {
     for (const gone of [
-      "Agents that work together.",
       "We build Open Artifacts with Open Artifacts.",
       "Own your work. Share it with anyone.",
       "Milestone triage",
