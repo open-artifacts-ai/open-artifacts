@@ -61,6 +61,7 @@
       "git show*--output*": "ask",
       "git diff*--output*": "ask",
       "git diff*--ext-diff*": "ask",
+      "git show*--ext-diff*": "ask",
       "git switch *": "allow",
       "git merge --no-edit origin/main": "allow",
       "git merge --no-edit origin/*": "allow",
