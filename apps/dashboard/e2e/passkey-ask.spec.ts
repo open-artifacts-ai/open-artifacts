@@ -167,5 +167,7 @@ test("Change on a verified answer asks for the passkey again and drops the pill"
   });
   await card.locator("[data-option=stop]").click();
   await expect(card.locator("[data-passkey-verifying]")).toBeVisible();
-  await expect(card.locator("[data-ask-answer]")).not.toContainText(/Stop|B ·/);
+  // Nothing is shown as answered to "Stop" while the prompt is open.
+  await expect(card.locator("[data-ask-answer]")).toHaveCount(0);
+  await expect(card.locator("[data-ask-verified]")).toHaveCount(0);
 });
