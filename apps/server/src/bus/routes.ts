@@ -40,7 +40,7 @@ import {
   pageResponse,
   sessionUser,
 } from "../http/pages.js";
-import { logError, logInfo } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
@@ -644,7 +644,22 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
   if (rl) return rl;
   // Hosted suspend (cloud #228): refuse at once from the install's own D1,
   // before the token lookup, as dispatch's paused answer would.
-  if (await isSuspended(env)) return pausedResponse();
+  // A failed marker read answers 503 try again (the daemon retries 503), not
+  // a 500: never 101 and never on to the token lookup.
+  let suspended: boolean;
+  try {
+    suspended = await isSuspended(env);
+  } catch {
+    logWarn("bus_suspend_read_failed");
+    return errorJson(
+      503,
+      "storage_unavailable",
+      "Try again in a few seconds",
+      undefined,
+      { "retry-after": "5" },
+    );
+  }
+  if (suspended) return pausedResponse();
   // Stamped by the route gate before any read (enforcePolicy).
   const authzAt = c.var.authzAt ?? Date.now();
   const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
