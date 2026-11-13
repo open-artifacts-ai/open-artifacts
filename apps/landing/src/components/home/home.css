@@ -114,6 +114,9 @@
     font-weight: 600;
     letter-spacing: -0.015em;
     text-wrap: balance;
+    /* site.css sets heading line-heights for the docs; here they follow
+       the text, as in the reference. */
+    line-height: inherit;
   }
   .wrap {
     width: 100%;
@@ -751,6 +754,8 @@
     border-radius: 10px;
     padding: 10px;
     font-size: 13.5px;
+    /* site.css gives a .card a shadow; these cards have only the line. */
+    box-shadow: none;
   }
   .card.col {
     color: var(--oa-text-muted);
@@ -980,6 +985,8 @@
     font-style: italic;
   }
   .asksfy {
+    border: 0;
+    cursor: pointer;
     background: var(--oa-warning-soft);
     color: var(--oa-warning);
     font: 600 12.5px var(--oa-font-sans);
@@ -988,6 +995,9 @@
     box-shadow: inset 0 0 0 1px var(--oa-warning);
     white-space: nowrap;
     flex: none;
+  }
+  .sh .asksfy {
+    font-size: 12px;
   }
   .mrow {
     display: flex;
@@ -3005,6 +3015,23 @@ centred */
     min-height: 62px;
     grid-template-columns: minmax(0, 1fr);
   }
+  .sc-dots {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+    display: flex;
+    gap: 6px;
+  }
+  .sc-dots li {
+    width: 22px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--oa-border);
+    transition: background 0.25s;
+  }
+  .sc-dots li.on {
+    background: var(--oa-accent);
+  }
   .pm {
     display: flex;
     gap: 4px;
@@ -3299,18 +3326,17 @@ centred */
   .pl-view .x-dec {
     font-size: 16px;
   }
-  .pl-view [data-s="3"] .x-blk[data-until],
-  .pl-view [data-s="4"] .x-blk[data-until],
-  .pl-view [data-s="4"] .x-blk[data-from="2"] {
+  .pl-view [data-s="2"] .sa-intro,
+  .pl-view [data-s="3"] .sa-intro,
+  .pl-view [data-s="4"] .sa-intro,
+  .pl-view [data-s="3"] .sa-cl,
+  .pl-view [data-s="4"] .sa-cl {
     display: none;
   }
   .plk[data-beat="4"] .pl-view .x-side:first-child {
     flex-basis: 0;
     opacity: 0;
     overflow: hidden;
-  }
-  .plk[data-beat="4"] .pl-view .x-blk[data-from="2"] {
-    display: block;
   }
   .pl-chap {
     flex: 1;
@@ -4027,6 +4053,13 @@ centred */
     &.lp-js:not([data-cards])[data-hand="1"] .x-note,
     &.lp-js:not([data-cards])[data-hand="1"] .sc-pin {
       visibility: hidden;
+    }
+    /* The note takes no height here, so the stage below starts exactly
+       where the pinned scene ends and nothing moves at the hand-over. */
+    &.lp-js:not([data-cards]) .sc .x-note {
+      height: 0;
+      margin-top: 0;
+      transform: translateY(12px);
     }
     &.lp-js:not([data-cards]) .chs {
       padding-top: calc(58vh - (100vh - var(--sch)) / 2 + 24vh);

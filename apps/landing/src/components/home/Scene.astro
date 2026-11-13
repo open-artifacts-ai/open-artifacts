@@ -17,7 +17,10 @@ import {
     <div class="sc-view" id="scview">
       <div class="sc-turn" aria-hidden="true"><b>{SCENE_TURN[0]}</b><span>{SCENE_TURN[1]}</span></div>
     </div>
-    <div class="sc-capw"><div class="sc-caps" id="sccaps" aria-live="polite"></div></div>
+    <div class="sc-capw">
+      <ol class="sc-dots" id="scdots" aria-hidden="true"><li></li><li></li><li></li><li></li></ol>
+      <div class="sc-caps" id="sccaps" aria-live="polite"></div>
+    </div>
     <p class="sbs-cap sc-end">{SCENE_NOTE}</p>
   </div>
   <div class="sc-steps" id="scsteps" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>

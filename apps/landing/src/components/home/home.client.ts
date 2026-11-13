@@ -120,6 +120,7 @@ let userVote: number | null = null;
 // A tiny helper: the first matching element inside a parent.
 const $in = (s: string, r: HTMLElement) => r.querySelector(s) as HTMLElement;
 let userPick: string | null = null,
+  noAuto = false,
   passed = false,
   tSel: string | null = null,
   tDec = false,
@@ -193,7 +194,8 @@ function render(force = false) {
   ln.classList.toggle("sel", t >= 20 && t < 23);
   ln.classList.toggle("sw", t >= 23 || s0);
   ln.classList.toggle("chg", t >= 23 && t < 30);
-  const pick = userPick || (t >= 32 ? "b" : null);
+  // Change clears your pick and stops Sam's scripted one from coming back.
+  const pick = userPick || (!noAuto && t >= 32 ? "b" : null);
   const done = !!pick && (!!userPick || t >= 33) && t >= 30;
   // The team chapter shows the ask undecided, with its own pick and who decides.
   const vp = teamV ? null : pick;
@@ -202,10 +204,18 @@ function render(force = false) {
   $("#thread0").classList.toggle("hide", !s0);
   $("#tcol").classList.toggle("hide", t < 30);
   $("#ask").classList.toggle("hide", t < 30);
-  $("#sopen").textContent =
-    t >= 30 ? (vd ? "All resolved" : "1 ask for you") : "1 open";
+  // Two asks wait for you until this one is answered; the team chapter's
+  // copy of it is still open.
+  const afy = vp ? "1 ask for you" : "2 asks for you";
+  const sopen = $("#sopen");
+  sopen.textContent = t >= 30 ? afy : "1 open";
+  sopen.classList.toggle("asksfy", t >= 30);
+  const asksfy = $("#asksfy");
+  asksfy.textContent = afy;
+  asksfy.classList.toggle("hide", !(t >= 30 && t < 40));
   for (const o of opts) press(o, o.dataset.k === (teamV ? tSel : vp));
   $("#ask").classList.toggle("need", !vp);
+  $("#ask").classList.toggle("locked", !!userPick && !teamV);
   $("#ask [data-askq]").classList.toggle("hide", !!vp);
   const name =
     pick === "a"
@@ -213,22 +223,16 @@ function render(force = false) {
       : pick === "x"
         ? "Your answer"
         : "Email list";
-  $("#why").classList.toggle("hide", !!vp);
   const picked = $("#picked");
   picked.classList.toggle("hide", !vp);
-  picked.replaceChildren();
-  if (vp) {
-    const who = document.createElement("span");
-    who.className = userPick ? "pp you" : "pp";
-    who.textContent = userPick ? "You" : "SR";
-    picked.append(
-      who,
-      userPick
-        ? vp === "x"
-          ? "You answered in your own words"
-          : `You picked ${vp.toUpperCase()}`
-        : `Sam Rivera picked ${vp.toUpperCase()}`,
-    );
+  const ph = !vp
+    ? ""
+    : userPick
+      ? `${vp === "x" ? "You answered in your own words" : `You picked ${vp.toUpperCase()}`} · just now · <button type="button" class="alink" data-change>Change</button>`
+      : `Sam Rivera picked ${vp.toUpperCase()} · just now`;
+  if (picked.dataset.h !== ph) {
+    picked.dataset.h = ph;
+    picked.innerHTML = ph;
   }
   $("#adone").classList.toggle("on", vd);
   $("#adonex").textContent =
@@ -291,6 +295,8 @@ function render(force = false) {
     vis = $("#vis");
   vis.textContent = pub ? "Public link" : "Shared with 4";
   vis.classList.toggle("pub", pub);
+  $("#avs").classList.add("on");
+  $("#avs").classList.toggle("more-on", t >= 63);
 }
 let raf = 0;
 const tick = () => {
@@ -319,6 +325,10 @@ $("#ask").addEventListener("click", (e) => {
   } else if (t.closest("[data-undo]")) {
     passed = false;
     tDec = false;
+    render(true);
+  } else if (t.closest("[data-change]")) {
+    userPick = null;
+    noAuto = true;
     render(true);
   } else if (t.closest("[data-decide]")) {
     if (tSel) {

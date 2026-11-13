@@ -380,6 +380,48 @@ describe("landing sections", () => {
     expect(index).toContain("2 asks for you");
   });
 
+  it("matches reference v28: hero dashes, stage bar, ask chips, flat thread cards", () => {
+    // The pinned hero counts its four moments with four dashes; the 11-mark
+    // rail starts after the hand-over.
+    const capw =
+      index.match(/<div class="sc-capw">[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? "";
+    expect(capw).toMatch(
+      /<ol class="sc-dots" id="scdots" aria-hidden="true">(<li><\/li>){4}<\/ol>/,
+    );
+    expect(capw).not.toContain('class="pm"');
+    // The stage's top bar: who is on it, how many asks wait, and the share count.
+    const vbar =
+      index.match(
+        /<div class="vbar">\s*<span class="t">Launch plan<\/span>\s*<span class="chip" id="vis">[\s\S]*?<\/div>/,
+      )?.[0] ?? "";
+    expect(vbar).toMatch(
+      /id="avs"[^>]*><span class="pp">SR<\/span><span class="pp">MC<\/span><span class="ag/,
+    );
+    expect(vbar).toContain('<span class="more">Shared with 12</span>');
+    expect(vbar).toContain(
+      '<button type="button" class="asksfy hide" id="asksfy">2 asks for you</button>',
+    );
+    // The stage's ask keeps its recommendation, and says who picked.
+    const ask =
+      index.match(
+        /<div class="card ask need hide" id="ask">[\s\S]*?id="adone"/,
+      )?.[0] ?? "";
+    expect(ask).toContain(
+      '<div class="why" id="why">Why B: the list converts best, and it gives us a day to fix surprises.</div>',
+    );
+    expect(ask).toContain(
+      '<div class="picked hide" id="picked" role="status"></div>',
+    );
+    // Thread cards have a line, not the docs' card shadow; the landing's
+    // headings follow the text's line height.
+    expect(index).toMatch(
+      /& \.card\{background:var\(--oa-surface\);border:1px solid var\(--oa-divider\);box-shadow:none/,
+    );
+    // The phone hand-over shows the timeline and its thread, no checklist.
+    expect(index).toContain('.pl-view [data-s="4"] .sa-cl{display:none}');
+    expect(index).not.toMatch(/\.plk\[data-beat="4"\] \.pl-view \.x-blk/);
+  });
+
   it("the phone chapter buttons say what to try", () => {
     expect(text).toContain("Try it: turn on the public link");
     expect(text).toContain("Try it: vote, or tick an item");

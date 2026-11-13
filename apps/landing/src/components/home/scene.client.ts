@@ -1,7 +1,7 @@
 // The pinned scroll scene in the hero. Scroll moves it through four moments, then
 // the turn, and back again. It only pins on a wide screen with motion allowed;
 // otherwise the four moments stay stacked as cards, as the page renders them.
-import { marksHtml, SCENE_CAPTIONS } from "../../lib/scene";
+import { SCENE_CAPTIONS } from "../../lib/scene";
 import { mountScene } from "./sceneview";
 
 export function initScene(lp: HTMLElement, reduce: boolean) {
@@ -17,6 +17,9 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
   const steps = sc.querySelector<HTMLElement>("#scsteps") as HTMLElement;
   const view = sc.querySelector<HTMLElement>("#scview") as HTMLElement;
   const caps = sc.querySelector<HTMLElement>("#sccaps") as HTMLElement;
+  const dots = [
+    ...(sc.querySelector<HTMLElement>("#scdots") as HTMLElement).children,
+  ];
   const { set, land } = mountScene(view);
   sc.classList.add("pinned");
 
@@ -67,8 +70,12 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
       const b = document.createElement("b");
       b.textContent = SCENE_CAPTIONS[s][0];
       p.append(b, SCENE_CAPTIONS[s][1]);
-      p.insertAdjacentHTML("afterbegin", marksHtml(s));
       caps.replaceChildren(p);
+      // Four dashes for the hero's four moments; the 11-mark rail is the
+      // story's, after the hand-over.
+      dots.forEach((d, i) => {
+        d.classList.toggle("on", i < s);
+      });
     }
   }
   let raf = 0;
