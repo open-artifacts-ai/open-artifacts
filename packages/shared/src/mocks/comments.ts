@@ -229,6 +229,10 @@ export function createCommentMock({
       ],
       to: [mine()],
       confirm: "passkey",
+      // As the server sends every ask (#2381): the card shows none of it on a risky ask.
+      decider: mine(),
+      role: "decide",
+      picks: [],
       closed: false,
     };
     const answered = (q: string, verified: boolean) => {
@@ -240,7 +244,14 @@ export function createCommentMock({
           { id: "stop", label: "Stop" },
         ],
         to: [mine()],
-        ...(verified ? { confirm: "passkey" as const } : {}),
+        ...(verified
+          ? {
+              confirm: "passkey" as const,
+              decider: mine(),
+              role: "decide" as const,
+              picks: [],
+            }
+          : {}),
         answer: {
           optionId: "go",
           by: mine(),

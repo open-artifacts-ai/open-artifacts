@@ -653,13 +653,17 @@ export function AskBlock({
   const decisionOpt = ask.options[decisionIdx];
   const weighing = ask.role === "weigh";
   const decider = ask.decider;
-  const deciderLine = !decider
-    ? null
-    : ask.role === "decide"
-      ? "You decide"
-      : ask.chosenBy
-        ? `${ask.chosenBy.me ? "You" : ask.chosenBy.name} asked ${decider.name} to decide`
-        : `${decider.name} decides`;
+  // A risky ask (an action option or a passkey) shows no one else: no who-line,
+  // weigh-ins or take back. It is the asker's own user's call.
+  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const deciderLine =
+    !decider || risky
+      ? null
+      : ask.role === "decide"
+        ? "You decide"
+        : ask.chosenBy
+          ? `${ask.chosenBy.me ? "You" : ask.chosenBy.name} asked ${decider.name} to decide`
+          : `${decider.name} decides`;
   // Who was asked to weigh in (people, not the decider), shown before anyone picks.
   const weighers = ask.to
     .filter((p) => p.kind !== "agent" && p.id !== decider?.id)
@@ -810,7 +814,7 @@ export function AskBlock({
               )}
             </div>
           )}
-          {ask.canTakeBack && (
+          {ask.canTakeBack && !risky && (
             <p className={TXT}>
               <Button
                 size="xs"
@@ -829,14 +833,14 @@ export function AskBlock({
               </Button>
             </p>
           )}
-          {ask.role && !ask.closed && !pickedOpt && (
+          {ask.role && !risky && !ask.closed && !pickedOpt && (
             <p data-ask-verb="" className={`${TXT} ${MUTED}`}>
               {weighing
                 ? `Pick an option to weigh in. ${decider?.name ?? "The decider"} decides.`
                 : "Pick an option to decide."}
             </p>
           )}
-          {bars && (
+          {bars && !risky && (
             <p data-ask-tally="" className={`${TXT} ${MUTED}`}>
               {views.length} of {people} weighed in. The tally decides nothing.
             </p>
@@ -964,6 +968,7 @@ export function AskBlock({
                     total={views.length}
                     bars={bars}
                     decided={
+                      !risky &&
                       ask.answer?.optionId === o.id &&
                       !isSendingAnswer(ask.answer)
                         ? actor(ask.answer.by, "You")
@@ -1006,7 +1011,7 @@ export function AskBlock({
               <>
                 <p className={`${TXT} font-medium`} data-ask-answer="">
                   {actor(ask.answer.by, "You")}{" "}
-                  {ask.decider ? "decided" : "picked"}{" "}
+                  {ask.decider && !risky ? "decided" : "picked"}{" "}
                   {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
                   {versionDate(ask.answer.at)}
                   {ask.closed ? " · closed" : ""}

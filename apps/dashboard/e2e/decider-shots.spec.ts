@@ -76,3 +76,48 @@ for (const w of [1280, 390]) {
     });
   }
 }
+
+// A risky ask shows no one else: no who-line, weigh-ins or take back (mock v13, "A risky ask shows no one else").
+for (const w of [1280, 390]) {
+  for (const theme of ["light", "dark"] as const) {
+    test(`${w} ${theme}: a passkey ask shows no who-line, weigh-ins or take back`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.setViewportSize({ width: w, height: w < 600 ? 844 : 900 });
+      await page.goto(`/a/${ID}?mock=asks&passkey=ok`);
+      await page.getByRole("button", { name: /^Comments/ }).click();
+      const none = async (c: ReturnType<typeof page.locator>) => {
+        await expect(c.locator("[data-ask-decider]")).toHaveCount(0);
+        await expect(c.locator("[data-ask-weighers]")).toHaveCount(0);
+        await expect(c.locator("[data-option-views]")).toHaveCount(0);
+        await expect(c.locator("[data-ask-verb]")).toHaveCount(0);
+        await expect(
+          c.getByRole("button", { name: "I'll decide this" }),
+        ).toHaveCount(0);
+      };
+      const idle = page
+        .locator("[data-ask]")
+        .filter({ hasText: "Merge the release PR?" });
+      await expect(idle).toContainText("Approving this needs your passkey");
+      await none(idle);
+      if (OUT) {
+        mkdirSync(OUT, { recursive: true });
+        await idle.screenshot({
+          path: `${OUT}/${w}-${theme}-passkey-idle.png`,
+        });
+      }
+      const verified = page
+        .locator("[data-ask]")
+        .filter({ hasText: "Deploy to production?" });
+      await expect(verified.locator("[data-ask-verified]")).toHaveText(
+        /Verified with passkey/,
+      );
+      await none(verified);
+      if (OUT)
+        await verified.screenshot({
+          path: `${OUT}/${w}-${theme}-passkey-verified.png`,
+        });
+    });
+  }
+}
