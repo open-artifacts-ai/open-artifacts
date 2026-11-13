@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.170.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.169.1...v0.170.0) (2026-11-13)
+
+
+### Features
+
+* **comments:** bubble pins and click-to-comment on images and PDFs ([#2019](https://github.com/open-artifacts-ai/open-artifacts/issues/2019)) ([#2385](https://github.com/open-artifacts-ai/open-artifacts/issues/2385)) ([dc185ef](https://github.com/open-artifacts-ai/open-artifacts/commit/dc185ef4944a67a56d640b272480b9444bb540ad))
+
 ## [0.169.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.169.0...v0.169.1) (2026-11-13)
 
 
