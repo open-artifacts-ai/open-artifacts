@@ -2238,14 +2238,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * One compare-and-set inside the DO's single-threaded transaction: it sets
    * `consumedAtMs` only when the ask is a permission ask, was answered "run"
    * by its addressee in the web app with a verified passkey, is live (not
-   * expired, withdrawn, used or in a resolved thread), `callerKeys` hold the
+   * expired, withdrawn, used or in a resolved thread), `callerKey` is the
    * agent that posted it, and `reqHash` is the stored one. 403 for another
    * agent; else 409 consume_refused with details { reason }.
    */
   commentsConsume(a: {
     threadId: string;
     commentId: string;
-    callerKeys: string[];
+    callerKey: string;
     reqHash: string;
   }): { consumed: true; reservation: string } {
     this.ensureSchema();
@@ -2253,7 +2253,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       const r = askRow(this.sql, a.threadId, a.commentId);
       const p = r?.ask.permission;
       if (!r || !p) fail("not_found", "Not found");
-      if (!a.callerKeys.includes(p.agentKey))
+      if (a.callerKey !== p.agentKey)
         fail("forbidden", "Only the agent that asked can use this");
       // The reason rides as the message; the service puts it in details.
       const no = (reason: string): never => fail("consume_refused", reason);
@@ -2286,14 +2286,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
   commentsWithdraw(a: {
     threadId: string;
     commentId: string;
-    callerKeys: string[];
+    callerKey: string;
   }): { reservation: string } {
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       const r = askRow(this.sql, a.threadId, a.commentId);
       const p = r?.ask.permission;
       if (!r || !p) fail("not_found", "Not found");
-      if (!a.callerKeys.includes(p.agentKey))
+      if (a.callerKey !== p.agentKey)
         fail("forbidden", "Only the agent that asked can withdraw this");
       if (p.consumedAtMs !== undefined)
         fail("consumed", "This permission was already used");

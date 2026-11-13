@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4a93dc15-b978-4fcc-aeb6-e447047e4a63",
+  "id": "6ad63650-bbc6-4e99-ad3f-89a377855a48",
   "prevId": "cfbd6aee-3d79-4f3e-980c-e7d413573d60",
   "tables": {
     "agent_grants": {
@@ -1633,6 +1633,20 @@
         },
         "done_at": {
           "name": "done_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "withdrawn_at": {
+          "name": "withdrawn_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,

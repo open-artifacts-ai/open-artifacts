@@ -32,26 +32,31 @@ export const permissionReqHash = (r: PermissionRequest): Promise<string> =>
   );
 
 /**
- * Control (Cc), format (Cf: bidi overrides, zero-width, BOM), line and
- * paragraph separators, lone surrogates and variation selectors. What a card
- * shows must be what runs ("Trojan Source").
+ * An allowlist: a field may hold only letters, numbers, punctuation, symbols
+ * and the ASCII space. That refuses every control, format, separator and
+ * mark character, and every non-ASCII space. Some invisible characters are
+ * letters or symbols, so those are refused by name, with everything Unicode
+ * marks default-ignorable. What a card shows must be what runs ("Trojan
+ * Source").
  */
-const UNSAFE =
-  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]|[\uFE00-\uFE0F]|[\u180B-\u180D]|[\u{E0100}-\u{E01EF}]/u;
+const ALLOWED = /^[\p{L}\p{N}\p{P}\p{S} ]*$/u;
+const INVISIBLE =
+  /\u115F|\u1160|\u3164|\uFFA0|\u2800|\u034F|\u17B4|\u17B5|\p{Default_Ignorable_Code_Point}/u;
+
+const unsafeText = (v: string): boolean =>
+  !ALLOWED.test(v) || INVISIBLE.test(v);
 
 /** 400 unsafe_characters for any field holding such a character; only `command` may hold \n and \t. */
 export function refuseUnsafe(r: PermissionRequest, question?: string): void {
   const bad: string[] = [];
   for (const [k, v] of Object.entries(r) as [string, string][]) {
-    const text = k === "command" ? v.replace(/[\n\t]/g, "") : v;
-    if (UNSAFE.test(text)) bad.push(k);
+    if (unsafeText(k === "command" ? v.replace(/[\n\t]/g, "") : v)) bad.push(k);
   }
-  if (question !== undefined && UNSAFE.test(question.replace(/[\n\t]/g, "")))
-    bad.push("question");
+  if (question !== undefined && unsafeText(question)) bad.push("question");
   if (bad.length)
     throw new ApiError(
       "unsafe_characters",
-      `A control, bidirectional or invisible character is not allowed in: ${bad.join(", ")}`,
+      `Only letters, numbers, punctuation, symbols and plain spaces are allowed in: ${bad.join(", ")}`,
       { fields: bad },
     );
 }
@@ -151,18 +156,25 @@ export async function reserveSlot(
     );
 }
 
-/** Frees the slot of an ask that was used or withdrawn. Never throws. */
+/**
+ * Frees the slot of an ask that was used, withdrawn or never stored, and records
+ * which (the audit): `consumed`, `withdrawn` or `failed`. Never throws.
+ */
 export async function releaseSlot(
   env: Env,
   id: string,
+  how: "consumed" | "withdrawn" | "failed",
   now = Date.now(),
 ): Promise<void> {
   try {
     await stmt(
       env.DB,
-      "update permission_asks set done_at = ?1 where id = ?2 and done_at is null",
+      `update permission_asks set done_at = coalesce(done_at, ?1),
+         consumed_at = case when ?3 = 'consumed' then coalesce(consumed_at, ?1) else consumed_at end,
+         withdrawn_at = case when ?3 = 'withdrawn' then coalesce(withdrawn_at, ?1) else withdrawn_at end
+       where id = ?2`,
     )
-      .bind(now, id)
+      .bind(now, id, how)
       .run();
   } catch {
     // The slot frees itself when the ask expires.

@@ -1421,14 +1421,43 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
   };
 }
 
+/** #1958: a permission ask that was not stored gives its reserved slot back. */
+async function releasingOnFailure<T>(
+  env: Env,
+  slot: { id?: string },
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (slot.id) await releaseSlot(env, slot.id, "failed");
+    throw e;
+  }
+}
+
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
-export async function addThread(
+export function addThread(
   env: Env,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   who: CommentWho,
   viewer: CommentViewer,
   raw: { anchor: unknown; body: unknown } & CommentExtras,
   opts: ExtrasOpts = {},
+): Promise<Thread> {
+  const slot: { id?: string } = {};
+  return releasingOnFailure(env, slot, () =>
+    addThreadImpl(env, a, who, viewer, raw, opts, slot),
+  );
+}
+
+async function addThreadImpl(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
+  who: CommentWho,
+  viewer: CommentViewer,
+  raw: { anchor: unknown; body: unknown } & CommentExtras,
+  opts: ExtrasOpts,
+  slot: { id?: string },
 ): Promise<Thread> {
   const body = checkBody(raw.body);
   // #1958: a permission ask's comment says nothing the client chose, and sits
@@ -1442,7 +1471,8 @@ export async function addThread(
       'A permission request goes on the whole page (anchor { kind: "note" })',
     );
   const r0 = await resolveExtras(env, a.id, who, raw, opts);
-  const isPerm = r0.extras?.ask?.permission !== undefined;
+  slot.id = r0.extras?.ask?.permission?.reservation;
+  const isPerm = slot.id !== undefined;
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -1495,6 +1525,7 @@ export async function addThread(
       ...(participants.length ? { participants } : {}),
     }),
   );
+  slot.id = undefined; // stored: the slot stays taken
   const root = t.comments[0];
   if (root?.ask) await indexAsk(env, a.id, t.id, root.id, root.ask.to);
   if (root && r.agents.length > 0) {
@@ -1714,7 +1745,7 @@ async function threadReply(
 }
 
 /** A reply. It does not reopen the thread. */
-export async function addReply(
+export function addReply(
   env: Env,
   artifactId: string,
   threadId: string,
@@ -1723,6 +1754,33 @@ export async function addReply(
   body: unknown,
   extras: CommentExtras = {},
   opts: ExtrasOpts = {},
+): Promise<Comment> {
+  const slot: { id?: string } = {};
+  return releasingOnFailure(env, slot, () =>
+    addReplyImpl(
+      env,
+      artifactId,
+      threadId,
+      who,
+      viewer,
+      body,
+      extras,
+      opts,
+      slot,
+    ),
+  );
+}
+
+async function addReplyImpl(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  who: CommentWho,
+  viewer: CommentViewer,
+  body: unknown,
+  extras: CommentExtras,
+  opts: ExtrasOpts,
+  slot: { id?: string },
 ): Promise<Comment> {
   const text = checkBody(body);
   let r: Resolved;
@@ -1741,6 +1799,7 @@ export async function addReply(
       await resolveExtras(env, artifactId, who, extras, opts),
     );
   }
+  slot.id = r.extras?.ask?.permission?.reservation;
   const participants = [
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),
@@ -1755,6 +1814,7 @@ export async function addReply(
       ...(participants.length ? { participants } : {}),
     }),
   );
+  slot.id = undefined; // stored: the slot stays taken
   // The thread's bound (one notice per window, a cap in all) left the reply
   // without its mention rows: nobody is told, and the usual follower notice
   // (its own limits) is the only one.
@@ -1811,6 +1871,29 @@ async function storedAsk(
 const isAsked = (ask: { to: StoredParty[] }, who: CommentWho): boolean =>
   who.kind === "user" && ask.to.some((p) => addresseeOf(p) === who.id);
 
+/**
+ * #1958: the page must still be one nobody else can read. Shared after the
+ * ask was posted, it takes no answer and no use: 409 consume_refused
+ * { reason: "page_shared" } on consume, 409 conflict on a pick.
+ */
+async function pageStillPrivate(
+  env: Env,
+  artifactId: string,
+  who: CommentWho,
+  onPick = false,
+): Promise<void> {
+  if (who.kind !== "user") return;
+  if (await isSoleReader(env, artifactId, who.id)) return;
+  if (onPick)
+    throw new ApiError(
+      "conflict",
+      "This page is shared now, so this permission request can no longer be answered. Ask the agent to post it again on a private page.",
+    );
+  throw new ApiError("consume_refused", "This permission cannot be used", {
+    reason: "page_shared",
+  });
+}
+
 /** #1958: 409 expired, consumed or withdrawn for a permission ask that takes no answer (the DO decides again). */
 function permissionLive(
   ask: { permission?: StoredPermission },
@@ -1858,6 +1941,7 @@ export async function answerChallenge(
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
   permissionLive(ask);
+  if (ask.permission) await pageStillPrivate(env, artifactId, who, true);
   if (ask.answer?.optionId === optionId)
     throw new ApiError(
       "already_answered",
@@ -1915,6 +1999,7 @@ export async function answerAsk(
         "This pick needs your passkey, in the web app",
       );
     permissionLive(ask);
+    if (ask.permission) await pageStillPrivate(env, artifactId, who, true);
     if (ask.answer?.optionId === optionId)
       throw new ApiError(
         "already_answered",
@@ -1967,15 +2052,15 @@ export async function answerAsk(
   return commentView(env, c, viewer);
 }
 
-/** The agent keys of a caller that may use a permission ask, or 403: a browser session or a bare credential is no agent. */
-function permissionCaller(who: CommentWho): string[] {
+/** The strongest key of a caller that may use a permission ask, or 403: a browser session or a bare credential is no agent. It must equal the poster's exactly. */
+function permissionCaller(who: CommentWho): string {
   const keys = who.kind === "user" ? agentKeysOf(who.id, who.agent) : [];
   if (who.kind !== "user" || who.typed === true || keys.length === 0)
     throw new ApiError(
       "forbidden",
       "Only the agent that asked can use this permission",
     );
-  return keys;
+  return keys[0] as string;
 }
 
 /**
@@ -1993,8 +2078,9 @@ export async function consumePermission(
   who: CommentWho,
   request: PermissionRequest,
 ): Promise<{ consumed: true }> {
-  const callerKeys = permissionCaller(who);
+  const callerKey = permissionCaller(who);
   refuseUnsafe(request);
+  await pageStillPrivate(env, artifactId, who);
   const reqHash = await permissionReqHash(request);
   let out: { reservation: string };
   try {
@@ -2002,7 +2088,7 @@ export async function consumePermission(
       stub(env, artifactId).commentsConsume({
         threadId,
         commentId,
-        callerKeys,
+        callerKey,
         reqHash,
       }),
     );
@@ -2013,7 +2099,7 @@ export async function consumePermission(
       });
     throw e;
   }
-  await releaseSlot(env, out.reservation);
+  await releaseSlot(env, out.reservation, "consumed");
   return { consumed: true };
 }
 
@@ -2025,11 +2111,11 @@ export async function withdrawPermission(
   commentId: string,
   who: CommentWho,
 ): Promise<{ withdrawn: true }> {
-  const callerKeys = permissionCaller(who);
+  const callerKey = permissionCaller(who);
   const out = await call(() =>
-    stub(env, artifactId).commentsWithdraw({ threadId, commentId, callerKeys }),
+    stub(env, artifactId).commentsWithdraw({ threadId, commentId, callerKey }),
   );
-  await releaseSlot(env, out.reservation);
+  await releaseSlot(env, out.reservation, "withdrawn");
   return { withdrawn: true };
 }
 

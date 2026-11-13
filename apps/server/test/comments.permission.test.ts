@@ -12,7 +12,7 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
-import { addThread } from "../src/services/comments.js";
+import { addThread, consumePermission } from "../src/services/comments.js";
 import { permissionReqHash } from "../src/services/permission.js";
 import { getUser } from "../src/services/users.js";
 import { api, errOf } from "./helpers.js";
@@ -486,6 +486,215 @@ describe("who sees the request", () => {
   });
 });
 
+describe("only plain text is allowed", () => {
+  const odd = [
+    ["Hangul filler", "\u3164"],
+    ["braille blank", "\u2800"],
+    ["combining grapheme joiner", "\u034F"],
+    ["no-break space", "\u00A0"],
+    ["em space", "\u2003"],
+    ["ideographic space", "\u3000"],
+    ["combining mark", "e\u0301"],
+    ["Khmer inherent vowel", "\u17B4"],
+    ["halfwidth Hangul filler", "\uFFA0"],
+  ] as const;
+
+  it("refuses them in every field on post (400 unsafe_characters), and in the question", async () => {
+    const id = await page();
+    for (const [name, ch] of odd) {
+      for (const req of [
+        { ...REQ, command: `ls ${ch}` },
+        { ...REQ, cwd: `/tmp/${ch}` },
+        { ...REQ, toolName: `Bash${ch}` },
+        { ...REQ, sessionId: `s${ch}` },
+        { ...REQ, machineId: `m${ch}` },
+      ]) {
+        const r = await postRaw(agent, id, askOf({}, alice.userId, req));
+        expect(r.isError, name).toBe(true);
+        expect(textOf(r), name).toMatch(/^unsafe_characters/);
+      }
+      const q = await postRaw(agent, id, askOf({ question: `why${ch}x` }));
+      expect(textOf(q), name).toMatch(/^unsafe_characters/);
+    }
+    // Ordinary text, symbols and emoji still pass.
+    const ok = await postRaw(
+      agent,
+      id,
+      askOf({}, alice.userId, { ...REQ, command: "echo 'héllo' | wc -l # ✓" }),
+    );
+    expect(ok.isError, textOf(ok)).toBeFalsy();
+  });
+
+  it("refuses them on consume (400)", async () => {
+    const k = await post();
+    await pick(k);
+    for (const [name, ch] of odd) {
+      const r = await consume(k, agent.token, {
+        ...REQ,
+        command: `${REQ.command}${ch}`,
+      });
+      expect(r.status, name).toBe(400);
+      expect((await errOf(r)).code, name).toBe("unsafe_characters");
+      const c = await consume(k, agent.token, { ...REQ, cwd: `/x${ch}` });
+      expect(c.status, name).toBe(400);
+    }
+    expect((await consume(k, agent.token)).status).toBe(200);
+  });
+});
+
+describe("the same agent, exactly", () => {
+  const grant = {
+    name: "agent",
+    version: null,
+    via: { kind: "grant", id: "g-1" },
+  };
+  const ident = {
+    identityId: "idn-1",
+    namespace: "ns",
+    name: "builder",
+    kind: "claude",
+  };
+  const whoOf = (agentAttr: object) =>
+    ({ kind: "user", id: alice.userId, agent: agentAttr }) as never;
+
+  async function postAs(agentAttr: object): Promise<K> {
+    const artifactId = await page();
+    const t = (await addThread(
+      E,
+      { id: artifactId, format: "html", currentVersion: 1 } as never,
+      whoOf(agentAttr),
+      { userId: alice.userId, short: null, moderator: true },
+      { anchor: { kind: "note" } as never, body: "x", ask: askOf() as never },
+      { moderator: true },
+    )) as Thread;
+    const k = {
+      artifactId,
+      threadId: t.id,
+      commentId: (t.comments[0] as Comment).id,
+    };
+    expect((await pick(k)).status).toBe(200);
+    return k;
+  }
+  const consumeAs = (k: K, agentAttr: object) =>
+    consumePermission(
+      E,
+      k.artifactId,
+      k.threadId,
+      k.commentId,
+      whoOf(agentAttr),
+      REQ,
+    );
+
+  it("posted by a grant alone: the same grant with a bus identity is refused", async () => {
+    const k = await postAs({ ...grant, via: { kind: "grant", id: "g-a" } });
+    await expect(
+      consumeAs(k, {
+        ...grant,
+        via: { kind: "grant", id: "g-a" },
+        identity: ident,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      consumeAs(k, { ...grant, via: { kind: "grant", id: "g-b" } }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      consumeAs(k, { ...grant, via: { kind: "grant", id: "g-a" } }),
+    ).resolves.toEqual({ consumed: true });
+  });
+
+  it("posted with a bus identity: the same grant without it is refused", async () => {
+    const k = await postAs({
+      ...grant,
+      via: { kind: "grant", id: "g-c" },
+      identity: ident,
+    });
+    await expect(
+      consumeAs(k, { ...grant, via: { kind: "grant", id: "g-c" } }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      consumeAs(k, {
+        ...grant,
+        via: { kind: "grant", id: "g-c" },
+        identity: { ...ident, identityId: "idn-2" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      consumeAs(k, {
+        ...grant,
+        via: { kind: "grant", id: "g-c" },
+        identity: ident,
+      }),
+    ).resolves.toEqual({ consumed: true });
+  });
+});
+
+describe("a page shared after posting", () => {
+  const share = (k: K) =>
+    api(app, R.shares(k.artifactId), alice.cookie, {
+      method: "PUT",
+      body: { email: "pm-late@x.com", role: "viewer" },
+    });
+
+  it("approved, then shared: consume is refused (page_shared)", async () => {
+    const k = await post();
+    expect((await pick(k)).status).toBe(200);
+    expect((await share(k)).status).toBe(200);
+    await refusedWith(await consume(k, agent.token), "page_shared");
+  });
+
+  it("shared before the pick: no challenge and no answer (409)", async () => {
+    const k = await post();
+    expect((await share(k)).status).toBe(200);
+    const c = await challenge(k, alice.cookie);
+    expect(c.status).toBe(409);
+    const r = await answer(k, alice.cookie, { optionId: "deny" });
+    expect(r.status).toBe(409);
+  });
+});
+
+describe("the durable audit and the reserved slot", () => {
+  const slot = (a: Agent) =>
+    E.DB.prepare(
+      "select consumed_at c, withdrawn_at w, done_at d from permission_asks where agent_key = ?",
+    )
+      .bind(`${alice.userId}|t:${a.id}`)
+      .all<{ c: number | null; w: number | null; d: number | null }>();
+
+  it("records consumed_at and withdrawn_at on the permission_asks row", async () => {
+    const a = await mkAgent(alice);
+    const used = await post(a);
+    const taken = await post(a);
+    await pick(used);
+    await consume(used, a.token);
+    await withdraw(taken, a.token);
+    const rows = (await slot(a)).results;
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((r) => r.c !== null && r.d !== null)).toHaveLength(1);
+    expect(rows.filter((r) => r.w !== null && r.d !== null)).toHaveLength(1);
+  });
+
+  it("gives the slot back when the write fails (a reply into a resolved thread)", async () => {
+    const a = await mkAgent(alice);
+    const id = await page();
+    const t = (await tool(a.client, "add_comment", { id, body: "start" }))
+      .structuredContent as { thread: Thread };
+    await tool(a.client, "resolve_comment", { id, threadId: t.thread.id });
+    for (let i = 0; i < 5; i++) {
+      const r = await tool(a.client, "add_comment", {
+        id,
+        threadId: t.thread.id,
+        body: "x",
+        ask: askOf(),
+      });
+      expect(r.isError).toBe(true);
+    }
+    expect((await slot(a)).results.every((r) => r.d !== null)).toBe(true);
+    await post(a);
+    await post(a);
+    await post(a);
+  });
+});
+
 describe("nothing but the ask carries the command", () => {
   it("the client's body is dropped and a quote is refused; a page shared later shows a second member nothing", async () => {
     const id = await page();
@@ -687,6 +896,10 @@ describe("red lines: consume stays refused", () => {
     const k = await post();
     // Bob cannot even see the page.
     expect((await challenge(k, bob.cookie)).status).toBeGreaterThanOrEqual(403);
+    expect(
+      (await answer(k, bob.cookie, { optionId: "run" })).status,
+    ).toBeGreaterThanOrEqual(403);
+    await refusedWith(await consume(k, agent.token), "not_approved");
     // Shared in later, he is still not the person asked.
     await api(app, R.shares(k.artifactId), alice.cookie, {
       method: "PUT",
@@ -696,7 +909,8 @@ describe("red lines: consume stays refused", () => {
     expect(c.status).toBe(403);
     const r = await answer(k, bob.cookie, { optionId: "run" });
     expect(r.status).toBe(403);
-    await refusedWith(await consume(k, agent.token), "not_approved");
+    // Shared now, so the page itself is the ground for refusing.
+    await refusedWith(await consume(k, agent.token), "page_shared");
   });
 
   it("a second consume", async () => {

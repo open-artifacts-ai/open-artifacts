@@ -577,7 +577,10 @@ export const permissionAsks = sqliteTable(
     artifactId: text("artifact_id").notNull(),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at").notNull(),
+    /** Set when the ask is used or withdrawn: frees the slot. The two below say which. */
     doneAt: integer("done_at"),
+    consumedAt: integer("consumed_at"),
+    withdrawnAt: integer("withdrawn_at"),
   },
   (t) => [index("permission_asks_agent_idx").on(t.agentKey, t.createdAt)],
 );
