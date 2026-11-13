@@ -140,7 +140,7 @@ describe("layout behaviour", () => {
     expect(screen.getByRole("main")).toBeInTheDocument();
   });
 
-  it("NoAccess renders for a logged-in non-member with a sign-out button", async () => {
+  it("NoAccess renders for a logged-in non-member with a log-out button", async () => {
     mount(async () => meAs("guest"), "/no-access");
     expect(
       await screen.findByRole("heading", { name: /nothing here for you yet/ }),

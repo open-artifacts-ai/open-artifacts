@@ -334,7 +334,7 @@ describe("mentions", () => {
 
   // `assign` was dropped (#1792). The bodies are not strict (like every other
   // unknown field), so it is stripped: the POST succeeds and nothing is sent.
-  it("an aslog in a thread or reply body is ignored: no notice, no assignment", async () => {
+  it("an assign in a thread or reply body is ignored: no notice, no assignment", async () => {
     const s = await setup();
     const r = await post(s.id, owner, { assign: { key: s.claude } });
     expect(r.status).toBe(201);
