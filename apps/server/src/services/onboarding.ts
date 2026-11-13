@@ -6,6 +6,7 @@
 // member later never brings it back).
 
 import type { Member, Onboarding, OnboardingPatch } from "@oa/shared";
+import { isInstanceOwner } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { appOrigin } from "../http/errors.js";
@@ -123,7 +124,7 @@ export async function noteCommented(env: Env, userId: string): Promise<void> {
  * the claim so the next sign-in retries. Never throws: sign-in must not block.
  */
 export async function seedWelcome(env: Env, user: Member): Promise<void> {
-  if (env.HOSTED !== "1" || user.role !== "owner") return;
+  if (env.HOSTED !== "1" || !isInstanceOwner(user)) return;
   try {
     // One atomic claim. An instance that already has any artifact row (deleted
     // ones too) is not fresh: a "skipped" claim (no user, no artifact) is kept
