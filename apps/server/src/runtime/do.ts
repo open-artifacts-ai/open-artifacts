@@ -2245,12 +2245,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
           (r.ask.answer.verified ?? null) === (a.verified ?? null)
         : mine?.optionId === a.optionId;
       const now = this.iso();
+      // The cap is for weigh-ins: a decision is never refused by it.
       if (
         !unchanged &&
+        !isDecider &&
         a.by.kind === "user" &&
         pickCount(this.sql, a.commentId, a.by.ref) >= PICKS_PER_PERSON_MAX
       )
-        fail("rate_limited", "Too many picks on this ask. Try again later.");
+        fail(
+          "rate_limited",
+          "You have changed your view on this ask too many times.",
+        );
       if (!unchanged) {
         // An answer from before deciders becomes the first pick on record.
         if (r.legacy && r.ask.history?.[0])

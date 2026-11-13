@@ -393,12 +393,13 @@ const withLegacy = (
   rows: StoredPick[],
   author: string,
 ): StoredPick[] => {
-  if (rows.length || !ask.answer) return rows;
-  const pick = { ...ask.answer };
-  // Before deciders anyone asked could answer: only the asker's own user's
-  // answer is the decision now; another person's reads as their weigh-in.
-  if (ask.answer.by.ref !== (ask.decider ?? author)) delete ask.answer;
-  return [pick];
+  const legacy = ask.answer ? { ...ask.answer } : undefined;
+  // Before deciders anyone asked could answer: only the decider's own answer
+  // (the asker's own user's, unless another was named) is the decision now. A
+  // stored answer by anyone else reads as their weigh-in, with or without pick rows.
+  if (ask.answer && ask.answer.by.ref !== (ask.decider ?? author))
+    delete ask.answer;
+  return rows.length || !legacy ? rows : [legacy];
 };
 
 const askOf = (r: AskRow): StoredAsk => ({

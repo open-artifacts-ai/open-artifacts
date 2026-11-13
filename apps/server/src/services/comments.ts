@@ -1480,7 +1480,15 @@ export async function addThread(
     }),
   );
   const root = t.comments[0];
-  if (root?.ask) await indexAsk(env, a.id, t.id, root.id, root.ask.to);
+  if (root?.ask)
+    await indexAsk(
+      env,
+      a.id,
+      t.id,
+      root.id,
+      root.ask.to,
+      root.ask.decider ?? root.author.ref,
+    );
   if (root && r.agents.length > 0) {
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
@@ -1744,7 +1752,15 @@ export async function addReply(
   // (its own limits) is the only one.
   if (extras.toAsker && !c.mentions?.length)
     r = { ...r, agents: [], mentions: [] };
-  if (c.ask) await indexAsk(env, artifactId, threadId, c.id, c.ask.to);
+  if (c.ask)
+    await indexAsk(
+      env,
+      artifactId,
+      threadId,
+      c.id,
+      c.ask.to,
+      c.ask.decider ?? c.author.ref,
+    );
   const row = await stmt(
     env.DB,
     "select current_version as v from artifacts where id = ?",

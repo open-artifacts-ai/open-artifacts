@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { ArtifactAgent } from "@oa/shared";
 import {
@@ -13,6 +14,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { callerOf } from "../src/auth/authz.js";
 import type { Env } from "../src/env.js";
+import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { listQuery, publish } from "../src/services/artifacts.js";
 import { askRows, reconcileAsks } from "../src/services/asks.js";
 import {
@@ -124,7 +126,8 @@ describe("asksForYou", () => {
     expect(await countFor(reader, id)).toBe(1);
     // The other person can read the artifact but was not asked; neither was the asker.
     expect(await countFor(other, id)).toBeUndefined();
-    expect(await countFor(owner, id)).toBeUndefined();
+    // The asker's own user decides, so it waits on them too (#2381).
+    expect(await countFor(owner, id)).toBe(1);
   });
 
   it("an ask to two people counts once for each", async () => {
@@ -181,9 +184,16 @@ describe("asksForYou", () => {
       { canDecide: true, guest: false },
     );
     expect(await countFor(reader, id)).toBeUndefined();
-    expect(await rows(id)).toEqual([
-      { addressee: reader.userId, open: 0, answered: 1 },
-    ]);
+    // A weigh-in closes it for the one who made it; the decider (the asker) still waits.
+    expect(
+      (await rows(id)).sort((x, y) => x.addressee.localeCompare(y.addressee)),
+    ).toEqual(
+      [
+        { addressee: reader.userId, open: 0, answered: 1 },
+        { addressee: owner.userId, open: 1, answered: 0 },
+      ].sort((x, y) => x.addressee.localeCompare(y.addressee)),
+    );
+    expect(await countFor(owner, id)).toBe(1);
   });
 
   it("resolving closes it, and reopening brings back only an unanswered ask", async () => {
@@ -534,17 +544,58 @@ describe("review fixes", () => {
       expect(await rows(id)).toEqual([]);
     }
     await api(app, `${R.comments(id)}?status=all`, owner.cookie);
-    expect(await rows(id)).toHaveLength(1);
+    expect(await rows(id)).toHaveLength(2);
   });
 
   it("a truncated read never deletes rows it may lack; a complete one does", async () => {
     const id = await mkArtifact();
     await ask(id, [reader]);
     const have = (await askRows(E, id)) ?? [];
-    expect(have).toHaveLength(1);
+    expect(have).toHaveLength(2);
     await reconcileAsks(E, id, [], true, have);
-    expect(await rows(id)).toHaveLength(1);
+    expect(await rows(id)).toHaveLength(2);
     await reconcileAsks(E, id, [], false, have);
     expect(await rows(id)).toEqual([]);
+  });
+});
+
+describe("deciders in the index (#2381)", () => {
+  it("a legacy answer by a non-decider reconciles: closed for that person, open for the decider", async () => {
+    const id = await mkArtifact();
+    const t = await ask(id, [reader, other]);
+    const cid = t.comments[0]?.id as string;
+    await runInDurableObject(
+      runtimeStub(E, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec(
+          "update comment_asks set answer = ? where comment_id = ?",
+          JSON.stringify({
+            optionId: "a",
+            by: { kind: "user", ref: reader.userId, typed: true },
+            at: new Date().toISOString(),
+          }),
+          cid,
+        );
+      },
+    );
+    await E.DB.prepare("delete from artifact_asks where artifact_id = ?")
+      .bind(id)
+      .run();
+    await api(app, `${R.comments(id)}?status=all`, owner.cookie);
+    const by = Object.fromEntries(
+      (await rows(id)).map((r) => [r.addressee, r]),
+    );
+    expect(by[reader.userId]).toMatchObject({ open: 0, answered: 1 });
+    expect(by[other.userId]).toMatchObject({ open: 1, answered: 0 });
+    expect(by[owner.userId]).toMatchObject({ open: 1, answered: 0 });
+  });
+
+  it("a default decider who was not asked gets an open row", async () => {
+    const id = await mkArtifact();
+    await ask(id, [reader]);
+    expect(await countFor(owner, id)).toBe(1);
+    expect((await rows(id)).map((r) => r.addressee).sort()).toEqual(
+      [owner.userId, reader.userId].sort(),
+    );
   });
 });

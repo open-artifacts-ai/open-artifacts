@@ -44,11 +44,14 @@ export const indexAsk = (
   threadId: string,
   commentId: string,
   to: StoredParty[],
+  /** #2381: the decider (default: the asker's own user) waits on the ask too, asked or not. */
+  decider?: string,
 ) =>
   guarded("create", artifactId, () =>
     env.DB.batch(
-      addressees(to).map((who) =>
-        stmt(env.DB, INSERT).bind(artifactId, threadId, commentId, who, 1, 0),
+      [...new Set([...addressees(to), ...(decider ? [decider] : [])])].map(
+        (who) =>
+          stmt(env.DB, INSERT).bind(artifactId, threadId, commentId, who, 1, 0),
       ),
     ),
   );
@@ -170,7 +173,8 @@ export const reconcileAsks = (
     for (const t of threads)
       for (const c of t.comments) {
         if (!c.ask) continue;
-        for (const who of addressees(c.ask.to)) {
+        const decider = c.ask.decider ?? c.author.ref;
+        for (const who of new Set([...addressees(c.ask.to), decider])) {
           // The decision closes it for all; a weigh-in only for the one who made it (#2381).
           const answered =
             c.ask.answer || c.ask.history?.some((p) => p.by.ref === who)

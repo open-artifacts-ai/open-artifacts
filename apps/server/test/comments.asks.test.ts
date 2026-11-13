@@ -977,6 +977,69 @@ describe("deciders (#2381)", () => {
     expect(n).toBe(4);
   });
 
+  it("a legacy answer by B is dropped even once C has weighed in; A can decide B's option", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId, editor.userId]);
+    const cid = cidOf(t);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec(
+          "update comment_asks set answer = ? where comment_id = ?",
+          JSON.stringify({
+            optionId: "wide",
+            by: { kind: "user", ref: viewer.userId, typed: true },
+            at: new Date().toISOString(),
+          }),
+          cid,
+        );
+      },
+    );
+    // C weighs in: that writes pick rows, and B's stale answer must stay dropped.
+    expect((await answer(s.id, t.id, cid, editor, "compact")).status).toBe(200);
+    const a = await listAsk(s.id, owner, cid);
+    expect(a?.answer).toBeUndefined();
+    expect(a?.picks?.map((p) => [p.by.id, p.optionId]).sort()).toEqual(
+      [
+        [viewer.userId, "wide"],
+        [editor.userId, "compact"],
+      ].sort(),
+    );
+    const d = await answer(s.id, t.id, cid, owner, "wide");
+    expect(d.status).toBe(200);
+    expect(((await d.json()) as Comment).ask?.answer).toMatchObject({
+      optionId: "wide",
+      by: { id: owner.userId },
+    });
+  });
+
+  it("the cap never refuses the decider's decision, and its message does not say to wait", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    const fill = (user: string) =>
+      runInDurableObject(
+        runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (_i, state) => {
+          for (let n = 0; n < 50; n++)
+            state.storage.sql.exec(
+              "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed) values (?, ?, 'wide', ?, ?, 1)",
+              cid,
+              user,
+              JSON.stringify({ kind: "user", ref: user }),
+              new Date().toISOString(),
+            );
+        },
+      );
+    await fill(owner.userId);
+    const d = await answer(s.id, t.id, cid, owner, "compact");
+    expect(d.status).toBe(200);
+    await fill(viewer.userId);
+    const w = await answer(s.id, t.id, cid, viewer, "compact");
+    expect(w.status).toBe(429);
+    expect((await errOf(w)).message).not.toMatch(/try again/i);
+  });
+
   it("caps picks at 50 a person on an ask, then 429", async () => {
     const s = await setup();
     const t = await ask(s.id, [viewer.userId]);
