@@ -5,6 +5,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -765,6 +766,24 @@ export function systemService(d: ServiceDeps): Service {
       return typeof pid === "number"
         ? d.processArgs(pid) !== undefined
         : undefined;
+    },
+
+    others() {
+      if (manager === undefined) return [];
+      const dir = dirname(fresh());
+      const own = fileName();
+      const re =
+        manager === "launchd"
+          ? /^com\.open-artifacts\.bus\.[0-9a-f]{8}\.plist$/
+          : /^oa-bus-[0-9a-f]{8}\.service$/;
+      try {
+        return readdirSync(dir)
+          .filter((f) => re.test(f) && f !== own)
+          .map((f) => f.replace(/\.(plist|service)$/, ""))
+          .sort();
+      } catch {
+        return [];
+      }
     },
 
     problems() {

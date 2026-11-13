@@ -2,13 +2,12 @@
 // Hosted Team and the Team trial hide the Directory tab (#2113) but the server
 // keeps the binding (mode "frozen"), so a Team that synced on Business has no
 // other way to disconnect. Removals pass the plan gate (#2146).
+import { BUSINESS_CONTACT_URL } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useState } from "react";
 import { useDisconnectDirectory } from "../api/queries";
 import { useMe } from "../auth/useMe";
-import { PLAN_PAGE } from "../layout/PlanBanner";
 import { groupSyncHidden } from "../layout/SyncBanner";
-import { AppLink } from "../library/AppLink";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { muted, SettingsCard } from "./ui";
 
@@ -36,9 +35,9 @@ export function GoogleWorkspaceRow() {
       <p className={`m-0 ${muted}`}>
         Open Artifacts is still connected to your Google Workspace directory,
         but group sync is on the Business plan. Disconnect it, or move to{" "}
-        <AppLink href={PLAN_PAGE} className="underline">
+        <a href={BUSINESS_CONTACT_URL} className="underline">
           Business
-        </AppLink>{" "}
+        </a>{" "}
         to sync again.
       </p>
       <div>

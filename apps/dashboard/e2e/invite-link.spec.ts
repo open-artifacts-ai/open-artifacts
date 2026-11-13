@@ -26,7 +26,7 @@ const axeRun = async (page: Page): Promise<string[]> => {
   });
 };
 
-test("adding a member confirms with the sign-in link and copies it", async ({
+test("adding a member confirms with the login link and copies it", async ({
   page,
   context,
   baseURL,
@@ -40,14 +40,14 @@ test("adding a member confirms with the sign-in link and copies it", async ({
   await dialog.getByRole("button", { name: "Add member" }).click();
   await expect(
     dialog.getByRole("heading", {
-      name: "new.person@example.com can now sign in",
+      name: "new.person@example.com can now log in",
     }),
   ).toBeVisible();
   const origin = new URL(baseURL ?? page.url()).origin;
-  await expect(
-    dialog.getByRole("textbox", { name: "Sign-in link" }),
-  ).toHaveValue(origin);
-  await expect(dialog).toContainText(`They'll sign in at ${origin}`);
+  await expect(dialog.getByRole("textbox", { name: "Login link" })).toHaveValue(
+    origin,
+  );
+  await expect(dialog).toContainText(`They'll log in at ${origin}`);
   await dialog.getByRole("button", { name: "Copy link" }).click();
   await expect(dialog.getByRole("button", { name: /Copied/ })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
@@ -82,7 +82,7 @@ test("email on: the invite is emailed, and the dialog says so", async ({
   await page.getByRole("button", { name: "Add member" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText(
-    "We'll email them a link to Acme Artifacts. They'll sign in with a one-time code.",
+    "We'll email them a link to Acme Artifacts. They'll log in with a one-time code.",
   );
   await dialog.getByLabel("Email").fill("new.person@example.com");
   await dialog.getByRole("button", { name: "Add member" }).click();
@@ -93,11 +93,11 @@ test("email on: the invite is emailed, and the dialog says so", async ({
   ).toBeVisible();
   const origin = new URL(baseURL ?? page.url()).origin;
   await expect(dialog).toContainText(
-    `They can also sign in at ${origin} with a one-time code.`,
+    `They can also log in at ${origin} with a one-time code.`,
   );
-  await expect(
-    dialog.getByRole("textbox", { name: "Sign-in link" }),
-  ).toHaveValue(origin);
+  await expect(dialog.getByRole("textbox", { name: "Login link" })).toHaveValue(
+    origin,
+  );
 });
 
 test("email on but the send failed: the link to send, and why", async ({
@@ -110,7 +110,7 @@ test("email on but the send failed: the link to send, and why", async ({
   await dialog.getByRole("button", { name: "Add member" }).click();
   await expect(
     dialog.getByRole("heading", {
-      name: "new.person@example.com can now sign in",
+      name: "new.person@example.com can now log in",
     }),
   ).toBeVisible();
   await expect(dialog).toContainText(
@@ -130,7 +130,7 @@ test("email on: sharing says the link was emailed", async ({ page }) => {
   await expect(page.getByText("Shared with eve@example.com")).toBeVisible();
   await expect(
     page.getByText(
-      "We emailed them a link. They'll sign in with a one-time code.",
+      "We emailed them a link. They'll log in with a one-time code.",
     ),
   ).toBeVisible();
 });

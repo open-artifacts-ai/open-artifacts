@@ -132,6 +132,35 @@ describe("a suspended install refuses bus connects at once (cloud #228)", () => 
     expect(await status(await connect(m2.token))).toBe(101);
   });
 
+  it("a failed marker read answers 503 try again, never 101 or the token lookup", async () => {
+    const u = await member();
+    const m = await machine("readfail-box", u.userId);
+    const realDb = H.DB as D1Database;
+    const seen: string[] = [];
+    const failing = {
+      ...H,
+      DB: new Proxy(realDb, {
+        get(t, k) {
+          if (k !== "prepare") return Reflect.get(t, k).bind?.(t);
+          return (q: string) => {
+            seen.push(q);
+            if (q.includes("select 1 as one from settings"))
+              throw new Error("d1 down");
+            return t.prepare(q);
+          };
+        },
+      }),
+    };
+    const r = await connect(m.token, failing);
+    expect(r.status).toBe(503);
+    expect(r.webSocket).toBeFalsy();
+    expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await r.text()).toContain("Try again");
+    expect(seen.some((q) => q.includes("bus_machines"))).toBe(false);
+    // The same token connects once the read works.
+    expect(await status(await connect(m.token))).toBe(101);
+  });
+
   it("a self-host install (not HOSTED) never reads the marker", async () => {
     const u = await member();
     const m = await machine("selfhost-box", u.userId);

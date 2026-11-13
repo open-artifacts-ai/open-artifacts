@@ -72,7 +72,7 @@ const instrument = (context: BrowserContext) =>
               })
             : new Response(
                 JSON.stringify({
-                  error: { code: "unauthorized", message: "Signed in" },
+                  error: { code: "unauthorized", message: "Logged in" },
                 }),
                 {
                   status: 401,
@@ -248,7 +248,7 @@ test("(a) an attacker frame with a session cookie and no hint stays anonymous", 
   ).toHaveCount(0);
 });
 
-test("(b) top-level /full with a session stays signed in", async ({ page }) => {
+test("(b) top-level /full with a session stays logged in", async ({ page }) => {
   await page.goto(`/a/${POLL}/full`);
   const app = page.mainFrame();
   const artifact = await contentFrame(page);

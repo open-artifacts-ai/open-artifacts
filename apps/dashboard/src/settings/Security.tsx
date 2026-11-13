@@ -57,9 +57,9 @@ export const WAITING = "Waiting for your passkey…";
 export const ADD_AFTER_REAUTH_KEY = "oa.passkey.addAfterReauth";
 const ADD_AFTER_REAUTH_MS = 10 * 60 * 1000;
 export const ADD_REAUTH_NOTE =
-  "Adding a passkey asks you to sign in again first.";
+  "Adding a passkey asks you to log in again first.";
 export const ADD_RETURN_LINE =
-  "You're signed in again. Add your passkey within 10 minutes.";
+  "You're logged in again. Add your passkey within 10 minutes.";
 // Product's words for the step between approving and creating.
 export const APPROVED_LINE =
   "Your current passkey was accepted. Now add the new one.";

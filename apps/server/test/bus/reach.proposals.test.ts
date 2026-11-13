@@ -505,7 +505,7 @@ describe("reach proposals (#1346)", () => {
     const stale = await sessionAt(b.userId, old, old);
     const g = await get(p.secret, { cookie: stale });
     expect(g.status).toBe(403);
-    expect(await g.text()).toContain("Sign in again");
+    expect(await g.text()).toContain("Log in again");
     const csrf = await formCsrf(
       env,
       REACH_CONFIRM_SCOPE,

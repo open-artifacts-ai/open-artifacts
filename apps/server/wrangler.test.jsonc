@@ -18,14 +18,16 @@
       { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
       { "name": "USER_PRESENCE", "class_name": "UserPresence" },
       { "name": "DIRECTORY_SYNC", "class_name": "DirectorySync" },
-      { "name": "BUS_HUB", "class_name": "BusHub" }
+      { "name": "BUS_HUB", "class_name": "BusHub" },
+      { "name": "DOC_ROOM", "class_name": "DocRoom" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ArtifactRuntime"] },
     { "tag": "v2", "new_sqlite_classes": ["UserPresence"] },
     { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] },
-    { "tag": "v4", "new_sqlite_classes": ["BusHub"] }
+    { "tag": "v4", "new_sqlite_classes": ["BusHub"] },
+    { "tag": "v5", "new_sqlite_classes": ["DocRoom"] }
   ],
   "ratelimits": [
     {

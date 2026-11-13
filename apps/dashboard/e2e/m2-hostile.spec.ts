@@ -116,7 +116,7 @@ test("a hostile next never leaves the app", async ({ page }) => {
   // The guest link drops it too; the code request carries the safe next and
   // sign-in lands on "/".
   const guest = page.getByRole("link", {
-    name: "Get a sign-in code",
+    name: "Get a login code",
     exact: true,
   });
   await expect(guest).toHaveAttribute("href", "/sign-in?method=code&next=%2F");

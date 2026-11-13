@@ -1,5 +1,6 @@
 import {
   ANON_ID_HEADER,
+  AnswerChallengeSchema,
   type ArtifactAgent,
   ArtifactAgentSchema,
   COMMENT_BODY_MAX,
@@ -23,6 +24,7 @@ import {
 } from "@tanstack/react-query";
 import { useMemo, useSyncExternalStore } from "react";
 import { z } from "zod";
+import { getAssertion } from "../auth/webauthn";
 import {
   isAnonToken,
   loadAnonToken,
@@ -577,6 +579,39 @@ export const useAnswerAsk = (id: string) =>
     },
   );
 
+/**
+ * #2263: pick an option on a `confirm: "passkey"` ask. Challenge, then the passkey
+ * prompt, then the answer; nothing is answered until the server verifies it.
+ */
+export const usePasskeyAnswer = (id: string) =>
+  useRefetching(
+    id,
+    false,
+    false,
+    async (v: { thread: string; comment: string; optionId: string }, x) => {
+      const ch = await api.send(
+        "POST",
+        R.commentAnswerChallenge(id, v.thread, v.comment),
+        { optionId: v.optionId },
+        AnswerChallengeSchema,
+        undefined,
+        x,
+      );
+      const assertion = await getAssertion(ch.options);
+      return api.send(
+        "POST",
+        R.commentAnswer(id, v.thread, v.comment),
+        {
+          optionId: v.optionId,
+          assertion,
+        },
+        CommentSchema,
+        undefined,
+        x,
+      );
+    },
+  );
+
 export const useSetThreadStatus = (id: string, guest = false) =>
   useRefetching(
     id,
@@ -694,6 +729,9 @@ const wait = (s: number) =>
 const isPlanRefusal = (code: string | null) =>
   code === "plan_required" || code === "plan_read_only";
 
+/** The billing service is down: nothing about the caller's plan, so everyone reads the same copy. */
+const isBillingDown = (code: string | null) => code === "billing_unavailable";
+
 /** No Me (anonymous) or a capped account: billing details never reach them. */
 const planOutsider = (ctx?: ErrorContext) => !ctx || ctx.capped === true;
 
@@ -737,6 +775,8 @@ export function commentError(
     return planOutsider(ctx)
       ? cappedCopy("comment")
       : errorCopy(e, "Couldn't post your comment. Try again.", ctx);
+  if (isBillingDown(code))
+    return errorCopy(e, "Couldn't post your comment. Try again.", ctx);
   switch (code) {
     case "rate_limited":
       return e instanceof ApiClientError && e.retryAfter
@@ -760,7 +800,7 @@ export function commentError(
       return "That comment couldn't be found.";
     case "unauthorized":
     case "comments_signed_in_only":
-      return "Sign in to comment.";
+      return "Log in to comment.";
     default:
       return "Couldn't post your comment. Try again.";
   }
@@ -768,6 +808,8 @@ export function commentError(
 
 /** Copy for a failed answer: 403 not asked, 409 closed, 400 unknown option. */
 export function answerError(e: unknown, ctx?: ErrorContext): string {
+  if (e instanceof ApiClientError && isBillingDown(e.code))
+    return errorCopy(e, "Couldn't send your answer. Try again.", ctx);
   if (e instanceof ApiClientError && isPlanRefusal(e.code))
     return planOutsider(ctx)
       ? cappedCopy("answer")

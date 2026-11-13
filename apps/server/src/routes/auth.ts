@@ -38,6 +38,7 @@ import { FAVICON_TAGS } from "../http/head.js";
 import { BREAK_GLASS_MS } from "../http/middleware.js";
 import { onGoogleSignIn } from "../services/directory.js";
 import { admit } from "../services/identity.js";
+import { seedWelcome } from "../services/onboarding.js";
 import {
   getMismatchOwner,
   getUserWithEpoch,
@@ -69,12 +70,12 @@ function retryPage(next: string, cookies: string[]): Response {
   const href = esc(`${AUTH.login}?next=${encodeURIComponent(next)}`);
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign-in interrupted</title>
+<title>Login interrupted</title>
 <style>:root{color-scheme:light dark}body{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 16px;color:#1a1a1a;background:#fff}@media (prefers-color-scheme:dark){body{color:#eee;background:#111}a{color:#8ab4ff}}</style>
 ${FAVICON_TAGS}
-</head><body><h1>Sign-in interrupted</h1>
-<p>Sign-in took too long or was opened in another tab. Try again.</p>
-<p><a href="${href}">Sign in again</a></p></body></html>`;
+</head><body><h1>Login interrupted</h1>
+<p>Login took too long or was opened in another tab. Try again.</p>
+<p><a href="${href}">Log in again</a></p></body></html>`;
   const h = new Headers({
     "content-type": "text/html; charset=utf-8",
     "content-security-policy": RETRY_PAGE_CSP,
@@ -288,6 +289,8 @@ export function mountAuth(app: AppType): void {
         logAuth({ provider: "google", outcome: "refused", stage: r.reason });
         return toSignIn(r.reason, id.next, clear, "google");
       }
+      // #2287: a hosted instance's first owner gets the Welcome; never throws.
+      await seedWelcome(c.env, r.user);
       try {
         await onGoogleSignIn(c.env, r.user);
       } catch (e) {

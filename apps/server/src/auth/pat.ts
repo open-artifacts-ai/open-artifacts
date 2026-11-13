@@ -38,7 +38,7 @@ export async function createPat(
     .bind(id, userId, label, await sha256Hex(token), Date.now())
     .run();
   if (res.meta.changes === 0)
-    throw new ApiError("unauthorized", "Sign in again");
+    throw new ApiError("unauthorized", "Log in again");
   return { id, token };
 }
 

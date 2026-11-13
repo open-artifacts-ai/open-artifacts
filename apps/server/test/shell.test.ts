@@ -154,7 +154,7 @@ describe("OG shell", () => {
 });
 
 describe("instance meta", () => {
-  it("signed-out shell routes carry exactly one instance meta", async () => {
+  it("logged-out shell routes carry exactly one instance meta", async () => {
     await setName("Acme Docs");
     const id = await mk("public", "T", "D");
     const { DB } = settingsDb();

@@ -1,5 +1,5 @@
 // Connections: Disconnect Google Workspace for a frozen directory (#2149).
-import type { Me } from "@oa/shared";
+import { BUSINESS_CONTACT_URL, type Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
@@ -33,10 +33,10 @@ it("frozen Team owner: the row shows with the button", async () => {
     await screen.findByRole("heading", { name: "Google Workspace" }),
   ).toBeVisible();
   expect(screen.getByRole("button", BUTTON)).toBeVisible();
-  // Product's copy: "Business" links to the Plan page.
+  // #2404: "Business" goes to Contact us, not the Plan page.
   expect(screen.getByRole("link", { name: "Business" })).toHaveAttribute(
     "href",
-    "/settings/plan",
+    BUSINESS_CONTACT_URL,
   );
 });
 

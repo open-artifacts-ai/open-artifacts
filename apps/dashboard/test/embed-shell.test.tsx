@@ -88,7 +88,7 @@ const byTitle = (t: string) => {
 };
 
 describe("embed mode", () => {
-  it("a private artifact shows the not-public panel, never a sign-in redirect", async () => {
+  it("a private artifact shows the not-public panel, never a login redirect", async () => {
     privateIs404();
     const { id } = byTitle("Landing page"); // private
     const redirect = mount(`/a/${id}/full`);

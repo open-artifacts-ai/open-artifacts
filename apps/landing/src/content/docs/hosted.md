@@ -4,7 +4,7 @@ description: What hosted Open Artifacts is, and how to leave it with your work.
 order: 8
 ---
 
-Hosted Open Artifacts is the same product, run for you at open-artifacts.app. Sign up there with Google and get an instance at your own address. Solo starts with a free month, then $1/month or $10/year.
+Hosted Open Artifacts is the same product, run for you at open-artifacts.app. Sign up there with Google and get an instance at your own address. It's invite-only during the beta: after you sign up you're on the waitlist, and we email you when it's your turn. Solo starts with a free month, then $1/month or $10/year.
 
 ## Leave hosted
 

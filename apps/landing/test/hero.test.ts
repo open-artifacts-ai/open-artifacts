@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { heroActions, SELF_HOST_HREF } from "../src/lib/hero";
+import {
+  heroActions,
+  loginHref,
+  SELF_HOST_HREF,
+  signupHref,
+} from "../src/lib/hero";
 
 // #421: hosted sign-up leads once its URL is set; until then, self-host does.
 describe("heroActions", () => {
@@ -12,14 +17,35 @@ describe("heroActions", () => {
     },
   );
 
-  it("with a sign-up URL, Get started free leads and self-host is second", () => {
+  it("with a sign-up URL, Sign up leads and self-host is second", () => {
     expect(heroActions(" https://app.example.com/sign-up ")).toEqual([
       {
-        label: "Get started free",
+        label: "Sign up",
         href: "https://app.example.com/sign-up",
         primary: true,
       },
       { label: "Self-host it", href: SELF_HOST_HREF, primary: false },
     ]);
+  });
+});
+
+describe("signupHref", () => {
+  it("uses the hosted sign-up URL, else the pricing table", () => {
+    expect(signupHref(" https://app.example.com/sign-up ")).toBe(
+      "https://app.example.com/sign-up",
+    );
+    expect(signupHref(undefined)).toBe("#pricing");
+    expect(signupHref("  ")).toBe("#pricing");
+  });
+});
+
+describe("loginHref", () => {
+  it("is the hosted URL, and nothing when it is unset (no anchor fallback)", () => {
+    expect(loginHref(" https://app.example.com/sign-up ")).toBe(
+      "https://app.example.com/sign-up",
+    );
+    expect(loginHref(undefined)).toBeUndefined();
+    expect(loginHref("")).toBeUndefined();
+    expect(loginHref("  ")).toBeUndefined();
   });
 });

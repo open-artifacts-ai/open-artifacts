@@ -1069,6 +1069,34 @@ describe("pins", () => {
       expect(last("comment.pin")).not.toHaveProperty("at");
     });
 
+    it("comment.positions gets no `ghost` until the shell announces itself (#2408)", async () => {
+      // What an old shell accepts: positions only.
+      const oldPositions = (m: unknown) =>
+        Object.keys(m as object).every((k) =>
+          ["oa", "nonce", "type", "positions"].includes(k),
+        );
+      await start("pin");
+      await send({
+        type: "comments.set",
+        threads: [],
+        ghost: { x: 0.5, y: 0.5 },
+      });
+      const before = last("comment.positions");
+      expect(before).toBeDefined();
+      expect(before).not.toHaveProperty("ghost");
+      expect(oldPositions(before)).toBe(true);
+      // Once the shell says it knows the field, it is sent (and an old one would drop it).
+      await send({ type: "shell.protocol", protocol: 6 });
+      await send({
+        type: "comments.set",
+        threads: [],
+        ghost: { x: 0.5, y: 0.5 },
+      });
+      const after = last("comment.positions");
+      expect(after).toMatchObject({ ghost: { x: 120, y: 60 } });
+      expect(oldPositions(after)).toBe(false);
+    });
+
     it("the same old shell would drop the message once `at` is on it", async () => {
       await start("pin");
       await send({ type: "shell.protocol", protocol: 6 });
@@ -1076,6 +1104,40 @@ describe("pins", () => {
       await flush();
       expect(oldShell.safeParse(last("comment.pin")).success).toBe(false);
     });
+  });
+
+  it("reports where the new-pin flag is, and again when the page scrolls (#2386)", async () => {
+    await start("pin");
+    await send({ type: "shell.protocol", protocol: 6 });
+    await send({
+      type: "comments.set",
+      threads: [],
+      ghost: { x: 0.5, y: 0.5 },
+    });
+    expect(last("comment.positions")).toMatchObject({
+      ghost: { x: 120, y: 60 },
+    });
+    // The image moves up 50px under the frame.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      top: -40,
+      left: 20,
+      right: 220,
+      bottom: 60,
+      width: 200,
+      height: 100,
+    } as DOMRect);
+    window.dispatchEvent(new Event("scroll"));
+    frames();
+    await flush();
+    expect(last("comment.positions")).toMatchObject({
+      ghost: { x: 120, y: 10 },
+    });
+  });
+
+  it("says nothing about a flag when none is placed (#2386)", async () => {
+    await start("pin");
+    await send({ type: "comments.set", threads: [] });
+    expect(last("comment.positions")).not.toHaveProperty("ghost");
   });
 
   describe("badges (#2019)", () => {
@@ -1135,6 +1197,60 @@ describe("pins", () => {
       expect(svg?.querySelector("path")?.getAttribute("onclick")).toBeNull();
       expect(svg?.querySelector("circle")?.getAttribute("style")).toBeNull();
       expect(p?.querySelector("script, image")).toBeNull();
+    });
+
+    it("copies only SVG-namespace shapes (#2388)", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({
+            badge: {
+              icon: '<path xmlns="urn:evil" d="M1 1h4"/><circle cx="3" cy="3" r="2"/>',
+              color: "#2456c4",
+            },
+          }),
+        ],
+      });
+      const names = Array.from(
+        pin()?.querySelectorAll("svg *") ?? [],
+        (n) => n.localName,
+      );
+      expect(names).toEqual(["circle"]);
+    });
+
+    it("the same icon is parsed once, however often the pins are measured (#2388)", async () => {
+      const parse = vi.spyOn(DOMParser.prototype, "parseFromString");
+      await start("select");
+      const badge = {
+        icon: '<circle cx="3" cy="3" r="2"/><rect x="1" y="1" width="2" height="2"/>',
+        color: "#123456",
+      };
+      const before = parse.mock.calls.length;
+      for (let i = 0; i < 3; i++)
+        await send({
+          type: "comments.set",
+          threads: [base({ badge }), { ...base({ badge }), id: "p2", n: 2 }],
+        });
+      expect(parse.mock.calls.length - before).toBe(1);
+      expect(pin()?.querySelector("svg circle")).not.toBeNull();
+    });
+
+    it("ignores a badge when the page is not an image or a pdf (#2388)", async () => {
+      document.head
+        .querySelector<HTMLMetaElement>('meta[name="oa-format"]')
+        ?.setAttribute("content", "html");
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({ badge: { initials: "AL", label: "Comment by Ada L" } }),
+        ],
+      });
+      // No badge or button is ever built outside image and pdf.
+      expect(
+        roots.at(-1)?.querySelector(".initials, .face, button") ?? null,
+      ).toBeNull();
     });
 
     it("an agent with no face is the dashed robot mark, not initials", async () => {

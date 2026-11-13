@@ -146,7 +146,7 @@ describe("copy (#213)", () => {
     expect(own?.html).toContain(OWN);
   });
 
-  it("a user named 'me' (the sign-in default) is shown as the full address", () => {
+  it("a user named 'me' (the login default) is shown as the full address", () => {
     const inviter = senderName({ name: "me", email: "me@test.invalid" });
     const m = inviteEmail({ ...common, inviter, instance: "Open Artifacts" });
     expect(m.subject).toBe("me@test.invalid added you to Open Artifacts");
@@ -155,7 +155,7 @@ describe("copy (#213)", () => {
 
 // Review item 11: the sign-in copy names only the methods that admit the
 // recipient; never "a one-time code" when codes aren't offered to them.
-describe("sign-in copy (review item 11)", () => {
+describe("login copy (review item 11)", () => {
   const share = (signIn: typeof common.signIn) =>
     shareEmail({
       ...common,
@@ -171,12 +171,12 @@ describe("sign-in copy (review item 11)", () => {
     inviteEmail({ ...common, inviter: "Ada", instance: "Acme", signIn });
 
   it.each([
-    [["email"], "You'll sign in with a one-time code sent to new@x.com."],
-    [["google"], "You'll sign in with your Google account."],
-    [["access"], "You'll sign in with your organization's single sign-on."],
+    [["email"], "You'll log in with a one-time code sent to new@x.com."],
+    [["google"], "You'll log in with your Google account."],
+    [["access"], "You'll log in with your organization's single sign-on."],
     [
       ["email", "google"],
-      "You'll sign in with your Google account or a one-time code sent to new@x.com.",
+      "You'll log in with your Google account or a one-time code sent to new@x.com.",
     ],
   ] as const)("%j: %s", (signIn, line) => {
     const inv = invite([...signIn]);
@@ -195,10 +195,10 @@ describe("sign-in copy (review item 11)", () => {
     const pre = (signIn: typeof common.signIn) =>
       invite(signIn).html.replaceAll("&#39;", "'");
     expect(pre(["google"])).toContain(
-      ">You'll sign in with your Google account.&#8199;",
+      ">You'll log in with your Google account.&#8199;",
     );
     expect(pre(["email"])).toContain(
-      ">You'll sign in with a one-time code sent to this address.&#8199;",
+      ">You'll log in with a one-time code sent to this address.&#8199;",
     );
   });
 
@@ -206,15 +206,15 @@ describe("sign-in copy (review item 11)", () => {
   it.each([
     [
       "needs_invite",
-      "You can't sign in to Acme yet. Ask an admin there to invite you, then open this link again.",
+      "You can't log in to Acme yet. Ask an admin there to invite you, then open this link again.",
     ],
     [
       "outside_domains",
-      "This address can't sign in to Acme. Ask Ada to share it with an address that can.",
+      "This address can't log in to Acme. Ask Ada to share it with an address that can.",
     ],
     [
       "no_sign_in_method",
-      "This address can't sign in to Acme. Ask Ada to share it with an address that can.",
+      "This address can't log in to Acme. Ask Ada to share it with an address that can.",
     ],
   ] as const)("no method, %s: %s", (cantSignIn, line) => {
     expect(
@@ -239,12 +239,12 @@ describe("sign-in copy (review item 11)", () => {
     expect(m.html.replaceAll("&#39;", "'")).toContain(line);
     for (const part of [m.text, m.html]) {
       expect(part).not.toContain("one-time code");
-      expect(part).not.toContain("sign in with");
+      expect(part).not.toContain("log in with");
       expect(part).not.toContain("Reply to");
     }
   });
 
-  it("no em dashes in the sign-in copy", () => {
+  it("no em dashes in the login copy", () => {
     for (const signIn of [
       [],
       ["email"],

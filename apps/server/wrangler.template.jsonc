@@ -39,7 +39,8 @@
     { "tag": "v1", "new_sqlite_classes": ["ArtifactRuntime"] },
     { "tag": "v2", "new_sqlite_classes": ["UserPresence"] },
     { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] },
-    { "tag": "v4", "new_sqlite_classes": ["BusHub"] }
+    { "tag": "v4", "new_sqlite_classes": ["BusHub"] },
+    { "tag": "v5", "new_sqlite_classes": ["DocRoom"] }
   ],
   "ratelimits": [
     {

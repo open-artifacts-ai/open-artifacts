@@ -117,6 +117,22 @@ const members: Member[] = [
   { ...bob, role: "member", lastSeenAt: null },
 ];
 
+/** #2287: the seeded Welcome artifact's id, in the mocks' `welcome` option. */
+export const WELCOME_MOCK_ID = "WmCnEfGhJk4mNpQr";
+
+/** The Welcome artifact, its one version and its html (the page the server seeds). */
+export function welcomeFixture() {
+  return {
+    artifact: art(WELCOME_MOCK_ID, "Welcome", "html", {
+      createdAt: "2026-01-01T10:00:00.000Z",
+      updatedAt: "2026-01-01T10:00:00.000Z",
+    }),
+    version: ver(1, "index.html", "text/html"),
+    // The real page is apps/server/src/onboarding/welcome.html; specs serve it.
+    html: "<!doctype html><h1>Welcome</h1>",
+  };
+}
+
 /** The moment the bus fixtures describe; the mocks serve them shifted to now. */
 export const BUS_FIXTURE_NOW = "2026-01-03T10:00:00.000Z";
 

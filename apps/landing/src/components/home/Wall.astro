@@ -1,0 +1,21 @@
+---
+// The kinds of thing agents publish: an ordinary section after the story.
+---
+<section class="x-sec wallsec" id="everything" aria-labelledby="everything-h"><div class="wrap">
+  <h2 id="everything-h">One place for everything your agents make.</h2>
+  <p class="x-agl">Pages, Markdown, code, PDFs and images. All versioned, all open to comments.</p>
+  <div class="wgrid mwall" data-done="1" aria-hidden="true">
+        <div class="tile"><div class="tb">Launch plan<span>page</span></div><div class="tc"><h6>Q4 launch plan</h6><div class="ln" style="width:92%"></div><div class="ln" style="width:70%"></div><ul class="mck" style="margin-top:8px"><li class="d"><i></i>Pricing page reviewed</li><li class="d"><i></i>Docs links checked</li><li><i></i>Go or no-go call</li></ul></div></div>
+        <div class="tile"><div class="tb">Release status<span>page</span></div><div class="tc"><div class="srow">Search filters <span class="pl g">shipped</span></div><div class="srow">Saved views <span class="pl w">in review</span></div><div class="srow">Dark mode <span class="pl y">building</span></div></div></div>
+        <div class="tile"><div class="tb">Sync spec<span>markdown</span></div><div class="tc"><h6>How sync works</h6><div class="ln" style="width:88%"></div><div class="ln" style="width:64%"></div><div class="flow"><span>Agent</span><i></i><span>Publish</span><i></i><span>Viewer</span></div><div class="ln" style="width:76%;margin-top:9px"></div></div></div>
+        <div class="tile"><div class="tb">Weekly numbers<span>page</span></div><div class="tc"><div class="stat"><div><b>1,284</b><small>artifacts published</small></div><div><b>+18%</b><small>this week</small></div></div><svg class="chart" viewBox="0 0 200 64" preserveAspectRatio="none"><path class="g" d="M0 20h200M0 42h200"/><path class="a" d="M0 54 28 48 56 50 84 38 112 40 140 26 168 22 200 8V64H0z"/><path class="l" d="M0 54 28 48 56 50 84 38 112 40 140 26 168 22 200 8"/></svg></div></div>
+        <div class="tile"><div class="tb">retry.py<span>code</span></div><div class="tc"><pre class="code"><span class="n">1</span><span class="k">def</span> retry(fn, tries=<span class="s">3</span>):
+<span class="n">2</span>    <span class="c"># back off between tries</span>
+<span class="n">3</span>    <span class="k">for</span> i <span class="k">in</span> range(tries):
+<span class="n">4</span>        <span class="k">try</span>:
+<span class="n">5</span>            <span class="k">return</span> fn()
+<span class="n">6</span>        <span class="k">except</span> Timeout:
+<span class="n">7</span>            sleep(<span class="s">2</span> ** i)</pre></div></div>
+        <div class="tile"><div class="tb">Sign-up screen<span>image</span></div><div class="tc"><div class="img"><div class="ph"></div><span class="pin" style="left:40%;top:36%">1</span><span class="pin" style="left:66%;top:70%">2</span></div></div></div>
+      </div>
+</div></section>

@@ -6,7 +6,7 @@ order: 2
 
 Every instance serves one MCP server at `https://<your-app-host>/mcp` over Streamable HTTP. Any MCP client can connect in one of two ways:
 
-- **OAuth.** Clients that support MCP OAuth need only the URL. They register themselves, and you sign in through your instance's login page.
+- **OAuth.** Clients that support MCP OAuth need only the URL. They register themselves, and you log in through your instance's login page.
 - **Personal access token.** For clients and scripts without OAuth, create a token in the dashboard under **Settings → Connections** and send it as `Authorization: Bearer oa_pat_…`. Tokens can be revoked at any time.
 
 Setup's `agent-config` step prints each snippet below with your URL filled in, and the dashboard's **Settings → Connections** page shows them too. The examples use `artifacts.example.com` and the default server name, `open-artifacts`; setup names the server after its `--name` flag.
@@ -25,7 +25,7 @@ Claude Code, Cursor, and OpenCode use OAuth, so their snippets are only the URL:
 claude mcp add --transport http -s user open-artifacts https://artifacts.example.com/mcp
 ```
 
-Then run `/mcp` in Claude Code and sign in.
+Then run `/mcp` in Claude Code and log in.
 
 ## Cursor
 
@@ -41,7 +41,7 @@ In `.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` for every project:
 }
 ```
 
-Cursor opens a sign-in when it connects.
+Cursor opens a login when it connects.
 
 ## OpenCode
 
@@ -60,7 +60,7 @@ In `opencode.json`:
 }
 ```
 
-Then run `opencode mcp auth open-artifacts` and sign in.
+Then run `opencode mcp auth open-artifacts` and log in.
 
 ## Without OAuth
 
@@ -92,7 +92,7 @@ codex mcp add open-artifacts --url https://artifacts.example.com/mcp
 codex mcp login open-artifacts
 ```
 
-Sign in with your instance account in the browser, then run `codex mcp list` to check the connection. No PAT is needed. If an existing config sets `bearer_token_env_var` or `http_headers_helper`, remove that setting before using OAuth.
+Log in with your instance account in the browser, then run `codex mcp list` to check the connection. No PAT is needed. If an existing config sets `bearer_token_env_var` or `http_headers_helper`, remove that setting before using OAuth.
 
 ### Token fallback
 

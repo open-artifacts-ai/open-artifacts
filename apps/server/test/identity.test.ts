@@ -51,7 +51,7 @@ const admin = actor("admin");
 const ownerActor = actor("owner");
 
 describe("admit (Google)", () => {
-  it("an admin demotion racing the sign-in sticks (role promoted in SQL)", async () => {
+  it("an admin demotion racing the login sticks (role promoted in SQL)", async () => {
     const id = g();
     const userId = await seedUser(id.email, "admin", { googleSub: id.subject });
     // The demotion lands between admit's read and touch's write: the first
@@ -81,7 +81,7 @@ describe("admit (Google)", () => {
     expect((await rowOf(userId)).role).toBe("member");
   });
 
-  it("a user suspended mid-sign-in is refused, with no auth.signin row", async () => {
+  it("a user suspended mid-login is refused, with no auth.signin row", async () => {
     const id = g();
     const userId = await seedUser(id.email, "member", {
       googleSub: id.subject,
@@ -115,7 +115,7 @@ describe("admit (Google)", () => {
     ).toBe(0);
   });
 
-  it("a guest signing in with a verified Google identity becomes a member", async () => {
+  it("a guest logging in with a verified Google identity becomes a member", async () => {
     const id = g();
     const userId = await seedUser(id.email, "guest", { googleSub: id.subject });
     expect(await admit(env, cfg(), id)).toMatchObject({
@@ -161,7 +161,7 @@ describe("admit (Google)", () => {
     expect(await subjectOf(uid)).toBe(id.subject);
   });
 
-  it("the same sub signs in again as the same user", async () => {
+  it("the same sub logs in again as the same user", async () => {
     const id = g();
     const a = await admit(env, cfg(), id);
     const b = await admit(env, cfg(), id);
@@ -179,7 +179,7 @@ describe("admit (Google)", () => {
     });
   });
 
-  it("a P3-synced identity (subject = Directory user id) signs in as that row", async () => {
+  it("a P3-synced identity (subject = Directory user id) logs in as that row", async () => {
     const email = uniq("synced");
     const dir = `1122334455${Math.floor(Math.random() * 1e6)}`;
     const uid = await seedUser(email, "member", { googleSub: dir });
@@ -232,7 +232,7 @@ describe("admit (Google)", () => {
     expect((await rowOf(uid)).role).toBe("member");
   });
 
-  it("an OWNER_EMAIL first sign-in is a member while an owner row exists", async () => {
+  it("an OWNER_EMAIL first login is a member while an owner row exists", async () => {
     await seedUser(uniq("owner"), "owner");
     const boss = uniq("boss");
     const e = direct({ OWNER_EMAIL: boss });
@@ -299,7 +299,7 @@ describe("admit (Google)", () => {
     ).toBe(0);
   });
 
-  it("concurrent first sign-ins create one user and one identity", async () => {
+  it("concurrent first logins create one user and one identity", async () => {
     const id = g();
     const rs = await Promise.all([
       admit(env, cfg(), id),
@@ -432,7 +432,7 @@ describe("resetIdentity", () => {
     expect(await grants(uid)).toBe(0);
   });
 
-  it("marks the row google_relink; the user's own Google sign-in that links next clears it", async () => {
+  it("marks the row google_relink; the user's own Google login that links next clears it", async () => {
     const email = uniq("relink");
     const uid = await seedUser(email, "member", { googleSub: `RL-${email}` });
     const flag = async () =>

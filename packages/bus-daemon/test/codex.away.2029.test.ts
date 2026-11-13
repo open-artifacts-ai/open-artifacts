@@ -232,13 +232,14 @@ function fdinfo(
   fd: string,
   file: string,
   held: boolean,
+  kind = "FLOCK",
 ): void {
   const st = statSync(file, { bigint: true });
   const { major, minor } = devParts(st.dev);
   mkdirSync(join(proc, String(pid), "fdinfo"), { recursive: true });
   writeFileSync(
     join(proc, String(pid), "fdinfo", fd),
-    `pos:\t0\nflags:\t0100002\n${held ? `lock:\t1: FLOCK  ADVISORY  WRITE ${pid} ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n` : ""}`,
+    `pos:\t0\nflags:\t0100002\n${held ? `lock:\t1: ${kind}  ADVISORY  WRITE ${pid} ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n` : ""}`,
   );
 }
 
@@ -963,6 +964,15 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     // The holder filtered out (no lock on any fd): no candidate.
     fdinfo(proc, 100, "7", locked, false);
     expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([]);
+    // #2307: a lease or delegation line is no lock; POSIX and OFDLCK are.
+    for (const kind of ["LEASE", "DELEG"]) {
+      fdinfo(proc, 100, "7", locked, true, kind);
+      expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([]);
+    }
+    for (const kind of ["POSIX", "OFDLCK"]) {
+      fdinfo(proc, 100, "7", locked, true, kind);
+      expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([100]);
+    }
     // fdinfo unreadable: fail closed.
     fdinfo(proc, 100, "7", locked, true);
     rmSync(join(proc, "100", "fdinfo"), { recursive: true });

@@ -127,7 +127,7 @@ describe("version faces (REST)", () => {
   });
 
   it.each([
-    ["signed out", () => null],
+    ["logged out", () => null],
     ["guest role", () => guestV],
     ["restricted", () => restrictedV],
   ])("%s: no linked, product or animal; id never leaves", async (_n, who) => {

@@ -358,7 +358,7 @@ export function TitleBar({
           </ShButton>
         )}
         {live}
-        {/* On phones it moves into the ••• menu, which only signed-in
+        {/* On phones it moves into the ••• menu, which only logged-in
             viewers have. */}
         {gone ? (
           <ShButton
@@ -446,7 +446,7 @@ export function TitleBar({
             className={`${BAR} text-primary-foreground hover:text-primary-foreground`}
           >
             <a href={`${AUTH.login}?next=${encodeURIComponent(next)}`}>
-              Sign in
+              Log in
             </a>
           </ShButton>
         )}

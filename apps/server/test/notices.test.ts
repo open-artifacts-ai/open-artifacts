@@ -127,7 +127,7 @@ describe("Me.notices with soft removal (parity 1)", () => {
 });
 
 describe("Me.notices.guestShares (parity 2)", () => {
-  it("lists editor shares on the caller's own artifacts to active guests and never-signed-in addresses; skips viewers, members, inactive guests and deleted artifacts", async () => {
+  it("lists editor shares on the caller's own artifacts to active guests and never-logged-in addresses; skips viewers, members, inactive guests and deleted artifacts", async () => {
     const a = await user("a");
     const plan = await artifact(a.userId, "Plan");
     const gone = await artifact(a.userId, "Old", true);
@@ -209,7 +209,7 @@ describe("Me.notices.guestShares (parity 2)", () => {
     expect(m?.more).toBe(false);
   });
 
-  it("only on Access-only installs: never on direct sign-in or hosted", async () => {
+  it("only on Access-only installs: never on direct login or hosted", async () => {
     const a = await user("a");
     await share(await artifact(a.userId, "Plan"), uniq("d", "x.com"));
     expect(await notices(a.cookie)).toBeDefined();

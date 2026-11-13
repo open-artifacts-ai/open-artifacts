@@ -175,7 +175,7 @@ describe.each([
   ["spaces off", {}],
   ["spaces on", { FEATURES: "spaces" }],
 ] as const)(
-  "red-line: a removed person is refused on every sign-in path (%s)",
+  "red-line: a removed person is refused on every login path (%s)",
   (_, over) => {
     const E = { ...(env as object), ...over } as Env;
     const removeVia = async (email: string) => {
@@ -435,7 +435,7 @@ describe("red-line: directory sync revive (parity 1 round 2)", () => {
       }),
     );
 
-  it("a revived member's PAT and OAuth grant from before the directory removal stay refused (KV revocation missed too); a fresh sign-in works", async () => {
+  it("a revived member's PAT and OAuth grant from before the directory removal stay refused (KV revocation missed too); a fresh login works", async () => {
     const email = uniq("rl-revive", "a.com");
     const sub = `g-rl-rv-${crypto.randomUUID()}`;
     const m = await login(email, "member");

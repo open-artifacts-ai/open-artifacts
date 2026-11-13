@@ -49,7 +49,7 @@ beforeAll(() => {
 });
 afterAll(() => vi.restoreAllMocks());
 
-describe("direct sign-in CPU (Free: 10 ms)", () => {
+describe("direct login CPU (Free: 10 ms)", () => {
   it("GET /auth/providers is under 1 ms (config only)", async ({
     annotate,
   }) => {
@@ -84,7 +84,7 @@ describe("direct sign-in CPU (Free: 10 ms)", () => {
       );
       expect(r.status).toBe(302);
     });
-    await budget(annotate, "Google sign-in (login + callback, wall)", ms, 10);
+    await budget(annotate, "Google login (login + callback, wall)", ms, 10);
   });
 
   it("a code request and a verify fit the budget", async ({ annotate }) => {

@@ -42,7 +42,7 @@ it.each([
   ],
   [
     "reauth_required",
-    "For your security, sign in with Google again to manage the directory.",
+    "For your security, log in with Google again to manage the directory.",
   ],
   // Design, 2026-10-28 (the upload refusals, #775).
   [

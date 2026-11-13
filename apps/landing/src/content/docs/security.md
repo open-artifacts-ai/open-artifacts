@@ -27,9 +27,9 @@ Private content URLs carry a signed token that expires after {LIMIT_SIGNED_URL_T
 
 The [runtime API](/docs/runtime-api/) talks to the shell over `postMessage`. The shell checks each call against the artifact's declared capabilities and makes it with the viewer's session. The artifact itself never holds a credential.
 
-## Sign-in
+## Login
 
-Cloudflare Access is the identity provider, using a one-time PIN by email, or GitHub or Google if you turn them on. Open Artifacts stores no passwords. After sign-in, the Worker issues its own `HttpOnly`, `Secure`, `SameSite=Lax` session cookie that lasts 7 days. Requests that change data with that cookie must also send the header `X-OA-Request: 1`.
+Cloudflare Access is the identity provider, using a one-time PIN by email, or GitHub or Google if you turn them on. Open Artifacts stores no passwords. After login, the Worker issues its own `HttpOnly`, `Secure`, `SameSite=Lax` session cookie that lasts 7 days. Requests that change data with that cookie must also send the header `X-OA-Request: 1`.
 
 ## Who can see what
 
@@ -37,10 +37,10 @@ Cloudflare Access is the identity provider, using a one-time PIN by email, or Gi
 |---|---|
 | `private` (default) | The creator and the people it's shared with |
 | `team` | Every member of the instance |
-| `public` | Anyone with the link, without signing in |
+| `public` | Anyone with the link, without logging in |
 
 - **Roles:** the owner and admins manage members and settings. Members publish. Guests see only what's shared with them.
-- **Removed members:** someone an admin removes and later restores gets their space roles back, but not their old tokens or agent connections. They have to sign in again, and a former admin comes back as a member.
+- **Removed members:** someone an admin removes and later restores gets their space roles back, but not their old tokens or agent connections. They have to log in again, and a former admin comes back as a member.
 - **Shares** give a person `viewer` or `editor` access by email. Editors can publish new versions, edit the title and description, and restore versions.
 - **Only the creator** can share an artifact, change its visibility, or delete it. Admins can't see other people's private artifacts.
 - **No access looks like no artifact.** Anything you can't see returns `404`, never `403`.

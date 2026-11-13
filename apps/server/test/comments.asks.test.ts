@@ -396,7 +396,7 @@ describe("mentions", () => {
     expect(l.threads).toHaveLength(1);
   });
 
-  it("a signed-out guest on a public artifact is 403", async () => {
+  it("a logged-out guest on a public artifact is 403", async () => {
     const s = await setup({ visibility: "public" });
     const r = await post(s.id, null, { mentions: [{ key: s.claude }] });
     expect(r.status).toBe(403);
@@ -542,7 +542,7 @@ describe("asks", () => {
     await rejects({}, []);
   });
 
-  it("an ask needs a signed-in asker; the REST bodies ignore an ask field", async () => {
+  it("an ask needs a logged-in asker; the REST bodies ignore an ask field", async () => {
     const s = await setup({ visibility: "public" });
     const guest: CommentWho = {
       kind: "guest",
@@ -692,7 +692,7 @@ describe("asks", () => {
     expect(bus.sent).toHaveLength(1);
   });
 
-  it("a signed-out reader sees mentions without owner or address", async () => {
+  it("a logged-out reader sees mentions without owner or address", async () => {
     const s = await setup({ visibility: "public" });
     await post(s.id, owner, { mentions: [{ key: s.claude }] });
     const r = await api(app, R.comments(s.id), null, {

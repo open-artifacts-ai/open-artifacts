@@ -9,7 +9,17 @@ export function heroActions(signupUrl: string | undefined): HeroAction[] {
   if (!url)
     return [{ label: "Self-host it", href: SELF_HOST_HREF, primary: true }];
   return [
-    { label: "Get started free", href: url, primary: true },
+    { label: "Sign up", href: url, primary: true },
     { label: "Self-host it", href: SELF_HOST_HREF, primary: false },
   ];
+}
+
+/** Where "Sign up" goes: hosted sign-up (HOSTED_SIGNUP_URL, set at build), else the pricing table. */
+export function signupHref(signupUrl: string | undefined): string {
+  return signupUrl?.trim() || "#pricing";
+}
+
+/** Where the header's "Log in" goes: the same hosted URL. Unset: no link at all. */
+export function loginHref(signupUrl: string | undefined): string | undefined {
+  return signupUrl?.trim() || undefined;
 }

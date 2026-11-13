@@ -75,7 +75,7 @@ const REFUSED: Record<
   unknown: {
     title: "This link doesn't work",
     message:
-      "No link change waits behind this link for you. Check that you're signed in as the right person, or run the command again.",
+      "No link change waits behind this link for you. Check that you're logged in as the right person, or run the command again.",
     status: 404,
   },
   used: {

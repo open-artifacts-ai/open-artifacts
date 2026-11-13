@@ -293,7 +293,7 @@ it("restricted and guest rows show Viewer as text with their chip and reason", a
   const gia = await row("Gia Ruiz");
   expect(within(gia).getByText("Guest")).toBeVisible();
   expect(gia).toHaveTextContent(
-    "Gia Ruiz, guest, can only view. Guests sign in by link and can't publish, edit or write live data, from the app or any AI agent.",
+    "Gia Ruiz, guest, can only view. Guests log in by link and can't publish, edit or write live data, from the app or any AI agent.",
   );
   expect(gia).toHaveTextContent(
     "gia@partner.io · Guest · can only view · via eng@",

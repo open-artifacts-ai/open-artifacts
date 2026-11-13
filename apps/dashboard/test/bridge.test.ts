@@ -403,9 +403,10 @@ describe("comments (#682)", () => {
     });
     expect(o.onCommentSelect).toHaveBeenCalledWith(sel);
     expect(o.onCommentOpen).toHaveBeenCalledWith("t1");
-    expect(o.onCommentPositions).toHaveBeenCalledWith([
-      { id: "t1", state: "exact", top: 5 },
-    ]);
+    expect(o.onCommentPositions).toHaveBeenCalledWith(
+      [{ id: "t1", state: "exact", top: 5 }],
+      undefined,
+    );
   });
 
   it("a newer runtime's extra top-level field no longer drops the message (#2408)", () => {
@@ -1172,7 +1173,7 @@ describe("anonymous id", () => {
     );
   });
 
-  it("no header when signed in, even with a stored token", async () => {
+  it("no header when logged in, even with a stored token", async () => {
     vi.stubGlobal("localStorage", okStorage);
     store.set(ANON_ID_KEY, TOKEN);
     fetchMock.mockImplementation(async () => withToken(TOKEN2));

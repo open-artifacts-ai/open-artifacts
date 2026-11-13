@@ -152,9 +152,7 @@ for (const [width, shown] of [
     else await expect(email).toBeHidden();
     // The avatar still opens the account menu.
     await page.getByRole("button", { name: "Account menu" }).click();
-    await expect(
-      page.getByRole("menuitem", { name: "Sign out" }),
-    ).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Log out" })).toBeVisible();
   });
 
 for (const scheme of ["light", "dark"] as const)
@@ -188,12 +186,12 @@ for (const scheme of ["light", "dark"] as const)
       });
     });
 
-test("account menu shows the signed-in email as a label", async ({ page }) => {
+test("account menu shows the logged-in email as a label", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await page.goto("/?hosted=1");
   await page.waitForLoadState("networkidle");
   await page.getByRole("button", { name: "Account menu" }).click();
   const menu = page.getByRole("menu");
   await expect(menu.getByText("ada@example.com")).toBeVisible();
-  await expect(menu.getByRole("menuitem")).toHaveText(["Sign out"]);
+  await expect(menu.getByRole("menuitem")).toHaveText(["Log out"]);
 });

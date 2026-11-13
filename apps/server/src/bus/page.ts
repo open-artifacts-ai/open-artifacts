@@ -426,8 +426,8 @@ async function postCaller(
   if (!user)
     return {
       response: messagePage(
-        "Signed out",
-        "Your session ended. Sign in and try again.",
+        "Logged out",
+        "Your session ended. Log in and try again.",
         401,
       ),
     };

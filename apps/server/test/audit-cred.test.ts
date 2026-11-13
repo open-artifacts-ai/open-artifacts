@@ -285,7 +285,7 @@ describe("the store never bleeds between requests", () => {
     ).toEqual([pat]);
   });
 
-  it("sign-in rows record no credential, even inside a request holding one", async () => {
+  it("login rows record no credential, even inside a request holding one", async () => {
     const email = uniq("signin");
     const u = await login(email);
     await withCred({ kind: "session", id: "access:1" }, async () => {

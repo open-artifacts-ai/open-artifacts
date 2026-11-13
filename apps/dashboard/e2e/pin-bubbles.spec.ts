@@ -35,7 +35,7 @@ function frameHtml(kind: "image" | "pdf", schemas: string) {
   // stand-in (the same module, already loaded by the runtime, so its handlers
   // are registered by the time this resolves).
   const hello = `import("/_oa/${schemas}").then(()=>setTimeout(()=>parent.postMessage({oa:1,type:"hello",protocol:6,kind:"${kind}",nonce:window.__nonce},"*"),0))`;
-  return `<!doctype html><meta name="oa-format" content="${kind}"><body style="margin:0;background:#eceef1">${body}<script>window.__nonce=new URLSearchParams(location.hash.slice(1)).get("oa")</script><script src="/_oa/runtime.js"></script><script>${hello}</script>`;
+  return `<!doctype html><meta name="oa-format" content="${kind}"><body style="margin:0;background:#eceef1">${body}<div style="height:900px"></div><script>window.__nonce=new URLSearchParams(location.hash.slice(1)).get("oa")</script><script src="/_oa/runtime.js"></script><script>${hello}</script>`;
 }
 
 async function open(
@@ -154,6 +154,26 @@ test("image: click-to-comment opens the box beside the flag on a wide screen", a
   await textbox.fill("Here is a comment");
   await page.keyboard.press("Escape");
   await expect(page.locator("[data-pin-beside]")).toHaveCount(0);
+});
+
+test("image: the box beside the flag follows it when the page scrolls (#2386)", async ({
+  page,
+}) => {
+  const frame = await open(page, "image", 1280);
+  await expect(
+    frame.getByRole("button", { name: "Comment by Sam Rivera" }),
+  ).toBeVisible({ timeout: 15_000 });
+  const box = await frame.locator("img").boundingBox();
+  if (!box) throw new Error("no image");
+  await page.mouse.click(box.x + box.width * 0.12, box.y + box.height * 0.4);
+  const side = page.locator("[data-pin-beside]");
+  await expect(side).toBeVisible();
+  const before = await side.boundingBox();
+  await frame.locator("body").evaluate(() => window.scrollBy(0, 120));
+  await expect
+    .poll(async () => (await side.boundingBox())?.y ?? 0, { timeout: 5000 })
+    .toBeCloseTo((before?.y ?? 0) - 120, -1);
+  await shot(page, "1280-image-beside-scrolled");
 });
 
 test("image: a click near the bottom right keeps the box fully in view", async ({

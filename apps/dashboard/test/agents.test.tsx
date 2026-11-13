@@ -130,7 +130,7 @@ describe("Agents settings", () => {
     fireEvent.click(cursor);
     const panel = await screen.findByRole("tabpanel");
     expect(panel.textContent).toBe(
-      "Cursor signs in with OAuth, so it doesn't need a token.",
+      "Cursor logs in with OAuth, so it doesn't need a token.",
     );
     expect(within(panel).queryByRole("button")).toBeNull();
   });

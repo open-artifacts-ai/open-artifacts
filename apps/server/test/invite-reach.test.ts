@@ -78,7 +78,7 @@ describe("invite reachability (review item 11)", () => {
 
   it("the outside-domains message suggests sharing as a guest", () => {
     expect(INVITE_UNREACHABLE_MESSAGE.outside_domains).toBe(
-      "This address can't sign in to this workspace. Share artifacts with them as a guest instead.",
+      "This address can't log in to this workspace. Share artifacts with them as a guest instead.",
     );
   });
 
@@ -109,7 +109,7 @@ describe("invite reachability (review item 11)", () => {
     const body = MemberInviteResultSchema.parse(await r.json());
     expect(body.signIn).toBeUndefined();
     expect(sent[0]?.text).toContain(
-      `You'll sign in with a one-time code sent to ${email}.`,
+      `You'll log in with a one-time code sent to ${email}.`,
     );
   });
 
@@ -122,7 +122,7 @@ describe("invite reachability (review item 11)", () => {
       MemberInviteResultSchema.parse(await r.json()).signIn,
     ).toBeUndefined();
     const m = sent[0];
-    expect(m?.text).toContain("You'll sign in with your Google account.");
+    expect(m?.text).toContain("You'll log in with your Google account.");
     for (const part of [m?.subject, m?.text, m?.html])
       expect(part).not.toContain("one-time code");
   });
@@ -152,7 +152,7 @@ describe("invite reachability (review item 11)", () => {
       });
       expect(await rowOf(email)).not.toBeNull();
       const m = sent[0];
-      expect(m?.text).toContain("You'll sign in with your Google account.");
+      expect(m?.text).toContain("You'll log in with your Google account.");
       expect(m?.text).not.toContain("one-time code");
     },
   );
@@ -166,7 +166,7 @@ describe("invite reachability (review item 11)", () => {
       MemberInviteResultSchema.parse(await r.json()).signIn,
     ).toBeUndefined();
     expect(sent[0]?.text).toContain(
-      "You'll sign in with your organization's single sign-on.",
+      "You'll log in with your organization's single sign-on.",
     );
     expect(sent[0]?.text).not.toContain("one-time code");
   });
@@ -184,7 +184,7 @@ function namesExactly(text: string | undefined, methods: readonly string[]) {
       (t: string) => t.includes(phrase) === methods.includes(m),
     );
   expect(text ?? "").toSatisfy(
-    (t: string) => t.includes("can't sign in") === (methods.length === 0),
+    (t: string) => t.includes("can't log in") === (methods.length === 0),
   );
 }
 

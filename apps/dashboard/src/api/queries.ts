@@ -1177,7 +1177,7 @@ export const useResetIdentity = () => {
       // The Members row says these itself, naming the person.
       if (e instanceof ApiClientError && (e.status === 404 || e.status === 403))
         return;
-      failureToast(qc, "Couldn't reset the sign-in.", e);
+      failureToast(qc, "Couldn't reset the login.", e);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
   });

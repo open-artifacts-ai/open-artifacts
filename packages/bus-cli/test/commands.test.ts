@@ -1161,7 +1161,12 @@ describe("uninstall: transcript states 9 and 10", () => {
     mkdirSync(join(ctx.home, "logs"), { recursive: true });
     writeFileSync(join(ctx.home, "logs/daemon.log"), "theirs");
     expect(await uninstall({ purge: true }, ctx)).toBe(1);
-    expect(ctx.all()).toEqual(transcript("## 10. uninstall --purge")[2]);
+    // A non-default home never wired a harness (#2425), so that line is not printed.
+    expect(ctx.all()).toEqual(
+      (transcript("## 10. uninstall --purge")[2] as string[]).filter(
+        (l) => !l.includes("No harness had the bus wired"),
+      ),
+    );
     expect(existsSync(join(ctx.home, "logs/daemon.log"))).toBe(true);
   });
 

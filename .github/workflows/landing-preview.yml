@@ -30,6 +30,8 @@ jobs:
       - if: steps.gate.outputs.present == 'true'
         run: pnpm install --frozen-lockfile
       - if: steps.gate.outputs.present == 'true'
+        env:
+          HOSTED_SIGNUP_URL: https://signup.open-artifacts.app/
         run: pnpm --filter @oa/landing build
       - id: preview
         if: steps.gate.outputs.present == 'true'
