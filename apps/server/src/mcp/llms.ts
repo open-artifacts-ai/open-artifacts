@@ -41,10 +41,7 @@ export const CLAUDE_PLUGIN = {
 /** The MCP server name every client snippet registers. */
 const SERVER_NAME = "open-artifacts";
 
-type LlmsEnv = Pick<
-  Env,
-  "APP_HOST" | "SKILL_MD" | "BUS_HUB" | "HOSTED" | "FEATURES"
->;
+type LlmsEnv = Pick<Env, "APP_HOST" | "SKILL_MD"> & Parameters<typeof busOn>[0];
 
 /** The guide's inputs for one instance. */
 export const llmsInputs = (host: string) => {
