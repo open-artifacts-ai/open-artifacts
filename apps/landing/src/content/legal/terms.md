@@ -71,7 +71,7 @@ On monthly Team, each renewal charges for the number of creators you had the mon
 
 **Taxes.** Prices don't include taxes, and we don't add tax to invoices today. If that changes, we'll tell instance owners first. You're responsible for any taxes you owe on your purchase.
 
-**Cancelling.** The instance owner or an admin can cancel at any time in Settings, Plan and billing. The plan keeps working until the end of the period already paid for, and doesn't renew. After that you can still read and share everything, but nothing new can be published or edited. Nothing is deleted.
+**Cancelling.** The instance owner or an admin can cancel at any time in Settings, Plan and billing. The plan keeps working until the end of the period already paid for, and doesn't renew. After that, Solo pauses publishing, and on Team or Business the team features become read-only. You can still read and share everything, and nothing is deleted.
 
 **Refunds.** If you ask within 14 days of your first payment, we'll refund it in full. Write to [hello@open-artifacts.com](mailto:hello@open-artifacts.com) from the instance owner's address. After those 14 days, payments aren't refunded, and we don't give credit for part of a period, for moving to a cheaper plan, or for having fewer creators, except where the law requires it. If a charge looks wrong, write to the same address and we'll look into it.
 
