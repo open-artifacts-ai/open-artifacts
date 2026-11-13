@@ -16,6 +16,8 @@ const READS: Record<string, string> = {
     "fail closed: a hosted install never reaches a broker over HTTPS (no binding, no props: broker_unavailable)",
   "auth/broker-transport.ts: brokerTransportKind":
     "fail closed: reports no transport for a hosted install without a binding or props",
+  "bus/routes.ts: connect":
+    "tightens: hosted always has the edge's client IP, so a request without it is refused",
   "auth/config.ts: domainJoin":
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":

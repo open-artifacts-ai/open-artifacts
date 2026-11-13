@@ -40,7 +40,7 @@ import {
   pageResponse,
   sessionUser,
 } from "../http/pages.js";
-import { logError, logInfo } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
@@ -620,6 +620,14 @@ const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 const unauthorized = () =>
   errorJson(401, "unauthorized", "A valid machine token is required");
 
+let warnedNoConnectIp = false;
+/** Logs once per isolate that /bus/connect arrived with no client IP. */
+function noConnectIp(): void {
+  if (warnedNoConnectIp) return;
+  warnedNoConnectIp = true;
+  logWarn("bus_connect_no_ip");
+}
+
 /**
  * GET /bus/connect: a WebSocket upgrade with `Authorization: Bearer
  * oa_machine_...`. The token must be a live bus_machines row (never a PAT or
@@ -635,12 +643,27 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
   // Per IP, before the sha256 and the D1 lookup: any string would cost both.
   // RL_ANON_WRITES (120/min, RL_ANON if unbound) so a few daemons behind one
   // NAT reconnecting with backoff never trip it.
-  const rl = await limited(
-    env,
-    RL_KEYS.connect + clientIp(c),
-    60,
-    env.RL_ANON_WRITES ?? env.RL_ANON,
-  );
+  // Hosted always has cf-connecting-ip (the Cloudflare edge sets it), so
+  // hosted behaviour is unchanged. A self-host behind a proxy that doesn't
+  // set it has no IP: skip this limit rather than put every machine in one
+  // shared bucket. The token's per-machine and per-member limits still apply.
+  const ip = ipKey(c.req.header("cf-connecting-ip") ?? "");
+  if (ip === null) {
+    // Hosted tightens: the edge always sets the client IP, so a request
+    // without it is refused rather than left unthrottled.
+    if (env.HOSTED === "1")
+      return errorJson(400, "bad_request", "Missing client address");
+    noConnectIp();
+  }
+  const rl =
+    ip === null
+      ? null
+      : await limited(
+          env,
+          RL_KEYS.connect + ip,
+          60,
+          env.RL_ANON_WRITES ?? env.RL_ANON,
+        );
   if (rl) return rl;
   // Hosted suspend (cloud #228): refuse at once from the install's own D1,
   // before the token lookup, as dispatch's paused answer would.
