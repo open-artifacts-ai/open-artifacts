@@ -334,6 +334,18 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
           .one(),
       )
     ).id;
+    // #2318: its minted-name and rename-limit rows go with it.
+    await inHub(h, (_, s) => {
+      s.storage.sql.exec(
+        "insert into minted_names (org_id, lname, name, agent_id, lbase, created_at) values ('o', 'idle-7', 'Idle-7', ?, 'idle', 0)",
+        id,
+      );
+      s.storage.sql.exec(
+        "insert into rename_rl (agent_id, at) values (?, ?)",
+        id,
+        t0 + 10 * MAILBOX_RETAIN_MS,
+      );
+    });
     // The alarm is armed for the purge.
     const armed = await inHub(h, (_, s) => s.storage.getAlarm());
     expect(armed).not.toBeNull();
@@ -350,6 +362,19 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
     await clock(h, t0 + MAILBOX_RETAIN_MS + 1);
     await alarms(h, 2);
     expect(await exists(h, id)).toBe(false);
+    expect(
+      await inHub(
+        h,
+        (_, s) =>
+          s.storage.sql
+            .exec<{ n: number }>(
+              "select (select count(*) from minted_names where agent_id = ?) + (select count(*) from rename_rl where agent_id = ?) as n",
+              id,
+              id,
+            )
+            .one().n,
+      ),
+    ).toBe(0);
     // The ref comes back with a new id: a purged id is never reused.
     d.send(up("u2", "ref_a", "Idle", n));
     await until(d, "agent_ok");

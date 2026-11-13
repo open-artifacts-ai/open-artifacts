@@ -6645,9 +6645,9 @@ export class BusHub extends DurableObject<Env> {
     }
     const u = cur?.u ?? -1;
     const r = cur?.r ?? 0;
-    const rows = all<{ rid: number; u: number; idle: number }>(
+    const rows = all<{ rid: number; id: string; u: number; idle: number }>(
       sql,
-      `select a.rowid as rid, a.updated_at as u, ${IDLE_AGENT_SQL} as idle
+      `select a.rowid as rid, a.id as id, a.updated_at as u, ${IDLE_AGENT_SQL} as idle
          from agents a indexed by agents_closed
         where a.live = 0 and a.updated_at < ?
           and (a.updated_at > ? or (a.updated_at = ? and a.rowid > ?))
@@ -6660,12 +6660,24 @@ export class BusHub extends DurableObject<Env> {
       r,
       BATCH,
     );
-    const gone = rows.filter((x) => x.idle === 1).map((x) => x.rid);
-    if (gone.length > 0)
+    const goneRows = rows.filter((x) => x.idle === 1);
+    const gone = goneRows.map((x) => x.rid);
+    if (gone.length > 0) {
+      // #2318: the agent's minted-name and rename-limit rows go with it.
+      const ids = JSON.stringify(goneRows.map((x) => x.id));
+      sql.exec(
+        "delete from minted_names where agent_id in (select value from json_each(?))",
+        ids,
+      );
+      sql.exec(
+        "delete from rename_rl where agent_id in (select value from json_each(?))",
+        ids,
+      );
       sql.exec(
         "delete from agents where live = 0 and rowid in (select value from json_each(?))",
         JSON.stringify(gone),
       );
+    }
     if (gone.length > 0) logEvent("agents_purged", { n: gone.length });
     const kept = (cur?.kept ?? 0) + rows.length - gone.length;
     const last = rows.at(-1);
@@ -6763,6 +6775,14 @@ export class BusHub extends DurableObject<Env> {
       const ids = JSON.stringify(gone.map((x) => x.id));
       sql.exec(
         "delete from former_names where kind = 'away' and agent_id in (select value from json_each(?))",
+        ids,
+      );
+      sql.exec(
+        "delete from minted_names where agent_id in (select value from json_each(?))",
+        ids,
+      );
+      sql.exec(
+        "delete from rename_rl where agent_id in (select value from json_each(?))",
         ids,
       );
       sql.exec(

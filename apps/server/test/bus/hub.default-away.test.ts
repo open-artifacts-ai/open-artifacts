@@ -127,6 +127,49 @@ describe("default-named away agents (#2311)", () => {
     expect(left).toBe(0);
   });
 
+  it("the purge takes the agent's minted-name and rename-limit rows, not a live agent's (#2318)", async () => {
+    const h = fresh();
+    const t0 = Date.now();
+    const gone = await seed(h, "claude-111", 0, t0);
+    const live = await seed(h, "claude-222", 1, t0);
+    await inHub(h, (_, s) => {
+      for (const [id, l] of [
+        [gone, "claude-111"],
+        [live, "claude-222"],
+      ] as const) {
+        s.storage.sql.exec(
+          "insert into minted_names (org_id, lname, name, agent_id, lbase, created_at) values (?, ?, ?, ?, 'claude', 0)",
+          OWNER_ORG_ID,
+          l,
+          l,
+          id,
+        );
+        s.storage.sql.exec(
+          "insert into rename_rl (agent_id, at) values (?, ?)",
+          id,
+          t0 + 24 * 60 * MIN,
+        );
+      }
+    });
+    const rows = (id: string) =>
+      inHub(
+        h,
+        (_, s) =>
+          s.storage.sql
+            .exec<{ n: number }>(
+              "select (select count(*) from minted_names where agent_id = ?) + (select count(*) from rename_rl where agent_id = ?) as n",
+              id,
+              id,
+            )
+            .one().n,
+      );
+    await clock(h, t0 + DEFAULT_NAME_AWAY_MS + MIN);
+    await alarms(h, 3);
+    expect(await exists(h, gone)).toBe(false);
+    expect(await rows(gone)).toBe(0);
+    expect(await rows(live)).toBe(2);
+  });
+
   it("a renamed away agent and a live default-named one are kept", async () => {
     const h = fresh();
     const t0 = Date.now();
