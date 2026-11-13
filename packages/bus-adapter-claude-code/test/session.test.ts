@@ -49,6 +49,22 @@ describe("claude session discovery", () => {
     });
   });
 
+  it("#2311: an sdk-cli session never registers; cli and a missing entrypoint do", () => {
+    const dir = sessions();
+    session(dir, 400, { entrypoint: "sdk-cli" });
+    expect(findSession(500, deps(dir))).toBeNull();
+    session(dir, 400, { entrypoint: "sdk-cli", nameSource: "derived" });
+    expect(findSession(500, deps(dir))).toBeNull();
+    session(dir, 400, { entrypoint: "sdk-cli", nameSource: "user" });
+    expect(findSession(500, deps(dir))?.sessionId).toBe("s400");
+    session(dir, 400, { entrypoint: "sdk-cli", nameSource: "peer" });
+    expect(findSession(500, deps(dir))?.sessionId).toBe("s400");
+    session(dir, 400, { entrypoint: "cli" });
+    expect(findSession(500, deps(dir))?.sessionId).toBe("s400");
+    session(dir, 400, {});
+    expect(findSession(500, deps(dir))?.sessionId).toBe("s400");
+  });
+
   it("returns null when the process start moved", () => {
     const dir = sessions();
     session(dir, 400);

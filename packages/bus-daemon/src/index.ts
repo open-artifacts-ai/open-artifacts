@@ -479,6 +479,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
+      ...(rec.nameChosen && hubNameChosen
+        ? { name_chosen: true as const }
+        : {}),
       // A /clear: the new ref takes over the old address and its mail (#1295).
       ...(rec.replaces !== undefined && hubMailbox
         ? { replaces: rec.replaces }
@@ -995,7 +998,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * while the link or the agent's registration is not ready rides the next
    * agent_up (it carries proposedName).
    */
-  const renameIfChanged = (rec: AgentRecord, name: string, filePid: number) => {
+  const renameIfChanged = (
+    rec: AgentRecord,
+    name: string,
+    filePid: number,
+    chosen?: boolean,
+  ) => {
+    if (chosen !== undefined) rec.nameChosen = chosen;
     const was = rec.sessionName ?? rec.proposedName;
     // Never a name nobody chose: empty, or the file's own `claude-<pid>`
     // fallback (a file with no name, whichever process wrote it).
@@ -1063,6 +1072,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agent_ref: rec.ref,
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
+        // #2311: a re-derived Claude title is a rename, not a user's choice.
+        ...(hubNameChosen && rec.kind === "claude-code"
+          ? { name_chosen: rec.nameChosen === true }
+          : {}),
       })
     ) {
       rec.sentName = rec.proposedName;
@@ -1145,7 +1158,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
-        renameIfChanged(prev, s.name, s.pid);
+        renameIfChanged(prev, s.name, s.pid, s.nameChosen === true);
         continue;
       }
       // #2110: a record closed while its process and session file are still
@@ -1194,6 +1207,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
           : {}),
         sessionName: s.name,
+        ...(s.nameChosen ? { nameChosen: true } : {}),
         cwd: s.cwd,
         live: true,
       });
@@ -1291,6 +1305,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  let hubNameChosen = false;
   /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
   let hubFollow = false;
   /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
@@ -1463,6 +1478,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubNameChosen = frame.caps?.includes(BUS_CAPS.nameChosen) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
           hubWaitingQuery =
@@ -1474,6 +1490,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
+          // #2311: agent_up went out in onOpen, before this hello_ok said the
+          // hub takes name_chosen: say it again for a session the user named.
+          if (hubNameChosen)
+            for (const rec of agents.all())
+              if (rec.live && rec.nameChosen && rec.replaces === undefined)
+                announceUp(rec);
           for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
@@ -1543,6 +1565,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubNameChosen = false;
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
@@ -1977,6 +2000,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
+          ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
           ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
             ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
