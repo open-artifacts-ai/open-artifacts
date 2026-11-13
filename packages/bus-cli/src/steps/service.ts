@@ -547,6 +547,8 @@ export function systemService(d: ServiceDeps): Service {
     return "started";
   }
 
+  const skippedNow = () => isolated() !== undefined;
+
   return {
     get kind() {
       return installed() ? manager : undefined;
@@ -729,6 +731,26 @@ export function systemService(d: ServiceDeps): Service {
     env() {
       const e = installed() ? record().env : undefined;
       return typeof e === "object" && e !== null ? e : {};
+    },
+
+    async alive() {
+      if (skippedNow()) return undefined;
+      if (installed()) {
+        if (manager === "launchd") {
+          const r = await d.exec("launchctl", [
+            "print",
+            `${domain}/${names().label}`,
+          ]);
+          // A loaded job with no pid has exited (or not spawned yet).
+          return r.code === 0 && /\bpid = \d+/.test(r.stdout);
+        }
+        const r = await systemctl("is-active", names().unit);
+        return /^(active|activating|reloading)$/.test(r.stdout.trim());
+      }
+      const pid = record().fallback === true ? record().pid : undefined;
+      return typeof pid === "number"
+        ? d.processArgs(pid) !== undefined
+        : undefined;
     },
 
     problems() {
