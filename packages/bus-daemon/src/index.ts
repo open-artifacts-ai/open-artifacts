@@ -2352,6 +2352,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Decisions already logged, and the last hub roster read, per `thread:pid:start`. */
   const wakeLogged = new Set<string>();
   const wakeAsked = new Map<string, number>();
+  /** #2343: when a thread's "not loaded" skip was last logged; once an hour, dropped when the thread is no longer away. */
+  const wakeUnloadedLogged = new Map<string, number>();
   let waking = false;
   let wakeCheckedAt: number | undefined;
   /** Wakes sent and not yet answered by the thread's own call, and the mail count at each. */
@@ -2385,6 +2387,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Pruned for threads no longer away, or live.
       const away = new Set(rows.map((r) => r.ref));
       for (const [k, w] of wakeSent) if (!away.has(w.ref)) wakeSent.delete(k);
+      for (const k of wakeUnloadedLogged.keys())
+        if (!away.has(k)) wakeUnloadedLogged.delete(k);
       for (const m of [wakeAsked, wakeWaiting])
         for (const k of m.keys())
           if (!away.has(k.split(":")[1] ?? "")) m.delete(k);
@@ -2407,10 +2411,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // #2079: one frame for every held row, no live agent needed.
       let counts: Record<string, number> | undefined;
       if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
-        const refs = rows
-          .filter((r) => held.has(r.ref))
-          .map((r) => r.ref)
-          .slice(0, MAX_WAITING_QUERY);
+        // Unloaded rows too (#2343): their count says whether the skip is worth a log line.
+        const refs = rows.map((r) => r.ref).slice(0, MAX_WAITING_QUERY);
         if (refs.length) {
           counts = await hubWaitingCounts(refs);
           if (!counts) log("codex wake skipped: the hub did not answer");
@@ -2418,7 +2420,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       for (const r of rows) {
         const h = held.get(r.ref);
-        if (!h) continue;
+        if (!h) {
+          const last = wakeUnloadedLogged.get(r.ref);
+          if (
+            counts?.[r.ref] &&
+            (last === undefined || now - last >= 3_600_000)
+          ) {
+            wakeUnloadedLogged.set(r.ref, now);
+            ev("codex_wake_skipped", { thread: r.ref, reason: "not_loaded" });
+          }
+          continue;
+        }
         const key = `wake:${r.ref}:${h.pid}:${h.start.replace(/\s+/g, "_")}`;
         const who = `codex wake ${r.ref.slice(0, 8)} pid ${h.pid}`;
         let n = 1;
