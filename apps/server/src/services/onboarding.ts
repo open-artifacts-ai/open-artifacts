@@ -20,6 +20,13 @@ export const COMPLETED_KEY = "onboarding:completed";
 /** #2287: {userId, artifactId} of the seeded Welcome; written once, kept after a delete. */
 export const WELCOME_KEY = "onboarding:welcome";
 export const WELCOME_OPENED_KEY = "onboarding:welcome-opened";
+/**
+ * The hosted provisioner's create self-test page (a private markdown artifact
+ * the owner holds, #2422). It is not the user's work: it never makes an
+ * instance "not fresh" and never counts as their first artifact.
+ */
+const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
+
 /** One row per user who has posted a comment (any thread or reply). */
 export const commentedKey = (userId: string) =>
   `onboarding:commented:${userId}`;
@@ -44,8 +51,10 @@ export async function getOnboarding(
     ).bind(DISMISSED_KEY, COMPLETED_KEY, WELCOME_KEY, WELCOME_OPENED_KEY),
     stmt(
       env.DB,
-      "select 1 as x from artifacts where owner_id = ?1 and deleted_at is null limit 1",
-    ).bind(userId),
+      `select 1 as x from artifacts where owner_id = ?1 and deleted_at is null and not ${SELF_TEST}
+       and id <> coalesce((select json_extract(value, '$.artifactId') from settings where key = ?2), '')
+       limit 1`,
+    ).bind(userId, WELCOME_KEY),
     // An agent is connected: an OAuth grant it used, or a token that was used.
     stmt(
       env.DB,
@@ -56,6 +65,7 @@ export async function getOnboarding(
     stmt(
       env.DB,
       `select id, title from artifacts where owner_id = ?1 and deleted_at is null
+       and not ${SELF_TEST}
        and id <> coalesce((select json_extract(value, '$.artifactId') from settings where key = ?2), '')
        order by created_at, id limit 1`,
     ).bind(userId, WELCOME_KEY),
@@ -132,7 +142,7 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
     const claim = await stmt(
       env.DB,
       `insert into settings (key, value)
-       select ?1, case when exists (select 1 from artifacts) then ?2 else ?3 end
+       select ?1, case when exists (select 1 from artifacts where not ${SELF_TEST}) then ?2 else ?3 end
        on conflict (key) do nothing`,
     )
       .bind(
