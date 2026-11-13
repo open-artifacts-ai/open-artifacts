@@ -100,6 +100,7 @@ import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { BUS_FIXTURE_NOW, fakeHash, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
+import { createPasskeyMock, type PasskeyMockState } from "./passkeys.js";
 
 export type MockOptions = {
   latencyMs?: number;
@@ -114,6 +115,10 @@ export type MockOptions = {
   commentAsks?: boolean;
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
   commentAgents?: boolean;
+  /** #2019: the "Landing page" artifact is an image (or a pdf) with pins on it. */
+  commentPins?: "image" | "pdf";
+  /** #2338: agent comments with markdown, a hostile body and a markdown ask. */
+  commentMarkdown?: boolean;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
   commentersSignedIn?: boolean;
   /**
@@ -131,6 +136,8 @@ export type MockOptions = {
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
+  /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
+  passkeys?: PasskeyMockState;
 };
 
 const err = (code: ErrorCode, message: string, details?: unknown) =>
@@ -358,6 +365,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         a.commenters = "signed-in";
       }
   const versions = f.versions;
+  if (opts.commentPins)
+    for (const a of artifacts)
+      if (a.title === "Landing page") {
+        a.format = opts.commentPins;
+        for (const v of versions[a.id] ?? []) v.format = opts.commentPins;
+      }
   const files = new Map(Object.entries(f.files));
   const shares = f.shares;
   const members: Member[] = f.members;
@@ -650,12 +663,16 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
     seedAgents: opts.commentAgents,
+    seedMarkdown: opts.commentMarkdown,
+    seedPins: opts.commentPins,
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });
+  const passkeyMock = createPasskeyMock(opts.passkeys ?? "none", { err, body });
   return [
     ...pre,
     ...(h?.handlers ?? []),
+    ...passkeyMock.handlers,
     ...commentMock.handlers,
     http.get("*/api/v1/me", () => HttpResponse.json(me)),
     http.patch("*/api/v1/me", async ({ request }) => {
@@ -665,6 +682,10 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         me.displayName = r.data.displayName;
         me.needsDisplayName = false;
         me.user.name = r.data.displayName;
+        // #2277: the mock's stand-in for the server's agent-name check.
+        me.nameHiddenAs = /\bagent\b/i.test(r.data.displayName)
+          ? "email"
+          : null;
       }
       if (r.data.commentEmail !== undefined)
         me.commentEmail = r.data.commentEmail;

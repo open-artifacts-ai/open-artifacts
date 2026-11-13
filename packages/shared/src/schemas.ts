@@ -754,6 +754,8 @@ export const MeSchema = z.object({
   suggestedName: z.string().nullable(),
   /** No chosen name and no usable IdP name: ask the user for one. */
   needsDisplayName: z.boolean(),
+  /** #2277: what others see instead of the user's name when it reads as an agent's; null when they see it. Optional: older servers omit it (null). */
+  nameHiddenAs: z.enum(["sso", "email"]).nullable().optional(),
   /** Email me about comments (#1467); on unless turned off (PATCH R.me, or the unsubscribe link in a comment email). Optional: older servers omit it (on). */
   commentEmail: z.boolean().optional(),
   /** Hosted M1: how this request authenticated. */
@@ -966,6 +968,8 @@ export const BusAgentSchema = z.strictObject({
   status: z.enum(BUS_STATUS_STATES).optional(),
   statusLabel: z.string().optional(),
   statusAt: z.string().optional(),
+  /** #2311: still on a harness default name (never renamed); present only when true. */
+  unnamed: z.boolean().optional(),
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 
@@ -1459,3 +1463,113 @@ export type GetArtifactResult = z.infer<typeof GetArtifactResultSchema>;
 
 export const CreateUploadInputSchema = UploadCreateInputSchema;
 export type CreateUploadInput = UploadCreateInput;
+
+// ---- Passkeys (#2263) ----
+
+const b64url = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .regex(/^[A-Za-z0-9_-]+$/, "base64url");
+
+/** A WebAuthn assertion (PublicKeyCredential.toJSON() of credentials.get()), strict and size-capped. */
+export const PasskeyAssertionSchema = z.strictObject({
+  id: b64url(1400),
+  rawId: b64url(1400),
+  type: z.literal("public-key"),
+  authenticatorAttachment: z.enum(["platform", "cross-platform"]).nullish(),
+  clientExtensionResults: z.record(z.string(), z.unknown()).optional(),
+  response: z.strictObject({
+    clientDataJSON: b64url(2048),
+    authenticatorData: b64url(1024),
+    signature: b64url(1024),
+    userHandle: b64url(256).nullish(),
+  }),
+});
+export type PasskeyAssertion = z.infer<typeof PasskeyAssertionSchema>;
+
+/** A WebAuthn registration (credentials.create() as JSON), strict and size-capped. */
+export const PasskeyCredentialSchema = z.strictObject({
+  id: b64url(1400),
+  rawId: b64url(1400),
+  type: z.literal("public-key"),
+  authenticatorAttachment: z.enum(["platform", "cross-platform"]).nullish(),
+  clientExtensionResults: z.record(z.string(), z.unknown()).optional(),
+  response: z.strictObject({
+    clientDataJSON: b64url(2048),
+    attestationObject: b64url(8192),
+    transports: z.array(z.string().max(32)).max(8).optional(),
+    publicKey: b64url(1024).nullish(),
+    publicKeyAlgorithm: z.number().int().nullish(),
+    authenticatorData: b64url(2048).nullish(),
+  }),
+});
+export type PasskeyCredential = z.infer<typeof PasskeyCredentialSchema>;
+
+export const PasskeySchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().nullable(),
+  /** When it may first confirm a pick or a change (createdAt + 24 h). */
+  usableAt: z.string(),
+  usable: z.boolean(),
+  /** A removal asked for by re-auth alone is pending until then; null when none. */
+  removesAt: z.string().nullable(),
+});
+export type Passkey = z.infer<typeof PasskeySchema>;
+
+/** POST R.passkeyRegisterBegin: required when the member already has a usable passkey. */
+export const PasskeyRegisterBeginBodySchema = z
+  .strictObject({ assertion: PasskeyAssertionSchema.optional() })
+  .optional();
+
+export const PasskeyRegisterBodySchema = z.strictObject({
+  credential: PasskeyCredentialSchema,
+  label: z.string().trim().min(1).max(60).optional(),
+});
+export type PasskeyRegisterBody = z.infer<typeof PasskeyRegisterBodySchema>;
+
+export const PasskeyRemoveBodySchema = z
+  .strictObject({ assertion: PasskeyAssertionSchema.optional() })
+  .optional();
+
+const PasskeySwitches = z.strictObject({
+  merge: z.boolean(),
+  deploy: z.boolean(),
+  delete: z.boolean(),
+  share: z.boolean(),
+  public: z.boolean(),
+  command: z.boolean(),
+});
+
+/** PATCH R.passkeySettings and POST R.passkeySettingsChallenge: the full new state. */
+export const PasskeySettingsPatchSchema = z.strictObject({
+  /** One switch per action: on asks for a passkey. `command` is locked on (false is 400). */
+  actions: PasskeySwitches,
+  /** Ask for a passkey on every pick, whatever it names. */
+  everyPick: z.boolean(),
+  /** Required (PATCH only) when this turns any switch off. */
+  assertion: PasskeyAssertionSchema.optional(),
+});
+export type PasskeySettingsPatch = z.infer<typeof PasskeySettingsPatchSchema>;
+
+export const PasskeySettingsSchema = z.object({
+  actions: PasskeySwitches,
+  everyPick: z.boolean(),
+  /** Switches that can not be turned off. */
+  locked: z.array(z.literal("command")),
+  /** False: the switches show but can not be used ("Add a passkey to use these"). */
+  hasPasskey: z.boolean(),
+  /** True once a passkey is old enough to confirm. */
+  hasUsablePasskey: z.boolean(),
+});
+export type PasskeySettings = z.infer<typeof PasskeySettingsSchema>;
+
+/** The WebAuthn options JSON a challenge route returns. */
+export const PasskeyChallengeSchema = z.object({
+  options: z.record(z.string(), z.unknown()),
+  expiresAt: z.string(),
+});
+export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;

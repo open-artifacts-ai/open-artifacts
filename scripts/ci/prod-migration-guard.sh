@@ -5,7 +5,7 @@
 # record the live Worker version and a D1 Time Travel bookmark, capture the
 # database, upgrade, verify; on failure (if the run allows it) roll the Worker
 # back, restore D1 to the bookmark and compare against the capture.
-#   prod-migration-guard.sh detect   -> hold=, guarded= ($TAG vs the previous stable tag)
+#   prod-migration-guard.sh detect   -> hold=, guarded=, and reason= when held ($TAG vs the previous stable tag)
 #     (detect also holds when $TAG modifies, deletes or renames an existing server migration)
 #   prod-migration-guard.sh record  -> worker_version=, bookmark=; capture to $GUARD_DIR/before.json
 #   prod-migration-guard.sh verify   -> the migration's own verifier against the capture
@@ -42,6 +42,8 @@ case "${1:-}" in
     hold() {
       echo "hold=true" >> "$out"
       echo "guarded=false" >> "$out"
+      # One line: the workflow's final step fails the job with it (#2257).
+      echo "reason=$(printf '%s' "$1" | tr '\r\n' '  ')" >> "$out"
       echo "::warning title=Prod deploy held::$1"
       echo "**Prod deploy held:** $1" >> "$summary"
       exit 0

@@ -42,12 +42,14 @@ type Opts = {
   onCommentPositions: (p: unknown[]) => void;
   onCommentOpen: (id: string) => void;
   onCommentSelection: (has: boolean, bottom: number) => void;
+  onCommentAway: () => void;
 };
 const opts: Opts[] = [];
 const setMode = vi.fn();
 const setComments = vi.fn();
 const focus = vi.fn();
 const commentOnSelection = vi.fn();
+const clearSelection = vi.fn();
 // Like the real bridge, the mock loads the frame (Shell ignores earlier loads).
 vi.mock("../src/viewer/bridge", async () => {
   const { loadArtifactFrame } = await import("../src/viewer/frame");
@@ -65,6 +67,7 @@ vi.mock("../src/viewer/bridge", async () => {
         setComments,
         focusComment: focus,
         commentOnSelection,
+        clearSelection,
       };
     },
   };
@@ -145,6 +148,15 @@ const col = async () => {
   if (!screen.queryByRole("complementary", { name: "Comments" }))
     fireEvent.click(b);
   return screen.findByRole("complementary", { name: "Comments" });
+};
+// #2179: a one-reply thread has no replies button; its quote opens it.
+const openReplied = async (c: HTMLElement) => {
+  const card = (
+    await within(c).findByText("Agreed, shorter is better.")
+  ).closest("[data-thread]") as HTMLElement;
+  fireEvent.click(
+    within(card).getByRole("button", { name: /^Show (in page|pin)/ }),
+  );
 };
 const threadIds = () =>
   [...document.querySelectorAll("[data-thread]")].map((e) =>
@@ -299,7 +311,12 @@ describe("comments: layouts", () => {
       HTMLElement.prototype,
       "offsetHeight",
     );
+    let rule: HTMLStyleElement;
     beforeEach(() => {
+      // jsdom has no Tailwind: the sheet's scroller needs its overflow.
+      rule = document.createElement("style");
+      rule.textContent = ".overflow-y-auto{overflow-y:auto}";
+      document.head.append(rule);
       outletH = 56;
       Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
         configurable: true,
@@ -311,6 +328,7 @@ describe("comments: layouts", () => {
       });
     });
     afterEach(() => {
+      rule.remove();
       if (realH)
         Object.defineProperty(HTMLElement.prototype, "offsetHeight", realH);
       else
@@ -347,19 +365,23 @@ describe("comments: layouts", () => {
     });
     it("opening a 3-reply pin scrolls its last reply to the end, above the row, smoothly", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       await open();
       await act(async () => opts.at(-1)?.onCommentOpen("p3"));
       await waitFor(() =>
-        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" }),
+        expect(spy).toHaveBeenCalledWith({
+          top: expect.any(Number),
+          behavior: "smooth",
+        }),
       );
-      const el = spy.mock.contexts.at(-1) as HTMLElement;
-      expect(el.getAttribute("data-comment")).toBe("p3-c3");
+      const el = document.querySelector(
+        '[data-comment="p3-c3"]',
+      ) as HTMLElement;
       expect(el.style.scrollMarginBottom).toBe("56px");
     });
     it("the margin uses the row's height once the outlet shows, even after the first frame", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       let fire: () => void = () => {};
       const OriginalRO = globalThis.ResizeObserver;
       globalThis.ResizeObserver = class {
@@ -376,12 +398,17 @@ describe("comments: layouts", () => {
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
         await new Promise((r) => setTimeout(r, 50));
         expect(spy).not.toHaveBeenCalledWith(
-          expect.objectContaining({ block: "end" }),
+          expect.objectContaining({ behavior: "smooth" }),
         );
         outletH = 56; // the composer claims it
         act(() => fire());
-        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" });
-        const el = spy.mock.contexts.at(-1) as HTMLElement;
+        expect(spy).toHaveBeenCalledWith({
+          top: expect.any(Number),
+          behavior: "smooth",
+        });
+        const el = document.querySelector(
+          '[data-comment="p3-c3"]',
+        ) as HTMLElement;
         expect(el.style.scrollMarginBottom).toBe("56px");
       } finally {
         globalThis.ResizeObserver = OriginalRO;
@@ -389,7 +416,7 @@ describe("comments: layouts", () => {
     });
     it("focusing the reply box after the first measure doesn't scroll again", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       let fire: () => void = () => {};
       let disconnected = false;
       const OriginalRO = globalThis.ResizeObserver;
@@ -408,7 +435,7 @@ describe("comments: layouts", () => {
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
         await waitFor(() =>
           expect(spy).toHaveBeenCalledWith({
-            block: "end",
+            top: expect.any(Number),
             behavior: "smooth",
           }),
         );
@@ -423,7 +450,7 @@ describe("comments: layouts", () => {
     });
     it("no outlet (the wide overlay at pin height): no last-reply scroll", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       viewport(800);
       server.use(
         http.get(`*${R.comments(OWNED)}`, () =>
@@ -443,26 +470,29 @@ describe("comments: layouts", () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
       expect(spy).not.toHaveBeenCalledWith(
-        expect.objectContaining({ block: "end" }),
+        expect.objectContaining({ behavior: "smooth" }),
       );
     });
     it("a single reply gets no extra scroll", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       await open();
       await act(async () => opts.at(-1)?.onCommentOpen("p1"));
       await new Promise((r) => setTimeout(r, 50));
       expect(spy).not.toHaveBeenCalledWith(
-        expect.objectContaining({ block: "end" }),
+        expect.objectContaining({ behavior: "smooth" }),
       );
     });
     it("reduced motion: the scroll is not smooth", async () => {
       const spy = vi.fn();
-      Element.prototype.scrollIntoView = spy;
+      Element.prototype.scrollTo = spy;
       await open(true);
       await act(async () => opts.at(-1)?.onCommentOpen("p3"));
       await waitFor(() =>
-        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "auto" }),
+        expect(spy).toHaveBeenCalledWith({
+          top: expect.any(Number),
+          behavior: "auto",
+        }),
       );
     });
   });
@@ -529,6 +559,11 @@ describe("comments: layouts", () => {
     await wait(30);
     expect(card.contains(row)).toBe(false);
     expect(outlet.contains(row)).toBe(true);
+    expect(
+      within(card)
+        .getByRole("textbox", { name: "Reply" })
+        .hasAttribute("data-oa-field"),
+    ).toBe(true);
     fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
       target: { value: "Floats" },
     });
@@ -893,6 +928,19 @@ describe("comments: actions", () => {
     expect(posts[0]?.body).toMatchObject({ body: "Sent by key" });
   });
 
+  it("#2234: Ctrl+Enter while an IME is composing does not send", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Composing" } });
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true, isComposing: true });
+    await wait(30);
+    expect(posts).toHaveLength(0);
+  });
+
   it("#2118: Esc in the note box keeps the draft and does not close the phone sheet", async () => {
     viewport(400);
     mount(viewerPath(OWNED));
@@ -934,9 +982,13 @@ describe("comments: actions", () => {
       }),
     );
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
-    const card = box.parentElement as HTMLElement;
+    const card = box.parentElement?.parentElement as HTMLElement; // field wrapper, then card
     expect(card.firstElementChild?.textContent).toBe("Landing");
     expect(card.querySelectorAll("textarea")).toHaveLength(1);
+    // #2234: the quote composer's field is the outlined, growing one.
+    expect(box.hasAttribute("data-oa-field")).toBe(true);
+    expect(box.className).toContain("border-input");
+    expect(box.className).toContain("max-h-");
     expect(
       c.querySelectorAll('textarea[aria-label="Add a comment"]'),
     ).toHaveLength(1);
@@ -995,7 +1047,7 @@ describe("comments: actions", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     // Two comments: collapsed to a count until the card is selected.
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     // #1657: in the phone sheet's short height the action row stays on screen.
     const actions = within(c)
       .getByRole("button", { name: "Reply" })
@@ -1055,7 +1107,7 @@ describe("comments: actions", () => {
     const patches = calls("PATCH");
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     const mine = (
       await within(c).findByText("Agreed, shorter is better.")
     ).closest("li") as HTMLElement;
@@ -1073,17 +1125,19 @@ describe("comments: actions", () => {
     await waitFor(() =>
       expect(patches[0]?.body).toEqual({ body: "Agreed, much shorter." }),
     );
-    expect(
-      await within(c).findByText("Agreed, much shorter."),
-    ).toBeInTheDocument();
-    expect(within(c).getByText(/edited/)).toBeInTheDocument();
+    // The saved row can re-render after it first shows (the refetch replaces
+    // the node): query fresh on each try instead of holding a found node.
+    await waitFor(() => {
+      expect(within(c).getByText("Agreed, much shorter.")).toBeInTheDocument();
+      expect(within(c).getByText(/edited/)).toBeInTheDocument();
+    });
   });
 
   it("deletes a reply after Delete this reply?, and a root after Delete this thread?", async () => {
     const dels = calls("DELETE");
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     const reply = (
       await within(c).findByText("Agreed, shorter is better.")
     ).closest("li") as HTMLElement;
@@ -1588,7 +1642,7 @@ describe("comments: contract edges", () => {
   it("shows the conflict copy when a reply is refused", async () => {
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     server.use(
       http.post("*/api/v1/artifacts/:id/comments/:tid/replies", () =>
         HttpResponse.json(
@@ -1885,7 +1939,7 @@ describe("comments: review round 1", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await hello();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     fireEvent.change(within(c).getByRole("textbox", { name: "Reply" }), {
       target: { value: "typing a reply" },
     });
@@ -1922,7 +1976,7 @@ describe("comments: review round 1", () => {
   it("B1: an edit in progress and a pending draft count as writing too", async () => {
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    await openReplied(c);
     const mine = (
       await within(c).findByText("Agreed, shorter is better.")
     ).closest("li") as HTMLElement;
@@ -2430,11 +2484,17 @@ describe("comments: the quote stays highlighted while writing (#1834)", () => {
     fireEvent.change(box, { target: { value: "Tighten this" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts).toHaveLength(1));
-    // Held for a moment (the list is still empty)...
-    expect(sentQuote()).toMatchObject({ exact: "Landing" });
-    // ...and gone once the hold expires.
+    // Painted at once as the posted thread (optimistic), though the list
+    // never carries it...
+    const painted = (c: unknown[]) =>
+      c[2] !== undefined ||
+      (c[0] as { anchor: { exact?: string } }[] | undefined)?.some(
+        (t) => t.anchor.exact === "Landing",
+      ) === true;
+    expect(setComments.mock.calls.some(painted)).toBe(true);
+    // ...and gone once the list answers without it and the hold expires.
     await wait(1700);
-    expect(sentQuote()).toBeUndefined();
+    expect(painted(setComments.mock.calls.at(-1) ?? [])).toBe(false);
   });
 });
 
@@ -2771,5 +2831,144 @@ describe("comment on selection (#1732)", () => {
     expect(
       screen.queryByRole("button", { name: "Comment on selection" }),
     ).toBeNull();
+  });
+});
+
+describe("clicking away from an unsent selection (Google Docs)", () => {
+  const select = (exact: string) =>
+    act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact,
+        prefix: "",
+        suffix: "",
+      }),
+    );
+  const draftBox = () =>
+    screen.findByRole("textbox", { name: "Add a comment" });
+  const down = (el: Element) =>
+    act(() => {
+      el.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
+
+  beforeEach(() => clearSelection.mockClear());
+
+  it("the frame's pointerdown drops an empty draft and its highlight", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-away");
+    await draftBox();
+    await act(async () => opts.at(-1)?.onCommentAway());
+    await waitFor(() => expect(screen.queryByText("quote-away")).toBeNull());
+    await waitFor(() => expect(setComments.mock.lastCall?.[2]).toBeUndefined());
+  });
+
+  it("a pointerdown in the shell drops it and clears the frame's selection", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-shell");
+    await draftBox();
+    await down(document.body);
+    await waitFor(() => expect(screen.queryByText("quote-shell")).toBeNull());
+    expect(clearSelection).toHaveBeenCalled();
+  });
+
+  it("a typed draft stays on a click away; only the live selection clears", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-typed");
+    fireEvent.change(await draftBox(), { target: { value: "half a thought" } });
+    await down(document.body);
+    await act(async () => opts.at(-1)?.onCommentAway());
+    expect(screen.getByText("quote-typed")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("half a thought")).toBeInTheDocument();
+    expect(clearSelection).toHaveBeenCalled();
+  });
+
+  it("a pointerdown inside the comments column changes nothing", async () => {
+    mount(viewerPath(OWNED));
+    const aside = await col();
+    await select("quote-inside");
+    const box = await draftBox();
+    await down(box);
+    await down(aside);
+    expect(screen.getByText("quote-inside")).toBeInTheDocument();
+    expect(clearSelection).not.toHaveBeenCalled();
+  });
+
+  it("a click away with the list closed never drops typed text", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-closed");
+    fireEvent.change(await draftBox(), { target: { value: "mine" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await act(async () => opts.at(-1)?.onCommentAway());
+    await down(document.body);
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    expect(await screen.findByDisplayValue("mine")).toBeInTheDocument();
+  });
+
+  it("a new selection with the list closed keeps the typed draft and shows it", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-typed-held");
+    fireEvent.change(await draftBox(), { target: { value: "mine" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await select("quote-new");
+    expect(await screen.findByDisplayValue("mine")).toBeInTheDocument();
+    expect(screen.getByText("quote-typed-held")).toBeInTheDocument();
+    expect(screen.queryByText("quote-new")).toBeNull();
+  });
+
+  it("selecting different text starts a new draft", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("first-quote");
+    await down(document.body);
+    await waitFor(() => expect(screen.queryByText("first-quote")).toBeNull());
+    await select("second-quote");
+    expect(await screen.findByText("second-quote")).toBeInTheDocument();
+  });
+
+  it("closing the list drops an empty draft", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-close");
+    await draftBox();
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await screen.findByRole("complementary", { name: "Comments" });
+    expect(screen.queryByText("quote-close")).toBeNull();
+  });
+
+  it("closing the list keeps a draft the reader typed in", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await select("quote-keep");
+    fireEvent.change(await draftBox(), { target: { value: "typed" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    expect(await screen.findByText("quote-keep")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("typed")).toBeInTheDocument();
   });
 });

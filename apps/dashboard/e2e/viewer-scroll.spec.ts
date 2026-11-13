@@ -87,7 +87,7 @@ for (const [w, h] of [
           document.querySelector(".oa-vbody")?.append(d);
         });
       await page
-        .getByRole("button", { name: /\d+ replies/ })
+        .getByRole("button", { name: /Show \d+ earlier repl/ })
         .first()
         .click();
       await page.waitForTimeout(700);
@@ -110,7 +110,7 @@ for (const [w, h] of [
     await page.goto(`/a/${ID}?mock=agents`);
     await page.getByRole("button", { name: /^Comments/ }).click();
     await page
-      .getByRole("button", { name: /^1\d replies$/ })
+      .getByRole("button", { name: /^Show 1\d earlier replies$/ })
       .first()
       .click();
     await page.waitForTimeout(500);

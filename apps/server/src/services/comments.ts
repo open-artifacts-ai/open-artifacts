@@ -11,6 +11,7 @@ import {
   type CommentList,
   isId,
   type KeyRef,
+  type MentionDelivery,
   type CommentThread as Thread,
   type ThreadAgent,
 } from "@oa/shared";
@@ -19,7 +20,7 @@ import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logInfo } from "../log.js";
+import { logError, logInfo } from "../log.js";
 import {
   bodyOk,
   type NewExtras,
@@ -46,6 +47,8 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
+  addresseeOf,
+  addressees,
   askRows,
   indexAnswered,
   indexAsk,
@@ -53,8 +56,9 @@ import {
   indexStatus,
   reconcileAsks,
 } from "./asks.js";
-import { agentIdentityOf, agentNamesOf } from "./bus.js";
+import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
 import {
+  type AskerAddress,
   agentKey,
   agentRoster,
   askerRoster,
@@ -79,7 +83,8 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
-import { effectiveName, getUser } from "./users.js";
+import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
+import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
 // MCP tools after them. Storage is the artifact's DO (runtime/comments-store);
@@ -127,6 +132,25 @@ export type CommentViewer = {
   capped?: boolean;
   /** #2080: signed out where only signed-in people may comment: no edit or delete. */
   readOnly?: boolean;
+  /**
+   * #2224: the viewer is an agent (an MCP caller) with this connection; absent
+   * for a person. An agent sees `answer.yes` only on an ask it posted itself.
+   */
+  agent?: AgentAttr | null;
+};
+
+/** #2224: the viewer may take an answer on this ask as its yes: not an agent, or the agent that posted it. */
+const askedByViewer = (c: StoredComment, viewer: CommentViewer): boolean => {
+  if (viewer.agent === undefined) return true;
+  const mine = c.author.kind === "user" ? c.author.agent : undefined;
+  if (!mine || !viewer.agent) return false;
+  if (mine.identity)
+    return mine.identity.identityId === viewer.agent.identity?.identityId;
+  return (
+    !viewer.agent.identity &&
+    mine.name === viewer.agent.name &&
+    mine.via === (viewer.agent.via ? viaKey(viewer.agent.via) : null)
+  );
 };
 
 /** Anonymous, guest-role, or capped to guest or restricted: never wakes an agent without an @. */
@@ -277,7 +301,7 @@ export async function checkAnchor(
 
 type UserLite = { id: string; name: string | null; email: string };
 
-async function usersById(
+export async function usersById(
   env: Env,
   ids: Iterable<string>,
 ): Promise<Map<string, UserLite>> {
@@ -300,7 +324,7 @@ async function usersById(
       out.set(r.id, {
         id: r.id,
         email: r.email,
-        name: effectiveName(r),
+        name: shownEffectiveName(r),
       });
   }
   return out;
@@ -378,7 +402,7 @@ const NAMES_CACHE_MAX = 2000;
 const namesCache = new Map<string, { name: string; at: number }>();
 
 /** Every member's name, removed ones too (their names stay reserved), cached. */
-async function allClashes(env: Env): Promise<NameClashes> {
+export async function allClashes(env: Env): Promise<NameClashes> {
   if (clashCache && Date.now() - clashCache.at < CLASH_TTL_MS)
     return clashCache.map;
   const { results } = await env.DB.prepare(
@@ -390,7 +414,11 @@ async function allClashes(env: Env): Promise<NameClashes> {
     displayName: string | null;
   }>();
   const map = nameClashes(
-    results.map((r) => ({ id: r.id, email: r.email, name: effectiveName(r) })),
+    results.map((r) => ({
+      id: r.id,
+      email: r.email,
+      name: shownEffectiveName(r),
+    })),
   );
   clashCache = { at: Date.now(), map };
   return map;
@@ -498,6 +526,7 @@ const threadAgentView = (
   for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
   ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
   canRemove: viewer.owner === true || viewer.userId === p.owner,
+  ...(p.removed ? { removed: true } : {}),
 });
 
 async function threadViews(
@@ -523,20 +552,20 @@ async function threadViews(
         ),
       )
     : new Map<string, ParticipantRow[]>();
-  const live = (t: StoredThread) =>
-    (roster.get(t.id) ?? []).filter((p) => !p.removed);
-  for (const t of threads) for (const p of live(t)) ids.add(p.owner);
+  // #2174: removed agents are listed too (marked), for members only.
+  const rows = (t: StoredThread) => roster.get(t.id) ?? [];
+  for (const t of threads) for (const p of rows(t)) ids.add(p.owner);
   const users = await ctxFor(
     env,
     ids,
     threads.some(
       (t) =>
-        t.comments.some(hasAgent) || t.resolvedBy?.agent || live(t).length > 0,
+        t.comments.some(hasAgent) || t.resolvedBy?.agent || rows(t).length > 0,
     ),
     {
       comments: threads.flatMap((t) => t.comments),
       actors: threads.map((t) => t.resolvedBy),
-      agents: threads.flatMap(live),
+      agents: threads.flatMap(rows),
     },
   );
   return threads.map((t) => ({
@@ -548,8 +577,8 @@ async function threadViews(
     resolvedAt: t.resolvedAt,
     createdAt: t.createdAt,
     comments: t.comments.map((c) => commentOf(c, viewer, users)),
-    ...(live(t).length
-      ? { agents: live(t).map((p) => threadAgentView(p, viewer, users)) }
+    ...(rows(t).length
+      ? { agents: rows(t).map((p) => threadAgentView(p, viewer, users)) }
       : {}),
   }));
 }
@@ -721,6 +750,7 @@ const commentOf = (
                 }
               : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
+            ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
             ...(c.ask.answer
               ? {
                   answer: {
@@ -728,12 +758,18 @@ const commentOf = (
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
+                    ...(c.ask.answer.verified
+                      ? { verified: c.ask.answer.verified }
+                      : {}),
                     yes:
                       viewer.userId !== null &&
+                      (c.ask.confirm !== "passkey" ||
+                        c.ask.answer.verified === "passkey") &&
                       isTyped(c.ask.answer.by) &&
                       c.ask.answer.by.ref === viewer.userId &&
                       c.author.kind === "user" &&
-                      c.author.ref === viewer.userId,
+                      c.author.ref === viewer.userId &&
+                      askedByViewer(c, viewer),
                   },
                 }
               : {}),
@@ -765,7 +801,7 @@ const commentOf = (
               viewer,
               users,
             ),
-            delivery: m.state as "delivered" | "queued" | "seen" | "gone",
+            delivery: m.state as MentionDelivery,
           })),
         }
       : {}),
@@ -788,7 +824,10 @@ const commentOf = (
               viewer,
               users,
             ),
-            delivery: m.state as "delivered" | "queued" | "seen" | "gone",
+            // #2004: outsiders learn nothing of an agent's state.
+            ...(outsider(viewer) || viewer.userId === null
+              ? {}
+              : { delivery: m.state as MentionDelivery }),
           })),
         }
       : {}),
@@ -1077,11 +1116,16 @@ async function resolveExtras(
         throw unknownKey(key);
       to.push({ kind: "user", key: user.id });
     }
+    // #2263: the server decides, from the actions the options name and the
+    // addressees' switches. Whatever a client sent as `confirm` was stripped by
+    // the schema; an edit never touches the stored mark.
+    const confirm = await confirmFor(env, addressees(to), askIn.options);
     ask = {
       question: askIn.question,
       options: askIn.options,
       ...(askIn.recommended ? { recommended: askIn.recommended } : {}),
       to,
+      ...(confirm ? { confirm } : {}),
     };
   }
   const agents = new Map<string, Resolved["agents"][number]>();
@@ -1330,13 +1374,55 @@ export async function addThread(
 }
 
 /**
+ * #2224: the bus address of the agent that posted the ask at the thread's root
+ * (`author`), or null: a person's ask, or an agent with no verified bus
+ * identity (a notice then reaches nobody). It is the thread participant the
+ * author recorded at write time (same verified identity), at the address its
+ * owner's hub reports for that identity now (fresh read, never the names
+ * cache). Anything less than that answer gives null. Never a follower or the
+ * member's other agents.
+ */
+async function askingAddress(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  author: StoredActor,
+): Promise<AskerAddress | null> {
+  const id = author.kind === "user" ? author.agent?.identity : undefined;
+  if (author.kind !== "user" || !id) return null;
+  const rows = await call(() =>
+    stub(env, artifactId).commentsParticipants({ threadIds: [threadId] }),
+  );
+  const row = rows
+    .flatMap(([, ps]) => ps)
+    .find(
+      (p) => p.owner === author.ref && p.identity?.identityId === id.identityId,
+    );
+  if (!row) return null;
+  // Fail closed: a fresh, uncached read of the owner's own hub must give the
+  // identity's current name, and that name must still be this identity's. A
+  // miss, a timeout, an error or another agent holding the name sends nothing.
+  const none = (reason: string): null => {
+    logInfo("ask_asker_unresolved", { artifactId, threadId, reason });
+    return null;
+  };
+  const current = (await agentNamesOf(env, row.owner, [id.identityId])).get(
+    id.identityId,
+  );
+  if (!current) return none("no_current_name");
+  const address = { namespace: row.namespace, name: current };
+  if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
+  const at = await agentIdentityOf(env, row.owner, address);
+  if (at?.identityId !== id.identityId) return none("name_not_theirs");
+  return { ...address, identityId: id.identityId };
+}
+
+/**
  * A reply to the thread root's ask author (#1614). 400 not_an_ask unless the
  * root carries an ask and its author is an agent (a person's ask has no agent
  * to tell). The only addressee is that author's agents: the same target as
- * ask_answered (askerRoster: the agents that follow the artifact and belong to
- * the author's member; an MCP asker has no bus address until the open
- * publisher/asker user decision is made, so the member is the only link).
- * It can reach no other agent. The notice is fixed text with the ids.
+ * ask_answered (askerRoster: that exact agent by its verified bus address, #2224;
+ * an author with no bus address gets nobody). It can reach no other agent. The notice is fixed text with the ids.
  */
 async function resolveToAsker(
   env: Env,
@@ -1350,7 +1436,12 @@ async function resolveToAsker(
       "not_an_ask",
       "This thread has no question from an agent to reply to",
     );
-  const to = await askerRoster(env, artifactId, root.author.ref);
+  const to = await askerRoster(
+    env,
+    artifactId,
+    root.author.ref,
+    await askingAddress(env, artifactId, threadId, root.author),
+  );
   return {
     extras: to.length ? { asker: to.map((a) => storedAgent(a)) } : undefined,
     agents: to.map((agent) => ({ agent, kind: "asker" as const })),
@@ -1567,11 +1658,76 @@ export async function addReply(
   return commentView(env, sent, viewer);
 }
 
+/** How the pick reached the server (#2263): only a browser session may carry a passkey. */
+export type PickAuth = { interactive: boolean; assertion?: unknown };
+
+/** The stored ask of a comment and its thread's status, or 404. */
+async function storedAsk(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+) {
+  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+  const ask = t.comments.find((c) => c.id === commentId)?.ask;
+  if (!ask) throw new ApiError("not_found", "Not found");
+  return { ask, status: t.status };
+}
+
+/** Whether `who` is one of the people the ask was put to (as the DO decides). */
+const isAsked = (ask: { to: StoredParty[] }, who: CommentWho): boolean =>
+  who.kind === "user" && ask.to.some((p) => addresseeOf(p) === who.id);
+
+/**
+ * #2263: a WebAuthn challenge for picking `optionId` on a confirm ask:
+ * 403 passkey_required for anything but a browser session (a token or MCP
+ * grant can never carry a passkey), 403 forbidden unless asked, 404 without an
+ * ask, 400 for an ask that needs no passkey or an unknown option, 409
+ * conflict once closed, 409 already_answered (that option is the answer already; another option is a change and needs a fresh assertion), then the passkey rules
+ * (no_passkey, passkey_cooling) and the challenge budget (429).
+ */
+export async function answerChallenge(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+  optionId: string,
+  interactive: boolean,
+) {
+  const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
+  if (!interactive || who.kind !== "user")
+    throw new ApiError(
+      "passkey_required",
+      "Only the web app can use a passkey",
+    );
+  if (!isAsked(ask, who))
+    throw new ApiError("forbidden", "Only the people asked can answer");
+  if (ask.confirm !== "passkey")
+    throw new ApiError("bad_request", "This ask does not need a passkey");
+  if (status === "resolved")
+    throw new ApiError("conflict", "This ask is closed");
+  if (!ask.options.some((o) => o.id === optionId))
+    throw new ApiError("bad_request", "Unknown option");
+  if (ask.answer?.optionId === optionId)
+    throw new ApiError(
+      "already_answered",
+      "This ask is answered with that option",
+    );
+  return pickChallenge(env, who.id, artifactId, commentId, optionId);
+}
+
 /**
  * Answers an ask (#1535): 404 without one, 403 unless the caller is asked,
  * 409 once the thread is resolved, 400 for an option the ask lacks. The
  * answer may change until then. `who` is the caller as an author (a guest is
  * never asked).
+ *
+ * #2263: on an ask marked `confirm: "passkey"` the pick is one answer and
+ * needs a verified passkey assertion for a challenge issued for this exact
+ * (artifact, comment, option, member): 403 passkey_required without one, and
+ * always for a token or MCP grant; 409 already_answered; then the challenge
+ * rules of verifyPick (410 challenge_expired, 400 passkey_failed).
  */
 export async function answerAsk(
   env: Env,
@@ -1582,8 +1738,41 @@ export async function answerAsk(
   viewer: CommentViewer,
   optionId: string,
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
-  after?: Announce,
+  after: Announce | undefined,
+  pick: PickAuth,
 ): Promise<Comment> {
+  const { ask, status } = await storedAsk(env, artifactId, threadId, commentId);
+  let verified: "passkey" | undefined;
+  // Strangers, closed asks and unknown options fall through to the DO's own
+  // refusals (forbidden, conflict, bad_request) without touching a challenge.
+  if (
+    ask.confirm === "passkey" &&
+    isAsked(ask, who) &&
+    status !== "resolved" &&
+    ask.options.some((o) => o.id === optionId)
+  ) {
+    if (!pick.interactive || who.kind !== "user")
+      throw new ApiError(
+        "passkey_required",
+        "This pick needs your passkey, in the web app",
+      );
+    if (ask.answer?.optionId === optionId)
+      throw new ApiError(
+        "already_answered",
+        "This ask is answered with that option",
+      );
+    if (pick.assertion === undefined || pick.assertion === null)
+      throw new ApiError("passkey_required", "This pick needs your passkey");
+    await verifyPick(
+      env,
+      who.id,
+      artifactId,
+      commentId,
+      optionId,
+      pick.assertion,
+    );
+    verified = "passkey";
+  }
   const { comment: c, unchanged } = await call(() =>
     stub(env, artifactId).commentsAnswer({
       threadId,
@@ -1591,6 +1780,7 @@ export async function answerAsk(
       by: actorOf(who),
       optionId,
       rate: rateKeyOf(who),
+      ...(verified ? { verified } : {}),
     }),
   );
   await indexAnswered(env, artifactId, commentId);
@@ -1606,6 +1796,7 @@ export async function answerAsk(
         threadId,
         commentId,
         c.author.ref,
+        await askingAddress(env, artifactId, threadId, c.author),
         // Only an answer the asker picked themselves in the web app.
         c.ask?.answer !== undefined &&
           isTyped(c.ask.answer.by) &&
@@ -1674,6 +1865,8 @@ export async function setThreadAgent(
   key: string,
   viewer: CommentViewer,
   removed: boolean,
+  /** The request's execution context: the hub withdrawal runs after the response (a hung hub must not delay the ×). */
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   if (outsider(viewer) || viewer.userId === null)
     throw new ApiError("forbidden", "Only members can change who is notified");
@@ -1692,6 +1885,104 @@ export async function setThreadAgent(
   await call(() =>
     stub(env, artifactId).commentsParticipantSet({ threadId, key, removed }),
   );
+  if (!removed) return;
+  const w = withdrawHeldFor(env, artifactId, threadId, p);
+  if (ctx) ctx.waitUntil(w);
+  else await w;
+}
+
+/** #2240: how long one withdrawHeld call may take before it is retried. */
+export const withdrawHeldTimeout = { ms: 10_000 };
+
+function withdrawOnce(
+  hub: NonNullable<ReturnType<typeof busHub>>,
+  req: Parameters<NonNullable<ReturnType<typeof busHub>>["withdrawHeld"]>[0],
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, rej) => {
+    timer = setTimeout(
+      () => rej(new Error("withdrawHeld timed out")),
+      withdrawHeldTimeout.ms,
+    );
+  });
+  return Promise.race([hub.withdrawHeld(req), timeout]).finally(() =>
+    clearTimeout(timer),
+  );
+}
+
+/** #2240: the participant wrote this comment (same member, same bus identity or name). */
+function isAuthoredBy(a: StoredActor, p: ParticipantRow): boolean {
+  if (a.kind !== "user" || a.ref !== p.owner || !a.agent) return false;
+  const id = a.agent.identity;
+  if (id && p.identity) return id.identityId === p.identity.identityId;
+  // The hub lowercases names, so compare as it does.
+  return (id?.name ?? a.agent.name).toLowerCase() === p.name.toLowerCase();
+}
+
+/**
+ * #2175: removing an agent withdraws the notices from the thread still held
+ * for it on its owner's hub. Never throws: a failure leaves them to expire.
+ */
+async function withdrawHeldFor(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  p: ParticipantRow,
+): Promise<void> {
+  try {
+    const hub = busHub(env, p.owner);
+    if (!hub) return;
+    const held = await call(() =>
+      stub(env, artifactId).commentsHeldTargets({ threadId, key: p.key }),
+    );
+    // #2240: asks the removed agent authored, so the hub also drops their held ask_answered notices.
+    // A failed read costs only the ask ids: the held targets still go.
+    const own = await call(() =>
+      stub(env, artifactId).commentsAskAuthors({ threadId }),
+    )
+      .then((asks) =>
+        asks.filter((a) => isAuthoredBy(a.author, p)).map((a) => a.commentId),
+      )
+      .catch((e) => {
+        logError("comment_withdraw_asks_read_failed", e);
+        return [] as string[];
+      });
+    // Called even with no tracked targets: the hub also drops the thread's
+    // held thread_reply rows by threadId (older ones carry no target).
+    const req = {
+      namespace: p.namespace,
+      name: p.name,
+      ...(p.identity ? { identityId: p.identity.identityId } : {}),
+      artifactId,
+      threadId,
+      commentIds: [...new Set([...held.map((h) => h.commentId), ...own])],
+    };
+    // #2240: once more on an error or a timeout; the hub's idempotency (#2211)
+    // makes the repeat return what the first call already withdrew.
+    const { withdrawn } = await withdrawOnce(hub, req).catch(() =>
+      withdrawOnce(hub, req),
+    );
+    const targets = withdrawn
+      .filter(
+        (w) =>
+          w.key === p.key &&
+          (w.kind === "mention" || w.kind === "asker" || w.kind === "reply"),
+      )
+      .map((w) => ({
+        commentId: w.commentId,
+        kind: w.kind as "mention" | "asker" | "reply",
+      }));
+    if (targets.length === 0) return;
+    await call(() =>
+      stub(env, artifactId).commentsTargetsWithdraw({
+        threadId,
+        key: p.key,
+        targets,
+      }),
+    );
+  } catch (e) {
+    logError("comment_withdraw_held_failed", e);
+  }
 }
 
 /** Edits a comment's body: its author only (403 forbidden). */

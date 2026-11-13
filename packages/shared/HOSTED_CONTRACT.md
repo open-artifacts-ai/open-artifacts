@@ -81,7 +81,7 @@ Directory): sign-in and user-status checks keep running, nothing syncs. Hosted a
 | `RestrictionSchema` | `{ manual, groups: GroupRef[] }` (Member.restriction): restricted if either applies; frozen group restrictions stay in force |
 | `TierSchema` | `trial \| team \| business` (null = self-hosted) |
 | `DirectoryModeSchema` | `off \| google \| frozen` |
-| `InstanceDirectorySchema` | `{ mode, healthy, unhealthySince, banner, tokensUnverified, state, staleAt, heldSweeps }`. `banner`: unhealthy ≥ 1 h (owner/admin only). `tokensUnverified`: true while unhealthy, since PATs and MCP grants aren't capped at 24 h. `state` (`SyncState`) and `staleAt` (lastSuccessAt + 7 d, informational only - no access effect): owner/admin only, null for others; `heldSweeps`: held sweeps waiting, not counting snoozed ones (#412), 0 for non-admins |
+| `InstanceDirectorySchema` | `{ mode, healthy, unhealthySince, banner, tokensUnverified, state, staleAt, heldSweeps }`. `banner`: unhealthy ≥ 1 h (owner/admin only). `tokensUnverified`: true while unhealthy, since PATs and MCP grants aren't capped at 24 h. `state` (`SyncState`) and `staleAt` (lastSuccessAt + 7 d, informational only - no access effect): owner/admin only, null for others; `heldSweeps`: held sweeps waiting, not counting snoozed ones (#412), 0 for non-admins. Owner/admin only, optional (#2150): `pendingReverts` (frozen mode: changed roles on synced people the thaw will put back; removals, manual adds and removed users not counted) and `lastThaw` `{ id, reverted, names, at }` (google mode: the last thaw within 3 days, from its audit rows; `reverted` counts distinct people, `names` the first 2 display names; `id` is the thaw's own start marker, one per thaw). `pendingReverts` counts distinct people the thaw would actually revert (a role changed back counts nobody) |
 | `SyncStateSchema` | `ok \| backoff \| auth_failed \| customer_mismatch \| scope_missing \| never`. `scope_missing`: a granted scope was revoked (Admin SDK 403 insufficientPermissions); fix copy "reconnect and grant all scopes" |
 | `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }` |
 | `AuthMethodSchema` | `access \| google \| code \| pat \| oauth \| dev \| test` |
@@ -404,6 +404,28 @@ trial's end, optional, absent when billing's answer predates it.
 for the instance (a provisioned or comped plan has none, so no portal): owner
 and admins only, the plan cap included; absent for everyone else and when
 billing's answer predates it (unknown: the dashboard keeps Manage billing).
+`yearlyTeamBusiness` (boolean, optional): billing sets it true when yearly Team
+and Business prices are configured in this environment; absent or false hides
+yearly Team and Business in the dashboard. Owner and admins only, like
+`hasCustomer`; billing's `GET /tier` answer carries it and the server passes it on.
+`soloCheckedOut` (boolean, optional): billing sets it true once a Checkout has put
+a card on file for a Solo still in its free days (D1 `solo_checked_out`); the
+dashboard then shows Manage billing and the first charge date instead of Pay.
+Absent or false: Pay stays. Owner and admins only, like `hasCustomer`.
+`cancelsAt` (ISO string or null, optional): when a scheduled cancel (cancel at
+period end) takes effect, from billing's `cancelsAt` (ms). null or absent: none.
+Owner and admins only. While it is in the future the dashboard shows an "Ends <date>"
+pill and a warning, and keeps Manage billing so the plan can be resumed.
+`interval` ("month" | "year" | null) and `renewsAt` (ISO string or null), optional:
+the interval a paying subscription bills on and when the current period ends and
+the next charge is due; from billing's `interval` and `renewsAt` (ms), `renewsAt`
+null while a cancel is scheduled. The Price row shows "$10 a year, renews Dec 1,
+2027" for a paid plan, or a Solo with `soloCheckedOut`, when both are set. Owner
+and admins only.
+`overageDue` (`{ amountCents, months }`, optional): the extra-creator charges
+that failed and are unpaid (#2246), total in cents and months as `YYYY-MM`,
+oldest first. Billing sends null for none; the server passes it on only when
+present, owner and admins only. A notice only: it never moves tier or access.
 
 | State | What it does | `reason` |
 |---|---|---|
@@ -466,7 +488,7 @@ answers 409 `no_billing_customer` when billing has no Stripe customer for the
 instance (billing's 409 `no_customer`; no other route or status maps to it). Billing's 503
 `{ error: "retry" }` (Stripe still running the same idempotent request) is
 retried once, with the same signed body, after a short backoff. Checkout
-sends billing `{ install, ts, plan }`, plus `interval` and `seats` when the body had them, unchanged; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). A yearly Team or Business plan prepays `seats` creators; extra creators bill as overage at the monthly price ($10 per creator for Team, $25 for Business; Team and Business prices are per creator) (decided 2026-11-11). Checkout and Portal
+sends billing `{ install, ts, plan }`, plus `interval` and `seats` when the body had them, unchanged, and, for monthly Team and Business (no interval, or month), `creators`: the instance's own creator count for the current UTC month (0 or more), counted by the server and never taken from the body (a body with `creators` is 400). Monthly Team and Business bill per creator (#2123): the subscription starts at that count (billing bills at least 1), and each closed month's usage report sets the quantity to that month's count, with no proration, so each invoice bills the previous month's creators. The billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). A yearly Team or Business plan prepays `seats` creators; extra creators bill as overage at the monthly price ($10 per creator for Team, $25 for Business; Team and Business prices are per creator) (decided 2026-11-11). Checkout and Portal
 depend on Platform's billing routes (#849 gate allowlist for `POST /checkout`
 and `/portal`); until those ship they answer 503 `billing_unavailable`.
 

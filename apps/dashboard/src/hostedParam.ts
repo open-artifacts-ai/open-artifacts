@@ -88,6 +88,101 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // Yearly Team and Business prices configured (billing.yearlyTeamBusiness).
+  yearly: {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      yearlyTeamBusiness: true,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // A Solo in its free days that already paid at Checkout (billing.soloCheckedOut).
+  "solo-checked-out": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      soloCheckedOut: true,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // A Solo that cancelled in its free days (billing.cancelsAt).
+  "solo-canceled": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      soloCheckedOut: true,
+      cancelsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // A Team plan set to cancel at the end of its period (billing.cancelsAt).
+  "team-canceled": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      cancelsAt: new Date(Date.now() + 12 * 86_400_000).toISOString(),
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
+  // Failed extra-creator charges (#2246): one month, and several months.
+  "overage-due": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 9,
+      overageDue: { amountCents: 4200, months: ["2026-10"] },
+      readOnly: false,
+    },
+  },
+  "overage-due-months": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 9,
+      overageDue: { amountCents: 11850, months: ["2026-09", "2026-10"] },
+      readOnly: false,
+    },
+  },
+  // A paying Team on the yearly interval (billing.interval, renewsAt).
+  "team-yearly-renews": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      interval: "year",
+      renewsAt: "2027-12-01T00:00:00.000Z",
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
   "solo-no-customer": {
     billing: {
       tier: "solo",
@@ -224,7 +319,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
  * scope-missing, customer-mismatch, trial, solo, solo-paid (a paying Solo: customer, active,
  * Manage billing only), solo-trial-customer, solo-no-customer, solo-paused,
- * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
+ * overage-due, overage-due-months (failed extra-creator charges, #2246),
+ * plan-team-lapsed,plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one
  * guest owner has left), spaces-on, workspace-change (the confirm

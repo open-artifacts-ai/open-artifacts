@@ -235,15 +235,17 @@ describe("zod-free constants (Backend minors)", () => {
     expect(OAUTH_CLIENT_TTL_MS / 1000).toBe(2_592_000);
   });
 
-  it("SIGNUPS_ENABLED: true, false, test-users; anything else is closed", () => {
+  it("SIGNUPS_ENABLED: true, false, test-users, invite; anything else is closed", () => {
     expect([...SIGNUPS_ENABLED_VALUES]).toEqual([
       "false",
       "true",
       "test-users",
+      "invite",
     ]);
     expect(parseSignupsEnabled("true")).toBe("true");
     expect(parseSignupsEnabled("false")).toBe("false");
     expect(parseSignupsEnabled("test-users")).toBe("test-users");
+    expect(parseSignupsEnabled("invite")).toBe("invite");
     for (const v of [
       undefined,
       null,

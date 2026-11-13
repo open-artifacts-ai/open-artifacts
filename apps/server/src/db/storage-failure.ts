@@ -10,6 +10,10 @@ const MAX_CAUSE_DEPTH = 5;
 const STORAGE_FAILURE = [
   /^D1_ERROR: internal error\b/,
   /^D1_ERROR: Network connection lost\b/,
+  // R2 binding errors read "<op>: <text> (<code>)": 10001 internal error,
+  // 10043 service unavailable, 10058 same-key write rate (#2218). Never 404s or precondition failures.
+  /^(?:get|put|head|list|delete): [^\n]*\((?:10001|10043|10058)\)$/,
+  /^(?:get|put|head|list|delete): Network connection lost\b/i,
   /^KV (?:GET|PUT|DELETE|LIST) failed: 5\d\d\b/,
 ];
 

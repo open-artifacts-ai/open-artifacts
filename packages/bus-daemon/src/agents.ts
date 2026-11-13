@@ -22,6 +22,8 @@ export type AgentRecord = {
    * (a `-2`, a refusal) never is one. Unset: compare with `proposedName`.
    */
   sessionName?: string;
+  /** #2311: the harness says a user or a peer named the session; sent on agent_up as name_chosen. */
+  nameChosen?: boolean;
   /** The name the hub was last told for this agent (agent_up or rename). */
   sentName?: string;
   /**

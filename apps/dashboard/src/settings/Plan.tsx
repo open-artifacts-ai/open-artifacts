@@ -20,14 +20,14 @@ import { useMe } from "../auth/useMe";
 import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import { formatDate } from "./date";
+import { formatDate, formatShortDate } from "./date";
 import { type Column, PlanCompare } from "./PlanCompare";
 import { muted, SettingsCard, STACK } from "./ui";
 
 /** The public docs page on leaving hosted (#2108). */
 const LEAVE_HOSTED_URL = "https://open-artifacts.com/docs/hosted/";
 
-type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
+type Buy = Pick<BillingCheckoutInput, "tier" | "interval" | "seats">;
 
 const NAME: Record<BillingTier, string> = {
   free: "Solo",
@@ -57,6 +57,30 @@ type Status = {
   label: string;
   tone: "ok" | "warn" | "bad" | "info";
 };
+
+/** A scheduled cancel that has not taken effect yet (#2138). */
+const cancelsInFuture = (b: PlanView): boolean =>
+  !!b.cancelsAt && Date.parse(b.cancelsAt) > Date.now();
+
+/** What each tier bills per interval (#2135); Team and Business are per creator. */
+const PRICE_BY_INTERVAL: Record<
+  "solo" | "team" | "business",
+  Record<"month" | "year", string>
+> = {
+  solo: { month: "$1 a month", year: "$10 a year" },
+  team: {
+    month: "$10 per creator per month",
+    year: "$100 per creator per year",
+  },
+  business: {
+    month: "$25 per creator per month",
+    year: "$250 per creator per year",
+  },
+};
+
+/** The warning under a plan set to cancel. */
+const CANCEL_NOTE = (b: PlanView): string =>
+  `Your plan ends on ${date(b.cancelsAt as string)}. After that you can still read everything, but nothing new can be published or edited. To keep it, resume in Manage billing.`;
 
 /** The status pill and the one note under it, from the plan alone. */
 export const planStatus = (
@@ -94,6 +118,12 @@ export const planStatus = (
         }. After that, this instance becomes read-only.`,
       },
     };
+  // A scheduled cancel (#2138): the plan stays on until then, but it ends.
+  if (cancelsInFuture(b) && b.cancelsAt)
+    return {
+      pill: { label: `Ends ${formatShortDate(b.cancelsAt)}`, tone: "warn" },
+      note: { tone: "warning", text: CANCEL_NOTE(b) },
+    };
   // trialEndsAt is the Team trial's only: a Solo row with one is a used
   // Team trial and shows no note. The Solo month has its own date, and a
   // date already past (a paid Solo) shows nothing.
@@ -111,7 +141,10 @@ export const planStatus = (
       pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",
-        text: `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
+        // With a card on file the charge line under it names the first charge.
+        text: b.soloCheckedOut
+          ? `Your free month ends ${date(b.soloTrialEndsAt)}.`
+          : `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
       },
     };
   return { pill: { label: "Active", tone: "ok" } };
@@ -144,13 +177,23 @@ export function Plan() {
   const billing =
     state.status === "authed" ? state.me.instance.billing : undefined;
   if (!billing) {
+    // A hosted install with no billing answer has no way to pay yet (#2326).
     // Self-hosted installs have no plan; there is nothing to show.
+    const hosted = state.status === "authed" && state.me.instance.hosted;
     return (
       <div className={STACK}>
-        <p className={muted}>This install has no plan to manage.</p>
+        <p className={muted}>
+          {hosted
+            ? "Paid plans open soon. We'll email you before anything changes."
+            : "This install has no plan to manage."}
+        </p>
       </div>
     );
   }
+  // #2150: only with a binding (the server also sends owners and admins alone).
+  const dir =
+    state.status === "authed" ? state.me.instance.directory : undefined;
+  const pendingReverts = dir?.bound ? (dir.pendingReverts ?? 0) : 0;
   const { pill, note } = planStatus(billing);
   const column = COLUMN[billing.tier];
   const solo = column === "solo";
@@ -163,11 +206,19 @@ export function Plan() {
   // The portal needs a Stripe customer. A provisioned or comped plan has
   // none (hasCustomer false): no Manage billing, since billing would refuse.
   // Absent means billing's answer predates the field: keep the button.
-  const portal = (paid && !lapsedPaid) || billing.status === "past_due";
-  const operatorPlan = portal && billing.hasCustomer === false;
+  // A Solo with no Stripe customer (its free month ended unpaid) has no portal
+  // to go to: it pays through the Pay buttons below (#2137).
+  const soloNoCustomer = solo && billing.hasCustomer === false;
+  const portal =
+    (paid && !lapsedPaid) || (billing.status === "past_due" && !soloNoCustomer);
+  // Only a Team or Business plan can be set up by Open Artifacts; a Solo with
+  // no customer simply hasn't paid yet (#2137).
+  const operatorPlan = portal && !solo && billing.hasCustomer === false;
   // A paying Solo (a Stripe customer, active or past_due, past its free month)
   // manages its plan in the portal and sees no Pay buttons. During the free
-  // month the Pay buttons stay: they are the way to start paying or pick yearly.
+  // month the Pay buttons stay: they are the way to start paying or pick yearly,
+  // unless billing says a card is already on file (soloCheckedOut).
+  const cancelling = cancelsInFuture(billing);
   const soloTrialing =
     !!billing.soloTrialEndsAt &&
     Date.parse(billing.soloTrialEndsAt) > Date.now();
@@ -175,7 +226,27 @@ export function Plan() {
     billing.tier === "solo" &&
     billing.hasCustomer === true &&
     (billing.status === "active" || billing.status === "past_due") &&
-    !soloTrialing;
+    // Still in the free days, but a Checkout already put a card on file (#2138):
+    // a second Pay would only replace that subscription.
+    (!soloTrialing || billing.soloCheckedOut === true || cancelling);
+  // The price a paying plan pays and when it renews (#2135): a paid tier, or a
+  // Solo with a card on file. A no-card Solo trial cancels at its end with no
+  // charge, so it never shows a renewal. Billing sends renewsAt null while a
+  // cancel is scheduled, which leaves the plain price.
+  const pays =
+    paid ||
+    (billing.tier === "solo" && (billing.soloCheckedOut === true || soloPaid));
+  const tierKey = billing.tier === "free" ? "solo" : billing.tier;
+  const priceText =
+    pays &&
+    billing.interval &&
+    billing.renewsAt &&
+    (tierKey === "solo" || tierKey === "team" || tierKey === "business")
+      ? billing.tier === "solo" && soloTrialing
+        ? // A free month with a card on file: "First charge on" gives the date.
+          PRICE_BY_INTERVAL[tierKey][billing.interval]
+        : `${PRICE_BY_INTERVAL[tierKey][billing.interval]}, renews ${date(billing.renewsAt)}`
+      : PRICE[billing.tier];
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -198,7 +269,7 @@ export function Plan() {
           {!ended && !operatorPlan && (
             <>
               <dt className={muted}>Price</dt>
-              <dd className="m-0">{PRICE[billing.tier]}</dd>
+              <dd className="m-0">{priceText}</dd>
             </>
           )}
         </dl>
@@ -231,6 +302,11 @@ export function Plan() {
                 <Button disabled={busy} onClick={() => go.mutate("portal")}>
                   Manage billing
                 </Button>
+              )}
+              {column === "solo" && soloPaid && soloTrialing && !cancelling && (
+                <span className={muted}>
+                  First charge on {date(billing.soloTrialEndsAt as string)}.
+                </span>
               )}
               {column === "solo" && !soloPaid && (
                 <>
@@ -277,13 +353,26 @@ export function Plan() {
         column={column}
         trial={billing.tier === "trial"}
         busy={busy}
+        yearly={billing.yearlyTeamBusiness === true}
+        pendingReverts={pendingReverts}
         upgrade={
           operatorPlan || lapsedPaid
             ? undefined
             : // A paid plan changes in the billing portal, never a second checkout.
               portal
               ? () => go.mutate("portal")
-              : (tier) => go.mutate({ tier })
+              : // Seats come only from the yearly step; the schema needs them with year.
+                (tier, seats) =>
+                  go.mutate(
+                    seats === undefined
+                      ? { tier }
+                      : { tier, interval: "year", seats },
+                  )
+        }
+        seatsDefault={
+          operatorPlan || lapsedPaid || portal
+            ? undefined
+            : Math.max(1, billing.creatorsThisMonth ?? 1)
         }
       />
     </div>

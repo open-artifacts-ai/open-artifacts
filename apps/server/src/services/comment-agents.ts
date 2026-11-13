@@ -40,6 +40,8 @@ export type RosterAgent = ArtifactAgent & {
   /** The member whose agent it is. */
   userId: string;
   address: BusAddress;
+  /** #2238: the verified identity the address was resolved to; a notice then goes only to it. */
+  identityId?: string;
 };
 
 export async function agentKey(
@@ -123,6 +125,10 @@ type OwnAgents = {
   known: boolean;
 };
 
+/** #2311: an offline agent still on a harness default name is no mention target. */
+const hiddenUnnamed = (a: BusAgent): boolean =>
+  !a.running && a.unnamed === true;
+
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
 /**
@@ -144,9 +150,12 @@ export async function viewerAgents(
   const view = await busView(env, viewerId, { away: true });
   const sessions = sessionsOf(view.agents);
   const addresses: BusAddress[] = [];
-  const ordered = [...sessions.values()].sort(
-    (x, y) => Number(y.running) - Number(x.running),
-  );
+  // #2309, #2311: running first, then offline named agents, most recently
+  // active first; an offline agent still on a harness default name is left out.
+  const when = (x: BusAgent) => Date.parse(x.since ?? x.updatedAt) || 0;
+  const ordered = [...sessions.values()]
+    .filter((a) => !hiddenUnnamed(a))
+    .sort((x, y) => Number(y.running) - Number(x.running) || when(y) - when(x));
   for (const a of ordered) {
     // An address the bus would refuse a follow for (a reserved name) is no mention target.
     const ok = BusAddressSchema.safeParse({
@@ -240,7 +249,7 @@ export async function agentRoster(
     const owner = mine ? "" : ` (${shownName(user)})`;
     for (const address of addresses) {
       const a = sessions?.get(addrKey(address));
-      if (sessions && !a) continue;
+      if (sessions && (!a || hiddenUnnamed(a))) continue;
       out.push({
         key: await agentKey(artifactId, userId, address),
         name: `${a?.name ?? address.name}${owner}`,
@@ -347,6 +356,9 @@ export function commentNoticeText(
   ].join("\n");
 }
 
+/** #2238: an asking agent's bus address and the identity it was verified as. */
+export type AskerAddress = BusAddress & { identityId?: string };
+
 export type DeliveryState = "delivered" | "held" | "dropped";
 
 /** Sends one comment notice to a roster agent. Never throws. */
@@ -370,6 +382,7 @@ export async function notifyAgent(
     version,
     url,
     to: { namespace: to.address.namespace, name: to.address.name },
+    ...(to.identityId ? { toIdentity: to.identityId } : {}),
     text: commentNoticeText(
       kind,
       version,
@@ -413,11 +426,9 @@ export const ANSWER_WINDOW_MS = 10_000;
 
 /**
  * `ask_answered` (#1535): a person answered the ask at (`threadId`,
- * `commentId`). It goes to the agents that follow the artifact and belong to
- * `askerId`, the member who posted the ask. That is the honest target for now:
- * an MCP caller has no bus address, so until a publisher/asker link exists
- * (an open user decision) the asker's member is the only link to an agent. A
- * person-authored ask with no following agent gets nothing. The member is
+ * `commentId`). It goes only to the agent that posted the ask (`asker`, its
+ * bus address; #2224), never to followers or the member's other agents. A
+ * person-authored ask, or an agent with no bus address, gets nothing. The member is
  * re-checked at send time as the follows fan-out does (a lapsed one loses
  * their follows on the artifact and hears nothing). The coalesce key is one
  * per ask comment (a thread can hold two asks). A notice is sent after
@@ -427,8 +438,8 @@ export const ANSWER_WINDOW_MS = 10_000;
  * option did not change (a retry). The fan-out stops at FANOUT_BUDGET_MS:
  * the agents not reached hear nothing this time, and it is logged. Rate: the
  * answer itself already counts against the caller's comment limit
- * (commentsAnswer), and the send reads at most FANOUT_MAX follow rows of one
- * member. Text is fixed, with no question, option or name. Never throws.
+ * (commentsAnswer), and the send goes to one address, so it reads no follow
+ * rows. Text is fixed, with no question, option or name. Never throws.
  */
 export async function notifyAnswered(
   env: Env,
@@ -437,12 +448,14 @@ export async function notifyAnswered(
   threadId: string,
   commentId: string,
   askerId: string,
+  /** The asking agent's bus address; null sends nothing (#2224). */
+  asker: AskerAddress | null,
   /** The answer was picked in the web app by `askerId` themselves (#1797). */
   fromYourUser = false,
   /** Time the send may take; tests shrink it. */
   budgetMs = FANOUT_BUDGET_MS,
 ): Promise<void> {
-  const targets = await askerAgents(env, artifactId, askerId);
+  const targets = await askerAgents(env, artifactId, askerId, asker);
   if (targets.length === 0) return;
   const url = appOrigin(env) + viewerPath(artifactId);
   const scope = newDeliveryScope();
@@ -464,6 +477,7 @@ export async function notifyAnswered(
       version,
       url,
       to: { namespace: to.namespace, name: to.name },
+      ...(to.identityId ? { toIdentity: to.identityId } : {}),
       text: commentNoticeText(
         "answered",
         version,
@@ -482,29 +496,20 @@ export async function notifyAnswered(
 }
 
 /**
- * The agents of an ask's author that can be told of something on the ask (#1535,
- * #1614): the agents that follow the artifact and belong to `askerId`. That is
- * the honest target for now: an MCP caller has no bus address, so until a
- * publisher/asker link exists (an open user decision) the asker's member is
- * the only link to an agent. A person-authored ask with no following agent
- * gets nothing. The member is re-checked at send time as the follows fan-out
- * does (a lapsed one loses their follows on the artifact and hears nothing).
- * Reads at most FANOUT_MAX follow rows of one member. Never another member's.
+ * The one agent that can be told of something on an ask (#1535, #1614, #2224):
+ * the agent that posted it, by its own bus address. Never a follower or the
+ * member's other agents: an answer is a yes for the asker alone. A person's
+ * ask, or an agent with no bus address, gets nobody. The member is re-checked
+ * at send time (a lapsed one loses their follows and hears nothing).
  */
 export async function askerAgents(
   env: Env,
   artifactId: string,
   askerId: string,
-): Promise<BusAddress[]> {
-  const { results } = await stmt(
-    env.DB,
-    `select namespace, agent_name as name from follows
-     where artifact_id = ? and user_id = ?
-     order by created_at, namespace, agent_name limit ?`,
-  )
-    .bind(artifactId, askerId, FANOUT_MAX)
-    .all<{ namespace: string; name: string }>();
-  if (results.length === 0) return [];
+  /** The asking agent's own bus address, or null: a person's ask, or an agent with no bus address (#2224). */
+  address: AskerAddress | null,
+): Promise<AskerAddress[]> {
+  if (!address) return [];
   const user = await getUser(env, askerId);
   if (!user || !(await accessLevel(env, callerOf(user), artifactId))) {
     await stmt(env.DB, DROP_MEMBER_FOLLOWS).bind(askerId, artifactId).run();
@@ -516,7 +521,7 @@ export async function askerAgents(
     return [];
   }
   if (!canConnect(user)) return [];
-  return results;
+  return [address];
 }
 
 /** `askerAgents` as roster entries, for the card's delivery marks (#1614). */
@@ -524,15 +529,17 @@ export async function askerRoster(
   env: Env,
   artifactId: string,
   askerId: string,
+  asker: AskerAddress | null,
 ): Promise<RosterAgent[]> {
   const out: RosterAgent[] = [];
-  for (const address of await askerAgents(env, artifactId, askerId))
+  for (const address of await askerAgents(env, artifactId, askerId, asker))
     out.push({
       key: await agentKey(artifactId, askerId, address),
       name: address.name,
       ...UNKNOWN,
       userId: askerId,
-      address,
+      address: { namespace: address.namespace, name: address.name },
+      ...(address.identityId ? { identityId: address.identityId } : {}),
     });
   return out;
 }

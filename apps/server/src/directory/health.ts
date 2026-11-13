@@ -6,7 +6,7 @@ import type {
 } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { UPSERT } from "./store.js";
+import { CONNECTED_KEYS, UPSERT } from "./store.js";
 
 // Directory sync health at rest (P3 T13), in directory_state next to T12's
 // binding rows, so every reader (R.directory, Me.instance.directory, and
@@ -16,7 +16,12 @@ import { UPSERT } from "./store.js";
 // - "sync.state": the SyncState alone, so T18's per-request denial for
 //   customer_mismatch is one primary-key probe.
 
-export const HK = { health: "sync.health", state: "sync.state" } as const;
+export const HK = {
+  health: "sync.health",
+  state: "sync.state",
+  /** The reconcile run (its startedAt, ms) whose thaw had frozen edits to apply: lastThaw's id (#2150). */
+  thaw: "sync.thaw",
+} as const;
 
 /** Unhealthy this long: the banner and the 24 h browser session cap (T18). */
 export const BANNER_AFTER_MS = 3600_000;
@@ -119,9 +124,13 @@ export async function readHealthRaw(
   const row = await stmt(env.DB, READ)
     .bind(HK.health)
     .first<{ value: string }>();
-  if (!row) return { h: NEVER, raw: null };
+  return parseHealth(row?.value ?? null);
+}
+
+function parseHealth(raw: string | null): { h: Health; raw: string | null } {
+  if (raw === null) return { h: NEVER, raw: null };
   try {
-    const v = JSON.parse(row.value) as Partial<Health>;
+    const v = JSON.parse(raw) as Partial<Health>;
     return {
       h: {
         ...NEVER,
@@ -130,11 +139,33 @@ export async function readHealthRaw(
         liftsPaused: Array.isArray(v.liftsPaused) ? v.liftsPaused : [],
         lanes: { ...NEVER.lanes, ...(v.lanes ?? {}) },
       },
-      raw: row.value,
+      raw,
     };
   } catch {
-    return { h: NEVER, raw: row.value };
+    return { h: NEVER, raw };
   }
+}
+
+/**
+ * Health and whether a directory is connected (any CONNECTED key), in the one D1 statement /me
+ * already spends on health (both are directory_state rows): no extra read.
+ */
+export async function readHealthBound(
+  env: Pick<Env, "DB">,
+): Promise<{ h: Health; bound: boolean }> {
+  const { results } = await stmt(
+    env.DB,
+    `select key, value from directory_state where key in (?, ${CONNECTED_KEYS.map(() => "?").join(", ")})`,
+  )
+    .bind(HK.health, ...CONNECTED_KEYS)
+    .all<{ key: string; value: string }>();
+  let health: string | null = null;
+  let bound = false;
+  for (const r of results) {
+    if (r.key === HK.health) health = r.value;
+    else bound = true;
+  }
+  return { h: parseHealth(health).h, bound };
 }
 
 /**
@@ -235,6 +266,72 @@ export function healthFields(h: Health, now = Date.now()) {
   };
 }
 
+export type ThawNotice = Pick<InstanceDirectory, "pendingReverts" | "lastThaw">;
+
+/** How long after a thaw its notice stays on /me. */
+export const THAW_NOTICE_MS = 3 * 86_400_000;
+const THAW_REVERTS =
+  "('space.member.role', 'space.member.remove', 'space.member.add')";
+
+/**
+ * For owners and admins (#2150), one or two cheap reads:
+ * - frozen: pendingReverts, the people (not removed) the thaw would audit as
+ *   a revert, by thaw.ts AUDITS 0-2: an override edit whose pre-freeze manual
+ *   role (none: null) differs from the manual row now (so a role changed back
+ *   by hand counts nobody). Removals and manual adds stay.
+ * - google: lastThaw, from the thaw's audit rows (actor sync, detail thaw
+ *   true, the role, remove and add outcomes) at or after the thaw's own start
+ *   marker (HK.thaw, written when a reconcile's thaw step has frozen edits),
+ *   within 3 days. The marker is the id, so each thaw has its own.
+ */
+export async function readThawNotice(
+  env: Pick<Env, "DB">,
+  mode: InstanceDirectory["mode"],
+  now = Date.now(),
+): Promise<ThawNotice> {
+  if (mode === "frozen") {
+    const r = await stmt(
+      env.DB,
+      `select count(distinct f.user_id) as n from frozen_edits f
+        join users u on u.id = f.user_id
+        where f.kind = 'override' and u.status <> 'removed' and (
+          (f.manual_role is null and exists (select 1 from space_members m
+            where m.space_id = f.space_id and m.user_id = f.user_id and m.source = 'manual'))
+          or (f.manual_role is not null and not exists (select 1 from space_members m
+            where m.space_id = f.space_id and m.user_id = f.user_id and m.source = 'manual'
+              and m.role = f.manual_role)))`,
+    ).first<{ n: number }>();
+    return { pendingReverts: r?.n ?? 0 };
+  }
+  if (mode !== "google") return {};
+  const since = now - THAW_NOTICE_MS;
+  const where = `from audit_events a join users u on u.id = a.target_id
+    where a.at >= ?1 and a.at >= (select cast(value as integer) from directory_state where key = ?2)
+      and a.actor_kind = 'sync' and a.action in ${THAW_REVERTS}
+      and json_extract(a.detail, '$.thaw') = 1 and u.status <> 'removed'`;
+  const r = await stmt(
+    env.DB,
+    `select count(distinct a.target_id) as n, max(a.at) as last, (select value from directory_state where key = ?2) as id ${where}`,
+  )
+    .bind(since, HK.thaw)
+    .first<{ n: number; last: number | null; id: string | null }>();
+  if (!r?.n || r.last === null || r.id === null) return {};
+  const { results } = await stmt(
+    env.DB,
+    `select u.name, u.email ${where} group by a.target_id order by min(a.at), a.target_id limit 2`,
+  )
+    .bind(since, HK.thaw)
+    .all<{ name: string; email: string }>();
+  return {
+    lastThaw: {
+      id: r.id,
+      reverted: r.n,
+      names: results.map((x) => x.name.trim() || x.email),
+      at: new Date(r.last).toISOString(),
+    },
+  };
+}
+
 /**
  * Me.instance.directory. Health (banner, state, staleAt, held sweeps) is
  * for org owners and admins only; everyone else reads the mode alone.
@@ -244,6 +341,10 @@ export function instanceDirectory(
   h: Health,
   admin: boolean,
   now = Date.now(),
+  /** A directory is connected (live or pending); set for owners and admins only. */
+  bound?: boolean,
+  /** pendingReverts and lastThaw (readThawNotice); owners and admins only. */
+  thaw: ThawNotice = {},
 ): InstanceDirectory {
   if (mode === "off" || !admin)
     return {
@@ -265,6 +366,8 @@ export function instanceDirectory(
     banner: unhealthy && now - (h.unhealthySince ?? now) >= BANNER_AFTER_MS,
     tokensUnverified: unhealthy,
     state: h.state,
+    ...(bound === undefined ? {} : { bound }),
+    ...thaw,
     staleAt: f.staleAt,
     // A snoozed hold doesn't light the Settings dot (#412).
     heldSweeps: h.held.filter((x) => !snoozedAt(x, now)).length,

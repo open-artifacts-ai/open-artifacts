@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  nameWasChosen,
   notASession,
   ProcStartUnknownError,
   peerTokenFor,
@@ -18,6 +19,8 @@ export type LiveClaude = {
   cwd: string;
   /** The process start the session file recorded: tells a reused pid from the session's own. */
   procStart: string;
+  /** #2311: the session file says the user or a peer named it. */
+  nameChosen?: true;
   /** #2110: running, but its start time could not be read: unknown, kept live for a bounded grace by the caller. */
   unknown?: true;
 };
@@ -71,6 +74,7 @@ function scanSessions(dir: string): {
           : "",
       cwd: typeof rec.cwd === "string" ? rec.cwd : "",
       procStart: rec.procStart,
+      ...(nameWasChosen(rec) ? { nameChosen: true as const } : {}),
       // Not the mtime: live sessions rewrite their file every 15-60 s. A reused pid writes a new procStart.
       stamp: rec.procStart,
     });

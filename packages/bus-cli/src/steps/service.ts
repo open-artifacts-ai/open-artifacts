@@ -10,10 +10,19 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { BUS_CMD } from "@oa/bus-protocol";
-import type { Service, ServiceProblem } from "../context.ts";
+import type { Isolation, Service, ServiceProblem } from "../context.ts";
 import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
 import { codexHomeEnv } from "./codex.ts";
@@ -23,7 +32,42 @@ export const LAUNCHD_LABEL = "com.open-artifacts.bus";
 export const SYSTEMD_UNIT = "oa-bus.service";
 /** EX_CONFIG: the daemon's exit on revoke. systemd never restarts it. */
 export const REVOKED_EXIT = 78;
-const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
+/** An npx cache or a package's own .bin: never for a long-lived service. */
+const transient = (dir: string) =>
+  dir
+    .split(/[\\/]/)
+    .some(
+      (seg) =>
+        seg === "node_modules" || seg === "_npx" || seg === "node-gyp-bin",
+    );
+
+/**
+ * The service's PATH (#2105): the user's absolute PATH folders in their order,
+ * minus npx's and a project's node_modules/.bin, node's folder if missing, and
+ * the system folders. win32 keeps its PATH as is.
+ */
+export function servicePath(
+  env: Env,
+  execPath: string,
+  platform: NodeJS.Platform,
+): string {
+  if (platform !== "darwin" && platform !== "linux")
+    return env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  const system = [
+    "/usr/local/bin",
+    ...(platform === "darwin" ? ["/opt/homebrew/bin"] : []),
+    "/usr/bin",
+    "/bin",
+  ];
+  const mine = (env.PATH ?? "")
+    .split(delimiter)
+    .filter((d) => isAbsolute(d) && !transient(d));
+  const node = dirname(execPath);
+  if (!mine.includes(node) && isAbsolute(node) && !transient(node))
+    mine.unshift(node);
+  return [...new Set([...mine, ...system])].join(delimiter);
+}
+
 const STOP_WAIT_MS = 5000;
 const POLL_MS = 250;
 
@@ -278,13 +322,13 @@ function writeReplacing(path: string, text: string): void {
  * The path with symlinks resolved through its nearest existing ancestor, the
  * missing tail appended: identical before and after the path is created.
  */
-const real = (path: string): string => {
+const real = (path: string, native = false): string => {
   const abs = resolve(path);
   try {
-    return realpathSync(abs);
+    return (native ? realpathSync.native : realpathSync)(abs);
   } catch {
     const parent = dirname(abs);
-    return parent === abs ? abs : join(real(parent), basename(abs));
+    return parent === abs ? abs : join(real(parent, native), basename(abs));
   }
 };
 
@@ -330,6 +374,14 @@ export function isOurDaemon(args: string, entry: string): boolean {
 export type ServiceDeps = {
   platform: NodeJS.Platform;
   userHome: string;
+  /**
+   * The OS account's home (`os.userInfo().homedir`). The service manager is the
+   * account's, whatever HOME says: when `userHome` or the bus home is not under
+   * it, no service call is made (#2099). Unset: no check.
+   */
+  accountHome?: string;
+  /** Default `os.tmpdir()`: a bus home under it gets no daemon when isolated. */
+  tmpDir?: string;
   /** OA_BUS_HOME, read on each call: `--home` sets it after the ctx is made. */
   home: () => string;
   env: Env;
@@ -411,6 +463,24 @@ export function systemService(d: ServiceDeps): Service {
     return r && present(r) ? r : fresh();
   };
   const installed = () => manager !== undefined && present(file());
+  /** HOME or the bus home points away from the account's: its manager is not ours to touch. */
+  const fold = (p: string) =>
+    d.platform === "darwin" ? real(p, true).toLowerCase() : real(p, true);
+  const insideAccount = (p: string) => {
+    if (d.accountHome === undefined) return true;
+    const r = relative(fold(d.accountHome), fold(p));
+    return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+  };
+  const isolated = (): Isolation | undefined => {
+    if (manager === undefined || d.accountHome === undefined) return undefined;
+    // macOS volumes are case-insensitive (fold).
+    const account = fold(d.accountHome);
+    if (fold(d.userHome) !== account) return "home";
+    if (!insideAccount(home())) return "bus-home";
+    return manager === "systemd" && !insideAccount(configHome)
+      ? "xdg"
+      : undefined;
+  };
   const domain = `gui/${d.uid}`;
   const systemctl = (...args: string[]) =>
     d.exec("systemctl", ["--user", ...args]);
@@ -425,13 +495,14 @@ export function systemService(d: ServiceDeps): Service {
   }
 
   /** SIGTERMs the daemon on the socket if it is ours; the pid left answering. */
-  async function stopDaemon(): Promise<number | undefined> {
+  async function stopDaemon(strict = false): Promise<number | undefined> {
     const pid = await d.daemonPid();
     if (pid === undefined) return undefined;
     const args = d.processArgs(pid);
     // A pid we cannot tie to our daemon is someone else's: never signal it.
-    const ours =
-      args === undefined
+    const ours = strict
+      ? record().fallback === true && record().pid === pid
+      : args === undefined
         ? record().fallback === true && record().pid === pid
         : isOurDaemon(args, entryOf());
     if (!ours) return pid;
@@ -476,9 +547,15 @@ export function systemService(d: ServiceDeps): Service {
     return "started";
   }
 
+  const skippedNow = () => isolated() !== undefined;
+
   return {
     get kind() {
       return installed() ? manager : undefined;
+    },
+
+    get isolated() {
+      return isolated();
     },
 
     get fallback() {
@@ -486,6 +563,17 @@ export function systemService(d: ServiceDeps): Service {
     },
 
     async ensure() {
+      // Isolated: no service-manager call, but the bus still runs as a daemon.
+      const skipped = isolated();
+      // Its bus home is the account's own (a throwaway XDG, an explicit real
+      // OA_BUS_HOME): that daemon, bin and install.json are the real ones.
+      if (skipped && insideAccount(home())) return { skipped, idle: true };
+      // A throwaway home (tests, review harnesses, CI): a daemon would outlive it.
+      if (skipped) {
+        const r = relative(fold(d.tmpDir ?? tmpdir()), fold(home()));
+        if (r === "" || (!r.startsWith("..") && !isAbsolute(r)))
+          return { skipped, idle: true };
+      }
       const h = home();
       const src = d.source();
       const logs = join(h, "logs");
@@ -493,7 +581,7 @@ export function systemService(d: ServiceDeps): Service {
         node: nodeOf(h),
         entry: join(h, "bin", entryName(src)),
         env: {
-          PATH: d.env.PATH ?? DEFAULT_PATH,
+          PATH: servicePath(d.env, d.execPath, d.platform),
           ...(isDefaultHome(h, d.userHome) ? {} : { OA_BUS_HOME: h }),
           // Attestation and wake read the Codex home this shell uses (C26e).
           ...codexHomeEnv(d.userHome, d.env),
@@ -509,23 +597,27 @@ export function systemService(d: ServiceDeps): Service {
       // Stop the unit's daemon, then whatever else holds the socket (a
       // terminal's, the fallback's): the service's daemon would find it
       // taken. If it will not stop, start nothing.
-      if (manager === "launchd")
+      if (skipped) {
+        // Nothing of the account's manager is touched.
+      } else if (manager === "launchd")
         await d.exec("launchctl", ["bootout", `${domain}/${names().label}`]);
       else if (manager === "systemd" && installed())
         await systemctl("stop", names().unit);
-      const left = await stopDaemon();
+      // Isolated: only the fallback daemon this home recorded is ours to stop.
+      const left = await stopDaemon(skipped !== undefined);
       if (left !== undefined) return { running: left };
       installCli(h, src, launcherNode());
       mkdirSync(logs, { recursive: true, mode: 0o700 });
       const f = fresh();
       // XDG_CONFIG_HOME moved since the last install: drop the old unit.
       const old = recorded();
-      if (old && old !== f) {
+      if (!skipped && old && old !== f) {
         if (manager === "systemd") await systemctl("disable", names().unit);
         rmSync(old, { force: true });
       }
-      const started =
-        manager === "launchd"
+      const started = skipped
+        ? "failed"
+        : manager === "launchd"
           ? await startLaunchd(f, unit)
           : manager === "systemd"
             ? await startSystemd(f, unit)
@@ -544,7 +636,8 @@ export function systemService(d: ServiceDeps): Service {
       }
       // A booted-out daemon can answer a moment longer: wait it out.
       const still = await quiet();
-      if (still !== undefined) return { running: still };
+      if (still !== undefined)
+        return { running: still, ...(skipped ? { skipped } : {}) };
       const pid = d.spawnDaemon(u.node, [u.entry, "daemon"], {
         env: u.env,
         out: u.out,
@@ -553,10 +646,14 @@ export function systemService(d: ServiceDeps): Service {
       updateInstallFile(installFile(), {
         service: { fallback: true, pid } satisfies Record_,
       });
-      return {};
+      return skipped ? { skipped } : {};
     },
 
     async remove() {
+      {
+        const why = isolated();
+        if (why) return { skipped: why };
+      }
       if (!installed()) {
         // The fallback's daemon, or one in a terminal.
         if ((await d.daemonPid()) === undefined) return {};
@@ -634,6 +731,40 @@ export function systemService(d: ServiceDeps): Service {
     env() {
       const e = installed() ? record().env : undefined;
       return typeof e === "object" && e !== null ? e : {};
+    },
+
+    async alive() {
+      if (skippedNow()) return undefined;
+      if (installed()) {
+        if (manager === "launchd") {
+          const r = await d.exec("launchctl", [
+            "print",
+            `${domain}/${names().label}`,
+          ]);
+          // A loaded job with no pid has exited (or not spawned yet).
+          return r.code === 0 && /\bpid = \d+/.test(r.stdout);
+        }
+        const r = await systemctl(
+          "show",
+          "-p",
+          "ActiveState,SubState,NRestarts",
+          names().unit,
+        );
+        const v = (k: string) =>
+          r.stdout.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim();
+        if (r.code !== 0) return false;
+        if (v("ActiveState") === "active") return true;
+        // A crash loop waits in activating/auto-restart between runs.
+        return (
+          v("ActiveState") === "activating" &&
+          v("SubState") !== "auto-restart" &&
+          Number(v("NRestarts") ?? 0) === 0
+        );
+      }
+      const pid = record().fallback === true ? record().pid : undefined;
+      return typeof pid === "number"
+        ? d.processArgs(pid) !== undefined
+        : undefined;
     },
 
     problems() {

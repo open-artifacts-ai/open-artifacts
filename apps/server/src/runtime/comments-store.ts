@@ -32,7 +32,8 @@ create table if not exists comments (
 create index if not exists comments_thread on comments (thread_id, created_at);
 create table if not exists comment_asks (
   comment_id text primary key, thread_id text not null, question text not null,
-  options text not null, recommended text, addressees text not null, answer text
+  options text not null, recommended text, addressees text not null, answer text,
+  confirm text
 );
 create index if not exists comment_asks_thread on comment_asks (thread_id);
 create table if not exists comment_targets (
@@ -105,14 +106,27 @@ export type StoredParty =
 /** #1890: the bus identity of a named agent, resolved at write time from the owner's hub. Never a name: names can be reclaimed. */
 export type StoredIdentity = { identityId: string; kind: string };
 
-export type MentionState = "delivered" | "queued" | "seen" | "gone";
+export type MentionState =
+  | "delivered"
+  | "queued"
+  | "seen"
+  | "gone"
+  | "withdrawn";
 
 export type StoredAsk = {
   question: string;
   options: AskOption[];
   recommended?: { optionId: string; why: string };
   to: StoredParty[];
-  answer?: { optionId: string; by: StoredActor; at: string };
+  answer?: {
+    optionId: string;
+    by: StoredActor;
+    at: string;
+    /** #2263: a passkey assertion for this pick verified. Set by the server only. */
+    verified?: "passkey";
+  };
+  /** #2263: a pick needs the picker's passkey. Set by the server when the ask is created; never changes. */
+  confirm?: "passkey";
   /** The thread is resolved. */
   closed: boolean;
 };
@@ -324,6 +338,7 @@ type AskRow = {
   recommended: string | null;
   addressees: string;
   answer: string | null;
+  confirm: string | null;
   status: string;
 };
 type TargetRow = {
@@ -348,6 +363,7 @@ const askOf = (r: AskRow): StoredAsk => ({
       }
     : {}),
   to: JSON.parse(r.addressees) as StoredParty[],
+  ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.answer
     ? { answer: JSON.parse(r.answer) as NonNullable<StoredAsk["answer"]> }
     : {}),
@@ -364,7 +380,7 @@ function attachExtras(
   const ids = JSON.stringify(threadIds);
   const byId = new Map(comments.map((c) => [c.id, c]));
   for (const r of sql.exec<AskRow>(
-    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, t.status
+    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, t.status
      from comment_asks a join comment_threads t on t.id = a.thread_id
      where a.thread_id in (select value from json_each(?))`,
     ids,
@@ -413,14 +429,15 @@ export function insertExtras(
 ): void {
   if (x.ask)
     sql.exec(
-      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees)
-       values (?, ?, ?, ?, ?, ?)`,
+      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees, confirm)
+       values (?, ?, ?, ?, ?, ?, ?)`,
       commentId,
       threadId,
       x.ask.question,
       JSON.stringify(x.ask.options),
       x.ask.recommended ? JSON.stringify(x.ask.recommended) : null,
       JSON.stringify(x.ask.to),
+      x.ask.confirm === "passkey" ? "passkey" : null,
     );
   const put = (kind: "mention" | "asker", p: StoredAgent) =>
     sql.exec(
@@ -737,6 +754,30 @@ export function refundThreadReply(
     );
 }
 
+/**
+ * #2197: gives back one notice for `key` when its target settled gone. The
+ * state move already makes this once-only, so `n` is refunded whatever order
+ * the targets settle in; the pacing timestamps roll back only while `at` is
+ * still the last (SET expressions read the old row).
+ */
+export function refundThreadReplyCount(
+  sql: SqlStorage,
+  threadId: string,
+  key: string,
+  at: string,
+): void {
+  sql.exec(
+    `update comment_reply_notices set n = n - 1,
+       last_at = case when last_at = ? then coalesce(prev_at, '0') else last_at end,
+       prev_at = case when last_at = ? then null else prev_at end
+     where thread_id = ? and key = ? and n > 0`,
+    at,
+    at,
+    threadId,
+    key,
+  );
+}
+
 /** Sets one mention's state. */
 export function setTargetState(
   sql: SqlStorage,
@@ -804,11 +845,86 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (!c) return;
   const open = sql
     .exec(
-      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state != 'gone' limit 1",
+      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state not in ('gone', 'withdrawn') limit 1",
       commentId,
     )
     .toArray();
   if (open.length === 0) refundAsker(sql, c.threadId, c.at);
+}
+
+/** #2240: the ask comments of a thread with their authors (to find an agent's own asks). */
+export function askAuthors(
+  sql: SqlStorage,
+  threadId: string,
+): { commentId: string; author: StoredActor }[] {
+  return sql
+    .exec<{ id: string; author: string }>(
+      "select c.id as id, c.author as author from comment_asks a join comments c on c.id = a.comment_id where a.thread_id = ? order by c.rowid",
+      threadId,
+    )
+    .toArray()
+    .map((r) => ({
+      commentId: r.id,
+      author: JSON.parse(r.author) as StoredActor,
+    }));
+}
+
+/** #2175: this thread's comments with a target for `key` still held (queued) or expired by the Worker (gone; the hub may still hold it): what to ask the hub about. */
+export function heldTargets(
+  sql: SqlStorage,
+  threadId: string,
+  key: string,
+): { commentId: string; kind: "mention" | "asker" | "reply" }[] {
+  return sql
+    .exec<{ commentId: string; kind: "mention" | "asker" | "reply" }>(
+      "select comment_id as commentId, kind from comment_targets where thread_id = ? and key = ? and state in ('queued', 'gone') order by rowid",
+      threadId,
+      key,
+    )
+    .toArray();
+}
+
+/**
+ * #2175: marks the targets the hub withdrew "withdrawn" (only while still
+ * queued or gone, so a delivered or seen one stays) and gives back their spends: an asker
+ * notice like one that never reached the agent, a thread reply's per key.
+ */
+export function withdrawTargets(
+  sql: SqlStorage,
+  threadId: string,
+  key: string,
+  targets: { commentId: string; kind: "mention" | "asker" | "reply" }[],
+): void {
+  const askers = new Set<string>();
+  const move = (t: { commentId: string; kind: string }, from: string) =>
+    sql.exec(
+      "update comment_targets set state = 'withdrawn' where comment_id = ? and kind = ? and key = ? and thread_id = ? and state = ?",
+      t.commentId,
+      t.kind,
+      key,
+      threadId,
+      from,
+    ).rowsWritten > 0;
+  for (const t of targets) {
+    // A target the Worker already gave up on ("gone") was refunded then: it
+    // becomes withdrawn without a second refund.
+    if (!move(t, "queued")) {
+      move(t, "gone");
+      continue;
+    }
+    if (t.kind === "asker") askers.add(t.commentId);
+    else if (t.kind === "reply") {
+      const c = sql
+        .exec<{ at: string }>(
+          "select created_at as at from comments where id = ?",
+          t.commentId,
+        )
+        .toArray()[0];
+      if (c) refundThreadReply(sql, threadId, [key], c.at);
+    }
+  }
+  // After every target moved, so the order the hub names them in is moot.
+  for (const id of askers) refundAskerIfAllGone(sql, id);
 }
 
 /** Drops the ask and targets of comments (`commentId`, or every comment of `threadId`). */
@@ -845,7 +961,7 @@ export function askRow(
 ): { ask: StoredAsk; status: string } | null {
   const r = sql
     .exec<AskRow & { status: string }>(
-      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, t.status
+      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, t.status
        from comment_asks a join comment_threads t on t.id = a.thread_id
        where a.comment_id = ? and a.thread_id = ?`,
       commentId,
