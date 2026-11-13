@@ -182,7 +182,7 @@ it("the owner's summary: counts, and Transfer for a guest who owns artifacts", a
   );
 });
 
-it("direct sign-in (not Access-only) and hosted: no notices", async () => {
+it("direct login (not Access-only) and hosted: no notices", async () => {
   mountHosted("/", { selfHosted: true, mode: "direct", guestShares: 2 });
   await screen.findAllByText("Landing page");
   expect(screen.queryByRole("list", { name: SHARES })).toBeNull();

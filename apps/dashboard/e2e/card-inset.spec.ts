@@ -106,7 +106,7 @@ for (const width of [1280, 390]) {
     // Cursor keeps its tab there, with an OAuth note in place of code.
     await page.getByRole("tab", { name: "Cursor" }).click();
     await expect(
-      page.getByText("Cursor signs in with OAuth, so it doesn't need a token."),
+      page.getByText("Cursor logs in with OAuth, so it doesn't need a token."),
     ).toBeVisible();
     expect(await misaligned(page, inset(width))).toEqual([]);
     // The agent's Revoke… is in its ••• menu; the token's is a button.

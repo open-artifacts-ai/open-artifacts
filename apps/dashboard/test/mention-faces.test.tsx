@@ -204,7 +204,7 @@ describe("#1890 an ask's addressees", () => {
     expect(to.textContent).toContain("OA Product");
     expect(to.textContent).toContain("Claude Code");
   });
-  it("an outsider's payload (agents without face fields) adds no To line, signed in or not", async () => {
+  it("an outsider's payload (agents without face fields) adds no To line, logged in or not", async () => {
     serve([
       { kind: "agent", id: "agent:x", name: "Leo's agent", me: false },
       { kind: "user", id: "u", name: "Bea", me: false },

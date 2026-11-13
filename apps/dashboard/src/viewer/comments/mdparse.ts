@@ -384,3 +384,27 @@ export function parseInlineOnly(body: string): Inline[] {
     out.push({ t: "text", s: body.slice(MAX_INPUT) });
   return out;
 }
+
+/**
+ * #2348: the host to show after a link's label on a touch screen, or null when
+ * the label is the URL itself or names the link's exact host as a whole domain
+ * token (NFKC, case-insensitive, with or without www). "box.com" does not hide
+ * x.co, and "x.co.evil.com" does not hide x.co.
+ */
+export function hostAfterLabel(href: string, label: string): string | null {
+  let host: string;
+  try {
+    host = new URL(href).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+  if (!host || label === href) return null;
+  const text = label.normalize("NFKC").toLowerCase();
+  const esc = host.normalize("NFKC").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Domain chars are letters, digits, dots and hyphens: a token ends at any other.
+  const named = new RegExp(
+    `(?<![\\p{L}\\p{N}.-])(?:www\\.)?${esc}(?![\\p{L}\\p{N}-])(?!\\.[\\p{L}\\p{N}])`,
+    "u",
+  );
+  return named.test(text) ? null : host;
+}

@@ -40,7 +40,7 @@ export function contentViewer(
 ): ContentViewer | null {
   if (!uid) return null;
   if (epoch == null)
-    throw new Error("content_revocation: a signed-in viewer needs an epoch");
+    throw new Error("content_revocation: a logged-in viewer needs an epoch");
   return { uid, epoch };
 }
 

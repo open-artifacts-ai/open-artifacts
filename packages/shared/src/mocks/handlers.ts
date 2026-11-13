@@ -73,6 +73,7 @@ import {
   MemberPatchSchema,
   MePatchSchema,
   OAuthClientPatchSchema,
+  type Onboarding,
   OnboardingPatchSchema,
   PublishInputSchema,
   resolveDataWriters,
@@ -113,6 +114,8 @@ export type MockOptions = {
   commentsRateLimit?: number;
   /** Seed an open ask for the caller on "Landing page" (#1535). */
   commentAsks?: boolean;
+  /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
+  commentPasskey?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
   commentAgents?: boolean;
   /** #2019: the "Landing page" artifact is an image (or a pdf) with pins on it. */
@@ -378,7 +381,15 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const clients = f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
   // R.onboarding: install-wide, the owner only (anyone else 404).
-  const onboarding = { dismissed: false, completed: false };
+  const onboarding: Onboarding = {
+    dismissed: false,
+    completed: false,
+    welcomeId: null,
+    welcomeOpened: false,
+    agentConnected: false,
+    firstArtifact: null,
+    commented: false,
+  };
   if (opts.bus) {
     me.canConnect = true;
     me.busOn = true;
@@ -622,7 +633,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
           guestBarred(target, request)
         )
-          return err("comments_signed_in_only", "Sign in to comment.");
+          return err("comments_signed_in_only", "Log in to comment.");
       }
       const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       const path = new URL(request.url).pathname.replace(/^.*\/api\/v1/, "");
@@ -662,6 +673,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     emit: (id, open) => opts.events?.emitComments(id, open),
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
+    passkeyMode: opts.commentPasskey,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
     seedPins: opts.commentPins,

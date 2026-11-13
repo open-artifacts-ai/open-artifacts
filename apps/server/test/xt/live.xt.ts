@@ -41,7 +41,7 @@ const live_ = process.env.XT_LIVE === "1";
 let A: Install;
 let B: Install;
 
-describe.runIf(live_)("sign-in negative catalog (live)", () => {
+describe.runIf(live_)("login negative catalog (live)", () => {
   beforeAll(async () => {
     A = live(stagingOrigin(need("XT_A")), stagingOrigin(need("XT_A_CONTENT")));
     B = live(stagingOrigin(need("XT_B")), stagingOrigin(need("XT_B_CONTENT")));

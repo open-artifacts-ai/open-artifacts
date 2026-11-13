@@ -81,11 +81,11 @@ describe("share recipient reach (review item 37)", () => {
     expect(s.recipient).toEqual({ canSignIn: false, reason: "needs_invite" });
     const m = sent.find((x) => x.to === email);
     expect(m?.text).toMatch(
-      /You can't sign in to .+ yet\. Ask an admin there to invite you, then open this link again\./,
+      /You can't log in to .+ yet\. Ask an admin there to invite you, then open this link again\./,
     );
     for (const part of [m?.text, m?.html]) {
       expect(part).not.toContain("one-time code");
-      expect(part).not.toContain("sign in with");
+      expect(part).not.toContain("log in with");
     }
   });
 
@@ -102,13 +102,13 @@ describe("share recipient reach (review item 37)", () => {
     const s = await share(email);
     expect(s.recipient).toBeUndefined();
     expect(sent.find((x) => x.to === email)?.text).toContain(
-      `You'll sign in with a one-time code sent to ${email}.`,
+      `You'll log in with a one-time code sent to ${email}.`,
     );
   });
 
   /** Design's copy for outside_domains and no_sign_in_method (#799). */
   const NO_ADDRESS =
-    /This address can't sign in to .+\. Ask .+ to share it with an address that can\./;
+    /This address can't log in to .+\. Ask .+ to share it with an address that can\./;
 
   it("Google only, outside the domain: outside_domains, and the email says so", async () => {
     const { share, sent } = await setup(direct, {
@@ -162,16 +162,16 @@ describe("share recipient reach (review item 37)", () => {
     const email = uniq("sec", "secondary.com");
     expect((await share(email)).recipient).toBeUndefined();
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("You'll sign in with your Google account.");
-    expect(m?.text).not.toContain("can't sign in");
+    expect(m?.text).toContain("You'll log in with your Google account.");
+    expect(m?.text).not.toContain("can't log in");
   });
 
-  it("self-hosted direct with domain join: in-domain non-member signs in with Google, no flag", async () => {
+  it("self-hosted direct with domain join: in-domain non-member logs in with Google, no flag", async () => {
     const { share, sent } = await setup(direct, {});
     const email = uniq("in", "a.com");
     expect((await share(email)).recipient).toBeUndefined();
     expect(sent.find((x) => x.to === email)?.text).toContain(
-      "You'll sign in with your Google account.",
+      "You'll log in with your Google account.",
     );
   });
 
@@ -195,7 +195,7 @@ function namesExactly(text: string | undefined, methods: readonly string[]) {
       (t: string) => t.includes(phrase) === methods.includes(m),
     );
   expect(text ?? "").toSatisfy(
-    (t: string) => t.includes("can't sign in") === (methods.length === 0),
+    (t: string) => t.includes("can't log in") === (methods.length === 0),
   );
 }
 

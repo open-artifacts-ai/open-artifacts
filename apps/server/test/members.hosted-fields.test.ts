@@ -107,7 +107,7 @@ const list = async (e: Env, query = "") => {
 };
 const byId = (ms: Member[], id: string) => ms.find((m) => m.id === id);
 
-describe("GET /members on a direct-sign-in install", () => {
+describe("GET /members on a direct-login install", () => {
   it("every row carries status, identities and restriction", async () => {
     const ms = await list(DIRECT);
     const g = group;

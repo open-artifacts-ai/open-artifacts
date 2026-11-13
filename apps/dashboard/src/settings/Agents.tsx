@@ -123,7 +123,7 @@ function SnippetTabs({
         >
           {!s ? (
             <p className={muted}>
-              {agent} signs in with OAuth, so it doesn't need a token.
+              {agent} logs in with OAuth, so it doesn't need a token.
             </p>
           ) : (
             <>

@@ -128,7 +128,7 @@ describe("capabilities", () => {
 });
 
 describe("data routes", () => {
-  it("round trip for a signed-in viewer, attributed u:{id}", async () => {
+  it("round trip for a logged-in viewer, attributed u:{id}", async () => {
     const id = await pub({ visibility: "team" });
     const s = await put(id, viewer, "a", { n: 1 });
     expect(s.status).toBe(200);

@@ -10,9 +10,9 @@ import { installHarness, mount, server } from "./harness";
 installHarness();
 
 const EMAIL =
-  "Email sign-in is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so sign-in codes aren't offered. Set up email sending, or turn email sign-in off.";
+  "Email login is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so login codes aren't offered. Set up email sending, or turn email login off.";
 const GOOGLE =
-  "Google sign-in is on, but GOOGLE_CLIENT_ID isn't set. Set it, or turn Google sign-in off.";
+  "Google login is on, but GOOGLE_CLIENT_ID isn't set. Set it, or turn Google login off.";
 
 const withProblems = (problems?: string[]) =>
   server.use(
@@ -34,7 +34,7 @@ const withProblems = (problems?: string[]) =>
 it("the owner sees each problem verbatim on Instance settings", async () => {
   withProblems([EMAIL, GOOGLE]);
   mount("/settings/instance");
-  expect(await screen.findByText("Sign-in needs attention.")).toBeVisible();
+  expect(await screen.findByText("Login needs attention.")).toBeVisible();
   const items = [EMAIL, GOOGLE].map((t) => screen.getByText(t));
   for (const li of items) expect(li.tagName).toBe("LI");
 });
@@ -43,21 +43,21 @@ it("no note when the list is empty or absent", async () => {
   withProblems([]);
   mount("/settings/instance");
   expect(await screen.findByLabelText("Instance name")).toBeVisible();
-  expect(screen.queryByText("Sign-in needs attention.")).toBeNull();
+  expect(screen.queryByText("Login needs attention.")).toBeNull();
 });
 
 it("no note for an older server that sends no list", async () => {
   withProblems(undefined);
   mount("/settings/instance");
   expect(await screen.findByLabelText("Instance name")).toBeVisible();
-  expect(screen.queryByText("Sign-in needs attention.")).toBeNull();
+  expect(screen.queryByText("Login needs attention.")).toBeNull();
 });
 
 it("codes without Turnstile (parity A4) show under the same heading", async () => {
   const TURNSTILE =
-    "Sign-in codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
+    "Login codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
   withProblems([TURNSTILE]);
   mount("/settings/instance");
-  expect(await screen.findByText("Sign-in needs attention.")).toBeVisible();
+  expect(await screen.findByText("Login needs attention.")).toBeVisible();
   expect(screen.getByText(TURNSTILE).tagName).toBe("LI");
 });

@@ -40,7 +40,7 @@ for (const theme of ["light", "dark"]) {
     expect(await colW(page)).toBe(300);
     await shot(page, `1280-${theme}-min-focus`);
     await page.keyboard.press("End");
-    expect(await colW(page)).toBe(560);
+    expect(await colW(page)).toBe(800);
     await shot(page, `1280-${theme}-max`);
     await page.keyboard.press("Enter");
     await page.mouse.move(2, 2);
@@ -49,7 +49,7 @@ for (const theme of ["light", "dark"]) {
   });
   test(`960 ${theme}: max`, async ({ page }) => {
     await open(page, 960, theme, "560");
-    expect(await colW(page)).toBe(360);
+    expect(await colW(page)).toBe(480);
     await shot(page, `960-${theme}-max`);
   });
   test(`drag ${theme}`, async ({ page }) => {

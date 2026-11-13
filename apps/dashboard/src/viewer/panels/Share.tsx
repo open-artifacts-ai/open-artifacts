@@ -70,7 +70,7 @@ const writersHint = (w: DataWriters, v: Visibility) =>
   w === "editors"
     ? "Only you and people who can edit it."
     : v === "public"
-      ? "Anyone with the link, signed in or not."
+      ? "Anyone with the link, logged in or not."
       : "Anyone who can view it.";
 
 const CAPS = [
@@ -132,18 +132,18 @@ function RecipientLine({
   return reason === "needs_invite" ? (
     admin ? (
       <>
-        {email} can't sign in until they're a member.{" "}
+        {email} can't log in until they're a member.{" "}
         <AppLink href={MEMBERS_PAGE} className="underline">
           Invite them
         </AppLink>
       </>
     ) : (
-      `${email} can't sign in until they're a member. Ask an admin to invite them.`
+      `${email} can't log in until they're a member. Ask an admin to invite them.`
     )
   ) : reason === "outside_domains" ? (
-    `${email} can't sign in here, so they can't open this. Share with an address at ${domains} instead.`
+    `${email} can't log in here, so they can't open this. Share with an address at ${domains} instead.`
   ) : (
-    `No sign-in method here fits ${email}, so they can't open this. Share with another address.`
+    `No login method here fits ${email}, so they can't open this. Share with another address.`
   );
 }
 
@@ -458,13 +458,13 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 <p>
                   {shared.emailed
                     ? shared.with
-                      ? `We emailed them a link. They'll sign in with ${shared.with}.`
-                      : "We emailed them a link. They'll sign in with a one-time code."
+                      ? `We emailed them a link. They'll log in with ${shared.with}.`
+                      : "We emailed them a link. They'll log in with a one-time code."
                     : artifact.visibility === "public"
-                      ? "Send them this link. They can open it without signing in."
+                      ? "Send them this link. They can open it without logging in."
                       : shared.with
-                        ? `Send them this link. They'll sign in with ${shared.with}.`
-                        : "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact."}
+                        ? `Send them this link. They'll log in with ${shared.with}.`
+                        : "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact."}
                 </p>
                 {/* emailed:false with email on is not a failure here: members and
                   re-shares are never emailed, so there's no "didn't send" line. */}
@@ -741,8 +741,8 @@ function CommentsChoice({
         },
         {
           mode: "signed-in",
-          label: "Signed-in people",
-          hint: "Visitors who aren't signed in can read comments but not add them.",
+          label: "Logged-in people",
+          hint: "Visitors who aren't logged in can read comments but not add them.",
           patch: { comments: "signed-in" },
         },
         {

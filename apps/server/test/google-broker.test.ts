@@ -16,7 +16,13 @@ import { googleProvider } from "../src/auth/providers/google.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import { b64urlEncode } from "../src/util/crypto.js";
-import { CID, direct, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
+import {
+  CID,
+  direct,
+  seedUser,
+  TEST_BROKER_KEY,
+  uniq,
+} from "./auth-helpers.js";
 import { type FakeGoogle, fakeGoogle } from "./fixtures/fake-google.js";
 
 // P2 Task 11, install side: Google through the hosted broker. The real broker
@@ -160,6 +166,39 @@ describe("Google through the broker", () => {
     });
     // Google saw the broker's secret, never the install's.
     expect(g.tokenCalls.at(-1)?.get("client_secret")).toBe("broker-secret");
+  });
+
+  it("hosted: the owner's sign-in seeds one Welcome, and a second sign-in adds none (#2287)", async () => {
+    await env.DB.prepare(
+      "delete from settings where key = 'onboarding:welcome'",
+    ).run();
+    await env.DB.prepare("delete from artifacts").run();
+    const email = uniq("welcome-own");
+    const id = await seedUser(email, "owner", { googleSub: `b-${email}` });
+    const e = installEnv(undefined, { HOSTED: "1" });
+    const rows = () =>
+      env.DB.prepare(
+        "select id from artifacts where owner_id = ? and title = 'Welcome'",
+      )
+        .bind(id)
+        .all();
+    for (let n = 0; n < 2; n++) {
+      const b = await begin(e);
+      const code = g.issueCode(
+        { nonce: b.nonce, email, sub: `b-${email}` },
+        b.challenge,
+      );
+      const back = await broker.fetch(
+        new Request(
+          `${BROKER}/google/callback?code=${code}&state=${encodeURIComponent(b.bstate)}`,
+        ) as never,
+        brokerEnv,
+      );
+      const u = new URL(loc(back));
+      const r = await get(e, `${AUTH.callbackGoogle}${u.search}`, b.cookie);
+      expect(loc(r)).toBe("/a/x");
+      expect((await rows()).results).toHaveLength(1);
+    }
   });
 
   it("break-glass reauth (P3 T18) through the broker: max_age=0 at Google; a recent auth_time marks the session", async () => {
@@ -352,7 +391,7 @@ describe("Google through the broker", () => {
     ).toBe(false);
   });
 
-  it("a broker refusal (401) is a failed sign-in", async () => {
+  it("a broker refusal (401) is a failed login", async () => {
     const e = installEnv(async () =>
       Response.json({ error: "unauthorized" }, { status: 401 }),
     );
@@ -397,7 +436,7 @@ describe("Google through the broker", () => {
     });
   });
 
-  it("a broker state from another flow (hash mismatch) is a failed sign-in", async () => {
+  it("a broker state from another flow (hash mismatch) is a failed login", async () => {
     const e = installEnv();
     const victim = await begin(e);
     const other = await begin(e);
@@ -480,7 +519,7 @@ describe("hosted: the redeem through the dispatch props (AUTH_BROKER)", () => {
       .map((c) => new Request(c[0] as RequestInfo, c[1]).url)
       .filter((u) => u.startsWith(BROKER));
 
-  it("signs in with only POST /google/redeem through the capability, never HTTPS", async () => {
+  it("logs in with only POST /google/redeem through the capability, never HTTPS", async () => {
     const e = hosted();
     const b = await begin(e);
     const search = await toInstall(b);

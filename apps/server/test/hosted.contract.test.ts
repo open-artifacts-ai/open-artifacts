@@ -637,7 +637,7 @@ describe("KNOWN_GAPS", () => {
 
 // The fixture world seeds and the driver signs in, without any case.
 describe("server driver", () => {
-  it("seeds the fixture world and signs in as the owner", async () => {
+  it("seeds the fixture world and logs in as the owner", async () => {
     await fresh({ hosted: true });
     const me = (await (await call("GET", R.me)).json()) as {
       user: { id: string };

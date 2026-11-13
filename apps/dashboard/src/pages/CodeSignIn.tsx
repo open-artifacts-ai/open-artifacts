@@ -352,7 +352,7 @@ export function CodeSignIn({
           Check your email
         </h2>
         <p style={{ margin: "0 0 4px", color: "var(--oa-text-2)" }}>
-          If {pending.maskedEmail} can sign in here, we sent it a code.
+          If {pending.maskedEmail} can log in here, we sent it a code.
         </p>
         <p
           style={{
@@ -471,9 +471,9 @@ export function CodeSignIn({
 
 /** Codes are off on this instance: the copy depends on whether Google is a way in. */
 const CODES_OFF =
-  "Sign-in by email code isn't available right now. Ask your admin for help.";
+  "Login by email code isn't available right now. Ask your admin for help.";
 const CODES_OFF_GOOGLE =
-  "Sign-in by email code isn't available right now. Use Continue with Google, or ask your admin.";
+  "Login by email code isn't available right now. Use Continue with Google, or ask your admin.";
 
 /** `details.field`, when the server named one. */
 function fieldOf(details: unknown): string | null {

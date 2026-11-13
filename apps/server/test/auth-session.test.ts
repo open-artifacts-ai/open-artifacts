@@ -218,7 +218,7 @@ describe("session middleware", () => {
 describe("SESSION_SECRET shorter than 32 characters", () => {
   const short = { ...env, SESSION_SECRET: "s".repeat(20) } as Env;
 
-  it("still signs in on the DERIVED key (no raw fallback, no 500)", async () => {
+  it("still logs in on the DERIVED key (no raw fallback, no 500)", async () => {
     const { userId } = await login("t2-short@a.com");
     const v = await signSession(short, userId, Date.now(), {
       provider: "access",

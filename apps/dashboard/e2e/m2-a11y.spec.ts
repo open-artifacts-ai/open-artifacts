@@ -282,7 +282,7 @@ test("keyboard: role select, invite dialog and remove confirm without a mouse", 
   await page.keyboard.press("Enter");
   // #167: the dialog confirms with the sign-in link before closing.
   await expect(
-    dlg.getByRole("heading", { name: "kbd@example.com can now sign in" }),
+    dlg.getByRole("heading", { name: "kbd@example.com can now log in" }),
   ).toBeVisible();
   await dlg.getByRole("button", { name: "Done" }).focus();
   await page.keyboard.press("Enter");

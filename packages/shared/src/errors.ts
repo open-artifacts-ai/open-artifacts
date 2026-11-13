@@ -63,6 +63,7 @@ export const ERROR_CODES = [
   "comments_off",
   "comments_signed_in_only",
   "forbidden",
+  "business_contact_only",
   // Passkey-confirmed picks (#2263).
   "no_passkey",
   "passkey_cooling",
@@ -185,6 +186,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   /** #2080: a signed-out caller wrote a comment where only signed-in people may. */
   comments_signed_in_only: 403,
   forbidden: 403,
+  /** #2404: Business has no self-serve checkout; a new Business checkout is refused. Contact us instead. */
+  business_contact_only: 409,
   /** #2263: the caller has no passkey registered (a challenge cannot be issued). */
   no_passkey: 409,
   /** #2263: every passkey the caller has is younger than 24 hours. */
@@ -256,9 +259,9 @@ export const INVITE_UNREACHABLE_MESSAGE: Record<
   string
 > = {
   outside_domains:
-    "This address can't sign in to this workspace. Share artifacts with them as a guest instead.",
+    "This address can't log in to this workspace. Share artifacts with them as a guest instead.",
   no_sign_in_method:
-    "This address can't sign in to this workspace with the sign-in methods it offers. Ask the owner to turn on one that admits it.",
+    "This address can't log in to this workspace with the login methods it offers. Ask the owner to turn on one that admits it.",
 };
 
 /** 400 unsupported_format message. */

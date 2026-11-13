@@ -99,7 +99,7 @@ it("pending_confirm: Add N people?, the domain, the expiry in your zone, Cancel 
     "Add 12 people?",
   );
   expect(h).toHaveTextContent(
-    "This adds 12 people from example.com as members. They can sign in with Google right away.",
+    "This adds 12 people from example.com as members. They can log in with Google right away.",
   );
   expect(h).toHaveTextContent(`Confirm by ${expiryText}, or connect again.`);
   expect(within(h).getByRole("button", { name: "Cancel" })).toBeVisible();
@@ -118,7 +118,7 @@ it("one person: singular throughout", async () => {
     "Add 1 person?",
   );
   expect(h).toHaveTextContent(
-    "This adds 1 person from example.com as a member. They can sign in with Google right away.",
+    "This adds 1 person from example.com as a member. They can log in with Google right away.",
   );
   expect(within(h).getByRole("button", { name: "Add 1 person" })).toBeVisible();
 });
@@ -280,7 +280,7 @@ it("a different Workspace: the warning callout above the body", async () => {
     .closest("[data-slot=alert]") as HTMLElement;
   expect(callout).toHaveAttribute("role", "status");
   expect(callout).toHaveTextContent(
-    "People who signed in through old.example won't carry over and stay signed out. People in example.com are linked when you confirm.",
+    "People who logged in through old.example won't carry over and stay logged out. People in example.com are linked when you confirm.",
   );
   const body = within(h).getByText(/^This adds 12 people/);
   // Above the body.
@@ -300,7 +300,7 @@ it("a different Workspace with no previous domain: 'the previous Workspace'", as
     },
   });
   expect(await status()).toHaveTextContent(
-    "People who signed in through the previous Workspace won't carry over and stay signed out. People in example.com are linked when you confirm.",
+    "People who logged in through the previous Workspace won't carry over and stay logged out. People in example.com are linked when you confirm.",
   );
 });
 

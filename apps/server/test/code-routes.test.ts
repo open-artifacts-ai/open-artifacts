@@ -325,7 +325,7 @@ describe("POST AUTH.codeVerify", () => {
     expect(setCookieLine(r, CODE_COOKIE)).toContain("Max-Age=0");
   });
 
-  it("#803: a sign-in sent with another user's valid cookie records no credential", async () => {
+  it("#803: a login sent with another user's valid cookie records no credential", async () => {
     const alice = await login(uniq("alice"));
     const guest = uniq("g", "x.com");
     await seedUser(guest, "guest");
@@ -712,7 +712,7 @@ describe("code routes: review fixes", () => {
     });
   }
 
-  it("an MCP OAuth popup signs in by code and completes consent", async () => {
+  it("an MCP OAuth popup logs in by code and completes consent", async () => {
     const W = "https://app.localhost";
     const REDIRECT = "http://localhost:3333/cb";
     const b64 = (b: ArrayBuffer | Uint8Array) =>
@@ -930,7 +930,7 @@ describe("a code re-request keeps the pending request id", () => {
 // Review item 36b: next (up to 512 bytes) plus a long address could push the
 // pending cookie past its own 1024-byte read limit, so verify said no_pending.
 describe("the pending cookie fits its read limit", () => {
-  it("a 60-character address with a 512-byte next signs in, next falls back to /", async () => {
+  it("a 60-character address with a 512-byte next logs in, next falls back to /", async () => {
     const base = uniq("l", "x.com");
     const at = base.indexOf("@");
     const guest = `${base.slice(0, at)}${"z".repeat(60 - base.length)}${base.slice(at)}`;

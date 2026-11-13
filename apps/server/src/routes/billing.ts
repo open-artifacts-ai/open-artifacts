@@ -117,6 +117,13 @@ export function mountBilling(app: AppType): void {
       c,
       BillingCheckoutInputSchema,
     );
+    // #2404: Business has no self-serve checkout, whatever the body says.
+    // Existing Business subscriptions still use the portal.
+    if (tier === "business")
+      throw new ApiError(
+        "business_contact_only",
+        "Business is by contact only. Contact us about Business.",
+      );
     // Solo prices are for a Solo instance: a Team or Business instance
     // can't buy them (409, as a state conflict, not a bad body).
     if (tier === "solo") {

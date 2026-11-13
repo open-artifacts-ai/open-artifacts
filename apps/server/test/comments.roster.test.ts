@@ -435,7 +435,7 @@ describe("@ menu: per-session state, last active and machine", () => {
     }
   });
 
-  it("a guest or signed-out viewer gets no machine and no last active", async () => {
+  it("a guest or logged-out viewer gets no machine and no last active", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
     const t = new Date().toISOString();

@@ -370,7 +370,7 @@ describe("landing sections", () => {
     expect(index).toMatch(/<section[^>]*id="self-host"/);
     for (const step of [
       "Tell your agent",
-      "Sign in to Cloudflare",
+      "Log in to Cloudflare",
       "Publish and share",
     ])
       expect(index).toContain(`<h3>${step}</h3>`);

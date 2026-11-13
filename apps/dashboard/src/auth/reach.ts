@@ -15,7 +15,7 @@ export const orList = (list: readonly string[]) =>
     : `${list.slice(0, -1).join(", ")} or ${list[list.length - 1]}`;
 
 /** Only Google lists the sign-in domains; without it, a generic phrase. */
-const ANY_DOMAIN = "your sign-in domains";
+const ANY_DOMAIN = "your login domains";
 
 /** The org's sign-in domains as one phrase, from GET AUTH.providers. */
 export function useSignInDomains(): string {
@@ -33,12 +33,12 @@ export const inviteRefusedCopy = (
   domains: string,
 ) =>
   reason === "outside_domains"
-    ? `${email} can't sign in here. Only addresses at ${domains} can. Use one of those addresses.`
-    : `No sign-in method here fits ${email}. Use another address, or ask the owner to add a sign-in method.`;
+    ? `${email} can't log in here. Only addresses at ${domains} can. Use one of those addresses.`
+    : `No login method here fits ${email}. Use another address, or ask the owner to add a login method.`;
 
 /** 201 with signIn "uncertain": the invite stands, but warn (inline, under its heading). */
 export const inviteUncertainCopy = (email: string, domains: string) =>
-  `${email} is outside ${domains}, so they may not be able to sign in. If they can't, invite an address at ${domains}.`;
+  `${email} is outside ${domains}, so they may not be able to log in. If they can't, invite an address at ${domains}.`;
 
 // The email's phrases (server signInSentence), about the recipient.
 const METHOD_PHRASE: Record<SignInProviderId, string> = {

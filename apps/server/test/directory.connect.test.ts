@@ -348,7 +348,7 @@ describe("hosted", () => {
     expect((await get(e, R.directory, m.cookie)).status).toBe(404);
   });
 
-  it("under a plan lock a member's sign-in applies no group diff (frozen); unlocked it does", async () => {
+  it("under a plan lock a member's login applies no group diff (frozen); unlocked it does", async () => {
     const email = uniq("dir-signin");
     const uid = await seedUser(email, "member");
     const sub = `g-${crypto.randomUUID()}`;
@@ -417,7 +417,7 @@ describe("hosted", () => {
     expect(await inGroup()).toBe(true);
   });
 
-  it("after Business to Solo, a user suspended in Google is still refused at sign-in (frozen keeps the checks)", async () => {
+  it("after Business to Solo, a user suspended in Google is still refused at login (frozen keeps the checks)", async () => {
     const email = uniq("dir-solo-signin");
     const uid = await seedUser(email, "member");
     const sub = `g-${crypto.randomUUID()}`;

@@ -1,6 +1,10 @@
 // The plan prices (#2237), in cents: one table for the dashboard's cards and
 // the seat dialog's total. Team and Business are per creator. The charge itself
 // is Stripe's price; this is what we display.
+/** Where "Contact us" about Business goes (#2404). A mailto for now; it switches to the signup.open-artifacts.app/contact form when OA Self-Serve says it is live. */
+export const BUSINESS_CONTACT_URL =
+  "mailto:hello@open-artifacts.com?subject=Open%20Artifacts%20Business";
+
 export type PricedTier = "solo" | "team" | "business";
 export type PriceInterval = "month" | "year";
 

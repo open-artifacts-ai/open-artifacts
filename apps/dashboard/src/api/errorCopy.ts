@@ -27,7 +27,7 @@ const COPY: Partial<Record<ErrorCode, string>> = {
   binary_entry:
     "This file isn't text, so it can't open as a web page, Markdown or code. Check that its file extension matches what it is.",
   reauth_required:
-    "For your security, sign in with Google again to manage the directory.",
+    "For your security, log in with Google again to manage the directory.",
 };
 
 /** Billing's wording; `owner` swaps "ask your instance owner" for the action. */

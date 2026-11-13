@@ -244,7 +244,7 @@ describe("anonId issuance", () => {
     expect(ba).toMatch(BY_RE);
   });
 
-  it("signed-in callers are unchanged: no token, updatedBy u:{id}", async () => {
+  it("logged-in callers are unchanged: no token, updatedBy u:{id}", async () => {
     const id = await optIn();
     const token = await mintToken(id);
     const r = await api(app, R.dataDoc(id, "c", "s"), owner.cookie, {

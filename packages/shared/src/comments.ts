@@ -299,6 +299,13 @@ export const AnswerBodySchema = z.object({
 });
 export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 
+/** POST R.commentAnswerChallenge response (#2263): WebAuthn PublicKeyCredentialRequestOptionsJSON. */
+export const AnswerChallengeSchema = z.object({
+  options: z.object({ challenge: z.string() }).passthrough(),
+  expiresAt: z.string(),
+});
+export type AnswerChallenge = z.infer<typeof AnswerChallengeSchema>;
+
 /** GET R.artifactAgents: the agents that follow or publish to the artifact. */
 export const ArtifactAgentSchema = z.object({
   key,

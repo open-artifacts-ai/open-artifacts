@@ -87,11 +87,11 @@ describe("Add member dialog", () => {
       const dialog = await open();
       if (mode === "disabled")
         expect(dialog).toHaveTextContent(
-          "Open Artifacts doesn't send invitations. Add their email here, then send them the sign-in link yourself.",
+          "Open Artifacts doesn't send invitations. Add their email here, then send them the login link yourself.",
         );
       else
         expect(dialog).toHaveTextContent(
-          `We'll email them a link to ${INSTANCE}. They'll sign in with a one-time code.`,
+          `We'll email them a link to ${INSTANCE}. They'll log in with a one-time code.`,
         );
       const done = await add(dialog);
       if (mode === "sent") {
@@ -101,22 +101,22 @@ describe("Add member dialog", () => {
           }),
         ).toBeInTheDocument();
         expect(done).toHaveTextContent(
-          `They can also sign in at ${location.origin} with a one-time code.`,
+          `They can also log in at ${location.origin} with a one-time code.`,
         );
       } else {
         expect(
           within(done).getByRole("heading", {
-            name: "new@example.com can now sign in",
+            name: "new@example.com can now log in",
           }),
         ).toBeInTheDocument();
         expect(done).toHaveTextContent(
-          `Send them this link. They'll sign in at ${location.origin} with a one-time code sent to that address.`,
+          `Send them this link. They'll log in at ${location.origin} with a one-time code sent to that address.`,
         );
       }
       if (mode === "failed") expect(done).toHaveTextContent(FAILED);
       else expect(done).not.toHaveTextContent(FAILED);
       expect(
-        within(done).getByRole("textbox", { name: "Sign-in link" }),
+        within(done).getByRole("textbox", { name: "Login link" }),
       ).toHaveValue(location.origin);
     });
 });
@@ -131,9 +131,9 @@ describe("Share panel", () => {
   const WILL_EMAIL =
     "We'll email them a link. You can also copy it and send it yourself.";
   const EMAILED =
-    "We emailed them a link. They'll sign in with a one-time code.";
+    "We emailed them a link. They'll log in with a one-time code.";
   const SEND_LINK =
-    "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact.";
+    "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact.";
 
   for (const mode of MODES)
     it(`${mode}: hint and confirmation`, async () => {
