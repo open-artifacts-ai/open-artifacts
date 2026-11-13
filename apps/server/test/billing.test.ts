@@ -2059,7 +2059,7 @@ describe("Me.instance.billing and the billing routes", () => {
     ).not.toHaveProperty("interval");
   });
 
-  it("checkout team and business: yearly needs seats; interval and seats forwarded; bad bodies 400 before billing", async () => {
+  it("checkout team (business is refused, #2404): yearly needs seats; interval and seats forwarded; bad bodies 400 before billing", async () => {
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
     const post = (body: unknown) =>
       send(R.billingCheckout, owner.cookie, { method: "POST", body });
@@ -2089,15 +2089,21 @@ describe("Me.instance.billing and the billing routes", () => {
       interval: "year",
       seats: 7,
     });
-    expect((await post({ tier: "business", interval: "month" })).status).toBe(
-      200,
-    );
-    const last = calls.filter((c) => c.path === "/checkout").at(-1)?.body;
-    expect(last).toMatchObject({ plan: "business", interval: "month" });
-    expect(last).not.toHaveProperty("seats");
+    // #2404: Business has no self-serve checkout; billing is never called.
+    const beforeBiz = n();
+    for (const body of [
+      { tier: "business", interval: "month" },
+      { tier: "business", interval: "year", seats: 3 },
+      { tier: "business" },
+    ]) {
+      const r = await post(body);
+      expect(r.status).toBe(409);
+      expect(await errOf(r)).toMatchObject({ code: "business_contact_only" });
+    }
+    expect(n()).toBe(beforeBiz);
   });
 
-  it("checkout monthly team and business send this month's creator count, counted server side (#2123)", async () => {
+  it("checkout monthly team sends this month's creator count, counted server side (#2123)", async () => {
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
     const post = (body: unknown) =>
       send(R.billingCheckout, owner.cookie, { method: "POST", body });
@@ -2115,14 +2121,6 @@ describe("Me.instance.billing and the billing routes", () => {
       .run();
     expect((await post({ tier: "team" })).status).toBe(200);
     expect(last()).toMatchObject({ plan: "team", creators: 3 });
-    expect((await post({ tier: "business", interval: "month" })).status).toBe(
-      200,
-    );
-    expect(last()).toMatchObject({
-      plan: "business",
-      interval: "month",
-      creators: 3,
-    });
     // Yearly prepays seats; Solo is not per creator: neither sends creators.
     expect(
       (await post({ tier: "team", interval: "year", seats: 7 })).status,
@@ -2267,7 +2265,7 @@ describe("Me.instance.billing and the billing routes", () => {
     const checkout = () =>
       send(R.billingCheckout, owner.cookie, {
         method: "POST",
-        body: { tier: "business" },
+        body: { tier: "team" },
       });
     try {
       // Retry, then the session: 200, the same body twice, one backoff.

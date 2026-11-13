@@ -8,6 +8,7 @@ import {
   type BillingCheckoutInput,
   type BillingTier,
   BillingUrlSchema,
+  BUSINESS_CONTACT_URL,
   type PlanView,
   R,
 } from "@oa/shared";
@@ -190,10 +191,6 @@ export function Plan() {
       </div>
     );
   }
-  // #2150: only with a binding (the server also sends owners and admins alone).
-  const dir =
-    state.status === "authed" ? state.me.instance.directory : undefined;
-  const pendingReverts = dir?.bound ? (dir.pendingReverts ?? 0) : 0;
   const { pill, note } = planStatus(billing);
   const column = COLUMN[billing.tier];
   const solo = column === "solo";
@@ -284,18 +281,25 @@ export function Plan() {
               Manage billing
             </Button>
           ) : lapsedPaid ? (
-            (["team", "business"] as const).map((t) => (
-              <Button
-                key={t}
-                variant={t === billing.tier ? "default" : "outline"}
-                disabled={busy}
-                onClick={() => go.mutate({ tier: t })}
-              >
-                {t === billing.tier
-                  ? `Restart ${NAME[t]}`
-                  : `Switch to ${NAME[t]}`}
-              </Button>
-            ))
+            (["team", "business"] as const).map((t) =>
+              t === "business" ? (
+                // #2404: Business has no checkout; it is by contact only.
+                <Button key={t} variant="outline" asChild>
+                  <a href={BUSINESS_CONTACT_URL}>Contact us</a>
+                </Button>
+              ) : (
+                <Button
+                  key={t}
+                  variant={t === billing.tier ? "default" : "outline"}
+                  disabled={busy}
+                  onClick={() => go.mutate({ tier: t })}
+                >
+                  {t === billing.tier
+                    ? `Restart ${NAME[t]}`
+                    : `Switch to ${NAME[t]}`}
+                </Button>
+              ),
+            )
           ) : (
             <>
               {column === "solo" && soloPaid && (
@@ -354,7 +358,6 @@ export function Plan() {
         trial={billing.tier === "trial"}
         busy={busy}
         yearly={billing.yearlyTeamBusiness === true}
-        pendingReverts={pendingReverts}
         upgrade={
           operatorPlan || lapsedPaid
             ? undefined
