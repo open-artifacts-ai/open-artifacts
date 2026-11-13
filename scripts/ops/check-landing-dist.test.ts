@@ -209,18 +209,13 @@ describe("check-landing-dist", () => {
   it("finds the label inside inner tags, and checks that link too", () => {
     put(
       "index.html",
-      page(
-        '<a class="btn" href="#pricing"><span>Sign\n up</span></a>',
-      ),
+      page('<a class="btn" href="#pricing"><span>Sign\n up</span></a>'),
     );
     const r = run();
     expect(r.code).toBe(1);
     expect(r.out).toContain("Sign up link without a sign-up URL");
     expect(r.out).not.toContain('no "Sign up" link');
-    put(
-      "index.html",
-      page(`${LOGIN}${SIGNUP}<span>Sign up</span></a>`),
-    );
+    put("index.html", page(`${LOGIN}${SIGNUP}<span>Sign up</span></a>`));
     expect(run().code).toBe(0);
   });
   it("a Log in link must point at the same sign-up URL as the buttons", () => {
