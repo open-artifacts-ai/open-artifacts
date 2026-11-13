@@ -24,7 +24,7 @@ import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
-import { CommentsBody, PinBar } from "./comments/CommentsBody";
+import { CommentsBody, PinBar, PinBeside } from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -255,12 +255,16 @@ function Viewer({
     contentHash: versionInfo?.contentHash ?? null,
     getBridge,
     openSurface: () => openSurface.current(),
+    // #2019: a new pin's box opens beside its flag, except on a phone or full screen.
+    besideOk: surface !== "dialog",
+    viewerName: viewer?.name ?? viewer?.email ?? null,
   });
   // The card being read is a pin's: the phone sheet shortens so its pin stays
   // in view (#1657).
+  // #2019: so is a pin being placed on a phone: the flag stays in view while the box is typed in.
   const pinCard =
     cmt.threads.find((t) => t.id === cmt.active && t.anchor.kind === "pin")
-      ?.id ?? null;
+      ?.id ?? (cmt.draft && "pin" in cmt.draft ? "new-pin" : null);
   // #1783: a pin with replies needs the half height to show one.
   const pinReplies =
     (cmt.threads.find((t) => t.id === pinCard)?.comments.length ?? 0) > 1;
@@ -481,7 +485,7 @@ function Viewer({
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
       onCommentPositions: (p) => cmtRef.current.onPositions(p),
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
-      onCommentPin: (p) => cmtRef.current.onPin(p),
+      onCommentPin: (p, at) => cmtRef.current.onPin(p, at),
       onCommentEscape: () => cmtRef.current.onEscape(),
       onCommentSelection: (has) => cmtRef.current.onSelection(has),
       onCommentAway: () => cmtRef.current.onAway(),
@@ -755,6 +759,7 @@ function Viewer({
                 referrerPolicy="no-referrer"
                 allow="clipboard-write"
               />
+              {commentsOn && <PinBeside frame={el} />}
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||

@@ -64,6 +64,7 @@ import {
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
+import { isSuspended, pausedResponse } from "../services/suspend.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
 import { renderApprove, renderApproved, renderEntry } from "./approve-page.js";
@@ -95,6 +96,8 @@ export const RL_KEYS = {
   codeIp: "bus-code:ip:",
   /** PUT and DELETE of roles and links (#1358), per signed-in member. */
   write: "bus-write:u:",
+  /** GET /bus/connect, per client IP (IPv6 per /64), before the token lookup (#2359). */
+  connect: "bus-conn:ip:",
 } as const;
 
 /** Outstanding (unexpired) device codes per install; a new code past it is 429. */
@@ -163,8 +166,9 @@ async function limited(
   env: Env,
   key: string,
   retryAfterSec = 60,
+  binding: RateLimit | undefined = env.RL_ANON,
 ): Promise<Response | null> {
-  const rl = env.RL_ANON as RateLimit | undefined;
+  const rl = binding;
   if (!rl)
     return env.ENVIRONMENT === "dev"
       ? null
@@ -628,6 +632,19 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
   if (!busOn(env) || !env.BUS_HUB) throw notFound();
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
     return errorJson(426, "bad_request", "Expected a WebSocket upgrade");
+  // Per IP, before the sha256 and the D1 lookup: any string would cost both.
+  // RL_ANON_WRITES (120/min, RL_ANON if unbound) so a few daemons behind one
+  // NAT reconnecting with backoff never trip it.
+  const rl = await limited(
+    env,
+    RL_KEYS.connect + clientIp(c),
+    60,
+    env.RL_ANON_WRITES ?? env.RL_ANON,
+  );
+  if (rl) return rl;
+  // Hosted suspend (cloud #228): refuse at once from the install's own D1,
+  // before the token lookup, as dispatch's paused answer would.
+  if (await isSuspended(env)) return pausedResponse();
   // Stamped by the route gate before any read (enforcePolicy).
   const authzAt = c.var.authzAt ?? Date.now();
   const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";

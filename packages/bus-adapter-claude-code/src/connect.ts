@@ -1,48 +1,94 @@
 import { BUS_CMD, HelloRefused } from "@oa/bus-ipc";
-import { type ClaudeSession, NOT_UNDER_CLAUDE } from "./session.ts";
+import {
+  type ClaudeSession,
+  NOT_UNDER_CLAUDE,
+  type NoSessionReason,
+  RECOVERABLE_REASONS,
+  type SessionLookup,
+} from "./session.ts";
+
+export const RESTARTING_MESSAGE =
+  "oa-bus: the bus daemon is restarting; retry in a few seconds. If it keeps failing, run /mcp and reconnect oa_bus.";
+
+/** How long a call waits for a daemon that is restarting (#2364). */
+export const RESTART_WAIT_MS = 2000;
+const RESTART_STEP_MS = 200;
 
 export const BUSY_MESSAGE =
   "oa-bus: the bus daemon did not answer in time (busy?). Try again.";
 
 export type ConnectOutcome<C> =
   | { kind: "ok"; client: C }
-  /** No session above this process, or an unsafe socket folder. */
-  | { kind: "no-session" }
-  /** A session, but no daemon socket: the install hint applies. */
-  | { kind: "no-socket" }
+  /** No session above this process, or an unsafe socket folder; `reason` says which. */
+  | { kind: "no-session"; reason: NoSessionReason }
+  /**
+   * A session, but no daemon answered within the wait. `seen` is true when a
+   * socket file existed at some point (a daemon that is restarting): then no
+   * install would help. False means no daemon at all: the install hint applies.
+   */
+  | { kind: "no-socket"; seen: boolean }
   /** A session and a socket, but the connect or hello timed out or was reset. */
   | { kind: "busy" }
   /** The daemon answered hello with a refusal: its reason is the message. */
   | { kind: "refused"; reason: string };
 
 export type ConnectDeps<C> = {
-  findSession: () => ClaudeSession | null;
+  findSession: () => SessionLookup;
   socketDirProblem: () => unknown;
   socketExists: () => boolean;
   connect: (session: ClaudeSession) => Promise<C>;
+  /** Injected by tests; defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+  waitMs?: number;
 };
 
 export async function connectOutcome<C>(
   deps: ConnectDeps<C>,
 ): Promise<ConnectOutcome<C>> {
-  let session: ClaudeSession | null;
+  const sleep =
+    deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const waitMs = deps.waitMs ?? RESTART_WAIT_MS;
+  // A restarting daemon leaves its socket absent or refusing for a moment.
+  // Every attempt looks everything up again, so nothing stale survives.
+  let seen = false;
+  for (let waited = 0; ; waited += RESTART_STEP_MS) {
+    const out = await attempt(deps);
+    if (out.kind === "no-session") {
+      if (!RECOVERABLE_REASONS.includes(out.reason) || waited >= waitMs)
+        return out;
+      await sleep(RESTART_STEP_MS);
+      continue;
+    }
+    if (out.kind !== "no-socket") return out;
+    seen ||= out.seen;
+    if (waited >= waitMs) return { kind: "no-socket", seen };
+    await sleep(RESTART_STEP_MS);
+  }
+}
+
+async function attempt<C>(deps: ConnectDeps<C>): Promise<ConnectOutcome<C>> {
+  let session: ClaudeSession;
   try {
-    session = deps.findSession();
-    if (!session || deps.socketDirProblem()) return { kind: "no-session" };
+    const found = deps.findSession();
+    if (!found.ok) return { kind: "no-session", reason: found.reason };
+    session = found.session;
+    if (deps.socketDirProblem())
+      return { kind: "no-session", reason: "socket_dir" };
   } catch {
     // ps did not answer in time (ProcStartUnknownError): a loaded machine, not a missing install.
     return { kind: "busy" };
   }
-  if (!deps.socketExists()) return { kind: "no-socket" };
+  if (!deps.socketExists()) return { kind: "no-socket", seen: false };
+  // From here the socket file existed, so a vanished one means a daemon going down or restarting.
   try {
     return { kind: "ok", client: await deps.connect(session) };
   } catch (e) {
     if (e instanceof HelloRefused)
       return { kind: "refused", reason: e.reason ?? e.message };
     const code = (e as NodeJS.ErrnoException)?.code;
-    // Nothing is listening: the daemon is not running (or not installed).
+    // The socket file exists but nothing is listening (or it vanished): a daemon coming up or going down.
     if (code === "ECONNREFUSED" || code === "ENOENT")
-      return { kind: "no-socket" };
+      return { kind: "no-socket", seen: true };
     // A timeout, a reset, a dropped connection: a daemon that exists but is not answering.
     return { kind: "busy" };
   }
@@ -56,6 +102,13 @@ export function noSessionMessage(
   if (out.kind === "busy") return BUSY_MESSAGE;
   if (out.kind === "refused")
     return `oa-bus: the bus daemon refused: ${out.reason}`;
+  if (out.kind === "no-socket" && out.seen) return RESTARTING_MESSAGE;
+  if (out.kind === "no-session" && out.reason === "socket_dir")
+    return `oa-bus: the bus socket folder isn't safe to use; run \`${BUS_CMD} doctor\`.`;
+  if (out.kind === "no-session" && out.reason !== "none")
+    return underClaude
+      ? `oa-bus: this Claude session isn't visible to the bus right now (${out.reason}); retry, or run /mcp and reconnect oa_bus.`
+      : NOT_UNDER_CLAUDE;
   return underClaude
     ? `oa-bus: no Claude session or daemon found. Run \`${BUS_CMD} install\`.`
     : NOT_UNDER_CLAUDE;

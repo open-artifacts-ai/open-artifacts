@@ -5,7 +5,9 @@ export function Switch({
   disabled,
   onChange,
   describedBy,
+  id,
 }: {
+  id?: string;
   label: string;
   checked: boolean;
   disabled?: boolean;
@@ -14,6 +16,7 @@ export function Switch({
 }) {
   return (
     <button
+      id={id}
       type="button"
       role="switch"
       aria-label={label}

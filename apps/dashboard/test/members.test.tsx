@@ -564,7 +564,7 @@ describe("settings guards", () => {
     await at(admin, "/settings/usage", "/settings/usage");
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
   });
-  it("member sees only the Profile, Notifications and Connections tabs", async () => {
+  it("member sees only the Profile, Notifications, Security and Connections tabs", async () => {
     as(other);
     mount("/settings/connections");
     const nav = await screen.findByRole("navigation", {
@@ -572,6 +572,6 @@ describe("settings guards", () => {
     });
     expect(
       (await within(nav).findAllByRole("link")).map((a) => a.textContent),
-    ).toEqual(["Profile", "Notifications", "Connections"]);
+    ).toEqual(["Profile", "Notifications", "Security", "Connections"]);
   });
 });

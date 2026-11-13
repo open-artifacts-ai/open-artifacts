@@ -63,6 +63,13 @@ export const ERROR_CODES = [
   "comments_off",
   "comments_signed_in_only",
   "forbidden",
+  // Passkey-confirmed picks (#2263).
+  "no_passkey",
+  "passkey_cooling",
+  "already_answered",
+  "passkey_failed",
+  "challenge_expired",
+  "passkey_required",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -178,6 +185,18 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   /** #2080: a signed-out caller wrote a comment where only signed-in people may. */
   comments_signed_in_only: 403,
   forbidden: 403,
+  /** #2263: the caller has no passkey registered (a challenge cannot be issued). */
+  no_passkey: 409,
+  /** #2263: every passkey the caller has is younger than 24 hours. */
+  passkey_cooling: 409,
+  /** #2263: the passkey-confirmed ask already has an answer. */
+  already_answered: 409,
+  /** #2263: the assertion or attestation did not verify. */
+  passkey_failed: 400,
+  /** #2263: the challenge is missing, used, voided or older than its TTL; ask for a new one. */
+  challenge_expired: 410,
+  /** #2263: a passkey assertion is required (always so through MCP or an API token). */
+  passkey_required: 403,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */

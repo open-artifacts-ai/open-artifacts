@@ -45,8 +45,11 @@ import { LoginFailed, login } from "./login.ts";
 
 /** Transcript state 6: four attempts, waiting 2, 4 and 8 s between them. */
 export const CODE_RETRY_MS = [2000, 4000, 8000];
-export const DAEMON_WAIT_MS = 10_000;
+export const DAEMON_WAIT_MS = 60_000;
 const DAEMON_POLL_MS = 250;
+const DAEMON_POLL_MAX_MS = 2000;
+/** Before this, a daemon that is not up yet may still be spawning. */
+const DAEMON_GONE_AFTER_MS = 10_000;
 const ROSTER_ROWS = 20;
 
 export type InstallOpts = {
@@ -309,17 +312,36 @@ function shownSocket(ctx: Ctx): string {
   );
 }
 
-/** Polls the daemon socket until it answers or `DAEMON_WAIT_MS` passes. */
+/**
+ * Polls the daemon socket, backing off, until it answers or `DAEMON_WAIT_MS`
+ * passes. `gone`: the process exited or the service manager says it failed;
+ * `gone` is also true when liveness is unknown; a live but silent daemon at the bound is not gone (#2358).
+ */
 export async function waitForDaemon(
   ctx: Ctx,
-): Promise<StatusReply | undefined> {
+): Promise<{ st?: StatusReply; gone: boolean }> {
   const start = ctx.now();
+  let poll = DAEMON_POLL_MS;
+  let down = 0;
   for (;;) {
     try {
-      return await askDaemon(ctx, { cwd: ctx.cwd, timeoutMs: 1000 });
+      return {
+        st: await askDaemon(ctx, { cwd: ctx.cwd, timeoutMs: 1000 }),
+        gone: false,
+      };
     } catch {}
-    if (ctx.now() - start >= DAEMON_WAIT_MS) return undefined;
-    await ctx.sleep(DAEMON_POLL_MS);
+    const waited = ctx.now() - start;
+    if (waited >= DAEMON_GONE_AFTER_MS) {
+      const alive = await ctx.service.alive?.().catch(() => undefined);
+      down = alive === false ? down + 1 : 0;
+      if (down >= 3) return { gone: true };
+    }
+    if (waited >= DAEMON_WAIT_MS) {
+      const alive = await ctx.service.alive?.().catch(() => undefined);
+      return { gone: alive !== true };
+    }
+    await ctx.sleep(poll);
+    poll = Math.min(poll * 2, DAEMON_POLL_MAX_MS);
   }
 }
 
@@ -348,10 +370,19 @@ async function daemonStep(ctx: Ctx, noService = false): Promise<boolean> {
     return false;
   }
   const unsafe = socketFolderLines(ctx);
-  const st = unsafe ? undefined : await waitForDaemon(ctx);
-  if (!st) {
-    sayErr(ctx, unsafe ?? c.daemonTimeout());
+  if (unsafe) {
+    sayErr(ctx, unsafe);
     return false;
+  }
+  const { st, gone } = await waitForDaemon(ctx);
+  if (!st) {
+    if (gone) {
+      sayErr(ctx, c.daemonTimeout(DAEMON_WAIT_MS / 1000));
+      return false;
+    }
+    // Alive but silent: a busy machine. Not a failure.
+    say(ctx, c.daemonStarting());
+    return true;
   }
   say(ctx, c.daemonRunning(st.pid, ctx.service.kind, ctx.service.fallback), "");
   say(ctx, roster(ctx, st), "", c.statusHint());

@@ -80,6 +80,13 @@ export const TierAnswerSchema = z.object({
   hasCustomer: z.boolean().optional(),
   /** Yearly Team and Business prices are configured. Absent from an answer that predates it (off). */
   yearlyTeamBusiness: z.boolean().optional(),
+  /** A Checkout put a card on file. Absent from an answer that predates it (off). */
+  soloCheckedOut: z.boolean().optional(),
+  /** When a scheduled cancel takes effect (ms), or null. Absent from an answer that predates it. */
+  cancelsAt: z.number().int().nullable().optional(),
+  /** The billing interval and the renewal date (ms). Absent from an answer that predates them. */
+  interval: z.enum(["month", "year"]).nullable().optional(),
+  renewsAt: z.number().int().nullable().optional(),
   /** Unpaid extra-creator charges (#2246). Billing sends null for none; absent from an older answer. */
   overageDue: z
     .object({
@@ -147,6 +154,10 @@ export type EffectivePlan = {
   hasCustomer?: boolean;
   /** Absent when billing's answer carried none (off). */
   yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
+  interval?: "month" | "year" | null;
+  renewsAt?: number | null;
   /** Absent when billing's answer carried none or null (nothing due). */
   overageDue?: { amountCents: number; months: string[] };
   graceUntil: number | null;
@@ -197,6 +208,18 @@ export function effectivePlan(
       : {}),
     ...("yearlyTeamBusiness" in base && base.yearlyTeamBusiness !== undefined
       ? { yearlyTeamBusiness: base.yearlyTeamBusiness }
+      : {}),
+    ...("soloCheckedOut" in base && base.soloCheckedOut !== undefined
+      ? { soloCheckedOut: base.soloCheckedOut }
+      : {}),
+    ...("cancelsAt" in base && base.cancelsAt !== undefined
+      ? { cancelsAt: base.cancelsAt }
+      : {}),
+    ...("interval" in base && base.interval !== undefined
+      ? { interval: base.interval }
+      : {}),
+    ...("renewsAt" in base && base.renewsAt !== undefined
+      ? { renewsAt: base.renewsAt }
       : {}),
     ...("overageDue" in base && base.overageDue
       ? { overageDue: base.overageDue }

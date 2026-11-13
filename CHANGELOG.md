@@ -1,5 +1,89 @@
 # Changelog
 
+## [0.171.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.170.0...v0.171.0) (2026-11-13)
+
+
+### Features
+
+* **bus:** a suspended hosted install refuses bus connects at once (cloud [#228](https://github.com/open-artifacts-ai/open-artifacts/issues/228)) ([#2387](https://github.com/open-artifacts-ai/open-artifacts/issues/2387)) ([53d501d](https://github.com/open-artifacts-ai/open-artifacts/commit/53d501d609ff180f6d88e80012fba9863c3df169))
+
+
+### Bug Fixes
+
+* **bus-cli:** install waits for a slow daemon start instead of reporting a failure ([#2358](https://github.com/open-artifacts-ai/open-artifacts/issues/2358)) ([#2392](https://github.com/open-artifacts-ai/open-artifacts/issues/2392)) ([a2ac4c9](https://github.com/open-artifacts-ai/open-artifacts/commit/a2ac4c9534d7d7d362fe5db182b16e0644e827b4))
+* **bus:** a harness default name counts as default only for its own kind ([#2318](https://github.com/open-artifacts-ai/open-artifacts/issues/2318)) ([#2395](https://github.com/open-artifacts-ai/open-artifacts/issues/2395)) ([f41f1c7](https://github.com/open-artifacts-ai/open-artifacts/commit/f41f1c7c51a17a080b71cde6beb305f1d53185c4))
+* **bus:** the MCP adapter re-attaches after a daemon restart instead of saying to install ([#2364](https://github.com/open-artifacts-ai/open-artifacts/issues/2364)) ([#2393](https://github.com/open-artifacts-ai/open-artifacts/issues/2393)) ([357f5f9](https://github.com/open-artifacts-ai/open-artifacts/commit/357f5f9cdc29fb5a7306e29c12d495db6d30d638))
+* **release:** refuse a tag on an empty release commit; never re-arm a landed release PR ([#2379](https://github.com/open-artifacts-ai/open-artifacts/issues/2379)) ([#2397](https://github.com/open-artifacts-ai/open-artifacts/issues/2397)) ([cd2efae](https://github.com/open-artifacts-ai/open-artifacts/commit/cd2efae1ca3729aa9d0746131464134ff1489357))
+
+## [0.170.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.169.1...v0.170.0) (2026-11-13)
+
+
+### Features
+
+* **comments:** bubble pins and click-to-comment on images and PDFs ([#2019](https://github.com/open-artifacts-ai/open-artifacts/issues/2019)) ([#2385](https://github.com/open-artifacts-ai/open-artifacts/issues/2385)) ([dc185ef](https://github.com/open-artifacts-ai/open-artifacts/commit/dc185ef4944a67a56d640b272480b9444bb540ad))
+
+## [0.169.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.169.0...v0.169.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **bus:** log when an away Codex thread can't be woken because the app unloaded it ([#2343](https://github.com/open-artifacts-ai/open-artifacts/issues/2343)) ([#2382](https://github.com/open-artifacts-ai/open-artifacts/issues/2382)) ([2b936ea](https://github.com/open-artifacts-ai/open-artifacts/commit/2b936eac2a33ccb480b96996e83559e37663a6a0))
+
+## [0.169.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.168.0...v0.169.0) (2026-11-13)
+
+
+### Features
+
+* **bus:** sdk-cli sessions never register; harness-chosen names are kept ([#2311](https://github.com/open-artifacts-ai/open-artifacts/issues/2311)) ([#2315](https://github.com/open-artifacts-ai/open-artifacts/issues/2315)) ([cba4028](https://github.com/open-artifacts-ai/open-artifacts/commit/cba402865134a813d9c8e228280864de9de0e4b5))
+
+
+### Bug Fixes
+
+* **bus:** /bus/connect is rate-limited per IP before the token lookup ([#2359](https://github.com/open-artifacts-ai/open-artifacts/issues/2359)) ([#2362](https://github.com/open-artifacts-ai/open-artifacts/issues/2362)) ([2dd8c53](https://github.com/open-artifacts-ai/open-artifacts/commit/2dd8c53b56035ec24d498b4d93aa9b02b233a2e0))
+
+## [0.168.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.167.0...v0.168.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** the Price row shows the interval and renewal date ([#2135](https://github.com/open-artifacts-ai/open-artifacts/issues/2135)) ([#2372](https://github.com/open-artifacts-ai/open-artifacts/issues/2372)) ([479681c](https://github.com/open-artifacts-ai/open-artifacts/commit/479681cf536b9011eccf37a86e5c35b85998ac10))
+
+## [0.167.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.166.0...v0.167.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** a Solo that paid in its free days sees Manage billing, not Pay ([#2138](https://github.com/open-artifacts-ai/open-artifacts/issues/2138)) ([#2346](https://github.com/open-artifacts-ai/open-artifacts/issues/2346)) ([1603c43](https://github.com/open-artifacts-ai/open-artifacts/commit/1603c435bf8e936311aaf5ce59b15030baf74f67))
+
+## [0.166.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.165.0...v0.166.0) (2026-11-12)
+
+
+### Features
+
+* **comments:** @-mentions show as pills inside the comment box ([#2317](https://github.com/open-artifacts-ai/open-artifacts/issues/2317)) ([#2339](https://github.com/open-artifacts-ai/open-artifacts/issues/2339)) ([5e39b24](https://github.com/open-artifacts-ai/open-artifacts/commit/5e39b24bd2697d3e7312ef25f3700f9996ca090f))
+* **comments:** render a safe markdown subset in comment bodies ([#2338](https://github.com/open-artifacts-ai/open-artifacts/issues/2338)) ([#2340](https://github.com/open-artifacts-ai/open-artifacts/issues/2340)) ([cab83ec](https://github.com/open-artifacts-ai/open-artifacts/commit/cab83eca2234210f605fb8ffc4f0443c22f55226))
+
+## [0.165.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.164.0...v0.165.0) (2026-11-12)
+
+
+### Features
+
+* **settings:** Security section, passkeys and approval switches ([#2263](https://github.com/open-artifacts-ai/open-artifacts/issues/2263)) ([#2334](https://github.com/open-artifacts-ai/open-artifacts/issues/2334)) ([a492b2b](https://github.com/open-artifacts-ai/open-artifacts/commit/a492b2b2288d36e477c7328ca7590525c0b971ba))
+
+## [0.164.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.163.0...v0.164.0) (2026-11-12)
+
+
+### Features
+
+* **billing:** a failed extra-creator charge shows a notice ([#2246](https://github.com/open-artifacts-ai/open-artifacts/issues/2246)) ([#2345](https://github.com/open-artifacts-ai/open-artifacts/issues/2345)) ([e8a9cad](https://github.com/open-artifacts-ai/open-artifacts/commit/e8a9cad37a94b35e9e0e05bea4436741f6e20bed))
+* **passkeys:** register passkeys and passkey settings ([#2263](https://github.com/open-artifacts-ai/open-artifacts/issues/2263) A) ([#2329](https://github.com/open-artifacts-ai/open-artifacts/issues/2329)) ([dc3a6c8](https://github.com/open-artifacts-ai/open-artifacts/commit/dc3a6c8b88397e33829f8de0f12dbbf7b8ef5f6a))
+
+
+### Bug Fixes
+
+* **comments:** ask cards show the comment body ([#2344](https://github.com/open-artifacts-ai/open-artifacts/issues/2344)) ([#2347](https://github.com/open-artifacts-ai/open-artifacts/issues/2347)) ([616c0bd](https://github.com/open-artifacts-ai/open-artifacts/commit/616c0bdca65eadb007fad8152ab22a49d2fe7c78))
+* **settings:** the agent setup prompt is one line ([#2352](https://github.com/open-artifacts-ai/open-artifacts/issues/2352)) ([#2353](https://github.com/open-artifacts-ai/open-artifacts/issues/2353)) ([81214c9](https://github.com/open-artifacts-ai/open-artifacts/commit/81214c9ca942206f9d295e5f06472d87c4829047))
+
 ## [0.163.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.2...v0.163.0) (2026-11-12)
 
 

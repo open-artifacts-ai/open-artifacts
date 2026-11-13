@@ -20,7 +20,7 @@ import { versionDate } from "../versionDate";
 import { PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
-import { linkify } from "./linkify";
+import { Markdown, MarkdownInline } from "./Markdown";
 
 const MUTED = "text-muted-foreground";
 
@@ -619,9 +619,9 @@ export function AskBlock({
             asks{askedWho(ask.to, mine)}
           </p>
           {body}
-          <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {linked(ask.question, 0)}
-          </p>
+          <div id={qid} className={`${TXT} font-semibold break-words`}>
+            <Markdown body={ask.question} />
+          </div>
           <ul
             ref={opts}
             aria-labelledby={qid}
@@ -673,7 +673,7 @@ export function AskBlock({
                       <b>{o.label}</b>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
-                          {o.detail}
+                          <MarkdownInline body={o.detail} links={false} />
                         </span>
                       )}
                     </span>
@@ -805,8 +805,17 @@ export function mentionedKeys(
   text: string,
   agents: readonly ArtifactAgent[],
 ): string[] {
+  return mentionSpans(text, agents).map((s) => s.key);
+}
+
+/** Where each counted `@name` sits in the text (`start` at the "@", `end`
+    after the name), in the order `mentionedKeys` lists them. */
+export function mentionSpans(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { key: string; start: number; end: number }[] {
   let rest = text;
-  const keys: string[] = [];
+  const out: { key: string; start: number; end: number }[] = [];
   for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
     const re = new RegExp(
       `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
@@ -814,14 +823,46 @@ export function mentionedKeys(
     );
     const m = re.exec(rest);
     if (!m) continue;
-    keys.push(a.key);
     const at = m.index + (m[1]?.length ?? 0);
+    out.push({ key: a.key, start: at, end: at + a.name.length + 1 });
     rest =
       rest.slice(0, at) +
       " ".repeat(a.name.length + 1) +
       rest.slice(at + a.name.length + 1);
   }
-  return keys;
+  return out;
+}
+
+/** #2317: split the text into plain runs and counted mentions (the pills),
+    in text order. Joining the `text` of every segment gives the input back. */
+export function mentionSegments(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { text: string; key?: string }[] {
+  const spans = mentionSpans(text, agents).sort((x, y) => x.start - y.start);
+  const out: { text: string; key?: string }[] = [];
+  let last = 0;
+  for (const s of spans) {
+    if (s.start > last) out.push({ text: text.slice(last, s.start) });
+    out.push({ text: text.slice(s.start, s.end), key: s.key });
+    last = s.end;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+/** #2317: Backspace with the caret right after a pill: the range of the whole
+    `@name`, to select so the native delete removes it (and stays in the undo
+    stack). Null when the key should act normally. */
+export function atomicBackspace(
+  text: string,
+  start: number,
+  end: number,
+  agents: readonly ArtifactAgent[],
+): { start: number; end: number } | null {
+  if (start !== end) return null;
+  const s = mentionSpans(text, agents).find((m) => m.end === start);
+  return s ? { start: s.start, end: s.end } : null;
 }
 
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
@@ -857,15 +898,15 @@ export function removeMention(
   return atStart ? out.trimStart() : out;
 }
 
-/** A posted body with each `@name` from its mentions as a chip. Text spans only,
-    never HTML; a body with no mentions is the plain string. */
-export function MentionedText({
-  body,
-  mentions,
-  guest = false,
-  marks,
-  createdAt,
-}: {
+/** A posted body as the safe markdown subset (#2338), with each `@name` from its
+    mentions as a chip in its text. Text spans and elements only, never HTML. */
+export function MentionedText(props: MentionedProps) {
+  return (
+    <Markdown body={props.body} text={(s) => <>{mentioned(s, props)}</>} />
+  );
+}
+
+type MentionedProps = {
   body: string;
   mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
     key: string;
@@ -877,8 +918,14 @@ export function MentionedText({
   marks?: boolean;
   /** The comment's createdAt, for "sending" before a queued notice is held. */
   createdAt?: string;
-}) {
-  if (!mentions?.length) return <>{linked(body, 0)}</>;
+};
+
+/** One run of plain text with its mention chips. Links were cut out by the parser. */
+function mentioned(
+  body: string,
+  { mentions, guest = false, marks, createdAt }: MentionedProps,
+): React.ReactNode[] {
+  if (!mentions?.length) return [body];
   const names = [...new Set(mentions.map((m) => m.name))]
     .sort((x, y) => y.length - x.length)
     .map(esc);
@@ -894,7 +941,7 @@ export function MentionedText({
       (x) => x.name.toLowerCase() === (m[2] ?? "").toLowerCase(),
     );
     const face = same.length === 1 ? same[0] : undefined;
-    if (at > last) out.push(...linked(body.slice(last, at), last));
+    if (at > last) out.push(body.slice(last, at));
     if (marks && !guest && face?.delivery) {
       out.push(
         <MarkedChip
@@ -921,31 +968,9 @@ export function MentionedText({
     );
     last = end;
   }
-  if (last === 0) return <>{linked(body, 0)}</>;
-  if (last < body.length) out.push(...linked(body.slice(last), last));
-  return <>{out}</>;
-}
-
-/** Plain text with its http(s) URLs as links that open in a new tab. */
-function linked(text: string, base: number): React.ReactNode[] {
-  let at = base;
-  return linkify(text).map((p) => {
-    const key = at;
-    at += p.text.length;
-    return p.url ? (
-      <a
-        key={key}
-        href={p.text}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="break-all underline"
-      >
-        {p.text}
-      </a>
-    ) : (
-      p.text
-    );
-  });
+  if (last === 0) return [body];
+  if (last < body.length) out.push(body.slice(last));
+  return out;
 }
 
 /** Who gets notified: the mentioned agents. */

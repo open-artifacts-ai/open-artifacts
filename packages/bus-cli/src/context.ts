@@ -61,6 +61,11 @@ export type Service = {
     running?: number;
     skipped?: Isolation;
   }>;
+  /**
+   * Whether the daemon process is up: the service manager's view, or the
+   * fallback daemon's pid. undefined when it cannot tell (#2358).
+   */
+  alive?: () => Promise<boolean | undefined>;
   problems?: () => ServiceProblem[];
   /** The installed service's environment, as install recorded it; empty when none is. */
   env?: () => Record<string, string>;

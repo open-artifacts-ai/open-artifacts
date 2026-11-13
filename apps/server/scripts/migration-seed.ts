@@ -47,6 +47,9 @@ export const SHAPE = {
   artifact_asks: 3_000, // asks are rare: about one live artifact in a hundred
   data_writes_total: 1, // the install-wide write counter: one row
   tokens: 30_000,
+  passkeys: 2_000, // #2263
+  pick_assertions: 1_000,
+  passkey_settings: 1_000,
   agent_grants: 50_000,
   bus_machines: 20_000,
   bus_device_codes: 500,
@@ -502,6 +505,63 @@ export const RULES: Record<string, Rule> = {
         last_used_at: c.rand() < 0.7 ? c.time() : null,
         revoked_at: c.rand() < 0.2 ? c.time() : null,
         versions_published: c.int(500),
+      };
+    },
+  },
+  // #2263: passkeys, single-use pick challenges, and the per-member switches.
+  passkeys: {
+    rows: (c) => c.count("passkeys"),
+    row(i, c) {
+      const u = c.users[(i * 5) % c.users.length];
+      if (!u) return null;
+      return {
+        id: c.id("pk"),
+        user_id: u.id,
+        credential_id: `${c.id("cr")}${i}`,
+        public_key: c.id("k"),
+        alg: -7,
+        sign_count: c.int(50),
+        label: `Passkey ${i}`,
+        created_at: c.time(),
+        last_used_at: c.rand() < 0.5 ? c.time() : null,
+        removal_at: c.rand() < 0.05 ? c.time() : null,
+      };
+    },
+  },
+  pick_assertions: {
+    rows: (c) => c.count("pick_assertions"),
+    row(i, c) {
+      const u = c.users[(i * 11) % c.users.length];
+      if (!u) return null;
+      const at = c.time();
+      return {
+        id: c.id("pa"),
+        user_id: u.id,
+        kind: c.pick(["pick", "settings", "remove", "register"] as const),
+        scope: `${c.id("sc")}${i}`,
+        binding: c.id("b"),
+        challenge: c.id("ch"),
+        expires_at: at + 120_000,
+        used_at: c.rand() < 0.5 ? at + 1000 : null,
+        created_at: at,
+      };
+    },
+  },
+  passkey_settings: {
+    rows: (c) => Math.min(c.count("passkey_settings"), c.users.length),
+    row(i, c) {
+      const u = c.users[i];
+      if (!u) return null;
+      return {
+        user_id: u.id,
+        ask_merge: c.int(2),
+        ask_deploy: c.int(2),
+        ask_delete: c.int(2),
+        ask_share: c.int(2),
+        ask_public: c.int(2),
+        ask_command: 1,
+        every_pick: c.int(2),
+        updated_at: c.time(),
       };
     },
   },

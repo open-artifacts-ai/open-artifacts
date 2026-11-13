@@ -1162,6 +1162,7 @@ describe("ask_answered notice (#1535)", () => {
       view(viewer),
       "wide",
       { version: 1 },
+      { interactive: true },
     );
     expect(out.ask?.answer?.optionId).toBe("wide");
     expect(answered()).toHaveLength(0);
