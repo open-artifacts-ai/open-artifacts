@@ -8,11 +8,10 @@ import { toast } from "../layout/toast";
 import { muted, SettingsCard } from "./ui";
 
 /** The prompt a member pastes into any AI agent, written to the agent. The
-    origin is the app host, which serves /llms.txt. The URL ends its line, so
-    no punctuation can read as part of it. */
+    origin is the app host, which serves /llms.txt. One line, and the URL ends
+    it, so no punctuation can read as part of it. */
 export const setupPrompt = () =>
-  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt
-Sign in through the browser. Never ask me to paste a token into this chat.`;
+  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt`;
 
 /** Whoever the server lets connect an agent (its canConnect): not a guest,
     not capped. The role covers an older server, whose /me has no auth.

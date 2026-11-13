@@ -183,17 +183,19 @@ jobs:
   # passes only when every shard passed: a skipped, cancelled or failed shard
   # fails it.
   test:
-    needs: [test-shard]
+    needs: [test-shard, released-migrations-frozen]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Every shard passed
+      - name: Every shard passed and no shipped migration changed
         env:
           SHARDS: ${{ needs.test-shard.result }}
+          FROZEN: ${{ needs.released-migrations-frozen.result }}
         run: |
           echo "test-shard: $SHARDS"
-          [ "$SHARDS" = success ]
+          echo "released-migrations-frozen: $FROZEN"
+          [ "$SHARDS" = success ] && [ "$FROZEN" = success ]
   # P3 T16 (#605): the server authz matrix, in parallel with `test` so total
   # wall time drops. A required check; same release-only pattern as `test`.
   authz-matrix:
