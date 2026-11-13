@@ -70,7 +70,7 @@ export const busSetupLine = (origin: string): string =>
 
 /** #2476, #2477: the naming and first-page habits, taught only with the bus on. */
 const FIRST_PAGE_HABIT =
-  '- On first setup, ask your person what to call you (suggest a short name from the project) and check the bus `self` tool shows it. On the first page you ever publish for them, right after publishing, post a comment ("I\'m {name}, your agent. Type @{name} in any comment and I\'ll answer in the thread. Try it here.") and an ask ("What should I publish next?", options fitted to the project, such as "A status page for this project", "A summary of the README", "Nothing for now"). Do this once, never on later pages. Use your session name if they skipped naming, and follow that page so the mention and the pick reach you.';
+  '- On first setup, ask your person what to call you (suggest a short name from the project) and check the bus `self` tool shows it. On the first page you ever publish for them, right after publishing, post a comment ("I\'m {name}, your agent. Type @{name} in any comment and I\'ll answer in the thread. Try it here.") and an ask ("What should I publish next?", options fitted to the project, such as "A status page for this project", "A summary of the README", "Nothing for now"). When they pick, do it and reply in the thread; "Nothing for now" gets a one-line reply. Do this once, never on later pages. Use your session name if they skipped naming, and follow that page so the mention and the pick reach you.';
 
 export const busLine = (on: boolean, origin: string): string =>
   on

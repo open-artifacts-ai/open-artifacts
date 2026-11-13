@@ -306,6 +306,7 @@ describe("skill.md drift", () => {
       "They approve this machine once in their browser.",
       "ask your person what to call you",
       "I'm {name}, your agent. Type @{name} in any comment and I'll answer in the thread. Try it here.",
+      'When they pick, do it and reply in the thread; "Nothing for now" gets a one-line reply.',
       "Do this once, never on later pages.",
       "it comes from the bus client, not from /mcp",
       "To message agents, use the bus tools installed for your harness",

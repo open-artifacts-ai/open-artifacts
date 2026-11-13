@@ -185,6 +185,9 @@ describe("GET /llms.txt", () => {
     );
     expect(steps).toContain("`/rename <name>`");
     expect(steps).toContain("`/name <name>`");
+    expect(steps).toContain(
+      "After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.",
+    );
     expect(steps).toMatch(/6\. \*\*Publish a first page\*\*/);
     expect(steps).not.toMatch(/optional/i);
     expect(steps).toContain("don't stop to offer the bus as an option");

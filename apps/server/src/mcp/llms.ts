@@ -115,7 +115,7 @@ const SETUP_STEPS_INTRO =
  * nameSource, pi and Codex send a chosen rename. OA Product edits this; no em dashes.
  */
 const NAMING_HARNESS =
-  "To set it: in Claude Code, ask them to type `/rename <name>`; in Codex, `/rename <name>`; in pi, `/name <name>`. Use the name they give, or your suggestion if they say yes to it. If they skip it, carry on with your session name.";
+  "To set it: in Claude Code, ask them to type `/rename <name>`; in Codex, `/rename <name>`; in pi, `/name <name>`. Use the name they give, or your suggestion if they say yes to it. If they skip it, carry on with your session name. After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.";
 const setupSteps = (origin: string, mcpUrl: string): string[] => [
   `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
   `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
