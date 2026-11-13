@@ -87,6 +87,7 @@ export function AgentSetupBody({
   };
   return (
     <div className="grid min-w-0 gap-[var(--oa-space-2)] text-left">
+      {/* Intended: with the bus on, the setup intro wins over a caller's `intro` (the first-run checklist). */}
       <p className={`m-0 ${muted}`}>{bus ? SETUP_INTRO_BUS : intro}</p>
       <Textarea
         id={id}

@@ -112,7 +112,7 @@ const setupSteps = (origin: string, mcpUrl: string): string[] => [
   `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
   `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
   "**Habit lines.** If the installer prints QUESTION FOR YOUR USER, show it to them and run the command for their answer. Never answer it yourself.",
-  "**Check.** The bus `self` tool answers with your name. If it doesn't, setup is not done: tell the person what failed and the exact fix.",
+  "**Check.** The bus tools load when your session restarts or reloads. If the installer says to restart, tell the person, and check after the restart: the bus `self` tool answers with your name. If it still doesn't, setup is not done: tell the person what failed and the exact fix.",
   "**Publish a first page** and give them the link.",
 ];
 const SETUP_FAILURE =
