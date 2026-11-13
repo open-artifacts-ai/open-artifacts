@@ -330,7 +330,7 @@ describe("Settings › Security: passkeys", () => {
     expect(dels).toEqual([]);
   });
 
-  it("with no usable passkey, removing skips the prompt and DELETEs for a fresh sign-in", async () => {
+  it("with no usable passkey, removing skips the prompt and DELETEs for a fresh login", async () => {
     use("cooling");
     const redirect = vi
       .spyOn(webauthn, "redirectTo")
@@ -394,7 +394,7 @@ describe("Settings › Security: passkeys", () => {
     const header = screen.getByRole("button", { name: "Add a passkey" });
     expect(header).toHaveAttribute("aria-disabled", "true");
     expect(header.className).not.toMatch(/bg-primary/);
-    expect(screen.queryByText(/asks you to sign in again first/)).toBeNull();
+    expect(screen.queryByText(/asks you to log in again first/)).toBeNull();
     fireEvent.click(header);
     expect(get).toHaveBeenCalledTimes(1);
     const paths = posts.map((c) => c.path);
@@ -657,7 +657,7 @@ describe("Settings › Security: passkeys", () => {
   });
 });
 
-describe("Settings › Security: stale state, return from sign-in, pending removal", () => {
+describe("Settings › Security: stale state, return from login, pending removal", () => {
   afterEach(() => sessionStorage.clear());
 
   it("builds a switch change from the server's state, not the cached one", async () => {
@@ -696,17 +696,17 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
     ).toBeVisible();
   });
 
-  it("always says Add asks you to sign in again", async () => {
+  it("always says Add asks you to log in again", async () => {
     use("none");
     mount("/settings/security");
     expect(
       await screen.findByText(
-        "Adding a passkey asks you to sign in again first.",
+        "Adding a passkey asks you to log in again first.",
       ),
     ).toBeVisible();
   });
 
-  it("marks the return before following the sign-in, only when it follows", async () => {
+  it("marks the return before following the login, only when it follows", async () => {
     use("none");
     const redirect = vi.spyOn(webauthn, "redirectTo").mockImplementation(() => {
       // The mark is the time we left.
@@ -726,21 +726,21 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
     await waitFor(() => expect(redirect).toHaveBeenCalledTimes(1));
   });
 
-  it("back from the sign-in: clears the mark, focuses Add, says so, does not call create", async () => {
+  it("back from the login: clears the mark, focuses Add, says so, does not call create", async () => {
     use("none");
     sessionStorage.setItem("oa.passkey.addAfterReauth", String(Date.now()));
     mount("/settings/security");
     const add = await screen.findByRole("button", { name: "Add a passkey" });
     expect(
       await screen.findByText(
-        "You're signed in again. Add your passkey within 10 minutes.",
+        "You're logged in again. Add your passkey within 10 minutes.",
       ),
     ).toBeVisible();
     expect(add).toHaveFocus();
     expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBeNull();
     expect(create).not.toHaveBeenCalled();
     // The green line replaces the "sign in again first" note.
-    expect(screen.queryByText(/asks you to sign in again first/)).toBeNull();
+    expect(screen.queryByText(/asks you to log in again first/)).toBeNull();
   });
 
   it("a mark older than 10 minutes is cleared and ignored", async () => {
@@ -751,10 +751,10 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
     );
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    expect(screen.queryByText(/signed in again\./)).toBeNull();
+    expect(screen.queryByText(/logged in again\./)).toBeNull();
     expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBeNull();
     expect(
-      screen.getByText("Adding a passkey asks you to sign in again first."),
+      screen.getByText("Adding a passkey asks you to log in again first."),
     ).toBeVisible();
   });
 
@@ -783,7 +783,7 @@ describe("Settings › Security: stale state, return from sign-in, pending remov
     use("none");
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    expect(screen.queryByText(/signed in again/)).toBeNull();
+    expect(screen.queryByText(/logged in again/)).toBeNull();
   });
 
   it("Add keeps focus while adding", async () => {

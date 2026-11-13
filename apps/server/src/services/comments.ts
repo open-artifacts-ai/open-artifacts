@@ -83,6 +83,7 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
+import { noteCommented } from "./onboarding.js";
 import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
@@ -1061,7 +1062,7 @@ async function resolveExtras(
       "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
     );
   if (x.ask && who.kind !== "user")
-    throw new ApiError("forbidden", "Sign in to ask a question");
+    throw new ApiError("forbidden", "Log in to ask a question");
   const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
@@ -1300,7 +1301,7 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
 }
 
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
-export async function addThread(
+async function addThreadInner(
   env: Env,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   who: CommentWho,
@@ -1581,7 +1582,7 @@ async function threadReply(
 }
 
 /** A reply. It does not reopen the thread. */
-export async function addReply(
+async function addReplyInner(
   env: Env,
   artifactId: string,
   threadId: string,
@@ -2035,4 +2036,25 @@ export async function deleteComment(
     }),
   );
   await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
+}
+
+/** A new thread; records the commenter for the first-run checklist (#2287). */
+export async function addThread(
+  ...args: Parameters<typeof addThreadInner>
+): ReturnType<typeof addThreadInner> {
+  const t = await addThreadInner(...args);
+  // Only the person's own comment counts, never one an agent posted for them.
+  if (args[2].kind === "user" && !args[2].agent)
+    await noteCommented(args[0], args[2].id);
+  return t;
+}
+
+/** A reply; records the commenter for the first-run checklist (#2287). */
+export async function addReply(
+  ...args: Parameters<typeof addReplyInner>
+): ReturnType<typeof addReplyInner> {
+  const c = await addReplyInner(...args);
+  if (args[3].kind === "user" && !args[3].agent)
+    await noteCommented(args[0], args[3].id);
+  return c;
 }

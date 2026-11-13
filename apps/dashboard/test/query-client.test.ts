@@ -8,7 +8,7 @@ it("a 401 reauth_required does not sign the owner out", async () => {
   const client = makeQueryClient();
   client.setQueryData(qk.me, fixtures.me);
   const e = Object.assign(
-    new ApiClientError("reauth_required", "Sign in again", 401),
+    new ApiClientError("reauth_required", "Log in again", 401),
     { method: "GET", path: "/api/v1/directory" },
   );
   reportApiError(client, e);
@@ -22,7 +22,7 @@ it("any other 401 still marks /me failed", async () => {
   client.setQueryData(qk.me, fixtures.me);
   reportApiError(
     client,
-    Object.assign(new ApiClientError("unauthorized", "Sign in", 401), {
+    Object.assign(new ApiClientError("unauthorized", "Log in", 401), {
       method: "GET",
       path: "/api/v1/artifacts",
     }),

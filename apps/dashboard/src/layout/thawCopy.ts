@@ -1,17 +1,6 @@
-// Copy for the Team to Business thaw notices (#2150, OA Product's wording on
+// Copy for the Team to Business thaw notice (#2150, OA Product's wording on
 // the issue). One place, so the final wording changes here only.
-const people = (n: number) =>
-  n === 1
-    ? "1 person whose role was changed by hand on Team will go back to the role their group gives them."
-    : `${n} people whose roles were changed by hand on Team will go back to the role their group gives them.`;
-
 export const THAW_COPY = {
-  /** Upgrade confirm, shown only when n > 0. */
-  confirmTitle: "Upgrade to Business",
-  confirmBody: (n: number) =>
-    `Directory sync turns back on. ${people(n)} People you removed stay removed, and people you added stay.`,
-  confirmYes: "Upgrade",
-  confirmNo: "Cancel",
   /** One-time banner after the thaw reverted anything: at most 2 names, then "and N other(s)". */
   banner: (names: string[], total: number) => {
     const shown = names.slice(0, 2);

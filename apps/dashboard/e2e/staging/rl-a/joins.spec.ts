@@ -82,7 +82,7 @@ async function askForCode(browser: Browser, address: string): Promise<Page> {
   const page = await ctx.newPage();
   await page.goto("/sign-in?method=code");
   await expect(
-    page.getByRole("heading", { level: 1, name: "Get a sign-in code" }),
+    page.getByRole("heading", { level: 1, name: "Get a login code" }),
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Email" }).fill(address);
   // The slot is rendered, so the page has a site key and asks for a token.
@@ -102,7 +102,7 @@ async function askForCode(browser: Browser, address: string): Promise<Page> {
     page.getByRole("heading", { name: "Check your email" }),
   ).toBeVisible();
   await expect(
-    page.getByText(/can sign in here, we sent it a code\./),
+    page.getByText(/can log in here, we sent it a code\./),
   ).toBeVisible();
   return page;
 }
@@ -160,7 +160,7 @@ test("an invited member: Google is their way in, never a code; their session lan
   expect(me.user.role).toBe("member");
 });
 
-test("an outside guest signs in by code, sees only Shared with me, and is read-only", async ({
+test("an outside guest logs in by code, sees only Shared with me, and is read-only", async ({
   browser,
 }) => {
   const admin = await person(browser, "admin", "admin");

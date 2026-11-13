@@ -10,6 +10,7 @@ export type Command = (
       check: boolean;
       noOpen: boolean;
       noService: boolean;
+      alongside: boolean;
       habits?: "yes" | "no" | "show";
       json?: boolean;
     }
@@ -79,6 +80,7 @@ const FLAGS: Record<string, string[]> = {
     "yes",
     "check",
     "no-service",
+    "alongside",
     "habits",
     "no-habits",
     "show-habits",
@@ -115,6 +117,7 @@ export function parse(argv: string[]): Command {
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
+      alongside: { type: "boolean", default: false },
       habits: { type: "boolean", default: false },
       "no-habits": { type: "boolean", default: false },
       "show-habits": { type: "boolean", default: false },
@@ -211,6 +214,7 @@ type Values = {
   yes: boolean;
   check: boolean;
   "no-service": boolean;
+  alongside: boolean;
   habits: boolean;
   "no-habits": boolean;
   "show-habits": boolean;
@@ -270,6 +274,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
         check: values.check,
         noOpen: values["no-open"],
         noService: values["no-service"],
+        alongside: values.alongside,
         ...habitsMode(values),
         ...(values.json ? { json: true } : {}),
       };

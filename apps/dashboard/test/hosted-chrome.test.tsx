@@ -43,7 +43,7 @@ it("owner: backoff in its first 24 hours is a warning", async () => {
   expect(b).toHaveTextContent(
     `Google directory sync is failingGoogle sync stopped at 2:10 PM and we keep retrying. ${FROZEN_RETRY}`,
   );
-  expect(b).not.toHaveTextContent("Sign-ins now last at most 24 hours.");
+  expect(b).not.toHaveTextContent("Logins now last at most 24 hours.");
   expect(b).toHaveTextContent(TOKENS);
   expect(
     within(b).getByRole("link", { name: "Open directory settings" }),
@@ -52,7 +52,7 @@ it("owner: backoff in its first 24 hours is a warning", async () => {
   expect(within(b).getByRole("button", { name: "Dismiss" })).toBeVisible();
 });
 
-it("owner: backoff turns danger at 24 hours, with the sign-in line and no Dismiss", async () => {
+it("owner: backoff turns danger at 24 hours, with the login line and no Dismiss", async () => {
   mountHosted(
     "/",
     { unhealthy: true },
@@ -60,7 +60,7 @@ it("owner: backoff turns danger at 24 hours, with the sign-in line and no Dismis
   );
   const b = await sync("alert");
   expect(b).toHaveTextContent(
-    `Google directory sync is failingGoogle sync stopped Jan 5 at 2:10 PM and we keep retrying. ${FROZEN_RETRY} Sign-ins now last at most 24 hours.`,
+    `Google directory sync is failingGoogle sync stopped Jan 5 at 2:10 PM and we keep retrying. ${FROZEN_RETRY} Logins now last at most 24 hours.`,
   );
   expect(b).not.toHaveTextContent("Agent tokens");
   expect(within(b).queryByRole("button", { name: "Dismiss" })).toBeNull();
@@ -90,7 +90,7 @@ it.each([
   );
   const b = await sync("alert");
   expect(b).toHaveTextContent(
-    `Google directory sync stoppedGoogle sync stopped Jan 5 at 2:10 PM: ${why} ${FROZEN_RECONNECT} ${fix} Sign-ins now last at most 24 hours.`,
+    `Google directory sync stoppedGoogle sync stopped Jan 5 at 2:10 PM: ${why} ${FROZEN_RECONNECT} ${fix} Logins now last at most 24 hours.`,
   );
   expect(b).toHaveTextContent(TOKENS);
   expect(within(b).getByRole("link", { name: "Reconnect" })).toHaveAttribute(
@@ -110,7 +110,7 @@ it("owner: a danger state from today says only the time", async () => {
   expect(b).toHaveTextContent(
     "Google sync stopped at 2:10 PM: our connection was revoked or expired.",
   );
-  expect(b).not.toHaveTextContent("Sign-ins now last at most 24 hours.");
+  expect(b).not.toHaveTextContent("Logins now last at most 24 hours.");
 });
 
 it("an outage from yesterday under 24 hours old gets its date", async () => {
@@ -124,7 +124,7 @@ it("an outage from yesterday under 24 hours old gets its date", async () => {
   expect(b).toHaveTextContent(
     "Google sync stopped Oct 20 at 10:05 PM: our connection was revoked or expired.",
   );
-  expect(b).not.toHaveTextContent("Sign-ins now last at most 24 hours.");
+  expect(b).not.toHaveTextContent("Logins now last at most 24 hours.");
 });
 
 it("never: the first sync hasn't finished", async () => {
@@ -142,7 +142,7 @@ it("admin: the owner fixes it; View status; admins may dismiss danger", async ()
   mountHosted("/", { unhealthy: true }, dir({ unhealthySince: OLD }, "admin"));
   const b = await sync("alert");
   expect(b).toHaveTextContent(
-    `Google directory sync is failingGoogle sync stopped Jan 5 at 2:10 PM and we keep retrying. ${FROZEN_RETRY} Sign-ins now last at most 24 hours. The owner can fix it.`,
+    `Google directory sync is failingGoogle sync stopped Jan 5 at 2:10 PM and we keep retrying. ${FROZEN_RETRY} Logins now last at most 24 hours. The owner can fix it.`,
   );
   expect(within(b).getByRole("link", { name: "View status" })).toHaveAttribute(
     "href",
@@ -163,7 +163,7 @@ it("admin: danger-from-start states drop the owner's fix line", async () => {
   );
   const b = await sync("alert");
   expect(b).toHaveTextContent(
-    `${FROZEN_RECONNECT} Sign-ins now last at most 24 hours. The owner can fix it.`,
+    `${FROZEN_RECONNECT} Logins now last at most 24 hours. The owner can fix it.`,
   );
   expect(b).not.toHaveTextContent("Reconnect and allow every permission.");
 });

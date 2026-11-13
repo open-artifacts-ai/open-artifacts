@@ -286,7 +286,7 @@ export class OidcRedeemError extends ApiError {
  */
 export class OidcSilentFallback extends Error {
   constructor(public next: string) {
-    super("silent sign-in needs interaction");
+    super("silent login needs interaction");
   }
 }
 

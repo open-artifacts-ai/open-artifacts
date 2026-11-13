@@ -18,6 +18,7 @@ import {
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
+import { busOn } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { SKILL_PATH, skillEnabled } from "./skill.js";
 import { skillOrigin } from "./skill-common.js";
@@ -40,7 +41,7 @@ export const CLAUDE_PLUGIN = {
 /** The MCP server name every client snippet registers. */
 const SERVER_NAME = "open-artifacts";
 
-type LlmsEnv = Pick<Env, "APP_HOST" | "SKILL_MD">;
+type LlmsEnv = Pick<Env, "APP_HOST" | "SKILL_MD"> & Parameters<typeof busOn>[0];
 
 /** The guide's inputs for one instance. */
 export const llmsInputs = (host: string) => {
@@ -99,13 +100,36 @@ Then run \`claude plugin configure ${name}\` and check \`${option}\` shows ${ori
 `;
 };
 
+/**
+ * The setup order when the bus is on for this instance (busOn). The bus is
+ * part of setup, not an add-on: one numbered sequence, agreed once. OA Product
+ * edits this wording; keep it plain, no em dashes.
+ */
+const SETUP_STEPS_TITLE = "## Setup steps";
+const SETUP_STEPS_INTRO =
+  "Do these in order. They are all part of setup, so don't stop to offer the bus as an option.";
+const setupSteps = (origin: string, mcpUrl: string): string[] => [
+  `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
+  `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
+  "**Habit lines.** If the installer prints QUESTION FOR YOUR USER, show it to them and run the command for their answer. Never answer it yourself.",
+  "**Check.** The bus tools load when your session restarts or reloads. If the installer says to restart, tell the person, and check after the restart: the bus `self` tool answers with your name. If it still doesn't, setup is not done: tell the person what failed and the exact fix.",
+  "**Publish a first page** and give them the link.",
+];
+const SETUP_FAILURE =
+  "If the bus step fails, tell the person: \"Open Artifacts is connected, but the bus isn't, so I won't see your comments unless you tell me. To fix it: <the installer's printed fix>.\"";
+const setupBlock = (origin: string, mcpUrl: string) =>
+  `${SETUP_STEPS_TITLE}\n\n${SETUP_STEPS_INTRO}\n\n${setupSteps(origin, mcpUrl)
+    .map((t, i) => `${i + 1}. ${t}`)
+    .join("\n")}\n\n${SETUP_FAILURE}\n\n`;
+
 /** The guide for `host`. `plugin` and `skill` default to the live settings. */
 export function renderLlms(
   host: string,
-  opts: { plugin?: boolean; skill?: boolean } = {},
+  opts: { plugin?: boolean; skill?: boolean; bus?: boolean } = {},
 ): string {
   const plugin = opts.plugin ?? CLAUDE_PLUGIN_ENABLED;
   const skill = opts.skill ?? true;
+  const bus = opts.bus ?? false;
   const { origin, mcpUrl, tokenFile, clients, tokens } = llmsInputs(host);
   const verifySteps = [
     "List the server's tools. You should see tools such as `publish_artifact` and `list_artifacts`. If the list is empty or you get 401, see Troubleshoot.",
@@ -122,7 +146,7 @@ You are setting up ${PRODUCT_NAME} for the person you're working with. Do every 
 
 Server address (MCP, streamable HTTP): ${mcpUrl}
 
-## Connect
+${bus ? setupBlock(origin, mcpUrl) : ""}## Connect
 
 Use the section for the client you are running in: you know which one that is. Only if the person asks you to set up a different client, find it with \`which claude codex cursor opencode\`; if none fits, use Generic.
 
@@ -171,10 +195,11 @@ const sha8 = async (s: string): Promise<string> => {
 /** The body and its ETag (version plus the body's hash), memoized per isolate. */
 export function llmsDoc(env: LlmsEnv): Promise<{ body: string; etag: string }> {
   const skill = skillEnabled(env);
-  const key = `${env.APP_HOST}|${skill ? "s" : ""}`;
+  const bus = busOn(env);
+  const key = `${env.APP_HOST}|${skill ? "s" : ""}${bus ? "b" : ""}`;
   let p = memo.get(key);
   if (!p) {
-    const body = renderLlms(env.APP_HOST, { skill });
+    const body = renderLlms(env.APP_HOST, { skill, bus });
     p = sha8(body).then((h) => ({ body, etag: `"${VERSION}-llms-${h}"` }));
     // A failure is not memoized: the next request tries again.
     p = p.catch((e: unknown) => {

@@ -107,7 +107,7 @@ describe("members", () => {
     });
   });
 
-  it("after adding, shows the sign-in link to send instead of promising an email", async () => {
+  it("after adding, shows the login link to send instead of promising an email", async () => {
     mount("/settings/members");
     fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
     const dialog = await screen.findByRole("dialog");
@@ -118,10 +118,10 @@ describe("members", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     expect(
       await screen.findByRole("heading", {
-        name: "new@example.com can now sign in",
+        name: "new@example.com can now log in",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Sign-in link" })).toHaveValue(
+    expect(screen.getByRole("textbox", { name: "Login link" })).toHaveValue(
       location.origin,
     );
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
@@ -404,7 +404,7 @@ describe("members: failures and edge cases", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add member" }));
     const offer = await screen.findByRole("alert");
     expect(offer).toHaveTextContent(
-      "gone@example.com was removed. Restore them to bring back their account and the artifacts you haven't transferred. They come back with the access they had (no admin role) and sign in again.",
+      "gone@example.com was removed. Restore them to bring back their account and the artifacts you haven't transferred. They come back with the access they had (no admin role) and log in again.",
     );
     expect(screen.queryByRole("status")).toBeNull();
     fireEvent.click(
@@ -415,7 +415,7 @@ describe("members: failures and edge cases", () => {
     );
     expect(
       await screen.findByText(
-        "gone@example.com is restored. They can sign in again.",
+        "gone@example.com is restored. They can log in again.",
       ),
     ).toBeTruthy();
   });
@@ -495,7 +495,7 @@ describe("members: failures and edge cases", () => {
     fireEvent.submit(form);
     release();
     await screen.findByRole("heading", {
-      name: "new@example.com can now sign in",
+      name: "new@example.com can now log in",
     });
     expect(posts).toBe(1);
   });
@@ -512,7 +512,7 @@ describe("members: failures and edge cases", () => {
     ).toBe("page");
   });
 
-  it("labels last seen inline: Active …, Never signed in, Last active unknown", async () => {
+  it("labels last seen inline: Active …, Never logged in, Last active unknown", async () => {
     const recent = new Date(Date.now() - 3 * 3600_000).toISOString();
     as(owner, [
       { ...owner, lastSeenAt: recent },
@@ -525,7 +525,7 @@ describe("members: failures and edge cases", () => {
     const row = await rowOf(other.email);
     expect(within(row).getByText("Last active unknown")).toBeTruthy();
     const g = await rowOf(guest.email);
-    expect(within(g).getByText("Never signed in")).toBeTruthy();
+    expect(within(g).getByText("Never logged in")).toBeTruthy();
   });
 
   it("a guest row offers no owner option", async () => {

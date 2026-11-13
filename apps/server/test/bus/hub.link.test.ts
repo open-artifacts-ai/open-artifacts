@@ -700,7 +700,7 @@ describe("the away grace (#2110)", () => {
   it("a sign-out (closeAll) ends an away session's link", async () => {
     const s = await away();
     expect(await lookup(s.m.userId, hashOf("e"))).toEqual(s.live);
-    await (await hubOf(s.m.userId)).closeAll("signed out");
+    await (await hubOf(s.m.userId)).closeAll("logged out");
     expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
     expect(await count(s.m.userId)).toEqual([{ n: 0 }]);
     await setClock(s.m.userId, null);

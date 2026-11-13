@@ -22,7 +22,7 @@ describe("person names that read as an agent (#1894)", () => {
     name,
     displayName,
   });
-  it("toUserRef: signed in falls back to the email, anonymous to null", () => {
+  it("toUserRef: logged in falls back to the email, anonymous to null", () => {
     for (const n of ["Leo Urbina's agent", "Leo’s AGENT.", "Leo​'s agent"]) {
       expect(toUserRef(row(n), true).name).toBe("leo@x.com");
       expect(toUserRef(row(n), false).name).toBeNull();

@@ -16,12 +16,16 @@ const READS: Record<string, string> = {
     "fail closed: a hosted install never reaches a broker over HTTPS (no binding, no props: broker_unavailable)",
   "auth/broker-transport.ts: brokerTransportKind":
     "fail closed: reports no transport for a hosted install without a binding or props",
+  "bus/routes.ts: connect":
+    "tightens: hosted always has the edge's client IP, so a request without it is refused",
   "auth/config.ts: domainJoin":
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":
-    "fail closed: hosted Google sign-in requires the broker transport",
+    "fail closed: hosted Google login requires the broker transport",
+  "services/onboarding.ts: seedWelcome":
+    "#2287: only a hosted instance seeds the Welcome",
   "routes/codes.ts: (anonymous)":
-    "fail closed: hosted code sign-in requires Turnstile",
+    "fail closed: hosted code login requires Turnstile",
   "routes/me.ts: toMe":
     "reports: Me.instance.hosted; tightens: Me.instance.update is null (no self-host upgrade nudge, review item 39)",
   "services/bus.ts: busOn":

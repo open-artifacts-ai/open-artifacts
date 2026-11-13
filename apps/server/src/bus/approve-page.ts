@@ -144,7 +144,7 @@ export function renderEntry(v: EntryView): string {
     <label class="field" for="code">Code from your terminal</label>
     <input class="mono code${v.error ? " bad" : ""}" id="code" name="code" type="text" value="${v.typed}" placeholder="XXXX-XXXX" maxlength="32" autocomplete="off" spellcheck="false" autocapitalize="characters" autofocus required${v.error ? html` aria-invalid="true" aria-describedby="code-error"` : ""}>
     ${v.error ? html`<p class="error" id="code-error" role="alert">${v.error}</p>` : ""}
-    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="who">Logged in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="actions">
       <button type="submit" class="primary">Continue</button>
     </div>
@@ -198,7 +198,7 @@ export function renderApprove(v: ApproveView): string {
       <li>${CHECK}<div><b>Stay connected until you revoke it</b><small>It keeps a token on that machine that only works for this.</small></div></li>
       <li class="no">${CROSS}<div><b>Nothing else</b><small>No artifacts, no API and no MCP access. It never reaches anyone else's agents.</small></div></li>
     </ul>
-    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="who">Logged in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Only approve if you started this setup yourself. If you don't recognise where it came from, choose Deny.</span></div>
     <div class="actions">
       <button type="submit" name="decision" value="deny">Deny</button>
@@ -301,7 +301,7 @@ export function renderRoleConfirm(v: RoleConfirmView): string {
           : html`<li>${CHECK}<div><b>${v.action === "clear" ? "Its reach is removed" : "Its reach goes with the role"}</b><small>${v.action === "clear" ? "This role can message agents in:" : "The new holder can message agents in:"}${names(v.reach)}</small></div></li>`
       }
     </ul>
-    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="who">Logged in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Messages sent to this role go to its holder at send time. Only confirm a change you asked for. ${left}</span></div>
     <div class="actions">
       <button type="submit" name="decision" value="reject">Reject</button>
@@ -423,9 +423,9 @@ export function renderSignInHop(v: {
   nonce: string;
 }): string {
   return shell(
-    "Sign in",
+    "Log in",
     v.instanceHost,
-    html`<div class="card" id="s" data-base="${v.base}" data-go="${v.go}">Taking you to sign in…</div>
+    html`<div class="card" id="s" data-base="${v.base}" data-go="${v.go}">Taking you to log in…</div>
 ${withScript(STASH_SCRIPT, v.nonce)}`,
   );
 }
@@ -441,13 +441,13 @@ export function renderRoleReauth(v: {
   stash?: { base: string; nonce: string };
 }): string {
   return shell(
-    "Sign in again",
+    "Log in again",
     v.instanceHost,
     html`<div class="card">
-    <h1>Sign in again</h1>
-    <p>To confirm ${v.what ?? "a role change"}, sign in again first. Your last sign-in is more than 10 minutes old.</p>
-    <div class="who">Signed in as <b>${v.userEmail}</b></div>
-    <div class="actions"><a class="primary" href="${v.reauthUrl}">Sign in again</a></div>
+    <h1>Log in again</h1>
+    <p>To confirm ${v.what ?? "a role change"}, log in again first. Your last login is more than 10 minutes old.</p>
+    <div class="who">Logged in as <b>${v.userEmail}</b></div>
+    <div class="actions"><a class="primary" href="${v.reauthUrl}">Log in again</a></div>
   </div>
 ${v.stash ? html`<div id="s" data-base="${v.stash.base}" data-go=""></div>${withScript(STASH_SCRIPT, v.stash.nonce)}` : ""}`,
   );
@@ -493,7 +493,7 @@ export function renderLinkConfirm(v: LinkConfirmView): string {
       <li>${CHECK}<div><b>Project</b><small class="wrap mono">${v.b}</small></div></li>
     </ul>
     ${noopNote === null ? "" : html`<div class="note" role="note">${WARN}<span>${noopNote}</span></div>`}
-    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="who">Logged in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>
     <div class="actions">
       <button type="submit" name="decision" value="reject">Reject</button>
@@ -544,7 +544,7 @@ export function renderReachConfirm(v: ReachConfirmView): string {
     </ul>
     ${v.unknown.length === 0 ? "" : html`<div class="note" role="note">${WARN}<span>Never seen on your machines:${names(v.unknown)}</span></div>`}
     ${v.noop ? html`<div class="note" role="note">${WARN}<span>This role already reaches all of these, so confirming changes nothing.</span></div>` : ""}
-    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="who">Logged in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>
     <div class="actions">
       <button type="submit" name="decision" value="reject">Reject</button>

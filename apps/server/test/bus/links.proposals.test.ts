@@ -353,7 +353,7 @@ describe("link proposals (#1567)", () => {
     const stale = await sessionAt(userId, old, old);
     const g = await get(p.secret, { cookie: stale });
     expect(g.status).toBe(403);
-    expect(await g.text()).toContain("Sign in again");
+    expect(await g.text()).toContain("Log in again");
     const csrf = await formCsrf(
       env,
       LINK_CONFIRM_SCOPE,
@@ -685,7 +685,7 @@ describe("link proposals: the secret rides in the URL fragment (#1426)", () => {
     d.close();
   });
 
-  it("signed out, the hop goes to sign-in with the page's path as next and never the secret", async () => {
+  it("logged out, the hop goes to login with the page's path as next and never the secret", async () => {
     const { machineToken } = await withBus();
     const p = await proposed(
       await propose(machineToken, { action: "link", a: ns("sa"), b: ns("sb") }),

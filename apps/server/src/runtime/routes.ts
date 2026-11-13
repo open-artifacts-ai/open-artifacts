@@ -283,7 +283,7 @@ async function gate(
   }
   if (kind === "read") return { artifactId, actor: "", anon: null, authzAt };
   if (kind === "storage")
-    throw new ApiError("unauthorized", "Sign in to save changes");
+    throw new ApiError("unauthorized", "Log in to save changes");
   if (kind === "anonId" && ctx.dataWriters !== "viewers")
     throw new ApiError("unauthorized", "No anonymous id here");
   if (!allowed()) throw refused();

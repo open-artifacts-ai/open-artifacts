@@ -421,7 +421,7 @@ async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
   if (!breakGlassFresh(s, now))
     throw new ApiError(
       "reauth_required",
-      "Sign in with Google again to manage the directory",
+      "Log in with Google again to manage the directory",
     );
   setCookieUser(c, s, row);
   await auditBreakGlass(c, row.user.id, s, now);

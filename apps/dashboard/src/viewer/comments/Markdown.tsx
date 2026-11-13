@@ -1,6 +1,7 @@
-import { Fragment, type ReactNode, useMemo } from "react";
+import { Fragment, type ReactNode, useMemo, useSyncExternalStore } from "react";
 import {
   type Block,
+  hostAfterLabel,
   type Inline,
   parseInlineOnly,
   parseMarkdown,
@@ -10,6 +11,22 @@ import {
     are div, p, strong, em, code, pre, blockquote, ul, ol, li and a (plus whatever
     `text` returns for plain text, e.g. mention chips). Never HTML. */
 type TextFn = (s: string, key: string) => ReactNode;
+
+// Not surfaces.tsx's useCoarsePointer: that module imports asks, which imports this one.
+const COARSE = "(pointer: coarse)";
+const onCoarse = (cb: () => void) => {
+  const m = window.matchMedia?.(COARSE);
+  m?.addEventListener?.("change", cb);
+  return () => m?.removeEventListener?.("change", cb);
+};
+const isCoarse = () => window.matchMedia?.(COARSE).matches ?? false;
+
+/** #2348: with no hover (touch), the link's host after its label, muted. */
+function LinkHost({ href, label }: { href: string; label: string }) {
+  const coarse = useSyncExternalStore(onCoarse, isCoarse, () => false);
+  const host = coarse ? hostAfterLabel(href, label) : null;
+  return host ? <span className="text-muted-foreground"> ({host})</span> : null;
+}
 
 function inline(
   nodes: Inline[],
@@ -39,21 +56,24 @@ function inline(
         // Inside a button: the text only, never an interactive element.
         if (!links) return <Fragment key={k}>{n.label}</Fragment>;
         return (
-          <a
-            key={k}
-            href={n.href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline [overflow-wrap:anywhere]"
-          >
-            {n.label}
-          </a>
+          <Fragment key={k}>
+            <a
+              href={n.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline [overflow-wrap:anywhere]"
+            >
+              {n.label}
+            </a>
+            <LinkHost href={n.href} label={n.label} />
+          </Fragment>
         );
     }
   });
 }
 
-const P = "m-0 whitespace-pre-wrap break-words";
+/** Text lines stay readable in a wide pane; code, quotes and cards use the full width. */
+const P = "m-0 max-w-[72ch] whitespace-pre-wrap break-words";
 
 function blocks(bs: Block[], text: TextFn, key: string): ReactNode[] {
   return bs.map((b, i) => {
@@ -95,7 +115,7 @@ function blocks(bs: Block[], text: TextFn, key: string): ReactNode[] {
           <Tag
             key={k}
             start={b.ordered && b.start !== 1 ? b.start : undefined}
-            className={`m-0 pl-5 ${b.ordered ? "list-decimal" : "list-disc"}`}
+            className={`m-0 max-w-[72ch] pl-5 ${b.ordered ? "list-decimal" : "list-disc"}`}
           >
             {b.items.map((it, j) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static parse output

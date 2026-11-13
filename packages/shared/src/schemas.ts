@@ -43,7 +43,7 @@ export type Commenters = z.infer<typeof CommentersSchema>;
 export const CommentsSettingSchema = z
   .union([z.boolean(), z.enum(["everyone", "signed-in", "off"])])
   .describe(
-    'Comments: "everyone" (anyone who can open it may comment), "signed-in" (signed-out visitors read but cannot post; the default for new artifacts), or "off". true turns comments on and keeps who may comment; false is off.',
+    'Comments: "everyone" (anyone who can open it may comment), "signed-in" (visitors who aren\'t logged in read but cannot post; the default for new artifacts), or "off". true turns comments on and keeps who may comment; false is off.',
   );
 export type CommentsSetting = z.infer<typeof CommentsSettingSchema>;
 /** #2080: a `comments` input as the stored pair; a field is absent when the input leaves it alone. */
@@ -1013,6 +1013,19 @@ export const OnboardingSchema = z.strictObject({
   completed: z.boolean(),
   /** The caller owns at least one artifact not in the trash (#1832; absent on older servers). */
   hasArtifacts: z.boolean().optional(),
+  /** #2287 (all optional; absent on older servers). The seeded Welcome's id, for the user it was seeded for only; null if never seeded, deleted or trashed. */
+  welcomeId: z.string().nullable().optional(),
+  /** The Welcome's first open was recorded (PUT welcomeOpened). */
+  welcomeOpened: z.boolean().optional(),
+  /** The caller has connected an agent (an OAuth grant or access token that was used). */
+  agentConnected: z.boolean().optional(),
+  /** The caller's oldest artifact outside the trash that is not the Welcome. */
+  firstArtifact: z
+    .strictObject({ id: z.string(), title: z.string() })
+    .nullable()
+    .optional(),
+  /** The caller has posted at least one comment. */
+  commented: z.boolean().optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
 
@@ -1020,6 +1033,8 @@ export type Onboarding = z.infer<typeof OnboardingSchema>;
 export const OnboardingPatchSchema = z.strictObject({
   dismissed: z.literal(true).optional(),
   completed: z.literal(true).optional(),
+  /** #2287: the first open of the Welcome happened; a no-op for anyone but its user. */
+  welcomeOpened: z.literal(true).optional(),
 });
 export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
 

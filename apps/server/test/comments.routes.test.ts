@@ -442,7 +442,7 @@ describe("edit and delete", () => {
 });
 
 describe("who can", () => {
-  it("a stranger and a signed-out caller on a private artifact get 404, never 403", async () => {
+  it("a stranger and a logged-out caller on a private artifact get 404, never 403", async () => {
     const id = await pub();
     for (const who of [stranger, null]) {
       expect((await call(id, who, "")).status).toBe(404);
@@ -457,7 +457,7 @@ describe("who can", () => {
     expect((await call(id, viewer, "")).status).toBe(200);
   });
 
-  it("a signed-out caller on a team artifact is 404; on any public one they read and comment, even when anonymous data writes are off", async () => {
+  it("a logged-out caller on a team artifact is 404; on any public one they read and comment, even when anonymous data writes are off", async () => {
     const team = await pub({ visibility: "team" });
     expect((await call(team, null, "")).status).toBe(404);
     expect((await post(team, null)).status).toBe(404);
@@ -521,7 +521,7 @@ describe("who can", () => {
     expect((await call(id, viewer, "")).status).toBe(200);
   });
 
-  it("every summary carries comments: true by default, false when off, signed out or in", async () => {
+  it("every summary carries comments: true by default, false when off, logged out or in", async () => {
     const id = await pub({ visibility: "public" });
     const get = async (who: U | null) =>
       (await (await api(app, R.artifact(id), who?.cookie ?? null)).json()) as {
@@ -736,7 +736,7 @@ describe("guests", () => {
 });
 
 describe("rate limits", () => {
-  it("10 a minute per signed-out IP, with Retry-After; a new IP is fine", async () => {
+  it("10 a minute per logged-out IP, with Retry-After; a new IP is fine", async () => {
     const id = await pub({ visibility: "public" });
     await inDo(id, (i) => {
       i.now = () => 1_800_000_000_000;
@@ -1133,7 +1133,7 @@ describe("review fixes (#682)", () => {
     expect((await miss()).status).toBe(429);
   });
 
-  it("signed-in status changes count against 30 a minute; a no-op neither broadcasts nor changes", async () => {
+  it("logged-in status changes count against 30 a minute; a no-op neither broadcasts nor changes", async () => {
     const id = await pub({ visibility: "team" });
     await inDo(id, (i) => {
       i.now = () => 1_800_000_000_000;
@@ -1250,7 +1250,7 @@ describe("review fixes (#682)", () => {
     expect(del.status).toBe(403);
   });
 
-  it("a signed-out write with no cf-connecting-ip is refused", async () => {
+  it("a logged-out write with no cf-connecting-ip is refused", async () => {
     const id = await pub({ visibility: "public" });
     const r = await call(id, null, "", {
       method: "POST",

@@ -8,6 +8,7 @@ import {
   type ErrorCode,
   LIMITS,
   METHOD_CAPABILITY,
+  OnboardingSchema,
   PageSchema,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
@@ -51,6 +52,13 @@ export interface BridgeOptions {
   /** This version's format; the artifact's own is only the current version's. */
   formatOf?: () => string | undefined;
   viewer: Viewer | null;
+  /**
+   * #2287: whether the viewer is the instance owner (read at each call).
+   * `onboarding.get` is answered only to the owner, for the Welcome artifact:
+   * the bridge reads R.onboarding itself and checks its `welcomeId` against
+   * this artifact's id, so no state from elsewhere has to be loaded first.
+   */
+  onboarding?: () => { owner: boolean };
   theme: Theme;
   onPdfText: (text: string) => void;
   onThumb: (blob: Blob) => void;
@@ -81,6 +89,7 @@ export interface BridgeOptions {
       ArtifactToShell,
       { type: "comment.positions" }
     >["positions"],
+    ghost?: { x: number; y: number },
   ) => void;
   onCommentOpen?: (id: string) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
@@ -192,6 +201,12 @@ export function createBridge(opts: BridgeOptions) {
   let lostFired = false;
   let inFlight = 0;
   const abort = new AbortController();
+  const forbidden = () =>
+    new ApiClientError(
+      "forbidden",
+      "onboarding.get is for the Welcome page",
+      403,
+    );
 
   // The sandboxed frame has an opaque origin, so the only valid targetOrigin is "*".
   // Replies carry no secrets beyond what this frame is already entitled to, and the
@@ -420,6 +435,16 @@ export function createBridge(opts: BridgeOptions) {
         return null;
       case "viewer.get":
         return viewer();
+      case "onboarding.get": {
+        if (embed || !opts.onboarding?.().owner) throw forbidden();
+        const o = await http.get(R.onboarding, OnboardingSchema);
+        if (!o.welcomeId || o.welcomeId !== id) throw forbidden();
+        return {
+          agentConnected: o.agentConnected === true,
+          firstArtifact: o.firstArtifact ?? null,
+          commented: o.commented === true,
+        };
+      }
       case "viewer.anonId":
         // Only the per-artifact short id; the signed token stays here.
         // Cached per token id and artifact: the route is rate limited per IP,
@@ -460,7 +485,11 @@ export function createBridge(opts: BridgeOptions) {
     const method = m.method;
     if (inFlight >= MAX_IN_FLIGHT)
       return fail(m.id, "rate_limited", "Too many concurrent calls");
-    if (!artifact.capabilities[METHOD_CAPABILITY[method]])
+    // onboarding.get has its own, stricter gate in run(): Welcome and its owner.
+    if (
+      method !== "onboarding.get" &&
+      !artifact.capabilities[METHOD_CAPABILITY[method]]
+    )
       return fail(
         m.id,
         "capability_denied",
@@ -555,7 +584,7 @@ export function createBridge(opts: BridgeOptions) {
         opts.onCommentSelect?.(m.anchor);
         break;
       case "comment.positions":
-        opts.onCommentPositions?.(m.positions);
+        opts.onCommentPositions?.(m.positions, m.ghost);
         break;
       case "comment.open":
         opts.onCommentOpen?.(m.id);

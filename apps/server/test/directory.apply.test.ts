@@ -606,7 +606,7 @@ describe("onGoogleSignIn", () => {
     return m;
   };
 
-  it("sign-in group diff adds and removes for that user only", async () => {
+  it("login group diff adds and removes for that user only", async () => {
     const me = await signedUp("si-me");
     const other = await signedUp("si-other");
     const s = await sharedSpace();
@@ -840,7 +840,7 @@ describe("T14 security review", () => {
     ...o,
   });
 
-  it("sign-in drift moves the shares: A drifts, then C gets A's old address with zero shares", async () => {
+  it("login drift moves the shares: A drifts, then C gets A's old address with zero shares", async () => {
     const [a1, a2] = [uniq("drift-a"), uniq("drift-a2")];
     const sa = `g-drift-a-${crypto.randomUUID()}`;
     const a = await seedUser(a1, "member", { googleSub: sa });
@@ -939,7 +939,7 @@ describe("T14 security review", () => {
     expect(await statusOf(su)).toBe("suspended");
   });
 
-  it("an unlinked row at a new directory id's address: a pure invite is linked, a row with sign-in history is recycled", async () => {
+  it("an unlinked row at a new directory id's address: a pure invite is linked, a row with login history is recycled", async () => {
     const [inv, used] = [uniq("inv"), uniq("used")];
     const invite = await seedUser(inv, "member");
     const signedIn = await seedUser(used, "member");

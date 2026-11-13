@@ -85,11 +85,11 @@ describe("viewer shell", () => {
     expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
   });
 
-  it("anonymous visitor of a public artifact gets minimal chrome and Sign in", async () => {
+  it("anonymous visitor of a public artifact gets minimal chrome and Log in", async () => {
     anonymous();
     mount(viewerPath(PUBLIC));
     await frame();
-    expect(screen.getByRole("link", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Log in" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
     // Full screen (#290) stays for anonymous visitors, on phones too.
@@ -117,7 +117,7 @@ describe("viewer shell", () => {
     );
     mount(viewerPath(PUBLIC));
     await frame();
-    expect(screen.getByRole("link", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Log in" })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/@/);
   });
 

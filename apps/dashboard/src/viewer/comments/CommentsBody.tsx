@@ -203,7 +203,7 @@ function SignInLink({ box = false }: { box?: boolean }) {
       target={isEmbed() ? "_blank" : undefined}
       rel="noopener noreferrer"
     >
-      {box ? "Sign in to comment" : "Sign in"}
+      {box ? "Log in to comment" : "Log in"}
     </a>
   );
 }

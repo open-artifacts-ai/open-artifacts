@@ -50,12 +50,12 @@ describe("role change mid-session", () => {
   });
 });
 
-describe("sign-in for visitors not signed in", () => {
+describe("login for visitors not logged in", () => {
   const anonymous = () =>
     server.use(
       http.get(`*${R.me}`, () =>
         HttpResponse.json(
-          { error: { code: "unauthorized", message: "Sign in" } },
+          { error: { code: "unauthorized", message: "Log in" } },
           { status: 401 },
         ),
       ),
@@ -77,7 +77,7 @@ describe("sign-in for visitors not signed in", () => {
         await screen.findByText("Use your work email to open Globex <Docs>."),
       ).toBeInTheDocument();
       await waitFor(() =>
-        expect(document.title).toBe("Sign in · Globex <Docs>"),
+        expect(document.title).toBe("Log in · Globex <Docs>"),
       );
     } finally {
       cleanup();

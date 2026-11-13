@@ -290,7 +290,7 @@ describe("BusHub (#1291 tag v4, shipped unbound in 0.109.0; bound by #1315)", ()
   }
 });
 
-describe("DocRoom (#1100 tag v5 shipped unbound; the doc route binds DOC_ROOM)", () => {
+describe("DocRoom (#1100 tag v5, ships unbound; the doc route binds DOC_ROOM later)", () => {
   const read = (f: string) =>
     JSON.parse(strip(readFileSync(join(root, "apps/server", f), "utf8")));
   for (const [name, c] of [
@@ -305,12 +305,6 @@ describe("DocRoom (#1100 tag v5 shipped unbound; the doc route binds DOC_ROOM)",
       expect(c.migrations[4]).toEqual({
         tag: "v5",
         new_sqlite_classes: ["DocRoom"],
-      });
-    });
-    it(`${name}: DOC_ROOM is bound to DocRoom`, () => {
-      expect(c.durable_objects.bindings).toContainEqual({
-        name: "DOC_ROOM",
-        class_name: "DocRoom",
       });
     });
     it(`${name}: no migration deletes, renames or transfers DocRoom`, () => {

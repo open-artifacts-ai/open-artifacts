@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.175.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.174.0...v0.175.0) (2026-11-13)
+
+
+### Features
+
+* setup installs and connects the bus as one step ([#2437](https://github.com/open-artifacts-ai/open-artifacts/issues/2437)) ([#2439](https://github.com/open-artifacts-ai/open-artifacts/issues/2439)) ([919c4d9](https://github.com/open-artifacts-ai/open-artifacts/commit/919c4d972289948a340cee9efbffb1ee34be3900))
+
+
+### Bug Fixes
+
+* **bus:** the event log fixes its mode only when it's wrong ([#2304](https://github.com/open-artifacts-ai/open-artifacts/issues/2304)) ([#2431](https://github.com/open-artifacts-ai/open-artifacts/issues/2431)) ([923e33f](https://github.com/open-artifacts-ai/open-artifacts/commit/923e33fed7296e367d2deb83822c0c964514e6db))
+* **bus:** the Linux lock check counts only real lock types ([#2307](https://github.com/open-artifacts-ai/open-artifacts/issues/2307)) ([#2432](https://github.com/open-artifacts-ai/open-artifacts/issues/2432)) ([8e96cf2](https://github.com/open-artifacts-ai/open-artifacts/commit/8e96cf2a234177d29a78746b9ee9f5ea4814ac23))
+* **share:** the storage permission is the viewer's own data ([#2441](https://github.com/open-artifacts-ai/open-artifacts/issues/2441)) ([#2442](https://github.com/open-artifacts-ai/open-artifacts/issues/2442)) ([06d37e7](https://github.com/open-artifacts-ai/open-artifacts/commit/06d37e71bff8eed03aa7d309019308101c9e3c0d))
+
+## [0.174.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.173.0...v0.174.0) (2026-11-13)
+
+
+### Features
+
+* llms.txt tells agents about the bus ([#2424](https://github.com/open-artifacts-ai/open-artifacts/issues/2424)) ([#2429](https://github.com/open-artifacts-ai/open-artifacts/issues/2429)) ([0838952](https://github.com/open-artifacts-ai/open-artifacts/commit/0838952c739f3ccabf8c97519bd0f19b72247db3))
+
+## [0.173.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.172.0...v0.173.0) (2026-11-13)
+
+
+### Features
+
+* **bus-cli:** a second bus home on one machine leaves every session's settings alone ([#2425](https://github.com/open-artifacts-ai/open-artifacts/issues/2425)) ([#2427](https://github.com/open-artifacts-ai/open-artifacts/issues/2427)) ([16ede08](https://github.com/open-artifacts-ai/open-artifacts/commit/16ede086fc2671271585cf4429695b6f74c7edd7))
+* **onboarding:** Welcome page, live checklist, first open and plan chip ([#2287](https://github.com/open-artifacts-ai/open-artifacts/issues/2287)) ([#2405](https://github.com/open-artifacts-ai/open-artifacts/issues/2405)) ([15538ba](https://github.com/open-artifacts-ai/open-artifacts/commit/15538ba45f1c153d0db5b4df862f4ccc6994a156))
+* **viewer:** the comments pane drags to 900px ([#2418](https://github.com/open-artifacts-ai/open-artifacts/issues/2418)) ([#2420](https://github.com/open-artifacts-ai/open-artifacts/issues/2420)) ([588c9a7](https://github.com/open-artifacts-ai/open-artifacts/commit/588c9a78211a3f0b96e19125dd34552c8d3b3f6f))
+
+
+### Bug Fixes
+
+* Log in / Log out / login wording across user-facing copy ([#2356](https://github.com/open-artifacts-ai/open-artifacts/issues/2356)) ([#2401](https://github.com/open-artifacts-ai/open-artifacts/issues/2401)) ([daecd04](https://github.com/open-artifacts-ai/open-artifacts/commit/daecd040376f226298c03d4eb151ec31cee1e06f))
+* **onboarding:** the provisioner's self-test page doesn't count as a first artifact or block the Welcome ([#2422](https://github.com/open-artifacts-ai/open-artifacts/issues/2422)) ([#2423](https://github.com/open-artifacts-ai/open-artifacts/issues/2423)) ([6468cf9](https://github.com/open-artifacts-ai/open-artifacts/commit/6468cf9557f99332291309031ecc92ebb98cc103))
+
+## [0.172.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.171.0...v0.172.0) (2026-11-13)
+
+
+### Features
+
+* **billing:** Business is contact-only; no self-serve Business checkout ([#2404](https://github.com/open-artifacts-ai/open-artifacts/issues/2404)) ([#2407](https://github.com/open-artifacts-ai/open-artifacts/issues/2407)) ([8161a47](https://github.com/open-artifacts-ai/open-artifacts/commit/8161a473bead470d92f34335404424d64fc67fc8))
+* **comments:** passkey approval on dangerous ask cards ([#2263](https://github.com/open-artifacts-ai/open-artifacts/issues/2263)) ([#2264](https://github.com/open-artifacts-ai/open-artifacts/issues/2264)) ([7d08f79](https://github.com/open-artifacts-ai/open-artifacts/commit/7d08f79a7ea15024d94ef21ade9ba75c4855b165))
+* **comments:** show a link's host after its label on touch ([#2348](https://github.com/open-artifacts-ai/open-artifacts/issues/2348)) ([#2399](https://github.com/open-artifacts-ai/open-artifacts/issues/2399)) ([d83064a](https://github.com/open-artifacts-ai/open-artifacts/commit/d83064a14b4e6e284ea09a23921c08755fe94901))
+* **docs:** the collaborative doc room Durable Object, core ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2154](https://github.com/open-artifacts-ai/open-artifacts/issues/2154)) ([641651c](https://github.com/open-artifacts-ai/open-artifacts/commit/641651c602b8d11ac61667a4c183ebc2a3b441de))
+* **onboarding:** a new hosted instance opens on a Welcome artifact ([#2287](https://github.com/open-artifacts-ai/open-artifacts/issues/2287)) ([#2403](https://github.com/open-artifacts-ai/open-artifacts/issues/2403)) ([80334cf](https://github.com/open-artifacts-ai/open-artifacts/commit/80334cf9855366c80931475151083531b2dad8b6))
+
+
+### Bug Fixes
+
+* **bus:** a purged agent's rename-limit rows go with it ([#2318](https://github.com/open-artifacts-ai/open-artifacts/issues/2318)) ([#2402](https://github.com/open-artifacts-ai/open-artifacts/issues/2402)) ([43a2ef0](https://github.com/open-artifacts-ai/open-artifacts/commit/43a2ef03bf8a42b6a22c3bf9b6b1669093adbed9))
+* **comments:** harden pin badges in the frame; the pin box follows its flag on scroll ([#2388](https://github.com/open-artifacts-ai/open-artifacts/issues/2388), [#2386](https://github.com/open-artifacts-ai/open-artifacts/issues/2386)) ([#2406](https://github.com/open-artifacts-ai/open-artifacts/issues/2406)) ([2bb3233](https://github.com/open-artifacts-ai/open-artifacts/commit/2bb3233720196689a581a58e0573bb39e90b9a93))
+* **comments:** plan-gate comment writes and show billing copy ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#2398](https://github.com/open-artifacts-ai/open-artifacts/issues/2398)) ([560c423](https://github.com/open-artifacts-ai/open-artifacts/commit/560c42363aae6b1567f29febb7dd1deec5db6047))
+
 ## [0.171.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.170.0...v0.171.0) (2026-11-13)
 
 

@@ -25,7 +25,7 @@ export function NoAccess() {
   if (hosted) return null;
   return (
     <EdgePanel>
-      <h1>You're signed in, but there's nothing here for you yet</h1>
+      <h1>You're logged in, but there's nothing here for you yet</h1>
       <p>
         This account isn't a member of this instance, and no artifacts have been
         shared with it.
@@ -37,10 +37,10 @@ export function NoAccess() {
       <SignedInAs />
       <div className="oa-actions">
         <a className="oa-btn oa-primary" href={AUTH.login}>
-          Sign in as someone else
+          Log in as someone else
         </a>
         <button type="button" className="oa-btn" onClick={signOut}>
-          Sign out
+          Log out
         </button>
       </div>
     </EdgePanel>

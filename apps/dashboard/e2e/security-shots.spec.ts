@@ -90,7 +90,7 @@ for (const scheme of ["light", "dark"] as const)
           await shot(page, `${s.n}-${scheme}-${width}`);
         });
 
-      test("back from the sign-in Add asked for", async ({ page }) => {
+      test("back from the login Add asked for", async ({ page }) => {
         await page.addInitScript(() =>
           sessionStorage.setItem(
             "oa.passkey.addAfterReauth",
@@ -100,7 +100,7 @@ for (const scheme of ["light", "dark"] as const)
         await page.goto("/settings/security?mock=passkey-none");
         await expect(
           page.getByText(
-            "You're signed in again. Add your passkey within 10 minutes.",
+            "You're logged in again. Add your passkey within 10 minutes.",
           ),
         ).toBeVisible();
         await expect(

@@ -38,7 +38,7 @@ for (const width of [1280, 390])
         await page.goto(
           `/a/${LANDING}?mock=signed-out&panel=open&tab=comments`,
         );
-        const link = page.getByRole("link", { name: "Sign in to comment" });
+        const link = page.getByRole("link", { name: "Log in to comment" });
         if (width < 600)
           await page.getByRole("button", { name: /^Comments/ }).click();
         await expect(link).toBeVisible();
