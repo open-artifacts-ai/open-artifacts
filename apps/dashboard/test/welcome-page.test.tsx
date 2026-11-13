@@ -47,7 +47,9 @@ describe("Welcome page", () => {
     for (const k of ["connect", "publish", "comment"])
       expect(step(k).dataset.done).toBe("false");
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(true);
+    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(
+      true,
+    );
   });
 
   it("ticks without a reload, and links the published artifact", async () => {
@@ -79,7 +81,9 @@ describe("Welcome page", () => {
       commented: true,
     };
     await vi.advanceTimersByTimeAsync(5000);
-    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(false);
+    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(
+      false,
+    );
     expect(step("comment").textContent).toContain("Commented");
     const n = get.mock.calls.length;
     await vi.advanceTimersByTimeAsync(20000);
@@ -132,8 +136,12 @@ describe("Welcome page", () => {
     });
     await load();
     (document.getElementById("tab-claude") as HTMLElement).click();
-    expect((document.getElementById("panel-any") as HTMLElement).hidden).toBe(true);
-    expect((document.getElementById("panel-claude") as HTMLElement).hidden).toBe(false);
+    expect((document.getElementById("panel-any") as HTMLElement).hidden).toBe(
+      true,
+    );
+    expect(
+      (document.getElementById("panel-claude") as HTMLElement).hidden,
+    ).toBe(false);
     (document.getElementById("copy") as HTMLElement).click();
     await vi.advanceTimersByTimeAsync(0);
     expect(writeText.mock.calls[0]?.[0]).toContain("claude mcp add");

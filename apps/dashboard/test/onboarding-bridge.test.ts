@@ -129,10 +129,9 @@ describe("onboarding.get", () => {
   it("gives an unset flag as not done", async () => {
     fetchMock.mockImplementation(
       async () =>
-        new Response(
-          JSON.stringify({ dismissed: false, completed: false }),
-          { status: 200 },
-        ),
+        new Response(JSON.stringify({ dismissed: false, completed: false }), {
+          status: 200,
+        }),
     );
     const r = await ask(art(WELCOME), { welcomeId: WELCOME, owner: true });
     expect(r.value).toEqual({

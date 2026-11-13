@@ -3,8 +3,8 @@ import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
-import { resetWelcomeRedirect } from "../src/library/useWelcomeRedirect";
 import { soloTrialDaysLeft } from "../src/layout/PlanChip";
+import { resetWelcomeRedirect } from "../src/library/useWelcomeRedirect";
 import {
   calls,
   installHarness,
@@ -58,9 +58,9 @@ describe("first open of Welcome", () => {
       expect(router.state.location.pathname).toBe(`/a/${WELCOME}`),
     );
     await waitFor(() =>
-      expect(
-        puts.find((c) => c.path === "/api/v1/onboarding")?.body,
-      ).toEqual({ welcomeOpened: true }),
+      expect(puts.find((c) => c.path === "/api/v1/onboarding")?.body).toEqual({
+        welcomeOpened: true,
+      }),
     );
   });
 
@@ -165,7 +165,9 @@ describe("Solo trial chip", () => {
     expect(chip).toHaveTextContent("Solo · 30 days free");
     fireEvent.click(chip);
     expect(await screen.findByText(/No card needed/)).toBeInTheDocument();
-    expect(screen.getByText(/\$1 a\s+month or \$10 a year/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/\$1 a\s+month or \$10 a year/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/7 days before/)).toBeInTheDocument();
     expect(screen.getByText(/Nothing is deleted/)).toBeInTheDocument();
   });

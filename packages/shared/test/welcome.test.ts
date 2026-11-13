@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { welcomeHtml, welcomeSetupPrompt, welcomeTabs } from "../src/welcome.js";
+import {
+  welcomeHtml,
+  welcomeSetupPrompt,
+  welcomeTabs,
+} from "../src/welcome.js";
 
 const HOST = "https://oa.example.com";
 
