@@ -18,7 +18,7 @@ import {
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
-import { PartyFace } from "./AuthorFace";
+import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
@@ -535,6 +535,15 @@ function OptionViews({
             data-view-by={p.by.id ?? p.by.name}
             className="inline-flex items-center gap-1"
           >
+            <FaceStack
+              faces={[
+                {
+                  key: String(p.by.id ?? p.by.name),
+                  round: p.by.kind !== "agent",
+                  el: <AuthorFace a={p.by} small />,
+                },
+              ]}
+            />
             {p.by.me ? "You" : p.by.name}
             {p.guest ? " (guest)" : ""} weighed in
           </span>
@@ -627,6 +636,17 @@ export function AskBlock({
       : ask.chosenBy
         ? `${ask.chosenBy.me ? "You" : ask.chosenBy.name} asked ${decider.name} to decide`
         : `${decider.name} decides`;
+  // Who was asked to weigh in (people, not the decider), shown before anyone picks.
+  const weighers = ask.to
+    .filter((p) => p.kind !== "agent" && p.id !== decider?.id)
+    .sort((x, y) => Number(y.me) - Number(x.me));
+  const names = weighers.map((p) => (p.me ? "You" : p.name));
+  const weighersText =
+    names.length <= 1
+      ? (names[0] ?? "")
+      : names.length <= 3
+        ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+        : `${names.slice(0, 2).join(", ")} and ${names.length - 2} others`;
   // Weighing in: everyone's latest view but the decider's own pick (that is the decision).
   const views = (ask.picks ?? []).filter((p) => p.by.id !== decider?.id);
   // Someone asked through their agent, or a pick kept from someone no longer
@@ -708,35 +728,65 @@ export function AskBlock({
             )}{" "}
             asks{askedWho(ask.to, mine)}
           </p>
-          {deciderLine && (
-            <p
-              data-ask-decider=""
-              className={`flex flex-wrap items-center gap-x-2 ${TXT} ${MUTED}`}
-            >
-              <span className="font-medium text-foreground">{deciderLine}</span>
-              {ask.canTakeBack && (
-                <Button
-                  size="xs"
-                  variant="link"
-                  className="h-auto p-0"
-                  disabled={takeBack.isPending}
-                  onClick={() => {
-                    setErr(null);
-                    takeBack.mutate(
-                      { thread: thread.id, comment: c.id },
-                      { onError: setErr },
-                    );
-                  }}
-                >
-                  I'll decide this
-                </Button>
-              )}
-            </p>
-          )}
           {body}
           <div id={qid} className={`${TXT} font-semibold break-words`}>
             <Markdown body={ask.question} />
           </div>
+          {deciderLine && decider && (
+            <div
+              data-ask-decider=""
+              className={`flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5 ${TXT}`}
+            >
+              <span className="flex flex-wrap items-center gap-1.5">
+                <FaceStack
+                  faces={[
+                    {
+                      key: decider.id ?? decider.name,
+                      round: decider.kind !== "agent",
+                      el: <AuthorFace a={decider} small />,
+                    },
+                  ]}
+                />
+                <span className="font-medium text-foreground">
+                  {deciderLine}
+                </span>
+              </span>
+              {weighers.length > 0 && (
+                <span
+                  data-ask-weighers=""
+                  className={`flex flex-wrap items-center gap-1.5 ${MUTED}`}
+                >
+                  <FaceStack
+                    faces={weighers.map((p, i) => ({
+                      key: `${p.id ?? p.name}-${i}`,
+                      round: true,
+                      el: <AuthorFace a={p} small />,
+                    }))}
+                  />
+                  <span>{weighersText} weigh in</span>
+                </span>
+              )}
+            </div>
+          )}
+          {ask.canTakeBack && (
+            <p className={TXT}>
+              <Button
+                size="xs"
+                variant="link"
+                className="h-auto p-0 font-normal text-primary underline"
+                disabled={takeBack.isPending}
+                onClick={() => {
+                  setErr(null);
+                  takeBack.mutate(
+                    { thread: thread.id, comment: c.id },
+                    { onError: setErr },
+                  );
+                }}
+              >
+                I'll decide this
+              </Button>
+            </p>
+          )}
           {ask.role && !ask.closed && !pickedOpt && (
             <p data-ask-verb="" className={`${TXT} ${MUTED}`}>
               {weighing
@@ -759,15 +809,20 @@ export function AskBlock({
             {ask.options.map((o, i) => {
               const rec = ask.recommended?.optionId === o.id;
               const sel = picked === o.id;
+              // The decision keeps full strength in green; only unpicked options fade.
+              const isDecision =
+                ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
               return (
                 <li key={o.id}>
                   <Button
                     variant="outline"
                     size="sm"
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
-                      sel
-                        ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
-                        : ""
+                      isDecision
+                        ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
+                        : sel
+                          ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
+                          : ""
                     }`}
                     disabled={
                       !canAnswer || answer.isPending || sel || (locked && !sel)
@@ -797,20 +852,22 @@ export function AskBlock({
                       </span>
                     )}
                     <span className="min-w-0 flex-1 break-words">
-                      <b>{o.label}</b>
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <b>{o.label}</b>
+                        {rec && (
+                          <span
+                            className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                          >
+                            Recommended
+                          </span>
+                        )}
+                      </span>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
                           <MarkdownInline body={o.detail} links={false} />
                         </span>
                       )}
                     </span>
-                    {rec && (
-                      <span
-                        className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                      >
-                        Recommended
-                      </span>
-                    )}
                   </Button>
                   <OptionViews
                     views={views.filter((p) => p.optionId === o.id)}
@@ -834,7 +891,7 @@ export function AskBlock({
             </p>
           )}
           {weighing && myPick && !answer.isPending && (
-            <p className={`${TXT} font-medium`} data-ask-answer="">
+            <p className={TXT} data-ask-answer="">
               Your view is in. {decider?.name ?? "The decider"} decides.
               {canAnswer && locked && (
                 <>
