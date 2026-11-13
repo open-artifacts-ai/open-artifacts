@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { newId, OnboardingSchema, R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import { seedWelcome } from "../src/services/onboarding.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
@@ -255,6 +256,26 @@ describe("R.onboarding", () => {
       );
       expect((await get(other.cookie)).body?.welcomeOpened).toBe(false);
       expect((await put(o.cookie, { welcomeOpened: false })).status).toBe(400);
+    });
+
+    it("a comment posted by an agent (a token) does not tick commented", async () => {
+      await clear();
+      const o = await owner();
+      const a = await api(app, R.artifacts, o.cookie, {
+        method: "POST",
+        body: { title: "mine", format: "html", content: "<p>x</p>" },
+      });
+      const { id } = (await a.json()) as { id: string };
+      const pat = (await createPat(env, o.userId, "Claude Code")).token;
+      const post = (auth: string) =>
+        api(app, R.comments(id), auth, {
+          method: "POST",
+          body: { anchor: { kind: "note" }, body: "hi" },
+        });
+      expect((await post(pat)).status).toBeLessThan(300);
+      expect((await get(o.cookie)).body?.commented).toBe(false);
+      expect((await post(o.cookie)).status).toBeLessThan(300);
+      expect((await get(o.cookie)).body?.commented).toBe(true);
     });
 
     it("reports the caller's first other artifact, connected agent and comment", async () => {
