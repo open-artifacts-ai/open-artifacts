@@ -183,7 +183,7 @@ describe("GET /llms.txt", () => {
     expect(steps).toMatch(/5\. \*\*Publish a first page\*\*/);
     expect(steps).not.toMatch(/optional|offer/i);
     expect(steps).not.toContain("\u2014");
-    expect(steps).toContain("https://open-artifacts.com/docs/agent-bus/");
+    expect(steps).toContain("Open Artifacts is connected, but the bus isn't");
   });
 
   it("bus off (no hub, or hosted without the bus feature): no Agent bus section", async () => {

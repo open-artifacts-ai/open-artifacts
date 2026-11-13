@@ -109,16 +109,18 @@ const SETUP_STEPS_TITLE = "## Setup steps";
 const SETUP_STEPS_INTRO =
   "Do these in order. The person agreed to all of it when they asked for setup.";
 const setupSteps = (origin: string, mcpUrl: string): string[] => [
-  `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser (see Connect below). Never ask them to paste a token into the chat.`,
-  `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do. More: https://open-artifacts.com/docs/agent-bus/`,
+  `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
+  `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
   "**Habit lines.** If the installer prints QUESTION FOR YOUR USER, show it to them and run the command for their answer. Never answer it yourself.",
   "**Check.** The bus `self` tool answers with your name. If it doesn't, setup is not done: tell the person what failed and the exact fix.",
   "**Publish a first page** and give them the link.",
 ];
+const SETUP_FAILURE =
+  "If the bus step fails, tell the person: \"Open Artifacts is connected, but the bus isn't, so I won't see your comments unless you tell me. To fix it: <the installer's printed fix>.\"";
 const setupBlock = (origin: string, mcpUrl: string) =>
   `${SETUP_STEPS_TITLE}\n\n${SETUP_STEPS_INTRO}\n\n${setupSteps(origin, mcpUrl)
     .map((t, i) => `${i + 1}. ${t}`)
-    .join("\n")}\n\n`;
+    .join("\n")}\n\n${SETUP_FAILURE}\n\n`;
 
 /** The guide for `host`. `plugin` and `skill` default to the live settings. */
 export function renderLlms(
