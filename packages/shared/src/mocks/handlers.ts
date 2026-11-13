@@ -115,6 +115,8 @@ export type MockOptions = {
   commentAsks?: boolean;
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
   commentAgents?: boolean;
+  /** #2019: the "Landing page" artifact is an image (or a pdf) with pins on it. */
+  commentPins?: "image" | "pdf";
   /** #2338: agent comments with markdown, a hostile body and a markdown ask. */
   commentMarkdown?: boolean;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
@@ -363,6 +365,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         a.commenters = "signed-in";
       }
   const versions = f.versions;
+  if (opts.commentPins)
+    for (const a of artifacts)
+      if (a.title === "Landing page") {
+        a.format = opts.commentPins;
+        for (const v of versions[a.id] ?? []) v.format = opts.commentPins;
+      }
   const files = new Map(Object.entries(f.files));
   const shares = f.shares;
   const members: Member[] = f.members;
@@ -656,6 +664,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     seedAsk: opts.commentAsks,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
+    seedPins: opts.commentPins,
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });
