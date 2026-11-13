@@ -2412,7 +2412,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       let counts: Record<string, number> | undefined;
       if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
         // Unloaded rows too (#2343): their count says whether the skip is worth a log line.
-        const refs = rows.map((r) => r.ref).slice(0, MAX_WAITING_QUERY);
+        // Held rows first: should the rows ever outnumber the cap (AWAY_MAX equals it today), wakes win.
+        const refs = [
+          ...rows.filter((r) => held.has(r.ref)),
+          ...rows.filter((r) => !held.has(r.ref)),
+        ]
+          .map((r) => r.ref)
+          .slice(0, MAX_WAITING_QUERY);
         if (refs.length) {
           counts = await hubWaitingCounts(refs);
           if (!counts) log("codex wake skipped: the hub did not answer");
