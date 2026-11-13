@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.173.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.172.0...v0.173.0) (2026-11-13)
+
+
+### Features
+
+* **bus-cli:** a second bus home on one machine leaves every session's settings alone ([#2425](https://github.com/open-artifacts-ai/open-artifacts/issues/2425)) ([#2427](https://github.com/open-artifacts-ai/open-artifacts/issues/2427)) ([16ede08](https://github.com/open-artifacts-ai/open-artifacts/commit/16ede086fc2671271585cf4429695b6f74c7edd7))
+* **onboarding:** Welcome page, live checklist, first open and plan chip ([#2287](https://github.com/open-artifacts-ai/open-artifacts/issues/2287)) ([#2405](https://github.com/open-artifacts-ai/open-artifacts/issues/2405)) ([15538ba](https://github.com/open-artifacts-ai/open-artifacts/commit/15538ba45f1c153d0db5b4df862f4ccc6994a156))
+* **viewer:** the comments pane drags to 900px ([#2418](https://github.com/open-artifacts-ai/open-artifacts/issues/2418)) ([#2420](https://github.com/open-artifacts-ai/open-artifacts/issues/2420)) ([588c9a7](https://github.com/open-artifacts-ai/open-artifacts/commit/588c9a78211a3f0b96e19125dd34552c8d3b3f6f))
+
+
+### Bug Fixes
+
+* Log in / Log out / login wording across user-facing copy ([#2356](https://github.com/open-artifacts-ai/open-artifacts/issues/2356)) ([#2401](https://github.com/open-artifacts-ai/open-artifacts/issues/2401)) ([daecd04](https://github.com/open-artifacts-ai/open-artifacts/commit/daecd040376f226298c03d4eb151ec31cee1e06f))
+* **onboarding:** the provisioner's self-test page doesn't count as a first artifact or block the Welcome ([#2422](https://github.com/open-artifacts-ai/open-artifacts/issues/2422)) ([#2423](https://github.com/open-artifacts-ai/open-artifacts/issues/2423)) ([6468cf9](https://github.com/open-artifacts-ai/open-artifacts/commit/6468cf9557f99332291309031ecc92ebb98cc103))
+
 ## [0.172.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.171.0...v0.172.0) (2026-11-13)
 
 
