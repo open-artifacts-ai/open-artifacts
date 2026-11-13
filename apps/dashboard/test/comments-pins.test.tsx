@@ -212,7 +212,9 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     await hello();
     // #1657, spec 6: an image starts in Pin; a pdf starts in Select.
     expect(await tool("Pin")).toHaveAttribute("aria-pressed", "true");
-    expect(await screen.findByText("Click to place a pin")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Click where you want to comment"),
+    ).toBeInTheDocument();
     // #1698: the default is not a mode the reader chose, so Esc is not offered
     // for it and does not take it away.
     expect(screen.queryByText(/Esc to cancel/)).toBeNull();
@@ -222,15 +224,17 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("pin"));
     fireEvent.click(await tool("Select"));
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
-    expect(screen.queryByText("Click to place a pin")).toBeNull();
+    expect(screen.queryByText("Click where you want to comment")).toBeNull();
     // And back: Pin is one click away, and now the choice is the reader's.
     fireEvent.click(await tool("Pin"));
-    expect(await screen.findByText("Click to place a pin")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Click where you want to comment"),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Esc to cancel/)).toBeInTheDocument();
     // Esc leaves that pin mode.
     fireEvent.keyDown(document.body, { key: "Escape" });
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
-    expect(screen.queryByText("Click to place a pin")).toBeNull();
+    expect(screen.queryByText("Click where you want to comment")).toBeNull();
   });
 
   it("a pdf opens in Select mode (#1657)", async () => {
@@ -239,7 +243,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     await col();
     await hello();
     expect(await tool("Select")).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByText("Click to place a pin")).toBeNull();
+    expect(screen.queryByText("Click where you want to comment")).toBeNull();
   });
 
   it("keeps a cue on the page when pin mode is on and the comments column is closed", async () => {
@@ -248,20 +252,24 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     await col();
     fireEvent.click(await tool("Pin"));
     // The list shows its own cue: one hint, no bar.
-    expect(await screen.findAllByText("Click to place a pin")).toHaveLength(1);
+    expect(
+      await screen.findAllByText("Click where you want to comment"),
+    ).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: /^Comments/ }));
     await waitFor(() =>
       expect(
         screen.queryByRole("complementary", { name: "Comments" }),
       ).toBeNull(),
     );
-    const bar = (await screen.findByText("Click to place a pin")).closest(
-      "[role=status]",
-    ) as HTMLElement;
-    expect(within(bar).getByText("Click to place a pin")).toBeInTheDocument();
+    const bar = (
+      await screen.findByText("Click where you want to comment")
+    ).closest("[role=status]") as HTMLElement;
+    expect(
+      within(bar).getByText("Click where you want to comment"),
+    ).toBeInTheDocument();
     fireEvent.click(within(bar).getByRole("button", { name: "Select" }));
     await waitFor(() =>
-      expect(screen.queryByText("Click to place a pin")).toBeNull(),
+      expect(screen.queryByText("Click where you want to comment")).toBeNull(),
     );
   });
 
@@ -271,7 +279,9 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     mount(viewerPath(OWNED));
     await col();
     fireEvent.click(await tool("Pin"));
-    expect(await screen.findByText("Tap to place a pin")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Tap where you want to comment"),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Esc to cancel/)).toBeNull();
   });
 
@@ -325,7 +335,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     await onPin({ x: 0.25, y: 0.75 });
     await screen.findByRole("textbox", { name: "Add a comment" });
     expect(await tool("Select")).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByText("Click to place a pin")).toBeNull();
+    expect(screen.queryByText("Click where you want to comment")).toBeNull();
   });
 
   it("Esc in a text field, an IME or a modal does not leave a chosen pin mode (#1698)", async () => {
@@ -462,10 +472,12 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     fireEvent.click(await tool("Pin"));
     await onPin({ x: 0.25, y: 0.75 });
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
-    expect(screen.getByText("New pin")).toBeInTheDocument();
+    expect(screen.getByText("New comment")).toBeInTheDocument();
     // #1698: the reader chose Pin, so that choice holds for the view: the
     // next pin is one click away.
-    expect(screen.getByText("Click to place a pin")).toBeInTheDocument();
+    expect(
+      screen.getByText("Click where you want to comment"),
+    ).toBeInTheDocument();
     await wait(30);
     expect(posts).toHaveLength(0);
     fireEvent.change(box, { target: { value: "Here" } });
@@ -512,21 +524,35 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     expect(box).toBeDefined();
   });
 
-  it("labels pin cards without a number (the bubbles have none) and focuses the pin on click", async () => {
+  it("labels image pin cards Pinned spot, with no number (the bubbles have none) and focuses the pin on click", async () => {
     asFormat("image", H1, {
       threads: [pinThread("a", 1, H1), pinThread("b", 2, H1)],
     });
     mount(viewerPath(OWNED));
     const c = await col();
-    const labels = await within(c).findAllByText("Pin", { selector: "p" });
+    const labels = await within(c).findAllByText("Pinned spot");
     expect(labels).toHaveLength(2);
     expect(within(c).queryByText(/Pin \d/)).toBeNull();
+    expect(within(c).getByRole("button", { name: "Pin" })).toHaveAttribute(
+      "title",
+      "Comment on a spot",
+    );
     const shows = within(c).getAllByRole("button", {
       name: "Show pin in page",
     });
     expect(shows).toHaveLength(2);
     fireEvent.click(shows[1] as HTMLElement);
     await waitFor(() => expect(focus).toHaveBeenCalledWith("b"));
+  });
+
+  it("a pdf pin's card says only its page", async () => {
+    const t = pinThread("a", 1, H1);
+    (t.anchor as { page?: number }).page = 3;
+    asFormat("pdf", H1, { threads: [t] });
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText("Page 3")).toBeInTheDocument();
+    expect(within(c).queryByText(/Pin/, { selector: "p" })).toBeNull();
   });
 
   it("says the image or page changed only when both hashes are known and differ", async () => {
@@ -551,7 +577,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     asFormat("image", H1, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
     await col();
-    await screen.findAllByText("Pin", { selector: "p" });
+    await screen.findAllByText("Pinned spot");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
 
@@ -559,7 +585,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     asFormat("image", H2, { threads: [pinThread("a", 1, null)] });
     mount(viewerPath(OWNED));
     await col();
-    await screen.findAllByText("Pin", { selector: "p" });
+    await screen.findAllByText("Pinned spot");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
 
@@ -567,7 +593,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     asFormat("image", null, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
     await col();
-    await screen.findAllByText("Pin", { selector: "p" });
+    await screen.findAllByText("Pinned spot");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
 });

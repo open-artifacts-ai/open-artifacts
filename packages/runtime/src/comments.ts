@@ -19,10 +19,11 @@ import {
 } from "./text-range.js";
 
 // The frame half of comments (#682). Loaded with the schemas chunk, not the
-// entry. Hard rule: comment text and author names never enter the frame. The
-// shell sends anchors, opaque ids, pin numbers and flags (#2019: on image and
-// pdf pins, also a badge: one or two initials or an agent's face, never the
-// name); the frame sends
+// entry. Hard rule: comment text and author names never enter the frame, with
+// one exception (#2019): image and pdf pins carry a badge (initials or an
+// agent's face) and the author's name as the bubble's accessible label (those
+// frames hold no author script). The shell sends anchors, opaque ids, pin
+// numbers and flags; the frame sends
 // anchors it built from the page's own text, ids, states and pixel offsets.
 // Nothing here adds a node to the page tree except one overlay host under
 // <html> (its UI sits in a shadow root), and highlights use the CSS Custom

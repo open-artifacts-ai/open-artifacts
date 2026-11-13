@@ -94,9 +94,9 @@ const touch = () =>
   typeof window !== "undefined" &&
   window.matchMedia?.("(pointer: coarse)").matches === true;
 
-/** "Click to place a pin" on a pointer device, "Tap to place a pin" on touch. */
+/** "Click where you want to comment" on a pointer device, "Tap where you want to comment" on touch. */
 export const pinHint = () =>
-  touch() ? "Tap to place a pin" : "Click to place a pin";
+  touch() ? "Tap where you want to comment" : "Click where you want to comment";
 
 /** "Esc to cancel", on a device with a keyboard only: touch has the Select button. */
 function EscHint({ esc }: { esc: boolean }) {
@@ -122,6 +122,7 @@ function Tools({ api }: { api: CommentsApi }) {
           size="xs"
           variant={api.mode === "pin" ? "default" : "outline"}
           aria-pressed={api.mode === "pin"}
+          title="Comment on a spot"
           onClick={() => api.setMode("pin")}
         >
           Pin
@@ -1192,7 +1193,7 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
     return (
       <div className="flex flex-col gap-1">
         <p className={`${TXT} font-medium ${MUTED}`}>
-          {a.page ? `Page ${a.page} · ` : ""}Pin
+          {a.page ? `Page ${a.page}` : "Pinned spot"}
         </p>
         {changed && api.pinFormat && (
           <p className={`${TXT} ${MUTED}`}>
@@ -1645,9 +1646,7 @@ function NewThread({
         actions={ACTIONS_PLAIN}
         quote={
           "pin" in draft ? (
-            <p className={`${TXT} font-medium ${MUTED}`}>
-              {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
-            </p>
+            <p className={`${TXT} font-medium ${MUTED}`}>New comment</p>
           ) : (
             <QuoteBar>{draft.anchor.exact}</QuoteBar>
           )
