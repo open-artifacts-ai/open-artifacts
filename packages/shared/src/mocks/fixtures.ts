@@ -13,7 +13,6 @@ import type {
   UserRef,
   VersionInfo,
 } from "../schemas.js";
-import { WELCOME_TITLE, welcomeHtml } from "../welcome.js";
 
 // Literal 16-char base58 ids (same shape as newId()) so fixtures stay deterministic.
 const ID = {
@@ -122,14 +121,15 @@ const members: Member[] = [
 export const WELCOME_MOCK_ID = "WmCnEfGhJk4mNpQr";
 
 /** The Welcome artifact, its one version and its html (the page the server seeds). */
-export function welcomeFixture(host: string) {
+export function welcomeFixture() {
   return {
-    artifact: art(WELCOME_MOCK_ID, WELCOME_TITLE, "html", {
+    artifact: art(WELCOME_MOCK_ID, "Welcome", "html", {
       createdAt: "2026-01-01T10:00:00.000Z",
       updatedAt: "2026-01-01T10:00:00.000Z",
     }),
     version: ver(1, "index.html", "text/html"),
-    html: welcomeHtml(host),
+    // The real page is apps/server/src/onboarding/welcome.html; specs serve it.
+    html: "<!doctype html><h1>Welcome</h1>",
   };
 }
 

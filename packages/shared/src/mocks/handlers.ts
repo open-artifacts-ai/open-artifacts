@@ -401,7 +401,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const onboarding: Onboarding = { dismissed: false, completed: false };
   if (opts.welcome) {
     const w = opts.welcome === true ? {} : opts.welcome;
-    const wf = welcomeFixture("https://app.example.com");
+    const wf = welcomeFixture();
     artifacts.unshift(wf.artifact);
     versions[wf.artifact.id] = [wf.version];
     files.set(`${wf.artifact.id}/1/index.html`, wf.html);

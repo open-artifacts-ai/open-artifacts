@@ -3,11 +3,14 @@
 // `pnpm --filter @oa/runtime build` first. Shots only when WELCOME_SHOTS_DIR is set.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { welcomeHtml } from "@oa/shared";
 import { expect, type Page, test } from "@playwright/test";
 
 const ID = "WmCnEfGhJk4mNpQr"; // the mock's Welcome (?mock=welcome)
 const DIST = join(process.cwd(), "../../packages/runtime/dist");
+const PAGE = readFileSync(
+  join(process.cwd(), "../server/src/onboarding/welcome.html"),
+  "utf8",
+);
 const OUT = process.env.WELCOME_SHOTS_DIR;
 
 test.use({
@@ -41,7 +44,7 @@ async function serveFrame(page: Page, host: string) {
     // The server injects the runtime first in <head>; so does this.
     return r.fulfill({
       contentType: "text/html",
-      body: welcomeHtml(host).replace(
+      body: PAGE.replaceAll("{{APP_ORIGIN}}", host).replace(
         "<head>",
         '<head><meta name="oa-format" content="html"><script src="/_oa/runtime.js"></script>',
       ),

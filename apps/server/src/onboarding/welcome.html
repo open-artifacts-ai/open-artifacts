@@ -1,64 +1,18 @@
-// #2287: the "Welcome" artifact a new instance opens on. A plain html page,
-// seeded by the server (welcomeHtml(host) with the instance's own origin: a
-// sandboxed content frame cannot learn the app's host from location). It asks
-// the shell how far the owner is through `openArtifacts.onboarding.get()`,
-// which the shell answers for this artifact and its owner only. Copy is
-// Product's, final: change it only with them. No em dashes.
-
-import { agentClients } from "./agent-clients.js";
-
-export const WELCOME_TITLE = "Welcome";
-
-/** The prompt a person pastes into any agent (the dashboard's setupPrompt). */
-export const welcomeSetupPrompt = (host: string) =>
-  `Set up Open Artifacts for me: follow ${host}/llms.txt`;
-
-const esc = (s: string) =>
-  s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
-/** Embeds JSON in a script block without letting it close the block. */
-const jsonForScript = (v: unknown) =>
-  JSON.stringify(v)
-    .replaceAll("<", "\\u003c")
-    .replaceAll(" ", "\\u2028")
-    .replaceAll(" ", "\\u2029");
-
-type Tab = {
-  id: string;
-  label: string;
-  note?: string;
-  file?: string;
-  code: string;
-};
-
-/** The tabs: the paste prompt for any agent, then each client's own setup. */
-export function welcomeTabs(host: string): Tab[] {
-  const oauth = agentClients(`${host}/mcp`).filter(
-    (s) => s.variant === "oauth",
-  );
-  const pick = (agent: string, id: string, label: string): Tab => {
-    const s = oauth.find((x) => x.agent === agent);
-    return {
-      id,
-      label,
-      code: s?.code ?? "",
-      file: s?.file,
-      note: s?.verify,
-    };
-  };
-  return [
-    { id: "any", label: "Any agent", code: welcomeSetupPrompt(host) },
-    pick("Claude Code", "claude", "Claude Code"),
-    pick("Codex CLI", "codex", "Codex"),
-    pick("Cursor", "cursor", "Cursor"),
-  ];
-}
-
-const CSS = `
+<!doctype html>
+<!--
+Welcome artifact (#2287). The server seeds this file as the "Welcome" html
+artifact. Before saving, replace EVERY occurrence of the token {{APP_ORIGIN}}
+with the instance's app origin (https://host, no trailing slash). The frame's
+own origin is the content host, so the page cannot learn it at runtime.
+Copy is Product's, final; no em dashes. The page asks the shell with
+openArtifacts.onboarding.get(), answered for this artifact's owner only.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome</title>
+<style>
 :root{color-scheme:light dark;--bg:#fff;--fg:#1b1d21;--muted:#5d6370;--line:#dfe2e8;--soft:#f4f5f8;--accent:#3b5bdb;--accent-soft:#e8edff;--ok:#1a7f4b;--mark:#fff1b8;--mark-line:#e6c84a}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#15171b;--fg:#e8eaee;--muted:#a0a6b3;--line:#2c3038;--soft:#1e2127;--accent:#8ea2ff;--accent-soft:#252c47;--ok:#4cc38a;--mark:#4a4018;--mark-line:#b89b2c}}
 :root[data-theme=dark]{color-scheme:dark;--bg:#15171b;--fg:#e8eaee;--muted:#a0a6b3;--line:#2c3038;--soft:#1e2127;--accent:#8ea2ff;--accent-soft:#252c47;--ok:#4cc38a;--mark:#4a4018;--mark-line:#b89b2c}
@@ -98,12 +52,40 @@ ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 .target mark{background:var(--mark);color:inherit;border-bottom:2px solid var(--mark-line);padding:2px 3px;border-radius:3px}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
 @media (max-width:420px){main{padding:24px 16px 40px}h1{font-size:24px}}
-`;
+</style>
+</head>
+<body>
+<main>
+<h1>Welcome</h1>
+<p class="lead">This is your Open Artifacts instance. Your agents publish pages here, and you read them, comment, and answer their questions.</p>
 
-const CHECK =
-  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+<h2>Connect your agent</h2>
+<p>Paste this into your agent. It connects to this instance and learns how to publish here.</p>
+<div role="tablist" aria-label="Your agent"><button role="tab" type="button" id="tab-any" aria-controls="panel-any" aria-selected="true" tabindex="0">Any agent</button><button role="tab" type="button" id="tab-claude" aria-controls="panel-claude" aria-selected="false" tabindex="-1">Claude Code</button><button role="tab" type="button" id="tab-codex" aria-controls="panel-codex" aria-selected="false" tabindex="-1">Codex</button><button role="tab" type="button" id="tab-cursor" aria-controls="panel-cursor" aria-selected="false" tabindex="-1">Cursor</button></div>
+<div class="panel" role="tabpanel" id="panel-any" aria-labelledby="tab-any"><pre>Set up Open Artifacts for me: follow {{APP_ORIGIN}}/llms.txt</pre></div><div class="panel" role="tabpanel" id="panel-claude" aria-labelledby="tab-claude" hidden><pre>claude mcp add --transport http -s user open-artifacts {{APP_ORIGIN}}/mcp</pre><p class="note">In a Claude Code session, run `/mcp`, pick open-artifacts and sign in with your browser. Claude Code then lists its tools.</p></div><div class="panel" role="tabpanel" id="panel-codex" aria-labelledby="tab-codex" hidden><p class="file">~/.codex/config.toml</p><pre>[mcp_servers.open-artifacts]
+url = &quot;{{APP_ORIGIN}}/mcp&quot;</pre><p class="note">Run `codex mcp login open-artifacts` to sign in with your browser. Then `codex mcp list` shows open-artifacts.</p></div><div class="panel" role="tabpanel" id="panel-cursor" aria-labelledby="tab-cursor" hidden><p class="file">~/.cursor/mcp.json</p><pre>{
+  &quot;mcpServers&quot;: {
+    &quot;open-artifacts&quot;: {
+      &quot;url&quot;: &quot;{{APP_ORIGIN}}/mcp&quot;
+    }
+  }
+}</pre><p class="note">Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.</p></div>
+<button class="copy" id="copy" type="button">Copy</button>
 
-const SCRIPT = `
+<h2>Get started</h2>
+<ol class="steps">
+<li class="step" data-step="connect" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Connect your agent</b></span></li>
+<li class="step" data-step="publish" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Publish your first artifact</b><span class="hint">Ask your agent: &quot;Publish a page about what you're working on.&quot;</span></span></li>
+<li class="step" data-step="comment" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Leave a comment</b><span class="hint">Select the highlighted sentence below and comment on it.</span></span></li>
+</ol>
+<p class="done-line" id="all-done" hidden>You're set. Everything you publish is in the <b>Library</b>.</p>
+
+<p class="target"><mark>Select this sentence and add a comment. Your agent can read it and reply in the thread.</mark></p>
+
+<footer>You can delete this page any time. Nothing else depends on it.</footer>
+</main>
+<script type="application/json" id="oa-welcome-data">{"host":"{{APP_ORIGIN}}","publishHint":"Ask your agent: \"Publish a page about what you're working on.\"","commentHint":"Select the highlighted sentence below and comment on it."}</script>
+<script>
 (function(){
   var D = JSON.parse(document.getElementById("oa-welcome-data").textContent);
   var oa = window.openArtifacts;
@@ -222,67 +204,6 @@ const SCRIPT = `
   document.addEventListener("visibilitychange", poll);
   window.addEventListener("focus", poll);
 })();
-`;
-
-/** The Welcome page for the instance at `host` (its origin, no trailing slash). */
-export function welcomeHtml(host: string): string {
-  host = host.replace(/\/+$/, "");
-  const tabs = welcomeTabs(host);
-  const tablist = tabs
-    .map(
-      (t, i) =>
-        `<button role="tab" type="button" id="tab-${t.id}" aria-controls="panel-${t.id}" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${esc(t.label)}</button>`,
-    )
-    .join("");
-  const panels = tabs
-    .map(
-      (t, i) =>
-        `<div class="panel" role="tabpanel" id="panel-${t.id}" aria-labelledby="tab-${t.id}"${i === 0 ? "" : " hidden"}>${
-          t.file ? `<p class="file">${esc(t.file)}</p>` : ""
-        }<pre>${esc(t.code)}</pre>${t.note ? `<p class="note">${esc(t.note)}</p>` : ""}</div>`,
-    )
-    .join("");
-  const data = {
-    host,
-    publishHint: `Ask your agent: "Publish a page about what you're working on."`,
-    commentHint: "Select the highlighted sentence below and comment on it.",
-  };
-  const step = (key: string, label: string) =>
-    `<li class="step" data-step="${key}" data-done="false"><span class="box">${CHECK}</span><span class="label">${label}</span></li>`;
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${WELCOME_TITLE}</title>
-<style>${CSS}</style>
-</head>
-<body>
-<main>
-<h1>${WELCOME_TITLE}</h1>
-<p class="lead">This is your Open Artifacts instance. Your agents publish pages here, and you read them, comment, and answer their questions.</p>
-
-<h2>Connect your agent</h2>
-<p>Paste this into your agent. It connects to this instance and learns how to publish here.</p>
-<div role="tablist" aria-label="Your agent">${tablist}</div>
-${panels}
-<button class="copy" id="copy" type="button">Copy</button>
-
-<h2>Get started</h2>
-<ol class="steps">
-${step("connect", "<b>Connect your agent</b>")}
-${step("publish", `<b>Publish your first artifact</b><span class="hint">${esc(data.publishHint)}</span>`)}
-${step("comment", `<b>Leave a comment</b><span class="hint">${esc(data.commentHint)}</span>`)}
-</ol>
-<p class="done-line" id="all-done" hidden>You're set. Everything you publish is in the <b>Library</b>.</p>
-
-<p class="target"><mark>Select this sentence and add a comment. Your agent can read it and reply in the thread.</mark></p>
-
-<footer>You can delete this page any time. Nothing else depends on it.</footer>
-</main>
-<script type="application/json" id="oa-welcome-data">${jsonForScript(data)}</script>
-<script>${SCRIPT}</script>
+</script>
 </body>
 </html>
-`;
-}

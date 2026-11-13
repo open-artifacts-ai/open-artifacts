@@ -1,8 +1,14 @@
 // #2287: the Welcome page's own script, run in jsdom against a stand-in runtime.
-import { welcomeHtml } from "@oa/shared";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const HOST = "https://oa.example.com";
+const FILE = join(__dirname, "../../server/src/onboarding/welcome.html");
+const TOKEN = "{{APP_ORIGIN}}";
+/** What the server seeds: the file with the token replaced by the app origin. */
+const welcomeHtml = (host: string) =>
+  readFileSync(FILE, "utf8").replaceAll(TOKEN, host);
 type Progress = {
   agentConnected: boolean;
   firstArtifact: { id: string; title: string } | null;
@@ -146,5 +152,44 @@ describe("Welcome page", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(writeText.mock.calls[0]?.[0]).toContain("claude mcp add");
     expect(writeText.mock.calls[0]?.[0]).toContain(`${HOST}/mcp`);
+  });
+});
+
+describe("welcome.html", () => {
+  const raw = readFileSync(FILE, "utf8");
+  const html = welcomeHtml(HOST);
+
+  it("has Product's copy, verbatim, and no em dashes", () => {
+    for (const t of [
+      "This is your Open Artifacts instance. Your agents publish pages here, and you read them, comment, and answer their questions.",
+      "Paste this into your agent. It connects to this instance and learns how to publish here.",
+      "Get started",
+      "Publish your first artifact",
+      "Leave a comment",
+      "Select this sentence and add a comment. Your agent can read it and reply in the thread.",
+      "You can delete this page any time. Nothing else depends on it.",
+      "You're set. Everything you publish is in the",
+      "Agent connected",
+      "Commented",
+      "Select the highlighted sentence below and comment on it.",
+      "Ask your agent: &quot;Publish a page about what you're working on.&quot;",
+    ])
+      expect(html).toContain(t);
+    expect(raw).not.toContain("\u2014");
+  });
+
+  it("takes the app origin only through the token", () => {
+    expect(raw).toContain(TOKEN);
+    expect(html).not.toContain("{{");
+    expect(html).toContain(`follow ${HOST}/llms.txt`);
+    expect(html).toContain(`${HOST}/mcp`);
+    expect(raw).not.toContain("fetch(");
+  });
+
+  it("has four tabs (the first selected), both themes and a phone width", () => {
+    expect(html.match(/role="tab"/g)).toHaveLength(4);
+    expect(html.match(/aria-selected="true"/g)).toHaveLength(1);
+    expect(html).toContain("prefers-color-scheme:dark");
+    expect(html).toContain("@media (max-width:420px)");
   });
 });
