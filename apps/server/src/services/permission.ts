@@ -59,7 +59,9 @@ export function refuseUnsafe(r: PermissionRequest, question?: string): void {
 /**
  * The keys that name the agent behind a request, strongest first: the bus
  * session it proved (#1822), then the grant or token. [] for a browser
- * session or a bare credential: not an agent.
+ * session or a bare credential: not an agent. The hook must consume over the
+ * same channel it posted on: an ask posted with a bus identity is used only by
+ * that identity.
  */
 export function agentKeysOf(
   userId: string,

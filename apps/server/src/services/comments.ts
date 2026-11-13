@@ -699,6 +699,9 @@ export const maskBody = (body: string, pairs: [string, string][]): string => {
 const isTyped = (a: StoredActor): boolean =>
   a.kind === "user" && a.typed === true && !a.agent;
 
+/** #1958: the comment text of every permission ask; the client's body is dropped. */
+const PERMISSION_BODY = "Permission request";
+
 /** #1958: only the person a permission ask is for sees what it asks. */
 const permissionFor = (c: StoredComment, viewer: CommentViewer): boolean => {
   const to = c.ask?.to[0];
@@ -1428,7 +1431,18 @@ export async function addThread(
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
   const body = checkBody(raw.body);
+  // #1958: a permission ask's comment says nothing the client chose, and sits
+  // on the whole page: no free text or quote can carry the command to a reader.
+  if (
+    raw.ask?.kind === "permission" &&
+    (raw.anchor as { kind?: unknown } | null)?.kind !== "note"
+  )
+    throw new ApiError(
+      "bad_request",
+      'A permission request goes on the whole page (anchor { kind: "note" })',
+    );
   const r0 = await resolveExtras(env, a.id, who, raw, opts);
+  const isPerm = r0.extras?.ask?.permission !== undefined;
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -1476,7 +1490,7 @@ export async function addThread(
       counted: true,
       anchor,
       version,
-      body,
+      body: isPerm ? PERMISSION_BODY : body,
       ...(r.extras ? { extras: r.extras } : {}),
       ...(participants.length ? { participants } : {}),
     }),
@@ -1736,7 +1750,7 @@ export async function addReply(
       threadId,
       actor: actorOf(who),
       rate: rateKeyOf(who),
-      body: text,
+      body: r.extras?.ask?.permission ? PERMISSION_BODY : text,
       ...(r.extras ? { extras: r.extras } : {}),
       ...(participants.length ? { participants } : {}),
     }),
