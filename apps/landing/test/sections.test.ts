@@ -91,11 +91,13 @@ describe("landing sections", () => {
     for (const gone of [
       "Start free",
       "Then $1 a month",
-      "free first month",
       "Free during the private beta",
     ])
       expect(text).not.toContain(gone);
-    expect(text).toContain("Sign-ups open in December. This plan");
+    expect(text).toContain(
+      "opening sign-ups with a free first month on Solo. This plan",
+    );
+    expect(text).not.toContain("December");
     expect(text).toContain(
       "Connect one or several. They publish to the same place, and they all get your comments.",
     );
