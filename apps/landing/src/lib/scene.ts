@@ -37,12 +37,12 @@ export const SCENE_LINES: [number, string, string][] = [
     "● Let me check last quarter's launch notes before I suggest dates.",
   ],
   [21, "", "● Read(notes/q3-launch.md)<span class=sub>⎿ Read 412 lines</span>"],
-  [22, "", "● I'd launch on Tuesday, Dec 2. Want a timeline?"],
+  [22, "", "● I'd launch on Tuesday, Dec 1. Want a timeline?"],
   [22, "u", "&gt; yes, add a timeline and a checklist"],
   [23, "", "● Write(launch-plan.md)<span class=sub>⎿ Wrote 84 lines</span>"],
   [23, "", "● Bash(pnpm check:links)<span class=sub>⎿ 212 links ok</span>"],
   [30, "u", "&gt; sam says tuesday is the board meeting"],
-  [31, "dec", "● Moved launch day to Thursday, Dec 4."],
+  [31, "dec", "● Moved launch day to Thursday, Dec 3."],
   [32, "cmp", "Conversation compacted"],
   [33, "", "● Edit(launch-plan.md)<span class=sub>⎿ Changed 3 lines</span>"],
   [40, "", "● Read(docs/status.md)<span class=sub>⎿ Read 268 lines</span>"],
@@ -125,9 +125,9 @@ const agent = (from?: number) =>
 function thread(t: number): string {
   const off = (cond: boolean) => (cond ? " off" : "");
   return (
-    `<div class="card sa-th"><div class="q">Launch day: Tuesday, Dec 2</div>` +
+    `<div class="card sa-th"><div class="q">Launch day: Tuesday, Dec 1</div>` +
     `<div class="cm${off(t < 30)}" data-at="30"><span class="pp" aria-hidden="true">SR</span><div><div class="w">Sam Rivera</div><div class="x">Can we move this to Thursday? Tuesday is the board meeting.</div></div></div>` +
-    `<div class="cm${off(t < 40)}" data-at="40">${agent()}<div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 4. That is v3.</div></div></div>` +
+    `<div class="cm${off(t < 40)}" data-at="40">${agent()}<div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 3. That is v3.</div></div></div>` +
     `<div class="rf">Reply</div></div>`
   );
 }
@@ -158,10 +158,10 @@ export function sceneHtml(t: number): string {
     `<span class="chip ver" data-k="ver">${S.ver}</span><span class="sbtn sa-share">Share</span></div>` +
     `<div class="sa-main"><div class="sa-doc"><div class="x-abody">` +
     `<h3 class="sa-h1">Q4 launch plan</h3><p class="sa-by">${agent()}OA Product, for Maya Chen</p>` +
-    `<div class="x-blk hit${off(s < 4)}" data-from="4"><h4>Decision</h4><p class="x-dec"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span>Launch day is Thursday, Dec 4.</span></p><p class="x-sub">Sam asked for the change. OA Product updated the plan.</p></div>` +
+    `<div class="x-blk hit${off(s < 4)}" data-from="4"><h4>Decision</h4><p class="x-dec"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span>Launch day is Thursday, Dec 3.</span></p><p class="x-sub">Sam asked for the change. OA Product updated the plan.</p></div>` +
     `<p class="sa-p sa-intro">We're opening sign-ups with a free first month on Solo. This plan is the one place the team and the agents work from.</p>` +
-    `<p class="sa-p sa-ld${off(s > 1)}" data-until="1">Launch day: Tuesday, Dec 2.</p>` +
-    `<div class="x-blk sa-blk${off(s < 2)}${s === 2 ? " hit" : ""}" data-from="2"><h4>Timeline</h4><ul class="tl"><li><span>Docs and pricing page ready</span><b>Nov 25</b></li><li data-k="ld" class="${s === 3 ? "sel" : ""}${s === 4 ? " chg" : ""}${s >= 4 ? " sw2" : ""}"><span>Launch day</span><b><span class="old">Tuesday, Dec 2</span><span class="new">Thursday, Dec 4</span></b></li><li class="sa-inline${off(s < 3)}" data-from="3">${thread(t)}</li><li><span>First-week review</span><b>Friday, Dec 12</b></li></ul></div>` +
+    `<p class="sa-p sa-ld${off(s > 1)}" data-until="1">Launch day: Tuesday, Dec 1.</p>` +
+    `<div class="x-blk sa-blk${off(s < 2)}${s === 2 ? " hit" : ""}" data-from="2"><h4>Timeline</h4><ul class="tl"><li><span>Docs and pricing page ready</span><b>Nov 25</b></li><li data-k="ld" class="${s === 3 ? "sel" : ""}${s === 4 ? " chg" : ""}${s >= 4 ? " sw2" : ""}"><span>Launch day</span><b><span class="old">Tuesday, Dec 1</span><span class="new">Thursday, Dec 3</span></b></li><li class="sa-inline${off(s < 3)}" data-from="3">${thread(t)}</li><li><span>First-week review</span><b>Friday, Dec 11</b></li></ul></div>` +
     `<div class="x-blk sa-blk sa-cl${off(s < 2)}${s === 2 ? " hit" : ""}" data-from="2"><h4>Launch checklist</h4><ul class="cl"><li><span class="bx"></span><span class="lb">Pricing page reviewed</span></li><li><span class="bx"></span><span class="lb">Docs links checked</span></li><li><span class="bx"></span><span class="lb">Go or no-go call</span></li></ul></div>` +
     `</div></div><aside class="sa-side"><div class="sa-pane"><div class="sh"><span>Comments</span><span>1 open</span></div>${thread(t)}</div></aside></div></div></figure></div>`
   );

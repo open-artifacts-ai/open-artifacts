@@ -150,7 +150,7 @@ describe("landing sections", () => {
     // the last moment lands on the decision, in both panels
     expect(text).toContain("The decision is in there somewhere.");
     expect(text).toContain("The decision is at the top.");
-    expect(text).toContain("Launch day is Thursday, Dec 4.");
+    expect(text).toContain("Launch day is Thursday, Dec 3.");
     expect(text).toContain("> wait, what did we decide?");
     expect(text).toContain(
       "Same work. One is a scroll you search. The other is a page your team works on.",
@@ -261,7 +261,7 @@ describe("landing sections", () => {
       "<h4>Timeline</h4>",
       "<h4>Launch checklist</h4>",
       'class="sa-pane"',
-      "Launch day is Thursday, Dec 4.",
+      "Launch day is Thursday, Dec 3.",
     ])
       expect(cards).toContain(part);
   });
