@@ -239,7 +239,7 @@ export function GetStarted({
         </Step>
         <Step n={4} state={st(3)} title="Mention your agent">
           {replied ? (
-            <p className="m-0">{nm} replied</p>
+            <p className="m-0">{o?.agentName || "Your agent"} replied</p>
           ) : (
             <>
               <p className="m-0">

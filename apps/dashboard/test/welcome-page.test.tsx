@@ -116,6 +116,13 @@ describe("Welcome page", () => {
     expect(document.getElementById("all-done")?.hidden).toBe(true);
   });
 
+  it("capitalizes the step 4 done line when there is no name", async () => {
+    await load();
+    progress = { ...five, agentName: null };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(step("mention").textContent).toBe("Your agent replied");
+  });
+
   it("shows the stalled line only while the mention has no reply", async () => {
     const stalled = () => document.getElementById("stalled") as HTMLElement;
     await load();

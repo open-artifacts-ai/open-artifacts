@@ -189,7 +189,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       a.textContent = p.firstArtifact.title;
       b.appendChild(a);
     }
-    line(items.mention, !!p.mentionReplied, "Mention your agent", nm + " replied", D.mentionHint.replace("{name}", nm));
+    line(items.mention, !!p.mentionReplied, "Mention your agent", (p.agentName ? nm : "Your agent") + " replied", D.mentionHint.replace("{name}", nm));
     line(items.ask, !!p.askAnswered, "Answer your agent's ask", "Answered", D.askHint.replace("{name}", nm));
     stalled.hidden = !(p.mentionStalled && !p.mentionReplied);
     var done = p.agentConnected && p.agentNamed && p.firstArtifact && p.mentionReplied && p.askAnswered;

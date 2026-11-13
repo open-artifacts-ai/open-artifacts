@@ -291,6 +291,13 @@ describe("Get started checklist", () => {
       expect(screen.getByText("Answered")).toBeInTheDocument();
     });
 
+    it("capitalizes the step 4 done line when there is no name", async () => {
+      withOnboarding({ agentNamed: true, mentionReplied: true });
+      mount("/");
+      await heading();
+      expect(screen.getByText("Your agent replied")).toBeInTheDocument();
+    });
+
     it("says the stalled line on step 4 only while it is stalled", async () => {
       withOnboarding({ agentNamed: true, mentionStalled: true });
       mount("/");
