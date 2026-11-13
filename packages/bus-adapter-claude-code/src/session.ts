@@ -44,7 +44,23 @@ export const busHome = (
  * agent-bus published. Liveness, attestation and findSession all skip it alike.
  */
 export const notASession = (rec: Record<string, unknown>): boolean =>
-  rec.parkedJobId !== undefined || Boolean(rec.agentBus);
+  rec.parkedJobId !== undefined ||
+  Boolean(rec.agentBus) ||
+  (isHeadlessEntrypoint(rec) && !nameWasChosen(rec));
+
+/**
+ * #2311: a session started by `claude -p` or an SDK (entrypoint `sdk-cli`,
+ * `sdk-ts`, ...): a child of some other session or program, never one the
+ * user sits in. A file with no entrypoint (an older Claude) still counts.
+ * One a user or peer named (nameSource) is an app the user set up and joins
+ * (notASession).
+ */
+export const isHeadlessEntrypoint = (rec: Record<string, unknown>): boolean =>
+  typeof rec.entrypoint === "string" && rec.entrypoint !== "cli";
+
+/** #2311: the session file says the user (or a peer) named the session, not Claude's derived title. */
+export const nameWasChosen = (rec: Record<string, unknown>): boolean =>
+  rec.nameSource === "user" || rec.nameSource === "peer";
 
 /**
  * An ancestor's `<pid>.json`: "none" only when there is no such file. One that

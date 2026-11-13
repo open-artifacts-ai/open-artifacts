@@ -644,7 +644,16 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const billingView = (): PlanView | undefined => {
     if (o.selfHosted) return undefined;
     if (isAdmin()) return { ...billing };
-    const { creatorsThisMonth: _, yearlyTeamBusiness: __, ...rest } = billing;
+    const {
+      creatorsThisMonth: _,
+      yearlyTeamBusiness: __,
+      soloCheckedOut: ___,
+      cancelsAt: ____,
+      interval: _interval,
+      renewsAt: _renewsAt,
+      overageDue: _____,
+      ...rest
+    } = billing;
     return {
       ...rest,
       status: null,

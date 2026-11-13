@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { ApiClientError } from "../src/api/client";
 import {
   coolingTime,
-  decodeRequestOptions,
   passkeyFailure,
   passkeyLine,
 } from "../src/viewer/comments/passkey";
@@ -13,6 +12,7 @@ describe("passkeyFailure", () => {
   it("maps browser errors", () => {
     expect(passkeyFailure(dom("NotAllowedError")).kind).toBe("cancelled");
     expect(passkeyFailure(dom("TypeError")).kind).toBe("other");
+    expect(passkeyFailure(dom("PasskeyCancelled")).kind).toBe("cancelled");
     expect(passkeyFailure(dom("InvalidStateError")).kind).toBe("cancelled");
     expect(passkeyFailure(dom("ConstraintError")).kind).toBe("cancelled");
     expect(
@@ -70,27 +70,5 @@ describe("passkeyLine and coolingTime", () => {
   it("uses no em dashes", () => {
     for (const k of ["cancelled", "failed", "expired", "too_many"] as const)
       expect(passkeyLine({ kind: k })?.text).not.toContain("\u2014");
-  });
-});
-
-describe("decodeRequestOptions", () => {
-  it("decodes base64url without parseRequestOptionsFromJSON", () => {
-    const pk = globalThis as unknown as { PublicKeyCredential?: unknown };
-    const saved = pk.PublicKeyCredential;
-    pk.PublicKeyCredential = class {};
-    try {
-      const o = decodeRequestOptions({
-        challenge: "AQID_w",
-        allowCredentials: [{ id: "BAU", type: "public-key" }],
-      });
-      expect([...new Uint8Array(o.challenge as ArrayBuffer)]).toEqual([
-        1, 2, 3, 255,
-      ]);
-      expect([
-        ...new Uint8Array(o.allowCredentials?.[0]?.id as ArrayBuffer),
-      ]).toEqual([4, 5]);
-    } finally {
-      pk.PublicKeyCredential = saved;
-    }
   });
 });

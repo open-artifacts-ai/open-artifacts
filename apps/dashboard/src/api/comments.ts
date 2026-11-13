@@ -600,16 +600,13 @@ export const usePasskeyAnswer = (id: string) =>
         undefined,
         x,
       );
-      const cred = await navigator.credentials.get({
-        publicKey: decodeRequestOptions(ch.options),
-      });
-      if (!cred) throw new DOMException("No credential", "NotAllowedError");
+      const assertion = await getAssertion(ch.options);
       return api.send(
         "POST",
         R.commentAnswer(id, v.thread, v.comment),
         {
           optionId: v.optionId,
-          assertion: assertionToJSON(cred as PublicKeyCredential),
+          assertion,
         },
         CommentSchema,
         undefined,

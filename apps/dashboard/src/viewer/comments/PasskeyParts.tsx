@@ -5,8 +5,6 @@ import { coolingTime, type PasskeyFailure } from "./passkey";
 
 const MUTED = "text-muted-foreground";
 
-// TODO(#2263): the base64url and assertion helpers in passkey.ts move to apps/dashboard/src/auth/webauthn.ts later; keep them here for now.
-
 /** The neutral inset for an account that can't approve yet: no passkey, or a new one still cooling (#2263). */
 export function PasskeyBlocked({ f }: { f: PasskeyFailure }) {
   if (f.kind !== "no_passkey" && f.kind !== "cooling") return null;

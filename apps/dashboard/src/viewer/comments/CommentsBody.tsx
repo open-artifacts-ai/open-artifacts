@@ -42,6 +42,7 @@ import {
   AskBlock,
   actor,
   asksForMe,
+  atomicBackspace,
   Delivery,
   DeliveryFaces,
   type Extras,
@@ -55,6 +56,7 @@ import {
   newProblems,
   nextAskFor,
   removeMention,
+  showsAskBody,
 } from "./asks";
 import {
   focusRow,
@@ -72,6 +74,7 @@ import {
   useLostDrafts,
   useLostPost,
 } from "./lostPosts";
+import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
@@ -653,81 +656,109 @@ function Composer({
       data-oa-composing={composing ? "" : undefined}
     >
       {quote}
-      <Textarea
-        ref={ref}
-        aria-label={label}
-        placeholder={
-          mentionable && canMention && api.canComment && mentionPlaceholder
-            ? mentionPlaceholder
-            : placeholder
-        }
-        value={text}
-        maxLength={COMMENT_BODY_MAX}
-        rows={1}
-        data-oa-field=""
-        className={`${CTXT} ${FIELD}`}
-        onFocus={() => {
-          setOpen(true);
-          retryAgents();
-        }}
-        onChange={(e) => {
-          setText(e.target.value);
-          setCaret(e.target.selectionStart);
-          setMenuOff(false);
-          setActiveOpt(0);
-        }}
-        aria-describedby={card && !coarse ? hintId : undefined}
-        aria-controls={menuOpen ? menuId : undefined}
-        aria-activedescendant={menuOpen ? `${menuId}-${activeOpt}` : undefined}
-        onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-        onKeyDown={(e) => {
-          if (menuOpen) {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              e.preventDefault();
-              const n = matches.length;
-              setActiveOpt(
-                (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
-              );
-              return;
-            }
+      <div className="relative rounded-md bg-card">
+        <Textarea
+          ref={ref}
+          aria-label={label}
+          placeholder={
+            mentionable && canMention && api.canComment && mentionPlaceholder
+              ? mentionPlaceholder
+              : placeholder
+          }
+          value={text}
+          maxLength={COMMENT_BODY_MAX}
+          rows={1}
+          data-oa-field=""
+          className={`${CTXT} ${FIELD} relative z-[1] bg-transparent`}
+          onFocus={() => {
+            setOpen(true);
+            retryAgents();
+          }}
+          onChange={(e) => {
+            setText(e.target.value);
+            setCaret(e.target.selectionStart);
+            setMenuOff(false);
+            setActiveOpt(0);
+          }}
+          aria-describedby={card && !coarse ? hintId : undefined}
+          aria-controls={menuOpen ? menuId : undefined}
+          aria-activedescendant={
+            menuOpen ? `${menuId}-${activeOpt}` : undefined
+          }
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+          onKeyDown={(e) => {
             if (
-              (e.key === "Enter" || e.key === "Tab") &&
+              e.key === "Backspace" &&
               !e.nativeEvent.isComposing &&
               !e.shiftKey &&
               !e.metaKey &&
-              !e.ctrlKey
+              !e.ctrlKey &&
+              !e.altKey &&
+              agents &&
+              agents.length > 0
+            ) {
+              const t = e.currentTarget;
+              const cut = atomicBackspace(
+                t.value,
+                t.selectionStart,
+                t.selectionEnd,
+                agents,
+              );
+              // Select the name and let the native delete remove it: the
+              // edit stays in the browser's undo stack.
+              if (cut) t.setSelectionRange(cut.start, cut.end);
+            }
+            if (menuOpen) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const n = matches.length;
+                setActiveOpt(
+                  (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
+                );
+                return;
+              }
+              if (
+                (e.key === "Enter" || e.key === "Tab") &&
+                !e.nativeEvent.isComposing &&
+                !e.shiftKey &&
+                !e.metaKey &&
+                !e.ctrlKey
+              ) {
+                e.preventDefault();
+                const a = matches[activeOpt];
+                if (a) pick(a);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setMenuOff(true);
+                return;
+              }
+            }
+            if (
+              e.key === "Enter" &&
+              (e.metaKey || e.ctrlKey) &&
+              !e.nativeEvent.isComposing
             ) {
               e.preventDefault();
-              const a = matches[activeOpt];
-              if (a) pick(a);
-              return;
+              void go();
             }
-            if (e.key === "Escape") {
-              e.preventDefault();
+            // An empty field lets Esc through (the phone sheet closes on it).
+            if (e.key === "Escape" && keepOnEsc && text !== "") {
               e.stopPropagation();
-              setMenuOff(true);
               return;
             }
-          }
-          if (
-            e.key === "Enter" &&
-            (e.metaKey || e.ctrlKey) &&
-            !e.nativeEvent.isComposing
-          ) {
-            e.preventDefault();
-            void go();
-          }
-          // An empty field lets Esc through (the phone sheet closes on it).
-          if (e.key === "Escape" && keepOnEsc && text !== "") {
-            e.stopPropagation();
-            return;
-          }
-          if (e.key === "Escape" && (onCancel || !alwaysOpen)) {
-            e.stopPropagation();
-            cancel();
-          }
-        }}
-      />
+            if (e.key === "Escape" && (onCancel || !alwaysOpen)) {
+              e.stopPropagation();
+              cancel();
+            }
+          }}
+        />
+        {agents && agents.length > 0 && (
+          <MentionMirror field={ref} text={text} agents={agents} />
+        )}
+      </div>
       {!canMention &&
         !guest &&
         !capped &&
@@ -1063,9 +1094,26 @@ function CommentRow({
             }
             askQuestion={askQuestion}
             guest={api.guest}
+            body={
+              showsAskBody(c.body, c.ask.question) ? (
+                <div
+                  className={`break-words ${CTXT}`}
+                  data-ask-body=""
+                  {...roving}
+                >
+                  <MentionedText
+                    body={c.body}
+                    mentions={c.mentions}
+                    guest={api.guest}
+                    marks={marks}
+                    createdAt={c.createdAt}
+                  />
+                </div>
+              ) : undefined
+            }
           />
         ) : (
-          <p className={`whitespace-pre-wrap break-words ${CTXT}`} {...roving}>
+          <div className={`break-words ${CTXT}`} {...roving}>
             <MentionedText
               body={c.body}
               mentions={c.mentions}
@@ -1073,7 +1121,7 @@ function CommentRow({
               marks={marks}
               createdAt={c.createdAt}
             />
-          </p>
+          </div>
         )}
         <Delivery
           c={c}

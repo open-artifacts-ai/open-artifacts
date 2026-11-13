@@ -79,6 +79,25 @@ export const R = {
   members: "/api/v1/members",
   /** PATCH MemberPatch -> Member; DELETE -> 204 */
   member: (id: string) => `/api/v1/members/${seg(id)}`,
+  /** GET -> Passkey[] (#2263): the caller's passkeys, session only. */
+  passkeys: "/api/v1/passkeys",
+  /** POST -> { options, expiresAt }: assertion options for approving a new passkey with one the member already has (fresh re-auth too). 409 when no existing passkey needs to approve. Send the assertion to R.passkeyRegisterBegin. */
+  passkeyRegisterChallenge: "/api/v1/passkeys/register/challenge",
+  /** POST { assertion? } -> { options, expiresAt }: WebAuthn creation options. 403 passkey_required without `assertion` when the member has a usable passkey (past 24 h, not pending removal); R.passkeyRegisterFinish then needs no second assertion. Needs a fresh re-auth (401 reauth_required); session only. */
+  passkeyRegisterBegin: "/api/v1/passkeys/register/begin",
+  /** POST PasskeyRegisterBody { credential, label? } -> 201 Passkey. A passkey approves only 24 hours after it is added; the member gets an email. */
+  passkeyRegisterFinish: "/api/v1/passkeys/register/finish",
+  /** POST -> { options, expiresAt }: an assertion challenge bound to removing this passkey. */
+  passkeyChallenge: (id: string) => `/api/v1/passkeys/${seg(id)}/challenge`,
+  /** POST -> 204: cancels a pending removal (session only; 409 when none is pending). */
+  passkeyCancelRemoval: (id: string) =>
+    `/api/v1/passkeys/${seg(id)}/cancel-removal`,
+  /** DELETE { assertion? } -> 204 (removed now: an assertion for R.passkeyChallenge) or 202 { removesAt } (a fresh re-auth alone only schedules it 24 h out; the passkey counts until then, the member is emailed and can cancel). Own passkeys only (else 404). */
+  passkey: (id: string) => `/api/v1/passkeys/${seg(id)}`,
+  /** GET -> PasskeySettings; PATCH PasskeySettingsPatch -> PasskeySettings. Turning a switch off needs `assertion` for R.passkeySettingsChallenge of the same body (400 passkey_failed, 403 passkey_required); turning one on needs nothing; `command` can not be turned off (400). */
+  passkeySettings: "/api/v1/passkeys/settings",
+  /** POST PasskeySettingsPatch -> { options, expiresAt }: a challenge bound to exactly that settings change. */
+  passkeySettingsChallenge: "/api/v1/passkeys/settings/challenge",
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",
   /** PATCH TokenPatch -> Token; DELETE -> 204. Own tokens only (else 404). */
@@ -221,7 +240,14 @@ export const R = {
   /** POST AnswerBody { optionId, assertion? } -> Comment (#1535). A `confirm: "passkey"` ask needs the assertion (#2263): 400 passkey_failed, 410 challenge_expired, 403 passkey_required. Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
   commentAnswer: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer`,
-  /** POST { optionId } -> AnswerChallenge (#2263): a single-use passkey challenge for this exact pick. 409 no_passkey; 409 passkey_cooling (details { usableAt }). */
+  /**
+   * POST { optionId } -> 200 { options, expiresAt } (#2263): a WebAuthn
+   * PublicKeyCredentialRequestOptions JSON for the pick, valid 2 minutes, single use,
+   * bound to (artifact, comment, option, you). 409 no_passkey, 409
+   * passkey_cooling (every passkey is under 24 hours old), 409 already_answered,
+   * 429 (a small budget). A new challenge voids your previous one for the ask.
+   * Then POST R.commentAnswer { optionId, assertion }.
+   */
   commentAnswerChallenge: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer/challenge`,
   /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */

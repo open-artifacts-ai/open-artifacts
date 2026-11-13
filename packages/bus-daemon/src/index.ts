@@ -479,6 +479,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
+      ...(rec.nameChosen && hubNameChosen
+        ? { name_chosen: true as const }
+        : {}),
       // A /clear: the new ref takes over the old address and its mail (#1295).
       ...(rec.replaces !== undefined && hubMailbox
         ? { replaces: rec.replaces }
@@ -995,7 +998,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * while the link or the agent's registration is not ready rides the next
    * agent_up (it carries proposedName).
    */
-  const renameIfChanged = (rec: AgentRecord, name: string, filePid: number) => {
+  const renameIfChanged = (
+    rec: AgentRecord,
+    name: string,
+    filePid: number,
+    chosen?: boolean,
+  ) => {
+    if (chosen !== undefined) rec.nameChosen = chosen;
     const was = rec.sessionName ?? rec.proposedName;
     // Never a name nobody chose: empty, or the file's own `claude-<pid>`
     // fallback (a file with no name, whichever process wrote it).
@@ -1063,6 +1072,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agent_ref: rec.ref,
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
+        // #2311: a re-derived Claude title is a rename, not a user's choice.
+        ...(hubNameChosen && rec.kind === "claude-code"
+          ? { name_chosen: rec.nameChosen === true }
+          : {}),
       })
     ) {
       rec.sentName = rec.proposedName;
@@ -1145,7 +1158,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
-        renameIfChanged(prev, s.name, s.pid);
+        renameIfChanged(prev, s.name, s.pid, s.nameChosen === true);
         continue;
       }
       // #2110: a record closed while its process and session file are still
@@ -1194,6 +1207,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
           : {}),
         sessionName: s.name,
+        ...(s.nameChosen ? { nameChosen: true } : {}),
         cwd: s.cwd,
         live: true,
       });
@@ -1291,6 +1305,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  let hubNameChosen = false;
   /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
   let hubFollow = false;
   /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
@@ -1463,6 +1478,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubNameChosen = frame.caps?.includes(BUS_CAPS.nameChosen) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
           hubWaitingQuery =
@@ -1474,6 +1490,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
+          // #2311: agent_up went out in onOpen, before this hello_ok said the
+          // hub takes name_chosen: say it again for a session the user named.
+          if (hubNameChosen)
+            for (const rec of agents.all())
+              if (rec.live && rec.nameChosen && rec.replaces === undefined)
+                announceUp(rec);
           for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
@@ -1543,6 +1565,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubNameChosen = false;
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
@@ -1977,6 +2000,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
+          ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
           ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
             ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
@@ -2352,6 +2376,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Decisions already logged, and the last hub roster read, per `thread:pid:start`. */
   const wakeLogged = new Set<string>();
   const wakeAsked = new Map<string, number>();
+  /** #2343: when a thread's "not loaded" skip was last logged; once an hour, dropped when the thread is no longer away. */
+  const wakeUnloadedLogged = new Map<string, number>();
   let waking = false;
   let wakeCheckedAt: number | undefined;
   /** Wakes sent and not yet answered by the thread's own call, and the mail count at each. */
@@ -2385,6 +2411,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Pruned for threads no longer away, or live.
       const away = new Set(rows.map((r) => r.ref));
       for (const [k, w] of wakeSent) if (!away.has(w.ref)) wakeSent.delete(k);
+      for (const k of wakeUnloadedLogged.keys())
+        if (!away.has(k)) wakeUnloadedLogged.delete(k);
       for (const m of [wakeAsked, wakeWaiting])
         for (const k of m.keys())
           if (!away.has(k.split(":")[1] ?? "")) m.delete(k);
@@ -2407,8 +2435,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // #2079: one frame for every held row, no live agent needed.
       let counts: Record<string, number> | undefined;
       if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
-        const refs = rows
-          .filter((r) => held.has(r.ref))
+        // Unloaded rows too (#2343): their count says whether the skip is worth a log line.
+        // Held rows first: should the rows ever outnumber the cap (AWAY_MAX equals it today), wakes win.
+        const refs = [
+          ...rows.filter((r) => held.has(r.ref)),
+          ...rows.filter((r) => !held.has(r.ref)),
+        ]
           .map((r) => r.ref)
           .slice(0, MAX_WAITING_QUERY);
         if (refs.length) {
@@ -2418,7 +2450,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       for (const r of rows) {
         const h = held.get(r.ref);
-        if (!h) continue;
+        if (!h) {
+          const last = wakeUnloadedLogged.get(r.ref);
+          if (
+            counts?.[r.ref] &&
+            (last === undefined || now - last >= 3_600_000)
+          ) {
+            wakeUnloadedLogged.set(r.ref, now);
+            ev("codex_wake_skipped", { thread: r.ref, reason: "not_loaded" });
+          }
+          continue;
+        }
         const key = `wake:${r.ref}:${h.pid}:${h.start.replace(/\s+/g, "_")}`;
         const who = `codex wake ${r.ref.slice(0, 8)} pid ${h.pid}`;
         let n = 1;

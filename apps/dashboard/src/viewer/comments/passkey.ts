@@ -1,64 +1,6 @@
 /** Passkey approval of dangerous asks (#2263): WebAuthn helpers and the card's error states. */
 import { ApiClientError } from "../../api/client";
 
-const fromB64 = (s: string): ArrayBuffer => {
-  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
-  const out = new Uint8Array(b.length);
-  for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
-  return out.buffer;
-};
-const toB64 = (buf: ArrayBuffer | null): string => {
-  let s = "";
-  for (const b of new Uint8Array(buf ?? new ArrayBuffer(0)))
-    s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
-
-type Json = Record<string, unknown>;
-
-/** PublicKeyCredentialRequestOptionsJSON to the binary options navigator.credentials.get takes. */
-export function decodeRequestOptions(
-  o: Json,
-): PublicKeyCredentialRequestOptions {
-  const parse = (
-    PublicKeyCredential as unknown as {
-      parseRequestOptionsFromJSON?: (
-        j: Json,
-      ) => PublicKeyCredentialRequestOptions;
-    }
-  ).parseRequestOptionsFromJSON;
-  if (typeof parse === "function") return parse.call(PublicKeyCredential, o);
-  const allow = (o.allowCredentials as Json[] | undefined)?.map((c) => ({
-    ...c,
-    id: fromB64(String(c.id)),
-  }));
-  return {
-    ...o,
-    challenge: fromB64(String(o.challenge)),
-    ...(allow ? { allowCredentials: allow } : {}),
-  } as unknown as PublicKeyCredentialRequestOptions;
-}
-
-/** A WebAuthn assertion as AuthenticationResponseJSON. */
-export function assertionToJSON(cred: PublicKeyCredential): Json {
-  const r = cred.response as AuthenticatorAssertionResponse;
-  return {
-    id: cred.id,
-    rawId: toB64(cred.rawId),
-    type: cred.type,
-    response: {
-      clientDataJSON: toB64(r.clientDataJSON),
-      authenticatorData: toB64(r.authenticatorData),
-      signature: toB64(r.signature),
-      ...(r.userHandle ? { userHandle: toB64(r.userHandle) } : {}),
-    },
-    clientExtensionResults: cred.getClientExtensionResults?.() ?? {},
-    ...(cred.authenticatorAttachment
-      ? { authenticatorAttachment: cred.authenticatorAttachment }
-      : {}),
-  };
-}
-
 export type PasskeyFailure =
   | { kind: "cancelled" }
   | { kind: "failed" }
@@ -90,6 +32,7 @@ export function passkeyFailure(e: unknown): PasskeyFailure {
   if (
     name === "NotAllowedError" ||
     name === "AbortError" ||
+    name === "PasskeyCancelled" ||
     name === "InvalidStateError" ||
     name === "ConstraintError"
   )
