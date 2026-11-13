@@ -117,25 +117,46 @@ export function peerTokenFor(
   }
 }
 
+/** Why no Claude session was found for this process (#2364); shown to the agent. */
+export type NoSessionReason =
+  | "none"
+  | "unreadable"
+  | "not_session"
+  | "no_proc_start"
+  | "proc_start_mismatch"
+  | "proc_start_unknown"
+  | "socket_dir";
+
+/** The reasons a later look may find a session: a file mid-write, a slow `ps`; no_proc_start is permanent on an older Claude Code. */
+export const RECOVERABLE_REASONS: readonly NoSessionReason[] = [
+  "unreadable",
+  "proc_start_mismatch",
+  "proc_start_unknown",
+];
+
+export type SessionLookup =
+  | { ok: true; session: ClaudeSession }
+  | { ok: false; reason: NoSessionReason };
+
 /**
  * The Claude session this process runs under. Like the daemon's attestation,
  * the nearest ancestor with a session file owns it; an outer one never does.
  */
-export function findSession(
-  pid: number,
-  deps: SessionDeps,
-): ClaudeSession | null {
+export function lookupSession(pid: number, deps: SessionDeps): SessionLookup {
   for (const anc of deps.ancestors(pid)) {
     const file = readSessionFile(deps.sessionsDir, anc);
     if (file.state === "none") continue;
     // The nearest file owns this process, even when it is not a session or not readable yet.
-    if (file.state === "unreadable") return null;
+    if (file.state === "unreadable") return { ok: false, reason: "unreadable" };
     const { rec } = file;
-    if (notASession(rec)) return null;
+    if (notASession(rec)) return { ok: false, reason: "not_session" };
     // No procStart, no way to tell this process from a reused pid.
-    if (typeof rec.procStart !== "string") return null;
+    if (typeof rec.procStart !== "string")
+      return { ok: false, reason: "no_proc_start" };
     const start = deps.procStart(anc);
-    if (!start || rec.procStart !== start) return null;
+    if (!start) return { ok: false, reason: "proc_start_unknown" };
+    if (rec.procStart !== start)
+      return { ok: false, reason: "proc_start_mismatch" };
     const socketPath =
       typeof rec.messagingSocketPath === "string"
         ? rec.messagingSocketPath
@@ -144,14 +165,25 @@ export function findSession(
       socketPath &&
       peerTokenFor(anc, socketPath, deps.sessionsDir, start, deps.sha256);
     return {
-      pid: anc,
-      sessionId: rec.sessionId,
-      socketPath,
-      peerToken,
-      name: typeof rec.name === "string" ? rec.name : `claude-${anc}`,
+      ok: true,
+      session: {
+        pid: anc,
+        sessionId: rec.sessionId,
+        socketPath,
+        peerToken,
+        name: typeof rec.name === "string" ? rec.name : `claude-${anc}`,
+      },
     };
   }
-  return null;
+  return { ok: false, reason: "none" };
+}
+
+export function findSession(
+  pid: number,
+  deps: SessionDeps,
+): ClaudeSession | null {
+  const r = lookupSession(pid, deps);
+  return r.ok ? r.session : null;
 }
 
 /**
