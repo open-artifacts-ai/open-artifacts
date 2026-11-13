@@ -542,6 +542,31 @@ describe("only plain text is allowed", () => {
   });
 });
 
+describe("lookalike warning", () => {
+  it("nonAscii is on the addressee's view only when a field holds a character above U+007E", async () => {
+    const plain = await post();
+    expect((await read(plain, alice.cookie)).ask?.nonAscii).toBeUndefined();
+    // Cyrillic "\u0441" looks like a Latin "c".
+    const odd = await post(agent, { ...REQ, command: "\u0441url example.com" });
+    expect(odd.comment.ask?.nonAscii).toBe(true);
+    expect((await read(odd, alice.cookie)).ask?.nonAscii).toBe(true);
+    const cwd = await post(agent, { ...REQ, cwd: "/Users/m\u00e9/proj" });
+    expect(cwd.comment.ask?.nonAscii).toBe(true);
+    // Newline and tab stay allowed and are plain ASCII.
+    const nl = await post(await mkAgent(alice), {
+      ...REQ,
+      command: "ls\n\tpwd",
+    });
+    expect(nl.comment.ask?.nonAscii).toBeUndefined();
+    // Not shown to anyone else.
+    await api(app, R.shares(odd.artifactId), alice.cookie, {
+      method: "PUT",
+      body: { email: (await member(bob)).email, role: "viewer" },
+    });
+    expect((await read(odd, bob.cookie)).ask?.nonAscii).toBeUndefined();
+  });
+});
+
 describe("the same agent, exactly", () => {
   const grant = {
     name: "agent",

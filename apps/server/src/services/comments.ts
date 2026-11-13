@@ -719,7 +719,14 @@ const permissionView = (c: StoredComment, viewer: CommentViewer) => {
   if (!p) return {};
   return {
     kind: "permission" as const,
-    ...(permissionFor(c, viewer) ? { request: p.request } : {}),
+    ...(permissionFor(c, viewer)
+      ? {
+          request: p.request,
+          ...(Object.values(p.request).some((v) => /[^\n\t -~]/.test(v))
+            ? { nonAscii: true as const }
+            : {}),
+        }
+      : {}),
     expiresAt: new Date(p.expiresAtMs).toISOString(),
     ...(p.consumedAtMs !== undefined
       ? { consumedAt: new Date(p.consumedAtMs).toISOString() }

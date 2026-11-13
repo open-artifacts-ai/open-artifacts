@@ -136,6 +136,8 @@ export const CommentAskSchema = z
     kind: z.literal("permission").optional(),
     /** #1958: what the agent wants to run. Only the addressee's reads carry it; everyone else's omit it. */
     request: z.lazy(() => PermissionRequestSchema).optional(),
+    /** #1958: the addressee's view only: true when a request field holds a character above U+007E (a lookalike such as Cyrillic "с" is possible). Absent: all ASCII. */
+    nonAscii: z.literal(true).optional(),
     /** #1958: ISO time after which the ask can no longer be answered or consumed (server clock). */
     expiresAt: z.string().optional(),
     /** #1958: ISO time the approval was used; absent: not yet. */
