@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.177.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.177.0...v0.177.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **landing:** the sign-up buttons say Sign up ([#2467](https://github.com/open-artifacts-ai/open-artifacts/issues/2467)) ([c872543](https://github.com/open-artifacts-ai/open-artifacts/commit/c87254311dd807e9c2ce92b75f4260cb534c8dbb))
+
 ## [0.177.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.1...v0.177.0) (2026-11-13)
 
 
