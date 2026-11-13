@@ -2589,13 +2589,17 @@ function liveVisibleIn(
   sql: SqlStorage,
   ns: string,
   lname: string,
+  identity?: string | null,
 ): AgentRow | null {
+  // #2294: an identity-addressed notice resolves to the agent whose proof
+  // matches, not to the name's preferred (global) agent.
   return one<AgentRow>(
     sql,
-    `select ${AGENT_COLS} from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1) order by global desc limit 1`,
+    `select ${AGENT_COLS} from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1)${identity ? " and identity_id = ?" : ""} order by global desc limit 1`,
     OWNER_ORG_ID,
     lname,
     ns,
+    ...(identity ? [identity] : []),
   );
 }
 
@@ -5617,6 +5621,32 @@ export class BusHub extends DurableObject<Env> {
    * after `renamed` sees the moved rows. A reclaim keeps the address: no call.
    */
   #rekeyed: Promise<void> = Promise.resolve();
+  /**
+   * #2294: identity-addressed notices held at an address the agent has left
+   * follow it to the new one (a colliding key keeps the row already there).
+   */
+  #retargetIdentityNotices(
+    before: { namespace: string; name: string },
+    after: { namespace: string; name: string },
+  ): void {
+    const sql = this.ctx.storage.sql;
+    const ident = one<{ i: string | null }>(
+      sql,
+      "select identity_id as i from agents where org_id = ? and live = 1 and namespace = ? and lower(name) = ?",
+      OWNER_ORG_ID,
+      after.namespace,
+      after.name.toLowerCase(),
+    )?.i;
+    if (!ident) return;
+    sql.exec(
+      "update or ignore notices set to_ns = ?, to_lname = ? where to_identity = ? and to_ns = ? and to_lname = ?",
+      after.namespace,
+      after.name.toLowerCase(),
+      ident,
+      before.namespace,
+      before.name.toLowerCase(),
+    );
+  }
   #rekeyFollows(
     before: { namespace: string; name: string } | null,
     after: { namespace: string; name: string },
@@ -5626,6 +5656,7 @@ export class BusHub extends DurableObject<Env> {
       (before.namespace === after.namespace && before.name === after.name)
     )
       return undefined;
+    this.#retargetIdentityNotices(before, after);
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
       : null;
@@ -7356,8 +7387,8 @@ export class BusHub extends DurableObject<Env> {
       // that holds it. No role or former-name resolution. A mismatch (renamed,
       // name reused, another member's id) drops the notice and touches no
       // waiting row: the agent at the name is not who it was meant for.
-      const at = liveVisibleIn(sql, n.to.namespace, sent);
-      if (!at || identityOfAgent(sql, at.id) !== n.toIdentity) {
+      const at = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
+      if (!at) {
         logEvent("notice_dropped", { reason: "identity" });
         return "dropped";
       }
@@ -7366,7 +7397,7 @@ export class BusHub extends DurableObject<Env> {
       n.toIdentity !== undefined
         ? null
         : resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
-    const liveNamed = liveVisibleIn(sql, n.to.namespace, sent);
+    const liveNamed = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
     const former =
       byRole !== null || liveNamed !== null || n.toIdentity !== undefined
         ? []
@@ -7380,7 +7411,8 @@ export class BusHub extends DurableObject<Env> {
     const to = byAlias
       ? { namespace: byAlias.namespace, name: byAlias.name }
       : n.to;
-    const agent = byAlias ?? liveVisibleIn(sql, to.namespace, lname);
+    const agent =
+      byAlias ?? liveVisibleIn(sql, to.namespace, lname, n.toIdentity);
     const key = [to.namespace, lname, n.coalesceKey] as const;
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).
@@ -7543,7 +7575,8 @@ export class BusHub extends DurableObject<Env> {
     );
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
-      if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      if (liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity)?.id !== agent.id)
+        continue;
       if (this.#identityMismatch(r, agent)) continue;
       if (!this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r)))
         break;
@@ -7635,7 +7668,7 @@ export class BusHub extends DurableObject<Env> {
         paced = true;
         break;
       }
-      const agent = liveVisibleIn(sql, r.toNs, r.toLname);
+      const agent = liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity);
       if (agent && this.#identityMismatch(r, agent)) continue;
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;

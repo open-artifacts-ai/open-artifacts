@@ -243,4 +243,47 @@ describe("a notice addressed to an identity (#2238)", () => {
       ),
     ).toEqual([{ f: 0, i: now }]);
   });
+
+  it("reaches the namespaced agent when a global agent shares its name (#2294)", async () => {
+    const s = await setup(uniq("a"), uniq("b"));
+    const [a, b] = s.agents;
+    await inHub(s.userId, (_, st) =>
+      st.storage.sql.exec(
+        "update agents set name = ?, namespace = ?, global = 1 where identity_id = ?",
+        a.name,
+        uniq("elsewhere"),
+        b.identity,
+      ),
+    );
+    const stub = await hubOf(s.userId);
+    const n = note(
+      { namespace: s.namespace, name: a.name },
+      { toIdentity: a.identity },
+    );
+    expect(await stub.deliverNotice(n)).toBe("delivered");
+    expect((await waitFor(s.d, "deliver")).body).toBe(n.text);
+  });
+
+  it("a held identity notice follows the agent through a rename (#2294)", async () => {
+    const s = await setup(uniq("old"));
+    const [a] = s.agents;
+    const stub = await hubOf(s.userId);
+    const n = note(
+      { namespace: s.namespace, name: a.name },
+      { toIdentity: a.identity, notBefore: s.t + 60_000 },
+    );
+    expect(await stub.deliverNotice(n)).toBe("held");
+    s.d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: a.ref,
+      proposed_name: uniq("new"),
+    } as never);
+    await waitFor(s.d, "renamed");
+    await setClock(s.userId, s.t + 120_000);
+    await runDurableObjectAlarm(await hubOf(s.userId));
+    expect((await waitFor(s.d, "deliver")).body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
+  });
 });
