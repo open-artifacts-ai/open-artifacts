@@ -383,7 +383,23 @@ export const AddCommentInputSchema = z.strictObject({
   threadId: IdSchema.optional(),
   anchor: anchorInputSchema.optional(),
   /** Turns the comment into an ask (#1535): owner and editors only. */
-  ask: z.union([PermissionAskInputSchema, AskInputSchema]).optional(),
+  ask: z
+    .union([PermissionAskInputSchema, AskInputSchema], {
+      // A bare "Invalid input" would hide which field is wrong: say it for the branch the caller meant.
+      error: (iss) => {
+        const inp = iss.input as { kind?: unknown } | null;
+        const branch = inp?.kind === "permission" ? 0 : 1;
+        const first = (
+          iss as unknown as {
+            errors?: { path: PropertyKey[]; message: string }[][];
+          }
+        ).errors?.[branch]?.[0];
+        return first
+          ? `${first.path.map(String).join(".")}: ${first.message}`
+          : "Invalid ask";
+      },
+    })
+    .optional(),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
 

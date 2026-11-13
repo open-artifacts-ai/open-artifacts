@@ -34,10 +34,10 @@ import {
   type StoredActor,
   type StoredAgent,
   type StoredComment,
-  type StoredPermission,
   type StoredIdentity,
   type StoredParticipant,
   type StoredParty,
+  type StoredPermission,
   type StoredThread,
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
@@ -708,9 +708,7 @@ const permissionFor = (c: StoredComment, viewer: CommentViewer): boolean => {
 };
 
 const permissionQuestion = (c: StoredComment, viewer: CommentViewer): string =>
-  permissionFor(c, viewer)
-    ? (c.ask?.question ?? "")
-    : "a permission request";
+  permissionFor(c, viewer) ? (c.ask?.question ?? "") : "a permission request";
 
 /** The permission fields of an ask's view; the request itself only for the addressee. */
 const permissionView = (c: StoredComment, viewer: CommentViewer) => {
@@ -1182,7 +1180,7 @@ async function resolveExtras(
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");
   if (x.ask && who.kind === "user" && x.ask.kind === "permission")
-    return resolvePermission(env, artifactId, who, x.ask);
+    return await resolvePermission(env, artifactId, who, x.ask);
   const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);

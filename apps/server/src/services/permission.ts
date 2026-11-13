@@ -37,7 +37,7 @@ export const permissionReqHash = (r: PermissionRequest): Promise<string> =>
  * shows must be what runs ("Trojan Source").
  */
 const UNSAFE =
-  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}︀-️᠋-᠍\u{E0100}-\u{E01EF}]/u;
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]|[\uFE00-\uFE0F]|[\u180B-\u180D]|[\u{E0100}-\u{E01EF}]/u;
 
 /** 400 unsafe_characters for any field holding such a character; only `command` may hold \n and \t. */
 export function refuseUnsafe(r: PermissionRequest, question?: string): void {
