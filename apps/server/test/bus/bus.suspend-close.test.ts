@@ -141,6 +141,46 @@ describe("a suspended install refuses bus connects at once (cloud #228)", () => 
     await job(RESUME_CRON);
   });
 
+  it("a marker write error still closes the sockets, then the job rejects", async () => {
+    const u = await member();
+    const m = await machine("markfail-box", u.userId);
+    const d = await daemon(m.token, {}, (token) =>
+      fetchAndWait(
+        app,
+        new Request(`http://app.localhost${BUS_ROUTES.connect}`, {
+          headers: {
+            Upgrade: "websocket",
+            authorization: `Bearer ${token}`,
+            "cf-connecting-ip": "198.51.100.200",
+          },
+        }),
+        H,
+      ),
+    );
+    d.send(hello());
+    await waitFor(d, "hello_ok");
+    const realDb = H.DB as D1Database;
+    const failing = {
+      ...H,
+      DB: new Proxy(realDb, {
+        get(t, k) {
+          if (k !== "prepare") return Reflect.get(t, k).bind?.(t);
+          return (q: string) => {
+            if (q.includes("into settings (key, value) values (?1, '1')"))
+              throw new Error("d1 down");
+            return t.prepare(q);
+          };
+        },
+      }),
+    };
+    await expect(job(CLOSE_SOCKETS_CRON, failing)).rejects.toThrow("d1 down");
+    const c = await Promise.race([
+      d.closed,
+      new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
+    ]);
+    expect(c?.code).toBe(4403);
+  });
+
   it("an unknown oa: job is still refused", async () => {
     await expect(job("oa:nope")).rejects.toThrow("unknown system job");
     expect(RESUME_CRON).toBe("oa:resume");

@@ -163,11 +163,19 @@ async function run(
     if (event.cron === CLOSE_SOCKETS_CRON) {
       // First: from now on /bus/connect refuses from this install's own D1
       // (cloud #228), before dispatch's cached HOSTS value turns paused.
-      await markSuspended(env);
+      // A D1 error here must not skip the close: remember it, close, then
+      // rethrow so the platform sees a non-ok outcome.
+      let markErr: unknown;
+      try {
+        await markSuspended(env);
+      } catch (e) {
+        markErr = e;
+        logError("system_job_failed", e);
+      }
       const idx = socketIndexStub(env);
       if (!idx) {
         logWarn("system_job_failed", new Error("socket index unbound"));
-        throw new Error("socket index unbound");
+        throw markErr ?? new Error("socket index unbound");
       }
       const r = await idx.closeInstall("suspended");
       logInfo("system_job", {
@@ -176,6 +184,7 @@ async function run(
         closed: r.closed,
         queued: r.queued,
       });
+      if (markErr) throw markErr;
       return;
     }
     if (event.cron === RESUME_CRON) {
