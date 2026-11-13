@@ -38,10 +38,11 @@ create table if not exists comment_asks (
 create index if not exists comment_asks_thread on comment_asks (thread_id);
 create table if not exists comment_ask_picks (
   seq integer primary key autoincrement, comment_id text not null,
-  option_id text not null, by text not null, at text not null,
-  verified text, guest integer not null default 0
+  user_id text not null, option_id text not null, by text not null,
+  at text not null, typed integer not null default 0, verified text,
+  guest integer not null default 0
 );
-create index if not exists comment_ask_picks_comment on comment_ask_picks (comment_id, seq);
+create index if not exists comment_ask_picks_person on comment_ask_picks (comment_id, user_id, at, seq);
 create table if not exists comment_targets (
   comment_id text not null, thread_id text not null, kind text not null,
   key text not null, name text not null, state text not null, owner text, identity text,
@@ -1020,26 +1021,48 @@ export function addPick(
   p: StoredPick,
 ): void {
   sql.exec(
-    "insert into comment_ask_picks (comment_id, option_id, by, at, verified, guest) values (?, ?, ?, ?, ?, ?)",
+    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest) values (?, ?, ?, ?, ?, ?, ?, ?)",
     commentId,
+    p.by.ref,
     p.optionId,
     JSON.stringify(p.by),
     p.at,
+    p.by.kind === "user" && p.by.typed === true && !p.by.agent ? 1 : 0,
     p.verified ?? null,
     p.guest ? 1 : 0,
   );
 }
 
-/** Sets or clears (null) the decider (#2381). */
-export function setDecider(
+/** The most picks one person may add to one ask (#2381): a retry loop or a bot stops here. */
+export const PICKS_PER_PERSON_MAX = 50;
+
+/** How many picks `userId` has made on the ask. */
+export function pickCount(
   sql: SqlStorage,
   commentId: string,
-  decider: string | null,
-): void {
-  sql.exec(
-    "update comment_asks set decider = ? where comment_id = ?",
-    decider,
-    commentId,
+  userId: string,
+): number {
+  return sql
+    .exec<{ n: number }>(
+      "select count(*) as n from comment_ask_picks where comment_id = ? and user_id = ?",
+      commentId,
+      userId,
+    )
+    .one().n;
+}
+
+/** Clears the decider only while it is still `from` and nothing is decided (#2381): a compare-and-set. True when it moved. */
+export function clearDecider(
+  sql: SqlStorage,
+  commentId: string,
+  from: string,
+): boolean {
+  return (
+    sql.exec(
+      "update comment_asks set decider = null where comment_id = ? and decider = ? and answer is null",
+      commentId,
+      from,
+    ).rowsWritten > 0
   );
 }
 

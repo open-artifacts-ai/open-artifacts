@@ -56,6 +56,7 @@ import {
   bodyOk,
   COMMENTS_SCHEMA,
   claimEmail,
+  clearDecider,
   deleteExtras,
   getComment,
   getThread,
@@ -67,7 +68,9 @@ import {
   type NewExtras,
   openCount,
   type ParticipantRow,
+  PICKS_PER_PERSON_MAX,
   participantsOf,
+  pickCount,
   recordReplyTargets,
   refundAsker,
   refundAskerIfAllGone,
@@ -82,7 +85,6 @@ import {
   type StoredParticipant,
   type StoredThread,
   setAnswer,
-  setDecider,
   setParticipantRemoved,
   setTargetState,
   settleTarget,
@@ -2231,6 +2233,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
         .find((p) => p.by.ref === a.by.ref);
       const unchanged = mine?.optionId === a.optionId;
       const now = this.iso();
+      if (
+        !unchanged &&
+        a.by.kind === "user" &&
+        pickCount(this.sql, a.commentId, a.by.ref) >= PICKS_PER_PERSON_MAX
+      )
+        fail("rate_limited", "Too many picks on this ask. Try again later.");
       if (!unchanged)
         addPick(this.sql, a.commentId, {
           optionId: a.optionId,
@@ -2294,7 +2302,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!r.ask.decider || r.ask.decider === a.by.ref)
         fail("bad_request", "You already decide this");
       if (r.ask.answer) fail("already_decided", "This is already decided");
-      setDecider(this.sql, a.commentId, null);
+      if (!clearDecider(this.sql, a.commentId, r.ask.decider))
+        fail("already_decided", "This is already decided");
       touchThread(this.sql, a.threadId, this.iso());
       return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
     });

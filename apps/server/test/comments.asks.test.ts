@@ -907,6 +907,46 @@ describe("deciders (#2381)", () => {
     expect(n).toBe(4);
   });
 
+  it("caps picks at 50 a person on an ask, then 429", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        for (let n = 0; n < 50; n++)
+          state.storage.sql.exec(
+            "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed) values (?, ?, 'wide', ?, ?, 1)",
+            cid,
+            viewer.userId,
+            JSON.stringify({ kind: "user", ref: viewer.userId }),
+            new Date().toISOString(),
+          );
+      },
+    );
+    const r = await answer(s.id, t.id, cid, viewer, "compact");
+    expect(r.status).toBe(429);
+    expect((await errOf(r)).code).toBe("rate_limited");
+  });
+
+  it("works on a DO created before deciders: the column and table are added", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i, state) => {
+        state.storage.sql.exec("drop table comment_ask_picks");
+        state.storage.sql.exec("alter table comment_asks drop column decider");
+        (i as unknown as { ready: boolean }).ready = false;
+      },
+    );
+    expect((await answer(s.id, t.id, cid, viewer, "wide")).status).toBe(200);
+    const a = await listAsk(s.id, owner, cid);
+    expect(a?.decider).toMatchObject({ id: owner.userId });
+    expect(a?.picks).toHaveLength(1);
+  });
+
   it("an ask answered before deciders reads with the asker as decider and its answer as a pick", async () => {
     const s = await setup();
     const t = await ask(s.id, [viewer.userId]);
