@@ -3,9 +3,10 @@
 // in <head> (the hero's glyphs turn to mojibake otherwise), or if the home
 // page's "Get started free" buttons are missing or do not go to the hosted
 // sign-up URL. Usage: node check-landing-dist.ts [distDir] [--probe-signup]
-// --probe-signup (release only) also requests the sign-up URL found in the
-// built home page (not the env), follows redirects, and fails unless the final
-// answer is 2xx, so a release cannot ship dead sign-up buttons.
+// --probe-signup is a separate mode (release only): it requests the sign-up URL
+// found in the built home page (not the env), follows redirects, and exits 1
+// with an error annotation unless the final answer is 2xx, so the landing is
+// not deployed while sign-ups are closed.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -113,16 +114,20 @@ export function signupUrlInDist(dist: string): string | undefined {
 }
 
 /**
- * Release mode: the sign-up URL must end on a 2xx after redirects.
- * Returns an error message, or null when it is fine. `fetchFn` is injectable.
+ * Is the sign-up URL live? It must end on a 2xx after redirects. `detail` says
+ * why not, as "sign-up URL <url> answers <status>". `fetchFn` is injectable.
  */
 export async function probeSignup(
   url: string | undefined,
   fetchFn: typeof fetch = fetch,
-): Promise<string | null> {
+): Promise<{ live: true } | { live: false; detail: string }> {
   const u = url?.trim();
   if (!u)
-    return "no sign-up URL was found in the built home page, so there is nothing to probe";
+    return {
+      live: false,
+      detail:
+        "no sign-up URL was found in the built home page, so there is nothing to probe",
+    };
   try {
     // Follow redirects: what counts is where a visitor ends up, and that
     // final page must answer 2xx.
@@ -131,11 +136,34 @@ export async function probeSignup(
       redirect: "follow",
       signal: AbortSignal.timeout(15_000),
     });
-    if (res.status >= 200 && res.status < 300) return null;
-    return `the sign-up URL ${u} ends on a ${res.status}; sign-up buttons would be dead links`;
+    if (res.status >= 200 && res.status < 300) return { live: true };
+    return { live: false, detail: `sign-up URL ${u} answers ${res.status}` };
   } catch (e) {
-    return `the sign-up URL ${u} could not be reached (${e instanceof Error ? e.message : String(e)})`;
+    return {
+      live: false,
+      detail: `sign-up URL ${u} could not be reached (${e instanceof Error ? e.message : String(e)})`,
+    };
   }
+}
+
+/**
+ * Probe mode: exit 1 with an error annotation unless the sign-up URL is live,
+ * so the landing job fails red (and so does not deploy) while sign-ups are
+ * closed. The release itself is unaffected: the hosted deploys do not wait on
+ * the landing job.
+ */
+export async function probeMain(
+  dist: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<number> {
+  // The URL probed is the one the built page actually links to, not the env.
+  const r = await probeSignup(signupUrlInDist(dist), fetchFn);
+  if (r.live) {
+    console.log("ok: the sign-up URL is live");
+    return 0;
+  }
+  console.log(`::error::Landing not deployed: ${r.detail}`);
+  return 1;
 }
 
 async function main(): Promise<number> {
@@ -148,10 +176,9 @@ async function main(): Promise<number> {
     console.error(`::error::landing dist not found: ${dist}`);
     return 2;
   }
+  if (probe) return probeMain(dist);
   const hits = scan(dist);
-  // The URL probed is the one the built page actually links to, not the env.
-  const probeError = probe ? await probeSignup(signupUrlInDist(dist)) : null;
-  if (hits.length === 0 && !probeError) {
+  if (hits.length === 0) {
     console.log("ok: landing dist clean");
     return 0;
   }
@@ -161,11 +188,9 @@ async function main(): Promise<number> {
     );
   if (hits.length > MAX_LINES)
     console.log(`... and ${hits.length - MAX_LINES} more`);
-  if (probeError)
-    console.log(`::error::landing not release-ready: ${probeError}`);
   const files = new Set(hits.map((h) => h.file)).size;
   console.log(
-    `::error::Landing deploy skipped: ${hits.length} ${TOKENS.join(" / ")} / missing charset / sign-up link hit(s) in ${files} file(s)${probeError ? " and a sign-up URL that does not answer" : ""}. The release is already created; fix the landing, then re-run this workflow via workflow_dispatch with the tag.`,
+    `::error::Landing deploy skipped: ${hits.length} ${TOKENS.join(" / ")} / missing charset / sign-up link hit(s) in ${files} file(s). The release is already created; fix the landing, then re-run this workflow via workflow_dispatch with the tag.`,
   );
   return 1;
 }

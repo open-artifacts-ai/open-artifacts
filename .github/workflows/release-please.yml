@@ -120,9 +120,13 @@ jobs:
       # Re-run via workflow_dispatch with the tag once the landing is clean.
       - name: Check landing is release-ready
         if: steps.gate.outputs.present == 'true'
-        # --probe-signup requests the sign-up URL the built home page links to
-        # (not an env value), follows redirects, and fails unless the final
-        # answer is 2xx, so a release cannot ship dead sign-up buttons.
+        run: node scripts/ops/check-landing-dist.ts apps/landing/dist
+      # Sign-ups closed (the URL the built page links to does not end on a 2xx)
+      # fails this job red with an annotation, so no dead sign-up buttons ship.
+      # The hosted deploys do not wait on deploy-landing (tag-passed-checks
+      # ignores it), so a red landing job does not block them.
+      - name: Probe the sign-up URL
+        if: steps.gate.outputs.present == 'true'
         run: node scripts/ops/check-landing-dist.ts apps/landing/dist --probe-signup
       - name: Deploy landing to production (open-artifacts.com)
         if: steps.gate.outputs.present == 'true'
