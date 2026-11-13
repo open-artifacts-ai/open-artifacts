@@ -13,6 +13,7 @@ import {
   PROTOCOL_COMMENT_DRAFT,
   PROTOCOL_PIN_BADGE,
   PROTOCOL_PIN_CHANGED,
+  PROTOCOL_SHELL_ANNOUNCES,
   PROTOCOL_VERSION,
   parseArtifactMessage,
   R,
@@ -512,7 +513,9 @@ export function createBridge(opts: BridgeOptions) {
           appOrigin: location.origin,
         });
         // #2408: a runtime adds newer fields only for a shell that says it knows them.
-        reply({ oa: 1, type: "shell.protocol", protocol: PROTOCOL_VERSION });
+        // Only to a runtime that can read it (an older one would drop it).
+        if (frameProtocol >= PROTOCOL_SHELL_ANNOUNCES)
+          reply({ oa: 1, type: "shell.protocol", protocol: PROTOCOL_VERSION });
         onHello?.();
         break;
       case "call":

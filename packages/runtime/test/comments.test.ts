@@ -1025,6 +1025,12 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ at: { x: 120, y: 60 } });
   });
 
+  it("the runtime's copy of the announce protocol matches the shared one (#2408)", async () => {
+    const { SHELL_ANNOUNCES } = await import("../src/comments.js");
+    const { PROTOCOL_SHELL_ANNOUNCES } = await import("@oa/shared");
+    expect(SHELL_ANNOUNCES).toBe(PROTOCOL_SHELL_ANNOUNCES);
+  });
+
   describe("an older shell (#2408)", () => {
     // What a tab opened before the deploy still runs: strict, so a key it
     // does not know refuses the whole message.

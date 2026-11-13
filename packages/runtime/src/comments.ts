@@ -201,7 +201,7 @@ function fillBadge(el: HTMLElement, badge: PinBadge): void {
 }
 
 /** #2408: the first shell protocol that announces itself (shared PROTOCOL_SHELL_ANNOUNCES; not imported to keep this chunk small). */
-const SHELL_ANNOUNCES = 6;
+export const SHELL_ANNOUNCES = 6;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send"> & Partial<Pick<Bridge, "shellProtocol">>,
