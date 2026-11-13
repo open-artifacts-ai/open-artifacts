@@ -28,15 +28,42 @@ import { utf8Exceeds } from "./utf8.js";
  * know (all of them, not the field): bump this when a shell message gains one,
  * and have the shell leave that field out for a runtime that said an earlier
  * number. #1698: 2 adds `changed` on `comments.set` threads. #1834: 3 adds
- * `draft` on `comments.set`. 4 adds `comments.clear`.
+ * `draft` on `comments.set`. 4 adds `comments.clear`. #2019: 5 adds `badge`
+ * on `comments.set` pins and its ghost, and `at` on `comment.pin`.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
 export const PROTOCOL_PIN_CHANGED = 2;
 /** The first protocol whose runtime draws the quote being commented on (#1834). */
 export const PROTOCOL_COMMENT_DRAFT = 3;
 /** The first protocol whose runtime clears its selection on `comments.clear`. */
 export const PROTOCOL_COMMENT_CLEAR = 4;
+/** The first protocol whose runtime draws a pin's badge and reports where a pin was clicked (#2019). */
+export const PROTOCOL_PIN_BADGE = 5;
+
+/**
+ * #2019: what a pin's bubble shows, drawn by the shell's choice: one or two
+ * initials, or an agent's face as the inner markup of a 24px line icon. The
+ * frame parses `icon` against an element allowlist and never runs it. `label`
+ * is the bubble's accessible name ("Comment by Sam"). Image and pdf pages only,
+ * whose frame holds no author script: text comments carry no identity into the
+ * frame.
+ */
+export const PinBadgeSchema = z.union([
+  z.strictObject({
+    initials: z.string().min(1).max(4),
+    label: z.string().max(120).optional(),
+  }),
+  z.strictObject({
+    icon: z.string().min(1).max(6000),
+    label: z.string().max(120).optional(),
+    /** The agent's palette slot (0..PRESENCE_PALETTE_SIZE-1) as a CSS colour. */
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    /** An agent with no face the viewer may see: the dashed outline mark, as the card draws it. */
+    dashed: z.boolean().optional(),
+  }),
+]);
+export type PinBadge = z.infer<typeof PinBadgeSchema>;
 
 export const RUNTIME_METHODS = [
   "db.get",
@@ -277,6 +304,13 @@ export const ArtifactToShellSchema = z.union([
       y: z.number().min(0).max(1),
       page: z.number().int().min(1).max(100_000).optional(),
     }),
+    /** #2019: the click in frame-viewport pixels, so the shell can open the box beside it. */
+    at: z
+      .strictObject({
+        x: z.number().finite().min(0).max(100_000),
+        y: z.number().finite().min(0).max(100_000),
+      })
+      .optional(),
   }),
 ]);
 export type ArtifactToShell = z.infer<typeof ArtifactToShellSchema>;
@@ -372,6 +406,8 @@ export const ShellToArtifactSchema = z.union([
           resolved: z.boolean().optional(),
           /** #1657: a pin whose page changed since it was placed (the card says so too). */
           changed: z.boolean().optional(),
+          /** #2019: what the pin's bubble shows (pins on images and pdfs only). */
+          badge: PinBadgeSchema.optional(),
         }),
       )
       .max(COMMENT_THREADS_MAX),
@@ -381,6 +417,7 @@ export const ShellToArtifactSchema = z.union([
         x: z.number().min(0).max(1),
         y: z.number().min(0).max(1),
         page: z.number().int().min(1).max(100_000).optional(),
+        badge: PinBadgeSchema.optional(),
       })
       .optional(),
     /**

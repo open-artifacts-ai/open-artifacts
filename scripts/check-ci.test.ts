@@ -910,6 +910,28 @@ describe("release-please", () => {
       // scripts/ci/release-kind.test.ts; this only proves the step calls it.
       expect(existsSync(join(root, "scripts/ci/release-kind.ts"))).toBe(true);
     });
+    it("an empty release commit is refused before the action can tag it (#2379)", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const g = steps.findIndex((s: any) =>
+        String(s.run ?? "").includes("release-commit-changed.ts"),
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.findIndex((s: any) => s.id === "rp");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const kind = steps.findIndex((s: any) => s.id === "kind");
+      expect(g).toBeGreaterThan(kind);
+      expect(g).toBeLessThan(rp);
+      expect(steps[g].if).toContain("steps.kind.outputs.is_release == 'true'");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const checkout = steps.find((s: any) =>
+        String(s.uses ?? "").startsWith("actions/checkout@"),
+      );
+      expect(checkout.with["fetch-depth"]).toBeGreaterThanOrEqual(2);
+      expect(
+        existsSync(join(root, "scripts/ci/release-commit-changed.ts")),
+      ).toBe(true);
+    });
     it("a release commit that ends with no release fails the run instead of going green", () => {
       const steps = rpSteps();
       // biome-ignore lint/suspicious/noExplicitAny: untyped YAML

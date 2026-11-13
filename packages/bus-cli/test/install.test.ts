@@ -372,7 +372,7 @@ describe("install: daemon confirmation", () => {
     expect(ctx.service.ensure).toHaveBeenCalledOnce();
   });
 
-  it("gives up after 10 seconds: the transcript's failure, on stderr, nothing after", async () => {
+  it("gives up after 60 seconds when liveness is unknown: the transcript's failure, on stderr, nothing after", async () => {
     const ctx = fakeCtx({
       fetch: hub([approved]),
       ...allHarnesses({
@@ -383,15 +383,66 @@ describe("install: daemon confirmation", () => {
     });
     const start = ctx.clock.t;
     expect(await run(ctx)).toBe(1);
-    // One 5 s approval poll, then the 10 s wait.
-    expect(ctx.clock.t - start).toBeGreaterThanOrEqual(15_000);
-    expect(ctx.clock.t - start).toBeLessThan(16_000);
+    // One 5 s approval poll, then the 60 s wait.
+    expect(ctx.clock.t - start).toBeGreaterThanOrEqual(65_000);
+    expect(ctx.clock.t - start).toBeLessThan(68_000);
     expect(ctx.err()).toEqual([
-      "[[danger]]×[[/danger]]  The daemon did not start within 10 seconds.",
+      "[[danger]]×[[/danger]]  The daemon did not start within 60 seconds.",
       "   Run npx @open-artifacts/bus doctor to see why.",
     ]);
     // The harness lines (the output style's too) come before the daemon step.
     expect(ctx.out().some((l) => /OpenCode service/.test(l))).toBe(true);
+  });
+  describe("#2358: a slow start", () => {
+    const slowCtx = (
+      readyAfterMs: number,
+      alive?: () => boolean | undefined,
+    ) => {
+      const base = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+      let t0: number | undefined;
+      const ctx = fakeCtx({
+        fetch: hub([approved]),
+        ...allHarnesses({
+          status: vi.fn(async () => {
+            t0 ??= ctx.clock.t;
+            if (ctx.clock.t - t0 < readyAfterMs)
+              throw new Error("ECONNREFUSED");
+            return status();
+          }),
+        }),
+        service: {
+          ...base.service,
+          ...(alive ? { alive: async () => alive() } : {}),
+        },
+      });
+      return ctx;
+    };
+
+    it("ready at 30 s: success, no failure line", async () => {
+      const ctx = slowCtx(30_000, () => true);
+      expect(await run(ctx)).toBe(0);
+      expect(ctx.err()).toEqual([]);
+      expect(ctx.out().join("\n")).not.toContain("still starting");
+    });
+
+    it("alive but silent at the bound: a warning, not a failure", async () => {
+      const ctx = slowCtx(Number.POSITIVE_INFINITY, () => true);
+      expect(await run(ctx)).toBe(0);
+      expect(ctx.err()).toEqual([]);
+      expect(ctx.out()).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("The daemon is still starting."),
+        ]),
+      );
+    });
+
+    it("process gone: the failure, before the bound", async () => {
+      const ctx = slowCtx(Number.POSITIVE_INFINITY, () => false);
+      const start = ctx.clock.t;
+      expect(await run(ctx)).toBe(1);
+      expect(ctx.err()[0]).toContain("The daemon did not start within");
+      expect(ctx.clock.t - start).toBeLessThan(30_000);
+    });
   });
 });
 

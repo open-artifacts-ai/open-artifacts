@@ -182,7 +182,7 @@ describe("install through the service", () => {
     expect(ctx.out().filter((l) => l === FALLBACK[1])).toHaveLength(2);
   });
 
-  it("a service that never answers is the 10 s failure", async () => {
+  it("a service that never answers is the timeout failure", async () => {
     // Neither launchd nor the fallback daemon ever answers.
     const { ctx } = withService("darwin", (_c, a) => a[0] === "bootstrap", {
       daemonPid: async () => undefined,
@@ -190,7 +190,7 @@ describe("install through the service", () => {
     });
     expect(await install({ hub: HUB }, ctx)).toBe(1);
     expect(ctx.err()[0]).toBe(
-      "[[danger]]×[[/danger]]  The daemon did not start within 10 seconds.",
+      "[[danger]]×[[/danger]]  The daemon did not start within 60 seconds.",
     );
   });
 });

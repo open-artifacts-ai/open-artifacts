@@ -412,6 +412,63 @@ describe("systemService: systemd", () => {
     expect(s.kind).toBe("systemd");
   });
 
+  describe("alive (#2358)", () => {
+    const show = (active: string, sub: string, n = 0) =>
+      `ActiveState=${active}\nSubState=${sub}\nNRestarts=${n}\n`;
+    const aliveOn = async (
+      platform: NodeJS.Platform,
+      stdout: string,
+      code = 0,
+    ) => {
+      const { d } = deps(platform);
+      const s = systemService({
+        ...d,
+        exec: vi.fn(async (_c: string, a: string[]) =>
+          a.includes("show") || a.includes("print")
+            ? { code, stdout, stderr: "" }
+            : { code: 0, stdout: "", stderr: "" },
+        ),
+      });
+      await s.ensure();
+      return s.alive?.();
+    };
+    it.each([
+      ["active", show("active", "running"), true],
+      ["activating/start", show("activating", "start"), true],
+      ["activating/auto-restart", show("activating", "auto-restart"), false],
+      ["activating with restarts", show("activating", "start", 2), false],
+      ["failed", show("failed", "failed"), false],
+    ])("systemd %s", async (_n, out, want) => {
+      expect(await aliveOn("linux", out)).toBe(want);
+    });
+    it("systemd show failing is not alive", async () => {
+      expect(await aliveOn("linux", "", 1)).toBe(false);
+    });
+    it("launchd: a pid line is alive, none is not", async () => {
+      expect(await aliveOn("darwin", "state = running\n\tpid = 123\n")).toBe(
+        true,
+      );
+      expect(await aliveOn("darwin", "state = spawn scheduled\n")).toBe(false);
+      expect(await aliveOn("darwin", "", 113)).toBe(false);
+    });
+    it("fallback daemon: its recorded pid", async () => {
+      const mk = (args: string | undefined) => {
+        const { d } = deps(
+          "linux",
+          { processArgs: () => args, spawnDaemon: () => 4242 },
+          (c) => c === "systemctl",
+        );
+        return systemService(d);
+      };
+      const up = mk("node oa-bus daemon");
+      await up.ensure();
+      expect(await up.alive?.()).toBe(true);
+      const gone = mk(undefined);
+      await gone.ensure();
+      expect(await gone.alive?.()).toBe(false);
+    });
+  });
+
   it("honours XDG_CONFIG_HOME", async () => {
     const { d, userHome } = deps("linux");
     const xdg = join(userHome, "xdg");

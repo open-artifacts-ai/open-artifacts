@@ -63,6 +63,9 @@ describe("e2e.sh", () => {
     const mock = run("mock");
     expect(mock.code).toBe(0);
     expect(mock.sb.log()).toEqual([
+      // #2019: the mock suite serves the built runtime in a stand-in frame.
+      "pnpm --filter @oa/shared --filter @oa/runtime build",
+      "PW_DIR=",
       "pnpm --filter @oa/dashboard exec playwright test --reporter=list,html",
       "PW_DIR=playwright-report/mock",
     ]);
@@ -83,7 +86,15 @@ describe("e2e.sh", () => {
       });
       expect(r.code).toBe(0);
       const config = suite === "real" ? " -c playwright.real.config.ts" : "";
+      const build =
+        suite === "mock"
+          ? [
+              "pnpm --filter @oa/shared --filter @oa/runtime build",
+              `BLOB= PW_DIR=`,
+            ]
+          : [];
       expect(sb.log()).toEqual([
+        ...build,
         `pnpm --filter @oa/dashboard exec playwright test${config} --shard=3/4 --reporter=list,blob`,
         `BLOB=${join(sb.dir, "blobs", suite, "shard-3.zip")} PW_DIR=`,
       ]);

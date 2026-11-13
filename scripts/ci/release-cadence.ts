@@ -80,6 +80,8 @@ export type ReleasePr = {
   rollup: string;
   contexts: Context[];
   oid: string;
+  /** Main already carries the version this PR's head sets (it landed; GitHub still reads it open). */
+  landed?: boolean;
   /** When the latest check on the current head finished (ms), if known. */
   settledAt?: number;
 };
@@ -92,6 +94,25 @@ async function gh(exec: Exec, args: string[]): Promise<string> {
       `gh ${args.slice(0, 2).join(" ")}: ${r.stderr.trim() || `exit ${r.code}`}`,
     );
   return r.stdout;
+}
+
+/** The root package.json version at a ref, or "" when it cannot be read. */
+async function packageVersion(
+  exec: Exec,
+  repo: string,
+  ref: string,
+): Promise<string> {
+  try {
+    const out = await gh(exec, [
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw",
+      `repos/${repo}/contents/package.json?ref=${ref}`,
+    ]);
+    return String(JSON.parse(out)?.version ?? "");
+  } catch {
+    return "";
+  }
 }
 
 async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
@@ -122,6 +143,11 @@ async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
   const commit = n.commits?.nodes?.[0]?.commit;
   const rollup = commit?.statusCheckRollup;
   const contexts: Context[] = rollup?.contexts?.nodes ?? [];
+  const oid = String(commit?.oid ?? "");
+  const [mainV, headV] = await Promise.all([
+    packageVersion(exec, repo, "main"),
+    oid ? packageVersion(exec, repo, oid) : "",
+  ]);
   const times = contexts
     .map((c) => Date.parse(String(c.completedAt ?? c.createdAt ?? "")))
     .filter((t) => !Number.isNaN(t));
@@ -137,7 +163,8 @@ async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
       armedBy: n.autoMergeRequest?.enabledBy?.login,
       rollup: rollup?.state ?? "NONE",
       contexts,
-      oid: String(commit?.oid ?? ""),
+      oid,
+      landed: Boolean(mainV) && mainV === headV,
       settledAt: times.length ? Math.max(...times) : undefined,
     },
   };
@@ -149,6 +176,7 @@ export type ArmResult =
   | { action: "not-green"; pr: number; state: string }
   | { action: "waiting"; entries: number }
   | { action: "disarmed"; pr: number }
+  | { action: "landed"; pr: number }
   | { action: "armed"; pr: number };
 
 type Opts = {
@@ -178,6 +206,14 @@ function plan(
       do: "none",
       result: { action: "none" },
       msg: "no open release PR",
+    };
+  // GitHub can still read a landed release PR as open (#2379): arming it again
+  // made the queue build an empty commit that got tagged. Leave it alone.
+  if (pr.landed)
+    return {
+      do: "none",
+      result: { action: "landed", pr: pr.number },
+      msg: `release PR #${pr.number} already landed (main carries its version), not arming`,
     };
   const capHit =
     pr.rollup === "SUCCESS" &&

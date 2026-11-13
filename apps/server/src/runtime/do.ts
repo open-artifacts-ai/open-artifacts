@@ -573,6 +573,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "select name from pragma_table_info('comment_participants')",
         )
         .toArray();
+      // #2263: comment_asks.confirm, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "confirm")
+      )
+        sql.exec("alter table comment_asks add column confirm text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -2158,6 +2168,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     by: StoredActor;
     optionId: string;
     rate: string;
+    /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
+    verified?: "passkey";
   }): { comment: StoredComment; unchanged: boolean } {
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
@@ -2173,6 +2185,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
+      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
+      if (r.ask.confirm === "passkey") {
+        if (a.verified !== "passkey")
+          fail("passkey_required", "This pick needs your passkey");
+        if (r.ask.answer?.optionId === a.optionId)
+          fail("already_answered", "This ask is answered with that option");
+      }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
       const unchanged = r.ask.answer?.optionId === a.optionId;
       const now = this.iso();
@@ -2180,6 +2199,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         optionId: a.optionId,
         by: a.by,
         at: now,
+        ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
       });
       touchThread(this.sql, a.threadId, now);
       return {

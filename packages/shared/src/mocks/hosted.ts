@@ -647,7 +647,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     const {
       creatorsThisMonth: _,
       yearlyTeamBusiness: __,
-      overageDue: ___,
+      soloCheckedOut: ___,
+      cancelsAt: ____,
+      interval: _interval,
+      renewsAt: _renewsAt,
+      overageDue: _____,
       ...rest
     } = billing;
     return {

@@ -102,6 +102,48 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // A Solo in its free days that already paid at Checkout (billing.soloCheckedOut).
+  "solo-checked-out": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      soloCheckedOut: true,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // A Solo that cancelled in its free days (billing.cancelsAt).
+  "solo-canceled": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      soloCheckedOut: true,
+      cancelsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // A Team plan set to cancel at the end of its period (billing.cancelsAt).
+  "team-canceled": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      cancelsAt: new Date(Date.now() + 12 * 86_400_000).toISOString(),
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
   // Failed extra-creator charges (#2246): one month, and several months.
   "overage-due": {
     billing: {
@@ -124,6 +166,20 @@ const TOKENS: Record<string, HostedMockOptions> = {
       hasCustomer: true,
       creatorsThisMonth: 9,
       overageDue: { amountCents: 11850, months: ["2026-09", "2026-10"] },
+      readOnly: false,
+    },
+  },
+  // A paying Team on the yearly interval (billing.interval, renewsAt).
+  "team-yearly-renews": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      interval: "year",
+      renewsAt: "2027-12-01T00:00:00.000Z",
+      creatorsThisMonth: 4,
       readOnly: false,
     },
   },

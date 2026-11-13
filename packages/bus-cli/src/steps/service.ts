@@ -547,6 +547,8 @@ export function systemService(d: ServiceDeps): Service {
     return "started";
   }
 
+  const skippedNow = () => isolated() !== undefined;
+
   return {
     get kind() {
       return installed() ? manager : undefined;
@@ -729,6 +731,40 @@ export function systemService(d: ServiceDeps): Service {
     env() {
       const e = installed() ? record().env : undefined;
       return typeof e === "object" && e !== null ? e : {};
+    },
+
+    async alive() {
+      if (skippedNow()) return undefined;
+      if (installed()) {
+        if (manager === "launchd") {
+          const r = await d.exec("launchctl", [
+            "print",
+            `${domain}/${names().label}`,
+          ]);
+          // A loaded job with no pid has exited (or not spawned yet).
+          return r.code === 0 && /\bpid = \d+/.test(r.stdout);
+        }
+        const r = await systemctl(
+          "show",
+          "-p",
+          "ActiveState,SubState,NRestarts",
+          names().unit,
+        );
+        const v = (k: string) =>
+          r.stdout.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim();
+        if (r.code !== 0) return false;
+        if (v("ActiveState") === "active") return true;
+        // A crash loop waits in activating/auto-restart between runs.
+        return (
+          v("ActiveState") === "activating" &&
+          v("SubState") !== "auto-restart" &&
+          Number(v("NRestarts") ?? 0) === 0
+        );
+      }
+      const pid = record().fallback === true ? record().pid : undefined;
+      return typeof pid === "number"
+        ? d.processArgs(pid) !== undefined
+        : undefined;
     },
 
     problems() {

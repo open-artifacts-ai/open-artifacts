@@ -124,6 +124,7 @@ test("hosted: the Spaces tab sits after Members", async ({ page }) => {
   await expect(nav.getByRole("link")).toHaveText([
     "Profile",
     "Notifications",
+    "Security",
     "Members",
     "Spaces",
     "Directory",
@@ -142,6 +143,7 @@ test("hosted tab strip at 375 wraps without clipping (#1453)", async ({
   await expect(nav.getByRole("link")).toHaveText([
     "Profile",
     "Notifications",
+    "Security",
     "Members",
     "Spaces",
     /^Directory/,

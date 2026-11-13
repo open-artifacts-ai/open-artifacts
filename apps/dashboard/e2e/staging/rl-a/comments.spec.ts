@@ -24,12 +24,41 @@ import {
 
 const MIN = "0.162.0";
 
+const STEP_MS = 15_000;
+// Setup calls pace themselves against the hook window (hook-pace.ts), bounded
+// by the hook's own timeout less a margin; this only names a hang just under it.
+const SETUP_MS = 55_000;
+
+/** Fails fast and by name: a hung network step says which one hung. */
+async function step<T>(
+  name: string,
+  fn: () => Promise<T>,
+  ms = STEP_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${name} timed out after ${ms / 1000}s`)),
+      ms,
+    );
+  });
+  try {
+    return await Promise.race([fn(), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Two hook calls in all: one session, one OAuth grant (budget: 10 or fewer).
 let owner: Person;
 let agent: Agent;
 test.beforeAll(async ({ browser }) => {
-  owner = await personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member");
-  agent = await oauthAgent();
+  owner = await step(
+    "setup personAt",
+    () => personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member"),
+    SETUP_MS,
+  );
+  agent = await step("setup oauthAgent", () => oauthAgent(), SETUP_MS);
 });
 test.afterAll(async () => {
   await agent?.close();
@@ -45,12 +74,16 @@ const commentable = (title: string) => ({
 
 /** One commentable page owned by the shared person. */
 async function pageOf(title: string) {
-  const { id } = await publish(owner, commentable(`${title} ${Date.now()}`));
+  const { id } = await step("publish page", () =>
+    publish(owner, commentable(`${title} ${Date.now()}`)),
+  );
   return id;
 }
 
 const threads = async (agent: Agent, id: string) => {
-  const r = await agent.call("list_comments", { id });
+  const r = await step("agent list_comments", () =>
+    agent.call("list_comments", { id }),
+  );
   expect(r.ok, r.text).toBe(true);
   return (r.data as unknown as CommentList).threads;
 };
@@ -64,11 +97,13 @@ test("asks: an agent's ask, a person's answer (not a yes), and toAsker replies",
       { id: "short", label: "Short" },
       { id: "full", label: "Full" },
     ];
-    const asked = await agent.call("add_comment", {
-      id,
-      body: question,
-      ask: { question, options, to: [{ key: owner.id }] },
-    });
+    const asked = await step("agent add_comment (ask)", () =>
+      agent.call("add_comment", {
+        id,
+        body: question,
+        ask: { question, options, to: [{ key: owner.id }] },
+      }),
+    );
     expect(asked.ok, asked.text).toBe(true);
     const [thread] = await threads(agent, id);
     const root = thread?.comments[0];
@@ -79,10 +114,12 @@ test("asks: an agent's ask, a person's answer (not a yes), and toAsker replies",
     // which never counts as typed (auth/authz.ts interactiveSession), so the
     // pick is recorded but is not a yes, by design.
     await json(
-      await api(owner, R.commentAnswer(id, thread.id, root.id), {
-        method: "POST",
-        body: JSON.stringify({ optionId: "short" }),
-      }),
+      await step("POST commentAnswer", () =>
+        api(owner, R.commentAnswer(id, thread.id, root.id), {
+          method: "POST",
+          body: JSON.stringify({ optionId: "short" }),
+        }),
+      ),
     );
     const answered = (await threads(agent, id))[0]?.comments[0]?.ask?.answer;
     expect(answered).toMatchObject({
@@ -93,33 +130,44 @@ test("asks: an agent's ask, a person's answer (not a yes), and toAsker replies",
 
     // toAsker: reaches the asking agent's address, if it has one (this one
     // has none, so nobody is told) and is still a reply.
-    const reply = await api(owner, R.commentReplies(id, thread.id), {
-      method: "POST",
-      body: JSON.stringify({ body: "Yes, short.", toAsker: true }),
-    });
+    const reply = await step("POST commentReplies (toAsker)", () =>
+      api(owner, R.commentReplies(id, thread.id), {
+        method: "POST",
+        body: JSON.stringify({ body: "Yes, short.", toAsker: true }),
+      }),
+    );
     expect(reply.status).toBe(201);
     // Never with mentions.
-    const both = await api(owner, R.commentReplies(id, thread.id), {
-      method: "POST",
-      body: JSON.stringify({
-        body: "Also them",
-        toAsker: true,
-        mentions: [{ key: `agent:${"0".repeat(32)}` }],
+    const both = await step("POST commentReplies (toAsker + mentions)", () =>
+      api(owner, R.commentReplies(id, thread.id), {
+        method: "POST",
+        body: JSON.stringify({
+          body: "Also them",
+          toAsker: true,
+          mentions: [{ key: `agent:${"0".repeat(32)}` }],
+        }),
       }),
-    });
+    );
     expect(await refusal(both, 400)).toBe("bad_request");
   }
   // A person's thread has no agent to reply to.
   const t = await json<{ id: string }>(
-    await api(owner, R.comments(id), {
+    await step("POST comments (person's thread)", () =>
+      api(owner, R.comments(id), {
+        method: "POST",
+        body: JSON.stringify({
+          anchor: { kind: "note" },
+          body: "A person asks",
+        }),
+      }),
+    ),
+  );
+  const res = await step("POST commentReplies (no asker)", () =>
+    api(owner, R.commentReplies(id, t.id), {
       method: "POST",
-      body: JSON.stringify({ anchor: { kind: "note" }, body: "A person asks" }),
+      body: JSON.stringify({ body: "To the asker", toAsker: true }),
     }),
   );
-  const res = await api(owner, R.commentReplies(id, t.id), {
-    method: "POST",
-    body: JSON.stringify({ body: "To the asker", toAsker: true }),
-  });
   expect(await refusal(res, 400)).toBe("not_an_ask");
 });
 
@@ -127,10 +175,12 @@ test("live reply: an agent's reply shows with the page open, no reload", async (
   await needs("live replies (#2179)", MIN);
   const id = await pageOf("T19 live reply");
   const t = await json<{ id: string }>(
-    await api(owner, R.comments(id), {
-      method: "POST",
-      body: JSON.stringify({ anchor: { kind: "note" }, body: "Watching" }),
-    }),
+    await step("POST comments (watching)", () =>
+      api(owner, R.comments(id), {
+        method: "POST",
+        body: JSON.stringify({ anchor: { kind: "note" }, body: "Watching" }),
+      }),
+    ),
   );
   {
     const page = owner.page;
@@ -140,11 +190,9 @@ test("live reply: an agent's reply shows with the page open, no reload", async (
       page.getByRole("textbox", { name: "Comment on the whole page" }),
     ).toBeVisible();
     const body = "Arrived while you were reading";
-    const posted = await agent.call("add_comment", {
-      id,
-      threadId: t.id,
-      body,
-    });
+    const posted = await step("agent add_comment (reply)", () =>
+      agent.call("add_comment", { id, threadId: t.id, body }),
+    );
     expect(posted.ok, posted.text).toBe(true);
     await expect(
       page.locator("[data-comment]").filter({ hasText: body }),
