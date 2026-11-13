@@ -1,5 +1,11 @@
 import { BUS_CMD, HelloRefused } from "@oa/bus-ipc";
-import { type ClaudeSession, NOT_UNDER_CLAUDE } from "./session.ts";
+import {
+  type ClaudeSession,
+  NOT_UNDER_CLAUDE,
+  type NoSessionReason,
+  RECOVERABLE_REASONS,
+  type SessionLookup,
+} from "./session.ts";
 
 export const RESTARTING_MESSAGE =
   "oa-bus: the bus daemon is restarting; retry in a few seconds. If it keeps failing, run /mcp and reconnect oa_bus.";
@@ -13,8 +19,8 @@ export const BUSY_MESSAGE =
 
 export type ConnectOutcome<C> =
   | { kind: "ok"; client: C }
-  /** No session above this process, or an unsafe socket folder. */
-  | { kind: "no-session" }
+  /** No session above this process, or an unsafe socket folder; `reason` says which. */
+  | { kind: "no-session"; reason: NoSessionReason }
   /**
    * A session, but no daemon answered within the wait. `seen` is true when a
    * socket file existed at some point (a daemon that is restarting): then no
@@ -27,7 +33,7 @@ export type ConnectOutcome<C> =
   | { kind: "refused"; reason: string };
 
 export type ConnectDeps<C> = {
-  findSession: () => ClaudeSession | null;
+  findSession: () => SessionLookup;
   socketDirProblem: () => unknown;
   socketExists: () => boolean;
   connect: (session: ClaudeSession) => Promise<C>;
@@ -47,6 +53,12 @@ export async function connectOutcome<C>(
   let seen = false;
   for (let waited = 0; ; waited += RESTART_STEP_MS) {
     const out = await attempt(deps);
+    if (out.kind === "no-session") {
+      if (!RECOVERABLE_REASONS.includes(out.reason) || waited >= waitMs)
+        return out;
+      await sleep(RESTART_STEP_MS);
+      continue;
+    }
     if (out.kind !== "no-socket") return out;
     seen ||= out.seen;
     if (waited >= waitMs) return { kind: "no-socket", seen };
@@ -55,10 +67,13 @@ export async function connectOutcome<C>(
 }
 
 async function attempt<C>(deps: ConnectDeps<C>): Promise<ConnectOutcome<C>> {
-  let session: ClaudeSession | null;
+  let session: ClaudeSession;
   try {
-    session = deps.findSession();
-    if (!session || deps.socketDirProblem()) return { kind: "no-session" };
+    const found = deps.findSession();
+    if (!found.ok) return { kind: "no-session", reason: found.reason };
+    session = found.session;
+    if (deps.socketDirProblem())
+      return { kind: "no-session", reason: "socket_dir" };
   } catch {
     // ps did not answer in time (ProcStartUnknownError): a loaded machine, not a missing install.
     return { kind: "busy" };
@@ -87,6 +102,10 @@ export function noSessionMessage(
   if (out.kind === "refused")
     return `oa-bus: the bus daemon refused: ${out.reason}`;
   if (out.kind === "no-socket" && out.seen) return RESTARTING_MESSAGE;
+  if (out.kind === "no-session")
+    return underClaude
+      ? `oa-bus: this Claude session isn't visible to the bus right now (${out.reason}); retry, or run /mcp and reconnect oa_bus.`
+      : NOT_UNDER_CLAUDE;
   return underClaude
     ? `oa-bus: no Claude session or daemon found. Run \`${BUS_CMD} install\`.`
     : NOT_UNDER_CLAUDE;

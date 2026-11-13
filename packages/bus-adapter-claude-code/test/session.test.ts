@@ -6,6 +6,7 @@ import {
   claudeSessionsDir,
   findSession,
   hasClaudeAncestor,
+  lookupSession,
   NOT_UNDER_CLAUDE,
 } from "../src/session.ts";
 
@@ -167,5 +168,33 @@ describe("claude ancestor (#1448 item 6)", () => {
       "This MCP server is for Claude Code; use this harness's own bus tools.",
     );
     expect(NOT_UNDER_CLAUDE).not.toMatch(/install/);
+  });
+});
+
+describe("lookupSession reasons (#2364)", () => {
+  const why = (dir: string, over: object = {}) => {
+    const r = lookupSession(
+      500,
+      deps(dir, { ancestors: () => [500], ...over }),
+    );
+    return r.ok ? "ok" : r.reason;
+  };
+  it("names why a session is not found", () => {
+    const none = sessions();
+    expect(why(none)).toBe("none");
+    const bad = sessions();
+    writeFileSync(join(bad, "500.json"), "{not json");
+    expect(why(bad)).toBe("unreadable");
+    const parked = sessions();
+    session(parked, 500, { parkedJobId: "j" });
+    expect(why(parked)).toBe("not_session");
+    const noStart = sessions();
+    session(noStart, 500, { procStart: undefined });
+    expect(why(noStart)).toBe("no_proc_start");
+    const ok = sessions();
+    session(ok, 500);
+    expect(why(ok, { procStart: () => "other" })).toBe("proc_start_mismatch");
+    expect(why(ok, { procStart: () => null })).toBe("proc_start_unknown");
+    expect(why(ok)).toBe("ok");
   });
 });

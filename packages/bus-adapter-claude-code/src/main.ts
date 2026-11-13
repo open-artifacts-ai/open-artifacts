@@ -12,8 +12,8 @@ import {
   busHome,
   claudeProcStartOf,
   claudeSessionsDir,
-  findSession,
   hasClaudeAncestor,
+  lookupSession,
   sessionHello,
 } from "./session.ts";
 import { daemonSocketPath, socketDirProblem } from "./socket-path.ts";
@@ -31,7 +31,7 @@ const connect = () => {
   const SOCKET = daemonSocketPath(HOME);
   return connectOutcome<DaemonClient>({
     findSession: () =>
-      findSession(process.pid, {
+      lookupSession(process.pid, {
         sessionsDir: SESSIONS,
         ancestors: ancestorChain,
         procStart: claudeProcStartOf,
