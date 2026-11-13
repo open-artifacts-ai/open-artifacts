@@ -24,16 +24,13 @@ import {
 } from "@tanstack/react-query";
 import { useMemo, useSyncExternalStore } from "react";
 import { z } from "zod";
+import { getAssertion } from "../auth/webauthn";
 import {
   isAnonToken,
   loadAnonToken,
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
-import {
-  assertionToJSON,
-  decodeRequestOptions,
-} from "../viewer/comments/passkey";
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
