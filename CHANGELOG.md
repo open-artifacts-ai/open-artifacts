@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.176.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.1...v0.176.0) (2026-11-13)
+
+
+### Features
+
+* **landing:** the new home page, a scroll story with a before/after hero ([#1457](https://github.com/open-artifacts-ai/open-artifacts/issues/1457)) ([#2139](https://github.com/open-artifacts-ai/open-artifacts/issues/2139)) ([f576bc6](https://github.com/open-artifacts-ai/open-artifacts/commit/f576bc6b35d3dda8b016b1d5f83c1365cf1c7504))
+
+## [0.175.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.0...v0.175.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **billing:** an install billing has no row for keeps its provisioned Team or Business ([#2455](https://github.com/open-artifacts-ai/open-artifacts/issues/2455)) ([1179ec5](https://github.com/open-artifacts-ai/open-artifacts/commit/1179ec5d90c64116b1ee2390c161e69502afc3f3))
+* **bus:** a failed suspend-marker read answers 503 try again, not 500 ([#2447](https://github.com/open-artifacts-ai/open-artifacts/issues/2447)) ([2f4c296](https://github.com/open-artifacts-ai/open-artifacts/commit/2f4c296a91f06282960aaf470c9c421a872aef3e))
+* **bus:** an identity-addressed notice reaches its agent when a global agent shares the name ([#2294](https://github.com/open-artifacts-ai/open-artifacts/issues/2294)) ([#2450](https://github.com/open-artifacts-ai/open-artifacts/issues/2450)) ([01c5dc8](https://github.com/open-artifacts-ai/open-artifacts/commit/01c5dc80aade74df36667ad226ce3142e8f6867f))
+
+## [0.175.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.174.0...v0.175.0) (2026-11-13)
+
+
+### Features
+
+* setup installs and connects the bus as one step ([#2437](https://github.com/open-artifacts-ai/open-artifacts/issues/2437)) ([#2439](https://github.com/open-artifacts-ai/open-artifacts/issues/2439)) ([919c4d9](https://github.com/open-artifacts-ai/open-artifacts/commit/919c4d972289948a340cee9efbffb1ee34be3900))
+
+
+### Bug Fixes
+
+* **bus:** the event log fixes its mode only when it's wrong ([#2304](https://github.com/open-artifacts-ai/open-artifacts/issues/2304)) ([#2431](https://github.com/open-artifacts-ai/open-artifacts/issues/2431)) ([923e33f](https://github.com/open-artifacts-ai/open-artifacts/commit/923e33fed7296e367d2deb83822c0c964514e6db))
+* **bus:** the Linux lock check counts only real lock types ([#2307](https://github.com/open-artifacts-ai/open-artifacts/issues/2307)) ([#2432](https://github.com/open-artifacts-ai/open-artifacts/issues/2432)) ([8e96cf2](https://github.com/open-artifacts-ai/open-artifacts/commit/8e96cf2a234177d29a78746b9ee9f5ea4814ac23))
+* **share:** the storage permission is the viewer's own data ([#2441](https://github.com/open-artifacts-ai/open-artifacts/issues/2441)) ([#2442](https://github.com/open-artifacts-ai/open-artifacts/issues/2442)) ([06d37e7](https://github.com/open-artifacts-ai/open-artifacts/commit/06d37e71bff8eed03aa7d309019308101c9e3c0d))
+
+## [0.174.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.173.0...v0.174.0) (2026-11-13)
+
+
+### Features
+
+* llms.txt tells agents about the bus ([#2424](https://github.com/open-artifacts-ai/open-artifacts/issues/2424)) ([#2429](https://github.com/open-artifacts-ai/open-artifacts/issues/2429)) ([0838952](https://github.com/open-artifacts-ai/open-artifacts/commit/0838952c739f3ccabf8c97519bd0f19b72247db3))
+
+## [0.173.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.172.0...v0.173.0) (2026-11-13)
+
+
+### Features
+
+* **bus-cli:** a second bus home on one machine leaves every session's settings alone ([#2425](https://github.com/open-artifacts-ai/open-artifacts/issues/2425)) ([#2427](https://github.com/open-artifacts-ai/open-artifacts/issues/2427)) ([16ede08](https://github.com/open-artifacts-ai/open-artifacts/commit/16ede086fc2671271585cf4429695b6f74c7edd7))
+* **onboarding:** Welcome page, live checklist, first open and plan chip ([#2287](https://github.com/open-artifacts-ai/open-artifacts/issues/2287)) ([#2405](https://github.com/open-artifacts-ai/open-artifacts/issues/2405)) ([15538ba](https://github.com/open-artifacts-ai/open-artifacts/commit/15538ba45f1c153d0db5b4df862f4ccc6994a156))
+* **viewer:** the comments pane drags to 900px ([#2418](https://github.com/open-artifacts-ai/open-artifacts/issues/2418)) ([#2420](https://github.com/open-artifacts-ai/open-artifacts/issues/2420)) ([588c9a7](https://github.com/open-artifacts-ai/open-artifacts/commit/588c9a78211a3f0b96e19125dd34552c8d3b3f6f))
+
+
+### Bug Fixes
+
+* Log in / Log out / login wording across user-facing copy ([#2356](https://github.com/open-artifacts-ai/open-artifacts/issues/2356)) ([#2401](https://github.com/open-artifacts-ai/open-artifacts/issues/2401)) ([daecd04](https://github.com/open-artifacts-ai/open-artifacts/commit/daecd040376f226298c03d4eb151ec31cee1e06f))
+* **onboarding:** the provisioner's self-test page doesn't count as a first artifact or block the Welcome ([#2422](https://github.com/open-artifacts-ai/open-artifacts/issues/2422)) ([#2423](https://github.com/open-artifacts-ai/open-artifacts/issues/2423)) ([6468cf9](https://github.com/open-artifacts-ai/open-artifacts/commit/6468cf9557f99332291309031ecc92ebb98cc103))
+
 ## [0.172.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.171.0...v0.172.0) (2026-11-13)
 
 

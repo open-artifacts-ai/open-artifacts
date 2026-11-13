@@ -165,7 +165,15 @@ const listing = (names: string[], last: "and" | "or") =>
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} ${last} ${names.at(-1)}`;
 
-export function copy(style: Style, bus: string = BUS_CMD) {
+export function copy(
+  style: Style,
+  bus: string = BUS_CMD,
+  /**
+   * A second bus home (#2425): the command that approves it again. `install` would
+   * rewire every session's settings, so the errors name this instead.
+   */
+  approve?: string,
+) {
   const p = (tone: Tone, s: string) => paint(style, tone, s);
   const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
   const more = g("more");
@@ -466,6 +474,20 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     },
     lateQuote: (excerpt: string) => `    "${excerpt}"`,
 
+    // install --home <dir> for a second bus: no harness config is touched.
+    secondBus: (home: string) => [
+      done("Left every session's settings alone."),
+      next(`Start a session on this bus with: OA_BUS_HOME=${home} pi`),
+      next("It works the same for claude, opencode and omp."),
+      next(
+        "Codex, Hermes and OpenClaw do not follow it: they stay on your first bus.",
+      ),
+    ],
+    otherHomes: (names: string[]) =>
+      p(
+        "muted",
+        `Other bus homes have a service here: ${names.join(", ")}. Check one with ${bus} --home <dir> doctor.`,
+      ),
     statusHint: () =>
       p("muted", `Check this machine anytime with ${bus} status.`),
 
@@ -547,6 +569,8 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       "               --habits | --no-habits | --show-habits",
       "                                  add, decline or show the always-on habit lines",
       "               --no-service       skip the launchd or systemd step",
+      "               --alongside        with --home <dir>: set up this bus next to your main one,",
+      "                                  and leave every harness setting alone",
       "               --no-open          do not open a browser for approval",
       "               --json             the result as one JSON line on stdout",
       "               --yes, -y          answer yes where install asks",
@@ -649,11 +673,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     notRegistered: () => [
       fail("This computer is not connected to a bus."),
-      next(`Run ${bus} to approve it.`),
+      next(`Run ${approve ?? bus} to approve it.`),
     ],
     revoked: () => [
       fail("This machine was revoked."),
-      next(`Run ${bus} install to approve it again.`),
+      next(`Run ${approve ?? `${bus} install`} to approve it again.`),
     ],
 
     // 8. doctor
@@ -666,11 +690,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       done(`Credentials at ${clip(path, 37)}`, tokenTail(token, more)),
     noCredentials: (path: string) => [
       fail(`No credentials at ${clip(path, 21)}`),
-      next(`Run ${bus} to approve this machine.`),
+      next(`Run ${approve ?? bus} to approve this machine.`),
     ],
     revokedCheck: () => [
       fail("This machine was revoked"),
-      next(`Run ${bus} install to approve it again.`),
+      next(`Run ${approve ?? `${bus} install`} to approve it again.`),
     ],
     // DRAFT: the short socket folder a long OA_BUS_HOME needs is not ours.
     socketFolderUnsafe: (dir: string, why: string) => [

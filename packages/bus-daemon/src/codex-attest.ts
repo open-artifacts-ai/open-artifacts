@@ -1155,6 +1155,8 @@ export function lockHoldersLinux(
  * An fd that inherited the description counts; a separate open of the file does
  * not. Unreadable fdinfo is no proof.
  */
+const REAL_LOCKS = new Set(["FLOCK", "POSIX", "OFDLCK"]);
+
 function fdHoldsLock(
   procRoot: string,
   pid: number,
@@ -1168,7 +1170,10 @@ function fdHoldsLock(
       .split("\n")
       .some((l) => {
         if (!l.startsWith("lock:")) return false;
-        const [maj, min, ino] = (l.trim().split(/\s+/)[6] ?? "").split(":");
+        // #2307: leases and delegations are listed too; only real locks count.
+        const f = l.trim().split(/\s+/);
+        if (!REAL_LOCKS.has(f[2] ?? "")) return false;
+        const [maj, min, ino] = (f[6] ?? "").split(":");
         if (!maj || !min || !ino) return false;
         if (!/^[0-9a-f]+$/i.test(maj + min) || !/^\d+$/.test(ino)) return false;
         return `${BigInt(`0x${maj}`)}:${BigInt(`0x${min}`)}:${ino}` === want;

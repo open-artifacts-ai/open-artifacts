@@ -99,7 +99,12 @@ import {
 } from "../sniff.js";
 import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
-import { BUS_FIXTURE_NOW, fakeHash, fixtures } from "./fixtures.js";
+import {
+  BUS_FIXTURE_NOW,
+  fakeHash,
+  fixtures,
+  welcomeFixture,
+} from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
 import { createPasskeyMock, type PasskeyMockState } from "./passkeys.js";
 
@@ -139,6 +144,20 @@ export type MockOptions = {
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
+  /**
+   * #2287: the Welcome artifact is seeded for the owner, first in the
+   * Library, and R.onboarding names it. The flags set how far the checklist
+   * is; `opened` marks the first open as done (default false: the Library
+   * redirects to it once).
+   */
+  welcome?:
+    | boolean
+    | {
+        agentConnected?: boolean;
+        published?: boolean;
+        commented?: boolean;
+        opened?: boolean;
+      };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
 };
@@ -390,6 +409,22 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     firstArtifact: null,
     commented: false,
   };
+  if (opts.welcome) {
+    const w = opts.welcome === true ? {} : opts.welcome;
+    const wf = welcomeFixture();
+    artifacts.unshift(wf.artifact);
+    versions[wf.artifact.id] = [wf.version];
+    files.set(`${wf.artifact.id}/1/index.html`, wf.html);
+    const first = artifacts.find((x) => x.title === "Landing page");
+    Object.assign(onboarding, {
+      welcomeId: wf.artifact.id,
+      welcomeOpened: w.opened ?? false,
+      agentConnected: w.agentConnected ?? false,
+      firstArtifact:
+        w.published && first ? { id: first.id, title: first.title } : null,
+      commented: w.commented ?? false,
+    });
+  }
   if (opts.bus) {
     me.canConnect = true;
     me.busOn = true;
@@ -1377,7 +1412,26 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return HttpResponse.json(settings());
     }),
     http.get("*/api/v1/onboarding", () =>
-      me.user.role === "owner" ? HttpResponse.json(onboarding) : notFound(),
+      me.user.role === "owner"
+        ? HttpResponse.json({
+            ...onboarding,
+            // As the server answers: the caller's oldest artifact that is not
+            // the Welcome. With `welcome` set the option decides.
+            firstArtifact: opts.welcome
+              ? onboarding.firstArtifact
+              : (() => {
+                  const x = artifacts
+                    .filter(
+                      (a) =>
+                        a.owner.id === me.user.id &&
+                        a.deletedAt === null &&
+                        a.id !== onboarding.welcomeId,
+                    )
+                    .sort((p, q) => p.createdAt.localeCompare(q.createdAt))[0];
+                  return x ? { id: x.id, title: x.title } : null;
+                })(),
+          })
+        : notFound(),
     ),
     http.put("*/api/v1/onboarding", async ({ request }) => {
       if (me.user.role !== "owner") return notFound();

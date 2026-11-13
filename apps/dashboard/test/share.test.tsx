@@ -318,7 +318,10 @@ describe("share panel", () => {
     for (const [name, hint] of [
       ["Database", "Lets the page store shared data."],
       ["Viewer identity", "Lets the page see who is viewing."],
-      ["File storage", "Lets the page keep uploaded files."],
+      [
+        "Viewer's own data",
+        "Lets the page save data for each logged-in viewer, such as their own ticked boxes.",
+      ],
     ] as const) {
       expect(
         screen.getByRole("checkbox", { name }),

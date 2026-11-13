@@ -11,15 +11,25 @@ describe("cli", () => {
   it("install --no-service", () => {
     expect(parse(["install", "--no-service"])).toMatchObject({
       cmd: "install",
+      alongside: false,
       noService: true,
     });
     expect(parse(["install"])).toMatchObject({ noService: false });
     expect(() => parse(["login", "--no-service"])).toThrow(/does not apply/);
   });
 
+  it("parses install --alongside", () => {
+    expect(parse(["install", "--alongside", "--home", "/x"])).toMatchObject({
+      cmd: "install",
+      alongside: true,
+      home: "/x",
+    });
+  });
+
   it("defaults to install", () => {
     expect(parse([])).toEqual({
       cmd: "install",
+      alongside: false,
       hub: undefined,
       yes: false,
       check: false,
@@ -40,6 +50,7 @@ describe("cli", () => {
       cmd: "install",
       hub: undefined,
       noService: false,
+      alongside: false,
       yes: true,
       check: true,
       noOpen: true,
