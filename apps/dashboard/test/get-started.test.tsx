@@ -17,7 +17,17 @@ import { installHarness, mount, mountHosted, page, server } from "./harness";
 
 installHarness();
 
-const none = () => http.get("*/api/v1/artifacts", () => page([], null));
+// No artifacts, and the server (which knows the same) has no first one either.
+const none = () => [
+  http.get("*/api/v1/artifacts", () => page([], null)),
+  http.get("*/api/v1/onboarding", () =>
+    HttpResponse.json({
+      dismissed: false,
+      completed: false,
+      firstArtifact: null,
+    }),
+  ),
+];
 const noTokens = () => [
   http.get("*/api/v1/tokens", () => HttpResponse.json([])),
   http.get("*/api/v1/oauth-clients", () => HttpResponse.json([])),
@@ -49,7 +59,7 @@ const heading = () => screen.findByRole("heading", { name: "Get started" });
 
 describe("Get started checklist", () => {
   it("shows the three steps to the owner with the setup prompt", async () => {
-    server.use(none(), ...noTokens());
+    server.use(...none(), ...noTokens());
     mount("/");
     await heading();
     expect(screen.getByText("0 of 3")).toBeInTheDocument();
@@ -63,7 +73,7 @@ describe("Get started checklist", () => {
 
   it("ticks the connection from a token, then the artifact", async () => {
     server.use(
-      none(),
+      ...none(),
       http.get("*/api/v1/members", () =>
         HttpResponse.json(fixtures.members.filter((m) => m.role === "owner")),
       ),
@@ -146,7 +156,7 @@ describe("Get started checklist", () => {
     expect(screen.getByText("1 of 3")).toBeInTheDocument();
   });
 
-  it("uses only the server's answer when it gives one, even with own artifacts loaded", async () => {
+  it("firstArtifact decides: hasArtifacts counts Welcome, so it does not tick", async () => {
     server.use(
       http.get("*/api/v1/artifacts", () => page([fixtures.artifacts[0]], null)),
       ...noTokens(),
@@ -154,8 +164,9 @@ describe("Get started checklist", () => {
         HttpResponse.json({
           dismissed: false,
           completed: false,
-          hasArtifacts: false,
-          welcomeId: null,
+          hasArtifacts: true,
+          welcomeId: "WmCnEfGhJk4mNpQr",
+          firstArtifact: null,
         }),
       ),
     );
@@ -164,19 +175,38 @@ describe("Get started checklist", () => {
     expect(screen.getByText("0 of 3")).toBeInTheDocument();
   });
 
+  it("ticks from firstArtifact when the server gives one", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts", () => page([], null)),
+      ...noTokens(),
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json({
+          dismissed: false,
+          completed: false,
+          hasArtifacts: true,
+          welcomeId: "WmCnEfGhJk4mNpQr",
+          firstArtifact: { id: "Cd5fGhJkLm6nPqRs", title: "Landing page" },
+        }),
+      ),
+    );
+    mount("/");
+    await heading();
+    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+  });
+
   it("is not shown to invited members", async () => {
     mountHosted(
       "/",
       true,
       (m) => ({ ...m, user: { ...m.user, role: "member" } }),
-      [none(), ...noTokens()],
+      [...none(), ...noTokens()],
     );
     await screen.findByText("No artifacts yet");
     expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
   });
 
   it("ticks the invite once someone else is a member", async () => {
-    server.use(none(), ...noTokens());
+    server.use(...none(), ...noTokens());
     server.use(
       http.get("*/api/v1/members", () => HttpResponse.json(fixtures.members)),
     );
@@ -187,7 +217,7 @@ describe("Get started checklist", () => {
   });
 
   it("hides on Hide and stays hidden", async () => {
-    server.use(none(), ...noTokens());
+    server.use(...none(), ...noTokens());
     mount("/");
     await heading();
     fireEvent.click(screen.getByRole("button", { name: "Hide" }));
@@ -211,14 +241,14 @@ describe("Get started checklist", () => {
   });
 
   it("omits the trial line off Solo (self-hosted)", async () => {
-    server.use(none(), ...noTokens());
+    server.use(...none(), ...noTokens());
     mount("/");
     await heading();
     expect(screen.queryByText(trialLine)).toBeNull();
   });
 
   const hosted = (over: Record<string, unknown>) =>
-    mountHosted("/", true, billing(over), [none(), ...noTokens()]);
+    mountHosted("/", true, billing(over), [...none(), ...noTokens()]);
 
   it("says the trial line on Solo and free when a trial can start", async () => {
     hosted({});
@@ -238,7 +268,7 @@ describe("Get started checklist", () => {
   });
 
   it("marks the current step", async () => {
-    server.use(none(), ...noTokens());
+    server.use(...none(), ...noTokens());
     mount("/");
     await heading();
     const cur = document.querySelector('[aria-current="step"]');
@@ -259,7 +289,7 @@ describe("Get started checklist", () => {
   });
 
   it("offers Invite people and Not now only at step 3", async () => {
-    server.use(none(), ...noTokens());
+    server.use(...none(), ...noTokens());
     mount("/");
     await heading();
     expect(screen.queryByRole("link", { name: "Invite people" })).toBeNull();
@@ -288,7 +318,7 @@ describe("Get started checklist", () => {
     // A token and an artifact by someone else already exist; the owner never
     // opened the Library. It is open, not decided away by first-visit timing.
     server.use(
-      none(),
+      ...none(),
       http.get("*/api/v1/members", () =>
         HttpResponse.json(fixtures.members.filter((m) => m.role === "owner")),
       ),
@@ -318,7 +348,7 @@ describe("Get started checklist", () => {
 
   it("does not show once the server says it was hidden", async () => {
     server.use(
-      none(),
+      ...none(),
       ...noTokens(),
       http.get("*/api/v1/onboarding", () =>
         HttpResponse.json({ dismissed: true, completed: false }),

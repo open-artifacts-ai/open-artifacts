@@ -99,13 +99,15 @@ export function GetStarted({
   const clients = useOAuthClients(live);
   const members = useMembers(undefined, live);
   // The server says so even when the own artifact is past the loaded pages (#1832).
-  // It leaves out the seeded Welcome and the hosted self-test page, so when it
-  // answers it is the whole truth. An older server doesn't: count the loaded
-  // own artifacts, minus the Welcome.
-  const server = onboarding.data?.hasArtifacts;
-  const welcomeId = onboarding.data?.welcomeId;
+  // firstArtifact is the oldest own artifact that is not the seeded Welcome
+  // (the server's hasArtifacts counts Welcome and the self-test page, so it
+  // can't tick this). A server without it: hasArtifacts, else the loaded own
+  // artifacts minus the Welcome.
+  const o = onboarding.data;
   const hasArtifacts =
-    server !== undefined ? server : ownIds.some((id) => id !== welcomeId);
+    o?.firstArtifact !== undefined
+      ? o.firstArtifact !== null
+      : (o?.hasArtifacts ?? ownIds.some((id) => id !== o?.welcomeId));
   const connected =
     (tokens.data?.length ?? 0) > 0 || (clients.data?.length ?? 0) > 0;
   const invited = (members.data ?? []).some(

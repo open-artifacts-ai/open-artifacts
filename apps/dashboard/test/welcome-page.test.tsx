@@ -1,7 +1,7 @@
 // #2287: the Welcome page's own script, run in jsdom against a stand-in runtime.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { welcomePage as welcomeHtml } from "@oa/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const HOST = "https://oa.example.com";
 

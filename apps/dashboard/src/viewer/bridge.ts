@@ -53,11 +53,12 @@ export interface BridgeOptions {
   formatOf?: () => string | undefined;
   viewer: Viewer | null;
   /**
-   * #2287: who may ask `onboarding.get`. Read at each call. The call is
-   * answered only for the Welcome artifact (`welcomeId` equals this
-   * artifact's id) and only for its owner; anything else is forbidden.
+   * #2287: whether the viewer is the instance owner (read at each call).
+   * `onboarding.get` is answered only to the owner, for the Welcome artifact:
+   * the bridge reads R.onboarding itself and checks its `welcomeId` against
+   * this artifact's id, so no state from elsewhere has to be loaded first.
    */
-  onboarding?: () => { welcomeId: string | null | undefined; owner: boolean };
+  onboarding?: () => { owner: boolean };
   theme: Theme;
   onPdfText: (text: string) => void;
   onThumb: (blob: Blob) => void;
@@ -199,6 +200,12 @@ export function createBridge(opts: BridgeOptions) {
   let lostFired = false;
   let inFlight = 0;
   const abort = new AbortController();
+  const forbidden = () =>
+    new ApiClientError(
+      "forbidden",
+      "onboarding.get is for the Welcome page",
+      403,
+    );
 
   // The sandboxed frame has an opaque origin, so the only valid targetOrigin is "*".
   // Replies carry no secrets beyond what this frame is already entitled to, and the
@@ -428,14 +435,9 @@ export function createBridge(opts: BridgeOptions) {
       case "viewer.get":
         return viewer();
       case "onboarding.get": {
-        const gate = opts.onboarding?.();
-        if (embed || !gate?.owner || !gate.welcomeId || gate.welcomeId !== id)
-          throw new ApiClientError(
-            "forbidden",
-            "onboarding.get is for the Welcome page",
-            403,
-          );
+        if (embed || !opts.onboarding?.().owner) throw forbidden();
         const o = await http.get(R.onboarding, OnboardingSchema);
+        if (!o.welcomeId || o.welcomeId !== id) throw forbidden();
         return {
           agentConnected: o.agentConnected === true,
           firstArtifact: o.firstArtifact ?? null,

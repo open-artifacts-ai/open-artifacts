@@ -1409,7 +1409,26 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return HttpResponse.json(settings());
     }),
     http.get("*/api/v1/onboarding", () =>
-      me.user.role === "owner" ? HttpResponse.json(onboarding) : notFound(),
+      me.user.role === "owner"
+        ? HttpResponse.json({
+            ...onboarding,
+            // As the server answers: the caller's oldest artifact that is not
+            // the Welcome. With `welcome` set the option decides.
+            firstArtifact: opts.welcome
+              ? onboarding.firstArtifact
+              : (() => {
+                  const x = artifacts
+                    .filter(
+                      (a) =>
+                        a.owner.id === me.user.id &&
+                        a.deletedAt === null &&
+                        a.id !== onboarding.welcomeId,
+                    )
+                    .sort((p, q) => p.createdAt.localeCompare(q.createdAt))[0];
+                  return x ? { id: x.id, title: x.title } : null;
+                })(),
+          })
+        : notFound(),
     ),
     http.put("*/api/v1/onboarding", async ({ request }) => {
       if (me.user.role !== "owner") return notFound();

@@ -41,10 +41,7 @@ const send = (data: unknown) => {
   win.dispatchEvent(ev);
 };
 const flush = () => new Promise((r) => setTimeout(r, 0));
-const ask = async (
-  artifact: ArtifactSummary,
-  gate: { welcomeId: string | null | undefined; owner: boolean },
-) => {
+const ask = async (artifact: ArtifactSummary, gate: { owner: boolean }) => {
   live.push(
     createBridge({
       iframe: asFrame(frame),
@@ -80,8 +77,9 @@ afterEach(() => {
 });
 
 describe("onboarding.get", () => {
-  it("answers the Welcome artifact's owner", async () => {
-    const r = await ask(art(WELCOME), { welcomeId: WELCOME, owner: true });
+  it("answers the owner on the Welcome artifact at the first call, with one fetch", async () => {
+    // A direct load: nothing else has been loaded, only who is viewing.
+    const r = await ask(art(WELCOME), { owner: true });
     expect(r).toMatchObject({
       ok: true,
       value: {
@@ -90,50 +88,55 @@ describe("onboarding.get", () => {
         commented: false,
       },
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toContain(R.onboarding);
   });
 
   it("answers without the viewer capability", async () => {
-    const r = await ask(art(WELCOME, false), {
-      welcomeId: WELCOME,
-      owner: true,
-    });
+    const r = await ask(art(WELCOME, false), { owner: true });
     expect(r.ok).toBe(true);
   });
 
-  it("refuses any other artifact", async () => {
-    const r = await ask(art("OtherArtifact0001"), {
-      welcomeId: WELCOME,
-      owner: true,
-    });
+  it("refuses any other artifact, whatever the Welcome's id", async () => {
+    const r = await ask(art("OtherArtifact0001"), { owner: true });
+    expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("refuses someone who is not the owner, with no request", async () => {
+    const r = await ask(art(WELCOME), { owner: false });
     expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("refuses someone who is not the owner", async () => {
-    const r = await ask(art(WELCOME), { welcomeId: WELCOME, owner: false });
-    expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("refuses while the onboarding state is unknown or has no Welcome", async () => {
+  it("refuses when no Welcome was seeded", async () => {
     for (const welcomeId of [undefined, null]) {
       post.mockReset();
       frame = new FakeFrame(contentWindow);
-      const r = await ask(art(WELCOME), { welcomeId, owner: true });
+      fetchMock.mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({ dismissed: false, completed: false, welcomeId }),
+            { status: 200 },
+          ),
+      );
+      const r = await ask(art(WELCOME), { owner: true });
       expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
     }
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("gives an unset flag as not done", async () => {
     fetchMock.mockImplementation(
       async () =>
-        new Response(JSON.stringify({ dismissed: false, completed: false }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({
+            dismissed: false,
+            completed: false,
+            welcomeId: WELCOME,
+          }),
+          { status: 200 },
+        ),
     );
-    const r = await ask(art(WELCOME), { welcomeId: WELCOME, owner: true });
+    const r = await ask(art(WELCOME), { owner: true });
     expect(r.value).toEqual({
       agentConnected: false,
       firstArtifact: null,
