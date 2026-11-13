@@ -385,7 +385,7 @@ code{font:400 12px var(--oa-font-mono);background:var(--oa-surface-2);border:1px
       <span class="select"><select class="control" aria-label="Role for new invite"><option>Viewer</option><option>Editor</option></select><svg class="glyph" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></svg></span>
       <button class="btn primary" style="height:30px">Invite</button>
     </form>
-    <p class="help">They don't need an account yet. They'll log in with a one-time code sent to this address.</p>
+    <p class="help">They don't need an account yet. They'll sign in with a one-time code sent to this address.</p>
   </section>
 
   <!-- People -->
@@ -411,7 +411,7 @@ code{font:400 12px var(--oa-font-mono);background:var(--oa-surface-2);border:1px
       </div>
       <div class="person" data-when="default">
         <span class="avatar pending" style="--size:24px"><svg class="ic sm"><use href="#i-mail"/></svg></span>
-        <div class="who"><b><span>priya@lumen-legal.com</span><span class="badge neutral">Invited</span></b><small>Hasn't logged in yet</small></div>
+        <div class="who"><b><span>priya@lumen-legal.com</span><span class="badge neutral">Invited</span></b><small>Hasn't signed in yet</small></div>
         <span class="select sm"><select class="control" aria-label="Role for priya@lumen-legal.com"><option selected>Viewer</option><option>Editor</option></select><svg class="glyph" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></svg></span>
         <button class="btn ghost icon sm" aria-label="Remove priya@lumen-legal.com"><svg class="ic sm"><use href="#i-x"/></svg></button>
       </div>
@@ -542,7 +542,7 @@ window.OA_MOCK = { extra: [
 const NOTES = {
   private: ['lock', 'Only you and the people below can open it.'],
   team: ['team', 'All 14 members of Northwind Eng can view. People below keep their role.'],
-  public: ['globe', 'Anyone with the link; never indexed. No login needed.'],
+  public: ['globe', 'Anyone with the link; never indexed. No sign-in needed.'],
 };
 const BADGE = { private: ['lock', 'Private'], team: ['team', 'Team'], public: ['globe', 'Public'] };
 function setVis(v) {

@@ -41,7 +41,7 @@ export function registerBusTools(server: McpServer, t: ToolEnv): void {
               ? `point ${role} at ${p.agentName}${was}`
               : `create ${role} pointing at ${p.agentName}`;
         return ok(
-          `Proposed: ${what}. Nothing has changed. Give the person this link to confirm it in their browser, logged in (it works once and expires in ${ROLE_PROPOSAL_TTL_MIN} minutes): ${confirmUrl}`,
+          `Proposed: ${what}. Nothing has changed. Give the person this link to confirm it in their browser, signed in (it works once and expires in ${ROLE_PROPOSAL_TTL_MIN} minutes): ${confirmUrl}`,
           { proposal: p, confirmUrl },
         );
       }),

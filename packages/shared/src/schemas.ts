@@ -43,7 +43,7 @@ export type Commenters = z.infer<typeof CommentersSchema>;
 export const CommentsSettingSchema = z
   .union([z.boolean(), z.enum(["everyone", "signed-in", "off"])])
   .describe(
-    'Comments: "everyone" (anyone who can open it may comment), "signed-in" (signed-out visitors read but cannot post; the default for new artifacts), or "off". true turns comments on and keeps who may comment; false is off.',
+    'Comments: "everyone" (anyone who can open it may comment), "signed-in" (visitors who aren\'t logged in read but cannot post; the default for new artifacts), or "off". true turns comments on and keeps who may comment; false is off.',
   );
 export type CommentsSetting = z.infer<typeof CommentsSettingSchema>;
 /** #2080: a `comments` input as the stored pair; a field is absent when the input leaves it alone. */

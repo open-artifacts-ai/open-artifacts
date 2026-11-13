@@ -1169,7 +1169,7 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       ),
     ],
     linkNeedLogin: () => [
-      fail("This machine is not logged in to a hub."),
+      fail("This machine is not signed in to a hub."),
       next(`Run ${bus} login, then try again.`),
     ],
     linkUnauthorized: () => [

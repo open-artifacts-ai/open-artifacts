@@ -335,7 +335,7 @@ code{font:400 12px var(--oa-font-mono);background:var(--oa-surface-2);border:1px
       <p class="nf-eyebrow">404</p>
       <h1 id="nf-title">Page not found</h1>
       <p>There's nothing at this address for the account you're using. The link may be mistyped, or it may need a different account.</p>
-      <div class="nf-who"><span class="avatar lg" data-me-avatar style="--hue:215">MC</span><div><small>Logged in as</small><b data-me-email>maya@northwind.dev</b></div></div>
+      <div class="nf-who"><span class="avatar lg" data-me-avatar style="--hue:215">MC</span><div><small>Signed in as</small><b data-me-email>maya@northwind.dev</b></div></div>
       <div class="nf-actions">
         <a class="btn primary" href="library.html"><svg class="ic sm"><use href="#i-lib"/></svg>Go to library</a>
         <a class="btn secondary" href="edge-pages.html?page=sign-in"><svg class="ic sm"><use href="#i-swap"/></svg>Switch account</a>
@@ -410,7 +410,7 @@ code{font:400 12px var(--oa-font-mono);background:var(--oa-surface-2);border:1px
         <!-- ================= Members ================= -->
         <div class="stack" data-tab="members" data-when="default empty">
           <section class="card sec" aria-labelledby="invH">
-            <div class="secHead"><div><h2 id="invH">Invite people</h2><p>They log in with a one-time code sent to their email. No password to set up.</p></div></div>
+            <div class="secHead"><div><h2 id="invH">Invite people</h2><p>They sign in with a one-time code sent to their email. No password to set up.</p></div></div>
             <form class="row wrap" onsubmit="return false">
               <input class="control" type="email" placeholder="name@northwind.dev" aria-label="Email address">
               <span class="select"><select class="control" aria-label="Role"><option>Admin</option><option selected>Member</option><option>Guest</option></select><svg class="glyph" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></svg></span>
@@ -494,7 +494,7 @@ code{font:400 12px var(--oa-font-mono);background:var(--oa-surface-2);border:1px
 <pre class="codeblock" id="sn-claude">claude mcp add --transport http open-artifacts https://artifacts.northwind.dev/mcp<button class="btn secondary icon sm copy" data-copy="#sn-claude" aria-label="Copy command"><svg class="ic sm"><use href="#i-copy"/></svg></button></pre>
               </div>
               <div data-snip-panel="codex" role="tabpanel" hidden>
-                <p>Add to <span class="file">~/.codex/config.toml</span>, then log in.</p>
+                <p>Add to <span class="file">~/.codex/config.toml</span>, then sign in.</p>
 <pre class="codeblock" id="sn-codex"><span class="k">[mcp_servers.open-artifacts]</span>
 url = <span class="s">"https://artifacts.northwind.dev/mcp"</span><button class="btn secondary icon sm copy" data-copy="#sn-codex" aria-label="Copy config"><svg class="ic sm"><use href="#i-copy"/></svg></button></pre>
 <pre class="codeblock" id="sn-codex2" style="margin-top:8px">codex mcp login open-artifacts<button class="btn secondary icon sm copy" data-copy="#sn-codex2" aria-label="Copy command"><svg class="ic sm"><use href="#i-copy"/></svg></button></pre>
@@ -581,11 +581,11 @@ Authorization: Bearer oa_pat_…<button class="btn secondary icon sm copy" data-
 
         <!-- ================= Instance ================= -->
         <div class="stack" data-tab="instance" data-when="default empty">
-          <div class="banner info" data-when="empty"><svg class="ic"><use href="#i-info"/></svg><div class="bannerText"><strong>Setup used the defaults.</strong> Give your instance a name so people recognize it when they log in.</div></div>
+          <div class="banner info" data-when="empty"><svg class="ic"><use href="#i-info"/></svg><div class="bannerText"><strong>Setup used the defaults.</strong> Give your instance a name so people recognize it when they sign in.</div></div>
           <section class="card" aria-labelledby="instH">
             <div class="form">
               <div class="frow">
-                <div class="flabel"><b id="instH">Instance name</b><small>Shown in the sidebar and on the login page.</small></div>
+                <div class="flabel"><b id="instH">Instance name</b><small>Shown in the sidebar and on the sign-in page.</small></div>
                 <div class="fctl"><input class="control" id="instName" value="Northwind Eng" placeholder="e.g. Northwind Eng" aria-labelledby="instH"></div>
               </div>
               <div class="frow">
