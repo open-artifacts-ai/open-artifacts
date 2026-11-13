@@ -117,6 +117,8 @@ type Deps = {
   seedAgents?: boolean;
   /** #2338: also seed an agent comment with every markdown feature, a hostile one and an ask with markdown. */
   seedMarkdown?: boolean;
+  /** #2019: pins on the "Landing page" image (or pdf): a person, a linked agent, an unlinked agent and a resolved one. */
+  seedPins?: "image" | "pdf";
 };
 
 const iso = () => new Date().toISOString();
@@ -135,6 +137,7 @@ export function createCommentMock({
   seedAsk,
   seedAgents,
   seedMarkdown,
+  seedPins,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
@@ -408,6 +411,57 @@ export function createCommentMock({
         comments: nine,
         agents: THREAD_AGENTS.map((x) => ({ ...x })),
       });
+    }
+    if (seedPins) {
+      const fox: CommentAuthor = {
+        kind: "agent",
+        name: "OA Product",
+        for: "Leo Urbina",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const cur = artifacts.find((x) => x.id === id)?.currentVersion ?? 1;
+      let n = 0;
+      const pin = (
+        x: number,
+        y: number,
+        by: CommentAuthor,
+        text: string,
+        status: "open" | "resolved" = "open",
+      ): CommentThread => {
+        const c = comment(text, by);
+        return {
+          id: newId(),
+          anchor: {
+            kind: "pin",
+            version: cur,
+            x,
+            y,
+            ...(seedPins === "pdf" ? { page: 1 } : {}),
+            contentHash: contentHash?.(id, cur) ?? null,
+          },
+          version: cur,
+          status,
+          resolvedBy: null,
+          resolvedAt: null,
+          // In order, so the pins number 1 to 4 as listed.
+          createdAt: new Date(Date.now() - (4 - n++) * 60_000).toISOString(),
+          comments: [c],
+        };
+      };
+      faces.push(
+        pin(0.22, 0.34, other, "Is this Q4 or year to date?"),
+        pin(0.7, 0.62, fox, "The December bar includes the pre-orders."),
+        pin(
+          0.5,
+          0.2,
+          { kind: "agent", name: "Claude Code", linked: false, me: false },
+          "Title is cut off on narrow screens.",
+        ),
+        pin(0.4, 0.8, mine(), "Axis label looks wrong.", "resolved"),
+      );
     }
     if (seedMarkdown) {
       const bot: CommentAuthor = {

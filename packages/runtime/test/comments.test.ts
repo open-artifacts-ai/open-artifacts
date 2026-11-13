@@ -1010,6 +1010,143 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ pin: { x: 0.5, y: 0.5 } });
   });
 
+  it("a pin click also says where it landed, so the box can open beside it (#2019)", async () => {
+    await start("pin");
+    document.querySelector("img")?.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 120,
+        clientY: 60,
+      }),
+    );
+    await flush();
+    expect(last("comment.pin")).toMatchObject({ at: { x: 120, y: 60 } });
+  });
+
+  describe("badges (#2019)", () => {
+    const base = (extra: object) => ({
+      id: "p1",
+      n: 1,
+      anchor: {
+        kind: "pin" as const,
+        version: 1,
+        x: 0.5,
+        y: 0.25,
+        contentHash: "h",
+      },
+      ...extra,
+    });
+    const pin = () => roots.at(-1)?.querySelector<HTMLElement>(".pin") ?? null;
+
+    it("a pin with initials is a named button showing them", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({ badge: { initials: "AL", label: "Comment by Ada L" } }),
+        ],
+      });
+      const p = pin();
+      expect(p?.tagName).toBe("BUTTON");
+      expect(p?.getAttribute("aria-label")).toBe("Comment by Ada L");
+      expect(p?.textContent).toBe("AL");
+      p?.click();
+      await flush();
+      expect(last("comment.open")).toMatchObject({ id: "p1" });
+    });
+
+    it("an agent's face is rebuilt from allowed shapes only", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({
+            badge: {
+              icon: '<path d="M1 1h4" onclick="x()"/><script>alert(1)</script><circle cx="3" cy="3" r="2" style="x"/><g><image href="https://e.test/a.png"/><rect x="1" y="1" width="2" height="2"/></g>',
+              color: "#2456c4",
+              label: "Comment by Claude Code",
+            },
+          }),
+        ],
+      });
+      const p = pin();
+      expect(p?.classList.contains("face")).toBe(true);
+      expect(p?.style.getPropertyValue("--face")).toBe("#2456c4");
+      const svg = p?.querySelector("svg");
+      expect(svg?.getAttribute("aria-hidden")).toBe("true");
+      expect(
+        Array.from(svg?.querySelectorAll("*") ?? []).map((n) => n.localName),
+      ).toEqual(["path", "circle", "g", "rect"]);
+      expect(svg?.querySelector("path")?.getAttribute("onclick")).toBeNull();
+      expect(svg?.querySelector("circle")?.getAttribute("style")).toBeNull();
+      expect(p?.querySelector("script, image")).toBeNull();
+    });
+
+    it("an agent with no face is the dashed robot mark, not initials", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({
+            badge: {
+              icon: '<path d="M12 8V4"/><rect x="4" y="8" width="16" height="12" rx="2"/>',
+              color: "#5f6670",
+              dashed: true,
+              label: "Comment by Claude Code",
+            },
+          }),
+        ],
+      });
+      const p = pin();
+      expect(p?.classList.contains("dashed")).toBe(true);
+      expect(p?.querySelector("svg")).not.toBeNull();
+      expect(p?.textContent).toBe("");
+    });
+
+    it("a resolved pin is hidden, and faded while it is the open thread", async () => {
+      await start("select");
+      const badge = { initials: "AL", label: "Comment by Ada L" };
+      await send({
+        type: "comments.set",
+        threads: [base({ badge, resolved: true })],
+      });
+      expect(pin()).toBeNull();
+      await send({
+        type: "comments.set",
+        threads: [base({ badge, resolved: true, active: true })],
+      });
+      expect(pin()?.classList.contains("resolved")).toBe(true);
+    });
+
+    it("the pin being placed shows the author's initials, dashed, and is not a button", async () => {
+      await start("pin");
+      await send({
+        type: "comments.set",
+        threads: [],
+        ghost: { x: 0.5, y: 0.5, badge: { initials: "AL" } },
+      });
+      const g = roots.at(-1)?.querySelector<HTMLElement>(".pin.ghost");
+      expect(g?.tagName).toBe("DIV");
+      expect(g?.textContent).toBe("AL");
+    });
+
+    it("keyboard focus stays on a pin through a re-measure", async () => {
+      await start("select");
+      const t = [
+        base({ badge: { initials: "AL", label: "Comment by Ada L" } }),
+      ];
+      await send({ type: "comments.set", threads: t });
+      pin()?.focus();
+      expect(roots.at(-1)?.activeElement).toBe(pin());
+      await send({ type: "comments.set", threads: t });
+      expect(roots.at(-1)?.activeElement).toBe(pin());
+      expect(roots.at(-1)?.activeElement?.getAttribute("aria-label")).toBe(
+        "Comment by Ada L",
+      );
+    });
+  });
+
   it("Esc in pin mode tells the shell, with no data; in other modes it does not", async () => {
     await start("pin");
     document.body.dispatchEvent(
