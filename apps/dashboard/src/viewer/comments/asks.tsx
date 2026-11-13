@@ -17,6 +17,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ApiClientError } from "../../api/client";
 import {
   answerError,
   useAnswerAsk,
@@ -593,7 +594,11 @@ export function AskBlock({
   const passkey = usePasskeyAnswer(artifactId);
   const takeBack = useTakeBackAsk(artifactId);
   // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
-  const answer = ask?.confirm === "passkey" ? passkey : plain;
+  // #2381: an ask with no `confirm` mark can still need the decider's own passkey at pick
+  // time (their switches changed after it was posted): a plain pick that comes back
+  // passkey_required runs the passkey flow for the same option from then on.
+  const [viaPasskey, setViaPasskey] = useState(false);
+  const answer = ask?.confirm === "passkey" || viaPasskey ? passkey : plain;
   const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
@@ -629,7 +634,7 @@ export function AskBlock({
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
   // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
-  const pk = ask.confirm === "passkey";
+  const pk = ask.confirm === "passkey" || viaPasskey;
   const pkErr = pk && err != null ? passkeyFailure(err) : null;
   const pkLine = pkErr ? passkeyLine(pkErr) : null;
   const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
@@ -880,16 +885,31 @@ export function AskBlock({
                     onClick={() => {
                       setErr(null);
                       setLastPick(o.id);
-                      answer.mutate(
-                        { thread: thread.id, comment: c.id, optionId: o.id },
-                        {
-                          onError: (e) => {
-                            setErr(e);
-                            // Back to unanswered: focus returns to the option.
-                            setRefocus(o.id);
-                          },
+                      const v = {
+                        thread: thread.id,
+                        comment: c.id,
+                        optionId: o.id,
+                      };
+                      const failed = (e: unknown) => {
+                        setErr(e);
+                        // Back to unanswered: focus returns to the option.
+                        setRefocus(o.id);
+                      };
+                      answer.mutate(v, {
+                        onError: (e) => {
+                          if (
+                            answer === plain &&
+                            e instanceof ApiClientError &&
+                            e.code === "passkey_required"
+                          ) {
+                            setErr(null);
+                            setViaPasskey(true);
+                            passkey.mutate(v, { onError: failed });
+                            return;
+                          }
+                          failed(e);
                         },
-                      );
+                      });
                     }}
                   >
                     {letters && (

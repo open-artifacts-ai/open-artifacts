@@ -88,6 +88,11 @@ vi.mock("../src/viewer/bridge", async () => {
   };
 });
 
+vi.mock("../src/auth/webauthn", async (orig) => ({
+  ...(await orig<typeof import("../src/auth/webauthn")>()),
+  getAssertion: vi.fn(async () => ({ id: "cred" })),
+}));
+
 installHarness();
 
 // Most waits here follow a write: the PATCH or POST, then the list refetch it
@@ -886,6 +891,62 @@ describe("#2381 deciders on the card", () => {
     expect(await within(c).findByRole("alert")).toHaveTextContent(
       /can't decide this any more/,
     );
+  });
+});
+
+describe("#2381 a pick that needs the decider's own passkey", () => {
+  it("a plain pick answered passkey_required runs the passkey flow for the same option", async () => {
+    const posts: { optionId?: string; assertion?: unknown }[] = [];
+    let challenged = 0;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [{ kind: "user", id: "me", name: "Me", me: true }],
+          decider: { kind: "user", id: "me", name: "Me", me: true },
+          role: "decide",
+          picks: [],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
+        challenged++;
+        return HttpResponse.json({
+          options: { challenge: "x" },
+          expiresAt: "2099-01-01T00:00:00Z",
+        });
+      }),
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          const b = (await request.json()) as {
+            optionId?: string;
+            assertion?: unknown;
+          };
+          posts.push(b);
+          if (!b.assertion)
+            return HttpResponse.json(
+              { error: { code: "passkey_required", message: "x" } },
+              { status: 403 },
+            );
+          return HttpResponse.json(askThread().comments[0]);
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[0]).toEqual({ optionId: "b" });
+    expect(posts[1]).toMatchObject({
+      optionId: "b",
+      assertion: { id: "cred" },
+    });
+    expect(challenged).toBe(1);
+    expect(within(c).queryByRole("alert")?.textContent).toBeUndefined();
   });
 });
 

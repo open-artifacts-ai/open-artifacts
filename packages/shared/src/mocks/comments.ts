@@ -155,6 +155,8 @@ export function createCommentMock({
   asksForYou: (id: string) => number;
 } {
   const threads = new Map<string, CommentThread[]>();
+  /** Comment ids of asks with no `confirm` whose decider's switches ask for a passkey at pick time (#2381). */
+  const pickTimePasskey = new Set<string>();
   const mine = (): CommentAuthor => ({
     kind: "user",
     id: me.user.id,
@@ -251,6 +253,18 @@ export function createCommentMock({
       };
       return x;
     };
+    // #2381: no `confirm` mark, but the decider's own switches ask for a passkey at pick time.
+    const late = comment("Ship the changelog?", mine());
+    late.ask = {
+      question: "Ship the changelog?",
+      options: [
+        { id: "ship", label: "Ship it" },
+        { id: "wait", label: "Wait" },
+      ],
+      to: [mine()],
+      closed: false,
+    };
+    pickTimePasskey.add(late.id);
     const g = answered("Deploy to production?", true);
     const h = answered("Delete the old build?", false);
     const asked: CommentThread[] = seedAsk
@@ -267,7 +281,7 @@ export function createCommentMock({
                   createdAt: f.createdAt,
                   comments: [f],
                 },
-                ...[g, h].map((x) => ({
+                ...[g, h, late].map((x) => ({
                   id: newId(),
                   anchor: { kind: "note" as const },
                   version: 1,
@@ -874,16 +888,16 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      if (c.ask.confirm === "passkey") {
+      const needsPasskey =
+        c.ask.confirm === "passkey" || pickTimePasskey.has(c.id);
+      if (needsPasskey) {
         if (!j.data.assertion)
           return err("passkey_required", "This pick needs a passkey");
         if (passkeyMode === "expired")
           return err("challenge_expired", "That approval timed out");
       }
       const pick = {
-        ...(c.ask.confirm === "passkey"
-          ? { verified: "passkey" as const }
-          : {}),
+        ...(needsPasskey ? { verified: "passkey" as const } : {}),
         by: mine(),
         optionId: j.data.optionId,
         at: iso(),

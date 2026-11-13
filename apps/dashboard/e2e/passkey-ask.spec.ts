@@ -188,3 +188,20 @@ test("cancelling a Change brings the old verified answer back", async ({
   await expect(card.locator("[data-ask-answer]")).toContainText("picked Go");
   await expect(card.locator("[data-ask-verified]")).toBeVisible();
 });
+
+test("an ask with no mark whose decider's switches ask for a passkey: the pick runs the passkey flow (#2381)", async ({
+  page,
+}) => {
+  await stubPasskey(page);
+  await page.goto(`/a/${ID}?mock=asks&passkey=ok`);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  const card = page
+    .locator("[data-ask]")
+    .filter({ hasText: "Ship the changelog?" });
+  await expect(card).toBeVisible();
+  await card.locator("[data-option=ship]").click();
+  await expect(card.locator("[data-ask-verified]")).toHaveText(
+    /Verified with passkey/,
+  );
+  await expect(card.getByRole("alert")).toHaveCount(0);
+});
