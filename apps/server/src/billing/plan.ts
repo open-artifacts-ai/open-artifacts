@@ -263,7 +263,7 @@ export function effectivePlan(
       // Grace runs until graceUntil; billing sets it with past_due. Fail
       // closed on a missing date: the grace is 7 days from the answer (past_due
       // only ever comes from a billing answer).
-      if (now > (base.graceUntil ?? (used?.asOf ?? now) + PLAN_STALE_MS))
+      if (now > (base.graceUntil ?? (last?.asOf ?? now) + PLAN_STALE_MS))
         return unpaidSolo
           ? out("solo_unpaid", "viewOnly")
           : out("payment_failed", "readOnly");
