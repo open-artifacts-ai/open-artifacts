@@ -33,7 +33,7 @@ function member(c: Context<AppEnv>) {
   if (!interactiveSession(c))
     throw new ApiError(
       "forbidden",
-      "Use the web app, signed in in your browser",
+      "Use the web app, logged in in your browser",
     );
   return user;
 }
