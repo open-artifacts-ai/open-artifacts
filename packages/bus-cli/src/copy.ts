@@ -466,6 +466,20 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     },
     lateQuote: (excerpt: string) => `    "${excerpt}"`,
 
+    // install --home <dir> for a second bus: no harness config is touched.
+    secondBus: (home: string) => [
+      done("Left every session's settings alone."),
+      next(`Start a session on this bus with: OA_BUS_HOME=${home} pi`),
+      next("It works the same for claude, opencode and omp."),
+      next(
+        "Codex, Hermes and OpenClaw do not follow it: they stay on your first bus.",
+      ),
+    ],
+    otherHomes: (names: string[]) =>
+      p(
+        "muted",
+        `Other bus homes have a service here: ${names.join(", ")}. Check one with ${bus} --home <dir> doctor.`,
+      ),
     statusHint: () =>
       p("muted", `Check this machine anytime with ${bus} status.`),
 

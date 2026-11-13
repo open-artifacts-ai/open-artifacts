@@ -1378,3 +1378,25 @@ describe("#2105: the service PATH drops only transient folders", () => {
     }
   });
 });
+
+describe("systemService: others (#2425)", () => {
+  it("lists the other homes' hashed units, not its own or the default", async () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      const { d, userHome } = deps(platform);
+      const a = join(userHome, "bus-a");
+      const b = join(userHome, "bus-b");
+      await systemService({ ...d, home: () => a }).ensure();
+      await systemService({ ...d, home: () => b }).ensure();
+      await systemService(d).ensure();
+      const na = serviceNames(a, userHome);
+      const nb = serviceNames(b, userHome);
+      const key = platform === "darwin" ? "label" : "unit";
+      expect(systemService(d).others?.()).toEqual(
+        [na[key], nb[key]].map((n) => n.replace(/\.service$/, "")).sort(),
+      );
+      expect(systemService({ ...d, home: () => a }).others?.()).toEqual(
+        [nb[key]].map((n) => n.replace(/\.service$/, "")),
+      );
+    }
+  });
+});
