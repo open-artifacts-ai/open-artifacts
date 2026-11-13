@@ -64,6 +64,7 @@ import {
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
+import { isSuspended, pausedResponse } from "../services/suspend.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
 import { renderApprove, renderApproved, renderEntry } from "./approve-page.js";
@@ -641,6 +642,9 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
     env.RL_ANON_WRITES ?? env.RL_ANON,
   );
   if (rl) return rl;
+  // Hosted suspend (cloud #228): refuse at once from the install's own D1,
+  // before the token lookup, as dispatch's paused answer would.
+  if (await isSuspended(env)) return pausedResponse();
   // Stamped by the route gate before any read (enforcePolicy).
   const authzAt = c.var.authzAt ?? Date.now();
   const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";

@@ -22,6 +22,7 @@ import { sweepAuditEvents } from "./services/audit.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
 import { directoryMode } from "./services/spaces.js";
+import { clearSuspended, markSuspended } from "./services/suspend.js";
 import { sweepUploads } from "./services/uploads.js";
 
 /**
@@ -71,12 +72,20 @@ export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
  * TTL. Through the install's socket index (runtime/presence.ts
  * closeInstall): CLOSE_FANOUT artifacts now, the rest by its alarm, and a
  * second pass SECOND_PASS_MS later for reconnects that reached the install
- * before dispatch saw the pause. Sets nothing that refuses a later accept,
- * so a resume needs nothing. Logs counts only. Rejects when the index is
+ * before dispatch saw the pause. First records the suspended marker (D1
+ * settings, services/suspend.ts) so /bus/connect refuses at once; RESUME_CRON
+ * clears it. Logs counts only. Rejects when the index is
  * unbound (no USER_PRESENCE) or its call fails, so the caller can log it;
  * the platform's suspend never waits on it (the HOSTS pause is the stop).
  */
 export const CLOSE_SOCKETS_CRON = "oa:close-sockets";
+
+/**
+ * The platform's resume (cloud #228): clears the suspended marker that
+ * CLOSE_SOCKETS_CRON sets, so /bus/connect accepts again. Idempotent; a
+ * resume without a prior suspend changes nothing.
+ */
+export const RESUME_CRON = "oa:resume";
 
 /** Daily cron: purge soft-deleted artifacts past 30 days, sweep stale uploads,
  * delete OAuth clients that never completed a grant, re-enqueue search
@@ -152,6 +161,9 @@ async function run(
       return;
     }
     if (event.cron === CLOSE_SOCKETS_CRON) {
+      // First: from now on /bus/connect refuses from this install's own D1
+      // (cloud #228), before dispatch's cached HOSTS value turns paused.
+      await markSuspended(env);
       const idx = socketIndexStub(env);
       if (!idx) {
         logWarn("system_job_failed", new Error("socket index unbound"));
@@ -164,6 +176,11 @@ async function run(
         closed: r.closed,
         queued: r.queued,
       });
+      return;
+    }
+    if (event.cron === RESUME_CRON) {
+      await clearSuspended(env);
+      logInfo("system_job", { job: "resume" });
       return;
     }
     if (event.cron !== DIRECTORY_DISCONNECT_CRON) {
