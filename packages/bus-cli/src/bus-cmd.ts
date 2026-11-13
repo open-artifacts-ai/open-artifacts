@@ -6,6 +6,7 @@
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, tilde } from "./context.ts";
 import { copy } from "./copy.ts";
+import { checkAdapters } from "./steps/adapters.ts";
 import { shimState } from "./steps/path-shim.ts";
 import { isDefaultHome } from "./steps/service.ts";
 
@@ -25,9 +26,27 @@ export function busCmd(o: BusCmdOpts): string {
   }
 }
 
+/** Whether this bus is the one the harness configs name: the main bus, or a moved home wired by install (#1443). */
+export function wiredTo(ctx: Ctx): boolean {
+  if (isDefaultHome(ctx.home, ctx.userHome)) return true;
+  try {
+    return Object.values(
+      checkAdapters({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        which: ctx.which,
+        codexApp: ctx.codexApp,
+      }),
+    ).includes("configured");
+  } catch {
+    return false;
+  }
+}
+
 /** The copy for this run: a second bus home's errors name `login --home`, never `install` (#2425). */
 export function copyFor(ctx: Ctx, cmd: string = ctx.busCmd) {
-  const second = !isDefaultHome(ctx.home, ctx.userHome);
+  const second = !wiredTo(ctx);
   return copy(
     ctx.style,
     cmd,

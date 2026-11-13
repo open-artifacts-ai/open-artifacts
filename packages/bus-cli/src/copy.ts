@@ -569,6 +569,8 @@ export function copy(
       "               --habits | --no-habits | --show-habits",
       "                                  add, decline or show the always-on habit lines",
       "               --no-service       skip the launchd or systemd step",
+      "               --alongside        with --home <dir>: set up this bus next to your main one,",
+      "                                  and leave every harness setting alone",
       "               --no-open          do not open a browser for approval",
       "               --json             the result as one JSON line on stdout",
       "               --yes, -y          answer yes where install asks",

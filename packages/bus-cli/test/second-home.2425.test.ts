@@ -1,5 +1,11 @@
 // #2425: a second bus home sets up only itself and leaves every harness config alone.
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
@@ -70,17 +76,19 @@ const harnessCalls = (ctx: Ctx) =>
     ([cmd]) => cmd === "claude" || cmd === "pi",
   );
 
-describe("install --home <dir> for a second bus (#2425)", () => {
+describe("install --alongside for a second bus (#2425)", () => {
   it("runs no harness step, writes nothing outside its home, and says how to start a session", async () => {
     const ctx = make(true);
-    expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
+    expect(
+      await install({ label: LABEL, hub: HUB, alongside: true }, ctx),
+    ).toBe(0);
     expect(harnessCalls(ctx)).toEqual([]);
     expect(outside(ctx)).toEqual([]);
     expect(ctx.service.ensure).toHaveBeenCalledOnce();
     const out = ctx.out().join("\n");
     expect(out).toContain("Left every session's settings alone.");
     expect(out).toContain(
-      `Start a session on this bus with: OA_BUS_HOME=~/second-bus pi`,
+      `Start a session on this bus with: OA_BUS_HOME=${ctx.home} pi`,
     );
     expect(out).toContain("Codex, Hermes and OpenClaw do not follow it");
     expect(out).not.toContain("Configured");
@@ -96,14 +104,43 @@ describe("install --home <dir> for a second bus (#2425)", () => {
 
   it("refuses --habits for a second home", async () => {
     const ctx = make(true);
-    expect(await install({ habits: "yes" }, ctx)).toBe(1);
+    expect(await install({ habits: "yes", alongside: true }, ctx)).toBe(1);
     expect(ctx.err().join("\n")).toContain("belong to your first bus");
     expect(outside(ctx)).toEqual([]);
   });
 });
 
+/** Files outside the bus home that name it. */
+const naming = (ctx: Ctx) =>
+  outside(ctx).filter((f) => readFileSync(f, "utf8").includes(ctx.home));
+
+describe("a moved home as the only bus (#1443, #2425)", () => {
+  it("install without --alongside wires the harnesses to it; uninstall leaves no config naming it", async () => {
+    const ctx = make(true, { which: (c) => c === "pi" });
+    expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
+    expect(naming(ctx).length).toBeGreaterThan(0);
+    expect(ctx.out().join("\n")).not.toContain("Left every session");
+    expect(await uninstall({ purge: false }, ctx)).toBe(0);
+    expect(naming(ctx)).toEqual([]);
+  });
+
+  it("errors name install, not login --home, once a config points at it", async () => {
+    const { copyFor } = await import("../src/bus-cmd.ts");
+    const ctx = make(true, { which: (c) => c === "pi" });
+    expect(copyFor(ctx).revoked().join("\n")).toContain("login --home");
+    await install({ label: LABEL, hub: HUB }, ctx);
+    expect(copyFor(ctx).revoked().join("\n")).toContain("install to approve");
+  });
+
+  it("--alongside on the main home is refused", async () => {
+    const ctx = make(false);
+    expect(await install({ alongside: true }, ctx)).toBe(2);
+    expect(ctx.err().join("\n")).toContain("needs --home");
+  });
+});
+
 describe("uninstall --home <dir> for a second bus (#2425)", () => {
-  it("removes only its service and leaves every harness config", async () => {
+  it("an --alongside bus removes only its service and leaves every harness config", async () => {
     const ctx = make(true);
     const claude = join(ctx.userHome, ".claude.json");
     const piDir = join(ctx.userHome, ".pi/agent/extensions");

@@ -60,6 +60,8 @@ export type InstallOpts = {
   label?: string;
   /** Skip the launchd or systemd step: the user runs the daemon. */
   noService?: boolean;
+  /** --alongside (needs a non-default --home): set up this bus only, no harness settings. */
+  alongside?: boolean;
   /** --habits, --no-habits or --show-habits: only the always-on block, nothing else reruns. */
   habits?: HabitsMode;
   /** The result as one JSON line on stdout; the human lines go to stderr. */
@@ -590,11 +592,18 @@ async function installRun(
   realCtx: Ctx,
 ): Promise<number> {
   // A second bus home sets up only itself: the harness configs are global.
-  const second = !isDefaultHome(realCtx.home, realCtx.userHome);
+  const second = Boolean(opts.alongside);
+  if (second && isDefaultHome(realCtx.home, realCtx.userHome)) {
+    sayErr(realCtx, [
+      "--alongside sets up a second bus, so it needs --home <dir> for a folder other than the main one.",
+      `Run ${realCtx.busCmd} install --alongside --home <dir> --instance <url>.`,
+    ]);
+    return 2;
+  }
   if (opts.habits && second) {
     sayErr(realCtx, [
       "The always-on habits are one setting for every session, so they belong to your first bus.",
-      `Run ${realCtx.busCmd} install --habits without --home.`,
+      `Run ${realCtx.busCmd} install --habits without --alongside.`,
     ]);
     return 1;
   }
@@ -621,7 +630,7 @@ async function installRun(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
-  if (ok && second) say(ctx, "", c.secondBus(tilde(ctx, ctx.home)));
+  if (ok && second) say(ctx, "", c.secondBus(ctx.home));
   else if (ok) {
     reportShim(ctx);
     // The shim now exists: what is printed from here on can name oa-bus.

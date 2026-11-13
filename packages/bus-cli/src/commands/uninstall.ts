@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { wiredTo } from "../bus-cmd.ts";
 import {
   askDaemon,
   type Ctx,
@@ -21,7 +22,6 @@ import { readMade, removeMade } from "../steps/leftovers.ts";
 import { uninstallOutputStyle } from "../steps/output-style.ts";
 import { removeShim } from "../steps/path-shim.ts";
 import { purge } from "../steps/purge.ts";
-import { isDefaultHome } from "../steps/service.ts";
 import { uninstallSkill } from "../steps/skill.ts";
 
 const originOf = (hub: string) => {
@@ -158,8 +158,9 @@ export async function uninstall(
   if (removed.running !== undefined)
     say(ctx, c.daemonStillRunning(removed.running));
 
-  // A second bus home never wired a harness: those configs belong to the first bus.
-  if (isDefaultHome(ctx.home, ctx.userHome)) await unwire(ctx);
+  // A second bus set up with --alongside never wired a harness: leave the configs
+  // unless one points at this home, which is then the only bus (#1443).
+  if (wiredTo(ctx)) await unwire(ctx);
 
   if (!opts.purge) {
     say(ctx, "", c.kept(tilde(ctx, join(ctx.home, "machine.json"))));
