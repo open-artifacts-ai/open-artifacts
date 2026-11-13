@@ -512,17 +512,20 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     expect(box).toBeDefined();
   });
 
-  it("numbers pin cards and focuses the pin on click", async () => {
+  it("labels pin cards without a number (the bubbles have none) and focuses the pin on click", async () => {
     asFormat("image", H1, {
       threads: [pinThread("a", 1, H1), pinThread("b", 2, H1)],
     });
     mount(viewerPath(OWNED));
     const c = await col();
-    await within(c).findByText("Pin 2");
-    expect(within(c).getByText("Pin 1")).toBeInTheDocument();
-    fireEvent.click(
-      within(c).getByRole("button", { name: "Show pin 2 in page" }),
-    );
+    const labels = await within(c).findAllByText("Pin", { selector: "p" });
+    expect(labels).toHaveLength(2);
+    expect(within(c).queryByText(/Pin \d/)).toBeNull();
+    const shows = within(c).getAllByRole("button", {
+      name: "Show pin in page",
+    });
+    expect(shows).toHaveLength(2);
+    fireEvent.click(shows[1] as HTMLElement);
     await waitFor(() => expect(focus).toHaveBeenCalledWith("b"));
   });
 
@@ -548,7 +551,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     asFormat("image", H1, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
     await col();
-    await screen.findByText("Pin 1");
+    await screen.findAllByText("Pin", { selector: "p" });
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
 
@@ -556,7 +559,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     asFormat("image", H2, { threads: [pinThread("a", 1, null)] });
     mount(viewerPath(OWNED));
     await col();
-    await screen.findByText("Pin 1");
+    await screen.findAllByText("Pin", { selector: "p" });
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
 
@@ -564,7 +567,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     asFormat("image", null, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
     await col();
-    await screen.findByText("Pin 1");
+    await screen.findAllByText("Pin", { selector: "p" });
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
 });
@@ -613,6 +616,56 @@ describe("bubble pins and click-to-comment (#2019)", () => {
     expect(b?.label).toBe("Comment by Claude Code");
     expect(b?.icon).toContain("<");
     expect(b?.icon).not.toContain("<svg");
+  });
+
+  it("a signed-out viewer of a public image sees initials or the robot, never a face (#2004)", async () => {
+    const art = fixtures.artifacts.find((a) => a.id === OWNED);
+    const ver = fixtures.versions[OWNED]?.[0];
+    const agent = pinThread("a", 1, H1);
+    // What a leaky server would send: the card draws no face without `linked`,
+    // and the bubble must not either.
+    agent.comments[0].author = {
+      kind: "agent",
+      name: "Ada's agent",
+      linked: true,
+      animal: { id: "duck", color: 1 },
+      me: false,
+    } as never;
+    const person = pinThread("b", 2, H1);
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "no" } },
+          { status: 401 },
+        ),
+      ),
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...art,
+          format: "image",
+          can: undefined,
+          visibility: "public",
+          commenters: "everyone",
+        }),
+      ),
+      http.get(`*${R.versions(OWNED)}`, () =>
+        HttpResponse.json([{ ...ver, format: "image", contentHash: H1 }]),
+      ),
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [agent, person],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await hello();
+    await waitFor(() => expect(threads()?.length).toBe(2));
+    const badges = threads().map((t) => t.badge);
+    expect(badges[0]).toMatchObject({ dashed: true });
+    expect(badges[0]).not.toHaveProperty("color", "#2456c4");
+    expect(badges[1]).toMatchObject({ initials: "GU" });
   });
 
   it("comments on an html page carry no badge", async () => {

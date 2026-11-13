@@ -1083,6 +1083,27 @@ describe("pins", () => {
       expect(p?.querySelector("script, image")).toBeNull();
     });
 
+    it("an agent with no face is the dashed robot mark, not initials", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          base({
+            badge: {
+              icon: '<path d="M12 8V4"/><rect x="4" y="8" width="16" height="12" rx="2"/>',
+              color: "#5f6670",
+              dashed: true,
+              label: "Comment by Claude Code",
+            },
+          }),
+        ],
+      });
+      const p = pin();
+      expect(p?.classList.contains("dashed")).toBe(true);
+      expect(p?.querySelector("svg")).not.toBeNull();
+      expect(p?.textContent).toBe("");
+    });
+
     it("a resolved pin is hidden, and faded while it is the open thread", async () => {
       await start("select");
       const badge = { initials: "AL", label: "Comment by Ada L" };

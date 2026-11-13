@@ -18,10 +18,23 @@ describe("pin badges (#2019)", () => {
     });
   });
 
-  it("an unlinked agent reads as initials, not a face", () => {
-    expect(
-      badgeFor({ kind: "agent", name: "Some Bot", me: false } as never),
-    ).toMatchObject({ initials: "SB" });
+  it("an unlinked agent is the dashed robot, never initials like a person", () => {
+    const b = badgeFor({ kind: "agent", name: "Some Bot", me: false } as never);
+    expect(b).toMatchObject({ dashed: true, label: "Comment by Some Bot" });
+    expect("initials" in b).toBe(false);
+    expect(PinBadgeSchema.safeParse(b).success).toBe(true);
+  });
+
+  it("a guest or capped viewer gets no animal even if one slipped through (#2004)", () => {
+    const linked = {
+      kind: "agent",
+      name: "Ada's agent",
+      linked: true,
+      animal: { id: "duck", color: 1 },
+      me: false,
+    } as never;
+    expect(badgeFor(linked, true)).toMatchObject({ dashed: true });
+    expect(badgeFor(linked, false)).not.toHaveProperty("dashed");
   });
 
   it("a linked agent is its animal in its palette colour, and fits the frame's schema", () => {

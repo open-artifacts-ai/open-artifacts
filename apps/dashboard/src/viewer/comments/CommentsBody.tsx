@@ -75,7 +75,8 @@ import {
   useLostPost,
 } from "./lostPosts";
 import { MentionMirror } from "./MentionMirror";
-import { numbering, pinChanged, pinNumbering } from "./model";
+import { numbering, pinChanged } from "./model";
+import { besideWidth, placeBeside } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
@@ -416,6 +417,7 @@ function Composer({
   buttonsRight = false,
   lead,
   card = false,
+  flat = false,
   keepOnEsc = false,
   quote,
   instant = false,
@@ -433,6 +435,8 @@ function Composer({
   onLost?: (lost: Lost) => void;
   /** The composer as a card: quote on top, hint and button always visible (#2118). */
   card?: boolean;
+  /** A card with no border of its own, inside a surface that has one (#2019). */
+  flat?: boolean;
   /** Esc is swallowed here and the draft stays (the box never closes). */
   keepOnEsc?: boolean;
   /** Shown at the top of the card, under an amber bar. */
@@ -650,7 +654,7 @@ function Composer({
     <div
       className={
         card
-          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3"
+          ? `flex flex-col gap-2 rounded-lg bg-card p-3${flat ? "" : " border border-input"}`
           : "flex flex-col gap-2"
       }
       data-oa-composing={composing ? "" : undefined}
@@ -1183,13 +1187,12 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
       </p>
     );
   if (a.kind === "pin") {
-    const n = pinNumbering(api.threads).get(t.id) ?? 1;
     // Only when both hashes are known and differ (a pdf's hash covers the whole file, so the note says file).
     const changed = pinChanged(a.contentHash, api.contentHash);
     return (
       <div className="flex flex-col gap-1">
         <p className={`${TXT} font-medium ${MUTED}`}>
-          {a.page ? `Page ${a.page} · ` : ""}Pin {n}
+          {a.page ? `Page ${a.page} · ` : ""}Pin
         </p>
         {changed && api.pinFormat && (
           <p className={`${TXT} ${MUTED}`}>
@@ -1351,7 +1354,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             className="min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left"
             aria-label={
               t.anchor.kind === "pin"
-                ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
+                ? "Show pin in page"
                 : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
             }
             aria-pressed={isActive}
@@ -1566,17 +1569,27 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
 export function PinBeside({ frame }: { frame: HTMLElement | null }) {
   const api = useCommentsApi();
   const at = api.pinBeside;
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLElement>(null);
   const [h, setH] = useState(200);
+  // The box grows as the reader types: keep it in view at its real height.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the box mounts when a pin is placed (`at`)
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && el.offsetHeight) setH(el.offsetHeight);
-  });
+    if (!el) return;
+    const measure = () => el.offsetHeight && setH(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [at]);
   if (!at || !frame || !api.draft || !api.canComment) return null;
-  const W = Math.max(220, Math.min(320, frame.clientWidth - 16));
-  const x = at.x + 40;
-  const left = Math.max(8, x + W > frame.clientWidth - 8 ? at.x - W - 10 : x);
-  const top = Math.max(8, Math.min(at.y - 34, frame.clientHeight - h - 8));
+  const w = besideWidth(frame.clientWidth);
+  const { left, top } = placeBeside(
+    at,
+    { w: frame.clientWidth, h: frame.clientHeight },
+    { w, h },
+  );
   return (
     <section
       ref={ref}
@@ -1586,11 +1599,12 @@ export function PinBeside({ frame }: { frame: HTMLElement | null }) {
       style={{
         left: frame.offsetLeft + left,
         top: frame.offsetTop + top,
-        width: W,
+        width: w,
       }}
-      className="absolute z-20 max-h-[calc(100%-16px)] overflow-y-auto rounded-xl bg-card p-1.5 shadow-xl ring-1 ring-border"
+      className="absolute z-20 max-h-[calc(100%-16px)] overflow-y-auto rounded-xl border border-border bg-card shadow-xl"
     >
       <NewThread
+        flat
         key={JSON.stringify("pin" in api.draft ? api.draft.pin : null)}
         api={api}
       />
@@ -1598,7 +1612,13 @@ export function PinBeside({ frame }: { frame: HTMLElement | null }) {
   );
 }
 
-function NewThread({ api }: { api: CommentsApi }) {
+function NewThread({
+  api,
+  flat = false,
+}: {
+  api: CommentsApi;
+  flat?: boolean;
+}) {
   const create = useCreateThread(api.artifactId, api.guest);
   const last = useRef("");
   const lastDraft = useRef<NonNullable<typeof api.draft> | null>(null);
@@ -1621,6 +1641,7 @@ function NewThread({ api }: { api: CommentsApi }) {
         autoFocus
         buttonsRight
         card
+        flat={flat}
         actions={ACTIONS_PLAIN}
         quote={
           "pin" in draft ? (

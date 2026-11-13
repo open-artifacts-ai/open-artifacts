@@ -88,6 +88,8 @@ const OVERLAY_CSS = `
 .pin.face.flip-y{border-radius:3px 9px 9px 9px}
 .pin.face.flip-x{border-radius:9px 9px 3px 9px}
 .pin.face.flip-x.flip-y{border-radius:9px 3px 9px 9px}
+.pin.face.dashed{background:#fff;color:#5f6670;box-shadow:0 0 0 2px #fff,0 3px 8px rgba(0,0,0,.3);outline:1.5px dashed #5f6670;outline-offset:-4px}
+.pin.face.dashed svg{stroke:#5f6670}
 .pin svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .pin:focus-visible{outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 4px #1f5fbf}
 /* A resolved thread opened from the list: its bubble shows faded, so the spot can be found. */
@@ -192,6 +194,7 @@ function fillBadge(el: HTMLElement, badge: PinBadge): void {
   };
   copy(root, svg, 0);
   el.classList.add("face");
+  if (badge.dashed) el.classList.add("dashed");
   el.style.setProperty("--face", badge.color);
   el.append(svg);
 }

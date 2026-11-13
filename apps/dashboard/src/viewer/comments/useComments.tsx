@@ -303,7 +303,7 @@ export function useCommentsController({
           threads,
           active,
           contentHash,
-          pinFormat ? threadBadge : undefined,
+          pinFormat ? threadBadge(!authed || readOnly) : undefined,
         ),
         pin,
         quote,
@@ -323,6 +323,7 @@ export function useCommentsController({
     authed,
     viewerName,
     guestName,
+    readOnly,
   ]);
 
   // #1834: the held quote goes as soon as its thread is in the list, which is

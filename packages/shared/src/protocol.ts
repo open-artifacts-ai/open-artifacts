@@ -59,6 +59,8 @@ export const PinBadgeSchema = z.union([
     label: z.string().max(120).optional(),
     /** The agent's palette slot (0..PRESENCE_PALETTE_SIZE-1) as a CSS colour. */
     color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    /** An agent with no face the viewer may see: the dashed outline mark, as the card draws it. */
+    dashed: z.boolean().optional(),
   }),
 ]);
 export type PinBadge = z.infer<typeof PinBadgeSchema>;

@@ -122,7 +122,10 @@ test("a resolved thread's bubble shows faded while its thread is open", async ({
   await expect(mine).toHaveCount(0);
   await page.getByRole("button", { name: /^Comments/ }).click();
   await page.getByRole("button", { name: /^Show resolved/ }).click();
-  await page.getByRole("button", { name: "Show pin 4 in page" }).click();
+  await page
+    .locator("[data-thread]", { hasText: "Axis label looks wrong." })
+    .getByRole("button", { name: "Show pin in page" })
+    .click();
   await expect(mine).toHaveCount(1);
   await expect(mine).toHaveClass(/resolved/);
   await shot(page, "1280-image-resolved");
@@ -151,6 +154,33 @@ test("image: click-to-comment opens the box beside the flag on a wide screen", a
   await textbox.fill("Here is a comment");
   await page.keyboard.press("Escape");
   await expect(page.locator("[data-pin-beside]")).toHaveCount(0);
+});
+
+test("image: a click near the bottom right keeps the box fully in view", async ({
+  page,
+}) => {
+  const frame = await open(page, "image", 1280);
+  await expect(
+    frame.getByRole("button", { name: "Comment by Sam Rivera" }),
+  ).toBeVisible({ timeout: 15_000 });
+  const img = await frame.locator("img").boundingBox();
+  const host = await page.locator("iframe.oa-vframe").boundingBox();
+  if (!img || !host) throw new Error("no frame");
+  await page.mouse.click(img.x + img.width - 6, img.y + img.height - 6);
+  const side = page.locator("[data-pin-beside]");
+  await expect(side).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Add a comment" }),
+  ).toBeFocused();
+  const b = await side.boundingBox();
+  if (!b) throw new Error("no box");
+  expect(b.x).toBeGreaterThanOrEqual(host.x);
+  expect(b.y).toBeGreaterThanOrEqual(host.y);
+  expect(b.x + b.width).toBeLessThanOrEqual(host.x + host.width);
+  expect(b.y + b.height).toBeLessThanOrEqual(host.y + host.height);
+  // It is left of the flag, not on it.
+  expect(b.x + b.width).toBeLessThanOrEqual(img.x + img.width - 6);
+  await shot(page, "1280-image-bottom-right");
 });
 
 test("phone: the flag drops and the box is in the comments sheet", async ({
