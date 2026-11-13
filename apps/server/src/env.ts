@@ -1,5 +1,6 @@
 import type { BusHub } from "./bus/hub.js";
 import type { DirectorySync } from "./directory/sync-do.js";
+import type { DocRoom } from "./docs/room.js";
 import type { ArtifactRuntime } from "./runtime/do.js";
 import type { UserPresence } from "./runtime/presence.js";
 
@@ -43,6 +44,12 @@ export interface Env {
    * too, until #1299.
    */
   BUS_HUB?: DurableObjectNamespace<BusHub>;
+  /**
+   * One DocRoom DO per collaborative doc (docs/room.ts, #1100), named by the
+   * artifact id. The class ships unbound (tag v5) one release before the
+   * route binds and uses it; bound only in the test pool for now.
+   */
+  DOC_ROOM?: DurableObjectNamespace<DocRoom>;
   ASSETS: Fetcher;
   /**
    * Anonymous limiter, 30 per key per minute (wrangler `ratelimits`): anonymous

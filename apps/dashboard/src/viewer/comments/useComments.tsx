@@ -109,6 +109,7 @@ export type CommentsApi = {
   onSelect: (a: SelectionAnchor) => void;
   onPositions: (
     p: { id: string; state: FramePosition["state"]; top: number | null }[],
+    ghost?: { x: number; y: number },
   ) => void;
   onOpen: (id: string) => void;
   onPin: (p: PinPoint, at?: { x: number; y: number }) => void;
@@ -487,7 +488,13 @@ export function useCommentsController({
   // A mode change or a lost right drops the offer.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on these
   useEffect(() => setSelected(false), [mode, mayComment, enabled]);
-  const onPositions = useCallback<CommentsApi["onPositions"]>((list) => {
+  const onPositions = useCallback<CommentsApi["onPositions"]>((list, ghost) => {
+    // #2386: the flag moved (the page scrolled): the box beside it follows. Not
+    // rate-limited with the list; it only moves a box a pin already opened.
+    if (ghost)
+      setPinAt((prev) =>
+        prev && (prev.x !== ghost.x || prev.y !== ghost.y) ? ghost : prev,
+      );
     if (!gates.current.positions()) return;
     const next = new Map<string, FramePosition>();
     // Only ids in the shell's own list count.

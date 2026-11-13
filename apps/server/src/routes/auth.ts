@@ -38,6 +38,7 @@ import { FAVICON_TAGS } from "../http/head.js";
 import { BREAK_GLASS_MS } from "../http/middleware.js";
 import { onGoogleSignIn } from "../services/directory.js";
 import { admit } from "../services/identity.js";
+import { seedWelcome } from "../services/onboarding.js";
 import {
   getMismatchOwner,
   getUserWithEpoch,
@@ -288,6 +289,8 @@ export function mountAuth(app: AppType): void {
         logAuth({ provider: "google", outcome: "refused", stage: r.reason });
         return toSignIn(r.reason, id.next, clear, "google");
       }
+      // #2287: a hosted instance's first owner gets the Welcome; never throws.
+      await seedWelcome(c.env, r.user);
       try {
         await onGoogleSignIn(c.env, r.user);
       } catch (e) {

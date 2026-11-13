@@ -25,6 +25,7 @@ import { getUserWithEpoch } from "./services/users.js";
 
 export { BusHub } from "./bus/hub.js";
 export { DirectorySync } from "./directory/sync-do.js";
+export { DocRoom } from "./docs/room.js";
 export type { Env } from "./env.js";
 export { ArtifactRuntime } from "./runtime/do.js";
 export { UserPresence } from "./runtime/presence.js";

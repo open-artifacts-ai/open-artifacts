@@ -4,7 +4,12 @@
 // have no button. Yearly Team and Business prices are proposed until the user
 // confirms them and Billing makes them: until then they show monthly prices.
 
-import { formatCents, PLAN_PRICES, planPriceDisplay } from "@oa/shared";
+import {
+  BUSINESS_CONTACT_URL,
+  formatCents,
+  PLAN_PRICES,
+  planPriceDisplay,
+} from "@oa/shared";
 import {
   Badge,
   Button,
@@ -24,7 +29,6 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
-import { THAW_COPY } from "../layout/thawCopy";
 import { muted } from "./ui";
 
 export type Column = "solo" | "team" | "business";
@@ -324,12 +328,11 @@ export function PlanCompare({
   trial = false,
   seatsDefault,
   yearly: yearlyOn = false,
-  pendingReverts = 0,
 }: {
   /** The current plan's column (the invite trial is Team, #2113). */
   column: Column;
   /** Start the existing upgrade flow; absent: no buttons (can't buy here). */
-  upgrade?: (tier: "team" | "business", seats?: number) => void;
+  upgrade?: (tier: "team", seats?: number) => void;
   busy: boolean;
   /** The Team trial: nothing is paid yet, so both upgrades show and Team says "Your trial". */
   trial?: boolean;
@@ -341,12 +344,9 @@ export function PlanCompare({
   seatsDefault?: number;
   /** Billing says yearly Team and Business prices exist (billing.yearlyTeamBusiness); off: Solo only. */
   yearly?: boolean;
-  /** Synced people whose changed roles go back to their group's on Business (#2150); above 0, Upgrade to Business confirms first. */
-  pendingReverts?: number;
 }) {
   const [interval, setInterval] = useState<Interval>("year");
-  const [asking, setAsking] = useState<"team" | "business" | null>(null);
-  const [thawAsk, setThawAsk] = useState(false);
+  const [asking, setAsking] = useState<"team" | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   // A plan change (a billing refetch made this Team) or a lost buy path ends the
   // step; reopening starts again from the default.
@@ -354,9 +354,8 @@ export function PlanCompare({
   // biome-ignore lint/correctness/useExhaustiveDependencies: these are the triggers
   useEffect(() => {
     setAsking(null);
-    setThawAsk(false);
   }, [column, trial, canBuy]);
-  const start = (c: "team" | "business") => {
+  const start = (c: "team") => {
     if (yearlyOn && interval === "year" && seatsDefault !== undefined) {
       setAsking(c);
       return;
@@ -438,16 +437,17 @@ export function PlanCompare({
                   <Button variant="outline" disabled>
                     Current plan
                   </Button>
-                ) : i > rank && c !== "solo" ? (
+                ) : i > rank && c === "business" ? (
+                  // #2404: Business has no checkout; it is by contact only.
+                  <Button variant="outline" asChild>
+                    <a href={BUSINESS_CONTACT_URL}>Contact us</a>
+                  </Button>
+                ) : i > rank && c === "team" ? (
                   <Button
-                    variant={c === "team" ? "default" : "outline"}
+                    variant="default"
                     disabled={busy}
                     onClick={(e) => {
                       opener.current = e.currentTarget;
-                      if (c === "business" && pendingReverts > 0) {
-                        setThawAsk(true);
-                        return;
-                      }
                       start(c);
                     }}
                   >
@@ -471,42 +471,6 @@ export function PlanCompare({
           );
         })}
       </div>
-      {thawAsk && upgrade && (
-        <Dialog open onOpenChange={(o) => !o && setThawAsk(false)}>
-          <DialogContent
-            onCloseAutoFocus={(e) => {
-              e.preventDefault();
-              opener.current?.focus();
-            }}
-          >
-            <DialogHeader>
-              <DialogTitle>{THAW_COPY.confirmTitle}</DialogTitle>
-              <DialogDescription>
-                {THAW_COPY.confirmBody(pendingReverts)}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setThawAsk(false)}
-              >
-                {THAW_COPY.confirmNo}
-              </Button>
-              <Button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setThawAsk(false);
-                  start("business");
-                }}
-              >
-                {THAW_COPY.confirmYes}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
       {asking && upgrade && (
         <SeatStep
           tier={asking}

@@ -2379,6 +2379,18 @@ describe("comments: capped members", () => {
     );
   });
 
+  it("billing_unavailable shows the billing copy, for a post and an answer, with or without Me", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError, answerError, commentErrorCtx } = await import(
+      "../src/api/comments"
+    );
+    const e = new ApiClientError("billing_unavailable", "down", 503);
+    const copy = "Billing isn't reachable right now. Try again in a minute.";
+    expect(commentError(e)).toBe(copy);
+    expect(commentError(e, false, commentErrorCtx(undefined))).toBe(copy);
+    expect(answerError(e, commentErrorCtx(undefined))).toBe(copy);
+  });
+
   it("a member or admin under a plan lock (cap plan) keeps the plan copy", async () => {
     const { ApiClientError } = await import("../src/api/client");
     const { commentError } = await import("../src/api/comments");

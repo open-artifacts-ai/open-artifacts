@@ -383,9 +383,10 @@ describe("comments (#682)", () => {
     });
     expect(o.onCommentSelect).toHaveBeenCalledWith(sel);
     expect(o.onCommentOpen).toHaveBeenCalledWith("t1");
-    expect(o.onCommentPositions).toHaveBeenCalledWith([
-      { id: "t1", state: "exact", top: 5 },
-    ]);
+    expect(o.onCommentPositions).toHaveBeenCalledWith(
+      [{ id: "t1", state: "exact", top: 5 }],
+      undefined,
+    );
   });
 
   it("forwards a valid comment.pin and drops one that fails the schema", () => {
