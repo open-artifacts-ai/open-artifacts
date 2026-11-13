@@ -34,14 +34,14 @@ for (const width of [1280, 390])
           await g.scrollIntoViewIfNeeded();
           await shoot(page, info, `${name}-${width}-${theme}`);
         });
-      test("logged-out viewer", async ({ page }, info) => {
+      test("signed-out viewer", async ({ page }, info) => {
         await page.goto(
-          `/a/${LANDING}?mock=logged-out&panel=open&tab=comments`,
+          `/a/${LANDING}?mock=signed-out&panel=open&tab=comments`,
         );
         const link = page.getByRole("link", { name: "Log in to comment" });
         if (width < 600)
           await page.getByRole("button", { name: /^Comments/ }).click();
         await expect(link).toBeVisible();
-        await shoot(page, info, `logged-out-${width}-${theme}`);
+        await shoot(page, info, `signed-out-${width}-${theme}`);
       });
     });

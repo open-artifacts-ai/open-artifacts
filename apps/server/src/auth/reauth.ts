@@ -37,7 +37,7 @@ export function requireFreshReauth(
   next = "/settings/security",
 ): void {
   if (!freshReauth(c))
-    throw new ApiError("reauth_required", "Confirm it's you: sign in again", {
+    throw new ApiError("reauth_required", "Confirm it's you: log in again", {
       reauthUrl: reauthUrl(c, next),
     });
 }

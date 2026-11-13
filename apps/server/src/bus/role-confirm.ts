@@ -273,7 +273,7 @@ export function confirmCaller(
     return {
       response: messagePage(
         "Use your browser",
-        "Only you can confirm this, logged in in your browser. No token can.",
+        "Only you can confirm this, in your browser while logged in. No token can.",
         401,
       ),
     };

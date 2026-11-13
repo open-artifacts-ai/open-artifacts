@@ -461,7 +461,7 @@ async function startMocks() {
   // Like the cookie it stands in for, it never rides on a credentials:"omit" request.
   const realFetch = window.fetch.bind(window);
   // ?mock=signed-out (#2080): no token, so every request is anonymous.
-  const signedOut = params.get("mock") === "logged-out";
+  const signedOut = params.get("mock") === "signed-out";
   window.fetch = (input, init) => {
     const req = new Request(input, init);
     if (!signedOut && req.credentials !== "omit")
@@ -511,7 +511,7 @@ async function startMocks() {
       // ?mock=markdown (#2338): agent comments with markdown and a hostile one.
       commentMarkdown: params.get("mock") === "markdown",
       // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
-      commentersSignedIn: params.get("mock") === "logged-out",
+      commentersSignedIn: params.get("mock") === "signed-out",
       // ?mock=bus (#1293): the bus is on, with machines and agents.
       bus: params.get("mock") === "bus",
     }),

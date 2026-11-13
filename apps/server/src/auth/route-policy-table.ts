@@ -49,8 +49,8 @@ const art = (
     planSharing?: true;
   } = {},
 ): Policy => ({ artifact: action, ...extra });
-const SAVE = "Sign in to save changes";
-const COMMENT = "Sign in to comment";
+const SAVE = "Log in to save changes";
+const COMMENT = "Log in to comment";
 const ARTS = "/api/v1/artifacts/:id";
 const SPACES = "/api/v1/spaces/:id";
 const signedIn = { signedIn: true } as const;

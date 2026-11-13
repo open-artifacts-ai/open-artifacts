@@ -622,7 +622,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
           guestBarred(target, request)
         )
-          return err("comments_signed_in_only", "Sign in to comment.");
+          return err("comments_signed_in_only", "Log in to comment.");
       }
       const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       const path = new URL(request.url).pathname.replace(/^.*\/api\/v1/, "");

@@ -334,7 +334,7 @@ export function spaceSelfAddEmail(p: {
 
 const PASSKEY_ADDED_TXT = `A passkey was added to your {{instanceName}} account{{labelPart}}.
 
-It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and sign out of other sessions: {{securityUrl}}
+It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and log out of other sessions: {{securityUrl}}
 
 {{appHost}}
 `;
@@ -343,7 +343,7 @@ const PASSKEY_ADDED_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Passkey added</title></head>
 <body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <p>A passkey was added to your {{instanceName}} account{{labelPart}}.</p>
-<p>It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and sign out of other sessions.</p>
+<p>It can approve asks starting 24 hours from now. If this was not you, remove it in your security settings and log out of other sessions.</p>
 <p><a href="{{securityUrl}}">Open security settings</a></p>
 <p style="color:#5d636e">{{appHost}}</p>
 </body></html>
@@ -411,8 +411,8 @@ export function passkeyRemovedEmail(p: {
         ? `${name} on your ${inst} account will be removed in 24 hours.`
         : `${name} was removed from your ${inst} account.`,
       detail: p.pending
-        ? "It still works until then. If this was not you, cancel the removal in your security settings and sign out of other sessions."
-        : "If this was not you, sign out of other sessions and add a passkey again.",
+        ? "It still works until then. If this was not you, cancel the removal in your security settings and log out of other sessions."
+        : "If this was not you, log out of other sessions and add a passkey again.",
       securityUrl: linkOn(origin, "/settings/security"),
     },
   );

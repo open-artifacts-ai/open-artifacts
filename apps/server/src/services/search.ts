@@ -586,7 +586,7 @@ export async function search(
   agentVia?: string,
 ): Promise<Page<SearchHit>> {
   if (caller.kind !== "user")
-    throw new ApiError("unauthorized", "Log in required");
+    throw new ApiError("unauthorized", "Login required");
   const m = sanitizeQuery(q);
   if (!m) throw bad("q has no searchable words", "q");
   const offset = cursor === undefined ? 0 : decodeOffset(cursor);

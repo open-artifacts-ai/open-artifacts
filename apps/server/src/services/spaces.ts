@@ -188,7 +188,7 @@ export function requireSpaces(env: Env): void {
 }
 
 function me(c: Caller): Member {
-  if (c.kind !== "user") throw new ApiError("unauthorized", "Log in required");
+  if (c.kind !== "user") throw new ApiError("unauthorized", "Login required");
   return c.user;
 }
 

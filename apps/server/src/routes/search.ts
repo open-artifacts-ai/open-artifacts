@@ -12,7 +12,7 @@ export function mountSearch(app: AppType): void {
     const q = SearchQuerySchema.safeParse(c.req.query());
     if (!q.success) {
       // Anonymous → 401 before any validation detail.
-      if (!c.var.user) throw new ApiError("unauthorized", "Log in required");
+      if (!c.var.user) throw new ApiError("unauthorized", "Login required");
       throw new ApiError("bad_request", "Invalid query", q.error.issues);
     }
     return c.json(
