@@ -8,11 +8,11 @@ import { DOC_SWITCH } from "./doc-switch.js";
  * switch, and a hosted install (Workers for Platforms, always paid) or a
  * self-host on the Workers Paid plan (PLAN=paid).
  */
-/** What /me tells the dashboard: absent while the switch is off. */
-export const docsState = (
-  env: Pick<Env, "HOSTED" | "PLAN">,
-): "on" | "needs_paid" | undefined =>
-  DOC_SWITCH.creation ? (docsAvailable(env) ? "on" : "needs_paid") : undefined;
-
 export const docsAvailable = (env: Pick<Env, "HOSTED" | "PLAN">): boolean =>
   DOC_SWITCH.creation && (billingOn(env) || planOf(env.PLAN) === "paid");
+
+/** What /me tells the dashboard: absent while the switch is off. */
+export const docsState = (
+  env: Parameters<typeof docsAvailable>[0],
+): "on" | "needs_paid" | undefined =>
+  DOC_SWITCH.creation ? (docsAvailable(env) ? "on" : "needs_paid") : undefined;

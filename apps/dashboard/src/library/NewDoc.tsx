@@ -7,6 +7,7 @@ import { api } from "../api/client";
 import { isSoloPaused } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
+import { useUploadSpace } from "../spaces/SpacePicker";
 import { markFresh, NEW_DOC_TOAST } from "../viewer/doc/fresh";
 
 /** Where "See hosted plans" goes. */
@@ -22,6 +23,29 @@ export function useCanCreate(): boolean {
     me.me.user.role !== "guest" &&
     (me.me.auth?.cap ?? null) === null &&
     !isSoloPaused(me.me)
+  );
+}
+
+/**
+ * New doc beside the "doc is full" message: only where the Library would offer
+ * it (docs on, the caller may create), in the doc's own space. A component of
+ * its own so its hosted reads run only when the viewer renders it: the Shell
+ * mounts it for a signed-in viewer of a full doc, never for anyone else.
+ */
+export function FullDocNewDoc({ spaceOf }: { spaceOf: string | undefined }) {
+  const me = useMe();
+  const canCreate = useCanCreate();
+  const space = useUploadSpace(spaceOf);
+  if (!canCreate || me.status !== "authed" || me.me.instance.docs !== "on")
+    return null;
+  return (
+    <NewDocButton
+      docs="on"
+      size="sm"
+      variant="outline"
+      spaceId={space}
+      onGate={() => {}}
+    />
   );
 }
 
