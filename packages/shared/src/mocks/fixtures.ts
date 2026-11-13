@@ -1,4 +1,3 @@
-import { WELCOME_TITLE, welcomeHtml } from "../welcome.js";
 import type { BusLink, BusRole, BusRoleProposal } from "../bus-notices.js";
 import type {
   ArtifactSummary,
@@ -14,6 +13,7 @@ import type {
   UserRef,
   VersionInfo,
 } from "../schemas.js";
+import { WELCOME_TITLE, welcomeHtml } from "../welcome.js";
 
 // Literal 16-char base58 ids (same shape as newId()) so fixtures stay deterministic.
 const ID = {
@@ -119,7 +119,7 @@ const members: Member[] = [
 ];
 
 /** #2287: the seeded Welcome artifact's id, in the mocks' `welcome` option. */
-export const WELCOME_MOCK_ID = "WlCmEfGhJk4mNpQr";
+export const WELCOME_MOCK_ID = "WmCnEfGhJk4mNpQr";
 
 /** The Welcome artifact, its one version and its html (the page the server seeds). */
 export function welcomeFixture(host: string) {

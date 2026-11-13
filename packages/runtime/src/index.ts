@@ -2,8 +2,8 @@ import {
   type DataDoc,
   type DataQueryInput,
   type Format,
-  type OnboardingProgress,
   NAVIGATE_PATH_RE,
+  type OnboardingProgress,
   type Page,
   type ShellToArtifact,
 } from "@oa/shared";

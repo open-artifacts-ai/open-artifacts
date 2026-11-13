@@ -27,11 +27,19 @@ const jsonForScript = (v: unknown) =>
     .replaceAll(" ", "\\u2028")
     .replaceAll(" ", "\\u2029");
 
-type Tab = { id: string; label: string; note?: string; file?: string; code: string };
+type Tab = {
+  id: string;
+  label: string;
+  note?: string;
+  file?: string;
+  code: string;
+};
 
 /** The tabs: the paste prompt for any agent, then each client's own setup. */
 export function welcomeTabs(host: string): Tab[] {
-  const oauth = agentClients(`${host}/mcp`).filter((s) => s.variant === "oauth");
+  const oauth = agentClients(`${host}/mcp`).filter(
+    (s) => s.variant === "oauth",
+  );
   const pick = (agent: string, id: string, label: string): Tab => {
     const s = oauth.find((x) => x.agent === agent);
     return {
