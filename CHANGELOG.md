@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.176.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.1...v0.176.0) (2026-11-13)
+
+
+### Features
+
+* **landing:** the new home page, a scroll story with a before/after hero ([#1457](https://github.com/open-artifacts-ai/open-artifacts/issues/1457)) ([#2139](https://github.com/open-artifacts-ai/open-artifacts/issues/2139)) ([f576bc6](https://github.com/open-artifacts-ai/open-artifacts/commit/f576bc6b35d3dda8b016b1d5f83c1365cf1c7504))
+
 ## [0.175.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.0...v0.175.1) (2026-11-13)
 
 
