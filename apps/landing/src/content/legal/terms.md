@@ -1,7 +1,7 @@
 ---
 title: Terms of Service
 description: The rules for using hosted Open Artifacts and this website.
-updated: "November 11, 2026"
+updated: "November 13, 2026"
 ---
 
 These terms are an agreement between you and **Leo Urbina Consulting LLC** ("we", "us"), 8913 Bar K Ranch Road, Leander, Texas 78645, USA. They cover:
@@ -57,11 +57,27 @@ We may remove content or suspend access that breaks these rules, or that puts th
 
 ## Plans and payment
 
-- **Solo:** free for 30 days, then $1 a month or $10 a year.
-- **Team:** $10 per creator per month, or $100 per creator per year, with a 30-day free trial that starts when you invite someone.
-- **Business:** $25 per creator per month, or $250 per creator per year.
+- **Solo:** free for 30 days with no card needed, then $1 a month or $10 a year.
+- **Team:** $10 per creator per month, or $100 per creator per year, with a 30-day free trial that starts the first time you invite someone.
+- **Business:** $25 per creator per month, or $250 per creator per year. Contact us to start.
 
-Paid plans aren't on sale yet. Before we charge anyone, we'll add billing, renewal, refund and tax terms here, and tell instance owners first.
+A creator is a person who, in a calendar month, publishes a page or a new version of one, or changes a page's live data as its owner or editor. What your AI agents do counts as you. Each person counts once a month. Viewers are free on every plan: reading, commenting, or a viewer's vote in a poll doesn't make someone a creator.
+
+**Free trials.** If you don't pay when the Solo trial ends, nothing is charged. Publishing pauses, you can still read and share what you made, and nothing is deleted. The Team trial happens once for each instance. If it ends without a Team plan, the instance goes back to Solo.
+
+**Billing.** Prices are in US dollars. You pay by card through Stripe, our payment processor. We don't store your card number. A plan renews automatically each month or each year until you cancel it. If you start paying for Solo during its trial, the first charge comes when the trial ends.
+
+On monthly Team, each renewal charges for the number of creators you had the month before, with a minimum of one. On yearly Team, you pay up front for the number of creators you choose. Creators above that number are billed after each month they occur, at the monthly price.
+
+**Taxes.** Prices don't include taxes, and we don't add tax to invoices today. If that changes, we'll tell instance owners first. You're responsible for any taxes you owe on your purchase.
+
+**Cancelling.** The instance owner or an admin can cancel at any time in Settings, Plan and billing. The plan keeps working until the end of the period already paid for, and doesn't renew. After that you can still read and share everything, but nothing new can be published or edited. Nothing is deleted.
+
+**Refunds.** If you ask within 14 days of your first payment, we'll refund it in full. Write to [hello@open-artifacts.com](mailto:hello@open-artifacts.com) from the instance owner's address. After those 14 days, payments aren't refunded, and we don't give credit for part of a period, for moving to a cheaper plan, or for having fewer creators, except where the law requires it. If a charge looks wrong, write to the same address and we'll look into it.
+
+**Failed payments.** If a payment fails, you have 7 days to update your card. After that the instance becomes read-only until the payment goes through. Nothing is deleted.
+
+**Price changes.** We may change prices. We'll email instance owners at least 30 days before a new price applies to them, and it applies from their next renewal.
 
 ## Privacy
 
