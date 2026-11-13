@@ -198,11 +198,29 @@ describe("no-session reasons (#2364)", () => {
   ];
   it("each reason is named in the message under Claude, never the install hint", () => {
     for (const reason of reasons) {
+      if (reason === "none" || reason === "socket_dir") continue;
       const m = noSessionMessage({ kind: "no-session", reason }, true);
       expect(m).toContain(`(${reason})`);
       expect(m).toContain("/mcp");
       expect(m).not.toContain("install");
     }
+  });
+  it("socket_dir has its own doctor message", () => {
+    const m = noSessionMessage(
+      { kind: "no-session", reason: "socket_dir" },
+      true,
+    );
+    expect(m).toContain("socket folder isn't safe");
+    expect(m).toContain("doctor");
+  });
+  it("none under Claude keeps the install hint", () => {
+    expect(
+      noSessionMessage({ kind: "no-session", reason: "none" }, true),
+    ).toContain("install");
+  });
+  it("a socket that vanishes after it was seen is restarting, not install", async () => {
+    const out = await connectOutcome(failing(coded("ENOENT")));
+    expect(out).toEqual({ kind: "no-socket", seen: true });
   });
   it("an unreadable file that becomes readable recovers within the wait", async () => {
     let looks = 0;
@@ -222,6 +240,7 @@ describe("no-session reasons (#2364)", () => {
     for (const [reason, sleeps] of [
       ["none", 0],
       ["not_session", 0],
+      ["no_proc_start", 0],
       ["unreadable", 10],
       ["proc_start_mismatch", 10],
     ] as const) {

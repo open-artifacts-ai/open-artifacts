@@ -127,10 +127,9 @@ export type NoSessionReason =
   | "proc_start_unknown"
   | "socket_dir";
 
-/** The reasons a later look may find a session: a file mid-write, a slow `ps`. */
+/** The reasons a later look may find a session: a file mid-write, a slow `ps`; no_proc_start is permanent on an older Claude Code. */
 export const RECOVERABLE_REASONS: readonly NoSessionReason[] = [
   "unreadable",
-  "no_proc_start",
   "proc_start_mismatch",
   "proc_start_unknown",
 ];

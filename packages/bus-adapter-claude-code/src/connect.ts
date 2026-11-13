@@ -79,6 +79,7 @@ async function attempt<C>(deps: ConnectDeps<C>): Promise<ConnectOutcome<C>> {
     return { kind: "busy" };
   }
   if (!deps.socketExists()) return { kind: "no-socket", seen: false };
+  // From here the socket file existed, so a vanished one means a daemon going down or restarting.
   try {
     return { kind: "ok", client: await deps.connect(session) };
   } catch (e) {
@@ -87,7 +88,7 @@ async function attempt<C>(deps: ConnectDeps<C>): Promise<ConnectOutcome<C>> {
     const code = (e as NodeJS.ErrnoException)?.code;
     // The socket file exists but nothing is listening (or it vanished): a daemon coming up or going down.
     if (code === "ECONNREFUSED" || code === "ENOENT")
-      return { kind: "no-socket", seen: code === "ECONNREFUSED" };
+      return { kind: "no-socket", seen: true };
     // A timeout, a reset, a dropped connection: a daemon that exists but is not answering.
     return { kind: "busy" };
   }
@@ -102,7 +103,9 @@ export function noSessionMessage(
   if (out.kind === "refused")
     return `oa-bus: the bus daemon refused: ${out.reason}`;
   if (out.kind === "no-socket" && out.seen) return RESTARTING_MESSAGE;
-  if (out.kind === "no-session")
+  if (out.kind === "no-session" && out.reason === "socket_dir")
+    return `oa-bus: the bus socket folder isn't safe to use; run \`${BUS_CMD} doctor\`.`;
+  if (out.kind === "no-session" && out.reason !== "none")
     return underClaude
       ? `oa-bus: this Claude session isn't visible to the bus right now (${out.reason}); retry, or run /mcp and reconnect oa_bus.`
       : NOT_UNDER_CLAUDE;
