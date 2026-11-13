@@ -90,8 +90,11 @@ const alarms = async (h: Stub, n: number) => {
 
 describe("isDefaultAgentName", () => {
   it("knows the harness defaults and not chosen names", () => {
-    for (const n of ["claude-4242", "pi", "pi-7", "omp-3", "agent-2", "codex"])
+    for (const n of ["claude-4242", "agent-2", "claude-code"])
       expect(isDefaultAgentName(n, "claude-code", false)).toBe(true);
+    for (const n of ["pi", "pi-7", "omp-3"])
+      expect(isDefaultAgentName(n, "pi", false)).toBe(true);
+    expect(isDefaultAgentName("codex", "codex", false)).toBe(true);
     expect(isDefaultAgentName("open-artifacts-3fa1", "claude-code", true)).toBe(
       true,
     );
@@ -334,11 +337,22 @@ describe("agent_up name_chosen (#2311)", () => {
 
 describe("role holders and named-by-words (#2311)", () => {
   it("isDefaultAgentName: digits-only suffixes, not words", () => {
-    for (const n of ["claude-1", "pi", "pi-2", "agent-3", "codex-4-5"])
-      expect(isDefaultAgentName(n, "claude-code", false)).toBe(true);
+    expect(isDefaultAgentName("claude-1", "claude-code", false)).toBe(true);
+    expect(isDefaultAgentName("agent-3", "claude-code", false)).toBe(true);
+    expect(isDefaultAgentName("pi-2", "pi", false)).toBe(true);
+    expect(isDefaultAgentName("codex-4-5", "codex", false)).toBe(true);
     expect(isDefaultAgentName("hermes-4", "hermes", false)).toBe(true);
     for (const n of ["pi-docs", "codex-reviewer", "hermes-myrepo", "agent-x"])
       expect(isDefaultAgentName(n, n.split("-")[0] ?? "", false)).toBe(false);
+  });
+
+  it("a default name of another kind is a chosen name (#2318)", () => {
+    for (const n of ["codex", "codex-2", "pi", "pi-3", "omp"])
+      expect(isDefaultAgentName(n, "claude-code", false)).toBe(false);
+    for (const n of ["codex", "claude-4", "pi-2"])
+      expect(isDefaultAgentName(n, "hermes", false)).toBe(false);
+    expect(isDefaultAgentName("claude-4", "pi", false)).toBe(false);
+    expect(isDefaultAgentName("agent-2", "hermes", false)).toBe(true);
   });
 
   it("a role holder and a pi-docs agent are kept and a role holder is not marked unnamed", async () => {
