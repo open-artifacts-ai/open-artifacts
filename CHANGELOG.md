@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.171.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.170.0...v0.171.0) (2026-11-13)
+
+
+### Features
+
+* **bus:** a suspended hosted install refuses bus connects at once (cloud [#228](https://github.com/open-artifacts-ai/open-artifacts/issues/228)) ([#2387](https://github.com/open-artifacts-ai/open-artifacts/issues/2387)) ([53d501d](https://github.com/open-artifacts-ai/open-artifacts/commit/53d501d609ff180f6d88e80012fba9863c3df169))
+
+
+### Bug Fixes
+
+* **bus-cli:** install waits for a slow daemon start instead of reporting a failure ([#2358](https://github.com/open-artifacts-ai/open-artifacts/issues/2358)) ([#2392](https://github.com/open-artifacts-ai/open-artifacts/issues/2392)) ([a2ac4c9](https://github.com/open-artifacts-ai/open-artifacts/commit/a2ac4c9534d7d7d362fe5db182b16e0644e827b4))
+* **bus:** a harness default name counts as default only for its own kind ([#2318](https://github.com/open-artifacts-ai/open-artifacts/issues/2318)) ([#2395](https://github.com/open-artifacts-ai/open-artifacts/issues/2395)) ([f41f1c7](https://github.com/open-artifacts-ai/open-artifacts/commit/f41f1c7c51a17a080b71cde6beb305f1d53185c4))
+* **bus:** the MCP adapter re-attaches after a daemon restart instead of saying to install ([#2364](https://github.com/open-artifacts-ai/open-artifacts/issues/2364)) ([#2393](https://github.com/open-artifacts-ai/open-artifacts/issues/2393)) ([357f5f9](https://github.com/open-artifacts-ai/open-artifacts/commit/357f5f9cdc29fb5a7306e29c12d495db6d30d638))
+* **release:** refuse a tag on an empty release commit; never re-arm a landed release PR ([#2379](https://github.com/open-artifacts-ai/open-artifacts/issues/2379)) ([#2397](https://github.com/open-artifacts-ai/open-artifacts/issues/2397)) ([cd2efae](https://github.com/open-artifacts-ai/open-artifacts/commit/cd2efae1ca3729aa9d0746131464134ff1489357))
+
 ## [0.170.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.169.1...v0.170.0) (2026-11-13)
 
 
