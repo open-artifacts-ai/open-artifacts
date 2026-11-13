@@ -181,7 +181,8 @@ describe("GET /llms.txt", () => {
     expect(steps).toContain("They approve this machine once, in their browser");
     expect(steps).toContain("QUESTION FOR YOUR USER");
     expect(steps).toMatch(/5\. \*\*Publish a first page\*\*/);
-    expect(steps).not.toMatch(/optional|offer/i);
+    expect(steps).not.toMatch(/optional/i);
+    expect(steps).toContain("don't stop to offer the bus as an option");
     expect(steps).not.toContain("\u2014");
     expect(steps).toContain("Open Artifacts is connected, but the bus isn't");
   });

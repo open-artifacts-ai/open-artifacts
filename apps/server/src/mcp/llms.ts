@@ -107,7 +107,7 @@ Then run \`claude plugin configure ${name}\` and check \`${option}\` shows ${ori
  */
 const SETUP_STEPS_TITLE = "## Setup steps";
 const SETUP_STEPS_INTRO =
-  "Do these in order. The person agreed to all of it when they asked for setup.";
+  "Do these in order. They are all part of setup, so don't stop to offer the bus as an option.";
 const setupSteps = (origin: string, mcpUrl: string): string[] => [
   `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
   `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,

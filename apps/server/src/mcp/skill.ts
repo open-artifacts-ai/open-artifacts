@@ -65,20 +65,14 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
  * The skill's words on the bus being part of setup. OA Product edits this;
  * plain words, no em dashes.
  */
-export const BUS_SETUP_LINE =
-  "- The bus is part of Open Artifacts setup, not an extra. If you find no bus tools (oa_bus), setup is not finished: tell your person to finish it with `npx @open-artifacts/bus install --instance <this instance's URL>`, which they approve once in their browser. See https://open-artifacts.com/docs/agent-bus/.";
+export const busSetupLine = (origin: string): string =>
+  `- The bus is part of Open Artifacts setup, not an extra. If you find no bus tools (oa_bus), setup is not finished: tell your person, and when they say go, run \`npx @open-artifacts/bus install --instance ${origin}\`. They approve this machine once in their browser. See https://open-artifacts.com/docs/agent-bus/.`;
 
-/**
- * The skill's lines on the bus, or "" without the bus. The caller passes
- * busOn (BUS_HUB bound and not hosted, the routes' own switch), so the skill
- * can never teach the bus with the hub off, or hide it with the hub on. The
- * tools it names come from the harness, not from /mcp.
- */
-export const busLine = (on: boolean): string =>
+export const busLine = (on: boolean, origin: string): string =>
   on
     ? "- Find peers by bus name with the oa_bus list_agents tool (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n" +
       "- To message agents, use the bus tools installed for your harness: the oa_bus MCP server, or the oa-bus extension. Don't borrow another harness's config to get them. If they fail, report it to your human with the error and any fix it suggests; don't run that fix without their yes.\n" +
-      BUS_SETUP_LINE +
+      busSetupLine(origin) +
       "\n"
     : "";
 
@@ -139,7 +133,7 @@ export function renderSkill(
         hostSlug: hostSlug(env.APP_HOST),
         version: VERSION,
         upgradeLine: upgradeLine(env),
-        busPeers: busLine(bus),
+        busPeers: busLine(bus, skillOrigin(env.APP_HOST)),
       };
       const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
       const md = tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
