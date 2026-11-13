@@ -165,7 +165,15 @@ const listing = (names: string[], last: "and" | "or") =>
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} ${last} ${names.at(-1)}`;
 
-export function copy(style: Style, bus: string = BUS_CMD) {
+export function copy(
+  style: Style,
+  bus: string = BUS_CMD,
+  /**
+   * A second bus home (#2425): the command that approves it again. `install` would
+   * rewire every session's settings, so the errors name this instead.
+   */
+  approve?: string,
+) {
   const p = (tone: Tone, s: string) => paint(style, tone, s);
   const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
   const more = g("more");
@@ -663,11 +671,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     notRegistered: () => [
       fail("This computer is not connected to a bus."),
-      next(`Run ${bus} to approve it.`),
+      next(`Run ${approve ?? bus} to approve it.`),
     ],
     revoked: () => [
       fail("This machine was revoked."),
-      next(`Run ${bus} install to approve it again.`),
+      next(`Run ${approve ?? `${bus} install`} to approve it again.`),
     ],
 
     // 8. doctor
@@ -680,11 +688,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       done(`Credentials at ${clip(path, 37)}`, tokenTail(token, more)),
     noCredentials: (path: string) => [
       fail(`No credentials at ${clip(path, 21)}`),
-      next(`Run ${bus} to approve this machine.`),
+      next(`Run ${approve ?? bus} to approve this machine.`),
     ],
     revokedCheck: () => [
       fail("This machine was revoked"),
-      next(`Run ${bus} install to approve it again.`),
+      next(`Run ${approve ?? `${bus} install`} to approve it again.`),
     ],
     // DRAFT: the short socket folder a long OA_BUS_HOME needs is not ours.
     socketFolderUnsafe: (dir: string, why: string) => [

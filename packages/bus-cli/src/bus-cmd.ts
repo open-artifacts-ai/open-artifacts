@@ -4,9 +4,10 @@
 // skills): those keep BUS_CMD, because a later shell may not have the shim.
 
 import { BUS_CMD } from "@oa/bus-protocol";
-import type { Ctx } from "./context.ts";
+import { type Ctx, tilde } from "./context.ts";
 import { copy } from "./copy.ts";
 import { shimState } from "./steps/path-shim.ts";
+import { isDefaultHome } from "./steps/service.ts";
 
 export type BusCmdOpts = {
   userHome: string;
@@ -24,6 +25,18 @@ export function busCmd(o: BusCmdOpts): string {
   }
 }
 
+/** The copy for this run: a second bus home's errors name `login --home`, never `install` (#2425). */
+export function copyFor(ctx: Ctx, cmd: string = ctx.busCmd) {
+  const second = !isDefaultHome(ctx.home, ctx.userHome);
+  return copy(
+    ctx.style,
+    cmd,
+    second
+      ? `${cmd} login --home ${tilde(ctx, ctx.home)} --instance <url>`
+      : undefined,
+  );
+}
+
 /** Sets the printed command on `ctx` once for this run, and rebuilds its copy to match. */
 export function useBusCmd(ctx: Ctx): void {
   const cmd = busCmd({
@@ -34,5 +47,5 @@ export function useBusCmd(ctx: Ctx): void {
   });
   if (cmd === ctx.busCmd) return;
   ctx.busCmd = cmd;
-  ctx.copy = copy(ctx.style, cmd);
+  ctx.copy = copyFor(ctx, cmd);
 }

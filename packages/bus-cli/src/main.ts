@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { useBusCmd } from "./bus-cmd.ts";
+import { copyFor, useBusCmd } from "./bus-cmd.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
 import { global } from "./commands/global.ts";
@@ -46,7 +46,10 @@ export async function main(
     return 2;
   }
   const ctx = makeCtx(cmd.noColor);
-  if (cmd.home) ctx.home = resolve(cmd.home);
+  if (cmd.home) {
+    ctx.home = resolve(cmd.home);
+    ctx.copy = copyFor(ctx);
+  }
   // Only commands whose text goes to a person's terminal print oa-bus. The
   // daemon writes daemon.log, and mcp, mcp-proxy and mcp-proof write to an
   // agent's MCP stderr, so they keep npx. An install prints npx until its shim

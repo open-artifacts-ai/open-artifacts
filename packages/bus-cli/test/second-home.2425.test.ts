@@ -150,3 +150,37 @@ describe("doctor lists other homes' services (#2425)", () => {
     expect(second.all().join("\n")).not.toContain("Other bus homes");
   });
 });
+
+describe("not-logged-in errors for a second home (#2425)", () => {
+  it("name login --home, never install", async () => {
+    const { copyFor } = await import("../src/bus-cmd.ts");
+    const { status: statusCmd } = await import("../src/commands/status.ts");
+    const ctx = fakeCtx();
+    ctx.home = join(ctx.userHome, "second-bus");
+    ctx.copy = copyFor(ctx);
+    expect(await statusCmd(ctx)).toBe(1);
+    const err = ctx.err().join("\n");
+    expect(err).toContain(
+      "Run npx @open-artifacts/bus login --home ~/second-bus --instance <url> to approve it.",
+    );
+    expect(err).not.toContain("install");
+    const lines = [
+      ...ctx.copy.revoked(),
+      ...ctx.copy.revokedCheck(),
+      ...ctx.copy.noCredentials("x"),
+    ].join("\n");
+    expect(lines).not.toContain("install");
+    expect(lines).toContain("login --home ~/second-bus");
+  });
+
+  it("the first bus keeps its lines", async () => {
+    const ctx = fakeCtx();
+    const { copyFor } = await import("../src/bus-cmd.ts");
+    expect(copyFor(ctx).revoked().join("\n")).toContain(
+      "npx @open-artifacts/bus install to approve it again.",
+    );
+    expect(copyFor(ctx).notRegistered().join("\n")).toContain(
+      "Run npx @open-artifacts/bus to approve it.",
+    );
+  });
+});
