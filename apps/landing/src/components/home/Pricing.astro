@@ -1,6 +1,7 @@
 ---
 // The plan comparison. Yearly is the landed state (so it is what scripts-off
 // readers see); the script switches the amounts. Every column has a button.
+import { BUSINESS_CONTACT_URL } from "@oa/shared";
 import { PLAN_LIST, priceStrings, WORDS } from "../../lib/pricing";
 
 interface Props {
@@ -8,16 +9,22 @@ interface Props {
 }
 const { signup } = Astro.props;
 
+// Business is "Contact us" (#2404), a mailto until the contact form is live.
 const CTAS = [
   "Join the waitlist",
   "Join the waitlist",
-  "Join the waitlist",
+  "Contact us",
   "Self-host it",
 ];
 const plans = PLAN_LIST.map((p, i) => ({
   ...p,
   cta: CTAS[i],
-  href: p.monthly ? signup : "#self-host",
+  href:
+    p.name === "Business"
+      ? BUSINESS_CONTACT_URL
+      : p.monthly
+        ? signup
+        : "#self-host",
   strings: p.monthly ? priceStrings(p) : null,
 }));
 
