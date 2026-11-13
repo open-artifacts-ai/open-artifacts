@@ -9,9 +9,9 @@ interface Props {
 const { signup } = Astro.props;
 
 const CTAS = [
-  "Get started free",
-  "Get started free",
-  "Get started free",
+  "Join the waitlist",
+  "Join the waitlist",
+  "Join the waitlist",
   "Self-host it",
 ];
 const plans = PLAN_LIST.map((p, i) => ({
@@ -92,5 +92,6 @@ const groups: {
       </>))}
     </tbody>
   </table></div></div>
+  <p class="pnote">{WORDS.waitlist}</p>
   <p class="pnote">{WORDS.note}</p>
 </div></section>

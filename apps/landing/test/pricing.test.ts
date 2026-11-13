@@ -21,9 +21,13 @@ describe("pricing", () => {
     for (const name of ["Solo", "Team", "Business", "Self-host"])
       expect(head).toContain(`<span class="pn">${name}</span>`);
     expect(head.match(/<a class="btn[^"]*" href="[^"]+">/g)).toHaveLength(4);
-    expect(head.match(/>Get started free<\/a>/g)).toHaveLength(3);
+    expect(head.match(/>Join the waitlist<\/a>/g)).toHaveLength(3);
     expect(head).not.toContain("Start free");
     expect(head).toMatch(/href="#self-host">Self-host it<\/a>/);
+    // Beta: hosted plans are invite-only (Product's waitlist strings).
+    expect(pricing).toMatch(
+      /Hosted plans are invite-only during the beta\. Join the waitlist and we(&#39;|')ll email you when your instance is ready\./,
+    );
   });
 
   it("opens on Yearly: the per-month figure, with the monthly price one click away", () => {

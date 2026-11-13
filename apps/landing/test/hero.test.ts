@@ -17,10 +17,10 @@ describe("heroActions", () => {
     },
   );
 
-  it("with a sign-up URL, Get started free leads and self-host is second", () => {
+  it("with a sign-up URL, Join the waitlist leads and self-host is second", () => {
     expect(heroActions(" https://app.example.com/sign-up ")).toEqual([
       {
-        label: "Get started free",
+        label: "Join the waitlist",
         href: "https://app.example.com/sign-up",
         primary: true,
       },

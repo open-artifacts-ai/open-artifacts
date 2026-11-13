@@ -9,12 +9,12 @@ export function heroActions(signupUrl: string | undefined): HeroAction[] {
   if (!url)
     return [{ label: "Self-host it", href: SELF_HOST_HREF, primary: true }];
   return [
-    { label: "Get started free", href: url, primary: true },
+    { label: "Join the waitlist", href: url, primary: true },
     { label: "Self-host it", href: SELF_HOST_HREF, primary: false },
   ];
 }
 
-/** Where "Get started free" goes: hosted sign-up (HOSTED_SIGNUP_URL, set at build), else the pricing table. */
+/** Where "Join the waitlist" goes: hosted sign-up (HOSTED_SIGNUP_URL, set at build), else the pricing table. */
 export function signupHref(signupUrl: string | undefined): string {
   return signupUrl?.trim() || "#pricing";
 }

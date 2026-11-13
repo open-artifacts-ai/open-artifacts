@@ -83,10 +83,10 @@ describe("landing sections", () => {
     expect(png.readUInt32BE(20)).toBe(630);
   });
 
-  it("launch strings: Get started free everywhere, the trial line under the hero buttons", () => {
-    expect(index.match(/>Get started free<\/a>/g)).toHaveLength(5);
+  it("launch strings: Join the waitlist everywhere, the trial line under the hero buttons", () => {
+    expect(index.match(/>Join the waitlist<\/a>/g)).toHaveLength(5);
     expect(text).toContain(
-      "Solo is free for 30 days, no card needed. Open source, MIT licensed.",
+      "Hosted is invite-only during the beta. Solo is free for 30 days, no card needed. Open source, MIT licensed.",
     );
     for (const gone of [
       "Start free",

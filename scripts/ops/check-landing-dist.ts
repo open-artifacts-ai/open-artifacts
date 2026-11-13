@@ -1,7 +1,7 @@
 // Release gate: fail if the built landing site still contains TODO fallbacks
 // or unrendered {{ placeholders }}, or if a page doesn't declare UTF-8 first
 // in <head> (the hero's glyphs turn to mojibake otherwise), or if the home
-// page's "Get started free" buttons are missing or do not go to the hosted
+// page's "Join the waitlist" buttons are missing or do not go to the hosted
 // sign-up URL. Usage: node check-landing-dist.ts [distDir] [--probe-signup]
 // --probe-signup is a separate mode (release only): it requests the sign-up URL
 // found in the built home page (not the env), follows redirects, and exits 1
@@ -23,14 +23,14 @@ const TEXT_EXT = new Set([
   ".css",
 ]);
 const TOKENS = ["TODO", "{{", "OA-UNRELEASED"];
-const SIGNUP_LABEL = "Get started free";
+const SIGNUP_LABEL = "Join the waitlist";
 const NO_SIGNUP =
-  'Get started free link without a sign-up URL (set HOSTED_SIGNUP_URL for the landing build; its href is "#pricing" or missing)';
+  'Join the waitlist link without a sign-up URL (set HOSTED_SIGNUP_URL for the landing build; its href is "#pricing" or missing)';
 const NO_BUTTONS =
-  'no "Get started free" link on the home page (the sign-up buttons are gone)';
+  'no "Join the waitlist" link on the home page (the sign-up buttons are gone)';
 const LOGIN_LABEL = "Log in";
 const NO_LOGIN_URL =
-  "Log in link that does not point at the sign-up URL (it must be the same HOSTED_SIGNUP_URL as the Get started free buttons)";
+  "Log in link that does not point at the sign-up URL (it must be the same HOSTED_SIGNUP_URL as the Join the waitlist buttons)";
 const NO_LOGIN =
   'no "Log in" link in the home page header (it goes to the sign-up URL)';
 const CHARSET = /<head[^>]*>\s*<meta charset="utf-8"\s*\/?>/i;
@@ -76,7 +76,7 @@ export function scan(
       for (const token of TOKENS)
         if (text.includes(token)) hits.push({ file, line: i + 1, token });
     });
-    // Every "Get started free" button must go to the hosted sign-up URL, which
+    // Every "Join the waitlist" button must go to the hosted sign-up URL, which
     // the build gets from HOSTED_SIGNUP_URL. Without it the link falls back to
     // the pricing table. The home page must have them at all.
     if (extname(file).toLowerCase() === ".html") {
@@ -104,7 +104,7 @@ export function scan(
   return hits;
 }
 
-/** The sign-up URL the built home page links to (first live Get started free). */
+/** The sign-up URL the built home page links to (first live Join the waitlist). */
 export function signupUrlInDist(dist: string): string | undefined {
   const file = join(dist, "index.html");
   if (!existsSync(file)) return undefined;
