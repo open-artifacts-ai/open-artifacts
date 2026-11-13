@@ -289,3 +289,34 @@ describe("BusHub (#1291 tag v4, shipped unbound in 0.109.0; bound by #1315)", ()
     });
   }
 });
+
+describe("DocRoom (#1100 tag v5, ships unbound; the doc route binds DOC_ROOM later)", () => {
+  const read = (f: string) =>
+    JSON.parse(strip(readFileSync(join(root, "apps/server", f), "utf8")));
+  for (const [name, c] of [
+    ["staging", env],
+    ["template", read("wrangler.template.jsonc")],
+    ["test", read("wrangler.test.jsonc")],
+  ] as const) {
+    it(`${name}: tag v5 adds DocRoom after v4`, () => {
+      // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+      const tags = c.migrations.map((m: any) => m.tag);
+      expect(tags.slice(0, 5)).toEqual(["v1", "v2", "v3", "v4", "v5"]);
+      expect(c.migrations[4]).toEqual({
+        tag: "v5",
+        new_sqlite_classes: ["DocRoom"],
+      });
+    });
+    it(`${name}: no migration deletes, renames or transfers DocRoom`, () => {
+      for (const m of c.migrations as Record<string, unknown>[])
+        for (const k of [
+          "deleted_classes",
+          "renamed_classes",
+          "transferred_classes",
+        ])
+          expect(JSON.stringify(m[k] ?? []), `${m.tag} ${k}`).not.toContain(
+            "DocRoom",
+          );
+    });
+  }
+});
