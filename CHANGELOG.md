@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.175.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.0...v0.175.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **billing:** an install billing has no row for keeps its provisioned Team or Business ([#2455](https://github.com/open-artifacts-ai/open-artifacts/issues/2455)) ([1179ec5](https://github.com/open-artifacts-ai/open-artifacts/commit/1179ec5d90c64116b1ee2390c161e69502afc3f3))
+* **bus:** a failed suspend-marker read answers 503 try again, not 500 ([#2447](https://github.com/open-artifacts-ai/open-artifacts/issues/2447)) ([2f4c296](https://github.com/open-artifacts-ai/open-artifacts/commit/2f4c296a91f06282960aaf470c9c421a872aef3e))
+* **bus:** an identity-addressed notice reaches its agent when a global agent shares the name ([#2294](https://github.com/open-artifacts-ai/open-artifacts/issues/2294)) ([#2450](https://github.com/open-artifacts-ai/open-artifacts/issues/2450)) ([01c5dc8](https://github.com/open-artifacts-ai/open-artifacts/commit/01c5dc80aade74df36667ad226ce3142e8f6867f))
+
 ## [0.175.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.174.0...v0.175.0) (2026-11-13)
 
 
