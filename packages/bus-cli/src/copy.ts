@@ -398,9 +398,14 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       fail(`The instance reports a problem: ${displayKind(problem)}`),
       next("Ask the instance's admin to check it."),
     ],
-    daemonTimeout: () => [
-      fail("The daemon did not start within 10 seconds."),
+    daemonTimeout: (seconds: number) => [
+      fail(`The daemon did not start within ${seconds} seconds.`),
       next(`Run ${bus} doctor to see why.`),
+    ],
+    // The process is up but has not answered yet (a busy machine, #2358).
+    daemonStarting: () => [
+      warn("The daemon is still starting."),
+      next(`Check ${bus} status in a minute.`),
     ],
 
     rosterHeader: (namespace: string, live: number, queued: number) => {
