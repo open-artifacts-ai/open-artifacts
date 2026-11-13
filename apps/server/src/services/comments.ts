@@ -2043,7 +2043,9 @@ export async function addThread(
   ...args: Parameters<typeof addThreadInner>
 ): ReturnType<typeof addThreadInner> {
   const t = await addThreadInner(...args);
-  if (args[2].kind === "user") await noteCommented(args[0], args[2].id);
+  // Only the person's own comment counts, never one an agent posted for them.
+  if (args[2].kind === "user" && !args[2].agent)
+    await noteCommented(args[0], args[2].id);
   return t;
 }
 
@@ -2052,6 +2054,7 @@ export async function addReply(
   ...args: Parameters<typeof addReplyInner>
 ): ReturnType<typeof addReplyInner> {
   const c = await addReplyInner(...args);
-  if (args[3].kind === "user") await noteCommented(args[0], args[3].id);
+  if (args[3].kind === "user" && !args[3].agent)
+    await noteCommented(args[0], args[3].id);
   return c;
 }
