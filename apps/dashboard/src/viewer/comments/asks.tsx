@@ -780,7 +780,7 @@ export function AskBlock({
                     </>
                   )}
                 </p>
-                {ask.answer.verified === "passkey" && !changing && (
+                {ask.answer.verified === "passkey" && (
                   <span
                     data-ask-verified=""
                     className={`inline-flex w-fit items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}

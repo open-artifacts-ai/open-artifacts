@@ -157,7 +157,6 @@ test("Change on a verified answer asks for the passkey again and drops the pill"
     .filter({ hasText: "Deploy to production?" });
   await expect(card.locator("[data-ask-verified]")).toBeVisible();
   await card.getByRole("button", { name: "Change" }).click();
-  await expect(card.locator("[data-ask-verified]")).toHaveCount(0);
   // The current option can't be picked again (the server would answer 409 already_answered).
   await expect(card.locator("[data-option=go]")).toBeDisabled();
   await expect(card.locator("[data-option=stop]")).toBeEnabled();
@@ -170,4 +169,22 @@ test("Change on a verified answer asks for the passkey again and drops the pill"
   // Nothing is shown as answered to "Stop" while the prompt is open.
   await expect(card.locator("[data-ask-answer]")).toHaveCount(0);
   await expect(card.locator("[data-ask-verified]")).toHaveCount(0);
+});
+
+test("cancelling a Change brings the old verified answer back", async ({
+  page,
+}) => {
+  await stubPasskey(page, 1);
+  await page.goto(`/a/${ID}?mock=asks&passkey=ok`);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  const card = page
+    .locator("[data-ask]")
+    .filter({ hasText: "Deploy to production?" });
+  await expect(card.locator("[data-ask-verified]")).toBeVisible();
+  await card.getByRole("button", { name: "Change" }).click();
+  await card.locator("[data-option=stop]").click();
+  await expect(card.locator("[data-passkey-error=cancelled]")).toBeVisible();
+  // Never optimistic: the old answer and its pill are still the server's.
+  await expect(card.locator("[data-ask-answer]")).toContainText("picked Go");
+  await expect(card.locator("[data-ask-verified]")).toBeVisible();
 });
