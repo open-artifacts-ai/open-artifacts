@@ -770,6 +770,40 @@ function answerQueries(
 }
 
 describe("the wake needs no live asker and no lsof (#2079)", () => {
+  it("logs codex_wake_skipped once when mail waits and nobody holds the lock; no wake is tried (#2343)", async () => {
+    const w = world();
+    const evs: string[] = [];
+    const { two } = await restarted(
+      w,
+      { holdersOf: (fs: string[]) => new Map(fs.map((f) => [f, []])) },
+      {
+        events: (e: string, f?: Record<string, unknown>) =>
+          evs.push(`${e} ${JSON.stringify(f)}`),
+      },
+    );
+    const stop = answerQueries(two, (refs) =>
+      Object.fromEntries(refs.map((r) => [r, 2])),
+    );
+    await waitFor(() =>
+      expect(evs.filter((e) => e.startsWith("codex_wake_skipped"))).toContain(
+        `codex_wake_skipped ${JSON.stringify({ thread: THREAD, reason: "not_loaded" })}`,
+      ),
+    );
+    await waitFor(() =>
+      expect(two.of("waiting_query").length).toBeGreaterThan(2),
+    );
+    expect(
+      evs.filter(
+        (e) =>
+          e.includes(`"thread":"${THREAD}"`) &&
+          e.startsWith("codex_wake_skipped"),
+      ),
+    ).toHaveLength(1);
+    expect(w.runs()).toHaveLength(0);
+    expect(evs.some((e) => e.startsWith("codex_wake "))).toBe(false);
+    stop();
+  });
+
   it("a machine with no other live agent: one frame by its own away refs wakes the thread", async () => {
     const w = world();
     // The only other thread drops its lock: nobody is live to ask through.
@@ -802,7 +836,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     await waitFor(() => expect(w.runs()).toHaveLength(1));
     expect(two.of("list")).toHaveLength(0);
     for (const q of two.of("waiting_query"))
-      expect(q.agent_refs).toEqual([THREAD]);
+      expect(q.agent_refs).toEqual([THREAD, ASKER]); // #2343: unloaded rows ride along
     stop();
   });
 
