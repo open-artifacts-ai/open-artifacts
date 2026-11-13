@@ -132,6 +132,18 @@ export const CommentAskSchema = z
       })
       .optional(),
     closed: z.boolean(),
+    /** #1958: "permission" for a request to run one command. Absent: a normal ask. */
+    kind: z.literal("permission").optional(),
+    /** #1958: what the agent wants to run. Only the addressee's reads carry it; everyone else's omit it. */
+    request: z.lazy(() => PermissionRequestSchema).optional(),
+    /** #1958: the addressee's view only: true when a request field holds a character above U+007E (a lookalike such as Cyrillic "с" is possible). Absent: all ASCII. */
+    nonAscii: z.literal(true).optional(),
+    /** #1958: ISO time after which the ask can no longer be answered or consumed (server clock). */
+    expiresAt: z.string().optional(),
+    /** #1958: ISO time the approval was used; absent: not yet. */
+    consumedAt: z.string().optional(),
+    /** #1958: the agent withdrew the ask. */
+    withdrawn: z.boolean().optional(),
     /** #2263: a pick needs the picker's passkey (POST R.commentAnswerChallenge, then R.commentAnswer with the assertion). Set by the server when the ask is created, from its options' actions and the addressees' switches; never by a client, never removed by an edit. */
     confirm: z.literal("passkey").optional(),
   })
@@ -254,6 +266,8 @@ const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
  */
 export const AskInputSchema = z
   .object({
+    /** #1958: a permission ask has its own shape (PermissionAskInputSchema); this one never takes `kind`. */
+    kind: z.never().optional(),
     question: z.string().trim().min(1).max(ASK_QUESTION_MAX),
     options: optionRules(AskInputOptionSchema),
     recommended: askRecommended,
@@ -261,6 +275,47 @@ export const AskInputSchema = z
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
+
+// #1958: asking to run one command. The server fixes the options, computes the
+// request hash, forces the passkey and decides who may post it.
+export const PERMISSION_COMMAND_MAX = 8192;
+export const PERMISSION_CWD_MAX = 1024;
+export const PERMISSION_FIELD_MAX = 200;
+export const PERMISSION_QUESTION_MAX = 500;
+/** How long a permission ask can be answered and used, from when it is posted. */
+export const PERMISSION_TTL_MS = 10 * 60 * 1000;
+/** Fixed options of a permission ask; a client never sends options. */
+export const PERMISSION_OPTIONS = [
+  { id: "run", label: "Run once" },
+  { id: "deny", label: "Don't run" },
+] as const;
+
+const permField = z.string().min(1).max(PERMISSION_FIELD_MAX);
+/** The request a permission ask is for (strict: an unknown key, a client-sent hash included, is refused). */
+export const PermissionRequestSchema = z.strictObject({
+  toolName: permField,
+  command: z.string().min(1).max(PERMISSION_COMMAND_MAX),
+  cwd: z
+    .string()
+    .max(PERMISSION_CWD_MAX)
+    .regex(/^(\/|[A-Za-z]:[\\/])/, "cwd must be an absolute path"),
+  sessionId: permField,
+  machineId: permField,
+});
+export type PermissionRequest = z.infer<typeof PermissionRequestSchema>;
+
+/** MCP add_comment `ask` with kind "permission": to is exactly the agent's own user. */
+export const PermissionAskInputSchema = z.strictObject({
+  kind: z.literal("permission"),
+  question: z.string().trim().min(1).max(PERMISSION_QUESTION_MAX).optional(),
+  request: PermissionRequestSchema,
+  to: z.array(KeyRefSchema).length(1),
+});
+export type PermissionAskInput = z.infer<typeof PermissionAskInputSchema>;
+
+/** POST R.commentConsume body: the request again, never a hash. */
+export const ConsumeBodySchema = PermissionRequestSchema;
+export type ConsumeBody = z.infer<typeof ConsumeBodySchema>;
 
 /** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions: owner and editors only (403 forbidden). */
 const extras = {
@@ -330,7 +385,23 @@ export const AddCommentInputSchema = z.strictObject({
   threadId: IdSchema.optional(),
   anchor: anchorInputSchema.optional(),
   /** Turns the comment into an ask (#1535): owner and editors only. */
-  ask: AskInputSchema.optional(),
+  ask: z
+    .union([PermissionAskInputSchema, AskInputSchema], {
+      // A bare "Invalid input" would hide which field is wrong: say it for the branch the caller meant.
+      error: (iss) => {
+        const inp = iss.input as { kind?: unknown } | null;
+        const branch = inp?.kind === "permission" ? 0 : 1;
+        const first = (
+          iss as unknown as {
+            errors?: { path: PropertyKey[]; message: string }[][];
+          }
+        ).errors?.[branch]?.[0];
+        return first
+          ? `${first.path.map(String).join(".")}: ${first.message}`
+          : "Invalid ask";
+      },
+    })
+    .optional(),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
 

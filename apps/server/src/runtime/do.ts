@@ -82,6 +82,7 @@ import {
   type StoredThread,
   setAnswer,
   setParticipantRemoved,
+  setPermission,
   setTargetState,
   settleTarget,
   spendAsker,
@@ -583,6 +584,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "confirm")
       )
         sql.exec("alter table comment_asks add column confirm text");
+      // #1958: comment_asks.permission, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "permission")
+      )
+        sql.exec("alter table comment_asks add column permission text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -2185,6 +2196,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
+      // #1958: a permission ask is answered while it is live: once used, taken
+      // back or past its 10 minutes (the server's clock) it takes no answer.
+      const perm = r.ask.permission;
+      if (perm) {
+        if (perm.consumedAtMs !== undefined)
+          fail("consumed", "This permission was already used");
+        if (perm.withdrawnAtMs !== undefined)
+          fail("withdrawn", "The agent withdrew this request");
+        if (this.now() >= perm.expiresAtMs)
+          fail("expired", "This request has expired");
+      }
       // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
       if (r.ask.confirm === "passkey") {
         if (a.verified !== "passkey")
@@ -2206,6 +2228,83 @@ export class ArtifactRuntime extends DurableObject<Env> {
         comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
         unchanged,
       };
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /**
+   * #1958: the posting agent uses the approval of a permission ask, once.
+   * One compare-and-set inside the DO's single-threaded transaction: it sets
+   * `consumedAtMs` only when the ask is a permission ask, was answered "run"
+   * by its addressee in the web app with a verified passkey, is live (not
+   * expired, withdrawn, used or in a resolved thread), `callerKey` is the
+   * agent that posted it, and `reqHash` is the stored one. 403 for another
+   * agent; else 409 consume_refused with details { reason }.
+   */
+  commentsConsume(a: {
+    threadId: string;
+    commentId: string;
+    callerKey: string;
+    reqHash: string;
+  }): { consumed: true; reservation: string } {
+    this.ensureSchema();
+    return this.ctx.storage.transactionSync(() => {
+      const r = askRow(this.sql, a.threadId, a.commentId);
+      const p = r?.ask.permission;
+      if (!r || !p) fail("not_found", "Not found");
+      if (a.callerKey !== p.agentKey)
+        fail("forbidden", "Only the agent that asked can use this");
+      // The reason rides as the message; the service puts it in details.
+      const no = (reason: string): never => fail("consume_refused", reason);
+      const ans = r.ask.answer;
+      const addressee = r.ask.to[0];
+      const approved =
+        ans !== undefined &&
+        ans.optionId === "run" &&
+        ans.verified === "passkey" &&
+        ans.by.kind === "user" &&
+        ans.by.typed === true &&
+        addressee?.kind === "user" &&
+        ans.by.ref === addressee.key;
+      if (p.consumedAtMs !== undefined) return no("consumed");
+      if (p.withdrawnAtMs !== undefined || r.status === "resolved")
+        return no("withdrawn");
+      if (this.now() >= p.expiresAtMs) return no("expired");
+      if (!approved) return no("not_approved");
+      if (p.reqHash !== a.reqHash) return no("mismatch");
+      setPermission(this.sql, a.commentId, {
+        ...p,
+        consumedAtMs: this.now(),
+      });
+      touchThread(this.sql, a.threadId, this.iso());
+      return { consumed: true as const, reservation: p.reservation };
+    });
+  }
+
+  /** #1958: the posting agent takes back a permission ask that was not used (409 consumed otherwise). A second withdraw changes nothing. */
+  commentsWithdraw(a: {
+    threadId: string;
+    commentId: string;
+    callerKey: string;
+  }): { reservation: string } {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      const r = askRow(this.sql, a.threadId, a.commentId);
+      const p = r?.ask.permission;
+      if (!r || !p) fail("not_found", "Not found");
+      if (a.callerKey !== p.agentKey)
+        fail("forbidden", "Only the agent that asked can withdraw this");
+      if (p.consumedAtMs !== undefined)
+        fail("consumed", "This permission was already used");
+      if (p.withdrawnAtMs === undefined) {
+        setPermission(this.sql, a.commentId, {
+          ...p,
+          withdrawnAtMs: this.now(),
+        });
+        touchThread(this.sql, a.threadId, this.iso());
+      }
+      return { reservation: p.reservation };
     });
     this.broadcastComments();
     return out;
@@ -2587,6 +2686,8 @@ type RpcMethods =
   | "commentsAdd"
   | "commentsReply"
   | "commentsAnswer"
+  | "commentsConsume"
+  | "commentsWithdraw"
   | "commentsTargetStates"
   | "commentsTargetSettle"
   | "commentsAskerRefund"

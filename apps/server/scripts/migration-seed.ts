@@ -50,6 +50,7 @@ export const SHAPE = {
   passkeys: 2_000, // #2263
   pick_assertions: 1_000,
   passkey_settings: 1_000,
+  permission_asks: 1_000, // #1958: rare, ten-minute asks
   agent_grants: 50_000,
   bus_machines: 20_000,
   bus_device_codes: 500,
@@ -562,6 +563,28 @@ export const RULES: Record<string, Rule> = {
         ask_command: 1,
         every_pick: c.int(2),
         updated_at: c.time(),
+      };
+    },
+  },
+  // #1958: permission asks, for the per-agent caps.
+  permission_asks: {
+    rows: (c) => c.count("permission_asks"),
+    row(i, c) {
+      const u = c.users[(i * 13) % c.users.length];
+      if (!u) return null;
+      const at = c.time();
+      const done = c.rand() < 0.8;
+      const how = c.pick(["consumed", "withdrawn", "none"] as const);
+      return {
+        id: c.id("pm"),
+        user_id: u.id,
+        agent_key: `${u.id}|t:${c.id("tk")}`,
+        artifact_id: c.id("ar"),
+        created_at: at,
+        expires_at: at + 600_000,
+        done_at: done ? at + 1000 : null,
+        consumed_at: done && how === "consumed" ? at + 1000 : null,
+        withdrawn_at: done && how === "withdrawn" ? at + 1000 : null,
       };
     },
   },

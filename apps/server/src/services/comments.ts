@@ -12,6 +12,12 @@ import {
   isId,
   type KeyRef,
   type MentionDelivery,
+  newId,
+  PERMISSION_OPTIONS,
+  PERMISSION_TTL_MS,
+  type PermissionAskInput,
+  PermissionAskInputSchema,
+  type PermissionRequest,
   type CommentThread as Thread,
   type ThreadAgent,
 } from "@oa/shared";
@@ -31,6 +37,7 @@ import {
   type StoredIdentity,
   type StoredParticipant,
   type StoredParty,
+  type StoredPermission,
   type StoredThread,
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
@@ -84,6 +91,14 @@ import {
   notifyCommented,
 } from "./follows.js";
 import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
+import {
+  agentKeysOf,
+  isSoleReader,
+  permissionReqHash,
+  refuseUnsafe,
+  releaseSlot,
+  reserveSlot,
+} from "./permission.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -684,6 +699,42 @@ export const maskBody = (body: string, pairs: [string, string][]): string => {
 const isTyped = (a: StoredActor): boolean =>
   a.kind === "user" && a.typed === true && !a.agent;
 
+/** #1958: the comment text of every permission ask; the client's body is dropped. */
+const PERMISSION_BODY = "Permission request";
+
+/** #1958: only the person a permission ask is for sees what it asks. */
+const permissionFor = (c: StoredComment, viewer: CommentViewer): boolean => {
+  const to = c.ask?.to[0];
+  return (
+    to?.kind === "user" && viewer.userId !== null && viewer.userId === to.key
+  );
+};
+
+const permissionQuestion = (c: StoredComment, viewer: CommentViewer): string =>
+  permissionFor(c, viewer) ? (c.ask?.question ?? "") : "a permission request";
+
+/** The permission fields of an ask's view; the request itself only for the addressee. */
+const permissionView = (c: StoredComment, viewer: CommentViewer) => {
+  const p = c.ask?.permission;
+  if (!p) return {};
+  return {
+    kind: "permission" as const,
+    ...(permissionFor(c, viewer)
+      ? {
+          request: p.request,
+          ...(Object.values(p.request).some((v) => /[^\n\t -~]/.test(v))
+            ? { nonAscii: true as const }
+            : {}),
+        }
+      : {}),
+    expiresAt: new Date(p.expiresAtMs).toISOString(),
+    ...(p.consumedAtMs !== undefined
+      ? { consumedAt: new Date(p.consumedAtMs).toISOString() }
+      : {}),
+    ...(p.withdrawnAtMs !== undefined ? { withdrawn: true } : {}),
+  };
+};
+
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
@@ -733,7 +784,10 @@ const commentOf = (
     ...(c.ask
       ? {
           ask: {
-            question: maskBody(c.ask.question, pairs),
+            question: c.ask.permission
+              ? permissionQuestion(c, viewer)
+              : maskBody(c.ask.question, pairs),
+            ...permissionView(c, viewer),
             options: c.ask.options.map((o) => ({
               ...o,
               label: maskBody(o.label, pairs),
@@ -921,7 +975,7 @@ const emailPeople = (
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
-  ask?: AskInput;
+  ask?: AskInput | PermissionAskInput;
   /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
   toAsker?: boolean;
 };
@@ -1032,6 +1086,79 @@ const unknownKey = (key: string) =>
   new ApiError("bad_request", `Unknown agent or person: ${key}`);
 
 /**
+ * #1958: a permission ask, checked and built. Only an agent (a bus session,
+ * grant or token, never a browser session) may post it, only to its own
+ * user, only on a page nobody else can read. The options are fixed, the
+ * request hash is computed here, `confirm` is forced to "passkey", and the
+ * ask lives 10 minutes by the server's clock. 403 forbidden, 400 bad_request
+ * (unknown key, client-sent hash, bad options) or unsafe_characters, 429
+ * rate_limited past 3 pending or 20 an hour.
+ */
+async function resolvePermission(
+  env: Env,
+  artifactId: string,
+  who: Extract<CommentWho, { kind: "user" }>,
+  raw: unknown,
+): Promise<Resolved> {
+  const keys = agentKeysOf(who.id, who.agent);
+  if (who.typed === true || keys.length === 0)
+    throw new ApiError(
+      "forbidden",
+      "Only an agent can ask for permission to run a command",
+    );
+  const parsed = PermissionAskInputSchema.safeParse(raw);
+  if (!parsed.success)
+    throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
+  const { request, question, to } = parsed.data;
+  if (to[0]?.key !== who.id)
+    throw new ApiError(
+      "forbidden",
+      "A permission request goes only to the agent's own user",
+    );
+  refuseUnsafe(request, question);
+  if (!(await isSoleReader(env, artifactId, who.id)))
+    throw new ApiError(
+      "forbidden",
+      "A permission request can only be posted on a private page nobody else can read",
+    );
+  const now = Date.now();
+  const reservation = newId();
+  const agentKey = keys[0] as string;
+  await reserveSlot(
+    env,
+    reservation,
+    who.id,
+    agentKey,
+    artifactId,
+    now,
+    PERMISSION_TTL_MS,
+  );
+  return {
+    extras: {
+      ask: {
+        question: question ?? "Run this command once?",
+        options: PERMISSION_OPTIONS.map((o) => ({ ...o })),
+        to: [{ kind: "user", key: who.id }],
+        confirm: "passkey",
+        permission: {
+          request,
+          reqHash: await permissionReqHash(request),
+          reservation,
+          agentKey,
+          createdAtMs: now,
+          expiresAtMs: now + PERMISSION_TTL_MS,
+        },
+      },
+    },
+    agents: [],
+    follow: [],
+    mentions: [],
+    mentionKind: "mention",
+    participants: [],
+  };
+}
+
+/**
  * Checks and resolves mentions and ask. 403 forbidden unless the
  * caller is the owner or an editor (mentions) or a signed-in person
  * (ask); 400 bad_request for a key that is no agent following the artifact
@@ -1062,6 +1189,8 @@ async function resolveExtras(
     );
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");
+  if (x.ask && who.kind === "user" && x.ask.kind === "permission")
+    return await resolvePermission(env, artifactId, who, x.ask);
   const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
@@ -1299,8 +1428,22 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
   };
 }
 
+/** #1958: a permission ask that was not stored gives its reserved slot back. */
+async function releasingOnFailure<T>(
+  env: Env,
+  slot: { id?: string },
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (slot.id) await releaseSlot(env, slot.id, "failed");
+    throw e;
+  }
+}
+
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
-export async function addThread(
+export function addThread(
   env: Env,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   who: CommentWho,
@@ -1308,8 +1451,35 @@ export async function addThread(
   raw: { anchor: unknown; body: unknown } & CommentExtras,
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
+  const slot: { id?: string } = {};
+  return releasingOnFailure(env, slot, () =>
+    addThreadImpl(env, a, who, viewer, raw, opts, slot),
+  );
+}
+
+async function addThreadImpl(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
+  who: CommentWho,
+  viewer: CommentViewer,
+  raw: { anchor: unknown; body: unknown } & CommentExtras,
+  opts: ExtrasOpts,
+  slot: { id?: string },
+): Promise<Thread> {
   const body = checkBody(raw.body);
+  // #1958: a permission ask's comment says nothing the client chose, and sits
+  // on the whole page: no free text or quote can carry the command to a reader.
+  if (
+    raw.ask?.kind === "permission" &&
+    (raw.anchor as { kind?: unknown } | null)?.kind !== "note"
+  )
+    throw new ApiError(
+      "bad_request",
+      'A permission request goes on the whole page (anchor { kind: "note" })',
+    );
   const r0 = await resolveExtras(env, a.id, who, raw, opts);
+  slot.id = r0.extras?.ask?.permission?.reservation;
+  const isPerm = slot.id !== undefined;
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -1357,11 +1527,12 @@ export async function addThread(
       counted: true,
       anchor,
       version,
-      body,
+      body: isPerm ? PERMISSION_BODY : body,
       ...(r.extras ? { extras: r.extras } : {}),
       ...(participants.length ? { participants } : {}),
     }),
   );
+  slot.id = undefined; // stored: the slot stays taken
   const root = t.comments[0];
   if (root?.ask) await indexAsk(env, a.id, t.id, root.id, root.ask.to);
   if (root && r.agents.length > 0) {
@@ -1581,7 +1752,7 @@ async function threadReply(
 }
 
 /** A reply. It does not reopen the thread. */
-export async function addReply(
+export function addReply(
   env: Env,
   artifactId: string,
   threadId: string,
@@ -1590,6 +1761,33 @@ export async function addReply(
   body: unknown,
   extras: CommentExtras = {},
   opts: ExtrasOpts = {},
+): Promise<Comment> {
+  const slot: { id?: string } = {};
+  return releasingOnFailure(env, slot, () =>
+    addReplyImpl(
+      env,
+      artifactId,
+      threadId,
+      who,
+      viewer,
+      body,
+      extras,
+      opts,
+      slot,
+    ),
+  );
+}
+
+async function addReplyImpl(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  who: CommentWho,
+  viewer: CommentViewer,
+  body: unknown,
+  extras: CommentExtras,
+  opts: ExtrasOpts,
+  slot: { id?: string },
 ): Promise<Comment> {
   const text = checkBody(body);
   let r: Resolved;
@@ -1608,6 +1806,7 @@ export async function addReply(
       await resolveExtras(env, artifactId, who, extras, opts),
     );
   }
+  slot.id = r.extras?.ask?.permission?.reservation;
   const participants = [
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),
@@ -1617,11 +1816,12 @@ export async function addReply(
       threadId,
       actor: actorOf(who),
       rate: rateKeyOf(who),
-      body: text,
+      body: r.extras?.ask?.permission ? PERMISSION_BODY : text,
       ...(r.extras ? { extras: r.extras } : {}),
       ...(participants.length ? { participants } : {}),
     }),
   );
+  slot.id = undefined; // stored: the slot stays taken
   // The thread's bound (one notice per window, a cap in all) left the reply
   // without its mention rows: nobody is told, and the usual follower notice
   // (its own limits) is the only one.
@@ -1679,6 +1879,44 @@ const isAsked = (ask: { to: StoredParty[] }, who: CommentWho): boolean =>
   who.kind === "user" && ask.to.some((p) => addresseeOf(p) === who.id);
 
 /**
+ * #1958: the page must still be one nobody else can read. Shared after the
+ * ask was posted, it takes no answer and no use: 409 consume_refused
+ * { reason: "page_shared" } on consume, 409 conflict on a pick.
+ */
+async function pageStillPrivate(
+  env: Env,
+  artifactId: string,
+  who: CommentWho,
+  onPick = false,
+): Promise<void> {
+  if (who.kind !== "user") return;
+  if (await isSoleReader(env, artifactId, who.id)) return;
+  if (onPick)
+    throw new ApiError(
+      "conflict",
+      "This page is shared now, so this permission request can no longer be answered. Ask the agent to post it again on a private page.",
+    );
+  throw new ApiError("consume_refused", "This permission cannot be used", {
+    reason: "page_shared",
+  });
+}
+
+/** #1958: 409 expired, consumed or withdrawn for a permission ask that takes no answer (the DO decides again). */
+function permissionLive(
+  ask: { permission?: StoredPermission },
+  now = Date.now(),
+): void {
+  const p = ask.permission;
+  if (!p) return;
+  if (p.consumedAtMs !== undefined)
+    throw new ApiError("consumed", "This permission was already used");
+  if (p.withdrawnAtMs !== undefined)
+    throw new ApiError("withdrawn", "The agent withdrew this request");
+  if (now >= p.expiresAtMs)
+    throw new ApiError("expired", "This request has expired");
+}
+
+/**
  * #2263: a WebAuthn challenge for picking `optionId` on a confirm ask:
  * 403 passkey_required for anything but a browser session (a token or MCP
  * grant can never carry a passkey), 403 forbidden unless asked, 404 without an
@@ -1709,12 +1947,23 @@ export async function answerChallenge(
     throw new ApiError("conflict", "This ask is closed");
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
+  permissionLive(ask);
+  if (ask.permission) await pageStillPrivate(env, artifactId, who, true);
   if (ask.answer?.optionId === optionId)
     throw new ApiError(
       "already_answered",
       "This ask is answered with that option",
     );
-  return pickChallenge(env, who.id, artifactId, commentId, optionId);
+  // #1958: a permission ask's challenge is bound to its request hash too.
+  return pickChallenge(
+    env,
+    who.id,
+    artifactId,
+    commentId,
+    optionId,
+    undefined,
+    ask.permission?.reqHash,
+  );
 }
 
 /**
@@ -1756,6 +2005,8 @@ export async function answerAsk(
         "passkey_required",
         "This pick needs your passkey, in the web app",
       );
+    permissionLive(ask);
+    if (ask.permission) await pageStillPrivate(env, artifactId, who, true);
     if (ask.answer?.optionId === optionId)
       throw new ApiError(
         "already_answered",
@@ -1770,6 +2021,8 @@ export async function answerAsk(
       commentId,
       optionId,
       pick.assertion,
+      undefined,
+      ask.permission?.reqHash,
     );
     verified = "passkey";
   }
@@ -1804,6 +2057,73 @@ export async function answerAsk(
       ),
     );
   return commentView(env, c, viewer);
+}
+
+/** The strongest key of a caller that may use a permission ask, or 403: a browser session or a bare credential is no agent. It must equal the poster's exactly. */
+function permissionCaller(who: CommentWho): string {
+  const keys = who.kind === "user" ? agentKeysOf(who.id, who.agent) : [];
+  if (who.kind !== "user" || who.typed === true || keys.length === 0)
+    throw new ApiError(
+      "forbidden",
+      "Only the agent that asked can use this permission",
+    );
+  return keys[0] as string;
+}
+
+/**
+ * #1958: the agent that posted a permission ask uses its approval, once. The
+ * request comes again (never a hash); the server recomputes the hash and the
+ * DO sets `consumedAt` in one compare-and-set. 403 for another agent, 409
+ * consume_refused with details { reason } (not_approved, expired, mismatch,
+ * consumed, withdrawn), 400 unsafe_characters.
+ */
+export async function consumePermission(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+  request: PermissionRequest,
+): Promise<{ consumed: true }> {
+  const callerKey = permissionCaller(who);
+  refuseUnsafe(request);
+  await pageStillPrivate(env, artifactId, who);
+  const reqHash = await permissionReqHash(request);
+  let out: { reservation: string };
+  try {
+    out = await call(() =>
+      stub(env, artifactId).commentsConsume({
+        threadId,
+        commentId,
+        callerKey,
+        reqHash,
+      }),
+    );
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "consume_refused")
+      throw new ApiError("consume_refused", "This permission cannot be used", {
+        reason: e.message,
+      });
+    throw e;
+  }
+  await releaseSlot(env, out.reservation, "consumed");
+  return { consumed: true };
+}
+
+/** #1958: the posting agent takes back a permission ask not yet used. 403 for another agent, 409 consumed. */
+export async function withdrawPermission(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+): Promise<{ withdrawn: true }> {
+  const callerKey = permissionCaller(who);
+  const out = await call(() =>
+    stub(env, artifactId).commentsWithdraw({ threadId, commentId, callerKey }),
+  );
+  await releaseSlot(env, out.reservation, "withdrawn");
+  return { withdrawn: true };
 }
 
 /**

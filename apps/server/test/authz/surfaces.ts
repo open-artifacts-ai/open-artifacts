@@ -1023,6 +1023,30 @@ export const SURFACES: readonly Surface[] = [
       badRequest,
     ),
   ),
+  // #1958: the agent that asked uses or withdraws a permission ask. A malformed id stops at 400.
+  rest(
+    "comments permission consume",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/consume`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/consume`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  // #1958: the agent that asked uses or withdraws a permission ask. A malformed id stops at 400.
+  rest(
+    "comments permission withdraw",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/withdraw`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
   rest(
     "artifact agents",
     "comments.read",

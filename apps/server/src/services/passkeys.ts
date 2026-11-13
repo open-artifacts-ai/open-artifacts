@@ -126,12 +126,12 @@ async function requireUsable(
 
 export type Kind = "register" | "pick" | "settings" | "remove";
 
-const UPSERT_CHALLENGE = `insert into pick_assertions (id, user_id, kind, scope, binding, challenge, expires_at, used_at, created_at)
-  values (?1, ?2, ?3, ?4, ?5, ?6, ?7, null, ?8)
+const UPSERT_CHALLENGE = `insert into pick_assertions (id, user_id, kind, scope, binding, challenge, expires_at, used_at, created_at, req_hash)
+  values (?1, ?2, ?3, ?4, ?5, ?6, ?7, null, ?8, ?9)
   on conflict (user_id, scope) do update set
     id = excluded.id, kind = excluded.kind, binding = excluded.binding,
     challenge = excluded.challenge, expires_at = excluded.expires_at,
-    used_at = null, created_at = excluded.created_at`;
+    used_at = null, created_at = excluded.created_at, req_hash = excluded.req_hash`;
 
 /** Issues (replacing any earlier challenge of the scope) a challenge; 429 past the budget. */
 async function issue(
@@ -141,6 +141,7 @@ async function issue(
   scope: string,
   binding: string,
   now: number,
+  reqHash: string | null = null,
 ): Promise<{ challenge: string; expiresAt: number }> {
   const taken = await takeAll(env, [
     [
@@ -159,7 +160,17 @@ async function issue(
   const challenge = newChallenge();
   const expiresAt = now + PASSKEY_CHALLENGE_TTL_S * 1000;
   await stmt(env.DB, UPSERT_CHALLENGE)
-    .bind(newId(), userId, kind, scope, binding, challenge, expiresAt, now)
+    .bind(
+      newId(),
+      userId,
+      kind,
+      scope,
+      binding,
+      challenge,
+      expiresAt,
+      now,
+      reqHash,
+    )
     .run();
   return { challenge, expiresAt };
 }
@@ -172,6 +183,7 @@ async function requestOptions(
   scope: string,
   binding: string,
   now: number,
+  reqHash: string | null = null,
 ): Promise<PasskeyChallenge> {
   const allow = await requireUsable(env, userId, now);
   const { challenge, expiresAt } = await issue(
@@ -181,6 +193,7 @@ async function requestOptions(
     scope,
     binding,
     now,
+    reqHash,
   );
   return {
     options: {
@@ -854,6 +867,14 @@ export async function confirmFor(
 export const pickScope = (artifactId: string, commentId: string) =>
   `pick:${artifactId}:${commentId}`;
 
+/**
+ * #1958: a permission ask's pick is bound to (ask, option, request hash,
+ * member): the scope holds the ask and the member, the binding the option and
+ * the hash. The challenge is the nonce. An assertion for another hash fails.
+ */
+export const pickBinding = (optionId: string, reqHash?: string) =>
+  reqHash === undefined ? optionId : `${optionId}|${reqHash}`;
+
 export async function pickChallenge(
   env: Env,
   userId: string,
@@ -861,14 +882,16 @@ export async function pickChallenge(
   commentId: string,
   optionId: string,
   now = Date.now(),
+  reqHash?: string,
 ): Promise<PasskeyChallenge> {
   return requestOptions(
     env,
     userId,
     "pick",
     pickScope(artifactId, commentId),
-    optionId,
+    pickBinding(optionId, reqHash),
     now,
+    reqHash ?? null,
   );
 }
 
@@ -880,13 +903,14 @@ export const verifyPick = (
   optionId: string,
   assertion: unknown,
   now = Date.now(),
+  reqHash?: string,
 ) =>
   verifyForScope(
     env,
     userId,
     "pick",
     pickScope(artifactId, commentId),
-    optionId,
+    pickBinding(optionId, reqHash),
     assertion,
     now,
   );
