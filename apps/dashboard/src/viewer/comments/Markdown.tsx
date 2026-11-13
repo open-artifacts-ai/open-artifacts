@@ -1,6 +1,8 @@
 import { Fragment, type ReactNode, useMemo } from "react";
+import { useCoarsePointer } from "./surfaces";
 import {
   type Block,
+  hostAfterLabel,
   type Inline,
   parseInlineOnly,
   parseMarkdown,
@@ -10,6 +12,13 @@ import {
     are div, p, strong, em, code, pre, blockquote, ul, ol, li and a (plus whatever
     `text` returns for plain text, e.g. mention chips). Never HTML. */
 type TextFn = (s: string, key: string) => ReactNode;
+
+/** #2348: with no hover (touch), the link's host after its label, muted. */
+function LinkHost({ href, label }: { href: string; label: string }) {
+  const coarse = useCoarsePointer();
+  const host = coarse ? hostAfterLabel(href, label) : null;
+  return host ? <span className="text-muted-foreground"> ({host})</span> : null;
+}
 
 function inline(
   nodes: Inline[],
@@ -39,15 +48,17 @@ function inline(
         // Inside a button: the text only, never an interactive element.
         if (!links) return <Fragment key={k}>{n.label}</Fragment>;
         return (
-          <a
-            key={k}
-            href={n.href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline [overflow-wrap:anywhere]"
-          >
-            {n.label}
-          </a>
+          <Fragment key={k}>
+            <a
+              href={n.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline [overflow-wrap:anywhere]"
+            >
+              {n.label}
+            </a>
+            <LinkHost href={n.href} label={n.label} />
+          </Fragment>
         );
     }
   });

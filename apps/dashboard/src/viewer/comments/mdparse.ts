@@ -384,3 +384,18 @@ export function parseInlineOnly(body: string): Inline[] {
     out.push({ t: "text", s: body.slice(MAX_INPUT) });
   return out;
 }
+
+/**
+ * #2348: the host to show after a link's label on a touch screen, or null when
+ * the label is the URL itself or already names the host (www ignored).
+ */
+export function hostAfterLabel(href: string, label: string): string | null {
+  let host: string;
+  try {
+    host = new URL(href).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+  if (!host || label === href) return null;
+  return label.toLowerCase().includes(host) ? null : host;
+}
