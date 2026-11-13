@@ -3,7 +3,7 @@ import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
-import { soloTrialDaysLeft } from "../src/layout/PlanChip";
+import { calendarDaysTo, chipLabel, chipPlan } from "../src/layout/PlanChip";
 import { resetWelcomeRedirect } from "../src/library/useWelcomeRedirect";
 import {
   calls,
@@ -184,11 +184,92 @@ const trialMe =
     } as Me["instance"],
   });
 
-describe("Solo trial chip", () => {
-  it("shows 'Solo · 30 days free' and opens the note", async () => {
-    mountHosted("/", true, trialMe());
+const inDays = (d: number, h = 12) => {
+  const t = new Date();
+  t.setDate(t.getDate() + d);
+  t.setHours(h, 0, 0, 0);
+  return t.toISOString();
+};
+
+describe("plan chip wording", () => {
+  const label = (me: Me) => {
+    const p = chipPlan(me);
+    return p ? chipLabel(p) : null;
+  };
+  const withBilling = (over: object) => trialMe(over)({ instance: {} } as Me);
+
+  it("counts calendar days to the end date, in local time", () => {
+    // Late tonight is still "ends today"; just past midnight is tomorrow.
+    const now = new Date(2026, 10, 13, 23, 30).getTime();
+    expect(calendarDaysTo(new Date(2026, 10, 13, 23, 59).getTime(), now)).toBe(
+      0,
+    );
+    expect(calendarDaysTo(new Date(2026, 10, 14, 0, 5).getTime(), now)).toBe(1);
+    expect(calendarDaysTo(new Date(2026, 11, 13, 12).getTime(), now)).toBe(30);
+  });
+
+  it.each([
+    [29, "Solo trial · 29 days left"],
+    [1, "Solo trial · 1 day left"],
+    [0, "Solo trial · ends today"],
+  ])("Solo, %i days out: %s", (d, text) => {
+    const end = d === 0 ? Date.now() + 60_000 : Date.parse(inDays(d));
+    // Keep "today" for d = 0 even near midnight.
+    const iso =
+      d === 0
+        ? new Date(new Date().setHours(23, 59, 0, 0)).toISOString()
+        : new Date(end).toISOString();
+    if (d === 0 && Date.parse(iso) <= Date.now()) return;
+    expect(label(withBilling({ soloTrialEndsAt: iso }))).toBe(text);
+  });
+
+  it("names a Team trial the same way when its end is known", () => {
+    expect(
+      label(
+        withBilling({
+          tier: "trial",
+          soloTrialEndsAt: null,
+          trialEndsAt: inDays(12),
+        }),
+      ),
+    ).toBe("Team trial · 12 days left");
+  });
+
+  it("is the plain plan name after the trial, or for a paid plan", () => {
+    expect(
+      label(withBilling({ soloTrialEndsAt: "2026-01-01T00:00:00.000Z" })),
+    ).toBe("Solo");
+    expect(label(withBilling({ soloTrialEndsAt: null }))).toBe("Solo");
+    expect(label(withBilling({ tier: "team", soloTrialEndsAt: null }))).toBe(
+      "Team",
+    );
+    expect(
+      label(
+        withBilling({
+          tier: "trial",
+          soloTrialEndsAt: null,
+          trialEndsAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ),
+    ).toBe("Team");
+  });
+
+  it("is nothing for another tier or a self-hosted instance", () => {
+    expect(label(withBilling({ tier: "free" }))).toBeNull();
+    expect(
+      chipPlan({ instance: { billing: undefined } } as unknown as Me),
+    ).toBeNull();
+    expect(
+      chipPlan({ instance: { hosted: false, billing: {} } } as unknown as Me),
+    ).toBeNull();
+  });
+});
+
+describe("plan chip in the top bar", () => {
+  it("opens the Solo trial note", async () => {
+    mountHosted("/", true, trialMe({ soloTrialEndsAt: inDays(29) }));
     const chip = await screen.findByTestId("plan-chip");
-    expect(chip).toHaveTextContent("Solo · 30 days free");
+    expect(chip).toHaveTextContent("Solo trial · 29 days left");
     fireEvent.click(chip);
     expect(await screen.findByText(/No card needed/)).toBeInTheDocument();
     expect(
@@ -198,22 +279,11 @@ describe("Solo trial chip", () => {
     expect(screen.getByText(/Nothing is deleted/)).toBeInTheDocument();
   });
 
-  it("counts the days down", () => {
-    const me = trialMe({
-      soloTrialEndsAt: new Date(Date.now() + 2.2 * 86_400_000).toISOString(),
-    })({ instance: {} } as Me);
-    expect(soloTrialDaysLeft(me)).toBe(3);
-  });
-
-  it.each([
-    ["a paid Solo (no trial date)", { soloTrialEndsAt: null }],
-    ["a trial that has ended", { soloTrialEndsAt: "2026-01-01T00:00:00.000Z" }],
-    ["a card on file", { soloCheckedOut: true }],
-    ["another tier", { tier: "team" }],
-  ])("shows nothing for %s", async (_n, over) => {
-    mountHosted("/", true, trialMe(over));
-    await screen.findByRole("link", { name: "Landing page" });
-    expect(screen.queryByTestId("plan-chip")).toBeNull();
+  it("is a plain label with no note once the trial is over", async () => {
+    mountHosted("/", true, trialMe({ soloTrialEndsAt: null }));
+    const chip = await screen.findByTestId("plan-chip");
+    expect(chip).toHaveTextContent(/^Solo$/);
+    expect(chip.tagName).toBe("SPAN");
   });
 
   it("shows nothing on a self-hosted instance", async () => {

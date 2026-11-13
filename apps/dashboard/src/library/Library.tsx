@@ -287,7 +287,7 @@ export function Library({ scope }: { scope: Scope }) {
       {!filtered && !space && scope === "all" && !showRevoked && (
         // Your own artifacts only: ones shared with you aren't your first.
         <GetStarted
-          hasArtifacts={items.some((a) => a.owner.id === meId)}
+          ownIds={items.filter((a) => a.owner.id === meId).map((a) => a.id)}
           loaded={q.isSuccess}
         />
       )}

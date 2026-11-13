@@ -105,6 +105,65 @@ describe("Get started checklist", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not count the seeded Welcome as the first artifact (older server)", async () => {
+    const W = "WmCnEfGhJk4mNpQr";
+    const mine = {
+      ...(fixtures.artifacts[0] as object),
+      id: W,
+      title: "Welcome",
+    };
+    server.use(
+      http.get("*/api/v1/artifacts", () => page([mine], null)),
+      ...noTokens(),
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json({ dismissed: false, completed: false, welcomeId: W }),
+      ),
+    );
+    mount("/");
+    await heading();
+    expect(screen.getByText("Publish your first artifact")).toBeInTheDocument();
+    expect(screen.getByText("0 of 3")).toBeInTheDocument();
+  });
+
+  it("an older server still counts an own artifact that is not the Welcome", async () => {
+    const W = "WmCnEfGhJk4mNpQr";
+    const welcome = {
+      ...(fixtures.artifacts[0] as object),
+      id: W,
+      title: "Welcome",
+    };
+    server.use(
+      http.get("*/api/v1/artifacts", () =>
+        page([welcome, fixtures.artifacts[0]], null),
+      ),
+      ...noTokens(),
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json({ dismissed: false, completed: false, welcomeId: W }),
+      ),
+    );
+    mount("/");
+    await heading();
+    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+  });
+
+  it("uses only the server's answer when it gives one, even with own artifacts loaded", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts", () => page([fixtures.artifacts[0]], null)),
+      ...noTokens(),
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json({
+          dismissed: false,
+          completed: false,
+          hasArtifacts: false,
+          welcomeId: null,
+        }),
+      ),
+    );
+    mount("/");
+    await heading();
+    expect(screen.getByText("0 of 3")).toBeInTheDocument();
+  });
+
   it("is not shown to invited members", async () => {
     mountHosted(
       "/",

@@ -78,11 +78,11 @@ const Waiting = ({ children }: { children: string }) => (
  * (R.onboarding), so every browser agrees and a finished list stays gone.
  */
 export function GetStarted({
-  hasArtifacts: inLibrary,
+  ownIds,
   loaded,
 }: {
-  /** An own artifact is on the Library pages already loaded. */
-  hasArtifacts: boolean;
+  /** Ids of the own artifacts on the Library pages already loaded. */
+  ownIds: string[];
   loaded: boolean;
 }) {
   const state = useMe();
@@ -99,7 +99,13 @@ export function GetStarted({
   const clients = useOAuthClients(live);
   const members = useMembers(undefined, live);
   // The server says so even when the own artifact is past the loaded pages (#1832).
-  const hasArtifacts = inLibrary || onboarding.data?.hasArtifacts === true;
+  // It leaves out the seeded Welcome and the hosted self-test page, so when it
+  // answers it is the whole truth. An older server doesn't: count the loaded
+  // own artifacts, minus the Welcome.
+  const server = onboarding.data?.hasArtifacts;
+  const welcomeId = onboarding.data?.welcomeId;
+  const hasArtifacts =
+    server !== undefined ? server : ownIds.some((id) => id !== welcomeId);
   const connected =
     (tokens.data?.length ?? 0) > 0 || (clients.data?.length ?? 0) > 0;
   const invited = (members.data ?? []).some(

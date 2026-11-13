@@ -3,8 +3,8 @@
 // `pnpm --filter @oa/runtime build` first. Shots only when WELCOME_SHOTS_DIR is set.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { welcomePage as welcomeHtml } from "@oa/shared";
 import { expect, type Page, test } from "@playwright/test";
-import { welcomeHtml } from "../../server/src/onboarding/welcome";
 
 const ID = "WmCnEfGhJk4mNpQr"; // the mock's Welcome (?mock=welcome)
 const DIST = join(process.cwd(), "../../packages/runtime/dist");
@@ -83,6 +83,10 @@ for (const { w, h } of SIZES)
           .evaluate((e) => e.scrollWidth > e.clientWidth);
         expect(wide).toBe(false);
         await shot(page, "1-first-open", w, theme);
+        await frame
+          .getByText("You can delete this page any time")
+          .scrollIntoViewIfNeeded();
+        await shot(page, "1c-bottom", w, theme);
         await frame.getByRole("tab", { name: "Claude Code" }).click();
         await expect(frame.getByText(/claude mcp add/)).toBeVisible();
         await shot(page, "1b-claude-tab", w, theme);
@@ -111,6 +115,10 @@ for (const { w, h } of SIZES)
         await expect(link).toHaveAttribute("target", "_blank");
         await expect(frame.getByText(/You're set/)).toBeVisible();
         await shot(page, "3-all-ticked", w, theme);
+        await frame
+          .getByText("You can delete this page any time")
+          .scrollIntoViewIfNeeded();
+        await shot(page, "3b-all-ticked-bottom", w, theme);
       });
 
       test("Library shows Welcome as a normal row", async ({ page }) => {
@@ -122,8 +130,7 @@ for (const { w, h } of SIZES)
       test("the Solo trial chip opens its note", async ({ page }) => {
         await page.goto("/?hosted=solo");
         const chip = page.getByTestId("plan-chip");
-        await expect(chip).toContainText("Solo · ");
-        await expect(chip).toContainText("days free");
+        await expect(chip).toContainText(/Solo trial · \d+ days left/);
         await chip.click();
         await expect(page.getByText(/No card needed/)).toBeVisible();
         await shot(page, "4-plan-chip", w, theme);
