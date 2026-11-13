@@ -895,7 +895,7 @@ describe("#2381 deciders on the card", () => {
 });
 
 describe("#2381 a pick that needs the decider's own passkey", () => {
-  it("a plain pick answered passkey_required runs the passkey flow for the same option", async () => {
+  it("a plain pick answered passkey_required asks to pick again, and the next click runs the passkey flow", async () => {
     const posts: { optionId?: string; assertion?: unknown }[] = [];
     let challenged = 0;
     serveThreads(() => [
@@ -939,8 +939,14 @@ describe("#2381 a pick that needs the decider's own passkey", () => {
     fireEvent.click(
       await within(c).findByRole("button", { name: /Side by side/ }),
     );
+    // No prompt from the failed pick: it needs a click of its own.
+    expect(
+      await within(c).findByText("This now needs your passkey. Pick again."),
+    ).toBeInTheDocument();
+    expect(posts).toEqual([{ optionId: "b" }]);
+    expect(challenged).toBe(0);
+    fireEvent.click(within(c).getByRole("button", { name: /Side by side/ }));
     await waitFor(() => expect(posts).toHaveLength(2));
-    expect(posts[0]).toEqual({ optionId: "b" });
     expect(posts[1]).toMatchObject({
       optionId: "b",
       assertion: { id: "cred" },

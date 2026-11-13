@@ -596,8 +596,10 @@ export function AskBlock({
   // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
   // #2381: an ask with no `confirm` mark can still need the decider's own passkey at pick
   // time (their switches changed after it was posted): a plain pick that comes back
-  // passkey_required runs the passkey flow for the same option from then on.
+  // passkey_required switches this ask to the passkey path and asks to pick again, so
+  // the passkey prompt starts from a click (Safari needs the gesture).
   const [viaPasskey, setViaPasskey] = useState(false);
+  const [repick, setRepick] = useState(false);
   const answer = ask?.confirm === "passkey" || viaPasskey ? passkey : plain;
   const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
@@ -699,7 +701,9 @@ export function AskBlock({
   ) : !pickedOpt && !blocked ? (
     <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
       <KeyRound aria-hidden="true" className="size-3.5" />
-      Approving this needs your passkey.
+      {repick
+        ? "This now needs your passkey. Pick again."
+        : "Approving this needs your passkey."}
     </p>
   ) : null;
   const recIdx = ask.options.findIndex(
@@ -899,6 +903,7 @@ export function AskBlock({
                         // Back to unanswered: focus returns to the option.
                         setRefocus(o.id);
                       };
+                      setRepick(false);
                       answer.mutate(v, {
                         onError: (e) => {
                           if (
@@ -908,7 +913,7 @@ export function AskBlock({
                           ) {
                             setErr(null);
                             setViaPasskey(true);
-                            passkey.mutate(v, { onError: failed });
+                            setRepick(true);
                             return;
                           }
                           failed(e);

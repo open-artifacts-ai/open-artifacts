@@ -200,6 +200,11 @@ test("an ask with no mark whose decider's switches ask for a passkey: the pick r
     .filter({ hasText: "Ship the changelog?" });
   await expect(card).toBeVisible();
   await card.locator("[data-option=ship]").click();
+  await expect(card.locator("[data-passkey-slot]")).toContainText(
+    "This now needs your passkey. Pick again.",
+  );
+  await expect(card.locator("[data-ask-verified]")).toHaveCount(0);
+  await card.locator("[data-option=ship]").click();
   await expect(card.locator("[data-ask-verified]")).toHaveText(
     /Verified with passkey/,
   );
