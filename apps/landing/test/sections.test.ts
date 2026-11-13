@@ -208,6 +208,68 @@ describe("landing sections", () => {
     ]);
   });
 
+  it("the ask chapter is three: ask, team and record, with short captions for phones", () => {
+    for (const h of [
+      "Your agent asks. You decide.",
+      "The right person decides.",
+      "Every decision, on the record.",
+    ])
+      expect(text).toContain(h);
+    // each of the three has a short form of its caption, for the locked phone screen
+    expect(index).toContain(
+      'data-short="Your agent asks on the page, with options. Pick one, or answer in your own words."',
+    );
+    expect(index).toContain(
+      'data-short="Each ask names who decides. Others weigh in, or you pass it on."',
+    );
+    expect(index).toContain(
+      'data-short="Answered asks stay with the page: what, who and when."',
+    );
+    // the ask offers "Something else"; the team card says who decides, and can pass it on
+    expect(
+      index.match(/<b>Something else<\/b>/g)?.length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(text).toContain("You decide");
+    expect(text).toContain("Sam and Priya weigh in");
+    expect(text).toContain("Not mine to decide");
+    // the record: tabs and three rows
+    expect(text).toContain("Comments 12 Decisions 3");
+    for (const q of [
+      "Which channel goes first on launch day?",
+      "Monthly or yearly shown first?",
+      "Ship the beta Friday?",
+    ])
+      expect(text).toContain(q);
+  });
+
+  it("the share step lists Sam Rivera and Maya Chen, not a third name", () => {
+    const share = index.slice(index.indexOf('data-mp="share"'));
+    expect(share).toContain("Maya Chen");
+    expect(share).toContain("Sam Rivera");
+    expect(index).not.toContain("Jonas Weber");
+  });
+
+  it("the hero artifact is drawn like the real viewer, and reads with scripts off", () => {
+    const cards = index.match(/<ol class="sc-cards"[\s\S]*?<\/ol>/)?.[0] ?? "";
+    // top bar, title, byline, timeline, checklist, comments pane, decision
+    for (const part of [
+      'class="x-abar"',
+      'class="sa-h1">Q4 launch plan',
+      "OA Product, for Maya Chen",
+      "<h4>Timeline</h4>",
+      "<h4>Launch checklist</h4>",
+      'class="sa-pane"',
+      "Launch day is Thursday, Dec 4.",
+    ])
+      expect(cards).toContain(part);
+  });
+
+  it("the stage carries one pinned story: a caption column the script fills", () => {
+    expect(index).toContain('id="capcol"');
+    expect(index).toContain('id="dec0"');
+    expect(index).toContain('id="thread0"');
+  });
+
   it("has a card piece for each chapter on phones", () => {
     const pieces =
       index.match(

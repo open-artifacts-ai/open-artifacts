@@ -66,6 +66,44 @@ addEventListener("load", alignPlans);
 document.fonts?.ready.then(alignPlans);
 
 /* ---- scroll story ---- */
+// The left column: the caption of the active step, changing in place (the
+// chapters' own text is hidden on a wide screen; this copy is what you read).
+const capcol = $("#capcol");
+let capKey = "";
+const fillCap = (ns: number) => {
+  if (String(ns) === capKey) return;
+  capKey = String(ns);
+  const wrap = document.createElement("div");
+  if (ns <= 1) {
+    wrap.className = "capt";
+    for (const e of [...$(".sc-turn").children]) wrap.append(e.cloneNode(true));
+  } else {
+    const c = $$(".chs > .ch")[ns - 2] as HTMLElement;
+    const tr = c.querySelector<HTMLElement>(".try");
+    wrap.className = "ch";
+    const ci = document.createElement("div");
+    ci.className = "ci";
+    const n = document.createElement("span");
+    n.className = "n";
+    n.innerHTML = (c.querySelector(".n") as HTMLElement).innerHTML;
+    const h2 = document.createElement("h2");
+    h2.textContent = c.querySelector("h2")?.textContent ?? "";
+    const p = document.createElement("p");
+    p.textContent = c.querySelector(".ci > p")?.textContent ?? "";
+    ci.append(n, h2, p);
+    if (tr && !tr.classList.contains("m")) {
+      const t2 = document.createElement("span");
+      t2.className = "try";
+      t2.textContent = tr.textContent;
+      ci.append(t2);
+    }
+    wrap.append(ci);
+  }
+  capcol.replaceChildren(wrap);
+  capcol.classList.remove("in");
+  void capcol.offsetWidth;
+  capcol.classList.add("in");
+};
 const stage = $("#stage"),
   chs = $$(".chs .ch"),
   rail = $$("#rail button"),
@@ -111,7 +149,8 @@ function read() {
   // step here counts chapters: comment 2, ask 3, team 4, record 5, live 6,
   // versions 7, share 8.
   if (reduce) return Math.max(23, step * 10 + (step === 7 ? 1 : 3));
-  return Math.max(23, step * 10 + Math.floor(p * 4));
+  // Before the first chapter (step 1) the stage is the hero's last page: the hand-over.
+  return Math.max(step <= 1 ? 10 : 23, step * 10 + Math.floor(p * 4));
 }
 function render(force = false) {
   // At 820px and under the stage is hidden and the chapters are cards.
@@ -122,10 +161,17 @@ function render(force = false) {
   const ns = Math.floor(raw / 10);
   // The stage's own steps (ask 3, live 4, versions 5, share 6) drive the
   // existing logic; the team and record chapters hold the ask as it was.
+  const s0 = ns === 1; // the hand-over: the same page as the hero's last step
   const step = ns <= 3 ? ns : ns <= 5 ? 3 : ns - 2;
-  const t = ns <= 3 ? raw : ns <= 5 ? 39 : step * 10 + (raw % 10);
+  const t = s0 ? 12 : ns <= 3 ? raw : ns <= 5 ? 39 : step * 10 + (raw % 10);
   const teamV = ns === 4;
   stage.dataset.step = String(step);
+  flag("data-s0", s0);
+  if (stage.dataset.ns !== String(ns)) {
+    stage.dataset.ns = String(ns);
+    fillCap(ns);
+  }
+  $("#ld").classList.toggle("chg", s0);
   flag("data-team", teamV);
   flag("data-dec", ns === 5);
   for (const e of ons) e.classList.toggle("on", t >= Number(e.dataset.on));
@@ -142,17 +188,18 @@ function render(force = false) {
     else b.removeAttribute("aria-current");
   });
   flag("data-past1", step >= 2);
-  flag("data-side", step === 2 || step === 3);
+  flag("data-side", s0 || step === 2 || step === 3);
   flag("data-fan", step === 5);
   ln.classList.toggle("sel", t >= 20 && t < 23);
-  ln.classList.toggle("sw", t >= 23);
+  ln.classList.toggle("sw", t >= 23 || s0);
   ln.classList.toggle("chg", t >= 23 && t < 30);
   const pick = userPick || (t >= 32 ? "b" : null);
   const done = !!pick && (!!userPick || t >= 33) && t >= 30;
   // The team chapter shows the ask undecided, with its own pick and who decides.
   const vp = teamV ? null : pick;
   const vd = teamV ? false : done;
-  $("#thread").classList.toggle("hide", t >= 30);
+  $("#thread").classList.toggle("hide", t >= 30 || s0);
+  $("#thread0").classList.toggle("hide", !s0);
   $("#tcol").classList.toggle("hide", t < 30);
   $("#ask").classList.toggle("hide", t < 30);
   $("#sopen").textContent =

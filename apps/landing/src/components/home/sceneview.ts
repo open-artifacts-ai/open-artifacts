@@ -19,12 +19,18 @@ export function mountScene(host: HTMLElement) {
       e.classList.toggle("off", s < Number(e.dataset.from));
     for (const e of root.querySelectorAll<HTMLElement>("[data-until]"))
       e.classList.toggle("off", s > Number(e.dataset.until));
-    for (const e of root.querySelectorAll<HTMLElement>(".x-cm[data-at]"))
+    for (const e of root.querySelectorAll<HTMLElement>(".cm[data-at]"))
       e.classList.toggle("off", t < Number(e.dataset.at));
     k("ts").textContent = S.t;
     k("as").textContent = S.a;
     k("chip").textContent = S.chip;
-    k("ch").textContent = S.ch;
+    for (const e of root.querySelectorAll<HTMLElement>(".sa-blk"))
+      e.classList.toggle("hit", s === 2);
+    for (const e of root.querySelectorAll<HTMLElement>('[data-k="ld"]')) {
+      e.classList.toggle("sel", s === 3);
+      e.classList.toggle("chg", s === 4);
+      e.classList.toggle("sw2", s >= 4);
+    }
     k("ask").innerHTML = S.ask;
     const v = k("ver");
     if (v.textContent !== S.ver) {

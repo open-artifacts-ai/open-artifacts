@@ -6,7 +6,13 @@ import { mountScene } from "./sceneview";
 
 export function initScene(lp: HTMLElement, reduce: boolean) {
   const sc = lp.querySelector<HTMLElement>("#sc");
-  if (!sc || reduce) return;
+  if (!sc) return;
+  if (reduce) {
+    // No pinning and no hand-over: the story below reads as it is rendered.
+    lp.setAttribute("data-cards", "");
+    lp.dataset.hand = "1";
+    return;
+  }
   const pin = sc.querySelector<HTMLElement>("#scpin") as HTMLElement;
   const steps = sc.querySelector<HTMLElement>("#scsteps") as HTMLElement;
   const view = sc.querySelector<HTMLElement>("#scview") as HTMLElement;
@@ -25,7 +31,26 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
     const sub = Math.floor((q - Math.floor(q)) * 4);
     return { t: step * 10 + sub, done: p >= 3.25 };
   }
+  // One story: when this pinned run ends, the stage below takes over in the
+  // same place, at its last step (data-hand). Off a wide screen it does not apply.
+  function hand() {
+    const wide = lp.clientWidth > 820;
+    const ended = wide
+      ? steps.getBoundingClientRect().bottom -
+          pin.getBoundingClientRect().bottom <=
+        0.5
+      : true;
+    const v = ended ? "1" : "0";
+    if (lp.dataset.hand !== v) lp.dataset.hand = v;
+  }
+  // The chapter rail sits under the stage; the hand-over leaves room for it.
+  function setRh() {
+    const rail = document.getElementById("rail");
+    if (rail?.offsetHeight)
+      lp.style.setProperty("--rh", `${12 + rail.offsetHeight}px`);
+  }
   function render(force = false) {
+    hand();
     if (lp.clientWidth <= 820) return;
     const { t, done } = read();
     sc?.classList.toggle("done", done);
@@ -55,6 +80,12 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
       });
   };
   addEventListener("scroll", tick, { passive: true });
-  addEventListener("resize", () => render(true));
+  addEventListener("resize", () => {
+    setRh();
+    render(true);
+  });
+  setRh();
   render(true);
+  addEventListener("load", setRh);
+  document.fonts?.ready.then(setRh);
 }

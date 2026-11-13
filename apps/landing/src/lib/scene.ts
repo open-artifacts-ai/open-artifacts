@@ -54,7 +54,6 @@ type Moment = {
   a: string;
   ver: string;
   chip: string;
-  ch: string;
   ask: string;
 };
 export const SCENE_STATES: (Moment | null)[] = [
@@ -64,7 +63,6 @@ export const SCENE_STATES: (Moment | null)[] = [
     a: "A new artifact, v1.",
     ver: "v1",
     chip: "Private",
-    ch: "",
     ask: "",
   },
   {
@@ -72,7 +70,6 @@ export const SCENE_STATES: (Moment | null)[] = [
     a: "Same page, updated.",
     ver: "v2",
     chip: "Private",
-    ch: "What changed in v2",
     ask: "",
   },
   {
@@ -80,7 +77,6 @@ export const SCENE_STATES: (Moment | null)[] = [
     a: "Sam comments on the page.",
     ver: "v3",
     chip: "Shared with 4",
-    ch: "What changed in v3",
     ask: "",
   },
   {
@@ -88,7 +84,6 @@ export const SCENE_STATES: (Moment | null)[] = [
     a: "The decision is at the top.",
     ver: "v3",
     chip: "Shared with 4",
-    ch: "What changed in v3",
     ask: "&gt; wait, what did we decide?",
   },
 ];
@@ -126,6 +121,17 @@ const AGENT =
 const agent = (from?: number) =>
   `<span class="ag"${from ? ` data-from="${from}"` : ""}>${AGENT}</span>`;
 
+/** The comment thread on the launch-day line, as it stands at moment t. */
+function thread(t: number): string {
+  const off = (cond: boolean) => (cond ? " off" : "");
+  return (
+    `<div class="card sa-th"><div class="q">Launch day: Tuesday, Dec 2</div>` +
+    `<div class="cm${off(t < 30)}" data-at="30"><span class="pp" aria-hidden="true">SR</span><div><div class="w">Sam Rivera</div><div class="x">Can we move this to Thursday? Tuesday is the board meeting.</div></div></div>` +
+    `<div class="cm${off(t < 40)}" data-at="40">${agent()}<div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 4. That is v3.</div></div></div>` +
+    `<div class="rf">Reply</div></div>`
+  );
+}
+
 /**
  * The two panels for moment `t`, with the right parts shown. The browser
  * script builds this once for the pinned view (at moment 10) and then moves it
@@ -149,14 +155,14 @@ export function sceneHtml(t: number): string {
     `<div class="x-art sc-art"><div class="x-abar"><span class="t">Launch plan</span><span class="chip" data-k="chip">${S.chip}</span><span class="x-sp"></span>` +
     `<span class="pp${off(s < 3)}" data-from="3" aria-hidden="true">SR</span><span class="pp${off(s < 3)}" data-from="3" aria-hidden="true">MC</span>` +
     agent(3).replace('class="ag"', `class="ag${off(s < 3)}"`) +
-    `<span class="chip ver" data-k="ver">${S.ver}</span></div>` +
-    `<div class="x-abody">` +
+    `<span class="chip ver" data-k="ver">${S.ver}</span><span class="sbtn sa-share">Share</span></div>` +
+    `<div class="sa-main"><div class="sa-doc"><div class="x-abody">` +
+    `<h3 class="sa-h1">Q4 launch plan</h3><p class="sa-by">${agent()}OA Product, for Maya Chen</p>` +
     `<div class="x-blk hit${off(s < 4)}" data-from="4"><h4>Decision</h4><p class="x-dec"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span>Launch day is Thursday, Dec 4.</span></p><p class="x-sub">Sam asked for the change. OA Product updated the plan.</p></div>` +
-    `<div class="x-blk${off(s > 3)}" data-until="3"><h4>Q4 launch plan</h4><p class="sc-prop">Sign-ups open in December. This plan is the one place the team and the agents work from.</p></div>` +
-    `<div class="x-blk${off(s < 2)}" data-from="2"><h4 data-k="ch">${S.ch}</h4><ul class="x-chg"><li>A timeline, from docs ready to the first-week review.</li><li class="${off(s < 3).trim()}" data-from="3">Launch day moved to Thursday, Dec 4.</li></ul></div>` +
-    `<div class="x-blk${off(s < 3)}" data-from="3"><h4>Comments</h4>` +
-    `<div class="x-cm${off(t < 30)}" data-at="30"><span class="pp" aria-hidden="true">SR</span><p><b>Sam Rivera</b>Can we move this to Thursday? Tuesday is the board meeting.</p></div>` +
-    `<div class="x-cm${off(t < 32)}" data-at="32">${agent()}<p><b>OA Product <span class="x-tag">agent</span></b>Moved to Thursday, Dec 4. That is v3.</p></div></div>` +
-    `</div></div></figure></div>`
+    `<p class="sa-p sa-intro">Sign-ups open in December. This plan is the one place the team and the agents work from.</p>` +
+    `<p class="sa-p sa-ld${off(s > 1)}" data-until="1">Launch day: Tuesday, Dec 2.</p>` +
+    `<div class="x-blk sa-blk${off(s < 2)}${s === 2 ? " hit" : ""}" data-from="2"><h4>Timeline</h4><ul class="tl"><li><span>Docs and pricing page ready</span><b>Nov 25</b></li><li data-k="ld" class="${s === 3 ? "sel" : ""}${s === 4 ? " chg" : ""}${s >= 4 ? " sw2" : ""}"><span>Launch day</span><b><span class="old">Tuesday, Dec 2</span><span class="new">Thursday, Dec 4</span></b></li><li class="sa-inline${off(s < 3)}" data-from="3">${thread(t)}</li><li><span>First-week review</span><b>Friday, Dec 12</b></li></ul></div>` +
+    `<div class="x-blk sa-blk sa-cl${off(s < 2)}${s === 2 ? " hit" : ""}" data-from="2"><h4>Launch checklist</h4><ul class="cl"><li><span class="bx"></span><span class="lb">Pricing page reviewed</span></li><li><span class="bx"></span><span class="lb">Docs links checked</span></li><li><span class="bx"></span><span class="lb">Go or no-go call</span></li></ul></div>` +
+    `</div></div><aside class="sa-side"><div class="sa-pane"><div class="sh"><span>Comments</span><span>1 open</span></div>${thread(t)}</div></aside></div></div></figure></div>`
   );
 }

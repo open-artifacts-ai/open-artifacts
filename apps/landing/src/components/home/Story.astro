@@ -14,8 +14,8 @@ import { footHtml, whoHtml } from "./who";
           <span class="t">Launch plan</span>
           <span class="chip" id="vis">Shared with 4</span>
           <span class="sp"></span>
-          <span class="avs" id="avs" aria-hidden="true"><span class="pp">SR</span><span class="pp">MC</span><Agent class="b" /><span class="more">Shared with 12</span></span>
-          <span class="chip ver rev" id="ver" data-on="13">v3</span>
+          <span class="avs" id="avs" aria-hidden="true"><span class="pp">SR</span><span class="pp">MC</span><Agent class="" /><span class="more">Shared with 12</span></span>
+          <span class="chip ver rev" id="ver" data-on="12">v3</span>
           <span class="sbtn" aria-hidden="true">Share</span>
         </div>
         <div class="vbody">
@@ -23,12 +23,13 @@ import { footHtml, whoHtml } from "./who";
             <div class="vban" id="vban"><span>Viewing <b>v4</b>, from before the ask</span><span class="r">Restore</span></div>
             <div class="clip"><div class="track" id="track">
               <h3 class="asm" data-on="10">Q4 launch plan</h3>
-              <p class="dmeta asm" data-on="10"><Agent class="" />OA Product, for Sam Rivera</p>
+              <p class="dmeta asm" data-on="10"><Agent class="" />OA Product, for Maya Chen</p>
+              <div class="x-blk hit" id="dec0"><h4>Decision</h4><p class="x-dec"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span>Launch day is Thursday, Dec 4.</span></p><p class="x-sub">Sam asked for the change. OA Product updated the plan.</p></div>
               <p class="b asm" data-on="11">Sign-ups open in December. This plan is the one place the team and the agents work from.</p>
               <h4 class="asm" data-on="11">Timeline</h4>
               <ul class="tl asm" data-on="12">
                 <li><span>Docs and pricing page ready</span><b>Nov 25</b></li>
-                <li><span>Launch day</span><b>Thursday, Dec 4</b></li>
+                <li id="ld"><span>Launch day</span><b>Thursday, Dec 4</b></li>
                 <li id="ln"><span>First-week review</span><b><span class="old">Thursday, Dec 11</span><span class="new">Friday, Dec 12</span></b></li>
                 <li class="add" id="chan"><span>First channel</span><b id="chanv">Email list</b></li>
               </ul>
@@ -50,6 +51,10 @@ import { footHtml, whoHtml } from "./who";
             <div class="sh"><span>Comments</span><span id="sopen">1 open</span></div>
             <div class="dtabs"><span class="dtab">Comments <small>12</small></span><span class="dtab on">Decisions <small>3</small></span></div>
             <div class="card col hide" id="tcol">Maya and OA Product, 2 comments, resolved</div>
+            <div class="card hide" id="thread0"><div class="q">Launch day: Tuesday, Dec 2</div>
+              <div class="cm"><span class="pp">SR</span><div><div class="w">Sam Rivera</div><div class="x">Can we move this to Thursday? Tuesday is the board meeting.</div></div></div>
+              <div class="cm"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 4. That is v3.</div></div></div>
+              <div class="rf">Reply</div></div>
             <div class="card" id="thread">
               <div class="q">First-week review: Thursday, Dec 11</div>
               <div class="cm rev" data-on="21"><span class="pp">MC</span><div><div class="w">Maya Chen</div><div class="x">Can this be Friday? I'm out on Thursday. <span class="men">@OA Product</span></div></div></div>
@@ -94,6 +99,8 @@ import { footHtml, whoHtml } from "./who";
       <button type="button">Comment</button><button type="button">Ask</button><button type="button">Team</button><button type="button">Record</button><button type="button">Live</button><button type="button">Versions</button><button type="button">Share</button>
     </div>
   </div>
+
+  <div class="capcol" id="capcol" aria-live="polite"></div>
 
   <div class="chs">
     <section class="ch"><div class="ci"><span class="n"><Fragment set:html={marksHtml(5)} /></span><h2>Comment where it matters.</h2><p>A comment sits on the line it is about. Mention your agent and it answers in the thread, then changes the artifact.</p><div class="mp" data-mp="com">
