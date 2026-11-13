@@ -744,8 +744,22 @@ export function systemService(d: ServiceDeps): Service {
           // A loaded job with no pid has exited (or not spawned yet).
           return r.code === 0 && /\bpid = \d+/.test(r.stdout);
         }
-        const r = await systemctl("is-active", names().unit);
-        return /^(active|activating|reloading)$/.test(r.stdout.trim());
+        const r = await systemctl(
+          "show",
+          "-p",
+          "ActiveState,SubState,NRestarts",
+          names().unit,
+        );
+        const v = (k: string) =>
+          r.stdout.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim();
+        if (r.code !== 0) return false;
+        if (v("ActiveState") === "active") return true;
+        // A crash loop waits in activating/auto-restart between runs.
+        return (
+          v("ActiveState") === "activating" &&
+          v("SubState") !== "auto-restart" &&
+          Number(v("NRestarts") ?? 0) === 0
+        );
       }
       const pid = record().fallback === true ? record().pid : undefined;
       return typeof pid === "number"
