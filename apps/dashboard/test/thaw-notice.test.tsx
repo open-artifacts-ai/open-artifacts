@@ -1,5 +1,4 @@
-// #2150: what group sync puts back after Team to Business. The Upgrade to
-// Business confirm (before) and the one-time sync banner (after).
+// #2150: what group sync puts back after Team to Business: the one-time sync banner.
 import type { InstanceDirectory, Me } from "@oa/shared";
 import {
   cleanup,
@@ -10,7 +9,6 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { THAW_COPY } from "../src/layout/thawCopy";
 import { PlanCompare } from "../src/settings/PlanCompare";
 import { calls, installHarness, mountHosted } from "./harness";
 
@@ -51,107 +49,17 @@ const BUSINESS = {
   readOnly: false,
 };
 
-describe("Upgrade to Business confirm", () => {
-  const view = (pendingReverts: number, upgrade = vi.fn()) => {
-    render(
-      <PlanCompare
-        column="team"
-        busy={false}
-        pendingReverts={pendingReverts}
-        upgrade={upgrade}
-      />,
-    );
-    fireEvent.click(
-      within(screen.getByTestId("plan-card-business")).getByRole("button", {
-        name: "Upgrade to Business",
-      }),
-    );
-    return upgrade;
-  };
-
-  it("0 reverts: no confirm, the upgrade starts", () => {
-    const upgrade = view(0);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(upgrade).toHaveBeenCalledWith("business");
-  });
-
-  it("asks first with the count, and Upgrade continues", () => {
-    const upgrade = view(3);
-    expect(upgrade).not.toHaveBeenCalled();
-    const d = screen.getByRole("dialog", { name: "Upgrade to Business" });
-    expect(d).toHaveTextContent(
-      "Directory sync turns back on. 3 people whose roles were changed by hand on Team will go back to the role their group gives them. People you removed stay removed, and people you added stay.",
-    );
-    fireEvent.click(within(d).getByRole("button", { name: "Upgrade" }));
-    expect(upgrade).toHaveBeenCalledWith("business");
-  });
-
-  it("says one person for 1, and Cancel does not upgrade", () => {
-    const upgrade = view(1);
-    const d = screen.getByRole("dialog");
-    expect(d).toHaveTextContent(
-      "1 person whose role was changed by hand on Team will go back to the role their group gives them.",
-    );
-    fireEvent.click(within(d).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(upgrade).not.toHaveBeenCalled();
-  });
-
-  it("Team's upgrade never asks", () => {
+describe("Business has no upgrade confirm (#2404)", () => {
+  it("Business is Contact us, never an upgrade or a dialog", () => {
     const upgrade = vi.fn();
-    render(
-      <PlanCompare
-        column="solo"
-        busy={false}
-        pendingReverts={4}
-        upgrade={upgrade}
-      />,
-    );
-    fireEvent.click(
-      within(screen.getByTestId("plan-card-team")).getByRole("button", {
-        name: "Upgrade to Team",
-      }),
-    );
-    expect(upgrade).toHaveBeenCalledWith("team");
-  });
-});
-
-describe("yearly path", () => {
-  it("the confirm's Upgrade opens the seat step with focus, and checkout carries seats", async () => {
-    const posts = calls("POST");
-    mountHosted(
-      "/settings/plan",
-      {
-        billing: {
-          tier: "trial",
-          status: "active",
-          trialEndsAt: null,
-          graceUntil: null,
-          creatorsThisMonth: 4,
-          readOnly: false,
-          yearlyTeamBusiness: true,
-        },
-      },
-      dir({ mode: "frozen", bound: true, pendingReverts: 3 }),
-    );
-    const card = await screen.findByTestId("plan-card-business");
-    fireEvent.click(
-      within(card).getByRole("button", { name: "Upgrade to Business" }),
-    );
-    const confirm = await screen.findByRole("dialog", {
-      name: "Upgrade to Business",
-    });
-    fireEvent.click(within(confirm).getByRole("button", { name: "Upgrade" }));
-    const input = (await screen.findByLabelText(
-      "Creators",
-    )) as HTMLInputElement;
-    await waitFor(() => expect(input).toHaveFocus());
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await waitFor(() =>
-      expect(
-        posts.find((c) => c.path.endsWith("/billing/checkout"))?.body,
-      ).toEqual({ tier: "business", interval: "year", seats: 4 }),
-    );
+    render(<PlanCompare column="team" busy={false} upgrade={upgrade} />);
+    const card = within(screen.getByTestId("plan-card-business"));
+    expect(
+      card.queryByRole("button", { name: "Upgrade to Business" }),
+    ).toBeNull();
+    fireEvent.click(card.getByRole("link", { name: "Contact us" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(upgrade).not.toHaveBeenCalled();
   });
 });
 

@@ -1,7 +1,7 @@
 // Hosted P4 Tasks 17 and 18: /settings/directory, Design D12 B (status first),
 // copy from the build spec t6cjQuskQ6zrZaJd v5 (lost sync freezes access, no
 // deadline: staleAt is never shown).
-import { type Me, R } from "@oa/shared";
+import { BUSINESS_CONTACT_URL, type Me, R } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, onTestFinished, vi } from "vitest";
@@ -1259,8 +1259,8 @@ it("frozen (Team after Business): the tab shows with no dot, read-only, with the
   );
   expect(s).toHaveTextContent("Google group sync is part of Business.");
   expect(
-    within(s).getByRole("link", { name: "Upgrade to Business" }),
-  ).toHaveAttribute("href", "/settings/plan");
+    within(s).getByRole("link", { name: "Contact us about Business" }),
+  ).toHaveAttribute("href", BUSINESS_CONTACT_URL);
   expect(within(s).queryByRole("button", { name: "Sync now" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
   const t = await tabs();
