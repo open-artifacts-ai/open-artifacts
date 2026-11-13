@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.177.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.1...v0.177.0) (2026-11-13)
+
+
+### Features
+
+* **landing:** the bus section is back ([#2457](https://github.com/open-artifacts-ai/open-artifacts/issues/2457)) ([#2459](https://github.com/open-artifacts-ai/open-artifacts/issues/2459)) ([a567fdd](https://github.com/open-artifacts-ai/open-artifacts/commit/a567fddfb97c023d78edf99249ebdd5cfc086dff))
+
 ## [0.176.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.0...v0.176.1) (2026-11-13)
 
 
