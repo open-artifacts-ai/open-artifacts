@@ -362,6 +362,7 @@ export class DocRoom extends DurableObject<Env> {
         status: 429,
         headers: { "Retry-After": "10" },
       });
+    await this.ensureSeeded();
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [
@@ -1368,7 +1369,7 @@ export class DocRoom extends DurableObject<Env> {
         });
         savedVersion = saved?.version;
       }
-      await this.seedIfEmpty();
+      await this.ensureSeeded();
       const doc = this.loadDoc();
       let update: Uint8Array;
       let applied: number;
@@ -1452,40 +1453,74 @@ export class DocRoom extends DurableObject<Env> {
     };
   }
 
+  private seeding: Promise<void> | null = null;
+
   /**
-   * A doc nobody has opened has no room state yet (the editor seeds it from
-   * the saved text on first open). An edit seeds it the same way, from the
-   * current version, so the agent edits the real text.
+   * The room seeds itself once, from the artifact's current version (doc.json,
+   * else doc.md), the first time anything loads it: socket accept, applyOps or
+   * markdown(). A meta flag, written in the same step as the seed update,
+   * makes it happen exactly once, so an emptied doc is never refilled. A room
+   * that already holds state (from before this) only gets the flag.
    */
-  private async seedIfEmpty(): Promise<void> {
-    if (this.storedBytes() > 0) return;
-    const saved = await this.currentSaved();
-    if (!saved) return;
-    const node =
-      saved.json === null
-        ? markdownToDoc(saved.md).doc
-        : docFromJSON(saved.json as never);
-    const doc = new Y.Doc({ gc: true });
-    try {
-      docToYXmlFragment(node, docFragment(doc));
-      const update = Y.encodeStateAsUpdate(doc);
-      this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
-      this.buffer.push(update);
-      this.bufferBytes += update.byteLength;
-      const out = encoding.createEncoder();
-      encoding.writeVarUint(out, MSG_SYNC);
-      encoding.writeVarUint(out, SYNC_UPDATE);
-      encoding.writeVarUint8Array(out, update);
-      this.broadcast(encoding.toUint8Array(out), null);
-    } finally {
-      doc.destroy();
+  private ensureSeeded(): Promise<void> {
+    this.seeding ??= this.seedOnce().then(
+      () => {
+        if (!this.seeded()) this.seeding = null;
+      },
+      (e) => {
+        this.seeding = null;
+        throw e;
+      },
+    );
+    return this.seeding;
+  }
+
+  private seeded(): boolean {
+    return (
+      this.sql.exec("SELECT 1 FROM meta WHERE k = 'seeded'").toArray().length >
+      0
+    );
+  }
+
+  private async seedOnce(): Promise<void> {
+    if (this.seeded()) return;
+    if (this.storedBytes() === 0) {
+      const saved = await this.currentSaved();
+      if (!saved) return; // no version row: nothing to seed, try again later
+      // Another caller may have written state while we read.
+      if (this.seeded()) return;
+      if (this.storedBytes() === 0) {
+        const node =
+          saved.json === null
+            ? markdownToDoc(saved.md).doc
+            : docFromJSON(saved.json as never);
+        const doc = new Y.Doc({ gc: true });
+        try {
+          docToYXmlFragment(node, docFragment(doc));
+          const update = Y.encodeStateAsUpdate(doc);
+          this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
+          this.buffer.push(update);
+          this.bufferBytes += update.byteLength;
+          const out = encoding.createEncoder();
+          encoding.writeVarUint(out, MSG_SYNC);
+          encoding.writeVarUint(out, SYNC_UPDATE);
+          encoding.writeVarUint8Array(out, update);
+          this.broadcast(encoding.toUint8Array(out), null);
+        } finally {
+          doc.destroy();
+        }
+        void this.armAlarm(this.now() + FLUSH_MS);
+      }
     }
+    this.sql.exec(
+      "INSERT OR REPLACE INTO meta (k, v) VALUES ('seeded', ?)",
+      this.now(),
+    );
   }
 
   /** The doc as Markdown right now, unsaved edits included (get_artifact). */
   async markdown(): Promise<string> {
-    // A room nobody has opened holds nothing yet: the saved text is the doc.
-    if (this.storedBytes() === 0) return (await this.currentSaved())?.md ?? "";
+    await this.ensureSeeded();
     const doc = this.loadDoc();
     try {
       return readDoc(doc);

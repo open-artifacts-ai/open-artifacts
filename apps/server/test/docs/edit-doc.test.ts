@@ -447,10 +447,10 @@ describe("how a version was saved (docSave)", () => {
         by: { kind: "person", key: owner.userId, userId: owner.userId },
       }),
     );
-    // v5: restore of v1.
+    // v5: restore of v3 (v1 was written by the publish path, no doc.json).
     await inRoom(room, (r) =>
       r.restore({
-        version: 1,
+        version: 3,
         by: { kind: "person", key: owner.userId, userId: owner.userId },
       }),
     );
@@ -495,5 +495,54 @@ describe("how a version was saved (docSave)", () => {
     );
     const l = await list(p.id);
     expect(l[0]?.docSave).toBeUndefined();
+  });
+});
+
+describe("the room seeds itself once", () => {
+  it("a doc published with content shows it to the first socket", async () => {
+    const room = await fresh("# Hello\n\nSeeded text.\n");
+    const a = await connect(room);
+    await a.until(() => mdOf(a).includes("Seeded text."));
+    a.ws.close();
+  });
+
+  it("two concurrent first loads seed once", async () => {
+    const room = await fresh("# Hello\n\nSeeded text.\n");
+    const [a, b] = await Promise.all([connect(room), connect(room)]);
+    await a.until(() => mdOf(a).includes("Seeded text."));
+    await b.until(() => mdOf(b).includes("Seeded text."));
+    await a.ping();
+    expect(mdOf(a).split("Seeded text.").length).toBe(2);
+    expect(
+      (await inRoom(room, (x) => x.markdown())).split("Seeded text.").length,
+    ).toBe(2);
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it("applyOps on a never-opened room edits the seeded text, once", async () => {
+    const room = await fresh();
+    expect((await post(room.id, { ops: REPLACE })).status).toBe(200);
+    const md = await inRoom(room, (x) => x.markdown());
+    expect(md).toContain("Ship it on Monday.");
+    expect(md.split("Plan").length).toBe(2);
+    // A socket joining afterwards does not seed again.
+    const a = await connect(room);
+    await a.ping();
+    expect(mdOf(a).split("Plan").length).toBe(2);
+    a.ws.close();
+  });
+
+  it("an emptied doc is not refilled on the next load", async () => {
+    const room = await fresh();
+    const a = await connect(room);
+    await a.until(() => mdOf(a).includes("Plan"));
+    write(a, "");
+    await a.ping();
+    a.ws.close();
+    const b = await connect(room);
+    await b.ping();
+    expect(mdOf(b)).not.toContain("Plan");
+    b.ws.close();
   });
 });
