@@ -624,7 +624,14 @@ function Row({
         toast({
           title,
           tone: "neutral",
-          action: { label: "Undo", onClick: () => unmute.mutate(m) },
+          action: {
+            label: "Undo",
+            onClick: () =>
+              unmute.mutate(m, {
+                onError: () =>
+                  toast({ title: "Couldn't save that.", tone: "danger" }),
+              }),
+          },
         }),
     });
   const needs = x.level === "needs_you";
@@ -894,12 +901,19 @@ function AskView({
           />
         ) : threads.isError ? (
           // 403, 404 or comments off: say so; "Open the page" stays above.
-          <p
+          <div
             role="alert"
-            className="m-0 py-4 text-center text-[var(--oa-text-2)]"
+            className="py-4 text-center text-[var(--oa-text-2)]"
           >
-            Couldn't open this ask.
-          </p>
+            <p className="m-0 mb-2">Couldn't open this ask.</p>
+            <button
+              type="button"
+              onClick={() => void threads.refetch()}
+              className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
+            >
+              Try again
+            </button>
+          </div>
         ) : (
           <div
             aria-hidden="true"
