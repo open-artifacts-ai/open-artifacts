@@ -36,6 +36,7 @@ const PLAIN = [
 ];
 
 type Row = {
+  id: string;
   actor_kind: string;
   actor_id: string | null;
   actor_cred_kind: string | null;
@@ -193,9 +194,46 @@ describe("ask.approve", () => {
       action: "merge",
       passkey: false,
     });
-    // An unchanged repeat is a no-op.
+    // A retried or repeated pick, even concurrent, never writes a second row.
+    const before = (await rows(k))[0]?.id;
+    await Promise.all(
+      [1, 2, 3].map(() => answer(k, bob.pat, { optionId: "merge" })),
+    );
+    const after = await rows(k);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.id).toBe(before);
+  });
+
+  it("a row lost to a failed write is written by the retry, once", async () => {
+    const k = await ask(bob, OPTS);
+    await E.DB.prepare(
+      "create trigger if not exists ask_audit_fail2 before insert on audit_events when new.action = 'ask.approve' begin select raise(abort, 'audit down'); end",
+    ).run();
+    try {
+      expect((await answer(k, bob.pat, { optionId: "merge" })).status).toBe(
+        200,
+      );
+    } finally {
+      await E.DB.prepare("drop trigger if exists ask_audit_fail2").run();
+    }
+    expect(await rows(k)).toHaveLength(0);
+    expect((await answer(k, bob.pat, { optionId: "merge" })).status).toBe(200);
     expect((await answer(k, bob.pat, { optionId: "merge" })).status).toBe(200);
     expect(await rows(k)).toHaveLength(1);
+  });
+
+  it("changing the decision is a new decision: a second row", async () => {
+    const k = await ask(bob, [
+      ...OPTS,
+      { id: "deploy", label: "Deploy", action: "deploy" as const },
+    ]);
+    await answer(k, bob.pat, { optionId: "merge" });
+    await answer(k, bob.pat, { optionId: "deploy" });
+    const r = await rows(k);
+    expect(r.map((x) => JSON.parse(x.detail).action).sort()).toEqual([
+      "deploy",
+      "merge",
+    ]);
   });
 
   it("the option picked decides: a plain option on an action ask writes nothing", async () => {

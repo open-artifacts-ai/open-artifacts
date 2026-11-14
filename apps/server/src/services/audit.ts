@@ -20,7 +20,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo } from "../log.js";
-import { hmacSign, hmacVerify } from "../util/crypto.js";
+import { hmacSign, hmacVerify, sha256Hex } from "../util/crypto.js";
 
 // The audit log (P3 T8). audit() is a statement, never a write: callers put it
 // in the same D1 batch as the change it records, so both commit or neither
@@ -57,6 +57,8 @@ export const withRequestCred = (actor: AuditActor): AuditActor => ({
 });
 
 export type AuditExtra = {
+  /** A deterministic row id, with `insert or ignore`: a retry of the same fact writes nothing twice. */
+  id?: string;
   spaceId?: string | null;
   reason?: AuditReason;
   /** Enums and ids only. `reason` is reserved (stored alongside, read back as AuditEvent.reason). */
@@ -75,7 +77,10 @@ export type AuditExtra = {
   detailSql?: { sql: string; args: unknown[] };
 };
 
-const insertSql = (detailSql?: string) => `insert into audit_events
+const insertSql = (
+  detailSql?: string,
+  ignore = false,
+) => `insert ${ignore ? "or ignore " : ""}into audit_events
   (id, at, actor_kind, actor_id, actor_cred_kind, actor_cred_id, action, target_type, target_id, space_id, detail)
   select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${detailSql ? `json_patch(?, ${detailSql})` : "?"}`;
 
@@ -94,11 +99,11 @@ export function audit(
     ...extra.detail,
     ...(extra.reason && { reason: extra.reason }),
   };
-  const insert = insertSql(extra.detailSql?.sql);
+  const insert = insertSql(extra.detailSql?.sql, extra.id !== undefined);
   const sql = extra.when ? `${insert} where ${extra.when.sql}` : insert;
   const cred = credOf(actor);
   return stmt(env.DB, sql).bind(
-    newId(),
+    extra.id ?? newId(),
     Date.now(),
     actor.kind,
     actor.id,
@@ -242,20 +247,34 @@ export type AskApproval = {
   optionId: string;
   action?: string;
   passkey: boolean;
+  /** The decision's own time, as the DO stored it: the same decision always carries the same one. */
+  decidedAt: string;
   askerAgentId?: string | null;
   askerIsAgent: boolean;
 };
-export const askApproveAudit = (
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/** The decision's own row id: one per (artifact, comment, decision), however often it is retried. */
+const decisionRowId = async (a: AskApproval): Promise<string> => {
+  const h = await sha256Hex(
+    `ask.approve\n${a.artifactId}\n${a.commentId}\n${a.decidedAt}`,
+  );
+  let id = "";
+  for (let i = 0; i < 16; i++)
+    id += B58[Number.parseInt(h.slice(i * 2, i * 2 + 2), 16) % 58];
+  return id;
+};
+export const askApproveAudit = async (
   env: Env,
   userId: string,
   a: AskApproval,
-): D1PreparedStatement =>
+): Promise<D1PreparedStatement> =>
   audit(
     env,
     "ask.approve",
     { type: "ask", id: a.commentId },
     userActor(userId),
     {
+      id: await decisionRowId(a),
       detail: {
         artifactId: a.artifactId,
         threadId: a.threadId,

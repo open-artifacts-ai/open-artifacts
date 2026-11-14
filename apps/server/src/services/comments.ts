@@ -1985,27 +1985,32 @@ export async function answerAsk(
     }),
   );
   // #2458: a risky decision (a passkey ask, or the picked option names an
-  // action) is audited once the DO has it. A weigh-in, an unchanged repeat and
-  // a refused pick (thrown above) write nothing. A failed write is logged only.
+  // action) is audited once the DO has it, keyed on the decision itself (its
+  // stored time), so a retry or an unchanged repeat inserts nothing twice, and
+  // heals a row a failed write lost. A weigh-in and a refused pick (thrown
+  // above) write nothing. A failed write is logged only.
+  const stored = c.ask?.answer;
   const picked = ask.options.find((o) => o.id === optionId);
   if (
     decided &&
-    !unchanged &&
+    stored?.optionId === optionId &&
     who.kind === "user" &&
     (needsPasskey || picked?.action)
   )
     try {
       const askerAgent = c.author.kind === "user" ? c.author.agent : undefined;
-      await askApproveAudit(env, who.id, {
+      const row = await askApproveAudit(env, who.id, {
         artifactId,
         threadId,
         commentId,
         optionId,
         ...(picked?.action ? { action: picked.action } : {}),
-        passkey: verified === "passkey",
+        passkey: stored.verified === "passkey",
+        decidedAt: stored.at,
         askerIsAgent: askerAgent !== undefined,
         askerAgentId: askerAgent?.identity?.identityId ?? null,
-      }).run();
+      });
+      await row.run();
     } catch (e) {
       logError("ask_approve_audit_failed", e, { artifactId, commentId });
     }
