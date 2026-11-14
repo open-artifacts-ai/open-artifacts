@@ -175,21 +175,17 @@ describe("invite reachability", () => {
     expect(
       await within(dialog).findByText("Invite sent to pat@elsewhere.org"),
     ).toBeVisible();
-    expect(
-      screen.queryByText("Invitation sent to pat@elsewhere.org"),
-    ).toBeNull();
+    expect(screen.queryByText(/^Invitation sent/)).toBeNull();
   });
 
-  it("uncertain: Invite sent to <email>, the warning inline, no toast", async () => {
+  it("uncertain: Invite sent to <email>, no warning (#2520 dropped it), no toast", async () => {
     // Google on: outside the domain, only a Workspace secondary domain gets in.
     mountHosted("/settings/members");
     const dialog = await invite("pat@elsewhere.org");
     expect(
       await within(dialog).findByText("Invite sent to pat@elsewhere.org"),
     ).toBeVisible();
-    expect(dialog).toHaveTextContent(
-      "pat@elsewhere.org is outside example.com, so they may not be able to log in. If they can't, invite an address at example.com.",
-    );
+    expect(dialog).not.toHaveTextContent("may not be able to log in");
     expect(
       within(dialog).getByRole("textbox", { name: "Login link" }),
     ).toBeVisible();

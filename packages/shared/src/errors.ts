@@ -86,6 +86,11 @@ export const ERROR_CODES = [
   "use_edit_doc",
   // Collaborative docs (#1100): a self-host needs Workers Paid for docs.
   "docs_need_paid",
+  // Login settings (#2520): PUT R.settings/login.
+  "domain_unproven",
+  "apply_pending",
+  // Invites (#2520): an address no login way admits.
+  "no_way_in",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -224,6 +229,12 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   use_edit_doc: 400,
   /** Publishing format "doc" on a self-host whose PLAN is not paid (#1100). Nothing is published. */
   docs_need_paid: 400,
+  /** PUT settings/login (#2520): the owner's login doesn't prove that domain is their Google Workspace's; details DomainUnprovenDetails. */
+  domain_unproven: 403,
+  /** PUT settings/login (#2520): refused, an earlier change is still being applied (a hosted redeploy, about a minute). */
+  apply_pending: 409,
+  /** POST R.members (#2520): no login way admits the address (InviteReach.ways is []). Nothing is created. */
+  no_way_in: 400,
 };
 
 /**
@@ -309,3 +320,7 @@ export const DATA_EDITORS_ONLY_MESSAGE =
 
 export const QUOTA_MESSAGE =
   "Daily free-plan limit reached; resets at 00:00 UTC";
+
+/** 403 domain_unproven details (#2520): the domain the owner's login didn't prove. */
+export const DomainUnprovenDetailsSchema = z.object({ domain: z.string() });
+export type DomainUnprovenDetails = z.infer<typeof DomainUnprovenDetailsSchema>;

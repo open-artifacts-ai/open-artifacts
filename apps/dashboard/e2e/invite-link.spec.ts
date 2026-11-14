@@ -88,7 +88,7 @@ test("email on: the invite is emailed, and the dialog says so", async ({
   await dialog.getByRole("button", { name: "Add member" }).click();
   await expect(
     dialog.getByRole("heading", {
-      name: "Invitation sent to new.person@example.com",
+      name: "Invite sent to new.person@example.com",
     }),
   ).toBeVisible();
   const origin = new URL(baseURL ?? page.url()).origin;

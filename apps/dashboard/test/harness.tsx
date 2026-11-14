@@ -31,6 +31,7 @@ import { resetCpuLimit } from "../src/api/client";
 import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import type { HostedMockOptions } from "../src/hostedParam";
+import { loginAbsentHandlers } from "../src/mockLogin";
 import { createAppRouter } from "../src/router";
 
 const ORIGIN = "http://localhost";
@@ -115,6 +116,8 @@ export const installHarness = () => {
       }),
       ...createHandlers({ events }),
       ...events.handlers,
+      // #2520's PROVISIONAL routes: absent unless a test serves them.
+      ...loginAbsentHandlers(),
     );
     vi.stubGlobal(
       "IntersectionObserver",
