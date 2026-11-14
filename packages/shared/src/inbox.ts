@@ -48,7 +48,7 @@ export const InboxItemSchema = z
     /** Null only for kind "machine" and "away"; every other kind has its page. */
     artifact: z.object({ id: z.string(), title: z.string() }).nullable(),
     actor: CommentAuthorSchema.nullable(),
-    /** The agent's roster key, used by Mute agent. */
+    /** The asking agent's bus identity id (stable across pages), used by Mute agent. Not the per-page roster key. */
     agentKey: z.string().optional(),
     machine: z.object({ id: z.string(), name: z.string() }).optional(),
     away: z

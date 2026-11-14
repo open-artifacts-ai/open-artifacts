@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { type Inbox, type Me, type Member, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import {
@@ -302,5 +303,20 @@ describe("GET R.meInbox: Needs you", () => {
     expect(await mine(other, id)).toEqual([]);
     const anon = await api(app, R.meInbox, "");
     expect(anon.status).toBe(401);
+  });
+
+  it("a personal access token reads its own owner's inbox only", async () => {
+    const id = await mkArtifact();
+    await ask(id, [me]);
+    const read = async (u: U) => {
+      const { token } = await createPat(E, u.userId, "inbox");
+      const r = await api(app, R.meInbox, token);
+      expect(r.status).toBe(200);
+      return ((await r.json()) as Inbox).needsYou.filter(
+        (i) => i.artifact?.id === id,
+      );
+    };
+    expect(await read(me)).toHaveLength(1);
+    expect(await read(other)).toEqual([]);
   });
 });
