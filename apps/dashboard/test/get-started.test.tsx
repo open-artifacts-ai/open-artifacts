@@ -298,6 +298,15 @@ describe("Get started checklist", () => {
       expect(screen.getByText("Your agent replied")).toBeInTheDocument();
     });
 
+    it("the optional invite row has no number", async () => {
+      withOnboarding({});
+      mount("/");
+      await heading();
+      const li = [...document.querySelectorAll("ol > li")].pop();
+      expect(li?.textContent).toContain("Invite your team");
+      expect(li?.firstElementChild?.textContent).toBe("");
+    });
+
     it("says the stalled line on step 4 only while it is stalled", async () => {
       withOnboarding({ agentNamed: true, mentionStalled: true });
       mount("/");

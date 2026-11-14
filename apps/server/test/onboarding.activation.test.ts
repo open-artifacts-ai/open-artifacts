@@ -80,8 +80,42 @@ const mcpWho = (userId: string, identityId = "id-ns-owner-Claude") =>
       },
     },
   }) as never;
-const personWho = (userId: string) =>
-  ({ kind: "user", id: userId, typed: true }) as never;
+const personWho = (userId: string, typed = true) =>
+  ({ kind: "user", id: userId, ...(typed ? { typed: true } : {}) }) as never;
+
+/** An env that counts the thread reads (commentsGet) the service makes. */
+function counting() {
+  let reads = 0;
+  const ns = E.ARTIFACT_RUNTIME;
+  const spy = {
+    ...E,
+    ARTIFACT_RUNTIME: {
+      idFromName: (n: string) => ns.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const st = ns.get(id);
+        return new Proxy(st, {
+          get(t, k, r) {
+            if (k === "commentsGet") reads++;
+            return Reflect.get(t, k, r);
+          },
+        });
+      },
+    },
+  } as unknown as Env;
+  return { env: spy, reads: () => reads };
+}
+/** A request ctx that holds what runs after the response. */
+function later() {
+  const held: Promise<unknown>[] = [];
+  return {
+    after: {
+      version: 1,
+      ctx: { waitUntil: (p: Promise<unknown>) => void held.push(p) },
+    },
+    held,
+    flush: () => Promise.all(held),
+  };
+}
 const viewer = (userId: string) =>
   ({ userId, short: null, moderator: true }) as never;
 const art = () =>
@@ -238,6 +272,108 @@ describe("tick 4: an own agent replied to the owner's mention", () => {
       "unprompted",
     );
     expect(await rows()).toEqual([]);
+  });
+
+  it("a mention typed by a token (not a person in the web app) does not count as the owner's comment", async () => {
+    const t = await addThread(
+      E,
+      art(),
+      personWho(owner.userId, false),
+      viewer(owner.userId),
+      { anchor: NOTE, body: "hi @Claude", mentions: [{ key: claude }] },
+      { moderator: true },
+    );
+    await addReply(
+      E,
+      artifactId,
+      t.id,
+      mcpWho(owner.userId),
+      viewer(owner.userId),
+      "on it",
+    );
+    expect(await row(mentionRepliedKey(owner.userId))).toBeNull();
+  });
+
+  it("runs after the response when there is a ctx: the reply never waits on it", async () => {
+    const t = await mention();
+    const l = later();
+    await addReply(
+      E,
+      artifactId,
+      t.id,
+      mcpWho(owner.userId),
+      viewer(owner.userId),
+      "on it",
+      {},
+      { after: l.after as never },
+    );
+    expect(l.held.length).toBeGreaterThan(0);
+    await l.flush();
+    expect(await row(mentionRepliedKey(owner.userId))).not.toBeNull();
+  });
+
+  it("the person's mention is also recorded in the background, from the comment written", async () => {
+    const l = later();
+    const c = counting();
+    await addThread(
+      c.env,
+      art(),
+      personWho(owner.userId),
+      viewer(owner.userId),
+      { anchor: NOTE, body: "hi @Claude", mentions: [{ key: claude }] },
+      { moderator: true, after: l.after as never },
+    );
+    await l.flush();
+    expect(await row(mentionedKey(owner.userId))).not.toBeNull();
+    expect(c.reads()).toBe(0);
+  });
+
+  it("reads no thread when the reply is already recorded, or the agent is not the owner's", async () => {
+    const t = await mention();
+    const c = counting();
+    const reply = (who: never) =>
+      addReply(c.env, artifactId, t.id, who, viewer(owner.userId), "x");
+    // Not the instance owner: a member's agent.
+    await reply(mcpWho(member.userId, "id-ns-member-Codex"));
+    expect(c.reads()).toBe(0);
+    expect(await row(mentionRepliedKey(member.userId))).toBeNull();
+    // The owner's agent: one read, and it records.
+    await reply(mcpWho(owner.userId));
+    expect(c.reads()).toBe(1);
+    expect(await row(mentionRepliedKey(owner.userId))).not.toBeNull();
+    // Recorded: no read, on every later reply.
+    await reply(mcpWho(owner.userId));
+    expect(c.reads()).toBe(1);
+  });
+
+  it("an agent's new thread (even with a mention) reads nothing and ticks nothing", async () => {
+    const c = counting();
+    await addThread(
+      c.env,
+      art(),
+      mcpWho(owner.userId),
+      viewer(owner.userId),
+      { anchor: NOTE, body: "hey", mentions: [{ key: claude }] },
+      { moderator: true },
+    );
+    expect(c.reads()).toBe(0);
+    expect(await rows()).toEqual([]);
+  });
+
+  it("a mention already recorded is not read or written again", async () => {
+    await mention();
+    const first = await row(mentionedKey(owner.userId));
+    const c = counting();
+    await addThread(
+      c.env,
+      art(),
+      personWho(owner.userId),
+      viewer(owner.userId),
+      { anchor: NOTE, body: "again", mentions: [{ key: claude }] },
+      { moderator: true },
+    );
+    expect(c.reads()).toBe(0);
+    expect((await row(mentionedKey(owner.userId)))?.value).toBe(first?.value);
   });
 
   it("a reply by a different agent than the one mentioned does not tick", async () => {

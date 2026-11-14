@@ -124,18 +124,22 @@ describe("Welcome page", () => {
   });
 
   it("shows the stalled line only while the mention has no reply", async () => {
-    const stalled = () => document.getElementById("stalled") as HTMLElement;
+    // Shown only inside step 4's box, under its hint; out of the page otherwise.
+    const stalled = () => document.getElementById("stalled");
+    const shown = () => stalled() !== null && stalled()?.hidden === false;
     await load();
-    expect(stalled().hidden).toBe(true);
+    expect(shown()).toBe(false);
     progress = { ...five, mentionReplied: false, mentionStalled: true };
     await vi.advanceTimersByTimeAsync(5000);
-    expect(stalled().hidden).toBe(false);
-    expect(stalled().textContent).toBe(
+    expect(shown()).toBe(true);
+    expect(stalled()?.closest('[data-step="mention"]')).not.toBeNull();
+    expect(stalled()?.previousElementSibling?.className).toBe("hint");
+    expect(stalled()?.textContent).toBe(
       'No reply yet. Your agent may not be listening. Ask it: "Check the bus."',
     );
     progress = { ...five, mentionStalled: true };
     await vi.advanceTimersByTimeAsync(5000);
-    expect(stalled().hidden).toBe(true);
+    expect(shown()).toBe(false);
   });
 
   it("says it is set when all five are done, then stops asking", async () => {

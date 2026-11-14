@@ -45,6 +45,23 @@ async function first(
   }
 }
 
+/**
+ * The cheap gate before any thread read: `key` is still unset and `userId` is
+ * the instance owner. One settings read, then one user read, only while unset.
+ */
+export async function pendingFirst(
+  env: Env,
+  userId: string,
+  key: string,
+): Promise<boolean> {
+  const row = await stmt(env.DB, "select 1 as x from settings where key = ?1")
+    .bind(key)
+    .first();
+  if (row) return false;
+  const user = await getUser(env, userId);
+  return !!user && isInstanceOwner(user);
+}
+
 /** Step 2: the owner has a bus agent with a chosen name or a role. */
 export const noteAgentNamed = (env: Env, userId: string) =>
   first(env, userId, namedKey(userId), "onboarding_named_failed");

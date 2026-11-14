@@ -58,8 +58,8 @@ ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 .step a{color:var(--accent)}
 .done-line{margin-top:12px}
 .done-line[hidden]{display:none}
-.stalled{margin:12px 0 0;font-size:14px;color:var(--muted)}
-.stalled[hidden]{display:none}
+.step .stalled{display:block;margin-top:6px;font-size:14px;color:var(--muted)}
+.step .stalled[hidden]{display:none}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
 @media (max-width:420px){main{padding:24px 16px 40px}h1{font-size:24px}}
 </style>
@@ -87,10 +87,9 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 <li class="step" data-step="connect" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Connect your agent</b></span></li>
 <li class="step" data-step="name" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Name your agent</b><span class="hint">Your agent will suggest a name. It's what you'll type after @ in comments.</span></span></li>
 <li class="step" data-step="publish" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Publish your first artifact</b><span class="hint">Ask your agent: &quot;Publish a page about what you're working on.&quot;</span></span></li>
-<li class="step" data-step="mention" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Mention your agent</b><span class="hint">Open your first page, type @ in a comment and pick your agent. It replies in the thread.</span></span></li>
+<li class="step" data-step="mention" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Mention your agent</b><span class="hint">Open your first page, type @ in a comment and pick your agent. It replies in the thread.</span><span class="stalled" id="stalled" role="status" hidden>No reply yet. Your agent may not be listening. Ask it: &quot;Check the bus.&quot;</span></span></li>
 <li class="step" data-step="ask" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Answer your agent's ask</b><span class="hint">Your first page has a question from your agent. Pick an option.</span></span></li>
 </ol>
-<p class="stalled" id="stalled" role="status" hidden>No reply yet. Your agent may not be listening. Ask it: &quot;Check the bus.&quot;</p>
 <p class="done-line" id="all-done" hidden>You're set. Your agent hears your comments and answers them.</p>
 
 <footer>You can delete this page any time. Nothing else depends on it.</footer>
@@ -157,6 +156,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
   });
   var all = document.getElementById("all-done");
   var stalled = document.getElementById("stalled");
+  stalled.parentNode.removeChild(stalled);
   function tick(step, on){ step.setAttribute("data-done", String(on)); }
   // One step: its label is the done line when done, else the title and hint.
   function line(step, done, title, doneText, hint){
@@ -189,9 +189,10 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       a.textContent = p.firstArtifact.title;
       b.appendChild(a);
     }
-    line(items.mention, !!p.mentionReplied, "Mention your agent", (p.agentName ? nm : "Your agent") + " replied", D.mentionHint.replace("{name}", nm));
+    var ml = line(items.mention, !!p.mentionReplied, "Mention your agent", (p.agentName ? nm : "Your agent") + " replied", D.mentionHint.replace("{name}", nm));
     line(items.ask, !!p.askAnswered, "Answer your agent's ask", "Answered", D.askHint.replace("{name}", nm));
     stalled.hidden = !(p.mentionStalled && !p.mentionReplied);
+    if (!stalled.hidden) ml.appendChild(stalled);
     var done = p.agentConnected && p.agentNamed && p.firstArtifact && p.mentionReplied && p.askAnswered;
     all.hidden = !done;
     return !all.hidden;

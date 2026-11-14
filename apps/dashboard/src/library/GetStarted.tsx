@@ -23,7 +23,8 @@ function Step({
   title,
   children,
 }: {
-  n: number;
+  /** The step number; absent on the optional row, which shows an empty circle. */
+  n?: number;
   state: "done" | "cur" | "todo";
   title: React.ReactNode;
   children: React.ReactNode;
@@ -265,7 +266,6 @@ export function GetStarted({
           )}
         </Step>
         <Step
-          n={6}
           state={st(5)}
           title={
             <>
