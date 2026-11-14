@@ -583,8 +583,9 @@ describe.each(["solo", "readOnly"] as const)(
   },
 );
 
-// #2458: the audit log is Business only on hosted (403 plan_required for the
-// owner and admins on every other plan; a member is still 404 first).
+// #2458: the audit log on hosted: Business reads all, Team the last 30 days
+// (audit.plan.test.ts), Solo and free are refused 403 plan_required (a
+// member is still 404 first).
 describe.each(["none", "solo", "readOnly"] as const)(
   "plan %s: the audit log",
   (state) => {
@@ -595,10 +596,11 @@ describe.each(["none", "solo", "readOnly"] as const)(
     it.each([
       ["read", R.audit],
       ["export", R.auditExport],
-    ] as const)("%s: Business only", async (_n, route) => {
+    ] as const)("%s: Solo refused, Team and Business read", async (_n, route) => {
       for (const w of ["owner", "admin"] as const) {
         const r = await send(props, route, cred(w));
-        if (state === "none") expect(r.status).toBe(200);
+        // Business and Team (here lapsed) read; only Solo is refused.
+        if (state !== "solo") expect(r.status).toBe(200);
         else {
           expect(r.status).toBe(403);
           const e = ((await r.json()) as { error: { code: string } }).error;
