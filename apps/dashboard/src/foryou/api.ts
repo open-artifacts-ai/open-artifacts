@@ -7,9 +7,13 @@ import {
   type Inbox,
   type InboxItem,
   InboxItemSchema,
+  type InboxMutes,
+  InboxMutesSchema,
   InboxSchema,
   type Me,
   MeSchema,
+  type NotificationPrefs,
+  NotificationPrefsSchema,
   R,
 } from "@oa/shared";
 import {
@@ -177,10 +181,13 @@ export const useLater = () => {
 };
 
 /** A mute stops push only: the row stays. */
-export const useMute = () =>
-  useEdit((v: { kind: "agent" | "page"; id: string }) =>
-    api.send("POST", R.meInboxMutes, v),
-  );
+export const useMute = () => {
+  const qc = useQueryClient();
+  return useEdit(async (v: { kind: "agent" | "page"; id: string }) => {
+    await api.send("POST", R.meInboxMutes, v);
+    void qc.invalidateQueries({ queryKey: ["inbox-mutes"] });
+  });
+};
 
 /** An answered (or gone) ask leaves the list at once; the next fetch confirms it. */
 export const useDropItem = () => {
@@ -193,4 +200,68 @@ export const useDropItem = () => {
     void qc.invalidateQueries({ queryKey: inboxKey });
     void qc.invalidateQueries({ queryKey: qk.me, exact: true });
   };
+};
+
+export const prefsKey = ["notification-prefs"] as const;
+export const mutesKey = ["inbox-mutes"] as const;
+
+export const usePrefs = (enabled: boolean) =>
+  useQuery({
+    queryKey: prefsKey,
+    queryFn: ({ signal }) =>
+      api.get(R.meNotificationPrefs, NotificationPrefsSchema, signal),
+    enabled,
+  });
+
+/** The caller's zone, from the browser: "morning" and quiet hours are in it. */
+export const browserTimeZone = () =>
+  Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+/** PUT the whole prefs, shown at once; a failure puts them back. */
+export const useSavePrefs = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (p: NotificationPrefs) =>
+      api.send("PUT", R.meNotificationPrefs, p, NotificationPrefsSchema),
+    onMutate: async (p) => {
+      await qc.cancelQueries({ queryKey: prefsKey });
+      const prev = qc.getQueryData<NotificationPrefs>(prefsKey);
+      qc.setQueryData(prefsKey, p);
+      return { prev };
+    },
+    onError: (_e, _p, ctx) => {
+      if (ctx?.prev) qc.setQueryData(prefsKey, ctx.prev);
+    },
+    onSuccess: (p) => qc.setQueryData(prefsKey, p),
+  });
+};
+
+export const useMutes = (enabled: boolean) =>
+  useQuery({
+    queryKey: mutesKey,
+    queryFn: ({ signal }) => api.get(R.meInboxMutes, InboxMutesSchema, signal),
+    enabled,
+  });
+
+export const useUnmute = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (m: { kind: "agent" | "page"; id: string }) =>
+      api.send("DELETE", R.meInboxMute(m.kind, m.id), undefined),
+    onMutate: async (m) => {
+      await qc.cancelQueries({ queryKey: mutesKey });
+      const prev = qc.getQueryData<InboxMutes>(mutesKey);
+      if (prev)
+        qc.setQueryData<InboxMutes>(mutesKey, {
+          items: prev.items.filter(
+            (x) => !(x.kind === m.kind && x.id === m.id),
+          ),
+        });
+      return { prev };
+    },
+    onError: (_e, _m, ctx) => {
+      if (ctx?.prev) qc.setQueryData(mutesKey, ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: mutesKey }),
+  });
 };

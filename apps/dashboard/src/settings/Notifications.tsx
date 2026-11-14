@@ -8,6 +8,7 @@ import { useUpdateMe } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { ForYouPrefs } from "./ForYouPrefs";
 import { Switch } from "./spaces/Switch";
 import { muted, SettingsCard } from "./ui";
 
@@ -16,7 +17,13 @@ export function Notifications() {
   useDocumentTitle("Notifications");
   const state = useMe();
   if (state.status !== "authed") return null;
-  return <CommentEmail me={state.me} />;
+  // #2512: For you's settings when the server has it (Me.inbox); today's email switch stays as it is.
+  return (
+    <div className="grid max-w-[620px] min-w-0 gap-[var(--oa-space-4)]">
+      {state.me.inbox && <ForYouPrefs />}
+      <CommentEmail me={state.me} />
+    </div>
+  );
 }
 
 function CommentEmail({ me }: { me: Me }) {

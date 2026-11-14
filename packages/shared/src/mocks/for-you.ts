@@ -12,6 +12,8 @@ import {
   InboxMuteBodySchema,
   type InboxMutes,
   InboxReadBodySchema,
+  type NotificationPrefs,
+  NotificationPrefsSchema,
 } from "../inbox.js";
 import { R } from "../routes.js";
 import { FOR_YOU_ASK } from "./comments.js";
@@ -198,7 +200,30 @@ export function createForYouMock(d: Deps): {
     needsYou: open().length,
     unreadUpdates: updates.filter((x) => x.readAt === null).length,
   });
-  const mutes: InboxMutes["items"] = [];
+  // Design's screen 4: one agent and one page muted already.
+  const mutes: InboxMutes["items"] =
+    d.variant === "mixed"
+      ? [
+          { kind: "agent", id: "agent:polish", name: "OA Polish" },
+          { kind: "page", id: "WeeklyNumbers001", name: "Weekly numbers" },
+        ]
+      : [];
+  /** The server's defaults: browser off, quiet hours off, details hidden. */
+  let prefs: NotificationPrefs = {
+    needsYou: { inApp: true, browser: d.variant === "mixed" },
+    updates: { inApp: true, browser: false },
+    browserAllAsks: false,
+    quietHours: d.variant === "mixed" ? { start: "22:00", end: "07:30" } : null,
+    timeZone: "UTC",
+    lockScreenDetail: false,
+  };
+  /** A mute's name, as the server would know it. */
+  const nameOf = (kind: string, id: string) => {
+    const all = [...needsYou, ...later, ...updates];
+    if (kind === "agent")
+      return all.find((x) => x.agentKey === id)?.actor?.name ?? id;
+    return all.find((x) => x.artifact?.id === id)?.artifact?.title ?? id;
+  };
   const done = () => new HttpResponse(null, { status: 204 });
   const readNow = (x: InboxItem) =>
     x.readAt === null ? { ...x, readAt: ago(0) } : x;
@@ -252,6 +277,13 @@ export function createForYouMock(d: Deps): {
         later = [...later, moved];
         return HttpResponse.json(moved);
       }),
+      http.get(`*${R.meNotificationPrefs}`, () => HttpResponse.json(prefs)),
+      http.put(`*${R.meNotificationPrefs}`, async ({ request }) => {
+        const p = NotificationPrefsSchema.safeParse(await request.json());
+        if (!p.success) return d.err("bad_request", "Invalid body");
+        prefs = p.data;
+        return HttpResponse.json(prefs);
+      }),
       http.get(`*${R.meInboxMutes}`, () =>
         HttpResponse.json({ items: mutes } satisfies InboxMutes),
       ),
@@ -260,7 +292,7 @@ export function createForYouMock(d: Deps): {
         const p = InboxMuteBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
         if (!mutes.some((m) => m.kind === p.data.kind && m.id === p.data.id))
-          mutes.push({ ...p.data, name: p.data.id });
+          mutes.push({ ...p.data, name: nameOf(p.data.kind, p.data.id) });
         return done();
       }),
       http.delete("*/api/v1/me/inbox/mutes/:kind/:id", ({ params }) => {
