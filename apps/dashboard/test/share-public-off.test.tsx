@@ -51,9 +51,9 @@ const open = (overrides: HttpHandler[] = []) => {
   server.use(...overrides);
   return mount(`${viewerPath(art.id)}?panel=open&tab=share`);
 };
-const group = () => screen.findByRole("radiogroup", { name: "Visibility" });
+const group = () => screen.findByRole("radiogroup", { name: "General access" });
 const REASON =
-  "Public links are off for Exec. A space manager can turn them on.";
+  "Sharing by link is off for Exec. A space manager can turn it on.";
 
 // Radix Select needs these in jsdom.
 Element.prototype.hasPointerCapture ??= () => false;
@@ -64,15 +64,17 @@ it("Public stays visible but disabled in a public-off space, with the reason", a
     serve({ access: "manager", space: exec, can: full, visibility: "team" }),
   ]);
   const g = await group();
-  const pub = within(g).getByRole("radio", { name: "Public" });
+  const pub = within(g).getByRole("radio", { name: "Anyone with the link" });
   expect(pub).toBeDisabled();
   expect(screen.getByText(REASON)).toBeVisible();
-  expect(pub).toHaveAttribute("aria-describedby");
+  // Its own line, then the reason.
+  expect(pub).toHaveAccessibleDescription(
+    `No login needed. It won't appear in search engines. ${REASON}`,
+  );
+  expect(within(g).getByRole("radio", { name: "Restricted" })).toBeEnabled();
   expect(
-    document.getElementById(pub.getAttribute("aria-describedby") as string),
-  ).toHaveTextContent(REASON);
-  expect(within(g).getByRole("radio", { name: "Private" })).toBeEnabled();
-  expect(within(g).getByRole("radio", { name: "Team" })).toBeEnabled();
+    within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+  ).toBeEnabled();
   // Sharing with people works as today.
   expect(screen.getByRole("heading", { name: "Add people" })).toBeVisible();
 });
@@ -82,19 +84,25 @@ it("an artifact that's already public in a public-off space stays public: its li
     serve({ access: "manager", space: exec, can: full, visibility: "public" }),
   ]);
   const g = await group();
-  const pub = within(g).getByRole("radio", { name: "Public" });
+  const pub = within(g).getByRole("radio", { name: "Anyone with the link" });
   expect(pub).toBeChecked();
   expect(screen.getByText(REASON)).toBeVisible();
   // Choosing Team stages it; Public can then be chosen back (nothing was saved).
-  fireEvent.click(within(g).getByRole("radio", { name: "Team" }));
-  expect(within(g).getByRole("radio", { name: "Team" })).toBeChecked();
+  fireEvent.click(
+    within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+  );
+  expect(
+    within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+  ).toBeChecked();
 });
 
 it("no space (self-hosted): the Share panel is unchanged", async () => {
   open();
   const g = await group();
-  expect(within(g).getByRole("radio", { name: "Public" })).toBeEnabled();
-  expect(screen.queryByText(/A space manager can turn them on\./)).toBeNull();
+  expect(
+    within(g).getByRole("radio", { name: "Anyone with the link" }),
+  ).toBeEnabled();
+  expect(screen.queryByText(/A space manager can turn it on\./)).toBeNull();
 });
 
 it("a public-on space: Public is available and no reason shows", async () => {
@@ -102,8 +110,10 @@ it("a public-on space: Public is available and no reason shows", async () => {
     serve({ access: "manager", space: eng, can: full, visibility: "team" }),
   ]);
   const g = await group();
-  expect(within(g).getByRole("radio", { name: "Public" })).toBeEnabled();
-  expect(screen.queryByText(/A space manager can turn them on\./)).toBeNull();
+  expect(
+    within(g).getByRole("radio", { name: "Anyone with the link" }),
+  ).toBeEnabled();
+  expect(screen.queryByText(/A space manager can turn it on\./)).toBeNull();
 });
 
 it("a 403 public_links_off from a stale tab shows the copy and keeps the old visibility", async () => {
@@ -117,19 +127,18 @@ it("a 403 public_links_off from a stale tab shows the copy and keeps the old vis
     ),
   ]);
   const g = await group();
-  fireEvent.click(within(g).getByRole("radio", { name: "Public" }));
-  fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
   fireEvent.click(
-    within(await screen.findByRole("dialog")).getByRole("button", {
-      name: /public/i,
-    }),
+    within(g).getByRole("radio", { name: "Anyone with the link" }),
   );
+  fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
   await findVisibleToast(
-    "Public links are off for this space. A space manager can turn them on.",
+    "Sharing by link is off for this space. A space manager can turn it on.",
   );
   expect(screen.queryByText("server text")).toBeNull();
   await waitFor(() =>
-    expect(within(g).getByRole("radio", { name: "Team" })).toBeChecked(),
+    expect(
+      within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+    ).toBeChecked(),
   );
 });
 
@@ -144,7 +153,9 @@ it("people can be shared without visibility rights (share true, setVisibility fa
   expect(
     await screen.findByRole("heading", { name: "Add people" }),
   ).toBeVisible();
-  expect(screen.queryByRole("radio", { name: "Public" })).toBeNull();
+  expect(
+    screen.queryByRole("radio", { name: "Anyone with the link" }),
+  ).toBeNull();
 });
 
 it("an editor without share or setVisibility gets no Share button", async () => {
@@ -166,26 +177,30 @@ it("an editor without share or setVisibility gets no Share button", async () => 
   expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
 });
 
-it("hosted help text names the space on Private and the org on Team (D6 section 9)", async () => {
+it("#2509: in a shared space Restricted keeps the space's wording; the others read the same everywhere", async () => {
   open([
     serve({ access: "manager", space: eng, can: full, visibility: "private" }),
   ]);
   const g = await group();
   expect(
-    screen.getByText("People with access to Engineering, and anyone you add"),
-  ).toBeVisible();
-  fireEvent.click(within(g).getByRole("radio", { name: "Team" }));
-  expect(screen.getByText("Everyone at Acme Artifacts")).toBeVisible();
-  fireEvent.click(within(g).getByRole("radio", { name: "Public" }));
-  expect(screen.getByText("Anyone with the link, no login")).toBeVisible();
+    within(g).getByRole("radio", { name: "Restricted" }),
+  ).toHaveAccessibleDescription(
+    "People with access to Engineering, and anyone you add",
+  );
+  expect(
+    within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+  ).toHaveAccessibleDescription("Every member of Acme Artifacts can open it.");
+  expect(
+    within(g).getByRole("radio", { name: "Anyone with the link" }),
+  ).toHaveAccessibleDescription(
+    "No login needed. It won't appear in search engines.",
+  );
 });
 
-it("self-hosted help text is unchanged", async () => {
+it("#2509: self-hosted lines are General access's own", async () => {
   open();
-  await group();
+  const g = await group();
   expect(
-    screen.getByText(
-      /Only you and the people below can open it\.|Everyone in the workspace can open it\.|Anyone with the link can view\./,
-    ),
-  ).toBeVisible();
+    within(g).getByRole("radio", { name: "Restricted" }),
+  ).toHaveAccessibleDescription("Only people you add can open it.");
 });

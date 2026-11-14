@@ -18,7 +18,7 @@ export const LINK_BTN = `${SM} text-foreground hover:text-accent-foreground`;
 const VIS: Record<Visibility, { label: string; tone: string; icon: string[] }> =
   {
     private: {
-      label: "Private",
+      label: "Restricted",
       tone: "bg-[var(--oa-sunken)] text-[var(--oa-text-2)]",
       icon: [
         "M4.5 7h7A1.5 1.5 0 0 1 13 8.5v4a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 12.5v-4A1.5 1.5 0 0 1 4.5 7zM5.5 7V5a2.5 2.5 0 0 1 5 0v2",
@@ -32,7 +32,7 @@ const VIS: Record<Visibility, { label: string; tone: string; icon: string[] }> =
       ],
     },
     public: {
-      label: "Public",
+      label: "Anyone with link",
       tone: "bg-[var(--oa-success-soft)] text-[var(--oa-success-fg)]",
       icon: [
         "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM2 8h12M8 2c1.8 2 2.6 4 2.6 6S9.8 12 8 14M8 2C6.2 4 5.4 6 5.4 8S6.2 12 8 14",
@@ -43,12 +43,16 @@ const VIS: Record<Visibility, { label: string; tone: string; icon: string[] }> =
 export function VisibilityBadge({
   visibility,
   iconOnly = false,
+  org,
 }: {
   visibility: Visibility;
+  /** #2509: the instance's name, shown for team (else "Team"). */
+  org?: string;
   /** #2503: the lock (or globe) alone; the label stays its accessible name. */
   iconOnly?: boolean;
 }) {
   const v = VIS[visibility];
+  const label = visibility === "team" && org ? org : v.label;
   return (
     <Badge
       variant="secondary"
@@ -73,7 +77,16 @@ export function VisibilityBadge({
           <path key={d} d={d} />
         ))}
       </svg>
-      {iconOnly ? <span className="sr-only">{v.label}</span> : v.label}
+      {iconOnly ? (
+        <span className="sr-only">{label}</span>
+      ) : (
+        <span
+          className="max-w-[12rem] truncate"
+          title={label !== v.label ? label : undefined}
+        >
+          {label}
+        </span>
+      )}
     </Badge>
   );
 }

@@ -201,7 +201,8 @@ for (const width of [1280, 390])
         below: !!title && !!meta && meta.top >= title.bottom - 0.5,
       };
     });
-    expect(r.first).toMatch(/^(Private|Team|Public)$/);
+    // #2509: Restricted, the instance name (Acme Artifacts) or Anyone with link.
+    expect(r.first).toMatch(/^(Restricted|Acme Artifacts|Anyone with link)$/);
     expect(r.agent).toBe("Claude Code");
     expect(r.below).toBe(width <= 600);
   });

@@ -183,7 +183,7 @@ export const FormatIcon = ({
 
 const visibility: Record<Visibility, [string, ReactNode]> = {
   private: [
-    "Private",
+    "Restricted",
     <>
       <rect x="3" y="7" width="10" height="7" rx="1.5" />
       <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
@@ -197,7 +197,7 @@ const visibility: Record<Visibility, [string, ReactNode]> = {
     </>,
   ],
   public: [
-    "Public",
+    "Anyone with link",
     <>
       <circle cx="8" cy="8" r="6" />
       <path d="M2 8h12M8 2c1.8 2 2.6 4 2.6 6S9.8 12 8 14M8 2C6.2 4 5.4 6 5.4 8S6.2 12 8 14" />
@@ -205,12 +205,27 @@ const visibility: Record<Visibility, [string, ReactNode]> = {
   ],
 };
 
-export function VisibilityBadge({ visibility: v }: { visibility: Visibility }) {
+/**
+ * #2509: people read "Restricted", the instance's name, "Anyone with link";
+ * the value stays private/team/public. `org` names team (a long name truncates,
+ * whole in the tooltip); without it, "Team".
+ */
+export function VisibilityBadge({
+  visibility: v,
+  org,
+}: {
+  visibility: Visibility;
+  org?: string;
+}) {
   const [label, d] = visibility[v];
+  const text = v === "team" && org ? org : label;
   return (
-    <span className={cx(s.badge, s[`vis-${v}`])}>
+    <span
+      className={cx(s.badge, s[`vis-${v}`])}
+      title={text !== label ? text : undefined}
+    >
       {glyph(d, 11)}
-      {label}
+      <span className={s.badgeText}>{text}</span>
     </span>
   );
 }

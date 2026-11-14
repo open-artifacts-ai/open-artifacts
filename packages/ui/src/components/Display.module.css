@@ -8,6 +8,12 @@
   font: 500 var(--oa-text-xs) / 1 var(--oa-font-sans);
   white-space: nowrap;
 }
+/* #2509: the instance's name on a team badge stops at 12rem. */
+.badgeText {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .neutral,
 .vis-private {
   background: var(--oa-sunken);

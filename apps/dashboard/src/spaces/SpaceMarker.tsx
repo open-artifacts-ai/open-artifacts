@@ -43,13 +43,13 @@ export function VisibilityWithHint({
   // No org name in the contract yet: the install name stands in.
   const org = me.status === "authed" ? me.me.instance.name : "";
   const hint = visibilityHint(visibility, space, org);
-  if (!hint) return <VisibilityBadge visibility={visibility} />;
+  if (!hint) return <VisibilityBadge visibility={visibility} org={org} />;
   return (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex">
-            <VisibilityBadge visibility={visibility} />
+            <VisibilityBadge visibility={visibility} org={org} />
           </span>
         </TooltipTrigger>
         <TooltipContent>{hint}</TooltipContent>

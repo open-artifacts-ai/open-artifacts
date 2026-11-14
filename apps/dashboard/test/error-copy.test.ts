@@ -24,7 +24,7 @@ it.each([
   ],
   [
     "public_links_off",
-    "Public links are off for this space. A space manager can turn them on.",
+    "Sharing by link is off for this space. A space manager can turn it on.",
   ],
   ["use_move", "This artifact already exists. Use Move to change its space."],
   [

@@ -47,20 +47,34 @@ import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
 import { visibilityHint } from "../../spaces/SpaceMarker";
 
-const VIS: { value: Visibility; label: string }[] = [
-  { value: "private", label: "Private" },
-  { value: "team", label: "Team" },
-  { value: "public", label: "Public" },
-];
+const VIS: Visibility[] = ["private", "team", "public"];
 const ROLES: { value: ShareRole; label: string }[] = [
   { value: "viewer", label: "Viewer" },
   { value: "editor", label: "Editor" },
 ];
-const NOTE: Record<Visibility, string> = {
-  private: "Only you and the people below can open it.",
-  team: "Everyone in the workspace can open it.",
-  public: "Anyone with the link can view. It won't appear in search engines.",
-};
+/**
+ * #2509 General access: what each choice is called and the line under it
+ * (OA Product's strings). People read these; the value stays private, team
+ * or public. In a shared space, Restricted keeps the space's own wording.
+ */
+const ACCESS = (
+  v: Visibility,
+  org: string,
+  space: ArtifactSummary["space"],
+): [string, string] =>
+  v === "private"
+    ? [
+        "Restricted",
+        space?.kind === "shared"
+          ? (visibilityHint("private", space, org) ?? "")
+          : "Only people you add can open it.",
+      ]
+    : v === "team"
+      ? [`Anyone at ${org}`, `Every member of ${org} can open it.`]
+      : [
+          "Anyone with the link",
+          "No login needed. It won't appear in search engines.",
+        ];
 /** #681: who may change the page's live data. */
 const WRITERS: { value: DataWriters; label: string }[] = [
   { value: "viewers", label: "Everyone who can see it" },
@@ -194,7 +208,6 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const patch = usePatchArtifact(id);
   const put = usePutShare(id);
   const del = useDeleteShare(id);
-  const [confirmPublic, setConfirmPublic] = useState(false);
   // A 409 on a visibility change: the choice reverts to the server's value.
   const [conflict, setConflict] = useState(false);
   // The control only stages a choice; Save visibility commits it.
@@ -299,46 +312,64 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           after it. The accent marks the chosen visibility. */}
       <section>
         <h3 id="oa-share-vis" className={H3}>
-          Visibility
+          General access
         </h3>
         {vis ? (
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            aria-label="Visibility"
-            value={staged}
-            onValueChange={(v) =>
-              v && !patch.isPending && setPending(v as Visibility)
-            }
+          <div
+            role="radiogroup"
+            aria-labelledby="oa-share-vis"
+            className="flex flex-col gap-[var(--oa-space-1)]"
           >
-            {VIS.map((o) => (
-              <ToggleGroupItem
-                key={o.value}
-                value={o.value}
-                disabled={o.value === "public" && publicOff}
-                aria-describedby={
-                  o.value === "public" && space?.publicLinks === false
-                    ? "oa-share-public-off"
-                    : undefined
-                }
-                className={`px-[var(--oa-space-3)] ${CONTROL}`}
-                // Radio semantics: arrowing to an option chooses it, as the
-                // radiogroup role promises (Radix only moves focus).
-                // TODO: drop once Design's ToggleGroup primitive selects on arrow.
-                onFocus={() => !patch.isPending && setPending(o.value)}
-              >
-                {o.label}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+            {VIS.map((v) => {
+              const [label, line] = ACCESS(v, install, space);
+              const off = v === "public" && publicOff;
+              return (
+                <label
+                  key={v}
+                  data-access={v}
+                  className={`flex gap-[var(--oa-space-2)] rounded-[var(--oa-radius-md)] border border-transparent px-[var(--oa-space-2)] py-[var(--oa-space-2)] ${off ? "opacity-60" : "cursor-pointer hover:bg-[var(--oa-surface-2)]"} has-[:checked]:border-[var(--oa-accent)] has-[:checked]:bg-[var(--oa-accent-soft)] has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-[var(--oa-focus)]`}
+                >
+                  <input
+                    type="radio"
+                    name={`oa-access-${id}`}
+                    value={v}
+                    checked={staged === v}
+                    disabled={off}
+                    aria-labelledby={`oa-access-${v}-label`}
+                    aria-describedby={
+                      v === "public" && space?.publicLinks === false
+                        ? `oa-access-${v}-line oa-share-public-off`
+                        : `oa-access-${v}-line`
+                    }
+                    className="mt-[3px] size-[14px] flex-none accent-[var(--oa-accent)] outline-none"
+                    onChange={() => !patch.isPending && setPending(v)}
+                  />
+                  <span className="flex min-w-0 flex-col">
+                    <span
+                      id={`oa-access-${v}-label`}
+                      className={`${TEXT} font-medium`}
+                    >
+                      {label}
+                    </span>
+                    <span
+                      id={`oa-access-${v}-line`}
+                      className={`${TEXT} ${MUTED}`}
+                    >
+                      {line}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         ) : (
-          <VisibilityBadge visibility={artifact.visibility} />
+          <>
+            <VisibilityBadge visibility={artifact.visibility} org={install} />
+            <p className={`oa-vis-note mt-[var(--oa-space-2)] ${MUTED}`}>
+              {ACCESS(artifact.visibility, install, space)[1]}
+            </p>
+          </>
         )}
-        <p className={`oa-vis-note mt-[var(--oa-space-2)] ${MUTED}`}>
-          {/* Hosted: the help text names the space or the org (D6 section 9). */}
-          {visibilityHint(staged, artifact.space, install) ?? NOTE[staged]}
-        </p>
         {conflict && (
           <div className="mt-[var(--oa-space-2)]">
             <ConflictNote />
@@ -349,7 +380,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             id="oa-share-public-off"
             className={`mt-[var(--oa-space-1)] ${MUTED}`}
           >
-            Public links are off for {space.name}. A space manager can turn them
+            Sharing by link is off for {space.name}. A space manager can turn it
             on.
           </p>
         )}
@@ -360,11 +391,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               className={CONTROL}
               disabled={patch.isPending}
               aria-busy={patch.isPending || undefined}
-              onClick={() =>
-                staged === "public"
-                  ? setConfirmPublic(true)
-                  : commitVisibility(staged)
-              }
+              // #2509: Anyone with the link applies like the others, with no confirm.
+              onClick={() => commitVisibility(staged)}
             >
               Save visibility
             </Button>
@@ -680,34 +708,6 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       >
         Copy link
       </Button>
-
-      <Modal
-        open={confirmPublic}
-        onClose={() => setConfirmPublic(false)}
-        title="Make this public?"
-        description="Anyone with the link can view. It won't appear in search engines."
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setConfirmPublic(false);
-                setPending(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                setConfirmPublic(false);
-                commitVisibility("public");
-              }}
-            >
-              Make public
-            </Button>
-          </>
-        }
-      />
     </div>
   );
 }
