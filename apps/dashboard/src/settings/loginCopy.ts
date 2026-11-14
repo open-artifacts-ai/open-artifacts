@@ -95,7 +95,7 @@ export const SAVE = {
   pending: "Saving. This takes about a minute.",
   saved: "Saved.",
   failed: "Couldn't save. Try again.",
-  /** 409 apply_pending: refused, an earlier change is still applying. PLACEHOLDER: string asked of Product. */
+  /** 409 apply_pending: refused, an earlier change is still applying (Product, #2537). */
   busy: "An earlier change is still being saved. Try again in a minute.",
   /** domain_unproven, with the domain the server named (or the owner's). */
   unproven: (d: string) =>
