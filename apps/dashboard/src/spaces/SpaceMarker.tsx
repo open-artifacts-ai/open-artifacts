@@ -24,7 +24,8 @@ export const visibilityHint = (
 ): string | null => {
   if (!space) return null; // self-hosted: no spaces, no hints
   // Design D6 section 9: Private names the space, Team the org.
-  if (v === "team") return `Everyone at ${org}`;
+  // #2509: the badge already reads the org's name; the hint is Share's line.
+  if (v === "team") return `Every member of ${org} can open it.`;
   if (v === "public") return "Anyone with the link, no login";
   return space.kind === "shared"
     ? `People with access to ${space.name}, and anyone you add`

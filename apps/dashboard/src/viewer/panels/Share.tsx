@@ -38,7 +38,6 @@ import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { LoadError } from "../../layout/LoadError";
-import { Modal } from "../../layout/Modal";
 import { Notice } from "../../layout/Notice";
 import { personName } from "../../layout/person";
 import { toast } from "../../layout/toast";
