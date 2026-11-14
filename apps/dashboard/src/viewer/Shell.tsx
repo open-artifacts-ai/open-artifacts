@@ -781,7 +781,7 @@ function Viewer({
               authed={authed}
               comments={
                 commentsTab ? (
-                  <CommentsBody textFormat={textFormat} />
+                  <CommentsBody textFormat={textFormat} inPanel />
                 ) : undefined
               }
               tab={tab}

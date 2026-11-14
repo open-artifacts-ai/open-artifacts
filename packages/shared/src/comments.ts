@@ -137,6 +137,10 @@ export const CommentAskSchema = z
     canTakeBack: z.boolean().optional(),
     /** #2381: the latest pick of each person, oldest first. The decider's is the decision's source. */
     picks: z.array(AskPickSchema).optional(),
+    /** #2323: the id of the ask this one replaces (a comment on this artifact, posted by the same asker). */
+    replaces: key.optional(),
+    /** #2323: the id of the ask that replaces this one. */
+    replacedBy: key.optional(),
     /** The decision: the decider's pick (before #2381, the last pick of anyone asked). */
     answer: z
       .object({
@@ -145,6 +149,8 @@ export const CommentAskSchema = z
         at: z.string(),
         /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
         typed: z.boolean(),
+        /** #2381: the decision this one changed: the decider's earlier, different pick. */
+        was: z.object({ optionId: key, at: z.string() }).optional(),
         /** #2263: set by the server when a passkey assertion for this pick verified. */
         verified: z.literal("passkey").optional(),
         /**
@@ -284,6 +290,8 @@ export const AskInputSchema = z
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
     /** #2381: a person (member who can edit the page) who decides. Default: the asker's own user. Never on an ask that names an action. */
     decider: KeyRefSchema.optional(),
+    /** #2323: the id of an earlier ask by the same asker that this one replaces. */
+    replaces: key.optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;

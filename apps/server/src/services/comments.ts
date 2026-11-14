@@ -723,6 +723,22 @@ export const maskBody = (body: string, pairs: [string, string][]): string => {
 const isTyped = (a: StoredActor): boolean =>
   a.kind === "user" && a.typed === true && !a.agent;
 
+/**
+ * #2381: the decision this one changed: the decider's latest pick that is
+ * not the current decision's option (none for a first decision).
+ */
+const wasOf = (ask: StoredAsk): { was?: { optionId: string; at: string } } => {
+  if (!ask.answer) return {};
+  const who = ask.answer.by.ref;
+  const mine = (ask.history ?? []).filter((p) => p.by.ref === who);
+  for (let i = mine.length - 1; i >= 0; i--) {
+    const p = mine[i] as StoredPick;
+    if (p.optionId !== ask.answer.optionId)
+      return { was: { optionId: p.optionId, at: p.at } };
+  }
+  return {};
+};
+
 /** #2381: who decides, who chose them, the viewer's part and everyone's latest pick. */
 const deciderFields = (
   c: StoredComment,
@@ -822,6 +838,8 @@ const commentOf = (
               : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
             ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
+            ...(c.ask.replaces ? { replaces: c.ask.replaces } : {}),
+            ...(c.ask.replacedBy ? { replacedBy: c.ask.replacedBy } : {}),
             ...deciderFields(c, c.ask, viewer, users),
             ...(c.ask.answer
               ? {
@@ -830,6 +848,7 @@ const commentOf = (
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
+                    ...wasOf(c.ask),
                     ...(c.ask.answer.verified
                       ? { verified: c.ask.answer.verified }
                       : {}),
@@ -1244,6 +1263,7 @@ async function resolveExtras(
       to,
       ...(confirm ? { confirm } : {}),
       ...(decider ? { decider } : {}),
+      ...(askIn.replaces ? { replaces: askIn.replaces } : {}),
     };
   }
   const agents = new Map<string, Resolved["agents"][number]>();

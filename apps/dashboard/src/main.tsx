@@ -503,6 +503,8 @@ async function startMocks() {
       commentAsks: params.get("mock") === "asks",
       // ?mock=deciders (#2381): asks in each decider state.
       commentDeciders: params.get("mock") === "deciders",
+      // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
+      commentDecisions: params.get("mock") === "decisions",
       // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
       commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
         params.get("passkey") ?? "",

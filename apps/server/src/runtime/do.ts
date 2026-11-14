@@ -597,6 +597,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "decider")
       )
         sql.exec("alter table comment_asks add column decider text");
+      // #2323: comment_asks.replaces, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "replaces")
+      )
+        sql.exec("alter table comment_asks add column replaces text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",

@@ -1135,6 +1135,149 @@ describe("deciders (#2381)", () => {
   });
 });
 
+describe("Decisions data (#2381 S2, #2323)", () => {
+  const cidOf = (t: Thread) => (t.comments[0] as Comment).id;
+  const listAsk = async (id: string, u: U | null, cid: string) => {
+    const l = (await (
+      await api(
+        app,
+        R.comments(id),
+        u?.cookie ?? null,
+        u ? {} : { headers: { "cf-connecting-ip": "198.51.100.9" } },
+      )
+    ).json()) as CommentList;
+    return l.threads.flatMap((t) => t.comments).find((c) => c.id === cid)?.ask;
+  };
+
+  it("answer.was is the decider's earlier different pick; none for a first decision or a repeat", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await answer(s.id, t.id, cid, owner, "wide");
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toBeUndefined();
+    await answer(s.id, t.id, cid, owner, "wide");
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toBeUndefined();
+    await answer(s.id, t.id, cid, owner, "compact");
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toMatchObject({
+      optionId: "wide",
+    });
+    // Back to the first option: was is the one it replaced.
+    await answer(s.id, t.id, cid, owner, "wide");
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toMatchObject({
+      optionId: "compact",
+    });
+    // A weigh-in is never a "was".
+    await answer(s.id, t.id, cid, viewer, "compact");
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toMatchObject({
+      optionId: "compact",
+    });
+  });
+
+  it("replaces: the old ask reads replacedBy, the new one replaces; a second replace is 409", async () => {
+    const s = await setup();
+    const old = await ask(s.id, [viewer.userId]);
+    const fresh = await ask(s.id, [viewer.userId], {
+      replaces: cidOf(old),
+    });
+    expect(fresh.comments[0]?.ask?.replaces).toBe(cidOf(old));
+    const o = await listAsk(s.id, owner, cidOf(old));
+    expect(o?.replacedBy).toBe(cidOf(fresh));
+    expect(o?.replaces).toBeUndefined();
+    await expect(
+      ask(s.id, [viewer.userId], { replaces: cidOf(old) }),
+    ).rejects.toMatchObject({ code: "already_replaced" });
+  });
+
+  it("replaces is refused for another artifact's ask, a plain comment, another asker's ask", async () => {
+    const s = await setup();
+    const other = await setup();
+    const elsewhere = await ask(other.id, [viewer.userId]);
+    await expect(
+      ask(s.id, [viewer.userId], { replaces: cidOf(elsewhere) }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    const plain = (await (await post(s.id, owner, {})).json()) as Thread;
+    await expect(
+      ask(s.id, [viewer.userId], { replaces: cidOf(plain) }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    // An ask posted by another person (the editor) is not the owner's to replace.
+    const art = { id: s.id, format: "html", currentVersion: 1 } as never;
+    const theirs = await addThread(
+      E,
+      art,
+      who(editor),
+      view(editor),
+      {
+        anchor: NOTE,
+        body: "q",
+        ask: {
+          question: "Which?",
+          options: OPTS,
+          to: [{ key: viewer.userId }],
+        },
+      },
+      { moderator: true },
+    );
+    await expect(
+      ask(s.id, [viewer.userId], { replaces: cidOf(theirs) }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("replaces also needs the same agent when an agent posted the old ask", async () => {
+    const s = await setup();
+    const art = { id: s.id, format: "html", currentVersion: 1 } as never;
+    const mk = (who: CommentWho, replaces?: string) =>
+      addThread(
+        E,
+        art,
+        who,
+        view(owner),
+        {
+          anchor: NOTE,
+          body: "q",
+          ask: {
+            question: "Which?",
+            options: OPTS,
+            to: [{ key: viewer.userId }],
+            ...(replaces ? { replaces } : {}),
+          },
+        },
+        { moderator: true },
+      );
+    const old = await mk(agentOf(owner, "Claude", "ns-owner"));
+    await expect(
+      mk(agentOf(owner, "Codex", "ns-codex"), cidOf(old)),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    const ok = await mk(agentOf(owner, "Claude", "ns-owner"), cidOf(old));
+    expect(ok.comments[0]?.ask?.replaces).toBe(cidOf(old));
+  });
+
+  it("works on a DO created before replaces: the column is added", async () => {
+    const s = await setup();
+    const old = await ask(s.id, [viewer.userId]);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i, state) => {
+        state.storage.sql.exec("alter table comment_asks drop column replaces");
+        (i as unknown as { ready: boolean }).ready = false;
+      },
+    );
+    const fresh = await ask(s.id, [viewer.userId], { replaces: cidOf(old) });
+    expect(fresh.comments[0]?.ask?.replaces).toBe(cidOf(old));
+  });
+
+  it("a signed-out reader of a public page sees replaces and was like any other field", async () => {
+    const s = await setup({ visibility: "public" });
+    const old = await ask(s.id, [viewer.userId]);
+    const fresh = await ask(s.id, [viewer.userId], { replaces: cidOf(old) });
+    await answer(s.id, old.id, cidOf(old), owner, "wide");
+    await answer(s.id, old.id, cidOf(old), owner, "compact");
+    const out = await listAsk(s.id, null, cidOf(old));
+    expect(out?.replacedBy).toBe(cidOf(fresh));
+    expect(out?.answer?.was?.optionId).toBe("wide");
+    expect(out?.role).toBeUndefined();
+  });
+});
+
 describe("ask_answered notice (#1535)", () => {
   // The asker's address is read fresh from its owner's hub (#2224): stub hubs
   // and connected machines for this block only.
