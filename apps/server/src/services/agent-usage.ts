@@ -274,11 +274,14 @@ export async function dropGrantUsage(
   env: Env,
   grantId: string,
   userId: string,
+  /** Statements to commit in the same batch (an audit row). */
+  extra: D1PreparedStatement[] = [],
 ): Promise<void> {
-  await stmt(
-    env.DB,
-    "delete from agent_grants where grant_id = ? and user_id = ?",
-  )
-    .bind(grantId, userId)
-    .run();
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      "delete from agent_grants where grant_id = ? and user_id = ?",
+    ).bind(grantId, userId),
+    ...extra,
+  ]);
 }

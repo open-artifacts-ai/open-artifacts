@@ -49,6 +49,7 @@ import {
   uaFamily,
 } from "../services/agent-usage.js";
 import { noteInstanceFirst } from "../services/analytics.js";
+import { audit, userActor } from "../services/audit.js";
 import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
@@ -591,7 +592,26 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
       scope: approved.request.scope,
       props,
     });
-    await markClientGranted(c.env, approved.request.clientId);
+    // agent.grant: the grant's id (second part of the code, never the code)
+    // and the client's name, in the batch of the client's granted mark. The
+    // grant itself lives in KV, so this row follows it.
+    await markClientGranted(c.env, approved.request.clientId, Date.now(), [
+      audit(
+        c.env,
+        "agent.grant",
+        {
+          type: "agent_grant",
+          id: grantIdOfRedirect(redirectTo) ?? approved.request.clientId,
+        },
+        userActor(user.id),
+        {
+          detail: {
+            clientId: approved.request.clientId,
+            clientName: props.clientName,
+          },
+        },
+      ),
+    ]);
     approved.headers.set("location", redirectTo);
     return new Response(null, { status: 302, headers: approved.headers });
   } catch (e) {
@@ -600,6 +620,17 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
 }
 
 // ------------------------------------------------------------ oauth clients
+
+/** The grant id in an authorization redirect's `code` (`user:grant:secret`); the secret is dropped. */
+function grantIdOfRedirect(redirectTo: string): string | null {
+  try {
+    const code = new URL(redirectTo).searchParams.get("code");
+    const id = code?.split(":")[1];
+    return id && GRANT_ID.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
 
 const notFound = () => new ApiError("not_found", "Not found");
 
@@ -687,7 +718,15 @@ export function mountOAuth(app: AppType): void {
   app.delete(`${R.oauthClients}/:grantId`, async (c) => {
     const { user, grant } = await ownGrant(c);
     await oauthApi(c.env).revokeGrant(grant.grantId, user.id);
-    await dropGrantUsage(c.env, grant.grantId, user.id);
+    await dropGrantUsage(c.env, grant.grantId, user.id, [
+      audit(
+        c.env,
+        "agent.revoke",
+        { type: "agent_grant", id: grant.grantId },
+        userActor(user.id),
+        { detail: { clientName: grant.clientName } },
+      ),
+    ]);
     // #1403: the pending bus role proposals this grant made lapse with it.
     await expireBusRoleProposalsOf(c.env, user.id, {
       kind: "grant",

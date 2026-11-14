@@ -265,6 +265,15 @@ export const AuditActionSchema = z.enum([
   "passkey.remove",
   "passkey.remove_cancel",
   "passkey.settings",
+  "token.create",
+  "token.revoke",
+  "agent.grant",
+  "agent.revoke",
+  "invite.create",
+  "invite.accept",
+  "settings.change",
+  "audit.export",
+  "ask.approve",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 
@@ -316,6 +325,12 @@ export const AuditEventSchema = z.object({
       "mapping",
       "group",
       "directory",
+      "token",
+      "agent_grant",
+      "invite",
+      "settings",
+      "audit",
+      "ask",
     ]),
     id: z.string(),
   }),

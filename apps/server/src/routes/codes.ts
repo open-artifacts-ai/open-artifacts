@@ -28,7 +28,7 @@ import { requireTurnstile } from "../auth/turnstile.js";
 import { stmt } from "../db/stmt.js";
 import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
-import { signInAudit } from "../services/audit.js";
+import { inviteAcceptAudit, signInAudit } from "../services/audit.js";
 import { codeEligibility } from "../services/identity.js";
 import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
 import { getUserWithEpoch, insertUser } from "../services/users.js";
@@ -398,6 +398,8 @@ export function mountCodes(app: AppType): void {
     // The sign-in and its auth.signin audit row commit together; the last
     // statement reads the member's hosted fields (restriction included).
     const out = await c.env.DB.batch([
+      // Before the last-seen update (invite.accept reads it still null).
+      inviteAcceptAudit(c.env, user.id),
       stmt(c.env.DB, "update users set last_seen_at = ?1 where id = ?2").bind(
         Date.now(),
         user.id,
@@ -419,7 +421,7 @@ export function mountCodes(app: AppType): void {
       next: p.next,
       user: hostedFields(
         user,
-        out[2]?.results[0] as Parameters<typeof hostedFields>[1],
+        out[3]?.results[0] as Parameters<typeof hostedFields>[1],
       ),
       readOnly: cap !== null,
     });

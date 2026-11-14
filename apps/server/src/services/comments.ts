@@ -68,6 +68,7 @@ import {
   indexWeighed,
   reconcileAsks,
 } from "./asks.js";
+import { askApproveAudit } from "./audit.js";
 import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
 import {
   type AskerAddress,
@@ -1983,6 +1984,36 @@ export async function answerAsk(
       ...(needsPasskey ? { needsPasskey: true } : {}),
     }),
   );
+  // #2458: a risky decision (a passkey ask, or the picked option names an
+  // action) is audited once the DO has it, keyed on the decision itself (its
+  // stored time), so a retry or an unchanged repeat inserts nothing twice, and
+  // heals a row a failed write lost. A weigh-in and a refused pick (thrown
+  // above) write nothing. A failed write is logged only.
+  const stored = c.ask?.answer;
+  const picked = ask.options.find((o) => o.id === optionId);
+  if (
+    decided &&
+    stored?.optionId === optionId &&
+    who.kind === "user" &&
+    (needsPasskey || picked?.action)
+  )
+    try {
+      const askerAgent = c.author.kind === "user" ? c.author.agent : undefined;
+      const row = await askApproveAudit(env, who.id, {
+        artifactId,
+        threadId,
+        commentId,
+        optionId,
+        ...(picked?.action ? { action: picked.action } : {}),
+        passkey: stored.verified === "passkey",
+        decidedAt: stored.at,
+        askerIsAgent: askerAgent !== undefined,
+        askerAgentId: askerAgent?.identity?.identityId ?? null,
+      });
+      await row.run();
+    } catch (e) {
+      logError("ask_approve_audit_failed", e, { artifactId, commentId });
+    }
   // Only the decision is "answered"; a weigh-in is input (#2381).
   if (decided) await indexAnswered(env, artifactId, commentId);
   else if (who.kind === "user")

@@ -20,7 +20,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo } from "../log.js";
-import { hmacSign, hmacVerify } from "../util/crypto.js";
+import { hmacSign, hmacVerify, sha256Hex } from "../util/crypto.js";
 
 // The audit log (P3 T8). audit() is a statement, never a write: callers put it
 // in the same D1 batch as the change it records, so both commit or neither
@@ -57,6 +57,8 @@ export const withRequestCred = (actor: AuditActor): AuditActor => ({
 });
 
 export type AuditExtra = {
+  /** A deterministic row id, with `insert or ignore`: a retry of the same fact writes nothing twice. */
+  id?: string;
   spaceId?: string | null;
   reason?: AuditReason;
   /** Enums and ids only. `reason` is reserved (stored alongside, read back as AuditEvent.reason). */
@@ -75,7 +77,10 @@ export type AuditExtra = {
   detailSql?: { sql: string; args: unknown[] };
 };
 
-const insertSql = (detailSql?: string) => `insert into audit_events
+const insertSql = (
+  detailSql?: string,
+  ignore = false,
+) => `insert ${ignore ? "or ignore " : ""}into audit_events
   (id, at, actor_kind, actor_id, actor_cred_kind, actor_cred_id, action, target_type, target_id, space_id, detail)
   select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${detailSql ? `json_patch(?, ${detailSql})` : "?"}`;
 
@@ -94,11 +99,11 @@ export function audit(
     ...extra.detail,
     ...(extra.reason && { reason: extra.reason }),
   };
-  const insert = insertSql(extra.detailSql?.sql);
+  const insert = insertSql(extra.detailSql?.sql, extra.id !== undefined);
   const sql = extra.when ? `${insert} where ${extra.when.sql}` : insert;
   const cred = credOf(actor);
   return stmt(env.DB, sql).bind(
-    newId(),
+    extra.id ?? newId(),
     Date.now(),
     actor.kind,
     actor.id,
@@ -158,6 +163,131 @@ export const signInAuditByEmail = (env: Env, email: string, provider: string) =>
         from users u where u.email = ${email}`,
     );
 
+/**
+ * What marks an invited row: its invite.create audit row (target = the user's
+ * id). Rows from the first owner, a domain auto-join or directory sync have
+ * none, so their first sign-in is not an acceptance. Invites sent before
+ * invite.create existed have no marker either and record no acceptance.
+ */
+const INVITED =
+  "exists (select 1 from audit_events where action = 'invite.create' and target_id = ?)";
+
+/**
+ * invite.accept: the first sign-in of a person an owner or admin invited.
+ * Invited rows are created without a last-seen time, so this statement goes
+ * BEFORE the batch's last-seen update and writes only while that is still
+ * null on an active row. Ids and the role only, never the address; the invite
+ * is the user row it created, so its id is the user's.
+ */
+export const inviteAcceptAudit = (
+  env: Env,
+  userId: string,
+): D1PreparedStatement =>
+  audit(
+    env,
+    "invite.accept",
+    { type: "invite", id: userId },
+    { ...userActor(userId), cred: null },
+    {
+      detail: { userId },
+      detailSql: {
+        sql: "json_object('role', (select role from users where id = ?))",
+        args: [userId],
+      },
+      when: {
+        sql: `exists (select 1 from users where id = ? and status = 'active' and last_seen_at is null)
+          and ${INVITED}`,
+        args: [userId, userId],
+      },
+    },
+  );
+
+/** inviteAcceptAudit as a drizzle insert, for the Access path's drizzle batch. */
+export const inviteAcceptAuditDrizzle = (env: Env, userId: string) =>
+  getDb(env)
+    .insert(auditEvents)
+    .select(
+      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'invite.accept', 'invite', u.id, null,
+          json_object('userId', u.id, 'role', u.role), null, null
+        from users u where u.id = ${userId} and u.status = 'active' and u.last_seen_at is null
+          and exists (select 1 from audit_events where action = 'invite.create' and target_id = u.id)`,
+    );
+
+/**
+ * invite.create, keyed by the (normalized) address, in the batch of the
+ * insert that made the row: only while that insert changed a row. Ids and the
+ * role only. A drizzle insert, in the table's column order (as signInAuditByEmail).
+ */
+export const inviteCreateAuditByEmail = (
+  env: Env,
+  email: string,
+  inviterId: string,
+  role: string,
+) => {
+  const cred = currentCred();
+  return getDb(env)
+    .insert(auditEvents)
+    .select(
+      sql`select ${newId()}, ${Date.now()}, 'user', ${inviterId}, 'invite.create', 'invite', u.id, null, ${JSON.stringify({ role })}, ${cred?.kind ?? null}, ${cred?.id ?? null}
+        from users u where u.email = ${email} and changes() > 0`,
+    );
+};
+
+/**
+ * ask.approve (#2458): a risky ask was decided (its confirm needs a passkey, or
+ * the picked option names an action). Ids and enums only, never the question,
+ * an option's label, or an address. The decision lives in a Durable Object, so
+ * this row can't share its transaction: the caller writes it right after the
+ * DO confirms, and a failed write is logged, never fails the pick.
+ */
+export type AskApproval = {
+  artifactId: string;
+  threadId: string;
+  commentId: string;
+  optionId: string;
+  action?: string;
+  passkey: boolean;
+  /** The decision's own time, as the DO stored it: the same decision always carries the same one. */
+  decidedAt: string;
+  askerAgentId?: string | null;
+  askerIsAgent: boolean;
+};
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/** The decision's own row id: one per (artifact, comment, decision), however often it is retried. */
+const decisionRowId = async (a: AskApproval): Promise<string> => {
+  const h = await sha256Hex(
+    `ask.approve\n${a.artifactId}\n${a.commentId}\n${a.decidedAt}`,
+  );
+  let id = "";
+  for (let i = 0; i < 16; i++)
+    id += B58[Number.parseInt(h.slice(i * 2, i * 2 + 2), 16) % 58];
+  return id;
+};
+export const askApproveAudit = async (
+  env: Env,
+  userId: string,
+  a: AskApproval,
+): Promise<D1PreparedStatement> =>
+  audit(
+    env,
+    "ask.approve",
+    { type: "ask", id: a.commentId },
+    userActor(userId),
+    {
+      id: await decisionRowId(a),
+      detail: {
+        artifactId: a.artifactId,
+        threadId: a.threadId,
+        commentId: a.commentId,
+        optionId: a.optionId,
+        ...(a.action ? { action: a.action } : {}),
+        passkey: a.passkey,
+        askerIsAgent: a.askerIsAgent,
+        ...(a.askerAgentId ? { askerAgentId: a.askerAgentId } : {}),
+      },
+    },
+  );
+
 // ------------------------------------------------------------------- read
 
 type Row = {
@@ -184,6 +314,12 @@ const TARGETS = new Set([
   "mapping",
   "group",
   "directory",
+  "token",
+  "agent_grant",
+  "invite",
+  "settings",
+  "audit",
+  "ask",
 ]);
 
 /**
@@ -424,6 +560,8 @@ export async function exportAudit(
   env: Env,
   cursor: string | undefined,
   filters = auditFilters({}),
+  /** Who exports: recorded as audit.export before the first byte is read. */
+  by?: AuditActor,
 ): Promise<{ stream: ReadableStream<Uint8Array>; nextCursor: string | null }> {
   const scope: CursorScope = { kind: "export", filters };
   const after = cursor ? await decodeCursor(env, cursor, scope) : null;
@@ -434,10 +572,24 @@ export async function exportAudit(
       ? q.bind(limit, after.a, after.i, offset)
       : q.bind(limit, null, null, offset);
   };
-  const [first, edge] = await env.DB.batch<Cursor>([
-    keys(1, 0),
-    keys(2, n - 1),
-  ]);
+  // audit.export: who, how many rows (counted in the insert itself, before
+  // this row exists), the filters (known filter names only; none carry
+  // anything but ids and dates). It leads the batch, so the export reads the
+  // log with its own record already the newest row. Reading is not recorded.
+  const recorded = by
+    ? [
+        audit(env, "audit.export", { type: "audit", id: "log" }, by, {
+          detail: { continued: after !== null, filters: JSON.parse(filters) },
+          detailSql: {
+            sql: `json_object('rows', (select count(*) from (select 1 from audit_events e where ${KINDS}${after ? " and (e.at < ? or (e.at = ? and e.id < ?))" : ""} limit ?)))`,
+            args: after ? [after.a, after.a, after.i, n] : [n],
+          },
+        }),
+      ]
+    : [];
+  const [first, edge] = (
+    await env.DB.batch<Cursor>([...recorded, keys(1, 0), keys(2, n - 1)])
+  ).slice(recorded.length);
   const top = first?.results[0];
   const end = edge?.results[0] ?? null;
   const nextCursor =
