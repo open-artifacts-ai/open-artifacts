@@ -167,9 +167,6 @@ import {
 // OWNER_ORG_ID (Product: a constant for now).
 
 /** The one org id every hub row carries. */
-/** #2512: the most pending proposals the inbox reads from a hub. */
-const INBOX_PROPOSALS_MAX = 50;
-
 export const OWNER_ORG_ID = "owner";
 
 /** The DO name of `userId`'s hub. */
@@ -4590,76 +4587,6 @@ export class BusHub extends DurableObject<Env> {
       if (!out.has(r.identityId))
         out.set(r.identityId, Number(r.since ?? this.#now()));
     return [...out].map(([identityId, since]) => ({ identityId, since }));
-  }
-
-  /**
-   * #2512: the role and link proposals this member can still decide (pending,
-   * not past expiry), newest first, at most INBOX_PROPOSALS_MAX. Read only:
-   * nothing expires or changes. Returns only what the inbox line says; never
-   * the secret or its hash. Worker only.
-   */
-  async pendingProposals(): Promise<
-    {
-      id: string;
-      kind: "role" | "link";
-      agentName: string;
-      text: string;
-      createdAt: number;
-    }[]
-  > {
-    const sql = this.ctx.storage.sql;
-    const now = this.#now();
-    const roles = sql
-      .exec<{
-        id: string;
-        action: string;
-        name: string;
-        agentName: string | null;
-        createdAt: number;
-      }>(
-        `select id, action, name, agent_name as agentName, created_at as createdAt
-         from role_proposals where org_id = ? and status = 'pending' and expires_at > ?
-         order by created_at desc limit ?`,
-        OWNER_ORG_ID,
-        now,
-        INBOX_PROPOSALS_MAX,
-      )
-      .toArray()
-      .map((r) => ({
-        id: r.id,
-        kind: "role" as const,
-        agentName: r.agentName ?? r.name,
-        text: `${r.agentName ?? r.name} asks to ${r.action === "clear" ? "clear" : "take"} the role ${r.name}`,
-        createdAt: r.createdAt,
-      }));
-    const links = sql
-      .exec<{
-        id: string;
-        action: string;
-        a: string;
-        b: string;
-        machine: string | null;
-        createdAt: number;
-      }>(
-        `select p.id, p.action, p.ns_a as a, p.ns_b as b, m.label as machine, p.created_at as createdAt
-         from link_proposals p left join machines m on m.org_id = p.org_id and m.id = p.machine_id
-         where p.org_id = ? and p.status = 'pending' and p.expires_at > ?
-         order by p.created_at desc limit ?`,
-        OWNER_ORG_ID,
-        now,
-        INBOX_PROPOSALS_MAX,
-      )
-      .toArray()
-      .map((r) => ({
-        id: r.id,
-        kind: "link" as const,
-        agentName: r.machine ?? "A machine",
-        text: `${r.machine ?? "A machine"} asks to ${r.action === "unlink" ? "unlink" : "link"} ${r.a} and ${r.b}`,
-        createdAt: r.createdAt,
-      }));
-    return [...roles, ...links]
-      .sort((x, y) => y.createdAt - x.createdAt)
-      .slice(0, INBOX_PROPOSALS_MAX);
   }
 
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */

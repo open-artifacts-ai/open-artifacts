@@ -27,7 +27,7 @@ import {
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logError, logInfo } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import {
   bodyOk,
   type NewExtras,
@@ -951,6 +951,32 @@ export async function listComments(
     open: r.open,
     truncated: r.truncated,
   };
+}
+
+/**
+ * #2512: repairs the artifact's asks index from its Durable Object (the same
+ * reconcile a full comments read runs). True only when the read and the write
+ * both succeeded and the list was complete (not truncated): only then does a
+ * row still unfilled mean the comment is not an open ask.
+ */
+export async function repairAsks(
+  env: Env,
+  artifactId: string,
+): Promise<boolean> {
+  const rows = await askRows(env, artifactId);
+  if (!rows) return false;
+  let r: Awaited<ReturnType<ReturnType<typeof stub>["commentsList"]>>;
+  try {
+    r = await call(() => stub(env, artifactId).commentsList("all"));
+  } catch (e) {
+    logWarn("asks_repair_read_failed", e, { artifactId });
+    return false;
+  }
+  if (r.truncated) {
+    await reconcileAsks(env, artifactId, r.threads, true, rows);
+    return false;
+  }
+  return reconcileAsks(env, artifactId, r.threads, false, rows);
 }
 
 /**

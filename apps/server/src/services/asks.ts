@@ -30,11 +30,13 @@ async function guarded(
   op: string,
   artifactId: string,
   run: () => Promise<unknown>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await run();
+    return true;
   } catch (e) {
     logWarn("asks_index_failed", e, { op, artifactId });
+    return false;
   }
 }
 
@@ -57,6 +59,19 @@ export const askInfo = (c: StoredComment): AskInfo => ({
       : 0,
 });
 
+/**
+ * Who holds a row for an ask: its addressees and decider, but a risky ask
+ * (confirm = 1) only its decider, as no one else's pick can stand in (#2512).
+ */
+const rowPeople = (
+  to: StoredParty[],
+  decider: string | undefined,
+  confirm: number,
+): string[] =>
+  confirm === 1 && decider
+    ? [decider]
+    : [...new Set([...addressees(to), ...(decider ? [decider] : [])])];
+
 const INSERT =
   "insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
@@ -73,20 +88,19 @@ export const indexAsk = (
 ) =>
   guarded("create", artifactId, () =>
     env.DB.batch(
-      [...new Set([...addressees(to), ...(decider ? [decider] : [])])].map(
-        (who) =>
-          stmt(env.DB, INSERT).bind(
-            artifactId,
-            threadId,
-            commentId,
-            who,
-            1,
-            0,
-            info.question,
-            info.asker,
-            info.askedAt,
-            info.confirm,
-          ),
+      rowPeople(to, decider, info.confirm).map((who) =>
+        stmt(env.DB, INSERT).bind(
+          artifactId,
+          threadId,
+          commentId,
+          who,
+          1,
+          0,
+          info.question,
+          info.asker,
+          info.askedAt,
+          info.confirm,
+        ),
       ),
     ),
   );
@@ -213,14 +227,14 @@ export const reconcileAsks = (
       for (const c of t.comments) {
         if (!c.ask) continue;
         const decider = c.ask.decider ?? c.author.ref;
-        for (const who of new Set([...addressees(c.ask.to), decider])) {
+        const info = askInfo(c);
+        for (const who of rowPeople(c.ask.to, decider, info.confirm)) {
           // The decision closes it for all; a weigh-in only for the one who made it (#2381).
           const answered =
             c.ask.answer || c.ask.history?.some((p) => p.by.ref === who)
               ? 1
               : 0;
           const open = t.status === "open" && !answered ? 1 : 0;
-          const info = askInfo(c);
           want.set(`${c.id}|${who}`, {
             thread_id: t.id,
             comment_id: c.id,

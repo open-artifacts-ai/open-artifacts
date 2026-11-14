@@ -3,16 +3,18 @@ import { env } from "cloudflare:workers";
 import { type Inbox, type Me, type Member, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { callerOf } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
-import type { BusHub } from "../src/bus/hub.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
+import { indexAsk } from "../src/services/asks.js";
 import {
   addThread,
   answerAsk,
   type CommentWho,
   setStatus,
 } from "../src/services/comments.js";
+import { needsYou } from "../src/services/inbox.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { hubOf } from "./bus/helpers.js";
@@ -285,6 +287,9 @@ describe("GET R.meInbox: Needs you", () => {
     const [item] = await mine(me, id);
     expect(item?.urgency).toBe("plain");
     expect(item?.waitingSince).toBeUndefined();
+    // Not mine: no roster handle for Mute agent either.
+    expect(item?.actor?.kind).toBe("agent");
+    expect(item?.agentKey).toBeUndefined();
   });
 
   it("R.me counts the same asks", async () => {
@@ -321,60 +326,115 @@ describe("GET R.meInbox: Needs you", () => {
     expect(await read(other)).toEqual([]);
   });
 
-  it("the hub lists only my pending role and link proposals; the inbox does not (nothing in the app confirms one without its #secret)", async () => {
-    const u = await mk("i-prop");
-    const v = await mk("i-prop-other");
-    for (const m of [u, v])
+  it("a risky ask holds a row for its decider only, shown as approval", async () => {
+    const id = await mkArtifact();
+    const t = await ask(id, [me], "plain, to seed a thread");
+    const cid = `risky-${tag}`;
+    await indexAsk(
+      E,
+      id,
+      t.id,
+      cid,
+      [
+        { kind: "user", key: me.userId },
+        { kind: "user", key: other.userId },
+      ] as never,
+      owner.userId,
+      {
+        question: "risky?",
+        asker: JSON.stringify({ kind: "user", ref: owner.userId }),
+        askedAt: new Date().toISOString(),
+        confirm: 1,
+      },
+    );
+    const rows = (
       await E.DB.prepare(
-        "insert or ignore into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'Laptop', ?, 0, 1)",
+        "select addressee from artifact_asks where comment_id = ?",
       )
-        .bind(`m-${m.userId}`, m.userId, `h-${m.userId}`)
-        .run();
-    const seed = async (m: U, tagId: string, status: string) =>
-      runInDurableObject(await hubOf(m.userId), (_i, st) => {
-        const far = Date.now() + 3_600_000;
-        st.storage.sql.exec(
-          `insert into role_proposals (id, org_id, token_hash, action, namespace, name, lname, agent_name, created_at, expires_at, status)
-           values (?, 'owner', ?, 'set', 'ns', 'Reviewer', 'reviewer', 'Scout', ?, ?, ?)`,
-          `rp-${tagId}`,
-          `rh-${tagId}`,
-          Date.now(),
-          far,
-          status,
-        );
-        st.storage.sql.exec(
-          `insert into link_proposals (id, org_id, token_hash, action, ns_a, ns_b, machine_id, created_at, expires_at, status)
-           values (?, 'owner', ?, 'link', 'alpha', 'beta', ?, ?, ?, ?)`,
-          `lp-${tagId}`,
-          `lh-${tagId}`,
-          `m-${m.userId}`,
-          Date.now(),
-          far,
-          status,
-        );
-      });
-    await seed(u, `${tag}-u`, "pending");
-    await seed(v, `${tag}-v`, "pending");
-    const list = async (m: U) =>
-      (await runInDurableObject(await hubOf(m.userId), (i) =>
-        (i as unknown as BusHub).pendingProposals(),
-      )) as { id: string; text: string }[];
-    expect((await list(u)).map((p) => p.id).sort()).toEqual([
-      `lp-${tag}-u`,
-      `rp-${tag}-u`,
-    ]);
-    expect((await list(u)).map((p) => p.text).sort()).toEqual([
-      "A machine asks to link alpha and beta",
-      "Scout asks to take the role Reviewer",
-    ]);
+        .bind(cid)
+        .all<{ addressee: string }>()
+    ).results.map((r) => r.addressee);
+    expect(rows).toEqual([owner.userId]);
+    const mineRisky = (await mine(owner, id)).find(
+      (i) => i.id === `ask:${cid}`,
+    );
+    expect(mineRisky?.urgency).toBe("approval");
+    expect((await mine(me, id)).some((i) => i.id === `ask:${cid}`)).toBe(false);
+    expect((await mine(other, id)).some((i) => i.id === `ask:${cid}`)).toBe(
+      false,
+    );
+  });
+
+  it("repairs rows from before the migration, and closes one the DO does not have", async () => {
+    const u = await mk("i-repair");
+    const id = await mkArtifact([u]);
+    const t = await ask(id, [u], "old question");
+    const real = t.comments[0]?.id as string;
+    // Written before the migration: nothing filled in. Plus a row for a comment that is gone.
+    await E.DB.prepare(
+      "update artifact_asks set question = null, asker = null, asked_at = null, confirm = null where artifact_id = ?",
+    )
+      .bind(id)
+      .run();
+    await E.DB.prepare(
+      "insert into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered) values (?, ?, 'ghost', ?, 1, 0)",
+    )
+      .bind(id, t.id, u.userId)
+      .run();
+    // Unfilled rows are not counted: the badge agrees with what the list can show.
+    const before = (await (await api(app, R.me, u.cookie)).json()) as Me;
+    expect(before.inbox?.needsYou).toBe(0);
+    const items = (await inbox(u)).needsYou.filter(
+      (i) => i.artifact?.id === id,
+    );
+    expect(items.map((i) => i.id)).toEqual([`ask:${real}`]);
+    expect(items[0]?.text.endsWith("asks: old question")).toBe(true);
+    const ghost = await E.DB.prepare(
+      "select count(*) as n from artifact_asks where comment_id = 'ghost' and open = 1",
+    ).first<{ n: number }>();
+    expect(ghost?.n).toBe(0);
+    const after = (await (await api(app, R.me, u.cookie)).json()) as Me;
+    expect(after.inbox?.needsYou).toBe(1);
+  });
+
+  it("a failing repair read closes nothing: the row stays open and unfilled, retried later", async () => {
+    const u = await mk("i-failrepair");
+    const id = await mkArtifact([u]);
+    await ask(id, [u], "kept");
+    await E.DB.prepare(
+      "update artifact_asks set question = null, asker = null, asked_at = null, confirm = null where artifact_id = ?",
+    )
+      .bind(id)
+      .run();
+    // D1 fails on the repair's read of the index rows only.
+    const broken = new Proxy(E, {
+      get(t, k) {
+        if (k !== "DB") return Reflect.get(t, k);
+        return new Proxy(t.DB, {
+          get(d, m) {
+            const f = Reflect.get(d, m) as (...a: unknown[]) => unknown;
+            if (m !== "prepare") return f.bind(d);
+            return (q: string) => {
+              if (q.includes("asked_at, confirm from artifact_asks"))
+                throw new Error("d1 down");
+              return d.prepare(q);
+            };
+          },
+        });
+      },
+    }) as Env;
+    const caller = callerOf(u.member);
+    if (caller.kind !== "user") throw new Error("no caller");
+    expect(await needsYou(broken, caller)).toEqual([]);
+    const row = await E.DB.prepare(
+      "select open, question from artifact_asks where artifact_id = ? and addressee = ?",
+    )
+      .bind(id, u.userId)
+      .first<{ open: number; question: string | null }>();
+    expect(row).toEqual({ open: 1, question: null });
+    // A later, healthy read repairs it.
     expect(
-      (await inbox(u)).needsYou.filter((i) => i.kind === "proposal"),
-    ).toEqual([]);
-    // Decided: gone.
-    await runInDurableObject(await hubOf(u.userId), (_i, st) => {
-      st.storage.sql.exec("update role_proposals set status = 'applied'");
-      st.storage.sql.exec("update link_proposals set status = 'refused'");
-    });
-    expect(await list(u)).toEqual([]);
+      (await inbox(u)).needsYou.filter((i) => i.artifact?.id === id),
+    ).toHaveLength(1);
   });
 });

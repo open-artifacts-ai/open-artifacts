@@ -9,7 +9,7 @@ import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { agentsWaitingOn } from "./bus.js";
-import { askerFaces, type CommentViewer, listComments } from "./comments.js";
+import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
 export const NEEDS_YOU_MAX = 200;
@@ -26,6 +26,8 @@ const forMe = (caller: Me) =>
     listFilterSql(caller, "all"),
     eq(artifactAsks.addressee, caller.user.id),
     eq(artifactAsks.open, 1),
+    // A row not yet filled (before #2512) can't be shown, so it is not counted.
+    sql`${artifactAsks.question} is not null`,
     sql`${artifacts.deletedAt} is null and ${artifacts.comments} = 1`,
   );
 
@@ -65,9 +67,25 @@ const readRows = (env: Env, caller: Me): Promise<Row[]> =>
     .from(artifactAsks)
     .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
     .where(forMe(caller))
-    // The oldest are kept when over the cap's reach; rows still unfilled sort last.
-    .orderBy(sql`${artifactAsks.askedAt} is null`, artifactAsks.askedAt)
+    .orderBy(artifactAsks.askedAt)
     .limit(NEEDS_YOU_MAX * 2);
+
+/** Rows to repair: mine and open, but never filled in (written before #2512). */
+const unfilled = (env: Env, caller: Me): Promise<{ artifactId: string }[]> =>
+  getDb(env)
+    .select({ artifactId: artifactAsks.artifactId })
+    .from(artifactAsks)
+    .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
+    .where(
+      and(
+        listFilterSql(caller, "all"),
+        eq(artifactAsks.addressee, caller.user.id),
+        eq(artifactAsks.open, 1),
+        sql`${artifactAsks.question} is null`,
+        sql`${artifacts.deletedAt} is null and ${artifacts.comments} = 1`,
+      ),
+    )
+    .limit(NEEDS_YOU_MAX);
 
 const iso = (s: string): string => {
   const t = Date.parse(s);
@@ -88,24 +106,32 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
     guest: isGuestRole(caller.user.role),
     capped: capsReads(capOfCaller(caller)),
   };
-  let rows = await readRows(env, caller);
-  // Rows written before the migration have no question: a full comments read
-  // (it reconciles the index) repairs one artifact's rows; capped, then re-read.
+  // Rows written before the migration have no question. A full comments read
+  // (it reconciles the index) repairs one artifact's rows, or drops the rows of
+  // asks the DO no longer has; capped per request. A row still unfilled after
+  // its artifact was read is not an open ask the DO knows: it is closed, so it
+  // never costs another read.
   const old = [
-    ...new Set(
-      rows.filter((r) => r.question === null).map((r) => r.artifactId),
-    ),
+    ...new Set((await unfilled(env, caller)).map((r) => r.artifactId)),
   ].slice(0, REPAIR_MAX);
   if (old.length > 0) {
     await Promise.all(
-      old.map((id) =>
-        listComments(env, id, "all", viewer).catch((e) =>
-          logWarn("inbox_repair_failed", e, { artifactId: id }),
-        ),
-      ),
+      old.map(async (id) => {
+        try {
+          // Only a complete, successful read can say the comment is no open ask.
+          if (!(await repairAsks(env, id))) return;
+          await env.DB.prepare(
+            "update artifact_asks set open = 0 where artifact_id = ? and question is null",
+          )
+            .bind(id)
+            .run();
+        } catch (e) {
+          logWarn("inbox_repair_failed", e, { artifactId: id });
+        }
+      }),
     );
-    rows = await readRows(env, caller);
   }
+  const rows = await readRows(env, caller);
   const ready = rows.filter(
     (r): r is Row & { question: string; asker: string; askedAt: string } =>
       r.question !== null && r.asker !== null && r.askedAt !== null,
@@ -136,7 +162,9 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
         : {}),
       artifact: { id: r.artifactId, title: r.title },
       actor: face,
-      ...(face.kind === "agent" && idn ? { agentKey: idn } : {}),
+      ...(face.kind === "agent" && idn && actor.ref === caller.user.id
+        ? { agentKey: idn }
+        : {}),
       text: `${face.name} asks: ${[...r.question].slice(0, QUESTION_MAX).join("")}`,
       href: `${viewerPath(r.artifactId)}?thread=${encodeURIComponent(r.threadId)}`,
       createdAt: iso(r.askedAt),
