@@ -3,7 +3,7 @@
 // again) and a deleted doc (4404). Writes PNGs to SHOTS_DIR when set.
 import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
-import { startRoom, stopRoom } from "./room";
+import { roomLog, startRoom, stopRoom } from "./room";
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
 const DIR = process.env.SHOTS_DIR;
@@ -16,7 +16,43 @@ test.afterEach(async () => {
 const status = (page: Page, text: RegExp) =>
   page.getByRole("status").filter({ hasText: text });
 
+const LOGGED_OUT = "You've been logged out. Log in again to keep editing.";
+
+/**
+ * Logged out (--expire-auth: 4401, then every upgrade refused 401). With
+ * `unsent`, a line is typed after the 4401 and never reaches the room, so the
+ * notice leaves out "Your changes are saved."
+ */
+const loggedOut = (unsent: boolean) => async (page: Page) => {
+  await expect(status(page, /^Saved$/)).toBeVisible();
+  await expect
+    .poll(() =>
+      (room ? (roomLog.get(room) ?? []) : []).some((l) =>
+        l.startsWith("closing 4401 "),
+      ),
+    )
+    .toBe(true);
+  if (unsent) {
+    await page.locator(".ProseMirror p").first().click();
+    await page.keyboard.type(" Typed offline.");
+    await expect(status(page, /^Offline$/)).toBeVisible();
+  }
+  // The session is gone: /me answers 401 from now on.
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    unsent ? LOGGED_OUT : `${LOGGED_OUT} Your changes are saved.`,
+  );
+  await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+  await expect(page.getByRole("toolbar")).toHaveCount(0);
+  await page.locator(".ProseMirror").blur();
+};
+
 const STATES: [string, string[], (page: Page) => Promise<void>][] = [
+  ["logged-out-saved", ["--expire-auth"], loggedOut(false)],
+  ["logged-out-unsent", ["--expire-auth"], loggedOut(true)],
   [
     "editing",
     ["--hello", "edit"],
