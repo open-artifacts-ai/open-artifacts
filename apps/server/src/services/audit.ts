@@ -159,6 +159,15 @@ export const signInAuditByEmail = (env: Env, email: string, provider: string) =>
     );
 
 /**
+ * What marks an invited row: its invite.create audit row (target = the user's
+ * id). Rows from the first owner, a domain auto-join or directory sync have
+ * none, so their first sign-in is not an acceptance. Invites sent before
+ * invite.create existed have no marker either and record no acceptance.
+ */
+const INVITED =
+  "exists (select 1 from audit_events where action = 'invite.create' and target_id = ?)";
+
+/**
  * invite.accept: the first sign-in of a person an owner or admin invited.
  * Invited rows are created without a last-seen time, so this statement goes
  * BEFORE the batch's last-seen update and writes only while that is still
@@ -181,11 +190,23 @@ export const inviteAcceptAudit = (
         args: [userId],
       },
       when: {
-        sql: "exists (select 1 from users where id = ? and status = 'active' and last_seen_at is null)",
-        args: [userId],
+        sql: `exists (select 1 from users where id = ? and status = 'active' and last_seen_at is null)
+          and ${INVITED}`,
+        args: [userId, userId],
       },
     },
   );
+
+/** inviteAcceptAudit as a drizzle insert, for the Access path's drizzle batch. */
+export const inviteAcceptAuditDrizzle = (env: Env, userId: string) =>
+  getDb(env)
+    .insert(auditEvents)
+    .select(
+      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'invite.accept', 'invite', u.id, null,
+          json_object('userId', u.id, 'role', u.role), null, null
+        from users u where u.id = ${userId} and u.status = 'active' and u.last_seen_at is null
+          and exists (select 1 from audit_events where action = 'invite.create' and target_id = u.id)`,
+    );
 
 /**
  * invite.create, keyed by the (normalized) address, in the batch of the

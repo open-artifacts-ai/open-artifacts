@@ -5,7 +5,8 @@ import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
 import { admit } from "../src/services/identity.js";
-import { direct, uniq } from "./auth-helpers.js";
+import { upsertOnLogin } from "../src/services/users.js";
+import { direct, seedUser, uniq } from "./auth-helpers.js";
 import { api, login } from "./helpers.js";
 import { oauthToken } from "./mcp-helpers.js";
 
@@ -247,6 +248,69 @@ describe("invites", () => {
     // A later sign-in accepts nothing more.
     expect((await signIn()).ok).toBe(true);
     expect(await rows("invite.accept", id)).toHaveLength(1);
+  });
+
+  it("Access sign-in of an invited row accepts once; an unmarked never-seen row does not", async () => {
+    const email = uniq("ev-access");
+    const r = await api(app, R.members, owner.cookie, {
+      method: "POST",
+      body: { email, role: "member" },
+    });
+    const { id } = (await r.json()) as { id: string };
+    expect(
+      await upsertOnLogin(env, email, null, { provider: "access" }),
+    ).not.toBeNull();
+    const [a] = await rows("invite.accept", id);
+    expect(a).toMatchObject({ actor_id: id, target_type: "invite" });
+    expect(JSON.parse(a?.detail ?? "")).toEqual({ userId: id, role: "member" });
+    clean(a, [email]);
+    await upsertOnLogin(env, email, null, { provider: "access" });
+    expect(await rows("invite.accept", id)).toHaveLength(1);
+
+    // Never seen, but no invite.create: not an invite.
+    const bare = uniq("ev-access-bare");
+    const bareId = await seedUser(bare, "member");
+    await upsertOnLogin(env, bare, null, { provider: "access" });
+    expect(await rows("invite.accept", bareId)).toHaveLength(0);
+  });
+
+  it("a domain auto-join and the first owner write no accept", async () => {
+    const before = await total("invite.accept");
+    const sub = `sub-${crypto.randomUUID()}`;
+    const joined = await admit(env, authConfig(direct()), {
+      provider: "google",
+      subject: sub,
+      email: uniq("ev-join"),
+      name: "J",
+      tenant: "a.com",
+    });
+    expect(joined.ok).toBe(true);
+    const ownerEmail = uniq("ev-first-owner");
+    const first = await admit(
+      env,
+      authConfig(direct({ OWNER_EMAIL: ownerEmail })),
+      {
+        provider: "google",
+        subject: `sub-${crypto.randomUUID()}`,
+        email: ownerEmail,
+        name: "O",
+        tenant: "a.com",
+      },
+    );
+    expect(first.ok).toBe(true);
+    // A never-seen member row with no invite (as sync makes) signing in.
+    const synced = uniq("ev-synced");
+    const syncedId = await seedUser(synced, "member");
+    const s = await admit(env, authConfig(direct()), {
+      provider: "google",
+      subject: `sub-${crypto.randomUUID()}`,
+      email: synced,
+      name: "S",
+      tenant: "a.com",
+    });
+    expect(s.ok).toBe(true);
+    expect(await rows("invite.accept", syncedId)).toHaveLength(0);
+    expect(await total("invite.accept")).toBe(before);
   });
 
   it("a member who was never invited records no accept", async () => {
