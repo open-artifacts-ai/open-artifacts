@@ -204,7 +204,10 @@ function OneInviteDialog({ onClose }: { onClose: () => void }) {
   const submit = () => {
     if (sending.current || invite.isPending) return;
     const parsed = parseInviteEmail(email);
-    if (!parsed) return setError("Enter a valid email address (ASCII only).");
+    if (!parsed)
+      return setError(
+        "Enter a valid email address. Use plain letters and numbers, without accents.",
+      );
     setError(null);
     setRemoved(null);
     sending.current = true;

@@ -175,9 +175,7 @@ describe("invite reachability", () => {
     expect(
       await within(dialog).findByText("Invite sent to pat@elsewhere.org"),
     ).toBeVisible();
-    expect(
-      screen.queryByText("Invitation sent to pat@elsewhere.org"),
-    ).toBeNull();
+    expect(screen.queryByText(/^Invitation sent/)).toBeNull();
   });
 
   it("uncertain: Invite sent to <email>, no warning (#2520 dropped it), no toast", async () => {

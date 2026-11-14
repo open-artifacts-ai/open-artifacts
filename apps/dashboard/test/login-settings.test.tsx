@@ -469,7 +469,9 @@ describe("the invite dialog", () => {
     const d = await openInvite();
     list(d, "pat@acme.com nope ");
     expect(
-      await within(d).findByText("Enter a valid email address (ASCII only)."),
+      await within(d).findByText(
+        "Enter a valid email address. Use plain letters and numbers, without accents.",
+      ),
     ).toBeVisible();
     expect(within(d).getByRole("textbox", { name: "Email" })).toHaveValue(
       "nope",

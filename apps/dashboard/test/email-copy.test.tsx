@@ -97,7 +97,7 @@ describe("Add member dialog", () => {
       if (mode === "sent") {
         expect(
           within(done).getByRole("heading", {
-            name: "Invitation sent to new@example.com",
+            name: "Invite sent to new@example.com",
           }),
         ).toBeInTheDocument();
         expect(done).toHaveTextContent(

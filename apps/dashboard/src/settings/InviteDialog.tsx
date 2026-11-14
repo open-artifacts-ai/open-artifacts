@@ -122,12 +122,11 @@ export function inviteSent(
     <Modal
       onClose={onClose}
       title={
-        // Design (#800): an uncertain invite is "Invite sent", emailed or not.
-        uncertain
+        // Product (#2537): "Invite sent" when emailed, and for an uncertain
+        // invite (#800) emailed or not.
+        uncertain || emailed
           ? `Invite sent to ${email}`
-          : emailed
-            ? `Invitation sent to ${email}`
-            : `${email} can now log in`
+          : `${email} can now log in`
       }
       description={
         emailed
@@ -170,7 +169,8 @@ const split = (raw: string, parse: (v: string) => string | null) => {
   return { ok, bad };
 };
 
-const BAD_ADDRESS = "Enter a valid email address (ASCII only).";
+const BAD_ADDRESS =
+  "Enter a valid email address. Use plain letters and numbers, without accents.";
 /** At most this many addresses at once. */
 const LIST_MAX = 50;
 

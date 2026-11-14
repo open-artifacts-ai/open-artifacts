@@ -147,7 +147,7 @@ export const loginHandlers = (
           reauthUrl: reauthUrl(),
         });
       if (body.autoJoin && scenario === "unproven")
-        return error(403, "domain_unproven", "Domain not proven.", {
+        return error(403, "domain_unproven", "Couldn't confirm your domain", {
           domain: DOMAIN,
         });
       settings = { ...settings, ...body };
@@ -157,7 +157,7 @@ export const loginHandlers = (
         return error(
           409,
           "apply_pending",
-          "Applying. This takes about a minute.",
+          "Saving. This takes about a minute.",
         );
       }
       return HttpResponse.json(settings);

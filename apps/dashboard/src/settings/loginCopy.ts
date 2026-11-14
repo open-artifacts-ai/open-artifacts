@@ -21,7 +21,7 @@ export const LOGIN = {
   emailLine:
     "A six-digit code sent to their address. For people without a Google account.",
   methodsNote:
-    "Shown so you know what your people will see. Changing them is not part of this first version.",
+    "Shown so you know what your people will see. They can't be changed here yet.",
 
   whoTitle: "Who can get in",
   whoSub: "Two ways in. They work together.",
