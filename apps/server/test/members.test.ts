@@ -116,8 +116,21 @@ describe("members API", () => {
       method: "POST",
       body: { email: `NEW-${tag}@x.com`, role: "admin" },
     });
-    expect(dup.status).toBe(409);
-    expect(await errCode(dup)).toBe("conflict");
+    // Never signed in: a re-invite (200, same row, role unchanged).
+    expect(dup.status).toBe(200);
+    expect(MemberSchema.parse(await dup.json())).toMatchObject({
+      id: m.id,
+      role: "member",
+    });
+    await env.DB.prepare("update users set last_seen_at = 1 where id = ?")
+      .bind(m.id)
+      .run();
+    const dup2 = await call(R.members, admin.cookie, {
+      method: "POST",
+      body: { email: `NEW-${tag}@x.com`, role: "admin" },
+    });
+    expect(dup2.status).toBe(409);
+    expect(await errCode(dup2)).toBe("conflict");
     for (const body of [
       { email: "not-an-email", role: "member" },
       { email: "a@x.com", role: "owner" },

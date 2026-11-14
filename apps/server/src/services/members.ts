@@ -18,6 +18,7 @@ import {
   asc,
   eq,
   inArray,
+  isNotNull,
   isNull,
   notInArray,
   or,
@@ -264,6 +265,20 @@ export async function inviteMember(
   inviter: Member,
   input: MemberInvite,
 ): Promise<MemberInviteResult> {
+  return (await inviteMemberOutcome(env, inviter, input)).result;
+}
+
+/**
+ * inviteMember, and whether it was a re-invite (#2520): an active row that
+ * was invited and never signed in keeps its row, gets a fresh invited_at and
+ * the email again; the route answers 200 instead of 201. Every other existing
+ * row is still a 409.
+ */
+export async function inviteMemberOutcome(
+  env: Env,
+  inviter: Member,
+  input: MemberInvite,
+): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   const reach = await inviteReach(env, email, input.role);
@@ -281,25 +296,40 @@ export async function inviteMember(
       details,
     );
   }
+  const [again] = await getDb(env)
+    .update(users)
+    .set({ invitedAt: Date.now() })
+    .where(
+      and(
+        eq(users.email, email),
+        eq(users.status, "active"),
+        isNull(users.lastSeenAt),
+        isNotNull(users.invitedAt),
+      ),
+    )
+    .returning();
   // Hosted billing: the first invite on a free instance passes only if the
   // 30-day trial starts (signed POST /trial/start, idempotent). Billing
   // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
   // is created. An address that already exists is the usual conflict, and
   // starts nothing.
   const plan = planOfMember(inviter);
-  if (plan?.trialEligible) {
+  if (plan?.trialEligible && !again) {
     if (await stmt(env.DB, EXISTING).bind(email).first())
       return existingConflict(env, email);
     await requireTrialStarted(env);
   }
-  const [row] = await insertUser(env, {
-    email,
-    name: "",
-    role: input.role,
-    createdAt: Date.now(),
-  })
-    .onConflictDoNothing({ target: users.email })
-    .returning();
+  const [row] = again
+    ? [again]
+    : await insertUser(env, {
+        email,
+        name: "",
+        role: input.role,
+        createdAt: Date.now(),
+        invitedAt: Date.now(),
+      })
+        .onConflictDoNothing({ target: users.email })
+        .returning();
   if (!row) return existingConflict(env, email);
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
@@ -330,12 +360,20 @@ export async function inviteMember(
     );
   }
   return {
-    ...toMember(row),
-    emailed,
-    signInMethods,
-    ...(reach.methods.length === 0
-      ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
-      : {}),
+    reinvited: Boolean(again),
+    result: {
+      ...toMember(row),
+      emailed,
+      signInMethods,
+      ...(reach.methods.length === 0
+        ? {
+            signIn: {
+              status: "uncertain",
+              reason: "outside_domains",
+            } as const,
+          }
+        : {}),
+    },
   };
 }
 

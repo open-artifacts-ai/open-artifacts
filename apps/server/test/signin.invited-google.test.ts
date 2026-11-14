@@ -1,10 +1,15 @@
 import { env } from "cloudflare:workers";
+import type { Member } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { authConfig } from "../src/auth/config.js";
 import type { VerifiedIdentity } from "../src/auth/providers/types.js";
 import type { Env } from "../src/env.js";
-import { admit } from "../src/services/identity.js";
-import { removeMember, SYSTEM_ACTOR } from "../src/services/members.js";
+import { admit, codeEligibility } from "../src/services/identity.js";
+import {
+  inviteMember,
+  removeMember,
+  SYSTEM_ACTOR,
+} from "../src/services/members.js";
 import { direct, seedUser, uniq } from "./auth-helpers.js";
 
 // #2520 slice 1: invited people log in with their own Google account on strong
@@ -28,9 +33,12 @@ const subjectOf = async (userId: string) =>
       userId,
     )
   )?.s ?? null;
-const age = (id: string, ms: number) =>
-  env.DB.prepare("update users set created_at = ? where id = ?")
-    .bind(Date.now() - ms, id)
+/** Ages the row: invited_at (null: a row nobody invited) and created_at. */
+const age = (id: string, ms: number, invited = true) =>
+  env.DB.prepare(
+    "update users set created_at = ?1, invited_at = ?2 where id = ?3",
+  )
+    .bind(Date.now() - ms, invited ? Date.now() - ms : null, id)
     .run();
 
 const sub = () => `sub-${crypto.randomUUID()}`;
@@ -296,24 +304,46 @@ describe("drift needs strong evidence for the new address", () => {
 });
 
 describe("invite expiry", () => {
-  it("a never-signed-in member invite lapses after 30 days, an admin's after 7", async () => {
+  it("a never-signed-in invite lapses after 30 days, an admin's after 7", async () => {
     const { e, c } = cfgOf();
-    const cases: [string, "member" | "admin", number, boolean][] = [
-      ["member", "member", 29 * DAY, true],
-      ["member", "member", 31 * DAY, false],
-      ["admin", "admin", 6 * DAY, true],
-      ["admin", "admin", 8 * DAY, false],
-      ["member at 8d", "member", 8 * DAY, true],
+    const cases: ["member" | "admin", number, boolean][] = [
+      ["member", 29 * DAY, true],
+      ["member", 31 * DAY, false],
+      ["admin", 6 * DAY, true],
+      ["admin", 8 * DAY, false],
+      ["member", 8 * DAY, true],
     ];
-    for (const [, role, ms, ok] of cases) {
+    for (const [role, ms, ok] of cases) {
       const id = gmail();
       const uid = await seedUser(id.email, role);
       await age(uid, ms);
       const r = await admit(e, c, id);
       if (ok) expect(r).toMatchObject({ ok: true });
-      else expect(r).toEqual({ ok: false, reason: "invite_expired" });
-      if (!ok) expect(await subjectOf(uid)).toBeNull();
+      else {
+        expect(r).toEqual({ ok: false, reason: "invite_expired" });
+        expect(await subjectOf(uid)).toBeNull();
+      }
     }
+  });
+
+  it("a directory-synced row (no invited_at) older than 30 days is not expired", async () => {
+    const id = inDom();
+    const uid = await seedUser(id.email, "member");
+    await age(uid, 90 * DAY, false);
+    const { e, c } = cfgOf();
+    expect(await admit(e, c, id)).toMatchObject({ ok: true });
+    expect(await subjectOf(uid)).toBe(id.subject);
+  });
+
+  it("a share guest (no invited_at) older than 30 days is not expired", async () => {
+    const id = gmail();
+    const uid = await seedUser(id.email, "guest");
+    await age(uid, 90 * DAY, false);
+    const { e, c } = cfgOf();
+    expect(await admit(e, c, id)).toMatchObject({
+      ok: true,
+      user: { role: "guest" },
+    });
   });
 
   it("a row that has signed in never lapses", async () => {
@@ -327,14 +357,54 @@ describe("invite expiry", () => {
     expect(await admit(e, c, id)).toMatchObject({ ok: true });
   });
 
-  it("a restore restarts the clock (status_changed_at)", async () => {
+  it("email code: an expired invite gets no code (invite_expired); fresh and uninvited rows do", async () => {
+    const { e, c } = cfgOf({ AUTH_PROVIDERS: "google,email" });
+    const guest = uniq("g", "out.com");
+    const uid = await seedUser(guest, "guest");
+    expect(await codeEligibility(e, c, guest)).toMatchObject({ kind: "guest" });
+    await age(uid, 31 * DAY);
+    expect(await codeEligibility(e, c, guest)).toEqual({
+      kind: "none",
+      reason: "invite_expired",
+    });
+    await age(uid, 90 * DAY, false);
+    expect(await codeEligibility(e, c, guest)).toMatchObject({ kind: "guest" });
+  });
+});
+
+describe("re-invite", () => {
+  const owner = {
+    id: "inviter",
+    role: "owner",
+    email: "o@a.com",
+    name: "O",
+  } as Member;
+
+  it("an expired invite, re-invited, logs in; a signed-in or uninvited row is still a conflict", async () => {
+    const { e, c } = cfgOf();
     const id = gmail();
     const uid = await seedUser(id.email, "member");
-    await age(uid, 60 * DAY);
-    await env.DB.prepare("update users set status_changed_at = ? where id = ?")
-      .bind(Date.now() - DAY, uid)
-      .run();
-    const { e, c } = cfgOf();
-    expect(await admit(e, c, id)).toMatchObject({ ok: true });
+    await age(uid, 45 * DAY);
+    expect(await admit(e, c, id)).toEqual({
+      ok: false,
+      reason: "invite_expired",
+    });
+    const r = await inviteMember(e, owner, { email: id.email, role: "member" });
+    expect(r).toMatchObject({ id: uid, email: id.email });
+    expect(await admit(e, c, id)).toMatchObject({
+      ok: true,
+      user: { id: uid },
+    });
+
+    // Signed in now: a second invite is the usual 409.
+    await expect(
+      inviteMember(e, owner, { email: id.email, role: "member" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    // A row nobody invited stays a 409.
+    const other = uniq("plain", "gmail.com");
+    await seedUser(other, "member");
+    await expect(
+      inviteMember(e, owner, { email: other, role: "member" }),
+    ).rejects.toMatchObject({ code: "conflict" });
   });
 });

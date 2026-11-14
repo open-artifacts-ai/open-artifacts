@@ -20,7 +20,7 @@ import { type AppEnv, execCtx } from "../http/middleware.js";
 import { resetIdentity } from "../services/identity.js";
 import {
   eraseMember,
-  inviteMember,
+  inviteMemberOutcome,
   listMembers,
   patchMember,
   removeMember,
@@ -72,13 +72,14 @@ export function mountMembers(app: AppType): void {
   });
 
   /**
-   * Invite; 201 with `emailed`. `emailed:false` after the 3 s send timeout
+   * Invite; 201 with `emailed`; 200 when an invited, never-signed-in row is re-invited (fresh clock, email again). `emailed:false` after the 3 s send timeout
    * means delivery isn't confirmed: the email may still arrive.
    */
   app.post(R.members, async (c) => {
     const inviter = requireManager(c);
     const input = await jsonBody(c, MemberInviteSchema);
-    return c.json(await inviteMember(c.env, inviter, input), 201);
+    const out = await inviteMemberOutcome(c.env, inviter, input);
+    return c.json(out.result, out.reinvited ? 200 : 201);
   });
 
   app.patch(MEMBER, async (c) => {

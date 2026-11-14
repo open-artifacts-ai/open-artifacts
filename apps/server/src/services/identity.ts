@@ -48,7 +48,7 @@ const USER_COLS =
 
 const BY_SUBJECT = `select ${USER_COLS} from identities i join users u on u.id = i.user_id
   where i.provider = ?1 and i.subject = ?2 limit 1`;
-const BY_EMAIL = `select ${USER_COLS}, u.created_at as createdAt, u.status_changed_at as statusChangedAt, (select subject from identities i where i.user_id = u.id and i.provider = 'google') as subject
+const BY_EMAIL = `select ${USER_COLS}, u.invited_at as invitedAt, (select subject from identities i where i.user_id = u.id and i.provider = 'google') as subject
   from users u where u.email = ?1 limit 1`;
 
 const AN_OWNER = "select 1 as x from users where role = 'owner' limit 1";
@@ -169,8 +169,7 @@ export async function admit(
   const existing = await stmt(env.DB, BY_EMAIL).bind(email).first<
     UserRow & {
       subject: string | null;
-      createdAt: number;
-      statusChangedAt: number | null;
+      invitedAt: number | null;
     }
   >();
   if (existing && existing.status !== "active")
@@ -180,15 +179,10 @@ export async function admit(
   // new row, no OWNER_EMAIL first owner, whatever AUTH_DOMAIN_JOIN says.
   if (id.bound && !existing) return { ok: false, reason: "no_access" };
   if (existing) {
-    // A never-signed-in row is a pending invite: it lapses after 30 days,
-    // 7 for an admin. The clock restarts when an admin restores the row
-    // (status_changed_at); the owner row never lapses.
-    if (existing.lastSeenAt === null && existing.role !== "owner") {
-      const since = Math.max(existing.createdAt, existing.statusChangedAt ?? 0);
-      const days = existing.role === "admin" ? 7 : 30;
-      if (now - since > days * 86_400_000)
-        return { ok: false, reason: "invite_expired" };
-    }
+    // A pending invite (invited_at set, never signed in) lapses; a re-invite
+    // refreshes it. Rows nobody invited (directory sync, share guests) never do.
+    if (inviteLapsed(existing, now))
+      return { ok: false, reason: "invite_expired" };
     // First link of this Google account to an existing row (invited, code-only
     // member or admin, guest): only strong evidence links directly (#2520
     // M1). Weak evidence needs the emailed code, which slice 2 builds; until
@@ -221,6 +215,19 @@ export async function admit(
   return admitted(await touch(env, row, id, now));
 }
 
+/**
+ * A pending invite that has lapsed: invited_at set (inviteMember only), never
+ * signed in, older than 30 days (7 for an admin). The owner never lapses.
+ */
+export const inviteLapsed = (
+  row: { role: string; invitedAt: number | null; lastSeenAt: number | null },
+  now: number,
+): boolean =>
+  row.invitedAt !== null &&
+  row.lastSeenAt === null &&
+  row.role !== "owner" &&
+  now - row.invitedAt > (row.role === "admin" ? 7 : 30) * 86_400_000;
+
 /** Google admission rule 1: the tenant (hd) is a verified domain. */
 export const googleTenantOk = (
   cfg: AuthConfig,
@@ -238,10 +245,11 @@ const admitted = (user: Member | null): AdmitResult =>
 export type CodeEligibility =
   | { kind: "member"; userId: string | null; role: Role }
   | { kind: "guest"; userId: string | null }
-  | { kind: "none" };
+  | { kind: "none"; reason?: "invite_expired" };
 
 /** The user row codeRule reads, by email (?1). */
 export const ELIGIBILITY = `select u.id, u.role, u.status,
+    u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
     exists (select 1 from identities i where i.user_id = u.id) as linked
   from users u where u.email = ?1 limit 1`;
 const SHARED = "select 1 as x from shares where email = ?1 limit 1";
@@ -262,7 +270,12 @@ export async function codeEligibility(
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { kind: "none" };
-  const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
+  const row = await stmt(env.DB, ELIGIBILITY)
+    .bind(email)
+    .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
+  // The same lapse as a Google sign-in (#2520): no code for an expired invite.
+  if (row && row.status === "active" && inviteLapsed(row, Date.now()))
+    return { kind: "none", reason: "invite_expired" };
   return codeRule(cfg, email, row, async () =>
     Boolean(await stmt(env.DB, SHARED).bind(email).first()),
   );
