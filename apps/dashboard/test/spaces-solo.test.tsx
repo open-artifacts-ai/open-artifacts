@@ -98,6 +98,12 @@ it("settings, Solo owner with the trial: no New space; Invite people and See pla
     ["See plans", "/settings/plan"],
   ]);
   expect(screen.queryByRole("button", { name: "New space" })).toBeNull();
+  // The Spaces card is the only one: no Every space, no Access.
+  expect(screen.queryByRole("heading", { name: "Every space" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Access" })).toBeNull();
+  expect(
+    screen.queryByRole("switch", { name: "Space managers can map groups" }),
+  ).toBeNull();
 });
 
 it("settings, Solo owner after the trial: See plans only", async () => {
@@ -113,6 +119,10 @@ it("settings, Team: New space and no Solo note", async () => {
     await screen.findByRole("button", { name: "New space" }),
   ).toBeVisible();
   expect(screen.queryByText(TITLE)).toBeNull();
+  expect(
+    await screen.findByRole("heading", { name: "Every space" }),
+  ).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "Access" })).toBeVisible();
 });
 
 it("self-hosted: no Spaces section, and never Solo", async () => {

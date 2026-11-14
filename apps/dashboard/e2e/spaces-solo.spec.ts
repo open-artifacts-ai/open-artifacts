@@ -75,6 +75,12 @@ for (const scheme of ["light", "dark"] as const)
         await expect(
           page.getByRole("button", { name: "New space" }),
         ).toHaveCount(0);
+        await expect(
+          page.getByRole("heading", { name: "Every space" }),
+        ).toHaveCount(0);
+        await expect(page.getByRole("heading", { name: "Access" })).toHaveCount(
+          0,
+        );
         const v = await axeRun(page);
         expect(v, v.join("\n")).toEqual([]);
         await noOverflow(page);

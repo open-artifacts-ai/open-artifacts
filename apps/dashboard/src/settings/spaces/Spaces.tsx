@@ -793,6 +793,8 @@ export function Spaces() {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
+  // Hosted Solo (#2472): only the Spaces card, saying what spaces come with.
+  const solo = isHostedSolo(me);
   const syncOn = !!me && shownDirectoryMode(me) === "google";
   const orgName = me?.instance.name ?? "your organization";
   const { space: spaceId } = useSearch({ strict: false }) as { space?: string };
@@ -833,16 +835,16 @@ export function Spaces() {
   return (
     <div className={STACK}>
       <ReadOnlyNote />
-      {admin && <EverySpace syncOn={syncOn} />}
+      {admin && !solo && <EverySpace syncOn={syncOn} />}
       <SpaceList
         spaces={all}
         admin={admin}
-        solo={isHostedSolo(me) ? soloSettingsLinks(me) : null}
+        solo={solo ? soloSettingsLinks(me) : null}
         error={list.isError ? list.error : null}
         onRetry={() => void list.refetch()}
         onNew={() => setCreating(true)}
       />
-      {admin && <AccessSwitch />}
+      {admin && !solo && <AccessSwitch />}
       {creating && (
         <NewSpace orgName={orgName} onClose={() => setCreating(false)} />
       )}
