@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// The landing demos use › ✓ ·, which turn into mojibake if a page is served
+// The landing uses › ✓, which turn into mojibake if a page is served
 // or parsed as anything but UTF-8. Runs against the built site.
 const dist = fileURLToPath(new URL("../dist/", import.meta.url));
 const htmlFiles = (dir: string): string[] =>
@@ -28,7 +28,6 @@ describe("charset and glyphs", () => {
     for (const bytes of [
       [0xe2, 0x80, 0xba], // › U+203A
       [0xe2, 0x9c, 0x93], // ✓ U+2713
-      [0xc2, 0xb7], // · U+00B7
     ])
       expect(index.includes(Buffer.from(bytes)), bytes.join(" ")).toBe(true);
   });

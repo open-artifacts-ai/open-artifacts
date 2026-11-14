@@ -90,14 +90,18 @@ describe("release-gate markers", () => {
     expect(head).toContain(
       '<link rel="icon" href="/favicon.svg" type="image/svg+xml">',
     );
+    // The home page has its own preview image (#1457); other pages keep og.png.
     expect(head).toContain(
+      '<meta property="og:image" content="https://open-artifacts.com/og-home.png">',
+    );
+    expect(read("docs/setup/index.html").split("</head>")[0]).toContain(
       '<meta property="og:image" content="https://open-artifacts.com/og.png">',
     );
     expect(head).toContain(
       '<meta name="twitter:card" content="summary_large_image">',
     );
     expect(head).toMatch(/<meta name="theme-color"/);
-    for (const f of ["favicon.svg", "og.png"])
+    for (const f of ["favicon.svg", "og.png", "og-home.png"])
       expect(existsSync(`${dist}${f}`), f).toBe(true);
   });
 });

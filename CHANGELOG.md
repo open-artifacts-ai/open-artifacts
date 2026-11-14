@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.177.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.177.0...v0.177.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **landing:** the sign-up buttons say Sign up ([#2467](https://github.com/open-artifacts-ai/open-artifacts/issues/2467)) ([c872543](https://github.com/open-artifacts-ai/open-artifacts/commit/c87254311dd807e9c2ce92b75f4260cb534c8dbb))
+
+## [0.177.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.1...v0.177.0) (2026-11-13)
+
+
+### Features
+
+* **landing:** the bus section is back ([#2457](https://github.com/open-artifacts-ai/open-artifacts/issues/2457)) ([#2459](https://github.com/open-artifacts-ai/open-artifacts/issues/2459)) ([a567fdd](https://github.com/open-artifacts-ai/open-artifacts/commit/a567fddfb97c023d78edf99249ebdd5cfc086dff))
+
+## [0.176.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.0...v0.176.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **landing:** sample plan weekdays match their dates ([#2453](https://github.com/open-artifacts-ai/open-artifacts/issues/2453)) ([#2454](https://github.com/open-artifacts-ai/open-artifacts/issues/2454)) ([10de21e](https://github.com/open-artifacts-ai/open-artifacts/commit/10de21ea04fdc91dfd984bac4b3d15cd844b9455))
+
+## [0.176.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.1...v0.176.0) (2026-11-13)
+
+
+### Features
+
+* **landing:** the new home page, a scroll story with a before/after hero ([#1457](https://github.com/open-artifacts-ai/open-artifacts/issues/1457)) ([#2139](https://github.com/open-artifacts-ai/open-artifacts/issues/2139)) ([f576bc6](https://github.com/open-artifacts-ai/open-artifacts/commit/f576bc6b35d3dda8b016b1d5f83c1365cf1c7504))
+
+## [0.175.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.0...v0.175.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **billing:** an install billing has no row for keeps its provisioned Team or Business ([#2455](https://github.com/open-artifacts-ai/open-artifacts/issues/2455)) ([1179ec5](https://github.com/open-artifacts-ai/open-artifacts/commit/1179ec5d90c64116b1ee2390c161e69502afc3f3))
+* **bus:** a failed suspend-marker read answers 503 try again, not 500 ([#2447](https://github.com/open-artifacts-ai/open-artifacts/issues/2447)) ([2f4c296](https://github.com/open-artifacts-ai/open-artifacts/commit/2f4c296a91f06282960aaf470c9c421a872aef3e))
+* **bus:** an identity-addressed notice reaches its agent when a global agent shares the name ([#2294](https://github.com/open-artifacts-ai/open-artifacts/issues/2294)) ([#2450](https://github.com/open-artifacts-ai/open-artifacts/issues/2450)) ([01c5dc8](https://github.com/open-artifacts-ai/open-artifacts/commit/01c5dc80aade74df36667ad226ce3142e8f6867f))
+
 ## [0.175.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.174.0...v0.175.0) (2026-11-13)
 
 
