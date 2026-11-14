@@ -17,6 +17,7 @@ import {
   auditFilters,
   exportAudit,
   listAudit,
+  userActor,
 } from "../services/audit.js";
 import type { AppType } from "./index.js";
 
@@ -90,13 +91,14 @@ export function mountAudit(app: AppType): void {
 
   // Bounded per request (exportAudit); the header continues it.
   app.get(R.auditExport, async (c) => {
-    requireAuditor(c);
+    const auditor = requireAuditor(c);
     const w = auditWindow(c);
     const { stream, nextCursor } = await exportAudit(
       c.env,
       c.req.query("cursor"),
       auditFilters(c.req.queries()),
       w.since,
+      userActor(auditor.id),
     );
     const headers: Record<string, string> = {
       "content-type": "application/x-ndjson; charset=utf-8",

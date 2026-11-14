@@ -103,6 +103,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // Hosted billing: a tier answer that locks the instance (free or
   // read-only) caps everyone but the org owner: their sockets close.
   "billing/store.ts:storePlan": "user",
+  // #2458: revoking a PAT (it may hold sockets as its user): the user's
+  // presence closes after the revoke and its audit row commit.
+  "routes/tokens.ts:mountTokens": "user",
   // P3 T17 (test builds only): the session hook may lower the user's manual
   // space row.
   "test-hooks/index.ts:grantSpaces": "user",

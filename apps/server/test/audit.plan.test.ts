@@ -138,6 +138,46 @@ describe("hosted audit log plan rule", () => {
   });
 });
 
+describe("the audit.export row counts only what the plan exported", () => {
+  const exported = async () => {
+    const seen = new Set(
+      (
+        await env.DB.prepare(
+          "select id from audit_events where action = 'audit.export'",
+        ).all<{ id: string }>()
+      ).results.map((r) => r.id),
+    );
+    const res = await send(props, R.auditExport, owner.cookie);
+    expect(res.status).toBe(200);
+    const lines = (await res.text()).split("\n").filter(Boolean).length;
+    // The clock is pinned, so pick the new row by id, not by time.
+    const made = (
+      await env.DB.prepare(
+        "select id, detail from audit_events where action = 'audit.export'",
+      ).all<{ id: string; detail: string }>()
+    ).results.filter((r) => !seen.has(r.id));
+    expect(made).toHaveLength(1);
+    return {
+      lines,
+      rows: (JSON.parse(made[0]?.detail ?? "{}") as { rows: number }).rows,
+    };
+  };
+  it("Team's count excludes the rows past 30 days; Business's includes them", async () => {
+    await seed(`old2-${tag}`, 31);
+    await clearBilling();
+    await cachePlan({ ...row({ tier: "team" }), version: 6 }, mid);
+    const team = await exported();
+    // The export reads its own row too (newest): lines = rows + 1.
+    expect(team.lines).toBe(team.rows + 1);
+    await clearBilling();
+    await cachePlan({ ...row({}), version: 7 }, mid);
+    const biz = await exported();
+    expect(biz.lines).toBe(biz.rows + 1);
+    // Business sees the 31-day rows (two seeded) plus Team's export row.
+    expect(biz.rows - team.rows).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe("self-hosted", () => {
   it("always reads the audit log", async () => {
     for (const route of [R.audit, R.auditExport]) {
