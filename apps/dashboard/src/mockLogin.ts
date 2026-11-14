@@ -9,9 +9,10 @@
 //   no-email: the instance sends no email
 //   pending: turning the join on answers 409 apply_pending, then applies
 //   first-invite: as owner-off, with nobody but the owner yet
+//   unproven: turning the join on answers 403 domain_unproven
 // Turning the join on answers reauth_required until the page has ?reauthed=1
 // (the "login" comes back to the same page with it). An address starting
-// "removed" is a removed member (member_removed, then Restore).
+// "removed" is a removed member (reach says so; invites answer member_removed).
 import {
   getResponse,
   type HttpHandler,
@@ -20,6 +21,7 @@ import {
   type RequestHandler,
 } from "msw";
 import {
+  FIRST_INVITE_SEEN,
   type InviteReach,
   LOGIN_SETTINGS,
   type LoginSettings,
@@ -39,6 +41,7 @@ export const LOGIN_SCENARIOS = [
   "no-email",
   "pending",
   "first-invite",
+  "unproven",
 ] as const;
 export type LoginScenario = (typeof LOGIN_SCENARIOS)[number];
 
@@ -51,13 +54,15 @@ export const scenarioSettings = (s: LoginScenario): LoginSettings => {
     autoJoin: false,
     editable: true,
     provable: DOMAIN,
+    joined: 0,
+    firstInviteSeen: s !== "first-invite" && s !== "gmail",
   };
   switch (s) {
     case "owner-on":
     case "admin":
     case "codes-off":
     case "no-google":
-      return { ...off, autoJoin: true };
+      return { ...off, autoJoin: true, joined: 14 };
     case "gmail":
       return { ...off, domains: [], provable: null };
     case "selfhost":
@@ -66,6 +71,8 @@ export const scenarioSettings = (s: LoginScenario): LoginSettings => {
         autoJoin: true,
         editable: false,
         provable: null,
+        joined: 3,
+        firstInviteSeen: true,
       };
     default:
       return off;
@@ -78,8 +85,21 @@ export const scenarioMethods = (s: LoginScenario) => ({
   email: s !== "codes-off",
 });
 
+export const REMOVED_AT = "2026-11-12T10:00:00.000Z";
+
 /** OA Backend's draft rules for one address. */
 export const mockReach = (
+  s: LoginSettings,
+  methods: { google: boolean; email: boolean },
+  email: string,
+): InviteReach => {
+  const removed = email.startsWith("removed")
+    ? { removed: { at: REMOVED_AT } }
+    : {};
+  return { ...reachWays(s, methods, email), ...removed };
+};
+
+const reachWays = (
   s: LoginSettings,
   methods: { google: boolean; email: boolean },
   email: string,
@@ -126,14 +146,25 @@ export const loginHandlers = (
         return error(401, "reauth_required", "Log in again to continue.", {
           reauthUrl: reauthUrl(),
         });
+      if (body.autoJoin && scenario === "unproven")
+        return error(403, "domain_unproven", "Domain not proven.", {
+          domain: DOMAIN,
+        });
       settings = { ...settings, ...body };
       if (pendingOnce) {
         // Accepted, applied by a redeploy: the next GET has it.
         pendingOnce = false;
-        // Not in @oa/shared's codes yet: the client reads it by its 409.
-        return error(409, "conflict", "Applying. This takes about a minute.");
+        return error(
+          409,
+          "apply_pending",
+          "Applying. This takes about a minute.",
+        );
       }
       return HttpResponse.json(settings);
+    }),
+    http.post(`*${FIRST_INVITE_SEEN}`, () => {
+      settings = { ...settings, firstInviteSeen: true };
+      return new HttpResponse(null, { status: 204 });
     }),
     http.get(`*${MEMBERS_REACH}`, ({ request }) => {
       const email = new URL(request.url).searchParams.get("email") ?? "";

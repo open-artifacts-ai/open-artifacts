@@ -6,7 +6,7 @@
 // change shows, about a minute.
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { ApiClientError, api } from "../api/client";
+import { api } from "../api/client";
 import {
   LOGIN_SETTINGS,
   type LoginSettings,
@@ -63,7 +63,13 @@ export const joinBody = (
       : s.domains,
 });
 
-export type SaveState = "idle" | "saving" | "pending" | "saved" | "failed";
+export type SaveState =
+  | "idle"
+  | "saving"
+  | "pending"
+  | "saved"
+  | "failed"
+  | "unproven";
 
 /**
  * `change` sends a PUT. A reauth_required leaves for the login and resends it
@@ -77,6 +83,8 @@ export function useDomainJoin({ onDone }: { onDone?: () => void } = {}) {
   const done = useRef(onDone);
   done.current = onDone;
   const [want, setWant] = useState<boolean | null>(null);
+  /** domain_unproven's domain, when the server named one. */
+  const [unproven, setUnproven] = useState<string | null>(null);
   const watch = useQuery({
     queryKey: qkLogin,
     queryFn: ({ signal }) =>
@@ -104,14 +112,13 @@ export function useDomainJoin({ onDone }: { onDone?: () => void } = {}) {
       setState("idle");
       done.current?.();
     } catch (e) {
-      const why = putFailure(e);
-      if (why === "pending") return setState("pending");
-      const url =
-        why === "reauth" && e instanceof ApiClientError
-          ? sameOriginUrl(
-              (e.details as { reauthUrl?: unknown } | undefined)?.reauthUrl,
-            )
-          : null;
+      const f = putFailure(e);
+      if (f.why === "pending") return setState("pending");
+      if (f.why === "unproven") {
+        setUnproven(f.domain);
+        return setState("unproven");
+      }
+      const url = f.why === "reauth" ? sameOriginUrl(f.url) : null;
       // Already back from one login: never loop through another.
       if (!url || resumed) return setState("failed");
       sessionStorage.setItem(
@@ -131,6 +138,7 @@ export function useDomainJoin({ onDone }: { onDone?: () => void } = {}) {
   return {
     change: (body: LoginSettingsPut) => void send(body, false),
     state,
+    unproven,
     busy: state === "saving" || state === "pending",
   };
 }

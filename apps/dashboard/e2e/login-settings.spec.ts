@@ -65,7 +65,8 @@ const PAGES: { s: string; sees: string; hides?: string }[] = [
   { s: "gmail", sees: "Not available: you log in with a Gmail address" },
   { s: "solo", sees: "How people log in", hides: "Who can get in" },
   { s: "selfhost", sees: "Set by whoever runs this server." },
-  { s: "codes-off", sees: "Email code" },
+  { s: "codes-off", sees: "Everyone who can get in uses Google." },
+  { s: "no-google", sees: "Everyone who can get in uses an email code." },
 ];
 
 for (const scheme of ["light", "dark"] as const)
@@ -131,7 +132,7 @@ for (const scheme of ["light", "dark"] as const)
           name: "Stop letting acme.com join by itself?",
         });
         await expect(d).toContainText(
-          "New people at acme.com will need an invite.",
+          "The 14 members who already joined keep their access.",
         );
         await check(page, `domain-off-dialog-${tag}`);
         await d.getByRole("button", { name: "Turn off" }).click();
@@ -180,18 +181,36 @@ for (const scheme of ["light", "dark"] as const)
           await check(page, `invite-${s}-${tag}`);
         });
 
-      test("invite: a removed member gets Restore", async ({ page }) => {
+      test("invite: a removed member, with the date", async ({ page }) => {
         await open(page, "/settings/members", "owner-on");
         await page.getByRole("button", { name: "Invite people" }).click();
         const d = page.getByRole("dialog", { name: "Invite people" });
         await d
           .getByRole("textbox", { name: "Email" })
-          .fill("removed@acme.com ");
-        await d.getByRole("button", { name: "Send 1 invite" }).click();
+          .fill("removed@acme.com sam@globex.io ");
         await expect(
-          d.getByRole("button", { name: "Restore removed@acme.com" }),
+          d.getByText(
+            "Removed on Nov 12. Inviting them again lets them back in.",
+          ),
         ).toBeVisible();
         await check(page, `invite-removed-${tag}`);
+      });
+
+      test("domain_unproven", async ({ page }) => {
+        await open(page, "/settings/login?reauthed=1", "unproven");
+        await page
+          .getByRole("switch", { name: "Anyone at your domain" })
+          .click();
+        await page
+          .getByRole("button", { name: "Log in again and turn on" })
+          .click();
+        await expect(
+          page.getByText(
+            "We couldn't confirm that acme.com is your Google Workspace domain.",
+            { exact: false },
+          ),
+        ).toBeVisible();
+        await check(page, `domain-unproven-${tag}`);
       });
 
       test("first invite", async ({ page }) => {

@@ -24,9 +24,11 @@ import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
 import { billingContext, errorCopy } from "../api/errorCopy";
 import {
+  type InviteReach,
   type LoginSettings,
-  type LoginWay,
+  markFirstInviteSeen,
   reachQuery,
+  useSetLoginSettings,
 } from "../api/loginSettings";
 import { useInviteMember, useMembers, useRestoreMember } from "../api/queries";
 import { trialEndsOn, trialWouldStart } from "../api/trial";
@@ -41,7 +43,13 @@ import { toast } from "../layout/toast";
 import { AppLink } from "../library/AppLink";
 import { joinBody, useDomainJoin } from "./domainJoin";
 import { Pill } from "./Login";
-import { FIRST_INVITE, INVITE, reachLine, SAVE } from "./loginCopy";
+import {
+  FIRST_INVITE,
+  INVITE,
+  reachLine,
+  removedLine,
+  saveLine,
+} from "./loginCopy";
 import { errorText, muted } from "./ui";
 
 /**
@@ -166,14 +174,11 @@ const BAD_ADDRESS = "Enter a valid email address (ASCII only).";
 /** At most this many addresses at once. */
 const LIST_MAX = 50;
 
-/** The first-invite step was answered on this browser (Skip or Continue). */
-export const FIRST_INVITE_SEEN_KEY = "oa.login.firstInviteSeen";
-
 /**
  * The invite dialog on a server with login settings. The owner's first invite
- * starts with who should be able to join (screen D, client-side for now:
- * nobody invited yet, the join off, a provable domain, not answered here
- * before), then the addresses (screen C).
+ * starts with who should be able to join (screen D: nobody invited yet, the
+ * join off, a provable domain, and the server says it wasn't answered), then
+ * the addresses (screen C).
  */
 export function InvitePeople({
   settings,
@@ -199,8 +204,9 @@ export function InvitePeople({
     settings.provable !== null &&
     members.isSuccess &&
     !invitedAny &&
-    localStorage.getItem(FIRST_INVITE_SEEN_KEY) === null;
+    !settings.firstInviteSeen;
   const [answered, setAnswered] = useState(false);
+  const setSettings = useSetLoginSettings();
   if (ask && !answered && settings.provable)
     return (
       <FirstInviteStep
@@ -209,8 +215,12 @@ export function InvitePeople({
         instance={me?.instance.name ?? ""}
         onClose={onClose}
         onNext={() => {
-          localStorage.setItem(FIRST_INVITE_SEEN_KEY, "1");
           setAnswered(true);
+          // Recording it never holds the invite up; a failure asks again next time.
+          markFirstInviteSeen().then(
+            () => setSettings({ ...settings, firstInviteSeen: true }),
+            () => {},
+          );
         }}
       />
     );
@@ -262,12 +272,7 @@ export function FirstInviteStep({
       </span>
     </label>
   );
-  const note =
-    join.state === "pending"
-      ? SAVE.pending
-      : join.state === "failed"
-        ? SAVE.failed
-        : null;
+  const note = saveLine(join.state, join.unproven, settings.provable);
   return (
     <Modal
       onClose={join.busy ? () => {} : onClose}
@@ -298,10 +303,10 @@ export function FirstInviteStep({
       </fieldset>
       {note && (
         <p
-          role={join.state === "failed" ? "alert" : "status"}
-          className={`m-0 ${join.state === "failed" ? errorText : muted}`}
+          role={note.error ? "alert" : "status"}
+          className={`m-0 ${note.error ? errorText : muted}`}
         >
-          {note}
+          {note.text}
         </p>
       )}
     </Modal>
@@ -340,10 +345,10 @@ function InviteList({
   const [sent, setSent] = useState<Sent | null>(null);
   const sending = useRef(false);
   const reach = useQueries({ queries: list.map(reachQuery) });
-  const ways = new Map<string, readonly LoginWay[]>();
+  const reaches = new Map<string, InviteReach>();
   list.forEach((email, i) => {
     const d = reach[i]?.data;
-    if (d) ways.set(email, d.ways);
+    if (d) reaches.set(email, d);
   });
 
   const commit = (raw = draft): string[] => {
@@ -357,7 +362,7 @@ function InviteList({
     return capped;
   };
   /** Can't log in here: held, the rest still go. */
-  const held = (email: string) => ways.get(email)?.length === 0;
+  const held = (email: string) => reaches.get(email)?.ways.length === 0;
   const pending = split(draft, parse).ok.filter((v) => !list.includes(v));
   const count =
     list.filter((v) => !held(v) && !removed[v]).length + pending.length;
@@ -393,8 +398,23 @@ function InviteList({
           e instanceof ApiClientError && e.code === "member_removed"
             ? MemberRemovedDetailsSchema.safeParse(e.details)
             : null;
-        if (was?.success) gone[email] = was.data.userId;
-        else errors[email] = inviteFailure(e, email, domains, me);
+        if (!was?.success) {
+          errors[email] = inviteFailure(e, email, domains, me);
+          continue;
+        }
+        // The reach said removed, and the row said inviting lets them back
+        // in: restore them. Otherwise ask first, as before (parity 1).
+        if (!reaches.get(email)?.removed) {
+          gone[email] = was.data.userId;
+          continue;
+        }
+        try {
+          await restore.mutateAsync(was.data.userId);
+          last = null;
+          done.push(email);
+        } catch (r) {
+          errors[email] = restoreCopy(r, email);
+        }
       }
     }
     sending.current = false;
@@ -488,7 +508,7 @@ function InviteList({
               <AddressRow
                 key={email}
                 email={email}
-                ways={ways.get(email)}
+                reach={reaches.get(email)}
                 role={role}
                 error={failed[email]}
                 removed={
@@ -557,7 +577,7 @@ function InviteList({
 
 function AddressRow({
   email,
-  ways,
+  reach,
   role,
   error,
   removed,
@@ -566,15 +586,22 @@ function AddressRow({
 }: {
   email: string;
   /** Undefined while the server hasn't answered. */
-  ways: readonly LoginWay[] | undefined;
+  reach: InviteReach | undefined;
   role: JoinAs;
   error: string | undefined;
   removed: { line: string; restore: () => void; busy: boolean } | null;
   disabled: boolean;
   onRemove: () => void;
 }) {
+  const ways = reach?.ways;
   const cant = ways?.length === 0;
-  const line = ways && !removed ? reachLine(email, ways) : null;
+  const was = reach?.removed;
+  const line =
+    !reach || removed
+      ? null
+      : was
+        ? removedLine(was.at)
+        : reachLine(email, reach.ways);
   return (
     <li
       data-address={email}
@@ -614,10 +641,12 @@ function AddressRow({
           </p>
         )}
       </div>
-      {ways &&
+      {reach &&
         !removed &&
         (cant ? (
           <Pill tone="warn">{INVITE.cantPill}</Pill>
+        ) : was ? (
+          <Pill tone="plain">{INVITE.removedPill}</Pill>
         ) : (
           <Pill tone="plain">{role}</Pill>
         ))}

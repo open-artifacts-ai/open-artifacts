@@ -8,17 +8,17 @@
 //     403 domain_unproven { domain }; 409 apply_pending (a hosted redeploy,
 //     about a minute).
 // GET /api/v1/members/reach?email= -> InviteReach (owners and admins).
+// POST /api/v1/settings/login/first-invite-seen -> 204 (Skip or Continue).
 // POST R.members also returns { reach: InviteReach }, and takes role "guest".
-//
-// domain_unproven and apply_pending aren't in @oa/shared's ERROR_CODES yet,
-// so the client reads them as "internal": until they are, putFailure tells
-// them apart by status.
+
+import { DomainUnprovenDetailsSchema } from "@oa/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { ApiClientError, api } from "./client";
 
 export const LOGIN_SETTINGS = "/api/v1/settings/login";
 export const MEMBERS_REACH = "/api/v1/members/reach";
+export const FIRST_INVITE_SEEN = "/api/v1/settings/login/first-invite-seen";
 
 export const LoginWaySchema = z.enum([
   "google",
@@ -29,7 +29,11 @@ export const LoginWaySchema = z.enum([
 export type LoginWay = z.infer<typeof LoginWaySchema>;
 
 /** How an address can log in here; [] means it can't. */
-export const InviteReachSchema = z.object({ ways: z.array(LoginWaySchema) });
+export const InviteReachSchema = z.object({
+  ways: z.array(LoginWaySchema),
+  /** A removed member: inviting again lets them back in. */
+  removed: z.object({ at: z.string() }).optional(),
+});
 export type InviteReach = z.infer<typeof InviteReachSchema>;
 
 export const LoginSettingsSchema = z.object({
@@ -41,6 +45,10 @@ export const LoginSettingsSchema = z.object({
   editable: z.boolean(),
   /** The owner's provable domain (their token's hd); null for a Gmail owner. */
   provable: z.string().nullable(),
+  /** Members who joined by the domain (the turn-off dialog). */
+  joined: z.number().int().nonnegative(),
+  /** The owner answered the first-invite step (Skip or Continue). */
+  firstInviteSeen: z.boolean(),
 });
 export type LoginSettings = z.infer<typeof LoginSettingsSchema>;
 export type LoginSettingsPut = { autoJoin: boolean; domains: string[] };
@@ -64,23 +72,31 @@ export const useSetLoginSettings = () => {
   return (s: LoginSettings) => qc.setQueryData(qkLogin, s);
 };
 
-/** Why a PUT failed, by the draft's codes (or, until shared has them, its statuses). */
-export const putFailure = (
-  e: unknown,
-): "reauth" | "pending" | "unproven" | "other" => {
-  if (!(e instanceof ApiClientError)) return "other";
-  if (e.code === "reauth_required") return "reauth";
-  if ((e.code as string) === "apply_pending" || e.status === 409)
-    return "pending";
-  if (
-    (e.code as string) === "domain_unproven" ||
-    (e.status === 403 &&
-      typeof (e.details as { domain?: unknown } | undefined)?.domain ===
-        "string")
-  )
-    return "unproven";
-  return "other";
+export type PutFailure =
+  | { why: "reauth"; url: unknown }
+  | { why: "pending" }
+  | { why: "unproven"; domain: string | null }
+  | { why: "other" };
+
+/** Why a PUT failed, by its code. */
+export const putFailure = (e: unknown): PutFailure => {
+  if (!(e instanceof ApiClientError)) return { why: "other" };
+  if (e.code === "reauth_required")
+    return {
+      why: "reauth",
+      url: (e.details as { reauthUrl?: unknown } | undefined)?.reauthUrl,
+    };
+  if (e.code === "apply_pending") return { why: "pending" };
+  if (e.code === "domain_unproven") {
+    const d = DomainUnprovenDetailsSchema.safeParse(e.details);
+    return { why: "unproven", domain: d.success ? d.data.domain : null };
+  }
+  return { why: "other" };
 };
+
+/** Skip or Continue on the first-invite step: never asked again. */
+export const markFirstInviteSeen = () =>
+  api.send("POST", FIRST_INVITE_SEEN, undefined);
 
 /** Reach for one listed address, while the dialog is open. */
 export const reachQuery = (email: string) => ({

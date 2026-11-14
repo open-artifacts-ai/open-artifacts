@@ -17,7 +17,7 @@ import {
   DOMAIN_OFF,
   DOMAIN_ON,
   LOGIN,
-  SAVE,
+  saveLine,
 } from "./loginCopy";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
@@ -163,7 +163,7 @@ function Methods({ v, instance }: { v: LoginView; instance: string }) {
     <SettingsCard
       id="oa-login-methods"
       title={LOGIN.methodsTitle}
-      subtitle={LOGIN.methodsSub(instance)}
+      subtitle={LOGIN.methodsSub(instance, v.methods)}
     >
       <Row id="google" title={LOGIN.google} end={pill(v.methods.google)}>
         <Line>{LOGIN.googleLine}</Line>
@@ -196,18 +196,12 @@ function Who({
         title={LOGIN.invited}
         end={<Pill tone="ok">{LOGIN.pillAlways}</Pill>}
       >
-        <Line>{LOGIN.invitedLine}</Line>
+        <Line>{LOGIN.invitedLine(v.methods)}</Line>
       </Row>
       <DomainRow s={s} v={v} owner={owner} />
     </SettingsCard>
   );
 }
-
-const SAVE_LINE = {
-  pending: SAVE.pending,
-  saved: SAVE.saved,
-  failed: SAVE.failed,
-} as const;
 
 function DomainRow({
   s,
@@ -273,7 +267,7 @@ function DomainRow({
     );
 
   const name = v.domain;
-  const note = join.state in SAVE_LINE ? join.state : null;
+  const note = saveLine(join.state, join.unproven, s.provable);
   return (
     <>
       <Row
@@ -305,10 +299,10 @@ function DomainRow({
         </Line>
         {note && (
           <p
-            role={note === "failed" ? "alert" : "status"}
-            className={`m-0 ${note === "failed" ? errorText : muted}`}
+            role={note.error ? "alert" : "status"}
+            className={`m-0 ${note.error ? errorText : muted}`}
           >
-            {SAVE_LINE[note as keyof typeof SAVE_LINE]}
+            {note.text}
           </p>
         )}
       </Row>
@@ -332,8 +326,7 @@ function DomainRow({
         open={asking === "off"}
         onClose={() => setAsking(null)}
         title={DOMAIN_OFF.title(name)}
-        // The joined count isn't in #2520's API draft yet.
-        body={<p className="m-0">{DOMAIN_OFF.body(name, null)}</p>}
+        body={<p className="m-0">{DOMAIN_OFF.body(name, s.joined)}</p>}
         confirm={DOMAIN_OFF.confirm}
         onConfirm={() => join.change(joinBody(s, false))}
       />

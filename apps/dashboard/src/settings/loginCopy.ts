@@ -2,10 +2,19 @@
 // dialog's rows and the first-invite step, in one place. No server text.
 import type { LoginWay } from "../api/loginSettings";
 
+type Methods = { google: boolean; email: boolean };
+
 export const LOGIN = {
   methodsTitle: "How people log in",
-  methodsSub: (instance: string) =>
-    `Everyone who can get in may use either. These were set when ${instance} was created.`,
+  /** Names only the methods that are on (Design). */
+  methodsSub: (instance: string, m: Methods) =>
+    `${
+      m.google && m.email
+        ? "Everyone who can get in may use either."
+        : m.google
+          ? "Everyone who can get in uses Google."
+          : "Everyone who can get in uses an email code."
+    } These were set when ${instance} was created.`,
   google: "Google",
   googleLine: '"Continue with Google", with a work or personal Google account.',
   email: "Email code",
@@ -17,8 +26,12 @@ export const LOGIN = {
   whoTitle: "Who can get in",
   whoSub: "Two ways in. They work together.",
   invited: "People you invite",
-  invitedLine:
-    "Any address, at any company. Only that exact address gets in, with its own Google account or an email code. Remove them in Members and both stop working.",
+  invitedLine: (m: Methods) =>
+    m.google && m.email
+      ? "Any address, at any company. Only that exact address gets in, with its own Google account or an email code. Remove them in Members and both stop working."
+      : m.google
+        ? "Any address, at any company. Only that exact address gets in, with its own Google account. Remove them in Members and it stops working."
+        : "Any address, at any company. Only that exact address gets in, with an email code sent to it. Remove them in Members and it stops working.",
   domain: "Anyone at your domain",
   domainLine:
     "Anyone who logs in with Google from your domain joins as a member, with no invite.",
@@ -61,8 +74,8 @@ export const DOMAIN_ON = {
 
 export const DOMAIN_OFF = {
   title: (d: string) => `Stop letting ${d} join by itself?`,
-  /** `joined`: null until the API counts them (not in #2520's draft): the sentence is left out. */
-  body: (d: string, joined: number | null) =>
+  /** `joined`: 0 leaves the sentence out; 1 is singular. */
+  body: (d: string, joined: number) =>
     [
       `New people at ${d} will need an invite.`,
       joined === 1
@@ -82,7 +95,27 @@ export const SAVE = {
   pending: "Saving. This takes about a minute.",
   saved: "Saved.",
   failed: "Couldn't save. Try again.",
+  /** domain_unproven, with the domain the server named (or the owner's). */
+  unproven: (d: string) =>
+    `We couldn't confirm that ${d} is your Google Workspace domain. Log in with your ${d} work account and try again.`,
+  /** domain_unproven for a personal account (provable null). */
+  personal:
+    "This works with a Google Workspace account. You can still invite people one by one.",
 } as const;
+
+/** The line under the switch (or the step) for a save's state; null for none. */
+export const saveLine = (
+  state: string,
+  unproven: string | null,
+  provable: string | null,
+): { text: string; error: boolean } | null => {
+  if (state === "pending") return { text: SAVE.pending, error: false };
+  if (state === "saved") return { text: SAVE.saved, error: false };
+  if (state === "failed") return { text: SAVE.failed, error: true };
+  if (state !== "unproven") return null;
+  const d = provable === null ? null : (unproven ?? provable);
+  return { text: d ? SAVE.unproven(d) : SAVE.personal, error: true };
+};
 
 export const INVITE = {
   title: "Invite people",
@@ -99,13 +132,14 @@ export const INVITE = {
   send: (n: number) => (n === 1 ? "Send 1 invite" : `Send ${n} invites`),
   sent: (n: number) => (n === 1 ? "1 invite sent" : `${n} invites sent`),
   cantPill: "can't log in",
+  removedPill: "removed",
   remove: (email: string) => `Remove ${email}`,
 } as const;
 
 export const CANT_LINE =
   "Can't log in here yet. Their Google account must be Gmail or Google Workspace.";
 export const WORKSPACE_ONLY_LINE =
-  "Logs in with Google, if their address is a Google Workspace account";
+  "Logs in with Google, if their address is a Google Workspace account. Otherwise they can't log in while email codes are off.";
 
 const GMAIL = new Set(["gmail.com", "googlemail.com"]);
 
@@ -113,6 +147,13 @@ const GMAIL = new Set(["gmail.com", "googlemail.com"]);
  * The line under an address, from the server's ways (OA Backend's mapping):
  * null for a mix the draft doesn't produce.
  */
+/** "Nov 12": the day a member was removed. */
+const removedDay = (iso: string) =>
+  new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+export const removedLine = (at: string) =>
+  `Removed on ${removedDay(at)}. Inviting them again lets them back in.`;
+
 export const reachLine = (email: string, ways: readonly LoginWay[]) => {
   if (ways.length === 0) return CANT_LINE;
   const code = ways.includes("email_code");
