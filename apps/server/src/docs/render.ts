@@ -1,7 +1,7 @@
 // A doc's rendered page (index.html of each version, #1100): static HTML from
 // the schema's JSON, no scripts. Only schema nodes and marks are known; text
 // and attributes are escaped, so a doc can't inject markup.
-import type { DocJSON } from "@oa/doc-schema";
+import { type DocJSON, isAllowedHref } from "@oa/doc-schema";
 
 const esc = (s: string) =>
   s
@@ -32,7 +32,10 @@ function wrapMark(m: Mark, inner: string): string {
     case "code":
       return `<code>${inner}</code>`;
     case "link": {
-      const href = esc(String(m.attrs?.href ?? ""));
+      // A raw Yjs update can carry any href: only allowed ones become links.
+      const raw = m.attrs?.href;
+      if (!isAllowedHref(raw)) return inner;
+      const href = esc(raw);
       const title = m.attrs?.title
         ? ` title="${esc(String(m.attrs.title))}"`
         : "";
