@@ -13,11 +13,7 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { docFragment, docFromJSON, docToYXmlFragment } from "@oa/doc-schema";
-import {
-  accessChangedCloseReason,
-  type DocFrameActor,
-  type DocRoomTextFrame,
-} from "@oa/shared";
+import { accessChangedCloseReason, type DocRoomTextFrame } from "@oa/shared";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
 import * as Y from "yjs";
@@ -1074,22 +1070,14 @@ export class DocRoom extends DurableObject<Env> {
     } catch {
       // logged by compact; the flush alarm compacts later
     }
-    const by: DocFrameActor | null = author
-      ? {
-          kind: author.kind,
-          userId: author.userId ?? null,
-          name: author.kind === "agent" ? (author.agentName ?? "Agent") : null,
-        }
-      : null;
     const frame: DocRoomTextFrame =
       o.frame === "restored"
-        ? { type: "restored", from: o.restoredFrom ?? 0, version, by }
+        ? { type: "restored", from: o.restoredFrom ?? 0, version }
         : {
             type: "saved",
             version,
             ...(o.name ? { name: o.name } : {}),
             auto: o.name === null,
-            by,
           };
     this.broadcast(JSON.stringify(frame), null);
     return { version };

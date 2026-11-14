@@ -228,7 +228,6 @@ describe("automatic saves", () => {
       type: "saved",
       version: 2,
       auto: true,
-      by: { kind: "person", userId: owner.userId, name: null },
     });
     // Four files, R2 first; doc.md is the entry.
     expect(await fileText(room.id, 2, "doc.md")).toContain("# Hello");
@@ -332,7 +331,6 @@ describe("named saves and contributors", () => {
       version: 2,
       name: "Sent to legal",
       auto: false,
-      by: { kind: "person", userId: owner.userId, name: null },
     });
     await expect(
       inRoom(room, (x) =>
@@ -546,7 +544,6 @@ describe("frames", () => {
       version: 2,
       name: "By agent",
       auto: false,
-      by: { kind: "agent", userId: owner.userId, name: "Claude" },
     });
   });
 });
@@ -582,7 +579,6 @@ describe("restore", () => {
       type: "restored",
       from: 2,
       version: 4,
-      by: { kind: "person", userId: owner.userId, name: null },
     });
     // Older versions are untouched.
     expect(await fileText(room.id, 2, "doc.md")).toContain("First draft");
