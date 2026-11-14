@@ -281,7 +281,9 @@ const TARGETS = new Set([
 const KINDS = "e.actor_kind in ('user', 'sync', 'system')";
 /** Keyset bound: rows after (`<`) or from (`<=`) the key (?2, ?3). */
 const bound = (op: "<" | "<=" | null) =>
-  op ? ` and (e.at < ?2 or (e.at = ?2 and e.id ${op} ?3))` : "";
+  (op ? ` and (e.at < ?2 or (e.at = ?2 and e.id ${op} ?3))` : "") +
+  // The plan's window (?5): rows older than it are never reachable.
+  " and e.at >= ?5";
 const PAGE_SQL = (
   op: "<" | "<=" | null,
 ) => `select e.id, e.at, e.actor_kind as actorKind,
@@ -472,14 +474,14 @@ export async function listAudit(
   cursor: string | undefined,
   limit: number,
   filters = auditFilters({}),
+  since = 0,
 ): Promise<Page<AuditEvent>> {
   const scope: CursorScope = { kind: "list", filters };
   const after = cursor ? await decodeCursor(env, cursor, scope) : null;
   const q = stmt(env.DB, PAGE_SQL(after ? "<" : null));
-  const { results } = await (after
-    ? q.bind(limit + 1, after.a, after.i)
-    : q.bind(limit + 1)
-  ).all<Row>();
+  const { results } = await q
+    .bind(limit + 1, after?.a ?? null, after?.i ?? null, null, since)
+    .all<Row>();
   const more = results.length > limit;
   const rows = more ? results.slice(0, limit) : results;
   const last = rows[rows.length - 1];
@@ -511,6 +513,7 @@ export async function exportAudit(
   env: Env,
   cursor: string | undefined,
   filters = auditFilters({}),
+  since = 0,
   /** Who exports: recorded as audit.export before the first byte is read. */
   by?: AuditActor,
 ): Promise<{ stream: ReadableStream<Uint8Array>; nextCursor: string | null }> {
@@ -519,9 +522,7 @@ export async function exportAudit(
   const n = EXPORT_CHUNK * EXPORT_PAGES;
   const keys = (limit: number, offset: number) => {
     const q = stmt(env.DB, KEYS_SQL(after ? "<" : null));
-    return after
-      ? q.bind(limit, after.a, after.i, offset)
-      : q.bind(limit, null, null, offset);
+    return q.bind(limit, after?.a ?? null, after?.i ?? null, offset, since);
   };
   // audit.export: who, how many rows (counted in the insert itself, before
   // this row exists), the filters (known filter names only; none carry
@@ -532,8 +533,8 @@ export async function exportAudit(
         audit(env, "audit.export", { type: "audit", id: "log" }, by, {
           detail: { continued: after !== null, filters: JSON.parse(filters) },
           detailSql: {
-            sql: `json_object('rows', (select count(*) from (select 1 from audit_events e where ${KINDS}${after ? " and (e.at < ? or (e.at = ? and e.id < ?))" : ""} limit ?)))`,
-            args: after ? [after.a, after.a, after.i, n] : [n],
+            sql: `json_object('rows', (select count(*) from (select 1 from audit_events e where ${KINDS}${after ? " and (e.at < ? or (e.at = ? and e.id < ?))" : ""} and e.at >= ? limit ?)))`,
+            args: after ? [after.a, after.a, after.i, since, n] : [since, n],
           },
         }),
       ]
@@ -559,7 +560,7 @@ export async function exportAudit(
         return;
       }
       const { results } = await stmt(env.DB, PAGE_SQL(from.op))
-        .bind(EXPORT_CHUNK, from.k.a, from.k.i)
+        .bind(EXPORT_CHUNK, from.k.a, from.k.i, null, since)
         .all<Row>();
       let out = "";
       let reached = results.length < EXPORT_CHUNK;
