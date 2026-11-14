@@ -1,9 +1,17 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { root } from "./stubs.ts";
 import { type Pkg, trackedSources, workspace } from "./workspace-imports.ts";
-import { drift, KNOWN, parseKnown, reads, report } from "./workspace-reads.ts";
+import {
+  cloudPackages,
+  drift,
+  KNOWN,
+  PRIVATE_PATHS,
+  parseKnown,
+  reads,
+  report,
+} from "./workspace-reads.ts";
 
 const pkg = (dir: string, name: string, deps: string[] = []): Pkg => ({
   dir,
@@ -20,29 +28,25 @@ const pkgs = [
 
 const read = (path: string, text: string) => reads(pkgs, [{ path, text }]);
 
-// The baseline the warn-mode step reads: it must describe the repo as it is,
-// so a rename or a removed read fails here before it fails in lint.
+// The baseline the check reads: it must describe the repo as it is, so a
+// rename or a removed read fails here before it fails in lint. Lines for
+// packages only the cloud overlay has are not applicable here (#2500).
 describe("the known list matches the repo", () => {
   const known = parseKnown(readFileSync(join(root, KNOWN), "utf8"));
-  // public-only (#1056) copies the repo without the paths in private-paths.txt,
-  // and a good share of the baseline reads inside them: a reduced copy cannot
-  // match the list, the full checkout must. That job is advisory in CI; when
-  // the check goes fatal these lines go stale and this test fails with them.
-  const privatePaths = readFileSync(
-    join(root, "scripts/ci/private-paths.txt"),
-    "utf8",
-  )
-    .split("\n")
-    .map((l) => l.split("#")[0]?.trim() ?? "")
-    .filter(Boolean);
-  const full = privatePaths.every((p) => existsSync(join(root, p)));
   it("is sorted and holds a single space per line", () => {
     expect(known).toEqual([...known].sort());
     for (const l of known) expect(l.split(" ")).toHaveLength(2);
   });
-  it.skipIf(!full)("has no stale entry", () => {
-    const findings = reads(workspace(root), trackedSources(root));
-    expect(drift(findings, known).stale).toEqual([]);
+  it("has no stale entry", () => {
+    const pkgs = workspace(root);
+    const findings = reads(pkgs, trackedSources(root));
+    const present = new Set(pkgs.map((p) => p.name));
+    const cloud = cloudPackages(
+      readFileSync(join(root, PRIVATE_PATHS), "utf8"),
+    );
+    const d = drift(findings, known, present, cloud);
+    expect(d.stale).toEqual([]);
+    expect(d.unknown).toEqual([]);
   });
 });
 
@@ -174,6 +178,57 @@ describe("drift", () => {
     expect(stale.lines[0]).toContain(
       "delete the line from workspace-reads-known.txt",
     );
+  });
+  it("a line for a cloud-only package the workspace lacks is skipped, not stale", () => {
+    const known = ["apps/gone/test/a.ts @oa/cloud-only"];
+    const cloud = new Set(["@oa/cloud-only"]);
+    expect(report([], known, false, new Set(["@oa/other"]), cloud)).toEqual({
+      lines: [],
+      code: 0,
+    });
+    // A present package's unmatched line is still stale.
+    const r = report(
+      [],
+      ["apps/gone/test/a.ts @oa/other"],
+      false,
+      new Set(["@oa/other"]),
+    );
+    expect(r.code).toBe(1);
+    // Without the set (the cloud overlay's call), every unmatched line is stale.
+    expect(report([], known, false).code).toBe(1);
+  });
+  it("a line for a package neither the workspace nor cloud has fails as unknown", () => {
+    const r = report(
+      [],
+      ["apps/gone/test/a.ts @oa/provisoner"],
+      false,
+      new Set(["@oa/other"]),
+      new Set(["@oa/provisioner"]),
+    );
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([
+      `apps/gone/test/a.ts @oa/provisoner: unknown package @oa/provisoner: neither a workspace package nor a cloud one in ${PRIVATE_PATHS}; fix the name or delete the line`,
+    ]);
+  });
+  it("cloud packages are @oa/<dir> for each package directory in private-paths.txt", () => {
+    const text = [
+      "# comment",
+      "apps/admin",
+      "packages/gh-oidc  # why",
+      "scripts/hosted",
+      "tests/redline",
+      "scripts/ci/hosted-cf.sh",
+      "packages/shared/dist/provisioning",
+      ".github/workflows/x.yml",
+      "docs/ops/hosted.md",
+      "",
+    ].join("\n");
+    expect([...cloudPackages(text)].sort()).toEqual([
+      "@oa/admin",
+      "@oa/gh-oidc",
+      "@oa/hosted",
+      "@oa/redline",
+    ]);
   });
   it("an exactly matching known file passes", () => {
     const r = report([finding], ["apps/reader/test/a.ts @oa/other"], false);

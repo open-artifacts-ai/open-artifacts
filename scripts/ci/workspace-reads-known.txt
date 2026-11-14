@@ -8,7 +8,9 @@
 #
 # This list only shrinks. Declare the package in the reader's package.json
 # (dependencies or devDependencies) and delete the line, or drop the read. A
-# line that matches no current read fails the check as stale.
+# line that matches no current read fails the check as stale, unless its
+# package is absent from this workspace: those lines (the #1056 forbidden
+# lists) serve the cloud repo, which applies this file over its overlay.
 apps/dashboard/e2e/real/fixtures.ts @oa/server
 apps/server/test/node/test-hooks-strip.test.ts @oa/bundle
 packages/bundle/src/bundle.ts @oa/server
@@ -24,7 +26,10 @@ packages/bundle/test/imports.test.ts @oa/provisioning-contract  # forbidden-path
 packages/bundle/test/imports.test.ts @oa/redline  # forbidden-path list it must not import from, not a read (#1056)
 packages/bundle/test/imports.test.ts @oa/scheduler  # forbidden-path list it must not import from, not a read (#1056)
 packages/bundle/test/imports.test.ts @oa/shared  # forbidden-path list it must not import from, not a read (#1056)
+packages/bus-adapter-openclaw/test/bus.test.ts @open-artifacts/bus  # cycle: @open-artifacts/bus declares @oa/bus-adapter-openclaw
+packages/bus-cli/src/steps/claude-plugins.ts @oa/claude-code-shortcuts  # a sparse-checkout path in the GitHub repo it clones, not a local read
 packages/bus-ipc/test/copy.test.ts @open-artifacts/bus
 packages/ui/test/brand.test.ts @oa/landing
 scripts/setup/test/access-msg.test.ts @oa/landing
 scripts/setup/test/pat-file.test.ts @oa/landing
+scripts/setup/test/uninstall.test.ts @oa/landing  # cycle: @oa/landing declares @oa/setup
