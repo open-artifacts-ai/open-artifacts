@@ -28,6 +28,13 @@ import { Modal } from "../../layout/Modal";
 import { groupSyncHidden, shownDirectoryMode } from "../../layout/SyncBanner";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
+import {
+  isHostedSolo,
+  SOLO_SPACES_LINE,
+  SOLO_SPACES_TITLE,
+  type SoloLink,
+  soloSettingsLinks,
+} from "../../spaces/solo";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
 import {
@@ -386,12 +393,15 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
 function SpaceList({
   spaces,
   admin,
+  solo,
   error,
   onRetry,
   onNew,
 }: {
   spaces: Space[];
   admin: boolean;
+  /** Hosted Solo (#2472): no New space; what spaces come with, and its links. */
+  solo: SoloLink[] | null;
   /** The list failed to load: said instead of the count and rows. */
   error: unknown;
   onRetry: () => void;
@@ -402,7 +412,8 @@ function SpaceList({
       id="oa-spaces-list"
       title="Spaces"
       action={
-        admin && (
+        admin &&
+        !solo && (
           <WriteLock>
             <Button
               size="sm"
@@ -421,6 +432,22 @@ function SpaceList({
           error={error}
           onRetry={onRetry}
         />
+      ) : admin && solo ? (
+        <div className="grid gap-[6px]">
+          <p className="m-0 font-medium">{SOLO_SPACES_TITLE}</p>
+          <p className={`m-0 ${muted}`}>{SOLO_SPACES_LINE}</p>
+          <p className="m-0 flex flex-wrap gap-x-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
+            {solo.map((l) => (
+              <AppLink
+                key={l.to}
+                href={l.to}
+                className="font-medium underline underline-offset-2"
+              >
+                {l.label}
+              </AppLink>
+            ))}
+          </p>
+        </div>
       ) : (
         admin && (
           <p className={muted}>
@@ -810,6 +837,7 @@ export function Spaces() {
       <SpaceList
         spaces={all}
         admin={admin}
+        solo={isHostedSolo(me) ? soloSettingsLinks(me) : null}
         error={list.isError ? list.error : null}
         onRetry={() => void list.refetch()}
         onNew={() => setCreating(true)}

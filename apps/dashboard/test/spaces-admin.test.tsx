@@ -4,8 +4,15 @@
 import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { expect, it } from "vitest";
-import { calls, installHarness, mount, mountHosted } from "./harness";
+import { beforeEach, expect, it } from "vitest";
+import { qk } from "../src/api/queries";
+import {
+  calls,
+  installHarness,
+  lastClient,
+  mount,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -617,7 +624,24 @@ it("no copy contains an em dash", async () => {
 // #2472: Spaces on Solo refused a create with no way forward. The dialog now
 // says why and links where the owner can act: Invite people and See plans
 // with the trial offer, See plans alone without it. In the dialog, not a
-// toast: the dialog's overlay keeps a toast's links out of reach.
+// toast: the dialog's overlay keeps a toast's links out of reach. Solo hides
+// New space, so this is the fallback: the dialog was opened while /me still
+// read Team, and the instance is Solo by the time it's sent.
+let seenSolo = false;
+beforeEach(() => {
+  seenSolo = false;
+});
+/** /me reads Team until `seenSolo`, then the instance's real (Solo) plan. */
+const teamUntilSolo = (m: Me): Me =>
+  seenSolo || !m.instance.billing
+    ? m
+    : {
+        ...m,
+        instance: {
+          ...m.instance,
+          billing: { ...m.instance.billing, tier: "team", reason: undefined },
+        },
+      };
 const soloPlan = (trialEndsAt: string | null) => ({
   billing: {
     tier: "solo" as const,
@@ -644,6 +668,11 @@ const refuseCreate = http.post("*/api/v1/spaces", () =>
 const createRefused = async () => {
   fireEvent.click(await screen.findByRole("button", { name: "New space" }));
   const d = screen.getByRole("dialog", { name: "New space" });
+  seenSolo = true;
+  await lastClient.invalidateQueries({ queryKey: qk.me });
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "New space" })).toBeNull(),
+  );
   fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
     target: { value: "Design" },
   });
@@ -655,7 +684,9 @@ const createRefused = async () => {
 };
 
 it("a Solo owner whose trial never ran: the refusal links Invite people and See plans (#2472)", async () => {
-  mountHosted("/settings/spaces", soloPlan(null), undefined, [refuseCreate]);
+  mountHosted("/settings/spaces", soloPlan(null), teamUntilSolo, [
+    refuseCreate,
+  ]);
   const t = await createRefused();
   expect(t).toHaveTextContent(
     "Spaces are a team feature. Invite someone to start your free 30-day trial, or choose a plan.",
@@ -671,9 +702,12 @@ it("a Solo owner whose trial never ran: the refusal links Invite people and See 
 });
 
 it("Invite people opens Members from the dialog (#2472)", async () => {
-  const router = mountHosted("/settings/spaces", soloPlan(null), undefined, [
-    refuseCreate,
-  ]);
+  const router = mountHosted(
+    "/settings/spaces",
+    soloPlan(null),
+    teamUntilSolo,
+    [refuseCreate],
+  );
   const t = await createRefused();
   fireEvent.click(within(t).getByRole("link", { name: "Invite people" }));
   await waitFor(() =>
@@ -686,7 +720,7 @@ it("a Solo owner after a trial: the refusal links See plans only (#2472)", async
   mountHosted(
     "/settings/spaces",
     soloPlan("2026-10-01T00:00:00.000Z"),
-    undefined,
+    teamUntilSolo,
     [refuseCreate],
   );
   const t = await createRefused();
