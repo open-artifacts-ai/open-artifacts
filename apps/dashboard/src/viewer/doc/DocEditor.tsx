@@ -27,7 +27,7 @@ import {
 } from "./useDocRoom";
 
 /** The title bar's doc state: the room's, or "view" for a reader by access. */
-export type DocLabel = DocStatus | "view";
+export type DocLabel = DocStatus | "view" | "reconnecting";
 
 export const STATUS_TEXT: Record<DocLabel, string> = {
   connecting: "Connecting…",
@@ -36,6 +36,8 @@ export const STATUS_TEXT: Record<DocLabel, string> = {
   offline: "Offline",
   // Product: a quiet label where Saved sits, no banner.
   view: "View only",
+  // Product: signed in again, the room still refusing (nothing unsent).
+  reconnecting: "Reconnecting…",
 };
 
 export interface DocEditorProps {
@@ -95,7 +97,9 @@ export function DocEditor(props: DocEditorProps) {
       ? null
       : !props.canEdit || role === "read"
         ? "view"
-        : status;
+        : snap.reconnecting
+          ? "reconnecting"
+          : status;
   useEffect(() => {
     onStatus?.(room ? label : null);
   }, [onStatus, room, label]);
@@ -150,7 +154,12 @@ function Loaded({
   // read hello (a viewer, or a full room) wins over what the page thinks. A
   // closed socket (access gone, doc deleted) takes no edits.
   const editable =
-    canEdit && !tooLarge && snap.role === "edit" && snap.ended === null;
+    canEdit &&
+    !tooLarge &&
+    snap.role === "edit" &&
+    snap.ended === null &&
+    // "You can read, and editing comes back when it reconnects."
+    !snap.reconnecting;
   const extensions = useMemo(
     () => [
       ...contentExtensions(),

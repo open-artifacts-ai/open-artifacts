@@ -1109,6 +1109,40 @@ describe("DocEditor", () => {
       await waitFor(() => expect(seen.at(-1)).toBe("saved"));
     });
 
+    it("signed in again with nothing unsent, still refused: Reconnecting…, read-only, no notice yet", async () => {
+      const p = fakeProviders();
+      const seen: (string | null)[] = [];
+      let signedIn = false;
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          checkAuth={async () => signedIn}
+          onStatus={(s) => seen.push(s)}
+        />,
+      );
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      act(() => f.connect());
+      await screen.findByRole("toolbar");
+      act(() => f.close(4401));
+      f.refuse = true;
+      await waitFor(() => expect(f.connects).toBe(2), { timeout: 2000 });
+      act(() => f.close(1006));
+      await screen.findByRole("alert");
+      signedIn = true;
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await waitFor(() => expect(f.connects).toBe(3));
+      act(() => f.close(1006));
+      await waitFor(() => expect(seen.at(-1)).toBe("reconnecting"));
+      expect(STATUS_TEXT.reconnecting).toBe("Reconnecting…");
+      readOnly();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByRole("toolbar")).toBeNull();
+    });
+
     it("a deleted doc shows no status where Saved sits", async () => {
       const p = fakeProviders();
       const seen: (string | null)[] = [];

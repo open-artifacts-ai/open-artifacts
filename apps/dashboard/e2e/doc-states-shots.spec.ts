@@ -78,10 +78,27 @@ const saveFailed = async (page: Page) => {
   await expect(page.locator(".oa-docstate")).toHaveCount(0);
 };
 
+/** Signed in again with nothing unsent, still refused for 30 s: the quiet line. */
+const cantConnect = async (page: Page) => {
+  await loggedOut(false)(page);
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(status(page, /^Reconnecting…$/)).toBeVisible();
+  await page.clock.fastForward("00:30");
+  await expect(
+    page.getByText(
+      "Can't connect right now. You can read, and editing comes back when it reconnects.",
+    ),
+  ).toBeVisible();
+};
+
 const STATES: [string, string[], (page: Page) => Promise<void>][] = [
   ["logged-out-saved", ["--expire-auth"], loggedOut(false)],
   ["logged-out-unsent", ["--expire-auth"], loggedOut(true)],
   ["save-failed", ["--expire-auth"], saveFailed],
+  ["cant-connect", ["--expire-auth"], cantConnect],
   [
     "editing",
     ["--hello", "edit"],
@@ -135,6 +152,8 @@ for (const scheme of ["light", "dark"] as const)
       for (const [name, args, check] of STATES)
         test(name, async ({ page }, info) => {
           room = await startRoom(info, page, args);
+          // Lets a state jump time (the 30 s before the quiet line).
+          await page.clock.install();
           await page.goto(`/a/${LANDING}?mock=doc`);
           await expect(page.locator(".ProseMirror")).toBeVisible();
           await check(page);

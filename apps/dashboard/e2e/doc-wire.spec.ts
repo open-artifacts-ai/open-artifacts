@@ -548,3 +548,52 @@ test("signed in again but the room still refuses: couldn't save, Try again works
     .poll(() => log().filter((l) => l.startsWith("doc changed ")).length)
     .toBeGreaterThan(before);
 });
+
+test("signed in again, nothing unsent, the room still refuses: Reconnecting…, the quiet line at 30 s, both clear on reconnect", async ({
+  page,
+}, info) => {
+  // Playwright's clock: time flows, and fastForward jumps the 30 s.
+  await page.clock.install();
+  await open(page, info, ["--expire-auth"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect
+    .poll(() => log().some((l) => l.startsWith("closing 4401 ")))
+    .toBe(true);
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "You've been logged out. Your changes are saved. Log in again to keep editing.",
+  );
+  // Signed in again (/me fine), but the room still refuses.
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Reconnecting…$/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  const line =
+    "Can't connect right now. You can read, and editing comes back when it reconnects.";
+  await expect(page.getByText(line)).toHaveCount(0);
+  await page.clock.fastForward("00:30");
+  await expect(
+    page.getByRole("status").filter({ hasText: line }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  // Still retrying.
+  const refused = () => log().filter((l) => l.startsWith("refused ")).length;
+  const n = refused();
+  await expect.poll(refused).toBeGreaterThan(n);
+  // The room takes us again: both clear.
+  tellRoom(room, "login");
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect(page.getByText(line)).toHaveCount(0);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+});

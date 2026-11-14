@@ -17,6 +17,7 @@ import {
   ROOM_FULL_RETRY,
   roomNotice,
   roomShouldReconnect,
+  STALLED_MS,
   showsNote,
   UPDATE_BATCH_MS,
   versionNote,
@@ -839,6 +840,84 @@ describe("4401, then the session is gone (logged out)", () => {
     fake.frame(HELLO);
     expect(room.getSnapshot().ended).toBeNull();
     expect(server.getText("t").toString()).toBe("unsent ");
+    room.destroy();
+  });
+});
+
+describe("signed in again, nothing unsent, and the room still refuses", () => {
+  const HELLO = JSON.stringify({ type: "hello", role: "edit" });
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+  // Logged out with nothing unsent, then signed in again: the resumed socket
+  // is refused.
+  const refusedAfterLogin = async () => {
+    let signedIn = false;
+    const checkAuth = vi.fn(async () => signedIn);
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { checkAuth },
+    );
+    fake.connect();
+    fake.frame(HELLO);
+    fake.close(4401);
+    fake.refuse = true;
+    vi.advanceTimersByTime(200);
+    fake.close(1006);
+    await flush();
+    expect(room.getSnapshot()).toMatchObject({
+      ended: "signed_out",
+      endSaved: true,
+    });
+    signedIn = true;
+    room.recheckAuth();
+    await flush();
+    fake.close(1006);
+    await flush();
+    return room;
+  };
+
+  it("says Reconnecting, adds the quiet line at 30 s, keeps retrying, and a hello clears both", async () => {
+    const room = await refusedAfterLogin();
+    let s = room.getSnapshot();
+    expect([s.ended, s.reconnecting, s.stalled]).toEqual([null, true, false]);
+    expect(roomNotice(s)).toBeNull();
+    // Still retrying (y-websocket's backoff, the fake's 200 ms) and refused.
+    const n = fake.connects;
+    vi.advanceTimersByTime(STALLED_MS - 1);
+    expect(fake.connects).toBeGreaterThan(n);
+    expect(room.getSnapshot().stalled).toBe(false);
+    vi.advanceTimersByTime(1);
+    s = room.getSnapshot();
+    expect(s.stalled).toBe(true);
+    expect(roomNotice(s)).toEqual({
+      text: "Can't connect right now. You can read, and editing comes back when it reconnects.",
+    });
+    // The room takes us again.
+    fake.refuse = false;
+    fake.connect();
+    fake.frame(HELLO);
+    s = room.getSnapshot();
+    expect([s.reconnecting, s.stalled, s.status]).toEqual([
+      false,
+      false,
+      "saved",
+    ]);
+    expect(roomNotice(s)).toBeNull();
+    room.destroy();
+  });
+
+  it("a hello before 30 s: no quiet line, ever", async () => {
+    const room = await refusedAfterLogin();
+    fake.refuse = false;
+    fake.connect();
+    fake.frame(HELLO);
+    vi.advanceTimersByTime(STALLED_MS * 2);
+    const s = room.getSnapshot();
+    expect([s.reconnecting, s.stalled]).toEqual([false, false]);
     room.destroy();
   });
 });

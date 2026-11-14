@@ -64,6 +64,14 @@ export const SAVE_FAILED =
   "Couldn't save your latest changes. Copy them before leaving this page.";
 /** Product's copy: the button beside SAVE_FAILED. */
 export const SAVE_FAILED_RETRY = "Try again";
+/**
+ * Product's copy: signed in again with nothing unsent, and the room has
+ * refused us for STALLED_MS. A quiet line (no button); it keeps retrying.
+ */
+export const CANT_CONNECT =
+  "Can't connect right now. You can read, and editing comes back when it reconnects.";
+/** How long "Reconnecting…" shows before CANT_CONNECT joins it. */
+export const STALLED_MS = 30_000;
 /** While logged out, how often to ask whether the viewer signed in again. */
 export const AUTH_POLL_MS = 15_000;
 /** Where LOG_IN goes: sign in, then back to this page. */
@@ -156,6 +164,13 @@ export interface DocSnapshot {
    * after the viewer signs in again (in another tab). Null otherwise.
    */
   endSaved: boolean | null;
+  /**
+   * Signed in again with nothing unsent, but the room still refuses the
+   * socket: it keeps retrying, read-only, until a hello.
+   */
+  reconnecting: boolean;
+  /** reconnecting for STALLED_MS or more. */
+  stalled: boolean;
 }
 
 /** What to say about the room (not the doc-full alert), or null. */
@@ -169,6 +184,7 @@ export function roomNotice(
     };
   if (s.ended === "save_failed")
     return { text: SAVE_FAILED, retry: SAVE_FAILED_RETRY };
+  if (s.stalled) return { text: CANT_CONNECT };
   if (s.ended === "access_removed") return { text: ACCESS_REMOVED };
   if (s.ended === "not_found") return { text: NOT_FOUND };
   if (s.ended === "bad_frame") return { text: BAD_FRAME };
@@ -321,6 +337,8 @@ export function createDocRoom(
     version: null,
     ended: null,
     endSaved: null,
+    reconnecting: false,
+    stalled: false,
   };
   let role: DocSnapshot["role"] = null;
   let reason: DocSnapshot["reason"] = null;
@@ -342,6 +360,16 @@ export function createDocRoom(
   // Resumed after signing in again: until its hello, a refused reconnect
   // with edits unsent is save_failed (not another logged-out).
   let resuming = false;
+  // Resumed with nothing unsent and refused: see DocSnapshot.reconnecting.
+  let reconnecting = false;
+  let stalled = false;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearReconnecting = () => {
+    reconnecting = false;
+    stalled = false;
+    clearTimeout(stallTimer);
+    stallTimer = undefined;
+  };
   // A bare 4403 after a hello: the room closes every socket on any access
   // change (#2490), so reconnect to re-authorize. Set until the next hello; a
   // socket that closes before one meanwhile means access really went.
@@ -384,6 +412,8 @@ export function createDocRoom(
       version,
       ended,
       endSaved,
+      reconnecting,
+      stalled,
     };
     if (
       (Object.keys(next) as (keyof DocSnapshot)[]).every(
@@ -508,12 +538,24 @@ export function createDocRoom(
               // Pending: buffered, draining or written offline.
               const pending = !!(buffer || draining || unsent);
               if (!signedIn) {
+                clearReconnecting();
                 endSaved = !pending;
                 stop("signed_out");
               } else if (resuming) {
                 // Signed in, and still the room will not take us.
                 resuming = false;
                 if (pending) stop("save_failed");
+                else if (!reconnecting) {
+                  // Nothing to lose: keep retrying (y-websocket's backoff),
+                  // say so, and after STALLED_MS add the quiet line.
+                  reconnecting = true;
+                  stallTimer = setTimeout(() => {
+                    if (destroyed || !reconnecting) return;
+                    stalled = true;
+                    publish();
+                  }, STALLED_MS);
+                  publish();
+                }
               }
             })
             .finally(() => {
@@ -574,6 +616,7 @@ export function createDocRoom(
           probing = false;
           authProbe = false;
           resuming = false;
+          clearReconnecting();
           // The first frame: the role comes from the server only.
           role = frame.role === "edit" ? "edit" : "read";
           reason =
@@ -722,6 +765,7 @@ export function createDocRoom(
     },
     destroy(discard = false) {
       destroyed = true;
+      clearTimeout(stallTimer);
       clearTimeout(batchTimer);
       clearTimeout(drainTimer);
       clearTimeout(busyTimer);
@@ -757,6 +801,8 @@ const IDLE: DocSnapshot = {
   version: null,
   ended: null,
   endSaved: null,
+  reconnecting: false,
+  stalled: false,
 };
 const none = () => () => {};
 
