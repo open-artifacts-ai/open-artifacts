@@ -69,7 +69,7 @@ for (const scheme of ["light", "dark"] as const)
         });
         await expect(card).toContainText(TITLE);
         await expect(card.getByRole("link")).toHaveText([
-          "Invite people",
+          "Invite people to start a free 30-day trial",
           "See plans",
         ]);
         await expect(

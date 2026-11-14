@@ -28,5 +28,11 @@ export const SEE_PLANS: SoloLink = { label: "See plans", to: PLAN_SETTINGS };
  */
 export const soloSettingsLinks = (me: Me | null | undefined): SoloLink[] =>
   billingContext(me).trialNeverRan === true
-    ? [{ label: "Invite people", to: MEMBERS_SETTINGS }, SEE_PLANS]
+    ? [
+        {
+          label: "Invite people to start a free 30-day trial",
+          to: MEMBERS_SETTINGS,
+        },
+        SEE_PLANS,
+      ]
     : [SEE_PLANS];

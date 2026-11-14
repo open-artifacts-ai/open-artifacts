@@ -94,7 +94,7 @@ it("settings, Solo owner with the trial: no New space; Invite people and See pla
   const list = await soloCard();
   expect(list).toHaveTextContent(LINE);
   expect(links(list)).toEqual([
-    ["Invite people", "/settings/members"],
+    ["Invite people to start a free 30-day trial", "/settings/members"],
     ["See plans", "/settings/plan"],
   ]);
   expect(screen.queryByRole("button", { name: "New space" })).toBeNull();
@@ -147,7 +147,7 @@ it("isHostedSolo and soloSettingsLinks", () => {
   expect(isHostedSolo(me(true, null))).toBe(false);
   expect(isHostedSolo(null)).toBe(false);
   expect(soloSettingsLinks(me(true, {})).map((l) => l.label)).toEqual([
-    "Invite people",
+    "Invite people to start a free 30-day trial",
     "See plans",
   ]);
   expect(
