@@ -46,12 +46,14 @@ const links = (el: HTMLElement) =>
   within(el)
     .getAllByRole("link")
     .map((l) => [l.textContent, l.getAttribute("href")]);
-const asRole = (role: string) => (m: Me) => ({
-  ...m,
-  user: { ...m.user, role },
-});
+const asRole =
+  (role: Me["user"]["role"]) =>
+  (m: Me): Me => ({
+    ...m,
+    user: { ...m.user, role },
+  });
 
-it.each([
+it.each<[Me["user"]["role"], PlanView]>([
   ["owner", TRIAL],
   ["owner", USED],
   ["admin", TRIAL],
