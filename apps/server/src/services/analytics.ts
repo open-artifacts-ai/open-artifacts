@@ -70,6 +70,8 @@ export async function sendActivation(
           instance_id: id,
           plan,
           time: new Date(now).toISOString(),
+          // No location is derived from this server's IP.
+          $geoip_disable: true,
         },
       }),
     });
