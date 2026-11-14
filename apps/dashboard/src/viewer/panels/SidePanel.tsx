@@ -72,7 +72,9 @@ export function SidePanel({
   const wide = useWide();
   const withDecisions = comments !== undefined && !wide;
   const shown =
-    tab === "comments" && cmt.view === "decisions" ? "decisions" : tab;
+    tab === "comments" && cmt.view === "decisions" && withDecisions
+      ? "decisions"
+      : tab;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   // Focus moves to the active tab's search, else the active tab, on open (the

@@ -51,6 +51,7 @@ export function CommentsTabs({
     e.preventDefault();
     const next = api.view === "comments" ? "decisions" : "comments";
     api.setView(next);
+    api.setOpenDecision(null);
     // Focus follows the selection (roving tabindex). `currentTarget` is gone by the
     // microtask, so the tab list is taken now; it may also be unmounted by then.
     const list = e.currentTarget.parentElement;
@@ -76,6 +77,7 @@ export function CommentsTabs({
             type="button"
             role="tab"
             id={`oa-tab-${t.id}`}
+            aria-controls={`oa-panel-${t.id}`}
             data-tab={t.id}
             aria-selected={on}
             tabIndex={on ? 0 : -1}
@@ -287,15 +289,32 @@ export function DecisionsView({
 }) {
   const root = useRef<HTMLDivElement>(null);
   const saved = useRef<number | null>(null);
+  // The thread comes from the set the list does (every thread of the artifact), so a
+  // decision made on another version than the pinned one still opens.
   const open = api.openDecision
-    ? api.threads.find((t) => t.id === api.openDecision)
+    ? api.decisions.find((d) => d.thread.id === api.openDecision)?.thread
     : undefined;
+  const back = useRef<HTMLButtonElement>(null);
+  const lastRow = useRef<string | null>(null);
   // Back: the list is back in the DOM; put the scroll where it was.
   useLayoutEffect(() => {
     if (open || saved.current === null) return;
     const s = scroller(root.current);
     if (s) s.scrollTop = saved.current;
     saved.current = null;
+  }, [open]);
+  // Focus: the back control when a row opens, that row's button on back.
+  useEffect(() => {
+    if (open) {
+      back.current?.focus({ preventScroll: true });
+      return;
+    }
+    const id = lastRow.current;
+    if (!id) return;
+    lastRow.current = null;
+    root.current
+      ?.querySelector<HTMLElement>(`[data-decision="${CSS.escape(id)}"] button`)
+      ?.focus({ preventScroll: true });
   }, [open]);
   const all = api.decisions;
   const gone = api.openDecision !== null && !open;
@@ -307,6 +326,7 @@ export function DecisionsView({
     return (
       <div ref={root} className="flex flex-col gap-3" data-decision-thread="">
         <button
+          ref={back}
           type="button"
           onClick={() => api.setOpenDecision(null)}
           className={`flex w-fit cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-medium text-foreground ${TXT} focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)]`}
@@ -342,6 +362,7 @@ export function DecisionsView({
             onOpen={() => {
               const s = scroller(root.current);
               saved.current = s ? s.scrollTop : null;
+              lastRow.current = d.id;
               api.setOpenDecision(d.thread.id);
             }}
           />

@@ -1188,6 +1188,25 @@ describe("Decisions data (#2381 S2, #2323)", () => {
     ).rejects.toMatchObject({ code: "already_replaced" });
   });
 
+  it("a replaced ask takes no more picks (409 replaced) and never reads as a yes", async () => {
+    const s = await setup();
+    const old = await ask(s.id, [viewer.userId]);
+    // Answered as the asker's own user in the browser: a yes, until it is replaced.
+    await answer(s.id, old.id, cidOf(old), owner, "wide");
+    expect((await listAsk(s.id, owner, cidOf(old)))?.answer?.yes).toBe(true);
+    await ask(s.id, [viewer.userId], { replaces: cidOf(old) });
+    expect((await listAsk(s.id, owner, cidOf(old)))?.answer?.yes).toBe(false);
+    // A stale card cannot pick on it, as the decider or as someone weighing in.
+    for (const u of [owner, viewer]) {
+      const r = await answer(s.id, old.id, cidOf(old), u, "compact");
+      expect(r.status).toBe(409);
+      expect((await errOf(r)).code).toBe("replaced");
+    }
+    expect((await listAsk(s.id, owner, cidOf(old)))?.answer?.optionId).toBe(
+      "wide",
+    );
+  });
+
   it("replaces is refused for another artifact's ask, a plain comment, another asker's ask", async () => {
     const s = await setup();
     const other = await setup();

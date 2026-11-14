@@ -865,7 +865,9 @@ const commentOf = (
                     ...(c.ask.answer.verified
                       ? { verified: c.ask.answer.verified }
                       : {}),
+                    // A replaced ask is never a yes: the newer ask is the question now (#2323).
                     yes:
+                      !c.ask.replacedBy &&
                       viewer.userId !== null &&
                       (c.ask.confirm !== "passkey" ||
                         c.ask.answer.verified === "passkey") &&
@@ -1912,6 +1914,11 @@ export async function answerChallenge(
     throw new ApiError("bad_request", "This ask does not need a passkey");
   if (status === "resolved")
     throw new ApiError("conflict", "This ask is closed");
+  if (ask.replacedBy)
+    throw new ApiError(
+      "replaced",
+      "A newer ask replaced this one: pick on that",
+    );
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
   if (ask.answer?.optionId === optionId)
@@ -1954,6 +1961,11 @@ export async function answerAsk(
     threadId,
     commentId,
   );
+  if (ask.replacedBy)
+    throw new ApiError(
+      "replaced",
+      "A newer ask replaced this one: pick on that",
+    );
   let verified: "passkey" | undefined;
   const needsPasskey =
     ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));

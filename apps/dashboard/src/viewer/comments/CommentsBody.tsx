@@ -1952,59 +1952,66 @@ export function CommentsBody({
           api.guest && <SignInLink box />
         )}
       </div>
-      {api.error != null && !api.threads.length ? (
-        <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
-          <p>Couldn't load comments.</p>
-          <Button
-            size="xs"
-            variant="outline"
-            className="self-start"
-            onClick={api.refetch}
-          >
-            Retry
-          </Button>
-        </div>
-      ) : api.loading ? (
-        <p className={`${TXT} ${MUTED}`} aria-busy="true">
-          Loading comments…
-        </p>
-      ) : decisions ? (
-        <DecisionsView
-          api={api}
-          renderThread={(t) => <ThreadCard key={t.id} t={t} api={api} />}
-        />
-      ) : none ? (
-        <p className={`${TXT} ${MUTED}`}>
-          {api.pinFormat === "image" && api.canComment
-            ? "No comments yet. Place a pin to add one."
-            : textFormat && api.canComment
-              ? "No comments yet. Select text to add one."
-              : "No comments yet."}
-        </p>
-      ) : (
-        <>
-          <ul className="m-0 flex list-none flex-col gap-3 p-0">
-            {ordered.map((t) => (
-              <ThreadCard key={t.id} t={t} api={api} />
-            ))}
-          </ul>
-          {orphans.length > 0 && (
-            <section
-              aria-labelledby="oa-orphans"
-              className="flex flex-col gap-3"
+      <div
+        role="tabpanel"
+        id={`oa-panel-${api.view}`}
+        aria-labelledby={`oa-tab-${api.view}`}
+        className="contents"
+      >
+        {api.error != null && !api.threads.length ? (
+          <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
+            <p>Couldn't load comments.</p>
+            <Button
+              size="xs"
+              variant="outline"
+              className="self-start"
+              onClick={api.refetch}
             >
-              <h3 id="oa-orphans" className={`${TXT} font-medium`}>
-                On earlier text
-              </h3>
-              <ul className="m-0 flex list-none flex-col gap-3 p-0">
-                {orphans.map((t) => (
-                  <ThreadCard key={t.id} t={t} api={api} />
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
-      )}
+              Retry
+            </Button>
+          </div>
+        ) : api.loading ? (
+          <p className={`${TXT} ${MUTED}`} aria-busy="true">
+            Loading comments…
+          </p>
+        ) : decisions ? (
+          <DecisionsView
+            api={api}
+            renderThread={(t) => <ThreadCard key={t.id} t={t} api={api} />}
+          />
+        ) : none ? (
+          <p className={`${TXT} ${MUTED}`}>
+            {api.pinFormat === "image" && api.canComment
+              ? "No comments yet. Place a pin to add one."
+              : textFormat && api.canComment
+                ? "No comments yet. Select text to add one."
+                : "No comments yet."}
+          </p>
+        ) : (
+          <>
+            <ul className="m-0 flex list-none flex-col gap-3 p-0">
+              {ordered.map((t) => (
+                <ThreadCard key={t.id} t={t} api={api} />
+              ))}
+            </ul>
+            {orphans.length > 0 && (
+              <section
+                aria-labelledby="oa-orphans"
+                className="flex flex-col gap-3"
+              >
+                <h3 id="oa-orphans" className={`${TXT} font-medium`}>
+                  On earlier text
+                </h3>
+                <ul className="m-0 flex list-none flex-col gap-3 p-0">
+                  {orphans.map((t) => (
+                    <ThreadCard key={t.id} t={t} api={api} />
+                  ))}
+                </ul>
+              </section>
+            )}
+          </>
+        )}
+      </div>
       {keep.pill === "down" && (
         <NewReplyPill
           dir="down"

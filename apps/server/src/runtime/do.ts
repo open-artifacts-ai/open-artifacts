@@ -2234,6 +2234,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!asked && !isDecider)
         fail("forbidden", "Only the people asked can answer");
       if (r.status === "resolved") fail("conflict", "This ask is closed");
+      // A newer ask replaced this one: a stale card cannot approve it (#2323).
+      if (r.ask.replacedBy)
+        fail("replaced", "A newer ask replaced this one: pick on that");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
       // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.

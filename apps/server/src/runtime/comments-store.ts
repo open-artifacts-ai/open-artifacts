@@ -1185,6 +1185,13 @@ export function askRow(
     .map(pickOf);
   const author = (JSON.parse(r.author) as StoredActor).ref;
   ask.history = withLegacy(ask, rows, author);
+  const by = sql
+    .exec<{ comment_id: string }>(
+      "select comment_id from comment_asks where replaces = ?",
+      commentId,
+    )
+    .toArray()[0];
+  if (by) ask.replacedBy = by.comment_id;
   return {
     ask,
     status: r.status,

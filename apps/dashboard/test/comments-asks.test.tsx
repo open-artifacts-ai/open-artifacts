@@ -1056,6 +1056,99 @@ describe("#2381 S2 the Decisions tab", () => {
     expect(errors).toEqual([]);
   });
 
+  it("opening a row moves focus to the back control, and back returns it to the row", async () => {
+    serveThreads(() => [decided("a", "Q?", "2026-11-05T09:00:00Z")]);
+    const c = await open();
+    const rowBtn = c.querySelector(
+      '[data-decision="c-a"] button',
+    ) as HTMLElement;
+    fireEvent.click(rowBtn);
+    const back = await within(c).findByRole("button", { name: "Decisions" });
+    await waitFor(() => expect(document.activeElement).toBe(back));
+    fireEvent.click(back);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        c.querySelector('[data-decision="c-a"] button'),
+      ),
+    );
+  });
+
+  it("a decision made on another version than the pinned one still opens (no bounce)", async () => {
+    serveThreads(() => [
+      decided("a", "On v2?", "2026-11-05T09:00:00Z", {
+        version: 2,
+        anchor: { kind: "text", exact: "x", prefix: "", suffix: "" },
+      }),
+    ]);
+    mount(viewerPath(OWNED, 1));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("tab", { name: /Decisions/ }));
+    fireEvent.click(
+      (await waitFor(() => {
+        const b = c.querySelector('[data-decision="c-a"] button');
+        if (!b) throw new Error("no row");
+        return b;
+      })) as HTMLElement,
+    );
+    expect(
+      await within(c).findByRole("button", { name: "Decisions" }),
+    ).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(c.querySelector("[data-decision-thread]")).not.toBeNull();
+  });
+
+  it("the tabs name their panel, and an arrow key leaves an open decision", async () => {
+    serveThreads(() => [decided("a", "Q?", "2026-11-05T09:00:00Z")]);
+    const c = await open();
+    const tab = within(c).getByRole("tab", { name: /Decisions/ });
+    expect(tab.getAttribute("aria-controls")).toBe("oa-panel-decisions");
+    const panel = c.querySelector("#oa-panel-decisions");
+    expect(panel?.getAttribute("role")).toBe("tabpanel");
+    expect(panel?.getAttribute("aria-labelledby")).toBe("oa-tab-decisions");
+    fireEvent.click(
+      c.querySelector('[data-decision="c-a"] button') as HTMLElement,
+    );
+    await within(c).findByRole("button", { name: "Decisions" });
+    fireEvent.keyDown(tab, { key: "ArrowLeft" });
+    fireEvent.keyDown(within(c).getByRole("tab", { name: /Comments/ }), {
+      key: "ArrowRight",
+    });
+    expect(c.querySelector("[data-decision-thread]")).toBeNull();
+    expect(c.querySelector('[data-decision="c-a"]')).not.toBeNull();
+  });
+
+  it("in the panel row, Comments stays selected at 960px and up and Decisions is selected below it", async () => {
+    serveThreads(() => [decided("a", "Q?", "2026-11-05T09:00:00Z")]);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
+    const wide = await screen.findByRole("complementary", {
+      name: "Side panel",
+    });
+    fireEvent.click(
+      await within(wide).findByRole("tab", { name: /Decisions/ }),
+    );
+    const trigger = () =>
+      wide.querySelector(
+        '[role="tab"][id$="-trigger-comments"]',
+      ) as HTMLElement;
+    expect(trigger().getAttribute("data-state")).toBe("active");
+    expect(wide.querySelector('[id$="-trigger-decisions"]')).toBeNull();
+  });
+
+  it("below 960px the panel row has Decisions and selects it", async () => {
+    viewport(800);
+    serveThreads(() => [decided("a", "Q?", "2026-11-05T09:00:00Z")]);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
+    const p = await screen.findByRole("complementary", { name: "Side panel" });
+    const d = await waitFor(() => {
+      const t = p.querySelector('[role="tab"][id$="-trigger-decisions"]');
+      if (!t) throw new Error("no Decisions tab");
+      return t as HTMLElement;
+    });
+    fireEvent.mouseDown(d);
+    fireEvent.click(d);
+    await waitFor(() => expect(d.getAttribute("data-state")).toBe("active"));
+  });
+
   it("a row reads 'Maya decided', the weigh-ins without names, the time and the asker", async () => {
     serveThreads(() => [
       decided(
