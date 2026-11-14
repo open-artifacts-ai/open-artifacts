@@ -28,7 +28,9 @@ const on = (over: Partial<Env> = {}) =>
 
 const fetchSpy = vi.fn();
 const clear = () =>
-  env.DB.prepare("delete from settings where key like 'analytics:%'").run();
+  env.DB.prepare(
+    "delete from settings where key like 'analytics:%' or key = 'onboarding:welcome'",
+  ).run();
 const bodies = () =>
   fetchSpy.mock.calls.map((c) => JSON.parse(c[1].body as string));
 
@@ -112,7 +114,25 @@ describe("activation events", () => {
         { title, format: "html", content: "<p>x</p>", visibility: "private" },
         null,
       );
+    // The Welcome seed is being written (claimed, id not yet recorded).
+    await env.DB.prepare(
+      "insert into settings (key, value) values ('onboarding:welcome', ?1)",
+    )
+      .bind(JSON.stringify({ userId: owner.userId, artifactId: "" }))
+      .run();
     await pub(WELCOME_TITLE);
+    // The provisioner's self-test: a markdown page with the same title.
+    await publish(
+      e,
+      u,
+      {
+        title: WELCOME_TITLE,
+        format: "markdown",
+        content: "ok",
+        visibility: "private",
+      },
+      null,
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
     await pub("Secret plan");
     await pub("Another");

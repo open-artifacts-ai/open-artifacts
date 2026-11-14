@@ -25,7 +25,6 @@ import {
   type VersionInfo,
   VisibilitySchema,
   viewerPath,
-  WELCOME_TITLE,
 } from "@oa/shared";
 import { and, desc, eq, gte, type SQL, sql } from "drizzle-orm";
 import {
@@ -650,8 +649,7 @@ export async function publish(
   mark();
   // #2479: the first page anyone publishes (not the seeded Welcome or the
   // provisioner's self-test, which share its title); a no-op unless analytics is on.
-  if (create && title !== WELCOME_TITLE)
-    await noteInstanceFirst(env, "first_page_published", ctx);
+  if (create) await noteInstanceFirst(env, "first_page_published", ctx);
   logPublishTiming(env, id, create, at);
   const warning = dataWritersWarning({
     visibility: visibility ?? prior.visibility,

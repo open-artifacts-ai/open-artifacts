@@ -33,7 +33,7 @@ export const WELCOME_OPENED_KEY = "onboarding:welcome-opened";
  * the owner holds, #2422). It is not the user's work: it never makes an
  * instance "not fresh" and never counts as their first artifact.
  */
-const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
+export const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
 
 /** One row per user who has posted a comment (any thread or reply). */
 export const commentedKey = (userId: string) =>

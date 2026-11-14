@@ -10,9 +10,13 @@
 // Best effort: a failed or slow send never fails or delays the user's action,
 // and only a warning code is logged (never the payload or the error text).
 
+import { WELCOME_TITLE } from "@oa/shared";
 import { billingOn, readPlan } from "../billing/plan.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
+import { SELF_TEST, WELCOME_KEY } from "./onboarding.js";
+
+const WELCOME_TITLE_SQL = `title = '${WELCOME_TITLE}'`;
 
 export type ActivationEvent =
   | "agent_connected"
@@ -111,12 +115,23 @@ export async function noteInstanceFirst(
 ): Promise<void> {
   if (!analyticsOn(env) || recorded.has(event)) return;
   try {
+    // first_page_published counts the checklist's firstArtifact: not the
+    // provisioner's self-test, not the seeded Welcome (by id once recorded; by
+    // its title while the seed is still being written).
+    const gate =
+      event === "first_page_published"
+        ? `where exists (select 1 from artifacts where deleted_at is null and not ${SELF_TEST}
+             and id <> coalesce((select json_extract(value, '$.artifactId') from settings where key = ?3), '')
+             and not (${WELCOME_TITLE_SQL} and coalesce((select json_extract(value, '$.artifactId') from settings where key = ?3), '') = ''
+               and exists (select 1 from settings where key = ?3)))`
+        : "where ?3 is not null";
     const r = await env.DB.prepare(
-      `insert into settings (key, value) values (?1, ?2)
+      `insert into settings (key, value) select ?1, ?2 ${gate}
        on conflict (key) do nothing`,
     )
-      .bind(firstKey(event), String(Date.now()))
+      .bind(firstKey(event), String(Date.now()), WELCOME_KEY)
       .run();
+    if (r.meta.changes === 0 && event === "first_page_published") return;
     recorded.add(event);
     if (r.meta.changes > 0) await activation(env, event, ctx);
   } catch (e) {
