@@ -49,6 +49,9 @@ export const ERROR_CODES = [
   "query_too_large",
   // Collaboration suite: follows (#1292).
   "follow_limit",
+  // Notifications v1 (#2512).
+  "later_used",
+  "push_unavailable",
   // Self-serve billing (hosted/billing.ts).
   "plan_required",
   "plan_read_only",
@@ -170,6 +173,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   query_too_large: 400,
   /** A bus follow() past FOLLOW_LIMIT follows for one member (#1292): unfollow first. */
   follow_limit: 409,
+  /** POST R.meInboxLater on an item already deferred once. */
+  later_used: 409,
+  /** GET R.mePushKey on a server with no push key configured. */
+  push_unavailable: 404,
   /** A team feature on a free (solo) instance whose trial was already used: an invite, a shared space (sharing an artifact is free on every plan); details PlanRefusalDetails. */
   plan_required: 403,
   /** A write refused because team features are read-only (trial ended, lapsed, payment failed past grace, suspended, or billing unreachable past 7 days); details PlanRefusalDetails. Nothing was deleted. */

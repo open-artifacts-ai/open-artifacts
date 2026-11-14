@@ -48,9 +48,12 @@ export function SidePanel({
   onTab,
   onClose,
   comments,
+  commentsCount,
 }: {
   /** The Comments tab's body; without it the tab is not offered. */
   comments?: ReactNode;
+  /** #2486: the open count, shown on the Comments tab (between phones and wide windows). */
+  commentsCount?: number;
   artifact: ArtifactSummary;
   /** The version the viewer shows. */
   version: number;
@@ -70,12 +73,6 @@ export function SidePanel({
   const withDecisions = comments !== undefined && !wide;
   const shown =
     tab === "comments" && cmt.view === "decisions" ? "decisions" : tab;
-  const count = (t: string) =>
-    t === "comments"
-      ? cmt.listedOpen
-      : t === "decisions"
-        ? cmt.decisions.length
-        : null;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   // Focus moves to the active tab's search, else the active tab, on open (the
@@ -167,26 +164,41 @@ export function SidePanel({
                 className="flex h-auto w-auto justify-start group-data-[orientation=horizontal]/tabs:h-auto gap-0 overflow-x-auto overflow-y-hidden border-0 p-0 pb-[5px] [scrollbar-width:none]"
               >
                 {tabs.flatMap((t) => {
-                  const trigger = (v: string, label: string, extra = "") => (
+                  const trigger = (v: string) => (
                     <TabsTrigger
                       key={v}
                       value={v}
-                      className={`h-[34px] flex-none rounded-sm px-2 focus-visible:-outline-offset-2 ${TXT} ${PROGRAMMATIC} ${extra}`}
+                      className={`h-[34px] flex-none rounded-sm px-2 focus-visible:-outline-offset-2 ${TXT} ${PROGRAMMATIC}`}
+                      aria-label={
+                        v === "comments" && commentsCount
+                          ? `Comments, ${commentsCount} open`
+                          : undefined
+                      }
                     >
-                      {label}
-                      {count(v) !== null && !cmt.loading && (
+                      {v === "decisions" ? "Decisions" : LABELS[t]}
+                      {/* A space: the visible "Comments 3" is inside the name "Comments, 3 open". */}
+                      {v === "comments" && !!commentsCount && " "}
+                      {v === "comments" && !!commentsCount && (
                         <span
-                          aria-hidden="true"
+                          data-tab-count=""
+                          className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground"
+                        >
+                          {commentsCount}
+                        </span>
+                      )}
+                      {v === "decisions" && !cmt.loading && (
+                        <span
+                          data-tab-count=""
                           className="ml-1 font-normal text-muted-foreground"
                         >
-                          {count(v)}
+                          {cmt.decisions.length}
                         </span>
                       )}
                     </TabsTrigger>
                   );
                   return t === "comments" && withDecisions
-                    ? [trigger(t, LABELS[t]), trigger("decisions", "Decisions")]
-                    : [trigger(t, LABELS[t])];
+                    ? [trigger(t), trigger("decisions")]
+                    : [trigger(t)];
                 })}
               </TabsList>
             </TabStrip>
