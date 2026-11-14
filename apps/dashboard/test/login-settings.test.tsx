@@ -213,7 +213,7 @@ describe("the domain join", () => {
     ).toEqual({ autoJoin: true, domains: ["acme.com"] });
   });
 
-  it("back from the login: sent again, once, and on", async () => {
+  it("back from the login (L1): asks again, sends nothing until confirmed", async () => {
     sessionStorage.setItem(
       DOMAIN_AFTER_REAUTH_KEY,
       JSON.stringify({
@@ -223,6 +223,14 @@ describe("the domain join", () => {
     );
     const puts = calls("PUT");
     mountLogin("/settings/login", "owner-off", true);
+    const d = await screen.findByRole("alertdialog", {
+      name: "Let anyone at acme.com join?",
+    });
+    expect(sessionStorage.getItem(DOMAIN_AFTER_REAUTH_KEY)).toBeNull();
+    expect(puts.filter((c) => c.path === LOGIN_SETTINGS)).toHaveLength(0);
+    fireEvent.click(
+      within(d).getByRole("button", { name: "Log in again and turn on" }),
+    );
     await waitFor(() =>
       expect(screen.getByRole("switch", SWITCH)).toHaveAttribute(
         "aria-checked",
@@ -230,10 +238,45 @@ describe("the domain join", () => {
       ),
     );
     expect(puts.filter((c) => c.path === LOGIN_SETTINGS)).toHaveLength(1);
+  });
+
+  it("back from the login, then Cancel: nothing is sent", async () => {
+    sessionStorage.setItem(
+      DOMAIN_AFTER_REAUTH_KEY,
+      JSON.stringify({
+        at: Date.now(),
+        body: { autoJoin: true, domains: ["acme.com"] },
+      }),
+    );
+    const puts = calls("PUT");
+    mountLogin("/settings/login", "owner-off", true);
+    const d = await screen.findByRole("alertdialog", {
+      name: "Let anyone at acme.com join?",
+    });
+    fireEvent.click(within(d).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(puts).toHaveLength(0);
+    expect(screen.getByRole("switch", SWITCH)).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  });
+
+  it("a stale mark (over 10 minutes) asks nothing", async () => {
+    sessionStorage.setItem(
+      DOMAIN_AFTER_REAUTH_KEY,
+      JSON.stringify({
+        at: Date.now() - 11 * 60 * 1000,
+        body: { autoJoin: true, domains: ["acme.com"] },
+      }),
+    );
+    mountLogin("/settings/login", "owner-off", true);
+    await screen.findByRole("switch", SWITCH);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(sessionStorage.getItem(DOMAIN_AFTER_REAUTH_KEY)).toBeNull();
   });
 
-  it("apply_pending: Saving, then Saved once the settings show it", async () => {
+  it("accepted and applying: Saving, then Saved once it's done", async () => {
     mountLogin("/settings/login", "pending", true);
     fireEvent.click(await screen.findByRole("switch", SWITCH));
     fireEvent.click(
@@ -247,6 +290,20 @@ describe("the domain join", () => {
       "aria-checked",
       "true",
     );
+  });
+
+  it("409 apply_pending is a refusal: the change isn't taken", async () => {
+    mountLogin("/settings/login", "busy", true);
+    fireEvent.click(await screen.findByRole("switch", SWITCH));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Log in again and turn on" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(SAVE.busy);
+    expect(screen.getByRole("switch", SWITCH)).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    expect(screen.queryByText("Saved.")).toBeNull();
   });
 
   it("turning off: the dialog, then off", async () => {
@@ -264,8 +321,9 @@ describe("the domain join", () => {
     ).toBeVisible();
   });
 
-  it("domain_unproven: Product's line, naming the domain", async () => {
+  it("domain_unproven (L2): Product's line, and nothing resends it", async () => {
     mountLogin("/settings/login", "unproven", true);
+    const puts = calls("PUT");
     fireEvent.click(await screen.findByRole("switch", SWITCH));
     fireEvent.click(
       await screen.findByRole("button", { name: "Log in again and turn on" }),
@@ -273,6 +331,10 @@ describe("the domain join", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "We couldn't confirm that acme.com is your Google Workspace domain. Log in with your acme.com work account and try again.",
     );
+    expect(screen.getByRole("switch", SWITCH)).toBeDisabled();
+    expect(puts.map((c) => c.body)).toEqual([
+      { autoJoin: true, domains: ["acme.com"] },
+    ]);
   });
 
   it("domain_unproven for a personal account (provable null)", () => {
@@ -296,14 +358,18 @@ describe("the domain join", () => {
     );
   });
 
-  it("turning on adds the provable domain once", () => {
-    const s = scenarioSettings("gmail");
-    expect(joinBody({ ...s, provable: "acme.com" }, true).domains).toEqual([
-      "acme.com",
-    ]);
-    expect(joinBody(scenarioSettings("owner-on"), false)).toEqual({
-      autoJoin: false,
+  it("turning on (L2) sends only the provable domain, never the list", () => {
+    const s = {
+      ...scenarioSettings("owner-off"),
+      domains: ["old.example", "acme.com"],
+    };
+    expect(joinBody(s, true)).toEqual({
+      autoJoin: true,
       domains: ["acme.com"],
+    });
+    expect(joinBody(s, false)).toEqual({
+      autoJoin: false,
+      domains: ["old.example", "acme.com"],
     });
   });
 });
@@ -421,21 +487,65 @@ describe("the invite dialog", () => {
     );
   });
 
-  it("removed (reach): the date and pill; sending lets them back in", async () => {
+  it("removed (M1): the date, the pill and its own Restore; never sent", async () => {
     mountLogin("/settings/members", "owner-on");
     const posts = calls("POST");
     const d = await openInvite();
-    list(d, "removed@acme.com ");
+    list(d, "removed@acme.com sam@globex.io ");
     expect(
       await within(d).findByText(
         "Removed on Nov 12. Inviting them again lets them back in.",
       ),
     ).toBeVisible();
     expect(within(d).getByText("removed")).toBeVisible();
-    fireEvent.click(within(d).getByRole("button", { name: "Send 1 invite" }));
+    // Join as Guest never reaches a restore.
+    fireEvent.click(within(d).getByRole("combobox", { name: "Join as" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Guest" }));
+    fireEvent.click(
+      await within(d).findByRole("button", { name: "Send 1 invite" }),
+    );
+    await waitFor(() =>
+      expect(
+        posts.filter((c) => c.path === R.members).map((c) => c.body),
+      ).toEqual([{ email: "sam@globex.io", role: "guest" }]),
+    );
+    expect(posts.some((c) => c.path === R.memberRestore("u_removed"))).toBe(
+      false,
+    );
+    fireEvent.click(
+      within(d).getByRole("button", { name: "Restore removed@acme.com" }),
+    );
     await waitFor(() =>
       expect(posts.map((c) => c.path)).toContain(R.memberRestore("u_removed")),
     );
+    const restore = posts.find((c) => c.path === R.memberRestore("u_removed"));
+    expect(restore?.body).toBeUndefined();
+  });
+
+  it("no_way_in from the server: the row turns to can't log in", async () => {
+    const { http, HttpResponse } = await import("msw");
+    mountHosted("/settings/members", true, undefined, [
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          { error: { code: "no_way_in", message: "No way in." } },
+          { status: 400 },
+        ),
+      ),
+      ...loginHandlers(
+        "owner-on",
+        createHandlers({ hosted: true }),
+        () => false,
+      ),
+    ]);
+    const d = await openInvite();
+    list(d, "sam@globex.io ");
+    await within(d).findByText(/Outside your domain/);
+    fireEvent.click(within(d).getByRole("button", { name: "Send 1 invite" }));
+    expect(await within(d).findByText(CANT_LINE)).toBeVisible();
+    expect(within(d).getByText("can't log in")).toBeVisible();
+    expect(
+      within(d).getByRole("button", { name: "Send 0 invites" }),
+    ).toBeDisabled();
   });
 
   it("Join as Guest: the pills say guest and the invite asks for a guest", async () => {
@@ -525,6 +635,27 @@ describe("the first-invite step", () => {
     );
     fireEvent.click(within(d).getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(lastRedirect).toHaveBeenCalled());
+  });
+
+  it("back from the login (L1): the domain picked again, nothing sent", async () => {
+    sessionStorage.setItem(
+      DOMAIN_AFTER_REAUTH_KEY,
+      JSON.stringify({
+        at: Date.now(),
+        body: { autoJoin: true, domains: ["acme.com"] },
+      }),
+    );
+    const puts = calls("PUT");
+    mountLogin("/settings/members", "first-invite", true);
+    const d = await screen.findByRole("dialog", {
+      name: "Who should be able to join Acme Artifacts?",
+    });
+    expect(
+      await within(d).findByRole("radio", {
+        name: /Anyone at acme.com, and people I invite/,
+      }),
+    ).toBeChecked();
+    expect(puts).toHaveLength(0);
   });
 
   it("Gmail owner (no provable domain): no step", async () => {

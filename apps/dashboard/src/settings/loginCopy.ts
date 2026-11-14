@@ -95,6 +95,8 @@ export const SAVE = {
   pending: "Saving. This takes about a minute.",
   saved: "Saved.",
   failed: "Couldn't save. Try again.",
+  /** 409 apply_pending: refused, an earlier change is still applying. PLACEHOLDER: string asked of Product. */
+  busy: "An earlier change is still being saved. Try again in a minute.",
   /** domain_unproven, with the domain the server named (or the owner's). */
   unproven: (d: string) =>
     `We couldn't confirm that ${d} is your Google Workspace domain. Log in with your ${d} work account and try again.`,
@@ -112,6 +114,7 @@ export const saveLine = (
   if (state === "pending") return { text: SAVE.pending, error: false };
   if (state === "saved") return { text: SAVE.saved, error: false };
   if (state === "failed") return { text: SAVE.failed, error: true };
+  if (state === "busy_elsewhere") return { text: SAVE.busy, error: true };
   if (state !== "unproven") return null;
   const d = provable === null ? null : (unproven ?? provable);
   return { text: d ? SAVE.unproven(d) : SAVE.personal, error: true };

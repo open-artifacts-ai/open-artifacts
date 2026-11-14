@@ -118,6 +118,11 @@ for (const scheme of ["light", "dark"] as const)
           .getByRole("button", { name: "Log in again and turn on" })
           .click();
         await page.waitForURL(/reauthed=1/);
+        // Back from the login: asked again, nothing sent until confirmed.
+        await page
+          .getByRole("alertdialog", { name: "Let anyone at acme.com join?" })
+          .getByRole("button", { name: "Log in again and turn on" })
+          .click();
         await expect(
           page.getByRole("switch", { name: "Anyone at your domain" }),
         ).toHaveAttribute("aria-checked", "true");

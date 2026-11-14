@@ -7,9 +7,10 @@
 //   solo: a Solo instance;  selfhost: set at setup (editable false)
 //   codes-off: email codes off;  no-google: Google off (nobody new gets in)
 //   no-email: the instance sends no email
-//   pending: turning the join on answers 409 apply_pending, then applies
+//   pending: a change is accepted with applying: true, done by the next GET
 //   first-invite: as owner-off, with nobody but the owner yet
 //   unproven: turning the join on answers 403 domain_unproven
+//   busy: any change answers 409 apply_pending (an earlier one is applying)
 // Turning the join on answers reauth_required until the page has ?reauthed=1
 // (the "login" comes back to the same page with it). An address starting
 // "removed" is a removed member (reach says so; invites answer member_removed).
@@ -42,6 +43,7 @@ export const LOGIN_SCENARIOS = [
   "pending",
   "first-invite",
   "unproven",
+  "busy",
 ] as const;
 export type LoginScenario = (typeof LOGIN_SCENARIOS)[number];
 
@@ -137,9 +139,11 @@ export const loginHandlers = (
 ): HttpHandler[] => {
   let settings = scenarioSettings(scenario);
   const methods = scenarioMethods(scenario);
-  let pendingOnce = scenario === "pending";
   return [
-    http.get(`*${LOGIN_SETTINGS}`, () => HttpResponse.json(settings)),
+    // pending: the PUT says applying; any later GET finds it done.
+    http.get(`*${LOGIN_SETTINGS}`, () =>
+      HttpResponse.json({ ...settings, applying: false }),
+    ),
     http.put(`*${LOGIN_SETTINGS}`, async ({ request }) => {
       const body = (await request.json()) as LoginSettingsPut;
       if (body.autoJoin && !settings.autoJoin && !reauthed())
@@ -150,17 +154,19 @@ export const loginHandlers = (
         return error(403, "domain_unproven", "Couldn't confirm your domain", {
           domain: DOMAIN,
         });
-      settings = { ...settings, ...body };
-      if (pendingOnce) {
-        // Accepted, applied by a redeploy: the next GET has it.
-        pendingOnce = false;
+      // busy: an earlier change is still applying, so this one is refused.
+      if (scenario === "busy")
         return error(
           409,
           "apply_pending",
           "Saving. This takes about a minute.",
         );
-      }
-      return HttpResponse.json(settings);
+      settings = { ...settings, ...body };
+      // pending: accepted, applied by a redeploy; the next GET says done.
+      return HttpResponse.json({
+        ...settings,
+        applying: scenario === "pending",
+      });
     }),
     http.post(`*${FIRST_INVITE_SEEN}`, () => {
       settings = { ...settings, firstInviteSeen: true };
@@ -197,6 +203,8 @@ export const loginHandlers = (
           "This person was removed. Restore them instead.",
           { userId: "u_removed" },
         );
+      if (!mockReach(settings, methods, email).ways.length)
+        return error(400, "no_way_in", "No login way admits this address.");
       if (role !== "guest") return undefined;
       return HttpResponse.json(
         {
@@ -210,6 +218,24 @@ export const loginHandlers = (
         },
         { status: 201 },
       );
+    }),
+    // The removed address is in the removed list, so its Restore has an id.
+    http.get("*/api/v1/members", async ({ request }) => {
+      if (new URL(request.url).searchParams.get("status") !== "removed")
+        return undefined;
+      const res = await getResponse(hosted, request);
+      const body = ((await res?.json()) ?? []) as object[];
+      return HttpResponse.json([
+        ...body,
+        {
+          id: "u_removed",
+          email: "removed@acme.com",
+          name: null,
+          role: "member",
+          lastSeenAt: null,
+          status: "removed",
+        },
+      ]);
     }),
     http.post("*/api/v1/members/u_removed/restore", () =>
       HttpResponse.json({

@@ -3,7 +3,7 @@
 // screens A and B. The data is PROVISIONAL (api/loginSettings.ts).
 import type { Me } from "@oa/shared";
 import { Badge } from "@oa/ui/shadcn";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useAuthProviders } from "../api/auth";
 import { type LoginSettings, useLoginSettings } from "../api/loginSettings";
 import { useMe } from "../auth/useMe";
@@ -214,6 +214,11 @@ function DomainRow({
 }) {
   const [asking, setAsking] = useState<"on" | "off" | null>(null);
   const join = useDomainJoin();
+  // Back from the login: ask again; nothing is sent until the owner confirms.
+  const resume = owner && !s.autoJoin && join.resume !== null;
+  useEffect(() => {
+    if (resume) setAsking("on");
+  }, [resume]);
 
   if (v.scope === "self_hosted")
     return (
@@ -279,7 +284,8 @@ function DomainRow({
               id="oa-login-domain-switch"
               label={LOGIN.domain}
               checked={s.autoJoin}
-              disabled={join.busy}
+              // domain_unproven: turning on again would resend it.
+              disabled={join.busy || (join.locked && !s.autoJoin)}
               describedBy="oa-login-domain-state"
               onChange={(next) => setAsking(next ? "on" : "off")}
             />
@@ -308,7 +314,10 @@ function DomainRow({
       </Row>
       <ConfirmDialog
         open={asking === "on"}
-        onClose={() => setAsking(null)}
+        onClose={() => {
+          setAsking(null);
+          join.dismissResume();
+        }}
         title={DOMAIN_ON.title(name)}
         body={
           <>

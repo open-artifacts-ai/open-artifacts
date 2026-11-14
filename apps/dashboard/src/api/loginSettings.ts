@@ -3,13 +3,15 @@
 //
 // GET /api/v1/settings/login -> LoginSettings (owners and admins; 404 on a
 //     server without #2520: the Login tab hides, Members keeps its dialog)
-// PUT /api/v1/settings/login { autoJoin, domains } -> LoginSettings, owner
-//     only. 401 reauth_required { reauthUrl } (a fresh login, as passkeys);
-//     403 domain_unproven { domain }; 409 apply_pending (a hosted redeploy,
-//     about a minute).
+// PUT /api/v1/settings/login { autoJoin, domains } -> LoginSettings (with
+//     applying: true while a hosted redeploy applies it, about a minute),
+//     owner only. 401 reauth_required { reauthUrl } (a fresh login, as
+//     passkeys); 403 domain_unproven { domain }; 409 apply_pending (refused:
+//     an earlier change is still applying).
 // GET /api/v1/members/reach?email= -> InviteReach (owners and admins).
 // POST /api/v1/settings/login/first-invite-seen -> 204 (Skip or Continue).
-// POST R.members also returns { reach: InviteReach }, and takes role "guest".
+// POST R.members also returns { reach: InviteReach }, takes role "guest", and
+//     answers 400 no_way_in for an address with no way in.
 
 import { DomainUnprovenDetailsSchema } from "@oa/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -49,6 +51,8 @@ export const LoginSettingsSchema = z.object({
   joined: z.number().int().nonnegative(),
   /** The owner answered the first-invite step (Skip or Continue). */
   firstInviteSeen: z.boolean(),
+  /** An accepted change is still being applied (a hosted redeploy, about a minute). */
+  applying: z.boolean().optional(),
 });
 export type LoginSettings = z.infer<typeof LoginSettingsSchema>;
 export type LoginSettingsPut = { autoJoin: boolean; domains: string[] };

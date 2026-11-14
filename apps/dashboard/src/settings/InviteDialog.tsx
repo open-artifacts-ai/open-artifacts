@@ -19,7 +19,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useQueries } from "@tanstack/react-query";
 import { XIcon } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
 import { billingContext, errorCopy } from "../api/errorCopy";
@@ -44,6 +44,7 @@ import { AppLink } from "../library/AppLink";
 import { joinBody, useDomainJoin } from "./domainJoin";
 import { Pill } from "./Login";
 import {
+  CANT_LINE,
   FIRST_INVITE,
   INVITE,
   reachLine,
@@ -248,10 +249,23 @@ export function FirstInviteStep({
   onClose: () => void;
   onNext: () => void;
 }) {
-  const [pick, setPick] = useState<"only" | "domain">("only");
   const join = useDomainJoin({ onDone: onNext });
+  const [pick, setPick] = useState<"only" | "domain">("only");
+  // Back from the login: the domain is picked again; Continue confirms it.
+  useEffect(() => {
+    if (join.resume) setPick("domain");
+  }, [join.resume]);
+  // domain_unproven: nothing offers to resend it.
+  useEffect(() => {
+    if (join.locked) setPick("only");
+  }, [join.locked]);
   const name = useId();
-  const option = (value: "only" | "domain", title: string, line: string) => (
+  const option = (
+    value: "only" | "domain",
+    title: string,
+    line: string,
+    off = false,
+  ) => (
     <label
       className={`flex cursor-pointer items-start gap-[var(--oa-space-3)] rounded-md border p-[var(--oa-space-3)] ${pick === value ? "border-primary" : "border-border"}`}
     >
@@ -260,7 +274,7 @@ export function FirstInviteStep({
         name={name}
         value={value}
         checked={pick === value}
-        disabled={join.busy}
+        disabled={join.busy || off}
         onChange={() => setPick(value)}
         className="mt-[3px] accent-[var(--oa-accent)]"
       />
@@ -299,7 +313,12 @@ export function FirstInviteStep({
       <fieldset className="m-0 grid gap-[var(--oa-space-2)] border-0 p-0">
         <legend className="sr-only">{FIRST_INVITE.title(instance)}</legend>
         {option("only", FIRST_INVITE.only, FIRST_INVITE.onlyLine)}
-        {option("domain", FIRST_INVITE.domain(domain), FIRST_INVITE.domainLine)}
+        {option(
+          "domain",
+          FIRST_INVITE.domain(domain),
+          FIRST_INVITE.domainLine,
+          join.locked,
+        )}
       </fieldset>
       {note && (
         <p
@@ -341,6 +360,8 @@ function InviteList({
   const [failed, setFailed] = useState<Record<string, string>>({});
   // A removed member's address (member_removed): Restore, as before (parity 1).
   const [removed, setRemoved] = useState<Record<string, string>>({});
+  /** 400 no_way_in on send: the row turns to "can't log in". */
+  const [noWay, setNoWay] = useState<Record<string, true>>({});
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<Sent | null>(null);
   const sending = useRef(false);
@@ -361,22 +382,33 @@ function InviteList({
     setBad(rest.length > 0);
     return capped;
   };
-  /** Can't log in here: held, the rest still go. */
-  const held = (email: string) => reaches.get(email)?.ways.length === 0;
+  // Removed people, by address: Restore needs their id (OA Axe M1: never
+  // restored by sending; each has its own Restore).
+  const removedList = useMembers("removed");
+  const removedId = (email: string) =>
+    removed[email] ??
+    removedList.data?.find((m) => m.email === email && m.status === "removed")
+      ?.id;
+  const isRemoved = (email: string) =>
+    !!removed[email] || !!reaches.get(email)?.removed;
+  /** Can't log in here (the reach, or the server's no_way_in): held, the rest still go. UI only: the server refuses too. */
+  const cantIn = (email: string) =>
+    !!noWay[email] || reaches.get(email)?.ways.length === 0;
+  const held = (email: string) => cantIn(email) || isRemoved(email);
   const pending = split(draft, parse).ok.filter((v) => !list.includes(v));
-  const count =
-    list.filter((v) => !held(v) && !removed[v]).length + pending.length;
+  const count = list.filter((v) => !held(v)).length + pending.length;
 
   const submit = async () => {
     if (sending.current) return;
     const all = commit();
-    const out = all.filter((v) => !held(v) && !removed[v]);
+    const out = all.filter((v) => !held(v));
     if (out.length === 0) return;
     sending.current = true;
     setBusy(true);
     setFailed({});
     const errors: Record<string, string> = {};
     const gone: Record<string, string> = {};
+    const shut: Record<string, true> = {};
     const done: string[] = [];
     let last: Sent | null = null;
     for (const email of out) {
@@ -398,29 +430,17 @@ function InviteList({
           e instanceof ApiClientError && e.code === "member_removed"
             ? MemberRemovedDetailsSchema.safeParse(e.details)
             : null;
-        if (!was?.success) {
-          errors[email] = inviteFailure(e, email, domains, me);
-          continue;
-        }
-        // The reach said removed, and the row said inviting lets them back
-        // in: restore them. Otherwise ask first, as before (parity 1).
-        if (!reaches.get(email)?.removed) {
-          gone[email] = was.data.userId;
-          continue;
-        }
-        try {
-          await restore.mutateAsync(was.data.userId);
-          last = null;
-          done.push(email);
-        } catch (r) {
-          errors[email] = restoreCopy(r, email);
-        }
+        if (was?.success) gone[email] = was.data.userId;
+        else if (e instanceof ApiClientError && e.code === "no_way_in")
+          shut[email] = true;
+        else errors[email] = inviteFailure(e, email, domains, me);
       }
     }
     sending.current = false;
     setBusy(false);
     setFailed(errors);
     setRemoved((r) => ({ ...r, ...gone }));
+    setNoWay((n) => ({ ...n, ...shut }));
     const left = all.filter((v) => !done.includes(v));
     setList(left);
     if (done.length === 0) return;
@@ -430,8 +450,12 @@ function InviteList({
   };
 
   const restoreOne = (email: string) => {
-    const id = removed[email];
-    if (!id) return;
+    const id = removedId(email);
+    if (!id)
+      return setFailed((f) => ({
+        ...f,
+        [email]: restoreCopy(undefined, email),
+      }));
     restore.mutate(id, {
       onSuccess: () => {
         toast({
@@ -511,14 +535,18 @@ function InviteList({
                 reach={reaches.get(email)}
                 role={role}
                 error={failed[email]}
+                cant={cantIn(email)}
                 removed={
-                  removed[email]
-                    ? {
-                        line: `${email} was removed. Restore them to bring back their account and the ${spaces ? "personal " : ""}artifacts you haven't transferred. They come back with the access they had (no admin role) and log in again.`,
+                  !isRemoved(email)
+                    ? null
+                    : {
+                        // The reach's date, else today's member_removed copy.
+                        line: reaches.get(email)?.removed
+                          ? removedLine(reaches.get(email)?.removed?.at ?? "")
+                          : `${email} was removed. Restore them to bring back their account and the ${spaces ? "personal " : ""}artifacts you haven't transferred. They come back with the access they had (no admin role) and log in again.`,
                         restore: () => restoreOne(email),
                         busy: restore.isPending,
                       }
-                    : null
                 }
                 disabled={busy}
                 onRemove={() => setList((l) => l.filter((v) => v !== email))}
@@ -578,6 +606,7 @@ function InviteList({
 function AddressRow({
   email,
   reach,
+  cant,
   role,
   error,
   removed,
@@ -587,21 +616,22 @@ function AddressRow({
   email: string;
   /** Undefined while the server hasn't answered. */
   reach: InviteReach | undefined;
+  /** No way in (the reach, or no_way_in on send). */
+  cant: boolean;
   role: JoinAs;
   error: string | undefined;
+  /** A removed member: its own Restore, never sent (OA Axe M1). */
   removed: { line: string; restore: () => void; busy: boolean } | null;
   disabled: boolean;
   onRemove: () => void;
 }) {
-  const ways = reach?.ways;
-  const cant = ways?.length === 0;
-  const was = reach?.removed;
-  const line =
-    !reach || removed
-      ? null
-      : was
-        ? removedLine(was.at)
-        : reachLine(email, reach.ways);
+  const line = removed
+    ? null
+    : cant
+      ? CANT_LINE
+      : reach
+        ? reachLine(email, reach.ways)
+        : null;
   return (
     <li
       data-address={email}
@@ -619,10 +649,8 @@ function AddressRow({
           </p>
         )}
         {removed && (
-          <div role="alert" className="grid gap-[var(--oa-space-2)]">
-            <p className={`m-0 text-[length:var(--oa-text-sm)]`}>
-              {removed.line}
-            </p>
+          <div className="grid gap-[var(--oa-space-2)]">
+            <p className={`m-0 ${muted}`}>{removed.line}</p>
             <Button
               type="button"
               size="sm"
@@ -641,15 +669,13 @@ function AddressRow({
           </p>
         )}
       </div>
-      {reach &&
-        !removed &&
-        (cant ? (
-          <Pill tone="warn">{INVITE.cantPill}</Pill>
-        ) : was ? (
-          <Pill tone="plain">{INVITE.removedPill}</Pill>
-        ) : (
-          <Pill tone="plain">{role}</Pill>
-        ))}
+      {removed ? (
+        <Pill tone="plain">{INVITE.removedPill}</Pill>
+      ) : cant ? (
+        <Pill tone="warn">{INVITE.cantPill}</Pill>
+      ) : reach ? (
+        <Pill tone="plain">{role}</Pill>
+      ) : null}
       <Button
         type="button"
         variant="ghost"

@@ -89,6 +89,8 @@ export const ERROR_CODES = [
   // Login settings (#2520): PUT R.settings/login.
   "domain_unproven",
   "apply_pending",
+  // Invites (#2520): an address no login way admits.
+  "no_way_in",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -229,8 +231,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   docs_need_paid: 400,
   /** PUT settings/login (#2520): the owner's login doesn't prove that domain is their Google Workspace's; details DomainUnprovenDetails. */
   domain_unproven: 403,
-  /** PUT settings/login (#2520): accepted; a hosted instance applies it with a redeploy, about a minute. */
+  /** PUT settings/login (#2520): refused, an earlier change is still being applied (a hosted redeploy, about a minute). */
   apply_pending: 409,
+  /** POST R.members (#2520): no login way admits the address (InviteReach.ways is []). Nothing is created. */
+  no_way_in: 400,
 };
 
 /**
