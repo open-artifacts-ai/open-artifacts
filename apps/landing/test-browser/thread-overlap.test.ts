@@ -91,6 +91,8 @@ describe("the inline thread stays inside the timeline (#2480)", () => {
       const steps = document.getElementById("plsteps");
       return steps ? steps.children.length : 0;
     });
+    expect(units, "the phone story is locked").toBeGreaterThan(0);
+    let seen = 0;
     for (let b = 0; b < units; b++) {
       await page.evaluate((b) => {
         const pl = document.getElementById("pl") as HTMLElement;
@@ -102,10 +104,32 @@ describe("the inline thread stays inside the timeline (#2480)", () => {
           behavior: "instant",
         });
       }, b);
-      // Let the beat's max-height and opacity transitions finish.
-      await page.waitForTimeout(1600);
-      check(await spills(page), `phone beat ${b}`);
+      // Two frames for the beat's styles to apply, then wait until the
+      // story's transitions (max-height, opacity) have all finished.
+      await page.evaluate(
+        () =>
+          new Promise((r) =>
+            requestAnimationFrame(() => requestAnimationFrame(r)),
+          ),
+      );
+      await page.waitForFunction(
+        () =>
+          !document
+            .getAnimations()
+            .some(
+              (a) =>
+                a instanceof CSSTransition &&
+                a.playState === "running" &&
+                (a.effect as KeyframeEffect | null)?.target?.closest?.(
+                  ".pl-view",
+                ),
+            ),
+      );
+      const rows = await spills(page);
+      if (rows.length) seen++;
+      check(rows, `phone beat ${b}`);
     }
+    expect(seen, "some beat shows the inline thread").toBeGreaterThan(0);
     await ctx.close();
   });
 });
