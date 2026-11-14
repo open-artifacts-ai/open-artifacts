@@ -60,6 +60,11 @@ describe("legal pages", () => {
     expect(privacy).toMatch(/GDPR/);
   });
 
+  it("the privacy policy names PostHog and the setup events", () => {
+    expect(privacy).toMatch(/<h3[^>]*>Setup events<\/h3>/);
+    expect(privacy).toMatch(/<td>PostHog<\/td>\s*<td>Product analytics/);
+  });
+
   it("uses no em dashes", () => {
     for (const html of [privacy, terms]) expect(html).not.toContain("—");
   });
