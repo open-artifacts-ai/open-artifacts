@@ -204,7 +204,11 @@ export const loginHandlers = (
           { userId: "u_removed" },
         );
       if (!mockReach(settings, methods, email).ways.length)
-        return error(400, "no_way_in", "No login way admits this address.");
+        return error(
+          400,
+          "no_way_in",
+          "This address can't log in here with the login methods that are on.",
+        );
       if (role !== "guest") return undefined;
       return HttpResponse.json(
         {

@@ -527,7 +527,13 @@ describe("the invite dialog", () => {
     mountHosted("/settings/members", true, undefined, [
       http.post(`*${R.members}`, () =>
         HttpResponse.json(
-          { error: { code: "no_way_in", message: "No way in." } },
+          {
+            error: {
+              code: "no_way_in",
+              message:
+                "This address can't log in here with the login methods that are on.",
+            },
+          },
           { status: 400 },
         ),
       ),
@@ -543,6 +549,10 @@ describe("the invite dialog", () => {
     fireEvent.click(within(d).getByRole("button", { name: "Send 1 invite" }));
     expect(await within(d).findByText(CANT_LINE)).toBeVisible();
     expect(within(d).getByText("can't log in")).toBeVisible();
+    // The row's own line, never the server's message.
+    expect(d).not.toHaveTextContent(
+      "This address can't log in here with the login methods that are on.",
+    );
     expect(
       within(d).getByRole("button", { name: "Send 0 invites" }),
     ).toBeDisabled();
