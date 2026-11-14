@@ -1,7 +1,7 @@
 ---
 title: Privacy Policy
 description: What data hosted Open Artifacts and this website collect, why, and how long we keep it.
-updated: "November 13, 2026"
+updated: "November 14, 2026"
 ---
 
 This policy explains what **Leo Urbina Consulting LLC** ("we", "us") collects when you use:
@@ -57,6 +57,10 @@ We don't keep your IP address or full browser details for this. For personal acc
 ### Billing
 
 Payments are processed by Stripe. You type your card, billing email and address into Stripe's own checkout, so Stripe holds them and we never see your card. On our side we keep your plan and its dates, the ids Stripe gives us for your account and subscription, which accounts counted as creators each month (as internal ids, not names or emails), and whether each invoice was paid.
+
+### Setup events
+
+To see whether new accounts get set up, we record the first time each of these happens on a hosted instance: you sign up, an agent connects, you name it, a first page is published, an agent replies to a mention, and you answer an ask. Our servers send each event to PostHog with the instance's id, its plan and the time. We don't send what you publish, what you write in comments, your name or your email address. No tracking script runs in your browser.
 
 ### Cookies and browser storage
 
@@ -130,6 +134,7 @@ The providers that process data for us:
 |---|---|
 | Cloudflare | Hosting and storage; service logs; sending email; Turnstile, a bot check on login code requests, which receives your IP address; and Browser Run, which renders artifacts in a remote browser to make thumbnails |
 | Stripe | Payments: it receives your card details, billing email and address, and creates your invoices |
+| PostHog | Product analytics: it receives the setup events described above |
 | Google | Login, and the Google Workspace directory if your organization connects it |
 | GitHub | Checking for new Open Artifacts releases; no personal data is sent |
 

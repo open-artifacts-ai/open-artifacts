@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "87bd77d6-83cb-4cbf-956c-95c84cd135d1",
-  "prevId": "cfbd6aee-3d79-4f3e-980c-e7d413573d60",
+  "id": "260609a3-43bb-40c4-bd4d-18a5ce961416",
+  "prevId": "58d2abe6-f948-4d34-b726-94e742e7fc89",
   "tables": {
     "agent_grants": {
       "name": "agent_grants",
@@ -2445,6 +2445,107 @@
         "users_role_check": {
           "name": "users_role_check",
           "value": "\"role\" in ('owner', 'admin', 'member', 'guest')"
+        }
+      }
+    },
+    "version_contributors": {
+      "name": "version_contributors",
+      "columns": {
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "agent_name": {
+          "name": "agent_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "agent_version": {
+          "name": "agent_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "agent_via": {
+          "name": "agent_via",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "version_contributors_user_idx": {
+          "name": "version_contributors_user_idx",
+          "columns": ["user_id"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "version_contributors_artifact_id_artifacts_id_fk": {
+          "name": "version_contributors_artifact_id_artifacts_id_fk",
+          "tableFrom": "version_contributors",
+          "tableTo": "artifacts",
+          "columnsFrom": ["artifact_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "version_contributors_user_id_users_id_fk": {
+          "name": "version_contributors_user_id_users_id_fk",
+          "tableFrom": "version_contributors",
+          "tableTo": "users",
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "version_contributors_artifact_id_version_kind_key_pk": {
+          "columns": ["artifact_id", "version", "kind", "key"],
+          "name": "version_contributors_artifact_id_version_kind_key_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "version_contributors_kind_check": {
+          "name": "version_contributors_kind_check",
+          "value": "\"kind\" in ('person', 'agent')"
         }
       }
     },
