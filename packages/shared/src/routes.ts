@@ -20,6 +20,11 @@ export const R = {
   meInboxReadAll: "/api/v1/me/inbox/read-all",
   /** POST InboxLaterBody (`{ until: "hour" | "morning" }`) -> 204. Defers a needs-you item once; a second time is 409 later_used. */
   meInboxLater: (id: string) => `/api/v1/me/inbox/${seg(id)}/later`,
+  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204. Muted agents and pages stop producing update items. */
+  meInboxMutes: "/api/v1/me/inbox/mutes",
+  /** DELETE -> 204. Unmutes one agent or page. */
+  meInboxMute: (kind: "agent" | "page", id: string) =>
+    `/api/v1/me/inbox/mutes/${seg(kind)}/${seg(id)}`,
   /** GET -> NotificationPrefs; PUT NotificationPrefs -> NotificationPrefs. */
   meNotificationPrefs: "/api/v1/me/notification-prefs",
   /** GET -> PushKey (`{ publicKey }`); 404 push_unavailable when the server has no push key. */

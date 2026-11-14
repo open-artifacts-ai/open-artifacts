@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  InboxMuteBodySchema,
+  InboxMutesSchema,
   InboxSchema,
   NotificationPrefsSchema,
   PushPayloadSchema,
@@ -91,5 +93,38 @@ describe("notifications contract", () => {
         keys: { p256dh: "a", auth: "b" },
       }).success,
     ).toBe(false);
+  });
+
+  it("parses machine, away, agentId and mutes", () => {
+    const el = InboxSchema.shape.needsYou.element;
+    expect(
+      el.safeParse({
+        ...item,
+        kind: "machine",
+        actor: { kind: "agent", name: "b", agentId: "ag1" },
+        machine: { id: "m1", name: "laptop" },
+      }).success,
+    ).toBe(true);
+    expect(
+      el.safeParse({
+        ...item,
+        kind: "away",
+        away: { since: "2026-11-14T00:00:00Z", count: 3 },
+      }).success,
+    ).toBe(true);
+    expect(
+      el.safeParse({ ...item, away: { since: "x", count: -1 } }).success,
+    ).toBe(false);
+    expect(
+      InboxMutesSchema.safeParse({
+        items: [{ kind: "agent", id: "a", name: "A" }],
+      }).success,
+    ).toBe(true);
+    expect(
+      InboxMuteBodySchema.safeParse({ kind: "page", id: "p" }).success,
+    ).toBe(true);
+    expect(InboxMuteBodySchema.safeParse({ kind: "x", id: "p" }).success).toBe(
+      false,
+    );
   });
 });

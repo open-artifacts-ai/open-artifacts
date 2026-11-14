@@ -18,13 +18,28 @@ const Hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 export const InboxItemSchema = z.object({
   id: z.string(),
   level: z.enum(["needs_you", "update"]),
-  kind: z.enum(["ask", "mention", "reply", "comment", "share", "decision"]),
+  kind: z.enum([
+    "ask",
+    "mention",
+    "reply",
+    "comment",
+    "share",
+    "decision",
+    "machine",
+    "away",
+  ]),
   urgency: z.enum(["waiting", "approval", "plain"]).optional(),
   waitingSince: Iso.optional(),
   artifact: z.object({ id: z.string(), title: z.string() }),
   actor: z
-    .object({ kind: z.enum(["person", "agent"]), name: z.string() })
+    .object({
+      kind: z.enum(["person", "agent"]),
+      name: z.string(),
+      agentId: z.string().optional(),
+    })
     .nullable(),
+  machine: z.object({ id: z.string(), name: z.string() }).optional(),
+  away: z.object({ since: Iso, count: z.number().int().min(0) }).optional(),
   text: z.string(),
   href: SameOriginPath,
   createdAt: Iso,
@@ -106,3 +121,20 @@ export const PushPayloadSchema = z.object({
   count: z.number().int().optional(),
 });
 export type PushPayload = z.infer<typeof PushPayloadSchema>;
+
+export const InboxMuteBodySchema = z.object({
+  kind: z.enum(["agent", "page"]),
+  id: z.string(),
+});
+export type InboxMuteBody = z.infer<typeof InboxMuteBodySchema>;
+
+export const InboxMutesSchema = z.object({
+  items: z.array(
+    z.object({
+      kind: z.enum(["agent", "page"]),
+      id: z.string(),
+      name: z.string(),
+    }),
+  ),
+});
+export type InboxMutes = z.infer<typeof InboxMutesSchema>;
