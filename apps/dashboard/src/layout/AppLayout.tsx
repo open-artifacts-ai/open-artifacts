@@ -42,6 +42,7 @@ import { isEmbed, isFullPath } from "../embed";
 import { SearchBox } from "../library/SearchBox";
 import { EdgePanel } from "../pages/Edge";
 import { NotPublic } from "../pages/NotPublic";
+import { canConnectAgents, useNoAgentsPage } from "../settings/AgentSetupCard";
 import { useDeparted } from "../settings/departed";
 import { MEASURE } from "../settings/ui";
 import { SpaceSwitcher } from "../spaces/SpaceSwitcher";
@@ -76,6 +77,7 @@ const icon = (d: string) => (
 );
 const I = {
   lib: icon("M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z"),
+  connect: icon("M6 2v4M10 2v4M4 6h8v2a4 4 0 0 1-8 0zM8 12v3"),
   share: icon("M10.5 5.5 13 8l-2.5 2.5M13 8H5a3 3 0 0 0-3 3"),
   team: icon(
     "M6 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM1.5 13.5c.5-2.5 2.3-3.8 4.5-3.8s4 1.3 4.5 3.8",
@@ -407,6 +409,7 @@ function Link({
 function Sidebar({ me, path }: { me: Me | null; path: string }) {
   const role = me?.user.role;
   const guest = role === "guest";
+  const noConnections = useNoAgentsPage();
   const on = (p: string) => path === p || path.startsWith(`${p}/`);
   const go = useGo();
   const home = guest ? "/shared" : "/";
@@ -469,12 +472,24 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
                         label="Team"
                       />
                     )}
+                    {me && !noConnections && (
+                      <Link
+                        to="/settings/connections"
+                        active={on("/settings/connections")}
+                        icon={I.connect}
+                        label={
+                          canConnectAgents(me)
+                            ? "Connect agents"
+                            : "Connections"
+                        }
+                      />
+                    )}
                     {canUseBus(me) && (
                       <Link
                         to="/agents"
                         active={on("/agents")}
                         icon={I.agents}
-                        label="Agents"
+                        label="Agent messaging"
                       />
                     )}
                     {(role === "owner" || role === "admin") && !usageOff && (
@@ -489,7 +504,9 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
                       <Link
                         to="/settings/members"
                         active={
-                          path.startsWith("/settings") && !on("/settings/usage")
+                          path.startsWith("/settings") &&
+                          !on("/settings/usage") &&
+                          !on("/settings/connections")
                         }
                         icon={I.gear}
                         label="Settings"
