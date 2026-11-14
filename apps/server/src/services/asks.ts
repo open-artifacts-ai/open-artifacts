@@ -87,6 +87,34 @@ export const indexWeighed = (
       .run(),
   );
 
+/**
+ * #2527: the asker took the decision back. The asker's row is open (they
+ * decide now); the old decider's row goes unless they are still an addressee
+ * (then it stays as it is: open, or closed by their own weigh-in).
+ */
+export const indexTakenBack = (
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  to: StoredParty[],
+  asker: string,
+  oldDecider: string,
+) =>
+  guarded("take_back", artifactId, () =>
+    env.DB.batch([
+      stmt(env.DB, INSERT).bind(artifactId, threadId, commentId, asker, 1, 0),
+      ...(oldDecider !== asker && !addressees(to).includes(oldDecider)
+        ? [
+            stmt(
+              env.DB,
+              "delete from artifact_asks where artifact_id = ? and comment_id = ? and addressee = ?",
+            ).bind(artifactId, commentId, oldDecider),
+          ]
+        : []),
+    ]),
+  );
+
 /** Resolving closes every ask of the thread; reopening reopens those not answered. */
 export const indexStatus = (
   env: Env,

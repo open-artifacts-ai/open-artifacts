@@ -25,6 +25,7 @@ import {
   deleteComment,
   listComments,
   setStatus,
+  takeBackAsk,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
@@ -597,5 +598,120 @@ describe("deciders in the index (#2381)", () => {
     expect((await rows(id)).map((r) => r.addressee).sort()).toEqual(
       [owner.userId, reader.userId].sort(),
     );
+  });
+});
+
+describe("taking a decision back (#2527)", () => {
+  const byWho = async (id: string) =>
+    Object.fromEntries((await rows(id)).map((r) => [r.addressee, r]));
+  async function decided(to: U[], decider: U) {
+    const id = await mkArtifact();
+    await api(app, R.shares(id), owner.cookie, {
+      method: "PUT",
+      body: { email: decider.email, role: "editor" },
+    });
+    const t = await addThread(
+      E,
+      { id, format: "html", currentVersion: 1 } as never,
+      who(owner),
+      view(owner),
+      {
+        anchor: NOTE,
+        body: "Which one?",
+        ask: {
+          question: "Which one do we ship?",
+          options: OPTS,
+          to: to.map((u) => ({ key: u.userId })),
+          decider: { key: decider.userId },
+        },
+      },
+      { moderator: true },
+    );
+    return { id, tid: t.id, cid: t.comments[0]?.id as string };
+  }
+  const takeBack = (s: { id: string; tid: string; cid: string }, u: U) =>
+    api(app, R.commentAskDecider(s.id, s.tid, s.cid), u.cookie, {
+      method: "POST",
+      body: { takeBack: true },
+    });
+
+  it("the asker gets an open row, even after weighing in", async () => {
+    const s = await decided([reader], other);
+    await api(app, R.commentAnswer(s.id, s.tid, s.cid), owner.cookie, {
+      method: "POST",
+      body: { optionId: "a" },
+    });
+    expect((await byWho(s.id))[owner.userId]).toMatchObject({ open: 0 });
+    expect((await takeBack(s, owner)).status).toBe(200);
+    expect((await byWho(s.id))[owner.userId]).toMatchObject({
+      open: 1,
+      answered: 0,
+    });
+    expect(await countFor(owner, s.id)).toBe(1);
+  });
+
+  it("an old decider who was not asked loses their row", async () => {
+    const s = await decided([reader], other);
+    // The decider is always added to `to` on creation; an ask from before that
+    // may not name them, so drop them from the stored addressees.
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        const r = state.storage.sql
+          .exec(
+            "select addressees from comment_asks where comment_id = ?",
+            s.cid,
+          )
+          .one() as { addressees: string };
+        const kept = (JSON.parse(r.addressees) as { key: string }[]).filter(
+          (p) => p.key !== other.userId,
+        );
+        state.storage.sql.exec(
+          "update comment_asks set addressees = ? where comment_id = ?",
+          JSON.stringify(kept),
+          s.cid,
+        );
+      },
+    );
+    expect((await byWho(s.id))[other.userId]).toBeDefined();
+    expect((await takeBack(s, owner)).status).toBe(200);
+    const by = await byWho(s.id);
+    expect(by[other.userId]).toBeUndefined();
+    expect(by[reader.userId]).toMatchObject({ open: 1 });
+  });
+
+  it("an old decider who is in to keeps an open row", async () => {
+    const s = await decided([reader, other], other);
+    expect((await takeBack(s, owner)).status).toBe(200);
+    expect((await byWho(s.id))[other.userId]).toMatchObject({
+      open: 1,
+      answered: 0,
+    });
+  });
+
+  it("a refused take back changes no rows", async () => {
+    const s = await decided([reader], other);
+    const before = JSON.stringify(await byWho(s.id));
+    const agent: CommentWho = {
+      kind: "user",
+      id: owner.userId,
+      agent: { name: "Claude" },
+    } as never;
+    await expect(
+      takeBackAsk(E, s.id, s.tid, s.cid, agent, view(owner)),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      takeBackAsk(E, s.id, s.tid, s.cid, who(owner), view(owner)),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect((await takeBack(s, other)).status).toBe(403);
+    expect(JSON.stringify(await byWho(s.id))).toBe(before);
+    // Decided already: the CAS refuses.
+    await api(app, R.commentAnswer(s.id, s.tid, s.cid), other.cookie, {
+      method: "POST",
+      body: { optionId: "a" },
+    });
+    const decidedRows = JSON.stringify(await byWho(s.id));
+    expect((await takeBack(s, owner)).status).toBe(409);
+    expect(JSON.stringify(await byWho(s.id))).toBe(decidedRows);
   });
 });
