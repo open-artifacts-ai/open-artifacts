@@ -854,7 +854,6 @@ export class DocRoom extends DurableObject<Env> {
       // kept; retry on the next alarm.
       logError("doc_room_alarm_failed", e);
       await this.armAlarm(this.now() + FLUSH_MS);
-      return;
     } finally {
       if (nextTtl !== null) await this.armAlarm(nextTtl);
     }

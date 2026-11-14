@@ -261,6 +261,16 @@ describe("automatic saves", () => {
     while (t + 90_000 < T0 + AUTOSAVE_MAX_MS) {
       t += 90_000;
       room.clock.t = t;
+      // Sockets close at their 10-minute TTL (and the client reconnects):
+      // renew this one so the editing run is unbroken.
+      await inRoom(room, (r) => {
+        for (const w of (
+          r as unknown as { ctx: DurableObjectState }
+        ).ctx.getWebSockets()) {
+          const att = w.deserializeAttachment() as { t?: number };
+          w.serializeAttachment({ ...att, t: t });
+        }
+      });
       write(a, `# Edit ${++n}\n`);
       await a.ping();
       await tick(room, t + 1_000);
