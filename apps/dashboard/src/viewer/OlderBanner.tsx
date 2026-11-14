@@ -3,6 +3,8 @@ import { Button } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useState } from "react";
 import { useCan } from "../auth/permissions";
+import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
+import { useRestoreDoc } from "./doc/useRestoreDoc";
 import { RestoreDialog } from "./RestoreDialog";
 import { BAR } from "./ui";
 
@@ -23,7 +25,10 @@ export function OlderBanner({
   const { id } = artifact;
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as Record<string, unknown>;
-  const canRestore = useCan(artifact).edit;
+  // #1100: a doc restores through its room, with no confirm (the mockup's).
+  const isDoc = isDocArtifact(artifact);
+  const canRestore = useCan(artifact).edit && !(isDoc && mockDocReadOnly());
+  const docRestore = useRestoreDoc(id);
   const [asking, setAsking] = useState(false);
   return (
     <div
@@ -39,7 +44,8 @@ export function OlderBanner({
           <Button
             size="xs"
             className={`${BAR} bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]`}
-            onClick={() => setAsking(true)}
+            disabled={isDoc && docRestore.pending}
+            onClick={() => (isDoc ? docRestore.run(version) : setAsking(true))}
           >
             Restore this version
           </Button>

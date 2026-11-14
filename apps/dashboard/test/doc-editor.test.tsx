@@ -1468,7 +1468,39 @@ describe("cursor name flags", () => {
       false,
     );
     expect(agent.dataset.kind).toBe("agent");
-    expect(agent.querySelector(".oa-doc-flag-mark")).not.toBeNull();
+    // No face fields (an unlinked agent): AuthorFace's dashed robot.
+    expect(
+      agent.querySelector('.oa-doc-flag-face [data-avatar="agent"]'),
+    ).toHaveAttribute("data-linked", "false");
+  });
+
+  it("an agent's flag leads with its AuthorFace tile; an outsider sees the dashed robot and 'Agent'", () => {
+    const u = {
+      name: "OA Product",
+      color: "#9333ea",
+      kind: "agent" as const,
+      linked: true,
+      animal: { id: "duck", color: 6 },
+    };
+    const tile = renderCaret(u, false).querySelector(
+      '.oa-doc-flag-face [data-avatar="agent"]',
+    );
+    expect(tile).toHaveAttribute("data-linked", "true");
+    expect(tile).toHaveAttribute("data-animal", "duck");
+    expect(tile?.getAttribute("style")).toContain("--oa-presence-6");
+    const outside = renderCaret(u, true);
+    expect(outside.querySelector(".oa-doc-flag")?.textContent).toBe("Agent");
+    const robot = outside.querySelector(
+      '.oa-doc-flag-face [data-avatar="agent"]',
+    );
+    expect(robot).toHaveAttribute("data-linked", "false");
+    expect(robot?.hasAttribute("data-animal")).toBe(false);
+    // A person's flag has no face.
+    expect(
+      renderCaret({ name: "Maya", kind: "user" }, false).querySelector(
+        ".oa-doc-flag-face",
+      ),
+    ).toBeNull();
   });
 
   it("opens a flag on a move and closes it after 2 s", () => {

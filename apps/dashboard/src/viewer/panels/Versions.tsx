@@ -13,9 +13,13 @@ import { personName } from "../../layout/person";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
 import { AuthorFace, PartyFace } from "../comments/AuthorFace";
+import { isDocArtifact, mockDocReadOnly } from "../doc/docMock";
+import { useRestoreDoc } from "../doc/useRestoreDoc";
+import { docSaveKind, docVersionLabel, VERSIONS_NOTE } from "../doc/versions";
 import { RestoreDialog } from "../RestoreDialog";
 import { LINK_BTN, SM, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
+import { DocSaveVersion } from "./DocSaveVersion";
 
 /** The panel's id: the version chip's aria-controls. */
 export const VERSIONS_PANEL_ID = "oa-versions-panel";
@@ -29,15 +33,21 @@ let refocus: { id: string; version: number } | null = null;
 export const refocusPending = (id: string) => refocus?.id === id;
 
 const author = (x: VersionInfo) => x.agent?.name ?? personName(x.createdBy);
+/**
+ * A row's message. A doc's versions (#1100) read as how they were saved: a
+ * name, "Restored v3", or the automatic label; others show their message.
+ */
+const messageOf = (x: VersionInfo, doc: boolean) =>
+  doc ? docVersionLabel(x) : (x.message?.trim() ?? "");
 /** "12" or "v12": a version number to jump to. */
 const jumpTo = (q: string) => {
   const m = /^v?(\d+)$/i.exec(q.trim());
   return m ? Number(m[1]) : null;
 };
-const matches = (x: VersionInfo, q: string) => {
+const matches = (x: VersionInfo, q: string, doc: boolean) => {
   const n = q.trim().toLowerCase();
   return (
-    (x.message ?? "").toLowerCase().includes(n) ||
+    messageOf(x, doc).toLowerCase().includes(n) ||
     author(x).toLowerCase().includes(n)
   );
 };
@@ -86,7 +96,13 @@ export function Versions({
   const [target, setTarget] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState<number | null>(null);
-  const canRestore = useCan(artifact).edit;
+  // A doc's mock reader (?mock=doc-readonly) reads only, as the editor does.
+  const canRestore =
+    useCan(artifact).edit && !(isDocArtifact(artifact) && mockDocReadOnly());
+  // #1100: a doc saves by hand here, restores through its room, and labels
+  // its automatic versions.
+  const isDoc = isDocArtifact(artifact);
+  const docRestore = useRestoreDoc(id);
   const box = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const sentinel = useSentinel(q);
@@ -113,7 +129,7 @@ export function Versions({
         : far
           ? [far]
           : []
-      : items.filter((x) => matches(x, query));
+      : items.filter((x) => matches(x, query, isDoc));
   const older = q.hasNextPage ? Math.max(oldest - 1, 0) : 0;
   // Roving tabindex: the last focused row, else the viewed one, else the first.
   const focused = shown.some((x) => x.version === active)
@@ -195,6 +211,7 @@ export function Versions({
         box.current?.focus();
       }}
     >
+      {isDoc && canRestore && <DocSaveVersion id={id} />}
       <div className="relative px-4 pt-3 pb-2">
         <Input
           ref={box}
@@ -249,7 +266,13 @@ export function Versions({
               const pinned = current && !searching;
               const when = versionDate(x.createdAt);
               const exact = exactDate(x.createdAt);
-              const msg = x.message?.trim();
+              const msg = messageOf(x, isDoc);
+              // An automatic doc version: its label, quieter than a name.
+              const auto =
+                isDoc &&
+                msg !== "" &&
+                docSaveKind(x) !== "named" &&
+                docSaveKind(x) !== "restored";
               return (
                 <li
                   key={x.version}
@@ -292,7 +315,7 @@ export function Versions({
                         </span>
                       </span>{" "}
                       <span
-                        className={`line-clamp-2 ${TXT} ${msg ? "" : "text-muted-foreground italic"}`}
+                        className={`line-clamp-2 ${TXT} ${msg ? (auto ? "text-muted-foreground" : "") : "text-muted-foreground italic"}`}
                       >
                         {msg ? (
                           <Marked text={msg} q={counting ? query : ""} />
@@ -351,7 +374,12 @@ export function Versions({
                             variant="outline"
                             size="xs"
                             className={`${SM} max-[600px]:h-11`}
-                            onClick={() => setTarget(x.version)}
+                            disabled={isDoc && docRestore.pending}
+                            onClick={() =>
+                              isDoc
+                                ? docRestore.run(x.version)
+                                : setTarget(x.version)
+                            }
                           >
                             Restore
                           </ShButton>
@@ -397,6 +425,11 @@ export function Versions({
           >
             {q.isFetchingNextPage ? "Loading older…" : ""}
           </div>
+        )}
+        {isDoc && !searching && (
+          <p className="m-0 px-3 pt-2 text-[length:var(--oa-text-xs)] text-muted-foreground">
+            {VERSIONS_NOTE}
+          </p>
         )}
       </div>
       <RestoreDialog id={id} version={target} onClose={() => setTarget(null)} />

@@ -312,7 +312,14 @@ export function startDocRoom({
         },
       },
       {
-        user: { name: "Docs agent", color: "#9333ea", kind: "agent" },
+        // A linked agent's face (PROVISIONAL awareness fields, #1100).
+        user: {
+          name: "Docs agent",
+          color: "#9333ea",
+          kind: "agent",
+          linked: true,
+          animal: { id: "duck", color: 6 },
+        },
         // A caret at the end of the first heading.
         cursor: { anchor: at(0, 11), head: at(0, 11) },
       },

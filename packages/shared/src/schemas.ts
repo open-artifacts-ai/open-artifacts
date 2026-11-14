@@ -410,8 +410,34 @@ export const VersionInfoSchema = z.object({
    * Pins carry the hash the server stamped from the same bytes (#1490).
    */
   contentHash: z.string().nullable(),
+  /**
+   * PROVISIONAL (#1100, until OA Backend's #2496): how a doc version was
+   * saved. "auto": by itself (a pause, every 30 minutes, the last editor
+   * leaving); "before_agent": by itself, just before an agent's edit;
+   * "named": someone pressed Save version (the name is `message`);
+   * "restored": a restore (`message` "Restored v3"). Absent on other
+   * artifacts, and from servers that don't send it: the client then reads a
+   * null message as "auto".
+   */
+  saveKind: z.enum(["auto", "before_agent", "named", "restored"]).optional(),
 });
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
+
+/**
+ * PROVISIONAL (#1100, #2496): the body of POST R.docSaveVersion. No name:
+ * the server names it "Version {n}".
+ */
+export const DocSaveVersionBodySchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+});
+export type DocSaveVersionBody = z.infer<typeof DocSaveVersionBodySchema>;
+
+/** PROVISIONAL (#1100, #2496): what R.docSaveVersion and R.docRestore answer. */
+export const DocVersionResultSchema = z.object({
+  /** The version the call saved (the restore's "Restored v{n}" version). */
+  version: z.number().int(),
+});
+export type DocVersionResult = z.infer<typeof DocVersionResultSchema>;
 
 /**
  * A connection, as `versions.agent_via` records it: `g:<grantId>` (an OAuth

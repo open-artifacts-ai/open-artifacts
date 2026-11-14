@@ -1018,12 +1018,14 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   border-radius: 4px;
   padding-left: 4px;
 }
-.oa-doc-flag-mark {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  background: var(--oa-flag-fg);
-  opacity: 0.85;
+/* An agent's face in its flag: AuthorFace's tile. The dashed robot (unlinked,
+   or an outsider's "Agent") takes the flag's ink so it reads on any colour. */
+.oa-doc-flag-face {
+  display: inline-flex;
+}
+.oa-doc-flag-face [data-linked="false"] {
+  color: var(--oa-flag-fg);
+  border-color: currentColor;
 }
 .oa-doc-selection {
   background-color: color-mix(in srgb, var(--oa-caret) 22%, transparent);
@@ -1046,7 +1048,9 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
     position: fixed;
     inset-inline: 0;
     bottom: var(--oa-kb, 0px);
-    z-index: 20;
+    /* Under the side panel's sheet (z-index 10 below 960px), which covers
+       the doc while it is open; above the doc itself. */
+    z-index: 9;
     padding: 4px 12px calc(4px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--oa-border);
     border-bottom: 0;

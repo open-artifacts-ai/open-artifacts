@@ -418,8 +418,12 @@ function Viewer({
   const caps = artifact.capabilities;
   const live = caps.db || caps.viewer || caps.storage;
   const can = useCan(artifact);
-  // #1100: a collaborative doc is edited in place of the frame.
-  const isDoc = isDocArtifact(artifact);
+  // #1100: a collaborative doc is edited in place of the frame. An older
+  // version of it (opened from Versions) shows what was saved, read-only, in
+  // the frame like any version.
+  const isDoc =
+    isDocArtifact(artifact) &&
+    !(explicitVersion && version !== artifact.currentVersion);
   const [docStatus, setDocStatus] = useState<DocLabel | null>(null);
   const renameDoc = usePatchArtifact(artifact.id);
   // The room broadcasts saved and restored versions: refresh the version

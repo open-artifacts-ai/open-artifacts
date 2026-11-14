@@ -31,6 +31,58 @@ async function startMocks() {
   if (docMock === "doc" || docMock === "doc-readonly") {
     const { setMockDoc } = await import("./viewer/doc/docMock");
     setMockDoc(fixtures.artifacts[0]?.id ?? null, docMock === "doc-readonly");
+    // &versions=doc (#1100): the doc's history as the room saves it, one of
+    // each kind: named, automatic (a person's, an agent's), the save before
+    // an agent's edit, and a restore.
+    const docId = fixtures.artifacts[0]?.id;
+    const base = docId ? fixtures.versions[docId]?.[0] : undefined;
+    if (params.get("versions") === "doc" && docId && base) {
+      const ada = {
+        id: base.createdBy.id,
+        name: base.createdBy.name,
+        email: base.createdBy.email,
+      };
+      const maya = {
+        ...ada,
+        id: "MayaChenUser0001",
+        name: "Maya Chen",
+        email: "maya@example.com",
+      };
+      const duck = {
+        name: "OA Product",
+        version: "1.0",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "duck", color: 6 },
+      };
+      const at = (h: number) =>
+        new Date(Date.UTC(2026, 10, 10, 9 + h, 2)).toISOString();
+      const v = (
+        version: number,
+        message: string | null,
+        saveKind: "auto" | "before_agent" | "named" | "restored",
+        by: typeof ada,
+        agent: typeof duck | null,
+      ) => ({
+        ...structuredClone(base),
+        version,
+        message,
+        saveKind,
+        createdBy: by,
+        agent,
+        createdAt: at(version),
+      });
+      fixtures.versions[docId] = [
+        v(6, "Restored v2", "restored", maya, null),
+        v(5, null, "auto", ada, duck),
+        v(4, null, "before_agent", maya, null),
+        v(3, "After review", "named", maya, null),
+        v(2, null, "auto", ada, null),
+        v(1, "First draft", "named", ada, duck),
+      ];
+      const a = fixtures.artifacts[0];
+      if (a) a.currentVersion = 6;
+    }
   }
   // ?cap=plan: a capped (read-only) member, as a plan lock reports it.
   if (params.get("cap") === "plan")

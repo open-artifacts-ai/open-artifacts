@@ -10,6 +10,7 @@ import {
   type BusRolePut,
   BusRoleSchema,
   BusRolesSchema,
+  DocVersionResultSchema,
   type ListQueryInput,
   ListQuerySchema,
   type Me,
@@ -486,6 +487,31 @@ export const useRestoreVersion = (id: string) =>
   useInvalidating(
     (v: number) =>
       api.send("POST", R.restoreVersion(id, v), undefined, PublishResultSchema),
+    () => [...artifactKeys(id)(), qk.versions(id)],
+  );
+/**
+ * PROVISIONAL (#1100, #2496): a doc's "Save version" (a named version of what
+ * its room holds now). The room also broadcasts a saved frame.
+ */
+export const useDocSaveVersion = (id: string) =>
+  useInvalidating(
+    (name: string | undefined) =>
+      api.send(
+        "POST",
+        R.docSaveVersion(id),
+        name ? { name } : {},
+        DocVersionResultSchema,
+      ),
+    () => [...artifactKeys(id)(), qk.versions(id)],
+  );
+/**
+ * PROVISIONAL (#1100, #2496 / #2140): restore a doc version through its room,
+ * which saves unsaved edits first and applies the restore live for everyone.
+ */
+export const useDocRestore = (id: string) =>
+  useInvalidating(
+    (v: number) =>
+      api.send("POST", R.docRestore(id, v), undefined, DocVersionResultSchema),
     () => [...artifactKeys(id)(), qk.versions(id)],
   );
 export const usePatchArtifact = (id: string) =>

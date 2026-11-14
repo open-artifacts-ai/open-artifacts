@@ -65,6 +65,7 @@ import {
   DataPatchBodySchema,
   DataQuerySchema,
   DataSetBodySchema,
+  DocSaveVersionBodySchema,
   type FileEntry,
   type InstanceUpdate,
   ListQuerySchema,
@@ -89,6 +90,7 @@ import {
   TrashQuerySchema,
   UploadCreateInputSchema,
   type UserRef,
+  type VersionInfo,
 } from "../schemas.js";
 import {
   bytesHead,
@@ -541,6 +543,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       list: FileEntry[];
       bodies: Map<string, string>;
       restoredFrom?: number;
+      /** PROVISIONAL (#1100): a doc version's kind. */
+      saveKind?: VersionInfo["saveKind"];
     },
   ): Response => {
     const list = versions[a.id] ?? [];
@@ -559,6 +563,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       textIndexed: !v.list.some((x) => x.contentType === "application/pdf"),
       format: v.format,
       contentHash: fakeHash(version, v.entry),
+      ...(v.saveKind ? { saveKind: v.saveKind } : {}),
     });
     a.format = v.format;
     for (const [p, b] of v.bodies) files.set(`${a.id}/${version}/${p}`, b);
@@ -1190,6 +1195,65 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           bodies,
           restoredFrom: src.version,
         });
+      }, "write"),
+    ),
+    // PROVISIONAL (#1100, #2496): a doc's Save version and restore. The mock
+    // has no room: both add a version as the room would.
+    http.post(
+      `${A}/doc/versions`,
+      withArt(async (a, { request }) => {
+        const parsed = DocSaveVersionBodySchema.safeParse(
+          await request.json().catch(() => ({})),
+        );
+        if (!parsed.success)
+          return err(
+            "bad_request",
+            "Invalid version name",
+            parsed.error.issues,
+          );
+        const list = versions[a.id] ?? [];
+        const latest = list[0];
+        if (!latest) return notFound();
+        const n = Math.max(0, ...list.map((x) => x.version)) + 1;
+        const res = addVersion(a, {
+          message: parsed.data.name ?? `Version ${n}`,
+          entry: latest.entry,
+          language: latest.language,
+          format: latest.format,
+          list: structuredClone(latest.files),
+          bodies: new Map(
+            latest.files.map((x) => [
+              x.path,
+              fileBody(a.id, latest.version, x.path),
+            ]),
+          ),
+          saveKind: "named",
+        });
+        return HttpResponse.json({ version: n }, { status: res.status });
+      }, "write"),
+    ),
+    http.post(
+      `${A}/doc/versions/:v/restore`,
+      withArt((a, { params }) => {
+        const src = (versions[a.id] ?? []).find(
+          (x) => x.version === Number(params.v),
+        );
+        if (!src) return notFound();
+        const n =
+          Math.max(0, ...(versions[a.id] ?? []).map((x) => x.version)) + 1;
+        const res = addVersion(a, {
+          message: `Restored v${src.version}`,
+          entry: src.entry,
+          language: src.language,
+          format: src.format,
+          list: structuredClone(src.files),
+          bodies: new Map(
+            src.files.map((x) => [x.path, fileBody(a.id, src.version, x.path)]),
+          ),
+          restoredFrom: src.version,
+          saveKind: "restored",
+        });
+        return HttpResponse.json({ version: n }, { status: res.status });
       }, "write"),
     ),
     http.put(

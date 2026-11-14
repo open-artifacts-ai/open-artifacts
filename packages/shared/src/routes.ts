@@ -70,6 +70,21 @@ export const R = {
   /** POST -> PublishResult */
   restoreVersion: (id: string, v: number) =>
     `${A}/${seg(id)}/versions/${v}/restore`,
+  /**
+   * PROVISIONAL (#1100, until OA Backend's #2496 lands; swap the path here):
+   * POST DocSaveVersionBody -> DocVersionResult. "Save version" on a doc: the
+   * room saves its current state as a named version. Needs edit access.
+   */
+  docSaveVersion: (id: string) => `${A}/${seg(id)}/doc/versions`,
+  /**
+   * PROVISIONAL (#1100, until #2496 / #2140 land; swap the path here):
+   * POST -> DocVersionResult. Restore a doc version through its room: the
+   * room saves unsaved edits as an automatic version first, then applies
+   * version `v` as one edit everyone sees live, then saves "Restored v{v}".
+   * Needs edit access.
+   */
+  docRestore: (id: string, v: number) =>
+    `${A}/${seg(id)}/doc/versions/${v}/restore`,
   /** PUT text/plain (PDF extraction) -> 204 */
   versionText: (id: string, v: number) => `${A}/${seg(id)}/versions/${v}/text`,
   /** GET -> image/webp; PUT image/webp -> 204 */
