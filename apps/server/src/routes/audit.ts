@@ -2,6 +2,8 @@ import { AUDIT_NEXT_CURSOR_HEADER, type Member, R } from "@oa/shared";
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
+import { scopedPlan } from "../billing/features.js";
+import { auditPlanError, billingActive } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import {
@@ -43,9 +45,22 @@ function requireAuditor(c: Context<AppEnv>): Member {
   return user;
 }
 
+/**
+ * Hosted billing: only the Business tier reads or exports the log (a lapsed
+ * Business keeps its tier, so it still reads; recording is never gated).
+ * Self-hosted is never refused. Runs after requireAuditor, so a non-admin
+ * still gets 404 first.
+ */
+function requireAuditPlan(c: Context<AppEnv>): void {
+  if (!billingActive(c.env)) return;
+  const plan = scopedPlan();
+  if (plan?.tier !== "business") throw auditPlanError(plan?.tier);
+}
+
 export function mountAudit(app: AppType): void {
   app.get(R.audit, async (c) => {
     requireAuditor(c);
+    requireAuditPlan(c);
     return c.json(
       await listAudit(
         c.env,
@@ -59,6 +74,7 @@ export function mountAudit(app: AppType): void {
   // Bounded per request (exportAudit); the header continues it.
   app.get(R.auditExport, async (c) => {
     requireAuditor(c);
+    requireAuditPlan(c);
     const { stream, nextCursor } = await exportAudit(
       c.env,
       c.req.query("cursor"),

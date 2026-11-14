@@ -475,18 +475,6 @@ const EXEMPT: Exempt[] = [
     ok: ["owner", "admin"],
     run: (w) => send(props, R.members, cred(w)),
   },
-  {
-    name: "read the audit log",
-    ok: ["owner", "admin"],
-    run: (w) => send(props, R.audit, cred(w)),
-  },
-  // A capped read (audit.read refuses any cap) that the plan cap exempts:
-  // settings.read ignores caps altogether, so it would prove nothing.
-  {
-    name: "export the audit log",
-    ok: ["owner", "admin"],
-    run: (w) => send(props, R.auditExport, cred(w)),
-  },
   // The reads a locked admin still needs to see the team they would keep or drop.
   {
     name: "a departed member's transfer summary",
@@ -591,6 +579,33 @@ describe.each(["solo", "readOnly"] as const)(
       expect(
         (await send(props, R.directoryGroups, cred("member"))).status,
       ).toBe(404);
+    });
+  },
+);
+
+// #2458: the audit log is Business only on hosted (403 plan_required for the
+// owner and admins on every other plan; a member is still 404 first).
+describe.each(["none", "solo", "readOnly"] as const)(
+  "plan %s: the audit log",
+  (state) => {
+    beforeAll(async () => {
+      await clearBilling();
+      await cachePlan(ROWS[state]);
+    });
+    it.each([
+      ["read", R.audit],
+      ["export", R.auditExport],
+    ] as const)("%s: Business only", async (_n, route) => {
+      for (const w of ["owner", "admin"] as const) {
+        const r = await send(props, route, cred(w));
+        if (state === "none") expect(r.status).toBe(200);
+        else {
+          expect(r.status).toBe(403);
+          const e = ((await r.json()) as { error: { code: string } }).error;
+          expect(e.code).toBe("plan_required");
+        }
+      }
+      expect((await send(props, route, cred("member"))).status).toBe(404);
     });
   },
 );
