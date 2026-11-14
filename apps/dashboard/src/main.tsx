@@ -25,6 +25,29 @@ async function startMocks() {
   const quotaExceeded =
     import.meta.env.VITE_MOCK_QUOTA === "1" || params.get("mock") === "quota";
   const extra = [];
+  // ?mock=doc: the "Landing page" mock is a collaborative doc (#1100), served by
+  // e2e/doc-room.mjs at VITE_DOC_WS; ?mock=doc-readonly: viewed without edit.
+  const docMock = params.get("mock");
+  if (docMock === "doc" || docMock === "doc-readonly") {
+    const { setMockDoc } = await import("./viewer/doc/docMock");
+    setMockDoc(fixtures.artifacts[0]?.id ?? null, docMock === "doc-readonly");
+  }
+  // ?cap=plan: a capped (read-only) member, as a plan lock reports it.
+  if (params.get("cap") === "plan")
+    extra.push(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json({
+          ...fixtures.me,
+          instance: { ...fixtures.me.instance, docs: "on" },
+          auth: {
+            method: "google",
+            readOnly: true,
+            cap: "plan",
+            expiresAt: null,
+          },
+        }),
+      ),
+    );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   if (role === "admin" || role === "member" || role === "guest")
@@ -478,71 +501,107 @@ async function startMocks() {
     .addEventListener("connection", ({ client }) => {
       urls.push(client.url.href);
     });
+  const mainHandlers = createHandlers({
+    quotaExceeded,
+    emailEnabled,
+    plan: params.get("mock")?.startsWith("paid") ? "paid" : "free",
+    // ?mock=newdoc (#1100): docs are on (New doc); ?mock=newdoc-gate: a free self-host.
+    docs:
+      params.get("docs") === "needs_paid"
+        ? "needs_paid"
+        : params.get("mock") === "newdoc" || params.get("mock") === "doc"
+          ? "on"
+          : params.get("mock") === "newdoc-gate"
+            ? "needs_paid"
+            : undefined,
+    update,
+    // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
+    hosted: parseHostedParam(params.get("hosted")),
+    events,
+    // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
+    // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect.
+    welcome:
+      params.get("mock") === "welcome"
+        ? {
+            agentConnected: params.get("ticks")?.includes("connect"),
+            published: params.get("ticks")?.includes("publish"),
+            commented: params.get("ticks")?.includes("comment"),
+            named: params.get("ticks")?.includes("name"),
+            mentionReplied: params.get("ticks")?.includes("mention"),
+            mentionStalled: params.get("ticks")?.includes("stalled"),
+            askAnswered: params.get("ticks")?.includes("ask"),
+            opened: params.get("opened") === "1",
+          }
+        : false,
+    // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
+    commentAsks: params.get("mock") === "asks",
+    // ?mock=deciders (#2381): asks in each decider state.
+    commentDeciders: params.get("mock") === "deciders",
+    // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
+    commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
+      params.get("passkey") ?? "",
+    )
+      ? (params.get("passkey") as
+          | "ok"
+          | "none"
+          | "cooling"
+          | "expired"
+          | "many")
+      : undefined,
+    // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
+    passkeys:
+      params.get("mock") === "passkey-cooling"
+        ? "cooling"
+        : params.get("mock") === "passkey-usable"
+          ? "usable"
+          : params.get("mock") === "passkey-pending"
+            ? "pending"
+            : "none",
+    // ?mock=agents (#1822): agent-authored comments, linked and not.
+    commentAgents: params.get("mock") === "agents",
+    // ?mock=pins and ?mock=pins-pdf (#2019): the "Landing page" is an image (or a pdf) with pins on it.
+    commentPins:
+      params.get("mock") === "pins"
+        ? "image"
+        : params.get("mock") === "pins-pdf"
+          ? "pdf"
+          : undefined,
+    // ?mock=markdown (#2338): agent comments with markdown and a hostile one.
+    commentMarkdown: params.get("mock") === "markdown",
+    // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
+    commentersSignedIn: params.get("mock") === "signed-out",
+    // ?mock=bus (#1293): the bus is on, with machines and agents.
+    bus: params.get("mock") === "bus",
+  });
+  // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
+  // currentVersion, so a test can watch the version pill tick after the room
+  // says a version was saved.
+  if (docMock === "doc" || docMock === "doc-readonly") {
+    const docId = fixtures.artifacts[0]?.id;
+    extra.push(
+      http.get(`*/api/v1/artifacts/${docId}`, async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res) return undefined;
+        const body = (await res.json()) as { currentVersion: number };
+        const v = (window as unknown as { __oaDocVersion?: number })
+          .__oaDocVersion;
+        return HttpResponse.json(v ? { ...body, currentVersion: v } : body);
+      }),
+      // e2e (#1100): window.__oaMe401 makes /me answer 401, as once the
+      // session has ended, so the doc room's sign-in check sees it.
+      http.get("*/api/v1/me", () =>
+        (window as unknown as { __oaMe401?: boolean }).__oaMe401
+          ? HttpResponse.json(
+              { error: { code: "unauthorized", message: "Sign in" } },
+              { status: 401 },
+            )
+          : undefined,
+      ),
+    );
+  }
   await setupWorker(
     ...extra,
-    ...createHandlers({
-      quotaExceeded,
-      emailEnabled,
-      plan: params.get("mock")?.startsWith("paid") ? "paid" : "free",
-      update,
-      // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
-      hosted: parseHostedParam(params.get("hosted")),
-      events,
-      // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
-      // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect.
-      welcome:
-        params.get("mock") === "welcome"
-          ? {
-              agentConnected: params.get("ticks")?.includes("connect"),
-              published: params.get("ticks")?.includes("publish"),
-              commented: params.get("ticks")?.includes("comment"),
-              named: params.get("ticks")?.includes("name"),
-              mentionReplied: params.get("ticks")?.includes("mention"),
-              mentionStalled: params.get("ticks")?.includes("stalled"),
-              askAnswered: params.get("ticks")?.includes("ask"),
-              opened: params.get("opened") === "1",
-            }
-          : false,
-      // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
-      commentAsks: params.get("mock") === "asks",
-      // ?mock=deciders (#2381): asks in each decider state.
-      commentDeciders: params.get("mock") === "deciders",
-      // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
-      commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
-        params.get("passkey") ?? "",
-      )
-        ? (params.get("passkey") as
-            | "ok"
-            | "none"
-            | "cooling"
-            | "expired"
-            | "many")
-        : undefined,
-      // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
-      passkeys:
-        params.get("mock") === "passkey-cooling"
-          ? "cooling"
-          : params.get("mock") === "passkey-usable"
-            ? "usable"
-            : params.get("mock") === "passkey-pending"
-              ? "pending"
-              : "none",
-      // ?mock=agents (#1822): agent-authored comments, linked and not.
-      commentAgents: params.get("mock") === "agents",
-      // ?mock=pins and ?mock=pins-pdf (#2019): the "Landing page" is an image (or a pdf) with pins on it.
-      commentPins:
-        params.get("mock") === "pins"
-          ? "image"
-          : params.get("mock") === "pins-pdf"
-            ? "pdf"
-            : undefined,
-      // ?mock=markdown (#2338): agent comments with markdown and a hostile one.
-      commentMarkdown: params.get("mock") === "markdown",
-      // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
-      commentersSignedIn: params.get("mock") === "signed-out",
-      // ?mock=bus (#1293): the bus is on, with machines and agents.
-      bus: params.get("mock") === "bus",
-    }),
+    ...mainHandlers,
     ...events.handlers,
     seenUrls,
   ).start({
@@ -558,10 +617,14 @@ if (isEmbed()) lockToPath(router, location.pathname);
 
 const el = document.getElementById("root");
 if (!el) throw new Error("missing #root");
-createRoot(el).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
-  </StrictMode>,
+const app = (
+  <QueryClientProvider client={queryClient}>
+    <RouterProvider router={router} />
+  </QueryClientProvider>
 );
+// ?strict=off (mock mode only): render without StrictMode, so an e2e can tell
+// what the dev build's double mount does from what a production build does.
+const strictOff =
+  import.meta.env.VITE_MOCK === "1" &&
+  new URLSearchParams(location.search).get("strict") === "off";
+createRoot(el).render(strictOff ? app : <StrictMode>{app}</StrictMode>);

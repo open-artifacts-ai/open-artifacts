@@ -48,6 +48,9 @@ export function toast({
   return sonner.info(title, opts);
 }
 
+/** Close the toast with this id, if it is showing. */
+export const dismissToast = (id: string) => void sonner.dismiss(id);
+
 /** The app's one Toaster. The close button is named "Dismiss", with a 24px
     hit area and the 2px focus ring. */
 export function Toaster() {

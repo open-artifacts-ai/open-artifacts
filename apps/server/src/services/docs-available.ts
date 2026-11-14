@@ -10,3 +10,9 @@ import { DOC_SWITCH } from "./doc-switch.js";
  */
 export const docsAvailable = (env: Pick<Env, "HOSTED" | "PLAN">): boolean =>
   DOC_SWITCH.creation && (billingOn(env) || planOf(env.PLAN) === "paid");
+
+/** What /me tells the dashboard: absent while the switch is off. */
+export const docsState = (
+  env: Parameters<typeof docsAvailable>[0],
+): "on" | "needs_paid" | undefined =>
+  DOC_SWITCH.creation ? (docsAvailable(env) ? "on" : "needs_paid") : undefined;

@@ -732,6 +732,12 @@ export const MeSchema = z.object({
     emailEnabled: z.boolean(),
     /** The instance's Workers plan (env PLAN), as /healthz reports it. */
     plan: z.enum(["free", "paid"]),
+    /**
+     * Docs (#1100): "on" when this instance creates them, "needs_paid" when
+     * the doc switch is on but a self-host lacks Workers Paid. Absent while
+     * docs are off, and on older servers: no New doc, no note.
+     */
+    docs: z.enum(["on", "needs_paid"]).optional(),
     /** Null for members and guests, and before the first good check. Optional: older servers omit it. */
     update: InstanceUpdateSchema.nullable().optional(),
     /** Hosted M1 (all optional; older servers omit them, and Access-only installs omit hosted, tier and signIn). A hosted install (HOSTED=1). */

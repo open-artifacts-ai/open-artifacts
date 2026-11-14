@@ -3,6 +3,8 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
+    // @oa/doc-schema is consumed from source, whose imports end in .ts.
+    "allowImportingTsExtensions": true,
     "types": ["vite/client"],
     "paths": {
       "@oa/shared": ["../../packages/shared/src/index.ts"],
