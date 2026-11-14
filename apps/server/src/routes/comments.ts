@@ -6,6 +6,7 @@ import {
   isId,
   NewThreadBodySchema,
   ReplyBodySchema,
+  TakeBackBodySchema,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { z } from "zod";
@@ -17,6 +18,7 @@ import {
   canCtx,
   capOfCaller,
   interactiveSession,
+  meetsLevel,
 } from "../auth/authz.js";
 import {
   can,
@@ -44,6 +46,7 @@ import {
   listComments,
   setStatus,
   setThreadAgent,
+  takeBackAsk,
 } from "../services/comments.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
@@ -62,6 +65,7 @@ const REPLIES = `${THREAD}/replies`;
 const COMMENT = `${THREAD}/comments/:commentId`;
 const ANSWER = `${COMMENT}/answer`;
 const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
+const ASK_DECIDER = `${COMMENT}/ask/decider`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -385,8 +389,33 @@ export function mountComments(app: AppType): void {
       { version: artifact.currentVersion, ctx: execCtx(c) },
       // #2263: only a browser session can carry a passkey assertion.
       { interactive: interactiveSession(c), assertion: raw.data.assertion },
+      // #2381: a decider must edit the page; a guest-role member's pick is marked.
+      {
+        canDecide: meetsLevel(level, "editor"),
+        guest: capsReads(capOfCaller(cw)),
+      },
     );
     return c.json(out);
+  });
+
+  // #2381: the asker's own user takes the decision back.
+  app.post(ASK_DECIDER, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const raw = TakeBackBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    const { who, viewer } = await identity(
+      c,
+      id,
+      false,
+      modOf(cw, level, artifact),
+    );
+    if (!who)
+      throw new ApiError("forbidden", "Only the person who asked can do this");
+    return c.json(
+      await takeBackAsk(c.env, id, threadId, commentId, who, viewer),
+    );
   });
 
   // #2263: the WebAuthn challenge for a pick on a confirm ask.

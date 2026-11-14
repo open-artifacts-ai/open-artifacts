@@ -362,7 +362,8 @@ describe("notice tier", () => {
     bus.sent = [];
     const r = await answer(s.id, t.id, cid, owner.cookie);
     expect(r.status).toBe(200);
-    expect(((await r.json()) as Comment).ask?.answer?.typed).toBe(true);
+    // #2381: a teammate's pick is a weigh-in, not the decision.
+    expect(((await r.json()) as Comment).ask?.picks?.[0]?.typed).toBe(true);
     const n = sentTo("Claude");
     expect(n).toHaveLength(1);
     expect(n[0]?.text).toBe(
@@ -437,7 +438,7 @@ describe("notice tier", () => {
     const r = await answer(s.id, t.id, cid, editor.cookie);
     expect(r.status).toBe(200);
     // The pick is typed, but by someone else than the agent's own user.
-    expect(((await r.json()) as Comment).ask?.answer?.typed).toBe(true);
+    expect(((await r.json()) as Comment).ask?.picks?.[0]?.typed).toBe(true);
     const n = sentTo("Claude");
     expect(n).toHaveLength(1);
     expect(n[0]?.text).toBe(
@@ -487,13 +488,13 @@ describe("notice tier", () => {
       owner.cookie,
     );
     expect(r.status).toBe(200);
-    const a = ((await r.json()) as Comment).ask?.answer;
-    // Typed by you, on someone else's ask: not a yes for your agents.
-    expect(a).toMatchObject({ typed: true, yes: false });
+    const ask = ((await r.json()) as Comment).ask;
+    // Typed by you, on someone else's ask: a weigh-in, never a decision or a yes.
+    expect(ask?.picks?.[0]).toMatchObject({ typed: true });
+    expect(ask?.answer).toBeUndefined();
     expect(
-      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer
-        ?.yes,
-    ).toBe(false);
+      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer,
+    ).toBeUndefined();
   });
 
   it("answer.yes is false for the owner when an editor picks in the browser on the owner's agent's ask", async () => {
@@ -506,9 +507,9 @@ describe("notice tier", () => {
       editor.cookie,
     );
     expect(r.status).toBe(200);
-    expect(
-      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer,
-    ).toMatchObject({ typed: true, yes: false });
+    const ask = (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask;
+    expect(ask?.picks?.[0]).toMatchObject({ typed: true });
+    expect(ask?.answer).toBeUndefined();
   });
 
   describe("asker notice (toAsker, #1614)", () => {

@@ -1023,6 +1023,18 @@ export const SURFACES: readonly Surface[] = [
       badRequest,
     ),
   ),
+  // #2381: the asker's own user takes the decision back; the service refuses an agent or a token. A malformed id stops at 400.
+  rest(
+    "comments ask decider",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/ask/decider`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/ask/decider`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
   rest(
     "artifact agents",
     "comments.read",
