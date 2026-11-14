@@ -8,12 +8,7 @@ import { artifactAsks, artifacts } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
-import {
-  agentsWaitingOn,
-  LINK_CONFIRM_PATH,
-  pendingProposalsOf,
-  ROLE_CONFIRM_PATH,
-} from "./bus.js";
+import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, listComments } from "./comments.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
@@ -122,10 +117,7 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
   for (const a of actors)
     if (a.ref === caller.user.id && a.agent?.identity)
       mine.add(a.agent.identity.identityId);
-  const [waiting, proposals] = await Promise.all([
-    agentsWaitingOn(env, caller.user.id, [...mine]),
-    pendingProposalsOf(env, caller.user.id),
-  ]);
+  const waiting = await agentsWaitingOn(env, caller.user.id, [...mine]);
   const items = ready.map((r, i): InboxItem & { rank: number } => {
     const actor = actors[i] as StoredActor;
     const face = faces[i] as CommentAuthor;
@@ -152,23 +144,6 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
       rank: urgency === "waiting" ? 0 : urgency === "approval" ? 1 : 2,
     };
   });
-  // #2512: a role or link proposal waiting on the member's own confirm page. Nothing
-  // here decides it: the link goes to the page, where the fresh sign-in step stays.
-  for (const p of proposals)
-    items.push({
-      id: `proposal:${p.kind}:${p.id}`,
-      level: "needs_you",
-      kind: "proposal",
-      urgency: "approval",
-      artifact: null,
-      actor: null,
-      proposal: { id: p.id, kind: p.kind, agentName: p.agentName },
-      text: p.text,
-      href: p.kind === "role" ? ROLE_CONFIRM_PATH : LINK_CONFIRM_PATH,
-      createdAt: new Date(p.createdAt).toISOString(),
-      readAt: null,
-      rank: 1,
-    });
   items.sort(
     (a, b) =>
       a.rank - b.rank ||

@@ -4,6 +4,7 @@ import { type Inbox, type Me, type Member, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
+import type { BusHub } from "../src/bus/hub.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import {
@@ -320,7 +321,7 @@ describe("GET R.meInbox: Needs you", () => {
     expect(await read(other)).toEqual([]);
   });
 
-  it("pending role and link proposals of my own hub appear; another member's and decided ones do not", async () => {
+  it("the hub lists only my pending role and link proposals; the inbox does not (nothing in the app confirms one without its #secret)", async () => {
     const u = await mk("i-prop");
     const v = await mk("i-prop-other");
     for (const m of [u, v])
@@ -354,31 +355,26 @@ describe("GET R.meInbox: Needs you", () => {
       });
     await seed(u, `${tag}-u`, "pending");
     await seed(v, `${tag}-v`, "pending");
-    const items = (await inbox(u)).needsYou.filter(
-      (i) => i.kind === "proposal",
-    );
-    expect(items.map((i) => i.proposal?.id).sort()).toEqual([
+    const list = async (m: U) =>
+      (await runInDurableObject(await hubOf(m.userId), (i) =>
+        (i as unknown as BusHub).pendingProposals(),
+      )) as { id: string; text: string }[];
+    expect((await list(u)).map((p) => p.id).sort()).toEqual([
       `lp-${tag}-u`,
       `rp-${tag}-u`,
     ]);
-    expect(
-      items.every((i) => i.urgency === "approval" && i.artifact === null),
-    ).toBe(true);
-    expect(items.map((i) => i.href).sort()).toEqual([
-      "/bus/links/confirm",
-      "/bus/roles/confirm",
-    ]);
-    expect(items.map((i) => i.text).sort()).toEqual([
+    expect((await list(u)).map((p) => p.text).sort()).toEqual([
       "A machine asks to link alpha and beta",
       "Scout asks to take the role Reviewer",
     ]);
+    expect(
+      (await inbox(u)).needsYou.filter((i) => i.kind === "proposal"),
+    ).toEqual([]);
     // Decided: gone.
     await runInDurableObject(await hubOf(u.userId), (_i, st) => {
       st.storage.sql.exec("update role_proposals set status = 'applied'");
       st.storage.sql.exec("update link_proposals set status = 'refused'");
     });
-    expect(
-      (await inbox(u)).needsYou.filter((i) => i.kind === "proposal"),
-    ).toEqual([]);
+    expect(await list(u)).toEqual([]);
   });
 });
