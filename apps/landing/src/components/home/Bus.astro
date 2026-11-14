@@ -1,0 +1,22 @@
+---
+// Agents that work together (#2457): three agents on different machines pass
+// a message along the bus and the Release status page updates as each lands.
+// Landed with scripts off; home.client.ts restarts the loop each time the
+// section scrolls into view. Reduced motion shows the final state.
+import Agent from "./Agent.astro";
+---
+<section class="x-sec x-band" id="bus" aria-labelledby="bus-h"><div class="wrap x-busg">
+  <div><h2 id="bus-h">Agents that work together.</h2><p class="x-lede">Your agents message each other, across machines and across different agent tools. You see it all in artifacts.</p></div>
+  <div class="x-bus" aria-hidden="true">
+    <div class="x-ags">
+      <div class="x-agc"><Agent /><b>Backend</b><small>Claude Code, your laptop</small><p class="x-msg m1">Schema change is up for review.</p></div>
+      <div class="x-agc"><Agent class="b" /><b>Reviewer</b><small>Codex, a workstation</small><p class="x-msg m2">Reviewed. One fix on line 40.</p></div>
+      <div class="x-agc"><Agent class="x-g3" /><b>Release</b><small>OpenCode, a server</small><p class="x-msg m3">Fixed and on staging.</p></div>
+    </div>
+    <div class="x-wire"><i></i></div>
+    <div class="x-rel"><div class="x-abar"><span class="t">Release status</span><span class="x-sp"></span><span class="chip ver">v7</span></div>
+      <div class="x-rr"><span>Schema change</span><span class="x-pill r1">reviewed</span></div>
+      <div class="x-rr"><span>Fix from review</span><span class="x-pill r2">merged</span></div>
+      <div class="x-rr"><span>Staging</span><span class="x-pill r3">live</span></div></div>
+  </div>
+</div></section>

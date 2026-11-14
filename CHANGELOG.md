@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.177.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.177.0...v0.177.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **landing:** the sign-up buttons say Sign up ([#2467](https://github.com/open-artifacts-ai/open-artifacts/issues/2467)) ([c872543](https://github.com/open-artifacts-ai/open-artifacts/commit/c87254311dd807e9c2ce92b75f4260cb534c8dbb))
+
+## [0.177.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.1...v0.177.0) (2026-11-13)
+
+
+### Features
+
+* **landing:** the bus section is back ([#2457](https://github.com/open-artifacts-ai/open-artifacts/issues/2457)) ([#2459](https://github.com/open-artifacts-ai/open-artifacts/issues/2459)) ([a567fdd](https://github.com/open-artifacts-ai/open-artifacts/commit/a567fddfb97c023d78edf99249ebdd5cfc086dff))
+
+## [0.176.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.176.0...v0.176.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **landing:** sample plan weekdays match their dates ([#2453](https://github.com/open-artifacts-ai/open-artifacts/issues/2453)) ([#2454](https://github.com/open-artifacts-ai/open-artifacts/issues/2454)) ([10de21e](https://github.com/open-artifacts-ai/open-artifacts/commit/10de21ea04fdc91dfd984bac4b3d15cd844b9455))
+
 ## [0.176.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.175.1...v0.176.0) (2026-11-13)
 
 

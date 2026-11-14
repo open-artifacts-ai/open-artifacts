@@ -1,12 +1,13 @@
 ---
 // The landing page body (#1457): the hero with its scroll scene, the artifact's
-// chapters, the kinds of thing agents make, the agents it works with, pricing,
+// chapters, agents working together (the bus), the kinds of thing agents make, the agents it works with, pricing,
 // self-host and the close. Everything renders in its landed state in HTML;
 // home.client.ts enhances it.
 import { REPO_URL } from "@oa/shared";
 import { HERO_COPY } from "../../lib/copy";
 import { signupHref } from "../../lib/hero";
 import Agents from "./Agents.astro";
+import Bus from "./Bus.astro";
 import Pricing from "./Pricing.astro";
 import Scene from "./Scene.astro";
 import Story from "./Story.astro";
@@ -22,8 +23,8 @@ const [promptLead, promptUrl] = prompt.split(/(?<=: )/);
     <h1>{HERO_COPY.headline}</h1>
     <p class="lede lead1">{HERO_COPY.lead}</p>
     <p class="lede lead2">{HERO_COPY.question}</p>
-    <div class="btns"><a class="btn p" href={signup}>Join the waitlist</a><a class="btn" href="#self-host">Self-host it</a></div>
-    <p class="fine">Hosted is invite-only during the beta. Solo is free for 30 days, no card needed. Open source, MIT licensed.</p>
+    <div class="btns"><a class="btn p" href={signup}>Sign up</a><a class="btn" href="#self-host">Self-host it</a></div>
+    <p class="fine">Hosted is invite-only during the beta: sign up to join the waitlist. Solo is free for 30 days, no card needed. Open source, MIT licensed.</p>
     <p class="cue hcue"><i aria-hidden="true"></i>{HERO_COPY.cue}</p>
   </div>
   <Scene />
@@ -39,6 +40,8 @@ const [promptLead, promptUrl] = prompt.split(/(?<=: )/);
   </div>
 
   <Story />
+
+  <Bus />
 
   <Wall />
 
@@ -70,7 +73,7 @@ const [promptLead, promptUrl] = prompt.split(/(?<=: )/);
   <section class="x-sec x-close" aria-labelledby="close-h"><div class="wrap">
     <h2 id="close-h" class="x-cl">Where people and agents <br />come to do their best work, <br />together.</h2>
     <p class="x-lede">Give your agents somewhere better to put their work.</p>
-    <div class="btns"><a class="btn p" href={signup}>Join the waitlist</a><a class="btn" href={REPO_URL}>View on GitHub</a></div>
+    <div class="btns"><a class="btn p" href={signup}>Sign up</a><a class="btn" href={REPO_URL}>View on GitHub</a></div>
   </div></section>
 </div>
 

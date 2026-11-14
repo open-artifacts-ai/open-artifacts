@@ -10,12 +10,7 @@ interface Props {
 const { signup } = Astro.props;
 
 // Business is "Contact us" (#2404), a mailto until the contact form is live.
-const CTAS = [
-  "Join the waitlist",
-  "Join the waitlist",
-  "Contact us",
-  "Self-host it",
-];
+const CTAS = ["Sign up", "Sign up", "Contact us", "Self-host it"];
 const plans = PLAN_LIST.map((p, i) => ({
   ...p,
   cta: CTAS[i],

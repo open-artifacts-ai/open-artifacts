@@ -12,7 +12,7 @@ describe("hosted docs", () => {
   it("say invite-only, the free month and the prices, and keep the original Stop paying step", () => {
     const full = dist("llms-full.txt");
     for (const s of [
-      "get an instance at your own address. It's invite-only during the beta. Solo starts with a free month, then $1/month or $10/year.",
+      "get an instance at your own address. It's invite-only during the beta: after you sign up you're on the waitlist, and we email you when it's your turn. Solo starts with a free month, then $1/month or $10/year.",
       "**2. Stop paying.** Open Settings, then Plan and billing, then Manage billing, and cancel. When your subscription ends, the instance becomes read-only: you can still read everything, and nothing is deleted.",
     ])
       expect(full).toContain(s);
