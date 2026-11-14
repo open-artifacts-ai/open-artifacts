@@ -1,13 +1,15 @@
-import { parseTier } from "@oa/shared";
+import { type AuditAction, parseTier } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
+import { audit } from "../services/audit.js";
 import { LIVE_KEY, monthOf } from "./creators.js";
 import {
   billingActive,
   CHECK_KEY,
   effectivePlan,
   PLAN_KEY,
+  parseStored,
   planOfRaw,
   type StoredPlan,
   TierAnswerSchema,
@@ -66,6 +68,53 @@ const CAPPED_USERS = `select id from users where status = 'active' and role != '
   order by last_seen_at desc limit ?1`;
 
 /**
+ * The plan-change audit rows (#2458) for an answer replacing `last` (null: the
+ * provisioned TIER is the baseline), each only while STORE_PLAN changed a row
+ * (`changes() > 0`, so an unapplied answer writes none). Both sides are read
+ * raw (now 0: no trial-expiry or staleness view), so a trial that ran out
+ * and is now answered solo still records the move. Ids and enums only: no
+ * Stripe id, amount or address. Never throws: a failure here must not stop
+ * the plan from being stored.
+ */
+function planAudits(
+  env: Env,
+  last: StoredPlan | null,
+  answer: StoredPlan,
+): D1PreparedStatement[] {
+  try {
+    const prev = effectivePlan(last, null, env.TIER, 0);
+    const next = effectivePlan(answer, null, env.TIER, 0);
+    const out: [AuditAction, Record<string, unknown>][] = [];
+    if (prev.tier !== next.tier)
+      out.push([
+        "plan.change",
+        {
+          from: prev.tier,
+          to: next.tier,
+          ...(next.interval ? { interval: next.interval } : {}),
+        },
+      ]);
+    if (next.status === "past_due" && prev.status !== "past_due")
+      out.push(["plan.payment_failed", { tier: next.tier }]);
+    if (next.status === "lapsed" && prev.status !== "lapsed")
+      out.push(["plan.lapse", { tier: next.tier }]);
+    if (next.cancelsAt != null && prev.cancelsAt == null)
+      out.push(["plan.cancel", { tier: next.tier }]);
+    return out.map(([action, detail]) =>
+      audit(
+        env,
+        action,
+        { type: "settings", id: "billing" },
+        { kind: "system", id: null },
+        { detail, when: { sql: "changes() > 0", args: [] } },
+      ),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Stores a GET /tier (or /trial/start) answer under the version rule. When
  * it moves the instance into a lock (solo or read-only), everyone but the
  * owner just got the plan cap: their live sockets close (revokeUsersLive),
@@ -82,8 +131,15 @@ export async function storePlan(
     check: string | null;
   }>();
   const prev = planOfRaw(env, before?.plan, before?.check, now);
+  const audits = planAudits(
+    env,
+    parseStored(TierAnswerSchema, before?.plan),
+    answer,
+  );
+  // The audit rows follow STORE_PLAN at once, while its changes() holds.
   const [stored] = await env.DB.batch([
     env.DB.prepare(STORE_PLAN).bind(JSON.stringify(answer)),
+    ...audits,
     env.DB.prepare(CHECK_OK).bind(now),
   ]);
   const applied = (stored?.results.length ?? 0) > 0;
