@@ -188,7 +188,7 @@ export function SidePanel({
                       )}
                       {v === "decisions" && !cmt.loading && (
                         <span
-                          data-tab-count=""
+                          data-decisions-count=""
                           className="ml-1 font-normal text-muted-foreground"
                         >
                           {cmt.decisions.length}

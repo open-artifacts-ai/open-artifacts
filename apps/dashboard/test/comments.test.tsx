@@ -177,7 +177,7 @@ afterEach(() => vi.restoreAllMocks());
 const commentsCount = (c: HTMLElement) =>
   within(c)
     .getByRole("tab", { name: "Comments" })
-    .querySelector("[data-tab-count]")?.textContent;
+    .querySelector("[data-tabs-count]")?.textContent;
 
 describe("comments: layouts", () => {
   it("is a column beside the page at 960px and up, with the open count on the button", async () => {

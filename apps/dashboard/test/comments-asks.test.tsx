@@ -1041,6 +1041,21 @@ describe("#2381 S2 the Decisions tab", () => {
     );
   });
 
+  it("an arrow key on a tab never throws when the pane goes away before focus moves", async () => {
+    const errors: unknown[] = [];
+    const on = (e: PromiseRejectionEvent | ErrorEvent) => errors.push(e);
+    window.addEventListener("error", on);
+    serveThreads(() => [decided("a", "Q?", "2026-11-05T09:00:00Z")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const first = await within(c).findByRole("tab", { name: /Comments/ });
+    fireEvent.keyDown(first, { key: "ArrowRight" });
+    cleanup();
+    await new Promise((r) => setTimeout(r, 0));
+    window.removeEventListener("error", on);
+    expect(errors).toEqual([]);
+  });
+
   it("a row reads 'Maya decided', the weigh-ins without names, the time and the asker", async () => {
     serveThreads(() => [
       decided(

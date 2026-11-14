@@ -51,12 +51,15 @@ export function CommentsTabs({
     e.preventDefault();
     const next = api.view === "comments" ? "decisions" : "comments";
     api.setView(next);
-    // Focus follows the selection (roving tabindex).
-    queueMicrotask(() =>
-      e.currentTarget.parentElement
-        ?.querySelector<HTMLElement>(`[data-tab="${next}"]`)
-        ?.focus({ preventScroll: true }),
-    );
+    // Focus follows the selection (roving tabindex). `currentTarget` is gone by the
+    // microtask, so the tab list is taken now; it may also be unmounted by then.
+    const list = e.currentTarget.parentElement;
+    queueMicrotask(() => {
+      if (list?.isConnected)
+        list
+          .querySelector<HTMLElement>(`[data-tab="${next}"]`)
+          ?.focus({ preventScroll: true });
+    });
   };
   return (
     <div
@@ -91,7 +94,7 @@ export function CommentsTabs({
             <span
               aria-hidden="true"
               className={`ml-1.5 font-normal ${MUTED}`}
-              data-tab-count=""
+              data-tabs-count=""
             >
               {api.loading ? "·" : t.n}
             </span>
