@@ -596,18 +596,21 @@ describe.each(["none", "solo", "readOnly"] as const)(
     it.each([
       ["read", R.audit],
       ["export", R.auditExport],
-    ] as const)("%s: Solo refused, Team and Business read", async (_n, route) => {
-      for (const w of ["owner", "admin"] as const) {
-        const r = await send(props, route, cred(w));
-        // Business and Team (here lapsed) read; only Solo is refused.
-        if (state !== "solo") expect(r.status).toBe(200);
-        else {
-          expect(r.status).toBe(403);
-          const e = ((await r.json()) as { error: { code: string } }).error;
-          expect(e.code).toBe("plan_required");
+    ] as const)(
+      "%s: Solo refused, Team and Business read",
+      async (_n, route) => {
+        for (const w of ["owner", "admin"] as const) {
+          const r = await send(props, route, cred(w));
+          // Business and Team (here lapsed) read; only Solo is refused.
+          if (state !== "solo") expect(r.status).toBe(200);
+          else {
+            expect(r.status).toBe(403);
+            const e = ((await r.json()) as { error: { code: string } }).error;
+            expect(e.code).toBe("plan_required");
+          }
         }
-      }
-      expect((await send(props, route, cred("member"))).status).toBe(404);
-    });
+        expect((await send(props, route, cred("member"))).status).toBe(404);
+      },
+    );
   },
 );
