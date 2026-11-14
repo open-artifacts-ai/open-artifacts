@@ -29,9 +29,15 @@ import { utf8Exceeds } from "./utf8.js";
  * and have the shell leave that field out for a runtime that said an earlier
  * number. #1698: 2 adds `changed` on `comments.set` threads. #1834: 3 adds
  * `draft` on `comments.set`. 4 adds `comments.clear`. #2019: 5 adds `badge`
- * on `comments.set` pins and its ghost, and `at` on `comment.pin`.
+ * on `comments.set` pins and its ghost, and `at` on `comment.pin`. #2408: 6
+ * has the shell announce its own protocol after `hello` (`shell.protocol`), so
+ * the runtime adds a field to a frame message only for a shell that said it
+ * knows it (a tab opened before a deploy keeps its old, strict shell), and the
+ * shell drops unknown keys from a frame message instead of the whole message.
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
+/** The first protocol whose shell announces itself, and whose frame messages may carry fields an older shell would refuse (`at`, `ghost`). */
+export const PROTOCOL_SHELL_ANNOUNCES = 6;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
 export const PROTOCOL_PIN_CHANGED = 2;
 /** The first protocol whose runtime draws the quote being commented on (#1834). */
@@ -456,6 +462,12 @@ export const ShellToArtifactSchema = z.union([
      */
     draft: selectionAnchorSchema.optional(),
   }),
+  /** #2408: the shell's own protocol, sent once after `hello`. Absent: an older shell, which refuses frame messages with fields it does not know. */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("shell.protocol"),
+    protocol: z.number().int().min(1).max(1000),
+  }),
   /** The reader tapped the shell's "Comment on selection": run the frame's Comment path (#1732). */
   z.strictObject({ oa: z.literal(1), type: z.literal("comments.comment") }),
   /** Clear the frame's live text selection (the reader clicked elsewhere in the shell). */
@@ -495,9 +507,73 @@ export function sendToShell(msg: ArtifactToShell): void {
   window.parent.postMessage(n ? { ...msg, nonce: n } : msg, "*");
 }
 
+type Issue = {
+  code: string;
+  path: PropertyKey[];
+  keys?: string[];
+  errors?: Issue[][];
+};
+
+/** The unknown keys to drop, when unknown keys are the only thing wrong (null: something else is). */
+function unknownKeys(
+  issues: Issue[],
+): { path: PropertyKey[]; keys: string[] }[] | null {
+  const out: { path: PropertyKey[]; keys: string[] }[] = [];
+  for (const i of issues) {
+    // Top level only: a key inside `pin`, `anchor` or `positions` stays refused.
+    if (i.code === "unrecognized_keys" && i.keys && i.path.length === 0) {
+      out.push({ path: i.path, keys: i.keys });
+    } else if (i.code === "invalid_union" && i.errors) {
+      // The branch that matched but for its extra keys.
+      let found: ReturnType<typeof unknownKeys> = null;
+      for (const branch of i.errors) {
+        const k = unknownKeys(branch);
+        if (k && k.length > 0) {
+          found = k;
+          break;
+        }
+      }
+      if (!found) return null;
+      out.push(...found);
+    } else return null;
+  }
+  return out;
+}
+
+const without = (v: unknown, path: PropertyKey[], keys: string[]): unknown => {
+  if (v === null || typeof v !== "object") return v;
+  const copy: Record<PropertyKey, unknown> | unknown[] = Array.isArray(v)
+    ? [...v]
+    : { ...(v as object) };
+  if (path.length === 0) {
+    for (const k of keys) delete (copy as Record<string, unknown>)[k];
+    return copy;
+  }
+  const [head, ...rest] = path;
+  (copy as Record<PropertyKey, unknown>)[head as PropertyKey] = without(
+    (copy as Record<PropertyKey, unknown>)[head as PropertyKey],
+    rest,
+    keys,
+  );
+  return copy;
+};
+
+/**
+ * #2408: the shell's strict schemas refuse a message that carries a field this
+ * version does not know, which would drop all of it. A newer runtime (a frame
+ * loaded after a deploy) may add one: take the unknown keys out, once, and
+ * validate what is left as strictly as before. Top-level keys only: an unknown
+ * key inside a nested object still refuses the message.
+ */
 export function parseArtifactMessage(data: unknown): ArtifactToShell | null {
   const r = ArtifactToShellSchema.safeParse(data);
-  return r.success ? r.data : null;
+  if (r.success) return r.data;
+  const drop = unknownKeys(r.error.issues as Issue[]);
+  if (!drop || drop.length === 0) return null;
+  let cleaned = data;
+  for (const d of drop) cleaned = without(cleaned, d.path, d.keys);
+  const again = ArtifactToShellSchema.safeParse(cleaned);
+  return again.success ? again.data : null;
 }
 
 export function parseShellMessage(data: unknown): ShellToArtifact | null {

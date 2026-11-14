@@ -39,7 +39,9 @@
           // P3 T13 (#575): bound with its first use, one release after its v3 tag (0.46.0).
           { "name": "DIRECTORY_SYNC", "class_name": "DirectorySync" },
           // #1315: bound one release after its v4 tag (0.109.0); /bus serves.
-          { "name": "BUS_HUB", "class_name": "BusHub" }
+          { "name": "BUS_HUB", "class_name": "BusHub" },
+          // #1100: bound one release after the class shipped unbound (tag v5).
+          { "name": "DOC_ROOM", "class_name": "DocRoom" }
         ]
       },
       "migrations": [

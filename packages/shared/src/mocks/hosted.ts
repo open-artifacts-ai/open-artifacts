@@ -1876,6 +1876,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       "*/api/v1/spaces",
       authed(async ({ request }) => {
         if (!isAdmin()) return notFound();
+        // A team route (server route-policy-table TEAM_ROUTES): Solo is refused.
+        const refused = teamRefusal();
+        if (refused) return refused;
         const r = await c.body(request, SpaceCreateSchema);
         if (r.error) return r.error;
         const { addMe, ...data } = r.data;

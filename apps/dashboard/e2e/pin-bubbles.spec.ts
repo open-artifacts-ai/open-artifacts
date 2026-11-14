@@ -34,7 +34,7 @@ function frameHtml(kind: "image" | "pdf", schemas: string) {
   // The renderer says hello once the runtime's comments chunk is up; so does this
   // stand-in (the same module, already loaded by the runtime, so its handlers
   // are registered by the time this resolves).
-  const hello = `import("/_oa/${schemas}").then(()=>setTimeout(()=>parent.postMessage({oa:1,type:"hello",protocol:5,kind:"${kind}",nonce:window.__nonce},"*"),0))`;
+  const hello = `import("/_oa/${schemas}").then(()=>setTimeout(()=>parent.postMessage({oa:1,type:"hello",protocol:6,kind:"${kind}",nonce:window.__nonce},"*"),0))`;
   return `<!doctype html><meta name="oa-format" content="${kind}"><body style="margin:0;background:#eceef1">${body}<div style="height:900px"></div><script>window.__nonce=new URLSearchParams(location.hash.slice(1)).get("oa")</script><script src="/_oa/runtime.js"></script><script>${hello}</script>`;
 }
 

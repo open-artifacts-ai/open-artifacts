@@ -18,22 +18,51 @@ export const MAX_CLOSE = 50;
  * frame's reason: "deleted" for a soft delete, "changed" otherwise.
  */
 export async function closeRuntimeSockets(
-  env: Pick<Env, "ARTIFACT_RUNTIME">,
+  env: Pick<Env, "ARTIFACT_RUNTIME" | "DOC_ROOM" | "DB">,
   ids: readonly string[],
   reason: string,
   ctx?: Ctx,
   gone: GoneReason = "changed",
 ): Promise<void> {
-  const all = Promise.allSettled(
-    [...new Set(ids)]
-      .slice(0, MAX_CLOSE)
-      .map((id) => runtimeStub(env, id).closeSockets(reason, gone)),
-  ).then((rs) => {
+  const targets = [...new Set(ids)].slice(0, MAX_CLOSE);
+  const all = Promise.allSettled([
+    ...targets.map((id) => runtimeStub(env, id).closeSockets(reason, gone)),
+    closeDocRooms(env, targets, reason, gone),
+  ]).then((rs) => {
     for (const r of rs)
       if (r.status === "rejected") logError("close_sockets_failed", r.reason);
   });
   if (ctx) ctx.waitUntil(all);
   else await all;
+}
+
+/**
+ * The doc rooms (#1100) among `ids` close too: 4403, or 4404 for a deleted
+ * doc. One D1 read picks the docs, so no room is created for a plain artifact.
+ * Unbound DOC_ROOM: nothing to close.
+ */
+async function closeDocRooms(
+  env: Pick<Env, "DOC_ROOM" | "DB">,
+  ids: readonly string[],
+  reason: string,
+  gone: GoneReason,
+): Promise<void> {
+  const rooms = env.DOC_ROOM;
+  if (!rooms || ids.length === 0) return;
+  const marks = ids.map(() => "?").join(",");
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM artifacts WHERE doc = 1 AND id IN (${marks})`,
+  )
+    .bind(...ids)
+    .all<{ id: string }>();
+  const rs = await Promise.allSettled(
+    results.map((r) =>
+      rooms
+        .get(rooms.idFromName(r.id))
+        .closeSockets(reason, gone === "deleted" ? "deleted" : "changed"),
+    ),
+  );
+  for (const r of rs) if (r.status === "rejected") throw r.reason;
 }
 
 /** Retries of a failed UserPresence.closeAll call inside revokeUserLive. */
