@@ -155,7 +155,7 @@ const removedDay = (iso: string) =>
   new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 export const removedLine = (at: string) =>
-  `Removed on ${removedDay(at)}. Inviting them again lets them back in.`;
+  `Removed on ${removedDay(at)}. Restore them to let them back in.`;
 
 export const reachLine = (email: string, ways: readonly LoginWay[]) => {
   if (ways.length === 0) return CANT_LINE;

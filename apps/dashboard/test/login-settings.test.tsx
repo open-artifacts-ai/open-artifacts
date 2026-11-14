@@ -494,7 +494,7 @@ describe("the invite dialog", () => {
     list(d, "removed@acme.com sam@globex.io ");
     expect(
       await within(d).findByText(
-        "Removed on Nov 12. Inviting them again lets them back in.",
+        "Removed on Nov 12. Restore them to let them back in.",
       ),
     ).toBeVisible();
     expect(within(d).getByText("removed")).toBeVisible();

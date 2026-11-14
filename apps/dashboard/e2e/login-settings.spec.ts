@@ -194,9 +194,7 @@ for (const scheme of ["light", "dark"] as const)
           .getByRole("textbox", { name: "Email" })
           .fill("removed@acme.com sam@globex.io ");
         await expect(
-          d.getByText(
-            "Removed on Nov 12. Inviting them again lets them back in.",
-          ),
+          d.getByText("Removed on Nov 12. Restore them to let them back in."),
         ).toBeVisible();
         await check(page, `invite-removed-${tag}`);
       });
