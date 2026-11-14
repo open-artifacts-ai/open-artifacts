@@ -89,7 +89,7 @@ for (const scheme of ["light", "dark"] as const)
         // How each was saved: a restore, automatic ones, names.
         await expect(row(page, 6)).toContainText("Restored v2");
         await expect(row(page, 5)).toContainText("Saved automatically");
-        await expect(row(page, 4)).toContainText("Saved automatically");
+        await expect(row(page, 4)).toContainText("Before OA Product edited");
         await expect(row(page, 3)).toContainText("After review");
         await expect(row(page, 2)).toContainText("Saved automatically");
         await expect(row(page, 1)).toContainText("First draft");
@@ -121,9 +121,7 @@ for (const scheme of ["light", "dark"] as const)
         await name.fill("Before launch");
         await page.getByRole("button", { name: "Save version" }).click();
         expect((await saved).postDataJSON()).toEqual({ name: "Before launch" });
-        await expect(
-          page.getByText('Saved "Before launch" as v7.'),
-        ).toBeVisible();
+        await expect(page.getByText("Version saved.")).toBeVisible();
         await expect(row(page, 7)).toContainText("Before launch");
         await expect(name).toHaveValue("");
         // No name: the server's "Version n".
@@ -133,7 +131,7 @@ for (const scheme of ["light", "dark"] as const)
         );
         await page.getByRole("button", { name: "Save version" }).click();
         expect((await unnamed).postDataJSON()).toEqual({});
-        await expect(page.getByText('Saved "Version 8" as v8.')).toBeVisible();
+        await expect(page.getByText("Version saved.").first()).toBeVisible();
         await expect(row(page, 8)).toContainText("Version 8");
       });
 

@@ -272,7 +272,7 @@ export function Versions({
                 isDoc &&
                 msg !== "" &&
                 docSaveKind(x) !== "named" &&
-                docSaveKind(x) !== "restored";
+                docSaveKind(x) !== "restore";
               return (
                 <li
                   key={x.version}

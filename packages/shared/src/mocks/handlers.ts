@@ -543,8 +543,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       list: FileEntry[];
       bodies: Map<string, string>;
       restoredFrom?: number;
-      /** PROVISIONAL (#1100): a doc version's kind. */
-      saveKind?: VersionInfo["saveKind"];
+      /** PROVISIONAL (#1100): how a doc version was saved. */
+      docSave?: VersionInfo["docSave"];
     },
   ): Response => {
     const list = versions[a.id] ?? [];
@@ -563,7 +563,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       textIndexed: !v.list.some((x) => x.contentType === "application/pdf"),
       format: v.format,
       contentHash: fakeHash(version, v.entry),
-      ...(v.saveKind ? { saveKind: v.saveKind } : {}),
+      ...(v.docSave ? { docSave: v.docSave } : {}),
     });
     a.format = v.format;
     for (const [p, b] of v.bodies) files.set(`${a.id}/${version}/${p}`, b);
@@ -1227,7 +1227,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
               fileBody(a.id, latest.version, x.path),
             ]),
           ),
-          saveKind: "named",
+          docSave: { kind: "named", by: userRef(me.user) },
         });
         return HttpResponse.json({ version: n }, { status: res.status });
       }, "write"),
@@ -1251,7 +1251,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
             src.files.map((x) => [x.path, fileBody(a.id, src.version, x.path)]),
           ),
           restoredFrom: src.version,
-          saveKind: "restored",
+          docSave: { kind: "restore", by: userRef(me.user) },
         });
         return HttpResponse.json({ version: n }, { status: res.status });
       }, "write"),

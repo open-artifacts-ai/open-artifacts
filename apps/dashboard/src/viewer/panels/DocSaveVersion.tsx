@@ -1,17 +1,15 @@
 import { Input, Button as ShButton } from "@oa/ui/shadcn";
 import { useState } from "react";
-import { ApiClientError } from "../../api/client";
 import { useDocSaveVersion } from "../../api/queries";
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { toast } from "../../layout/toast";
 import {
-  defaultVersionName,
-  SAVE_FAILED_FALLBACK,
+  SAVE_FAILED,
   SAVE_VERSION,
   SAVE_VERSION_NOTE,
-  savedToast,
   VERSION_NAME_LABEL,
   VERSION_NAME_PLACEHOLDER,
+  VERSION_SAVED,
 } from "../doc/versions";
 import { SM, TXT } from "../ui";
 
@@ -33,20 +31,14 @@ export function DocSaveVersion({ id }: { id: string }) {
       // would drop mutate()'s own callbacks.
       save
         .mutateAsync(typed)
-        .then((r) => {
+        .then(() => {
           setName("");
-          toast({
-            title: savedToast(
-              typed ?? defaultVersionName(r.version),
-              r.version,
-            ),
-            tone: "neutral",
-          });
+          toast({ title: VERSION_SAVED, tone: "success" });
         })
-        .catch((e: unknown) =>
+        .catch(() =>
           toast({
-            title:
-              e instanceof ApiClientError ? e.message : SAVE_FAILED_FALLBACK,
+            // Product's words, whatever the server said.
+            title: SAVE_FAILED,
             tone: "danger",
           }),
         )

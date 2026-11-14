@@ -60,20 +60,24 @@ async function startMocks() {
       const v = (
         version: number,
         message: string | null,
-        saveKind: "auto" | "before_agent" | "named" | "restored",
+        kind: "auto" | "before_agent" | "named" | "restore",
         by: typeof ada,
         agent: typeof duck | null,
       ) => ({
         ...structuredClone(base),
         version,
         message,
-        saveKind,
+        docSave: {
+          kind,
+          // Who: the agent about to edit (before_agent), else the author.
+          by: kind === "before_agent" ? duck : (agent ?? by),
+        },
         createdBy: by,
         agent,
         createdAt: at(version),
       });
       fixtures.versions[docId] = [
-        v(6, "Restored v2", "restored", maya, null),
+        v(6, "Restored v2", "restore", maya, null),
         v(5, null, "auto", ada, duck),
         v(4, null, "before_agent", maya, null),
         v(3, "After review", "named", maya, null),

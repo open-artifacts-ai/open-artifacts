@@ -411,17 +411,27 @@ export const VersionInfoSchema = z.object({
    */
   contentHash: z.string().nullable(),
   /**
-   * PROVISIONAL (#1100, until OA Backend's #2496): how a doc version was
-   * saved. "auto": by itself (a pause, every 30 minutes, the last editor
-   * leaving); "before_agent": by itself, just before an agent's edit;
-   * "named": someone pressed Save version (the name is `message`);
-   * "restored": a restore (`message` "Restored v3"). Absent on other
-   * artifacts, and from servers that don't send it: the client then reads a
-   * null message as "auto".
+   * PROVISIONAL (#1100, OA Backend's marker, coming in the edit_doc PR): how
+   * a doc version was saved. See DocSaveSchema. Absent on other artifacts,
+   * and from servers that don't send it yet.
    */
-  saveKind: z.enum(["auto", "before_agent", "named", "restored"]).optional(),
+  docSave: z.lazy(() => DocSaveSchema).optional(),
 });
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
+
+/**
+ * PROVISIONAL (#1100, Backend's marker): `kind` "auto" (saved by itself: a
+ * pause, every 30 minutes, the last editor leaving), "named" (Save version;
+ * the name is the version's `message`), "before_agent" (saved by itself
+ * just before an agent edits; `by` is that agent) or "restore" (a restore;
+ * `message` "Restored v3"). `by`: who, in the versions' existing ref shapes,
+ * an agent's (AgentRef) or a person's (UserRef).
+ */
+export const DocSaveSchema = z.object({
+  kind: z.enum(["auto", "named", "before_agent", "restore"]),
+  by: z.union([AgentRefSchema, UserRefSchema]).optional(),
+});
+export type DocSave = z.infer<typeof DocSaveSchema>;
 
 /**
  * PROVISIONAL (#1100, #2496): the body of POST R.docSaveVersion. No name:

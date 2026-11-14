@@ -4,15 +4,21 @@
 import { type VersionInfo, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { setMockDoc } from "../src/viewer/doc/docMock";
 import {
   docSaveKind,
   docVersionLabel,
   restoredToast,
-  savedToast,
 } from "../src/viewer/doc/versions";
-import { calls, findVisibleToast, installHarness, mount } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mount,
+  server,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -50,21 +56,22 @@ const duck = {
 const v = (
   version: number,
   message: string | null,
-  saveKind: VersionInfo["saveKind"],
+  kind: NonNullable<VersionInfo["docSave"]>["kind"] | undefined,
   agent: typeof duck | null = null,
+  by?: NonNullable<VersionInfo["docSave"]>["by"],
 ): VersionInfo => ({
   ...structuredClone(base),
   version,
   message,
-  ...(saveKind ? { saveKind } : {}),
+  ...(kind ? { docSave: { kind, ...(by ? { by } : {}) } } : {}),
   agent,
   createdBy: ada,
 });
 const savedVersions = fixtures.versions[DOC.id];
 const savedCurrent = DOC.currentVersion;
 fixtures.versions[DOC.id] = [
-  v(5, "Restored v2", "restored"),
-  v(4, null, "before_agent"),
+  v(5, "Restored v2", "restore"),
+  v(4, null, "before_agent", null, duck),
   v(3, null, "auto", duck),
   v(2, "After review", "named"),
   v(1, "First draft", undefined),
@@ -86,23 +93,29 @@ const row = async (n: number) =>
   within(await list()).getByRole("button", { name: new RegExp(`^v${n}, `) });
 
 describe("doc version kinds and labels", () => {
-  it("uses the server's saveKind, else reads the message", () => {
+  it("uses Backend's docSave marker, else reads the message", () => {
     expect(docSaveKind(v(1, null, "before_agent"))).toBe("before_agent");
     expect(docSaveKind(v(1, null, undefined))).toBe("auto");
-    expect(docSaveKind(v(1, "Restored v3", undefined))).toBe("restored");
+    expect(docSaveKind(v(1, "Restored v3", undefined))).toBe("restore");
     expect(docSaveKind(v(1, "Before launch", undefined))).toBe("named");
     expect(docVersionLabel(v(1, null, "auto"))).toBe("Saved automatically");
-    // Until the lead's string comes, the save before an agent edit reads as automatic.
+    // Product: the save before an agent edits names that agent, if known.
+    expect(docVersionLabel(v(1, null, "before_agent", null, duck))).toBe(
+      "Before OA Product edited",
+    );
     expect(docVersionLabel(v(1, null, "before_agent"))).toBe(
-      "Saved automatically",
+      "Before an agent edited",
+    );
+    // A person in `by` is not an agent's name.
+    expect(docVersionLabel(v(1, null, "before_agent", null, ada))).toBe(
+      "Before an agent edited",
     );
     expect(docVersionLabel(v(1, "Before launch", "named"))).toBe(
       "Before launch",
     );
   });
 
-  it("the mockup's toasts", () => {
-    expect(savedToast("Before launch", 7)).toBe('Saved "Before launch" as v7.');
+  it("the mockup's restore toast", () => {
     // The room saves unsaved edits first: the doc as it was is the version before.
     expect(restoredToast(3, 8)).toBe(
       "Restored v3. Nothing is lost: the doc as it was is kept as v7.",
@@ -114,7 +127,7 @@ describe("a doc's Versions panel", () => {
   it("labels each version by how it was saved; an agent's row has its face", async () => {
     mount(panel(DOC.id));
     expect(await row(5)).toHaveTextContent("Restored v2");
-    expect(await row(4)).toHaveTextContent("Saved automatically");
+    expect(await row(4)).toHaveTextContent("Before OA Product edited");
     const agent = await row(3);
     expect(agent).toHaveTextContent("Saved automatically");
     expect(agent).toHaveTextContent("OA Product");
@@ -122,7 +135,7 @@ describe("a doc's Versions panel", () => {
       agent.querySelector('[data-avatar="agent"][data-animal="duck"]'),
     ).not.toBeNull();
     expect(await row(2)).toHaveTextContent("After review");
-    // No saveKind (an older server): a name reads as a name.
+    // No marker (a server without it yet): a name reads as a name.
     expect(await row(1)).toHaveTextContent("First draft");
     expect(
       screen.getByText(
@@ -137,7 +150,7 @@ describe("a doc's Versions panel", () => {
     const name = await screen.findByRole("textbox", { name: "Version name" });
     fireEvent.change(name, { target: { value: "  Before launch " } });
     fireEvent.click(screen.getByRole("button", { name: "Save version" }));
-    await findVisibleToast('Saved "Before launch" as v6.');
+    await findVisibleToast("Version saved.");
     expect(posts).toHaveLength(1);
     expect(posts[0]?.path).toBe(`/api/v1/artifacts/${DOC.id}/doc/versions`);
     await waitFor(() =>
@@ -157,8 +170,25 @@ describe("a doc's Versions panel", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Save version" }),
     );
-    await findVisibleToast('Saved "Version 6" as v6.');
+    await findVisibleToast("Version saved.");
     await waitFor(() => expect(posts[0]?.body).toEqual({}));
+  });
+
+  it("a failed save says Product's words, whatever the server said, and keeps the name", async () => {
+    server.use(
+      http.post(`*/api/v1/artifacts/${DOC.id}/doc/versions`, () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "Room down" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    mount(panel(DOC.id));
+    const name = await screen.findByRole("textbox", { name: "Version name" });
+    fireEvent.change(name, { target: { value: "Before launch" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save version" }));
+    await findVisibleToast("Couldn't save a version. Try again.");
+    expect(name).toHaveValue("Before launch");
   });
 
   it("a double click saves once", async () => {
@@ -167,7 +197,7 @@ describe("a doc's Versions panel", () => {
     const b = await screen.findByRole("button", { name: "Save version" });
     fireEvent.click(b);
     fireEvent.click(b);
-    await findVisibleToast('Saved "Version 6" as v6.');
+    await findVisibleToast("Version saved.");
     expect(posts).toHaveLength(1);
   });
 
