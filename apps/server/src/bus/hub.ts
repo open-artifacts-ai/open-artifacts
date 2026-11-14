@@ -4783,7 +4783,8 @@ export class BusHub extends DurableObject<Env> {
       ),
     );
     logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
-    if (r.ok && r.role !== null) this.#noteNamed();
+    // A confirmed set (not a clear) names the holder.
+    if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
     return r;
   }
 
