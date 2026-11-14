@@ -60,6 +60,7 @@ import { activation } from "./analytics.js";
 import {
   addresseeOf,
   addressees,
+  askInfo,
   askRows,
   indexAnswered,
   indexAsk,
@@ -952,6 +953,27 @@ export async function listComments(
   };
 }
 
+/**
+ * #2512: the asker of each inbox ask as the comments API shows them to
+ * `viewer` (the same builder, so masking and current agent names apply alike).
+ * One call for all of them.
+ */
+export async function askerFaces(
+  env: Env,
+  viewer: CommentViewer,
+  actors: StoredActor[],
+): Promise<CommentAuthor[]> {
+  const ids = new Set<string>();
+  for (const a of actors) if (a.kind === "user") ids.add(a.ref);
+  const ctx = await ctxFor(
+    env,
+    ids,
+    actors.some((a) => a.agent),
+    { comments: [], actors },
+  );
+  return actors.map((a) => authorView(a, viewer, ctx));
+}
+
 // ------------------------------------------------------------------- writes
 
 /** Where a new comment's `comment` notice goes: after the response when there is a ctx. */
@@ -1502,6 +1524,7 @@ async function addThreadInner(
       root.id,
       root.ask.to,
       root.ask.decider ?? root.author.ref,
+      askInfo(root),
     );
   if (root && r.agents.length > 0) {
     const sent = await deliver(env, a, t.id, root, r);
@@ -1775,6 +1798,7 @@ async function addReplyInner(
       c.id,
       c.ask.to,
       c.ask.decider ?? c.author.ref,
+      askInfo(c),
     );
   const row = await stmt(
     env.DB,
