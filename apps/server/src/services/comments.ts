@@ -56,6 +56,7 @@ import {
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
+import { activation } from "./analytics.js";
 import {
   addresseeOf,
   addressees,
@@ -1997,7 +1998,8 @@ export async function answerAsk(
     isTyped(c.ask.answer.by) &&
     c.ask.answer.by.ref === who.id
   )
-    await noteAskAnswered(env, who.id);
+    if (await noteAskAnswered(env, who.id))
+      await activation(env, "first_ask_answered", after?.ctx);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -2389,7 +2391,8 @@ async function noteMentionActivity(
             c.author.ref === who.id &&
             c.mentions?.some((m) => own(m) && m.identity?.identityId === me),
         );
-      if (asked) await noteMentionReplied(env, who.id);
+      if (asked && (await noteMentionReplied(env, who.id)))
+        await activation(env, "agent_replied_to_mention");
     })(),
   );
 }
