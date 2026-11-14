@@ -4,9 +4,12 @@ import { z } from "zod";
 const SameOriginPath = z
   .string()
   .max(2048)
-  .refine((h) => h.startsWith("/") && !h.startsWith("//") && !h.includes("\\"), {
-    message: "href must be a same-origin path",
-  });
+  .refine(
+    (h) => h.startsWith("/") && !h.startsWith("//") && !h.includes("\\"),
+    {
+      message: "href must be a same-origin path",
+    },
+  );
 
 const Iso = z.string();
 const Base64Url = z.string().regex(/^[A-Za-z0-9_-]+$/);

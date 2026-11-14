@@ -27,7 +27,8 @@ export const R = {
   /** GET -> PushSubscriptions; POST PushSubscribeBody -> 201 `{ id }`. */
   mePushSubscriptions: "/api/v1/me/push/subscriptions",
   /** DELETE -> 204. The caller's own subscription only. */
-  mePushSubscription: (id: string) => `/api/v1/me/push/subscriptions/${seg(id)}`,
+  mePushSubscription: (id: string) =>
+    `/api/v1/me/push/subscriptions/${seg(id)}`,
   /** GET -> ShareNoticeAgents; PUT ShareNoticeAgents -> ShareNoticeAgents (replaces the list; 400 bad_request on an invalid address, details { path: "agents[i].name", reason: "invalid" | "reserved" }, or more than SHARE_NOTICE_MAX, details { path: "agents", reason: "too_many" }). The bus addresses that get "shared with you" notices; empty (the default) drops them. Callers who may connect agents (mcp.connect), their own list only; PUT takes an interactive cookie session (a PAT or OAuth grant gets 404) (#1292). */
   shareNotices: "/api/v1/bus/share-notices",
   /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. Create only: an existing artifact's id is 400 bad_request (details { path: "id", reason: "not_reserved" }); publish a new version with POST R.versions(id). (MCP publish_artifact with an id does publish a new version.) */

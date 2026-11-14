@@ -60,12 +60,23 @@ describe("notifications contract", () => {
     ).toBe(true);
   });
 
-  it.each(["//evil", "https://x", "javascript:x"])("rejects href %s", (href) => {
-    expect(InboxSchema.shape.needsYou.element.safeParse({ ...item, href }).success).toBe(false);
-    expect(
-      PushPayloadSchema.safeParse({ v: 1, title: "t", body: "b", href, tag: "x" }).success,
-    ).toBe(false);
-  });
+  it.each(["//evil", "https://x", "javascript:x"])(
+    "rejects href %s",
+    (href) => {
+      expect(
+        InboxSchema.shape.needsYou.element.safeParse({ ...item, href }).success,
+      ).toBe(false);
+      expect(
+        PushPayloadSchema.safeParse({
+          v: 1,
+          title: "t",
+          body: "b",
+          href,
+          tag: "x",
+        }).success,
+      ).toBe(false);
+    },
+  );
 
   it("rejects bad quiet hours and push endpoints", () => {
     expect(
