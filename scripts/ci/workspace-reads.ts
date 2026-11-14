@@ -6,7 +6,9 @@
 //   node scripts/ci/workspace-reads.ts check --warn   -> warnings only, always exit 0
 //
 // scripts/ci/workspace-reads-known.txt is this check's baseline: the findings
-// that exist today. It only shrinks, so the check turns fatal once it is empty.
+// that exist today. It only shrinks. A line naming a package this workspace
+// lacks is not applicable here, never stale: the private cloud repo applies the
+// same file over its overlay, where those packages exist (#2500).
 import { readFileSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,17 +94,27 @@ export function parseKnown(text: string): string[] {
     .filter((l) => l && !l.startsWith("#"));
 }
 
-/** Findings the known file lacks, and known entries that no longer happen. */
+/** The package named by a "<file> <package>" known line. */
+const knownPkg = (line: string) => line.slice(line.lastIndexOf(" ") + 1);
+
+/**
+ * Findings the known file lacks, and known entries that no longer happen. With
+ * `present` (the workspace's package names), a line for a package not in it is
+ * skipped rather than stale; without it every unmatched line is stale.
+ */
 export function drift(
   findings: Read[],
   known: string[],
+  present?: Set<string>,
 ): { added: Read[]; stale: string[] } {
   const key = (r: Read) => `${r.file} ${r.package}`;
   const now = new Set(findings.map(key));
   const have = new Set(known);
   return {
     added: findings.filter((r) => !have.has(key(r))),
-    stale: known.filter((l) => !now.has(l)),
+    stale: known.filter(
+      (l) => !now.has(l) && (!present || present.has(knownPkg(l))),
+    ),
   };
 }
 
@@ -112,16 +124,15 @@ const declare = (pkg: string) =>
 /** A line the baseline still carries: declare the package, or delete the line. */
 const settle = (pkg: string) =>
   `declare ${pkg} in its package.json, or delete the line from workspace-reads-known.txt`;
-/** The package named by a "<file> <package>" known line. */
-const knownPkg = (line: string) => line.slice(line.lastIndexOf(" ") + 1);
 
 /** What to print and what to exit with: `check`, or `check --warn`. */
 export function report(
   findings: Read[],
   known: string[],
   warn: boolean,
+  present?: Set<string>,
 ): { lines: string[]; code: number } {
-  const { added, stale } = drift(findings, known);
+  const { added, stale } = drift(findings, known, present);
   if (warn)
     return {
       lines: [
@@ -160,10 +171,12 @@ function main(argv: string[]): number {
     return 2;
   }
   const warn = flags.includes("--warn");
+  const pkgs = workspace(root);
   const out = report(
-    reads(workspace(root), trackedSources(root)),
+    reads(pkgs, trackedSources(root)),
     parseKnown(readFileSync(join(root, KNOWN), "utf8")),
     warn,
+    new Set(pkgs.map((p) => p.name)),
   );
   for (const line of out.lines) {
     if (warn) console.log(line);
