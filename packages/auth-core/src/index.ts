@@ -45,6 +45,7 @@ export {
   type GoogleIdentity,
   GoogleTokenError,
   type GoogleTokenStage,
+  googleEvidenceStrong,
   hasDirectoryScopes,
   noDomainIdentityOk,
   verifyGoogleIdToken,

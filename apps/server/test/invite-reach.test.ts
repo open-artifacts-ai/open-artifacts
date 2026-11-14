@@ -157,6 +157,17 @@ describe("invite reachability (review item 11)", () => {
     },
   );
 
+  it("Google with AUTH_DOMAINS: an invited Gmail address is certain (no uncertain flag, #2520)", async () => {
+    const { e, sent } = install(direct, {});
+    const email = uniq("pal", "gmail.com");
+    const r = await invite(e, await owner(), email);
+    expect(r.status).toBe(201);
+    expect(
+      MemberInviteResultSchema.parse(await r.json()).signIn,
+    ).toBeUndefined();
+    expect(sent[0]?.text).toContain("You'll log in with your Google account.");
+  });
+
   it("Access-only (self-host default): unchanged, any address, no flag", async () => {
     const { e, sent } = install((o) => ({ ...env, ...o }) as Env);
     const email = uniq("acc", "anywhere.com");

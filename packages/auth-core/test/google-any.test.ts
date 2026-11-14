@@ -9,6 +9,7 @@ import {
 import { beforeAll, describe, expect, test } from "vitest";
 import {
   GoogleTokenError,
+  googleEvidenceStrong,
   noDomainIdentityOk,
   verifyGoogleIdTokenAnyDomain,
 } from "../src/google.js";
@@ -131,5 +132,25 @@ describe("noDomainIdentityOk", () => {
     ["nope", null, false],
   ])("%s with hd %s -> %s", (email, hd, ok) => {
     expect(noDomainIdentityOk(email, hd)).toBe(ok);
+  });
+});
+
+describe("googleEvidenceStrong", () => {
+  test.each([
+    ["me@gmail.com", true, null, true],
+    ["ME@GoogleMail.com", true, null, true],
+    ["me@acme.com", true, "acme.com", true],
+    ["me@acme.com", true, "ACME.com", true],
+    ["Me@Acme.com", true, "acme.com", true],
+    ["me@acme.com", true, null, false],
+    ["me@acme.com", true, "other.com", false],
+    ["me@sub.acme.com", true, "acme.com", false],
+    ["me@acme.com", true, undefined, false],
+    ["me@gmail.com", false, null, false],
+    ["me@acme.com", false, "acme.com", false],
+    ["nope", true, "nope", false],
+    ["me@acme.com", true, "", false],
+  ])("%s verified=%s hd=%s -> %s", (email, verified, hd, ok) => {
+    expect(googleEvidenceStrong(email, verified, hd)).toBe(ok);
   });
 });
