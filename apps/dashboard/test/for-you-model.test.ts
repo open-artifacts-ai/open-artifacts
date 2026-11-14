@@ -22,7 +22,8 @@ const item = (o: Partial<InboxItem> & { id: string }): InboxItem => ({
   level: "needs_you",
   kind: "ask",
   artifact: { id: "Cd5fGhJkLm6nPqRs", title: "Open Artifacts Asks" },
-  actor: { kind: "agent", name: "OA Manager", agentId: "agent:manager" },
+  actor: { kind: "agent", name: "OA Manager", linked: true, me: false },
+  agentKey: "agent:manager",
   text: o.id,
   href: "/a/Cd5fGhJkLm6nPqRs",
   createdAt: at(1),
@@ -161,6 +162,8 @@ describe("words", () => {
 
   it("sums up While you were away", () => {
     const since = new Date(2026, 10, 13, 22, 0).toISOString();
-    expect(awayText({ since, count: 6 })).toBe("6 updates since 22:00");
+    expect(awayText({ since, count: 6, pages: 3 })).toBe(
+      "6 updates on 3 pages since 22:00",
+    );
   });
 });

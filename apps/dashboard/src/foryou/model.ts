@@ -120,15 +120,18 @@ export function backText(until: string, now = Date.now()): string {
   return `Back ${day} at ${clock(until)}`;
 }
 
-/** "6 updates since 22:00" (the contract has no page count yet). */
+/** "6 updates on 3 pages since 22:00". */
 export function awayText(a: NonNullable<InboxItem["away"]>): string {
-  return `${a.count} ${a.count === 1 ? "update" : "updates"} since ${clock(a.since)}`;
+  const u = `${a.count} ${a.count === 1 ? "update" : "updates"}`;
+  const p = `${a.pages} ${a.pages === 1 ? "page" : "pages"}`;
+  return `${u} on ${p} since ${clock(a.since)}`;
 }
 
 /** The muted line under a row's text. A waiting ask shows its wait instead of a time. */
 export function contextLine(x: InboxItem, now = Date.now()): string {
   const when = agoText(x.createdAt, now);
-  const on = `on "${x.artifact.title}"`;
+  const title = x.artifact?.title ?? "";
+  const on = `on "${title}"`;
   switch (x.kind) {
     case "ask": {
       const who = x.actor ? `${x.actor.name} asks · ${on}` : on;
@@ -137,7 +140,7 @@ export function contextLine(x: InboxItem, now = Date.now()): string {
     case "machine":
       return `It wants to connect agents as you · ${when}`;
     case "share":
-      return `"${x.artifact.title}" · ${when}`;
+      return `"${title}" · ${when}`;
     case "away":
       return x.away ? awayText(x.away) : when;
     default:

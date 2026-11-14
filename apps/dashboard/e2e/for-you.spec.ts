@@ -169,7 +169,9 @@ for (const width of [1280, 390])
       await bell(page).click();
       const p = panel(page).first();
       await expect(p.getByText("Nothing is waiting on you.")).toBeVisible();
-      await expect(p.getByText(/^6 updates since 22:00/)).toBeVisible();
+      await expect(
+        p.getByText(/^6 updates on 3 pages since 22:00/),
+      ).toBeVisible();
       await axe(page);
       await noSidewaysScroll(page);
       await shot("7-open-nothing-needs-you");

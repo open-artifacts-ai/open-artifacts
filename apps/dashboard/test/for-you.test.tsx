@@ -111,6 +111,19 @@ describe("For you", () => {
     ).toHaveAttribute("href", "/settings/notifications");
   });
 
+  it("shows an agent with its tile, as comments do, and a person with initials", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    const reply = panel.querySelector('[data-for-you-item="itm:reply1"]');
+    expect(
+      reply?.querySelector('[data-avatar="agent"][data-linked="true"]'),
+    ).toHaveAttribute("data-animal", "fox");
+    const decided = panel.querySelector('[data-for-you-item="itm:decided1"]');
+    expect(decided?.querySelector('[data-avatar="agent"]')).toBeNull();
+    expect(decided).toHaveTextContent(/^SR/);
+  });
+
   it("never re-sorts what the server sent", async () => {
     const it = (id: string, waitMin: number): InboxItem => ({
       id: `ask:${id}`,
@@ -250,7 +263,7 @@ describe("Show more", () => {
     level: "update",
     kind: "reply",
     artifact: { id: "De6gHjKmNp7qRsTu", title: "Meeting notes" },
-    actor: { kind: "person", name: "Sam Rivera" },
+    actor: { kind: "user", name: "Sam Rivera", me: false },
     text: `Reply ${id}`,
     href: "/a/De6gHjKmNp7qRsTu",
     createdAt: new Date().toISOString(),

@@ -49,6 +49,21 @@ export function createForYouMock(d: Deps): {
   const now = d.now ?? Date.now;
   const ago = (ms: number) => new Date(now() - ms).toISOString();
   const page = (id: string, title: string) => ({ id, title });
+  /** A linked agent, as comments show one (CommentAuthor). */
+  const agent = (name: string, animal: string, color: number) => ({
+    kind: "agent" as const,
+    name,
+    for: "Ada Lovelace",
+    linked: true,
+    product: "Claude Code",
+    animal: { id: animal, color },
+    me: false,
+  });
+  const person = (name: string) => ({
+    kind: "user" as const,
+    name,
+    me: false,
+  });
   const ask: InboxItem = {
     id: `ask:${FOR_YOU_ASK.comment}`,
     level: "needs_you",
@@ -56,19 +71,19 @@ export function createForYouMock(d: Deps): {
     urgency: "waiting",
     waitingSince: ago(4 * MIN),
     artifact: page(d.landingId, "Open Artifacts Asks"),
-    actor: { kind: "agent", name: "OA Manager", agentId: "agent:manager" },
+    actor: agent("OA Manager", "owl", 4),
+    agentKey: "agent:manager",
     text: "Ship the landing with the waitlist?",
     href: `/a/${d.landingId}?thread=${FOR_YOU_ASK.thread}`,
     createdAt: ago(4 * MIN),
     readAt: null,
   };
-  // The contract requires `artifact` on every item; a machine has none (gap reported to OA Backend).
   const machine = (back: boolean): InboxItem => ({
     id: "itm:machine1",
     level: "needs_you",
     kind: "machine",
     machine: { id: "mach1", name: "Ada-Workstation" },
-    artifact: page("", ""),
+    artifact: null,
     actor: null,
     text: "Approve this machine: Ada-Workstation",
     href: "/agents",
@@ -89,22 +104,20 @@ export function createForYouMock(d: Deps): {
     at: number,
     read: boolean,
     actor: InboxItem["actor"],
+    agentKey?: string,
   ): InboxItem => ({
     id,
     level: "update",
     kind,
     artifact: page(d.otherId, title),
     actor,
+    ...(agentKey ? { agentKey } : {}),
     text,
     href: `/a/${d.otherId}`,
     createdAt: ago(at),
     readAt: read ? ago(at - MIN) : null,
   });
-  const design = {
-    kind: "agent" as const,
-    name: "OA Design",
-    agentId: "agent:design",
-  };
+  const design = agent("OA Design", "fox", 1);
   let needsYou: InboxItem[] = [];
   let later: InboxItem[] = [];
   let updates: InboxItem[] = [];
@@ -119,6 +132,7 @@ export function createForYouMock(d: Deps): {
         60 * MIN,
         false,
         design,
+        "agent:design",
       ),
       update(
         "itm:decided1",
@@ -127,7 +141,7 @@ export function createForYouMock(d: Deps): {
         "Pricing table",
         120 * MIN,
         true,
-        { kind: "person", name: "Sam Rivera" },
+        person("Sam Rivera"),
       ),
     ];
   }
@@ -141,8 +155,8 @@ export function createForYouMock(d: Deps): {
         id: "itm:away1",
         level: "update",
         kind: "away",
-        away: { since: since.toISOString(), count: 6 },
-        artifact: page("", ""),
+        away: { since: since.toISOString(), count: 6, pages: 3 },
+        artifact: null,
         actor: null,
         text: "While you were away",
         href: "/",
@@ -156,7 +170,8 @@ export function createForYouMock(d: Deps): {
         "Setup guide",
         12 * MIN,
         false,
-        { kind: "agent", name: "OA Docs", agentId: "agent:docs" },
+        agent("OA Docs", "otter", 5),
+        "agent:docs",
       ),
       update(
         "itm:share1",
@@ -165,7 +180,7 @@ export function createForYouMock(d: Deps): {
         "Q4 launch plan",
         26 * 60 * MIN,
         true,
-        { kind: "person", name: "Maya Chen" },
+        person("Maya Chen"),
       ),
     ];
   }
@@ -173,7 +188,7 @@ export function createForYouMock(d: Deps): {
 
   const open = () =>
     needsYou.filter((x) => {
-      if (x.kind !== "ask") return true;
+      if (x.kind !== "ask" || !x.artifact) return true;
       const thread = new URL(x.href, "https://x.invalid").searchParams.get(
         "thread",
       );

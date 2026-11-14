@@ -31,6 +31,7 @@ import {
 import { useThreads } from "../api/comments";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
+import { AuthorFace } from "../viewer/comments/AuthorFace";
 import { AskBlock, asksForMe, showsAskBody } from "../viewer/comments/asks";
 import { Markdown } from "../viewer/comments/Markdown";
 import {
@@ -413,7 +414,7 @@ function ForYouPanel({
                 aria-expanded={showLater}
                 data-for-you-later-line=""
                 onClick={() => setShowLater((s) => !s)}
-                className={`grid w-full cursor-pointer grid-cols-[22px_1fr] gap-[9px] border-0 bg-transparent px-3.5 py-2.5 text-left text-[14px] text-[var(--oa-text-muted)] ${phone ? "min-h-14" : ""}`}
+                className={`grid w-full cursor-pointer grid-cols-[24px_1fr] gap-[9px] border-0 bg-transparent px-3.5 py-2.5 text-left text-[14px] text-[var(--oa-text-muted)] ${phone ? "min-h-14" : ""}`}
               >
                 <Glyph>{showLater ? "▾" : "▸"}</Glyph>
                 <span className="min-w-0">
@@ -438,7 +439,7 @@ function Glyph({ children }: { children: ReactNode }) {
   return (
     <span
       aria-hidden="true"
-      className="grid size-[22px] flex-none place-items-center rounded-[6px] border border-[var(--oa-border)] text-[12px] text-[var(--oa-text-2)]"
+      className="grid size-[22px] flex-none place-items-center justify-self-center rounded-[6px] border border-[var(--oa-border)] text-[12px] text-[var(--oa-text-2)]"
     >
       {children}
     </span>
@@ -455,20 +456,13 @@ const initials = (name: string) =>
 
 function Face({ x }: { x: InboxItem }) {
   const a = x.actor;
-  if (a?.kind === "agent")
+  // Design: the product's agent tile, as in comments (animal on its presence colour; dashed when unlinked).
+  if (a?.kind === "agent") return <AuthorFace a={a} />;
+  if (a)
     return (
       <span
         aria-hidden="true"
-        className="grid size-[22px] flex-none place-items-center rounded-[6px] bg-[var(--oa-accent)]"
-      >
-        <i className="block h-2 w-2.5 rounded-b-[5px] border-2 border-t-0 border-[var(--oa-accent-text)]" />
-      </span>
-    );
-  if (a?.kind === "person")
-    return (
-      <span
-        aria-hidden="true"
-        className="grid size-[22px] flex-none place-items-center rounded-full border border-[var(--oa-border)] bg-[var(--oa-sunken)] text-[9.5px] font-semibold"
+        className="grid size-[22px] flex-none place-items-center justify-self-center rounded-full border border-[var(--oa-border)] bg-[var(--oa-sunken)] text-[9.5px] font-semibold"
       >
         {initials(a.name)}
       </span>
@@ -524,10 +518,10 @@ function Row({
   const isAsk = askComment(x) !== null;
   const away = x.kind === "away";
   const agent =
-    x.actor?.kind === "agent" && x.actor.agentId
-      ? { id: x.actor.agentId, name: x.actor.name }
+    x.actor?.kind === "agent" && x.agentKey
+      ? { id: x.agentKey, name: x.actor.name }
       : null;
-  const page = x.artifact.id && !away ? x.artifact : null;
+  const page = away ? null : x.artifact;
   const href = safePath(x.href);
   // The whole row is the target: the title's control stretches over it.
   const stretch =
@@ -559,7 +553,7 @@ function Row({
     <li
       data-for-you-item={x.id}
       data-level={x.level}
-      className={`relative grid grid-cols-[22px_1fr] gap-[9px] border-t border-[var(--oa-divider)] px-3.5 py-2.5 text-[14px] hover:bg-[var(--oa-sunken)] ${phone ? "min-h-14" : ""} ${put ? "text-[var(--oa-text-muted)]" : ""}`}
+      className={`relative grid grid-cols-[24px_1fr] gap-[9px] border-t border-[var(--oa-divider)] px-3.5 py-2.5 text-[14px] hover:bg-[var(--oa-sunken)] ${phone ? "min-h-14" : ""} ${put ? "text-[var(--oa-text-muted)]" : ""}`}
       style={
         needs && !put
           ? { boxShadow: "inset 3px 0 0 var(--oa-for-you-gold)" }
@@ -720,7 +714,7 @@ function AskView({
   close: () => void;
   back: () => void;
 }) {
-  const page = item.artifact.id;
+  const page = item.artifact?.id ?? "";
   const cid = askComment(item);
   // The card loads through the comments API; the item never carries the options.
   const threads = useThreads(page, !!page);
