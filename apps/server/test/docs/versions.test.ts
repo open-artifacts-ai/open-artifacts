@@ -24,11 +24,13 @@ import { api, login, runIndex } from "../helpers.js";
 
 const app = createApp();
 let owner: { cookie: string; userId: string };
+let other: { cookie: string; userId: string };
 DOC_SWITCH.creation = true;
 const savedPlan = (env as { PLAN?: string }).PLAN;
 beforeAll(async () => {
   (env as { PLAN?: string }).PLAN = "paid";
   owner = await login(`ver-${newId().slice(0, 6).toLowerCase()}@x.com`);
+  other = await login(`ver2-${newId().slice(0, 6).toLowerCase()}@x.com`);
 });
 afterAll(() => {
   (env as { PLAN?: string }).PLAN = savedPlan;
@@ -226,6 +228,7 @@ describe("automatic saves", () => {
       type: "saved",
       version: 2,
       auto: true,
+      by: { kind: "person", userId: owner.userId, name: null },
     });
     // Four files, R2 first; doc.md is the entry.
     expect(await fileText(room.id, 2, "doc.md")).toContain("# Hello");
@@ -263,14 +266,15 @@ describe("automatic saves", () => {
       await tick(room, t + 1_000);
       expect((await versions(room.id)).length).toBe(1);
     }
-    await tick(room, T0 + AUTOSAVE_MAX_MS);
+    // The 30 minutes run from the first unsaved edit (at T0 + 90 s).
+    await tick(room, T0 + 90_000 + AUTOSAVE_MAX_MS);
     expect((await versions(room.id)).length).toBe(2);
   });
 
   it("saves when the last editor socket closes, not the first", async () => {
     const room = await fresh();
     const a = await connect(room, { actor: `u:${owner.userId}` });
-    const b = await connect(room, { actor: "u:other-editor" });
+    const b = await connect(room, { actor: `u:${other.userId}` });
     const watch = await connect(room, { role: "read", actor: "u:watcher" });
     write(a, "# By A\n");
     await a.ping();
@@ -284,7 +288,7 @@ describe("automatic saves", () => {
     await watch.until(() => last(watch, "saved") !== undefined);
     expect((await versions(room.id)).length).toBe(2);
     const keys = (await contributors(room.id, 2)).map((c) => c.key).sort();
-    expect(keys).toEqual([owner.userId, "other-editor"].sort());
+    expect(keys).toEqual([owner.userId, other.userId].sort());
   });
 
   it("before an agent edit, saves only if people edited since the last version", async () => {
@@ -328,6 +332,7 @@ describe("named saves and contributors", () => {
       version: 2,
       name: "Sent to legal",
       auto: false,
+      by: { kind: "person", userId: owner.userId, name: null },
     });
     await expect(
       inRoom(room, (x) =>
@@ -520,11 +525,37 @@ describe("R2 first, then the row", () => {
   });
 });
 
+describe("frames", () => {
+  it("name an agent actor", async () => {
+    const room = await fresh();
+    const a = await connect(room);
+    await inRoom(room, (r) =>
+      r.saveVersion({
+        name: "By agent",
+        by: {
+          kind: "agent",
+          key: "tok1",
+          userId: owner.userId,
+          agentName: "Claude",
+        },
+      }),
+    );
+    await a.until(() => last(a, "saved") !== undefined);
+    expect(last(a, "saved")).toEqual({
+      type: "saved",
+      version: 2,
+      name: "By agent",
+      auto: false,
+      by: { kind: "agent", userId: owner.userId, name: "Claude" },
+    });
+  });
+});
+
 describe("restore", () => {
   it("saves unsaved edits, replaces the content live, saves 'Restored vN'", async () => {
     const room = await fresh();
     const a = await connect(room);
-    const b = await connect(room, { actor: "u:other-editor" });
+    const b = await connect(room, { actor: `u:${other.userId}` });
     write(a, "# First draft\n");
     await a.ping();
     const by = {
@@ -551,6 +582,7 @@ describe("restore", () => {
       type: "restored",
       from: 2,
       version: 4,
+      by: { kind: "person", userId: owner.userId, name: null },
     });
     // Older versions are untouched.
     expect(await fileText(room.id, 2, "doc.md")).toContain("First draft");
