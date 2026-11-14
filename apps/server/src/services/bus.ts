@@ -130,6 +130,16 @@ export type BusHubRpc = {
   waitingOf(
     identityIds: string[],
   ): Promise<{ identityId: string; since: number }[]>;
+  /** #2512: the pending role and link proposals this member can still decide (read only). */
+  pendingProposals(): Promise<
+    {
+      id: string;
+      kind: "role" | "link";
+      agentName: string;
+      text: string;
+      createdAt: number;
+    }[]
+  >;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(opts?: {
     away?: boolean;
@@ -580,6 +590,32 @@ export async function agentsWaitingOn(
     logError("bus_waiting_lookup_failed", e);
   }
   return out;
+}
+
+/**
+ * #2512: `userId`'s pending role and link proposals, from that member's own
+ * hub only, under the same guard and bound as agentsWaitingOn. A miss, a slow
+ * or failing hub give none; never throws.
+ */
+export async function pendingProposalsOf(
+  env: Env,
+  userId: string,
+): Promise<Awaited<ReturnType<BusHubRpc["pendingProposals"]>>> {
+  try {
+    if (!busOn(env)) return [];
+    return (
+      (await within(
+        (async () => {
+          if (!(await hasConnectedMachine(env, userId))) return null;
+          return (await busHub(env, userId)?.pendingProposals()) ?? null;
+        })(),
+        LINK_LOOKUP_MS,
+      )) ?? []
+    );
+  } catch (e) {
+    logError("bus_proposals_lookup_failed", e);
+    return [];
+  }
 }
 
 /** #1822: how long an identity or name lookup waits before it gives up. */

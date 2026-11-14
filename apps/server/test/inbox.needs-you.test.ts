@@ -319,4 +319,66 @@ describe("GET R.meInbox: Needs you", () => {
     expect(await read(me)).toHaveLength(1);
     expect(await read(other)).toEqual([]);
   });
+
+  it("pending role and link proposals of my own hub appear; another member's and decided ones do not", async () => {
+    const u = await mk("i-prop");
+    const v = await mk("i-prop-other");
+    for (const m of [u, v])
+      await E.DB.prepare(
+        "insert or ignore into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'Laptop', ?, 0, 1)",
+      )
+        .bind(`m-${m.userId}`, m.userId, `h-${m.userId}`)
+        .run();
+    const seed = async (m: U, tagId: string, status: string) =>
+      runInDurableObject(await hubOf(m.userId), (_i, st) => {
+        const far = Date.now() + 3_600_000;
+        st.storage.sql.exec(
+          `insert into role_proposals (id, org_id, token_hash, action, namespace, name, lname, agent_name, created_at, expires_at, status)
+           values (?, 'owner', ?, 'set', 'ns', 'Reviewer', 'reviewer', 'Scout', ?, ?, ?)`,
+          `rp-${tagId}`,
+          `rh-${tagId}`,
+          Date.now(),
+          far,
+          status,
+        );
+        st.storage.sql.exec(
+          `insert into link_proposals (id, org_id, token_hash, action, ns_a, ns_b, machine_id, created_at, expires_at, status)
+           values (?, 'owner', ?, 'link', 'alpha', 'beta', ?, ?, ?, ?)`,
+          `lp-${tagId}`,
+          `lh-${tagId}`,
+          `m-${m.userId}`,
+          Date.now(),
+          far,
+          status,
+        );
+      });
+    await seed(u, `${tag}-u`, "pending");
+    await seed(v, `${tag}-v`, "pending");
+    const items = (await inbox(u)).needsYou.filter(
+      (i) => i.kind === "proposal",
+    );
+    expect(items.map((i) => i.proposal?.id).sort()).toEqual([
+      `lp-${tag}-u`,
+      `rp-${tag}-u`,
+    ]);
+    expect(
+      items.every((i) => i.urgency === "approval" && i.artifact === null),
+    ).toBe(true);
+    expect(items.map((i) => i.href).sort()).toEqual([
+      "/bus/links/confirm",
+      "/bus/roles/confirm",
+    ]);
+    expect(items.map((i) => i.text).sort()).toEqual([
+      "A machine asks to link alpha and beta",
+      "Scout asks to take the role Reviewer",
+    ]);
+    // Decided: gone.
+    await runInDurableObject(await hubOf(u.userId), (_i, st) => {
+      st.storage.sql.exec("update role_proposals set status = 'applied'");
+      st.storage.sql.exec("update link_proposals set status = 'refused'");
+    });
+    expect(
+      (await inbox(u)).needsYou.filter((i) => i.kind === "proposal"),
+    ).toEqual([]);
+  });
 });
