@@ -40,7 +40,7 @@ create table if not exists comment_ask_picks (
   seq integer primary key autoincrement, comment_id text not null,
   user_id text not null, option_id text not null, by text not null,
   at text not null, typed integer not null default 0, verified text,
-  guest integer not null default 0
+  guest integer not null default 0, decision integer not null default 0
 );
 create index if not exists comment_ask_picks_person on comment_ask_picks (comment_id, user_id, at, seq);
 create table if not exists comment_targets (
@@ -127,6 +127,8 @@ export type StoredPick = {
   at: string;
   verified?: "passkey";
   guest?: boolean;
+  /** Made as the decider (it set the decision), not a weigh-in made before they decided (#2381 S2: "Was"). */
+  decision?: true;
 };
 
 export type StoredAsk = {
@@ -384,6 +386,7 @@ type PickRow = {
   at: string;
   verified: string | null;
   guest: number;
+  decision: number;
 };
 const pickOf = (r: PickRow): StoredPick => ({
   optionId: r.option_id,
@@ -391,6 +394,7 @@ const pickOf = (r: PickRow): StoredPick => ({
   at: r.at,
   ...(r.verified === "passkey" ? { verified: "passkey" as const } : {}),
   ...(r.guest ? { guest: true } : {}),
+  ...(r.decision ? { decision: true as const } : {}),
 });
 /** An ask answered before #2381 has no pick rows: its answer is its one pick. */
 const withLegacy = (
@@ -398,12 +402,16 @@ const withLegacy = (
   rows: StoredPick[],
   author: string,
 ): StoredPick[] => {
-  const legacy = ask.answer ? { ...ask.answer } : undefined;
+  const legacy: StoredPick | undefined = ask.answer
+    ? { ...ask.answer, decision: true }
+    : undefined;
   // Before deciders anyone asked could answer: only the decider's own answer
   // (the asker's own user's, unless another was named) is the decision now. A
   // stored answer by anyone else reads as their weigh-in, with or without pick rows.
-  if (ask.answer && ask.answer.by.ref !== (ask.decider ?? author))
+  if (ask.answer && ask.answer.by.ref !== (ask.decider ?? author)) {
     delete ask.answer;
+    if (legacy) delete legacy.decision;
+  }
   return rows.length || !legacy ? rows : [legacy];
 };
 
@@ -457,7 +465,7 @@ function attachExtras(
     }
     const hist = new Map<string, StoredPick[]>();
     for (const r of sql.exec<PickRow>(
-      `select comment_id, option_id, by, at, verified, guest from comment_ask_picks
+      `select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks
        where comment_id in (select value from json_each(?)) order by seq`,
       JSON.stringify(asked),
     )) {
@@ -501,12 +509,18 @@ export function withExtras(
   return c;
 }
 
+/** Who is behind an actor: null for a person, else the agent's identity (or its name and via when it has none). */
+const agentKey = (a: StoredActor): string | null =>
+  a.agent
+    ? (a.agent.identity?.identityId ?? `${a.agent.name}|${a.agent.via}`)
+    : null;
+
+/** The same asker: the same person, and either both are people or both the same agent. */
 const same = (a: StoredActor, b: StoredActor): boolean =>
   a.kind === "user" &&
   b.kind === "user" &&
   a.ref === b.ref &&
-  (a.agent?.identity?.identityId ?? `${a.agent?.name}|${a.agent?.via}`) ===
-    (b.agent?.identity?.identityId ?? `${b.agent?.name}|${b.agent?.via}`);
+  agentKey(a) === agentKey(b);
 
 /**
  * #2323: `replaces` must name an ask of this artifact, posted by the same
@@ -514,6 +528,9 @@ const same = (a: StoredActor, b: StoredActor): boolean =>
  * new comment itself and not already replaced by another ask. Thrown inside the
  * caller's transaction, so a refusal writes nothing.
  */
+// comment_asks.replaces has no index on purpose: `taken` below and the replacedBy
+// read in attachExtras each scan the table, which holds one row per ask of one
+// page. Index it if a page ever holds enough asks for that to show.
 function checkReplaces(sql: SqlStorage, commentId: string, old: string): void {
   const refuse = (code: string, why: string): never => {
     throw new Error(`oa:${code}:${why}`);
@@ -1096,7 +1113,7 @@ export function addPick(
   p: StoredPick,
 ): void {
   sql.exec(
-    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest) values (?, ?, ?, ?, ?, ?, ?, ?)",
+    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     commentId,
     p.by.ref,
     p.optionId,
@@ -1105,6 +1122,7 @@ export function addPick(
     p.by.kind === "user" && p.by.typed === true && !p.by.agent ? 1 : 0,
     p.verified ?? null,
     p.guest ? 1 : 0,
+    p.decision ? 1 : 0,
   );
 }
 
@@ -1160,7 +1178,7 @@ export function askRow(
   const ask = askOf(r);
   const rows = sql
     .exec<PickRow>(
-      "select comment_id, option_id, by, at, verified, guest from comment_ask_picks where comment_id = ? order by seq",
+      "select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks where comment_id = ? order by seq",
       commentId,
     )
     .toArray()

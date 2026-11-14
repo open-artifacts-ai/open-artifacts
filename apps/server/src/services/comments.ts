@@ -740,7 +740,10 @@ const isTyped = (a: StoredActor): boolean =>
 const wasOf = (ask: StoredAsk): { was?: { optionId: string; at: string } } => {
   if (!ask.answer) return {};
   const who = ask.answer.by.ref;
-  const mine = (ask.history ?? []).filter((p) => p.by.ref === who);
+  // Only picks made as the decider: a weigh-in before they decided is not a "was".
+  const mine = (ask.history ?? []).filter(
+    (p) => p.by.ref === who && p.decision === true,
+  );
   for (let i = mine.length - 1; i >= 0; i--) {
     const p = mine[i] as StoredPick;
     if (p.optionId !== ask.answer.optionId)

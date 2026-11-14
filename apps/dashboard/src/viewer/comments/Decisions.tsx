@@ -1,6 +1,7 @@
 import type { CommentThread } from "@oa/shared";
 import { ArrowLeft, Check, ShieldCheck } from "lucide-react";
 import {
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
@@ -161,6 +162,52 @@ function Row({
       </Pill>,
     );
   const by = answer.by;
+  // One " · " between every part of the meta line.
+  const parts: { key: string; el: ReactNode }[] = [
+    {
+      key: "by",
+      el: (
+        <span className="inline-flex items-center gap-1.5">
+          <FaceStack
+            faces={[
+              {
+                key: String(by.id ?? by.name),
+                round: by.kind !== "agent",
+                el: <AuthorFace a={by} small />,
+              },
+            ]}
+          />
+          {by.me ? "You decided" : `${by.name} decided`}
+        </span>
+      ),
+    },
+    ...(w.n > 0
+      ? [
+          {
+            key: "n",
+            el: <span data-weighed="">{w.n} weighed in</span>,
+          },
+        ]
+      : []),
+    ...(w.differed > 0
+      ? [{ key: "d", el: <span>{w.differed} differed</span> }]
+      : []),
+    { key: "at", el: <span>{versionDate(answer.at)}</span> },
+    { key: "asker", el: <span>Asked by {comment.author.name}</span> },
+    ...(answer.was
+      ? [
+          {
+            key: "was",
+            el: (
+              <span data-was="">
+                Was: {was?.label ?? answer.was.optionId},{" "}
+                {versionDate(answer.was.at)}
+              </span>
+            ),
+          },
+        ]
+      : []),
+  ];
   return (
     <li
       data-decision={d.id}
@@ -207,33 +254,14 @@ function Row({
       </button>
       <p
         data-decision-meta=""
-        className={`m-0 flex flex-wrap items-center gap-x-2 gap-y-0.5 ${TXT} ${MUTED}`}
+        className={`m-0 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 ${TXT} ${MUTED}`}
       >
-        <span className="inline-flex items-center gap-1.5">
-          <FaceStack
-            faces={[
-              {
-                key: String(by.id ?? by.name),
-                round: by.kind !== "agent",
-                el: <AuthorFace a={by} small />,
-              },
-            ]}
-          />
-          {by.me ? "You decided" : `${by.name} decided`}
-        </span>
-        {w.n > 0 && (
-          <span data-weighed="">
-            {w.n} weighed in{w.differed > 0 ? ` · ${w.differed} differed` : ""}
-          </span>
-        )}
-        <span>{versionDate(answer.at)}</span>
-        <span>Asked by {comment.author.name}</span>
-        {answer.was && (
-          <span data-was="">
-            Was: {was?.label ?? answer.was.optionId},{" "}
-            {versionDate(answer.was.at)}
-          </span>
-        )}
+        {parts.map((part, i) => (
+          <Fragment key={part.key}>
+            {i > 0 && <span aria-hidden="true">{" · "}</span>}
+            {part.el}
+          </Fragment>
+        ))}
       </p>
       {chips.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">{chips}</div>

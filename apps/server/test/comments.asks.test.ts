@@ -1222,6 +1222,91 @@ describe("Decisions data (#2381 S2, #2323)", () => {
     ).rejects.toMatchObject({ code: "bad_request" });
   });
 
+  it("replaces needs the same kind of asker: a person's ask is not replaced by their agent, nor the reverse", async () => {
+    const s = await setup();
+    const art = { id: s.id, format: "html", currentVersion: 1 } as never;
+    const mk = (by: CommentWho, replaces?: string) =>
+      addThread(
+        E,
+        art,
+        by,
+        view(owner),
+        {
+          anchor: NOTE,
+          body: "q",
+          ask: {
+            question: "Which?",
+            options: OPTS,
+            to: [{ key: viewer.userId }],
+            ...(replaces ? { replaces } : {}),
+          },
+        },
+        { moderator: true },
+      );
+    const byPerson = await mk(who(owner));
+    await expect(
+      mk(agentOf(owner, "Claude", "ns-owner"), cidOf(byPerson)),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    // An agent literally named "undefined" does not pass for a person.
+    await expect(
+      mk(agentOf(owner, "undefined", "ns-undefined"), cidOf(byPerson)),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    const byAgent = await mk(agentOf(owner, "Claude", "ns-owner"));
+    await expect(mk(who(owner), cidOf(byAgent))).rejects.toMatchObject({
+      code: "bad_request",
+    });
+    expect(
+      (await mk(who(owner), cidOf(byPerson))).comments[0]?.ask?.replaces,
+    ).toBe(cidOf(byPerson));
+  });
+
+  it("answer.was ignores a weigh-in made before the person became the decider", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId], {
+      decider: { key: editor.userId },
+    });
+    const cid = cidOf(t);
+    // The asker weighs in A, takes the decision back, then decides B: nothing was changed.
+    await answer(s.id, t.id, cid, owner, "wide");
+    const back = await api(
+      app,
+      R.commentAskDecider(s.id, t.id, cid),
+      owner.cookie,
+      {
+        method: "POST",
+        body: { takeBack: true },
+      },
+    );
+    expect(back.status).toBe(200);
+    await answer(s.id, t.id, cid, owner, "compact");
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toBeUndefined();
+    // Changing the decision as the decider does count.
+    await answer(s.id, t.id, cid, owner, "wide");
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toMatchObject({
+      optionId: "compact",
+    });
+  });
+
+  it("works on a DO created before the decision mark: the column is added and backfilled", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await answer(s.id, t.id, cid, owner, "wide");
+    await answer(s.id, t.id, cid, owner, "compact");
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i, state) => {
+        state.storage.sql.exec(
+          "alter table comment_ask_picks drop column decision",
+        );
+        (i as unknown as { ready: boolean }).ready = false;
+      },
+    );
+    expect((await listAsk(s.id, owner, cid))?.answer?.was).toMatchObject({
+      optionId: "wide",
+    });
+  });
+
   it("replaces also needs the same agent when an agent posted the old ask", async () => {
     const s = await setup();
     const art = { id: s.id, format: "html", currentVersion: 1 } as never;

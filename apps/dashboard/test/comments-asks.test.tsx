@@ -1182,6 +1182,62 @@ describe("#2381 S2 the Decisions tab", () => {
     );
   });
 
+  it("puts ' · ' between every part of the meta line", async () => {
+    serveThreads(() => [
+      decided(
+        "a",
+        "Which?",
+        "2026-11-05T09:00:00Z",
+        {},
+        {
+          picks: [
+            { by: sam, optionId: "b", at: "x", typed: true },
+            { by: priya, optionId: "a", at: "x", typed: true },
+          ],
+        },
+      ),
+    ]);
+    const c = await open();
+    const meta =
+      c.querySelector('[data-decision="c-a"] [data-decision-meta]')
+        ?.textContent ?? "";
+    expect(meta).toMatch(
+      /Maya decided · 2 weighed in · 1 differed · .+ · Asked by Leo$/,
+    );
+  });
+
+  it("copes with replaces/replacedBy ids that point at nothing (the other ask was deleted)", async () => {
+    serveThreads(() => [
+      decided(
+        "a",
+        "Old?",
+        "2026-11-05T09:00:00Z",
+        {},
+        {
+          replacedBy: "c-deleted",
+        },
+      ),
+      decided(
+        "b",
+        "New?",
+        "2026-11-05T10:00:00Z",
+        {},
+        {
+          replaces: "c-deleted",
+        },
+      ),
+    ]);
+    const c = await open();
+    // The replaced row says so, as plain text: there is no row to link to.
+    const old = c.querySelector('[data-decision="c-a"]') as HTMLElement;
+    expect(old.querySelector('[data-chip="replaced"]')?.tagName).toBe("SPAN");
+    expect(old.querySelector("a")).toBeNull();
+    // The replacing row shows nothing odd.
+    const fresh = c.querySelector('[data-decision="c-b"]') as HTMLElement;
+    expect(fresh.querySelector('[data-chip="replaced"]')).toBeNull();
+    expect(fresh.querySelector(".line-through")).toBeNull();
+  });
+
   it("says 'No decisions yet' when no ask is answered, and still shows the tab", async () => {
     serveThreads(() => [askThread({}, {})]);
     const c = await open();
