@@ -574,8 +574,11 @@ export function AskBlock({
   askQuestion,
   guest = false,
   body,
+  face,
 }: {
   artifactId: string;
+  /** #2512: a face before the asker's name (For you's panel); none by default. */
+  face?: React.ReactNode;
   /** The comment's own text (its steps), shown above the question; the caller renders it. */
   body?: React.ReactNode;
   /** A guest sees the masked name and no tile (#1890). */
@@ -763,7 +766,11 @@ export function AskBlock({
             canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
           }
         >
-          <p className={`${TXT} ${MUTED}`} data-ask-from="">
+          <p
+            className={`${TXT} ${MUTED} ${face ? "flex flex-wrap items-center gap-1.5" : ""}`}
+            data-ask-from=""
+          >
+            {face}
             {c.author.name}
             {c.author.kind === "agent" && (
               <>

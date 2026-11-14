@@ -124,6 +124,26 @@ describe("For you", () => {
     expect(decided).toHaveTextContent(/^SR/);
   });
 
+  it("an opened ask shows the agent's tile before its name, only here", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    fireEvent.click(
+      within(panel).getByRole("button", {
+        name: "Ship the landing with the waitlist?",
+      }),
+    );
+    const from = await waitFor(() => {
+      const el = panel.querySelector("[data-for-you-ask] [data-ask-from]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const tile = from.firstElementChild;
+    expect(tile).toHaveAttribute("data-avatar", "agent");
+    expect(tile).toHaveAttribute("data-animal", "owl");
+    expect(from).toHaveTextContent(/^OA Manager\s*agent\s*asks you$/);
+  });
+
   it("never re-sorts what the server sent", async () => {
     const it = (id: string, waitMin: number): InboxItem => ({
       id: `ask:${id}`,

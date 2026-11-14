@@ -766,6 +766,11 @@ function AskView({
             artifactId={page}
             thread={thread}
             c={c}
+            face={
+              c.author.kind === "agent" ? (
+                <AuthorFace a={c.author} />
+              ) : undefined
+            }
             body={
               c.ask && showsAskBody(c.body, c.ask.question) ? (
                 <div className="text-[13.5px] break-words text-[var(--oa-text-2)]">
