@@ -172,12 +172,12 @@ describe("between phones and wide windows (#2486)", () => {
     const p = await openPanel();
     const tab = within(p).getByRole("tab", { name: "Comments, 1 open" });
     expect(tab).toHaveTextContent("Comments 1");
-    expect(p.querySelector("[data-comments-header]")).toBeNull();
+    expect(within(p).queryByRole("heading", { name: "Comments" })).toBeNull();
     const b = screen.getByRole("button", { name: "Comments, 1 open" });
     expect(b).toHaveAttribute("aria-expanded", "true");
     // Pressed look while open (601px to 959px).
     expect(b.className).toContain(
-      "min-[601px]:max-[959.98px]:aria-expanded:bg-[var(--oa-sunken)]",
+      "[@media(width>600px)_and_(width<960px)]:aria-expanded:bg-[var(--oa-sunken)]",
     );
   });
 
@@ -186,7 +186,7 @@ describe("between phones and wide windows (#2486)", () => {
     await screen.findByRole("button", { name: "Comments, 1 open" });
     const fs = screen.getByRole("link", { name: "Full screen" });
     expect(within(fs).getByText("Full screen").className).toContain(
-      "min-[601px]:max-[959.98px]:sr-only",
+      "[@media(width>600px)_and_(width<960px)]:sr-only",
     );
   });
 
@@ -275,6 +275,194 @@ describe("between phones and wide windows (#2486)", () => {
     expect(p.querySelector("[data-compact]")?.className).toContain(
       "max-w-[720px]",
     );
+  });
+});
+
+/** Serve one ask thread, its root comment and ask changed by `c` and `ask`. */
+const serveAsk = (get: () => { c?: object; ask?: object }) =>
+  server.use(
+    http.get(`*${R.comments(OWNED)}`, () => {
+      const { c = {}, ask = {} } = get();
+      const [root, ...rest] = askThread.comments;
+      const t = {
+        ...askThread,
+        comments: [{ ...root, ...c, ask: { ...root?.ask, ...ask } }, ...rest],
+      };
+      return HttpResponse.json({ threads: [t], open: 1, truncated: false });
+    }),
+  );
+const rootOf = (p: HTMLElement) =>
+  p.querySelector('[data-comment="c-ask"]') as HTMLElement;
+
+describe("the compact ask header (#2503 review)", () => {
+  beforeEach(() => viewport(800));
+
+  it("keeps an unlinked agent's face and 'not linked' line", async () => {
+    serveAsk(() => ({}));
+    mount(viewerPath(OWNED));
+    const root = rootOf(await openPanel());
+    const head = root.querySelector("[data-ask-head]") as HTMLElement;
+    expect(head.querySelector('[data-avatar="agent"]')).toBeTruthy();
+    expect(head.querySelector('[data-linked="true"]')).toBeNull();
+    expect(head.querySelector("[data-for]")).toHaveTextContent("not linked");
+    expect(head.querySelectorAll("[data-ask-from]")).toHaveLength(1);
+  });
+
+  it("keeps a linked agent's product and 'for <person>'", async () => {
+    serveAsk(() => ({
+      c: {
+        author: {
+          kind: "agent",
+          id: "ag",
+          name: "OA Self-Serve",
+          me: false,
+          linked: true,
+          animal: { id: "fox", color: 1 },
+          product: "Claude Code",
+          for: "Leo",
+        },
+      },
+    }));
+    mount(viewerPath(OWNED));
+    const root = rootOf(await openPanel());
+    const head = root.querySelector("[data-ask-head]") as HTMLElement;
+    expect(head.querySelector('[data-avatar="agent"]')).toHaveAttribute(
+      "data-linked",
+      "true",
+    );
+    expect(head.querySelector("[data-for]")).toHaveTextContent(
+      "Claude Code · for Leo",
+    );
+  });
+
+  it("a closed ask uses the usual header, not 'asks you'", async () => {
+    serveAsk(() => ({ ask: { closed: true } }));
+    mount(viewerPath(OWNED));
+    const root = rootOf(await openPanel());
+    expect(root.querySelector("[data-ask-head]")).toBeNull();
+    expect(root.querySelector("[data-author-name]")).toHaveTextContent(
+      "OA Self-Serve",
+    );
+    expect(root.querySelector("[data-comment-body]")?.className).toContain(
+      "pl-8",
+    );
+  });
+
+  it("the asks row sticks while the list scrolls", async () => {
+    mount(viewerPath(OWNED));
+    const p = await openPanel();
+    const row = (p.querySelector("aside [data-asks-for-you]") ??
+      p.querySelector("[data-asks-for-you]")) as HTMLElement;
+    const sticky = row.parentElement as HTMLElement;
+    expect(sticky).toHaveAttribute("data-comments-header");
+    expect(sticky.className).toContain("sticky");
+  });
+});
+
+describe("the gold border follows [data-needs-you] (#2503 review)", () => {
+  beforeEach(() => viewport(800));
+  const person = (id: string, name: string, me = false) => ({
+    kind: "user" as const,
+    id,
+    name,
+    me,
+  });
+  const maya = person("maya", "Maya");
+  const me = person("me", "Me", true);
+  const needs = (p: HTMLElement) =>
+    p.querySelector('[data-thread="t-ask"] [data-needs-you]');
+
+  it("is on until the viewer weighs in, then off; off once the decider answers and once closed", async () => {
+    let state: { ask: object } = {
+      ask: { to: [maya, me], decider: maya, role: "weigh", picks: [] },
+    };
+    serveAsk(() => state);
+    let posted = false;
+    server.use(
+      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () => {
+        posted = true;
+        state = {
+          ask: {
+            ...state.ask,
+            picks: [
+              {
+                by: me,
+                optionId: "a",
+                at: "2026-11-05T12:00:00Z",
+                typed: true,
+              },
+            ],
+          },
+        };
+        return HttpResponse.json({});
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const p = await openPanel();
+    expect(needs(p)).toBeTruthy();
+    // The weigh-in pick.
+    fireEvent.click(within(p).getByRole("button", { name: /List only/ }));
+    await waitFor(() => expect(posted).toBe(true));
+    await waitFor(() => expect(needs(p)).toBeNull());
+  });
+
+  it("is off once the decider has answered", async () => {
+    serveAsk(() => ({
+      ask: {
+        to: [maya, me],
+        decider: maya,
+        role: "weigh",
+        picks: [],
+        answer: {
+          optionId: "b",
+          by: maya,
+          at: "2026-11-05T12:00:00Z",
+          typed: true,
+          yes: true,
+        },
+      },
+    }));
+    mount(viewerPath(OWNED));
+    const p = await openPanel();
+    expect(needs(p)).toBeNull();
+  });
+
+  it("is off once the ask is closed", async () => {
+    serveAsk(() => ({ ask: { closed: true } }));
+    mount(viewerPath(OWNED));
+    const p = await openPanel();
+    await within(p).findByText(/Which layout\?/);
+    expect(needs(p)).toBeNull();
+  });
+
+  it("is on for an open ask to the viewer, off after their own pick", async () => {
+    let answered = false;
+    serveAsk(() =>
+      answered
+        ? {
+            ask: {
+              answer: {
+                optionId: "a",
+                by: me,
+                at: "2026-11-05T12:00:00Z",
+                typed: true,
+                yes: true,
+              },
+            },
+          }
+        : {},
+    );
+    server.use(
+      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () => {
+        answered = true;
+        return HttpResponse.json({});
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const p = await openPanel();
+    expect(needs(p)).toBeTruthy();
+    fireEvent.click(within(p).getByRole("button", { name: /List only/ }));
+    await waitFor(() => expect(needs(p)).toBeNull());
   });
 });
 

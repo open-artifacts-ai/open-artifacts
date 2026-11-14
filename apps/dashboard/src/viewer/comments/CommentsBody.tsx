@@ -1033,9 +1033,11 @@ function CommentRow({
     marks && (mentioned.length > 0 || told.length > 0),
   );
   const roving = useRoving<HTMLParagraphElement>();
-  // #2486: in the compact panel an ask's own line is the header ("X asks you ·
-  // yesterday") and its text takes the full width; replies keep face and indent.
-  const askHead = useContext(Compact) && root && !!c.ask && mode !== "edit";
+  // #2486: in the compact panel an open ask's own line is the header ("X asks
+  // you · yesterday", with the face and an agent's identity line) and its text
+  // takes the full width; replies and a closed ask keep the usual header.
+  const askHead =
+    useContext(Compact) && root && !!c.ask && !c.ask.closed && mode !== "edit";
   return (
     <li
       className={`flex flex-col gap-1 transition-opacity${isSending(c.id) ? " opacity-60" : ""}`}
@@ -1050,7 +1052,14 @@ function CommentRow({
         className="flex items-start justify-between gap-2"
       >
         {askHead ? (
-          <AskFrom c={c} when className="m-0 min-w-0 self-center" />
+          <div className="flex min-w-0 items-start gap-2" data-ask-head="">
+            <AuthorFace a={c.author} />
+            <div className="flex min-w-0 flex-col self-center">
+              <AskFrom c={c} when className="m-0 min-w-0" />
+              {/* #1789/#1822: "not linked" and "for <person>" stay with the ask. */}
+              <AuthorSub a={c.author} />
+            </div>
+          </div>
         ) : (
           <Who
             a={c.author}
@@ -1586,7 +1595,9 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         ) : (
           canAct && (
             // #2486: under a compact ask the row lines up with the ask's full-width text.
-            <div className={`flex gap-2 ${compact && first.ask ? "" : "pl-8"}`}>
+            <div
+              className={`flex gap-2 ${compact && first.ask && !first.ask.closed ? "" : "pl-8"}`}
+            >
               <Button
                 size="xs"
                 variant="outline"
@@ -1846,6 +1857,7 @@ export function CommentsBody({
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
+  const stickyRow = compact && (forMe.length > 0 || resolvedCount > 0);
   // #2118: one composer at a time: a quote open hides the whole-page box
   // (mounted still, so a typed note survives) until Cancel or send.
   const draftOpen = api.draft != null && api.canComment;
@@ -1865,7 +1877,7 @@ export function CommentsBody({
       }
     >
       {keep.pill === "up" && (
-        <NewReplyPill dir="up" onClick={keep.go} under={heading} />
+        <NewReplyPill dir="up" onClick={keep.go} under={heading || stickyRow} />
       )}
       {/* #2179: one polite message per refetch that brought replies. The
           region stays mounted; a zero-width space alternates so the same
@@ -1886,7 +1898,12 @@ export function CommentsBody({
         </div>
       )}
       {(forMe.length > 0 || resolvedCount > 0) && (
-        <div className={`flex items-center justify-between gap-2 ${TXT}`}>
+        // #2486: with no band in the compact panel this row sticks, so the
+        // asks pill stays in reach; it is the header the scroll code steps under.
+        <div
+          data-comments-header={compact ? "" : undefined}
+          className={`flex items-center justify-between gap-2 ${TXT}${compact ? " sticky top-0 z-20 -mx-4 -mt-4 bg-card px-4 pt-4 pb-2" : ""}`}
+        >
           {forMe.length > 0 ? (
             <AsksForYou
               count={forMe.length}
@@ -1988,7 +2005,7 @@ export function CommentsBody({
           dir="down"
           foot={keep.foot}
           onClick={keep.go}
-          under={heading}
+          under={heading || stickyRow}
         />
       )}
     </div>

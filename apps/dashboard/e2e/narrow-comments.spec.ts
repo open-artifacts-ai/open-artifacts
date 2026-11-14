@@ -72,7 +72,10 @@ const boxes = (page: Page, root: string) =>
     const out: string[] = [];
     for (const n of [el, ...el.querySelectorAll<HTMLElement>("*")]) {
       if (n.closest("[data-comment]:not(:first-child)")) continue;
-      if (n.matches("button, [data-ask-decider], [data-agent-tag]")) continue;
+      if (
+        n.matches("button, [data-ask-decider], [data-agent-tag], [data-avatar]")
+      )
+        continue;
       if (n.closest("button")) continue;
       const s = getComputedStyle(n);
       const border =
@@ -134,7 +137,9 @@ for (const w of [760, 620])
       );
       await expect(askCard(page)).toBeVisible();
       // "Comments" once on screen: the tab with its count, no band.
-      await expect(page.locator("[data-comments-header]")).toHaveCount(0);
+      await expect(
+        page.locator("aside").getByRole("heading", { name: "Comments" }),
+      ).toHaveCount(0);
       await expect(
         page.getByRole("tab", { name: "Comments, 3 open" }),
       ).toBeVisible();
@@ -221,6 +226,13 @@ for (const w of [760, 620])
         page.getByRole("button", { name: "Comment", exact: true }),
       ).toBeEnabled();
 
+      // The asks row sticks: scrolled to the end, the pill is still in view.
+      await page
+        .locator("aside [data-slot=scroll-area-viewport]")
+        .evaluate((e) => {
+          e.scrollTop = e.scrollHeight;
+        });
+      await expect(page.locator("aside [data-asks-for-you]")).toBeInViewport();
       // The thread column stops at 720px and centres.
       const col = await page
         .locator("[data-compact]")

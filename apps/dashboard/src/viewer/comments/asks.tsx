@@ -760,6 +760,9 @@ export function AskBlock({
   const letters = showLetters(ask.options);
   const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
+  // Amber while it waits for this reader, as asksForMe counts it: a weigh-in
+  // waits no longer once the decider has answered (#2503 review).
+  const waiting = canAnswer && (needsMe(ask) || sendingPick);
   const decided = ask.closed && decisionOpt;
   const line = decided && (
     <>
@@ -804,14 +807,12 @@ export function AskBlock({
           className={`flex flex-col gap-2 rounded-md ${
             !boxed
               ? ""
-              : canAnswer && (!pickedOpt || sendingPick)
+              : waiting
                 ? "p-2 ring-1 ring-[var(--oa-warning)]"
                 : "p-2 ring-1 ring-border"
           }`}
           data-ask=""
-          data-needs-you={
-            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
-          }
+          data-needs-you={waiting ? "" : undefined}
         >
           {from && <AskFrom c={c} />}
           {body}

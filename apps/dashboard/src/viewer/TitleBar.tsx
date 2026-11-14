@@ -47,8 +47,13 @@ import { versionDate } from "./versionDate";
 const TITLE_MAX = 200;
 /** #2503: the title keeps at least this many characters before anything else gives way. */
 const TITLE_FLOOR = 10;
-/** Between the phone layout and the wide one (#2486): the bar stays one row. */
-const BETWEEN = "(min-width: 601px) and (max-width: 959.98px)";
+/**
+ * Between the phone layout and the wide one (#2486): the bar stays one row.
+ * The exact complement of PHONE_QUERY (width <= 600px) and WIDE_QUERY
+ * (width >= 960px), as are the `[@media(width>600px)_and_(width<960px)]`
+ * classes, so no width (a zoom between 600 and 601px) mixes two layouts.
+ */
+export const BETWEEN = "(width > 600px) and (width < 960px)";
 const between = {
   subscribe: (cb: () => void) => {
     const m = window.matchMedia?.(BETWEEN);
@@ -61,7 +66,7 @@ const between = {
 export const BAR_STAGES = 3;
 
 /**
- * #2503: the one-row bar (601px to 959px) gives way a step at a time while it
+ * #2503: the one-row bar (over 600px, under 960px) gives way a step at a time while it
  * overflows or cuts the title below its floor (see shortfall). Each step notes the width the row needed at the
  * step before, and steps back only once the bar is that wide again, so no
  * width flips between two stages. A change of content starts again from 0;
@@ -223,11 +228,11 @@ function EditableTitle({ artifact }: { artifact: ArtifactSummary }) {
 
 /** Full screen's icon: lucide Maximize2 at 14px, 4px from the label. */
 const MAXIMIZE = <Maximize2 className="size-3.5" aria-hidden="true" />;
-/** #2486: between 601px and 959px Full screen is its icon; the label stays its name. */
-const FS_LABEL = "min-[601px]:max-[959.98px]:sr-only";
-/** #2486: the Comments button looks pressed while the panel shows the list (601px to 959px). */
+/** #2486: over 600px and under 960px Full screen is its icon; the label stays its name. */
+const FS_LABEL = "[@media(width>600px)_and_(width<960px)]:sr-only";
+/** #2486: the Comments button looks pressed while the panel shows the list (over 600px, under 960px). */
 const PRESSED =
-  "min-[601px]:max-[959.98px]:aria-expanded:border-[var(--oa-border-strong)] min-[601px]:max-[959.98px]:aria-expanded:bg-[var(--oa-sunken)] min-[601px]:max-[959.98px]:aria-expanded:shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)]";
+  "[@media(width>600px)_and_(width<960px)]:aria-expanded:border-[var(--oa-border-strong)] [@media(width>600px)_and_(width<960px)]:aria-expanded:bg-[var(--oa-sunken)] [@media(width>600px)_and_(width<960px)]:aria-expanded:shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)]";
 
 export function TitleBar({
   artifact,
@@ -383,7 +388,7 @@ export function TitleBar({
     <div
       ref={bar}
       data-bar-stage={inBetween ? stage : undefined}
-      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 min-[601px]:max-[959.98px]:flex-nowrap"
+      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 [@media(width>600px)_and_(width<960px)]:flex-nowrap"
     >
       <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
         {iconFormat && <FormatIcon format={iconFormat} />}
@@ -420,7 +425,7 @@ export function TitleBar({
           </span>
         )}
       </div>
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] min-[601px]:max-[959.98px]:flex-none min-[601px]:max-[959.98px]:flex-nowrap">
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
         {pill && (
           <ShButton
             variant="outline"
@@ -506,7 +511,7 @@ export function TitleBar({
             v{version}
             {/* Phones show the number alone. */}
             {suffix && (
-              <span className="-ml-1 whitespace-pre max-[959.98px]:hidden">{` · ${suffix}`}</span>
+              <span className="-ml-1 whitespace-pre max-[960px]:hidden">{` · ${suffix}`}</span>
             )}
             {newer && !gone && <VersionsDot />}
           </ShButton>
