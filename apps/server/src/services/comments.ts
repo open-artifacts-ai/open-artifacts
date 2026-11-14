@@ -1984,8 +1984,8 @@ export async function answerAsk(
       ...(needsPasskey ? { needsPasskey: true } : {}),
     }),
   );
-  // #2458: a risky decision (a passkey ask, or the picked option names an
-  // action) is audited once the DO has it, keyed on the decision itself (its
+  // #2458: a risky decision (a passkey ask, or any option names an action, so
+  // moving to a plain option is logged too) is audited once the DO has it, keyed on the decision itself (its
   // stored time), so a retry or an unchanged repeat inserts nothing twice, and
   // heals a row a failed write lost. A weigh-in and a refused pick (thrown
   // above) write nothing. A failed write is logged only.
@@ -1995,7 +1995,7 @@ export async function answerAsk(
     decided &&
     stored?.optionId === optionId &&
     who.kind === "user" &&
-    (needsPasskey || picked?.action)
+    (needsPasskey || ask.options.some((o) => o.action))
   )
     try {
       const askerAgent = c.author.kind === "user" ? c.author.agent : undefined;
@@ -2007,10 +2007,12 @@ export async function answerAsk(
         ...(picked?.action ? { action: picked.action } : {}),
         passkey: stored.verified === "passkey",
         decidedAt: stored.at,
+        typed: isTyped(stored.by),
         askerIsAgent: askerAgent !== undefined,
         askerAgentId: askerAgent?.identity?.identityId ?? null,
       });
-      await row.run();
+      // One retry: the id is the decision's, so it can never write twice.
+      await row.run().catch(() => row.run());
     } catch (e) {
       logError("ask_approve_audit_failed", e, { artifactId, commentId });
     }

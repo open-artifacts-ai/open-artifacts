@@ -169,6 +169,7 @@ describe("ask.approve", () => {
       optionId: "merge",
       action: "merge",
       passkey: true,
+      typed: true,
       askerIsAgent: false,
     });
     const all = JSON.stringify(r);
@@ -193,6 +194,7 @@ describe("ask.approve", () => {
     expect(JSON.parse(row?.detail ?? "")).toMatchObject({
       action: "merge",
       passkey: false,
+      typed: false,
     });
     // A retried or repeated pick, even concurrent, never writes a second row.
     const before = (await rows(k))[0]?.id;
@@ -236,10 +238,20 @@ describe("ask.approve", () => {
     ]);
   });
 
-  it("the option picked decides: a plain option on an action ask writes nothing", async () => {
+  it("a plain option on an action ask is logged too, without an action", async () => {
     const k = await ask(bob, OPTS);
-    expect((await answer(k, bob.pat, { optionId: "wait" })).status).toBe(200);
-    expect(await rows(k)).toHaveLength(0);
+    expect((await answer(k, bob.pat, { optionId: "merge" })).status).toBe(200);
+    expect((await answer(k, bob.cookie, { optionId: "wait" })).status).toBe(
+      200,
+    );
+    const r = await rows(k);
+    expect(r).toHaveLength(2);
+    const hold = r
+      .map((x) => ({ ...x, d: JSON.parse(x.detail) }))
+      .find((x) => x.d.optionId === "wait");
+    expect(hold?.d).not.toHaveProperty("action");
+    expect(hold?.d).toMatchObject({ passkey: false, typed: true });
+    expect(hold?.actor_cred_kind).toBe("session");
   });
 
   it("an ask by an agent records the agent's identity id, not its name", async () => {

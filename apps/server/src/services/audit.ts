@@ -249,6 +249,8 @@ export type AskApproval = {
   passkey: boolean;
   /** The decision's own time, as the DO stored it: the same decision always carries the same one. */
   decidedAt: string;
+  /** Typed by a person in the web app (not an agent or a token). */
+  typed: boolean;
   askerAgentId?: string | null;
   askerIsAgent: boolean;
 };
@@ -272,7 +274,7 @@ export const askApproveAudit = async (
     env,
     "ask.approve",
     { type: "ask", id: a.commentId },
-    userActor(userId),
+    withRequestCred(userActor(userId)),
     {
       id: await decisionRowId(a),
       detail: {
@@ -282,6 +284,7 @@ export const askApproveAudit = async (
         optionId: a.optionId,
         ...(a.action ? { action: a.action } : {}),
         passkey: a.passkey,
+        typed: a.typed,
         askerIsAgent: a.askerIsAgent,
         ...(a.askerAgentId ? { askerAgentId: a.askerAgentId } : {}),
       },
