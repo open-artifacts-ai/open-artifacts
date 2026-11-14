@@ -136,4 +136,61 @@ describe("the hub records a named agent (#2478)", () => {
     await until(async () => (await stored(o.userId)) !== null);
     expect(await stored(o.userId)).not.toBeNull();
   });
+
+  it("a re-derived title (name_chosen false) does not record it", async () => {
+    const o = await login(`hub-own-${newId().slice(0, 6)}@x.com`, "owner");
+    const c = await connect(o.userId);
+    c.send({
+      v: 1,
+      id: "u0",
+      type: "agent_up",
+      agent_ref: "ref_a",
+      kind: "pi",
+      proposed_name: "pi-2",
+      namespace: "ns",
+      global: false,
+    });
+    await until(() => c.seen.includes("agent_ok"));
+    c.send({
+      v: 1,
+      id: "r0",
+      type: "rename",
+      agent_ref: "ref_a",
+      proposed_name: "Fix the login bug",
+      name_chosen: false,
+    });
+    await until(() => c.seen.includes("renamed"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await stored(o.userId)).toBeNull();
+  });
+
+  it("after the first record the hub makes no more settings writes", async () => {
+    const o = await login(`hub-own-${newId().slice(0, 6)}@x.com`, "owner");
+    const c = await connect(o.userId);
+    const up = (ref: string, id: string) =>
+      c.send({
+        v: 1,
+        id,
+        type: "agent_up",
+        agent_ref: ref,
+        kind: "pi",
+        proposed_name: `pi-${id}`,
+        namespace: "ns",
+        global: false,
+        name_chosen: true,
+      });
+    up("ref_a", "1");
+    await until(async () => (await stored(o.userId)) !== null);
+    const first = await stored(o.userId);
+    // Remove the row: a hub that still asked D1 would write it again.
+    await env.DB.prepare("delete from settings where key = ?1")
+      .bind(namedKey(o.userId))
+      .run();
+    await new Promise((r) => setTimeout(r, 50));
+    up("ref_b", "2");
+    await until(() => c.seen.filter((t) => t === "agent_ok").length >= 2);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await stored(o.userId)).toBeNull();
+    expect(first).not.toBeNull();
+  });
 });

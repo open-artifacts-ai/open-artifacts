@@ -62,6 +62,17 @@ export async function pendingFirst(
   return !!user && isInstanceOwner(user);
 }
 
+/** True when the owner's named time is already recorded (one settings read). */
+export async function namedRecorded(
+  env: Env,
+  userId: string,
+): Promise<boolean> {
+  const row = await stmt(env.DB, "select 1 as x from settings where key = ?1")
+    .bind(namedKey(userId))
+    .first();
+  return !!row;
+}
+
 /** Step 2: the owner has a bus agent with a chosen name or a role. */
 export const noteAgentNamed = (env: Env, userId: string) =>
   first(env, userId, namedKey(userId), "onboarding_named_failed");

@@ -69,7 +69,10 @@ import {
   pruneDeadFollows,
   unfollow,
 } from "../services/follows.js";
-import { noteAgentNamed } from "../services/onboarding-firsts.js";
+import {
+  namedRecorded,
+  noteAgentNamed,
+} from "../services/onboarding-firsts.js";
 import { VERSION } from "../version.gen.js";
 import { isDefaultAgentName } from "./default-names.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
@@ -5654,12 +5657,23 @@ export class BusHub extends DurableObject<Env> {
     );
   }
   /** #2478: this member now has a named agent (a chosen name or a role); records the first time, after the frame. */
+  #namedKnown = false;
   #noteNamed(): void {
+    // Once recorded (written here, or already there) nothing more is asked of D1.
+    if (this.#namedKnown) return;
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
       : null;
-    if (userId !== null)
-      this.ctx.waitUntil(noteAgentNamed(this.env, userId).then(() => {}));
+    if (userId === null) return;
+    this.ctx.waitUntil(
+      (async () => {
+        if (
+          (await noteAgentNamed(this.env, userId)) ||
+          (await namedRecorded(this.env, userId))
+        )
+          this.#namedKnown = true;
+      })().catch(() => {}),
+    );
   }
 
   #rekeyFollows(
@@ -5926,7 +5940,7 @@ export class BusHub extends DurableObject<Env> {
     sendFrame(ws, { ...reply, former });
     notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
     // #2478: a rename that is not a default re-mint is a chosen name.
-    if (f.name_kind !== "default") this.#noteNamed();
+    if (f.name_kind !== "default" && f.name_chosen !== false) this.#noteNamed();
     if (moved.length > 0) {
       this.#adoptHeld(moved, agent);
       this.#flush(ws, agent);
