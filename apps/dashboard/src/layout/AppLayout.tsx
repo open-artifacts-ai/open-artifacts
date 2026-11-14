@@ -555,7 +555,7 @@ function TopBar({ me }: { me: Me | null }) {
         <span data-header-email="" className="max-[640px]:hidden">
           {me.user.email}
         </span>
-        <ForYouBell me={me} />
+        <ForYouBell />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button

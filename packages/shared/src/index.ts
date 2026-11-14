@@ -4,7 +4,6 @@ export * from "./bus-notices.js";
 export * from "./comment-email-copy.js";
 export * from "./comments.js";
 export * from "./errors.js";
-export * from "./for-you.js";
 export * from "./formats.js";
 export * from "./hosted/index.js";
 export * from "./hosts.js";

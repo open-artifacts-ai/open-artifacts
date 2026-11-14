@@ -1,69 +1,16 @@
 /**
- * For you (#2512): what the bell counts and how the list is ordered. Pure, so
- * the rules are unit-tested apart from the UI. Shapes are PROVISIONAL until
- * OA Backend's contract lands (see @oa/shared for-you.ts).
+ * For you (#2512): what the bell shows and how a row reads. Pure, so the
+ * rules are unit-tested apart from the UI. The server sorts and filters the
+ * inbox (R.meInbox); the client never re-sorts it.
  */
-import type { ForYouAway, ForYouItem, Role } from "@oa/shared";
-
-/** Billing is for owners and admins only, as the Plan page is. */
-const forRole = (x: ForYouItem, role: Role | undefined) =>
-  !(x.kind === "billing" || x.audience === "admins") ||
-  role === "owner" ||
-  role === "admin";
-
-/** The items this caller may see. */
-export const visibleItems = (
-  items: readonly ForYouItem[],
-  role: Role | undefined,
-): ForYouItem[] => items.filter((x) => forRole(x, role));
-
-const snoozedNow = (x: ForYouItem) => x.later?.state === "snoozed";
-
-/** "Needs you", in order: back from Later first, then the longest wait, then newest. */
-export function needsYou(items: readonly ForYouItem[]): ForYouItem[] {
-  return items
-    .filter((x) => x.level === "needs" && !snoozedNow(x))
-    .sort(
-      (a, b) =>
-        Number(b.later?.state === "returned") -
-          Number(a.later?.state === "returned") ||
-        (b.waitingMs ?? -1) - (a.waitingMs ?? -1) ||
-        Date.parse(b.at) - Date.parse(a.at),
-    );
-}
-
-/** Put off with Later, soonest back first. */
-export function laterItems(items: readonly ForYouItem[]): ForYouItem[] {
-  const until = (x: ForYouItem) =>
-    x.later?.state === "snoozed" ? Date.parse(x.later.until) : 0;
-  return items
-    .filter((x) => x.level === "needs" && snoozedNow(x))
-    .sort((a, b) => until(a) - until(b));
-}
-
-/** Updates, newest first; those folded into "While you were away" stay out until shown. */
-export function updates(
-  items: readonly ForYouItem[],
-  away: ForYouAway | null | undefined,
-  showAway: boolean,
-): ForYouItem[] {
-  const folded = new Set(showAway ? [] : (away?.ids ?? []));
-  return items
-    .filter((x) => x.level === "update" && !folded.has(x.id))
-    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-}
-
-/** Only an item with one obvious action (a button on its row) may be put off. */
-export const canLater = (x: ForYouItem) =>
-  x.level === "needs" && !!x.action && !x.later;
+import type { Inbox, InboxItem } from "@oa/shared";
 
 export type BellState = { count: number; dot: boolean };
 
-/** The number counts only "Needs you"; updates never add to it, they light a dot (when there is no number). */
-export function bellState(items: readonly ForYouItem[]): BellState {
-  const count = needsYou(items).length;
-  const dot = count === 0 && items.some((x) => x.level === "update" && !x.read);
-  return { count, dot };
+/** The number counts only "Needs you"; unread updates light a dot, only when there is no number. */
+export function bellState(counts: Inbox["counts"]): BellState {
+  const count = counts.needsYou;
+  return { count, dot: count === 0 && counts.unreadUpdates > 0 };
 }
 
 /** The bell's accessible name. */
@@ -73,11 +20,56 @@ export function bellName({ count, dot }: BellState): string {
   return dot ? "For you, new updates" : "For you";
 }
 
+/** The counts as the list stands (after a change made here, before the server answers). */
+export const countsOf = (i: Pick<Inbox, "needsYou" | "updates">) => ({
+  needsYou: i.needsYou.length,
+  unreadUpdates: i.updates.filter((x) => x.readAt === null).length,
+});
+
+/** Only an item with one obvious action (a button on its row) may be put off, and only once. */
+export const canLater = (x: InboxItem) =>
+  x.level === "needs_you" &&
+  x.kind === "machine" &&
+  !x.later &&
+  !x.backFromLater;
+
+export const unread = (x: InboxItem) =>
+  x.level === "update" && x.readAt === null;
+
+/** The comment an ask item is about ("ask:<commentId>"). */
+export const askComment = (x: InboxItem) =>
+  x.kind === "ask" && x.id.startsWith("ask:") ? x.id.slice(4) : null;
+
+/** How long an agent has been blocked: the server's waitingSince, never the agent's own words. */
+export const waitMs = (x: InboxItem, now = Date.now()) => {
+  if (x.urgency !== "waiting" || !x.waitingSince) return undefined;
+  const t = Date.parse(x.waitingSince);
+  return Number.isNaN(t) ? undefined : Math.max(0, now - t);
+};
+
+/**
+ * The same-origin path for an item's href, or null. The contract already
+ * refuses others; this re-checks before any navigation (a tab or newline is
+ * stripped by URL parsers, so "/\t/evil.example" resolves off-site).
+ */
+export function safePath(
+  href: string,
+  origin = location.origin,
+): string | null {
+  try {
+    const u = new URL(href, origin);
+    if (u.origin !== origin) return null;
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return null;
+  }
+}
+
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
-/** "waiting 4 min", "waiting 2 h", "waiting 1 day": the server's duration, never the agent's claim. */
+/** "waiting 4 min", "waiting 2 h", "waiting 1 day". */
 export function waitText(ms: number): string {
   if (ms < HOUR) return `waiting ${Math.max(1, Math.floor(ms / MIN))} min`;
   if (ms < DAY) return `waiting ${Math.floor(ms / HOUR)} h`;
@@ -128,24 +120,27 @@ export function backText(until: string, now = Date.now()): string {
   return `Back ${day} at ${clock(until)}`;
 }
 
-/** "6 updates on 3 pages since 22:00". */
-export function awayText(a: ForYouAway): string {
-  const u = `${a.updates} ${a.updates === 1 ? "update" : "updates"}`;
-  const p = `${a.pages} ${a.pages === 1 ? "page" : "pages"}`;
-  return `${u} on ${p} since ${clock(a.since)}`;
+/** "6 updates since 22:00" (the contract has no page count yet). */
+export function awayText(a: NonNullable<InboxItem["away"]>): string {
+  return `${a.count} ${a.count === 1 ? "update" : "updates"} since ${clock(a.since)}`;
 }
 
-/** The muted line: the server's words, then how long ago (a waiting ask shows its wait instead). */
-export const contextLine = (x: ForYouItem, now = Date.now()) =>
-  x.waitingMs !== undefined
-    ? x.context
-    : `${x.context} · ${agoText(x.at, now)}`;
-
-/** Where Later puts an item, as the client guesses it until the server answers. */
-export function laterUntil(when: "hour" | "morning", now = Date.now()): string {
-  if (when === "hour") return new Date(now + HOUR).toISOString();
-  const d = new Date(now);
-  d.setDate(d.getDate() + 1);
-  d.setHours(8, 0, 0, 0);
-  return d.toISOString();
+/** The muted line under a row's text. A waiting ask shows its wait instead of a time. */
+export function contextLine(x: InboxItem, now = Date.now()): string {
+  const when = agoText(x.createdAt, now);
+  const on = `on "${x.artifact.title}"`;
+  switch (x.kind) {
+    case "ask": {
+      const who = x.actor ? `${x.actor.name} asks · ${on}` : on;
+      return waitMs(x, now) !== undefined ? who : `${who} · ${when}`;
+    }
+    case "machine":
+      return `It wants to connect agents as you · ${when}`;
+    case "share":
+      return `"${x.artifact.title}" · ${when}`;
+    case "away":
+      return x.away ? awayText(x.away) : when;
+    default:
+      return `${on} · ${when}`;
+  }
 }

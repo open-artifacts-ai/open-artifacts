@@ -1,25 +1,24 @@
 /**
- * MSW mock of For you (#2512), in memory per createHandlers.
- *
- * PROVISIONAL: the shapes and routes are the dashboard's guess until OA
- * Backend's contract lands (TODO(OA Backend, #2512)). Without a variant every
- * route answers 404, as a server without For you does, so the bell stays hidden.
+ * MSW mock of the For you inbox (#2512): R.meInbox and its writes, in memory
+ * per createHandlers, with Design's examples. Without a variant there are no
+ * handlers and /me carries no `inbox`, as on a server without it: no bell.
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
 import type { ErrorCode } from "../errors.js";
 import {
-  type ForYouAway,
-  type ForYouItem,
-  ForYouLaterBodySchema,
-  ForYouMuteBodySchema,
-  ForYouReadBodySchema,
-} from "../for-you.js";
+  type Inbox,
+  type InboxItem,
+  InboxLaterBodySchema,
+  InboxMuteBodySchema,
+  type InboxMutes,
+  InboxReadBodySchema,
+} from "../inbox.js";
 import { R } from "../routes.js";
 import { FOR_YOU_ASK } from "./comments.js";
 
 /**
  * mixed: two need you (a waiting ask, a machine to approve) and two updates.
- * calm: nothing needs you, "While you were away" and two updates.
+ * calm: nothing needs you; "While you were away" and two updates.
  * empty: nothing at all (first time).
  * back: the machine is back from Later.
  */
@@ -32,7 +31,7 @@ type Deps = {
   /** Another fixture page the updates open. */
   otherId: string;
   err: (code: ErrorCode, message: string) => Response;
-  /** Whether the seeded ask still waits for the caller (answered asks drop out). */
+  /** Whether the seeded ask still waits for the caller (answered asks leave). */
   askOpen: (id: string, thread: string) => boolean;
   now?: () => number;
 };
@@ -41,204 +40,213 @@ const MIN = 60_000;
 
 export function createForYouMock(d: Deps): {
   handlers: HttpHandler[];
-  /** Agents muted through R.forYouMutes, for tests. */
-  muted: string[];
+  /** Me.inbox, or undefined when the variant is off. */
+  counts: () => Inbox["counts"] | undefined;
 } {
+  if (!d.variant) return { handlers: [], counts: () => undefined };
   const now = d.now ?? Date.now;
   const ago = (ms: number) => new Date(now() - ms).toISOString();
-  const muted: string[] = [];
-  if (!d.variant) {
-    const none = () => d.err("not_found", "Not found");
-    return {
-      muted,
-      handlers: [
-        http.get(`*${R.forYou}`, none),
-        http.post(`*${R.forYouRead}`, none),
-        http.post("*/api/v1/for-you/:id/later", none),
-        http.post(`*${R.forYouMutes}`, none),
-      ],
-    };
-  }
-  const manager = {
-    kind: "agent" as const,
-    name: "OA Manager",
-    key: "agent:manager",
-  };
-  const ask: ForYouItem = {
-    id: "fy-ask",
-    level: "needs",
+  const page = (id: string, title: string) => ({ id, title });
+  const ask: InboxItem = {
+    id: `ask:${FOR_YOU_ASK.comment}`,
+    level: "needs_you",
     kind: "ask",
-    title: "Ship the landing with the waitlist?",
-    context: 'OA Manager asks · on "Open Artifacts Asks"',
-    at: ago(4 * MIN),
-    actor: manager,
-    page: { id: d.landingId, title: "Open Artifacts Asks" },
-    ask: { ...FOR_YOU_ASK },
-    waitingMs: 4 * MIN,
-    read: false,
+    urgency: "waiting",
+    waitingSince: ago(4 * MIN),
+    artifact: page(d.landingId, "Open Artifacts Asks"),
+    actor: { kind: "agent", name: "OA Manager", agentId: "agent:manager" },
+    text: "Ship the landing with the waitlist?",
+    href: `/a/${d.landingId}?thread=${FOR_YOU_ASK.thread}`,
+    createdAt: ago(4 * MIN),
+    readAt: null,
   };
-  const machine = (back: boolean): ForYouItem => ({
-    id: "fy-machine",
-    level: "needs",
+  // The contract requires `artifact` on every item; a machine has none (gap reported to OA Backend).
+  const machine = (back: boolean): InboxItem => ({
+    id: "itm:machine1",
+    level: "needs_you",
     kind: "machine",
-    title: "Approve this machine: Ada-Workstation",
-    context: "It wants to connect agents as you",
-    at: ago(back ? 26 * 60 * MIN : 20 * MIN),
-    actor: { kind: "system", name: "Open Artifacts" },
-    action: { href: "/agents" },
-    read: false,
-    ...(back ? { later: { state: "returned" as const } } : {}),
+    machine: { id: "mach1", name: "Ada-Workstation" },
+    artifact: page("", ""),
+    actor: null,
+    text: "Approve this machine: Ada-Workstation",
+    href: "/agents",
+    createdAt: ago(back ? 26 * 60 * MIN : 20 * MIN),
+    readAt: null,
+    ...(back
+      ? {
+          backFromLater: true as const,
+          later: { until: ago(MIN), used: true as const },
+        }
+      : {}),
   });
   const update = (
     id: string,
+    kind: InboxItem["kind"],
+    text: string,
     title: string,
-    context: string,
     at: number,
     read: boolean,
-    actor: ForYouItem["actor"],
-    kind: ForYouItem["kind"] = "reply",
-  ): ForYouItem => ({
+    actor: InboxItem["actor"],
+  ): InboxItem => ({
     id,
     level: "update",
     kind,
-    title,
-    context,
-    at: ago(at),
+    artifact: page(d.otherId, title),
     actor,
-    // The page's own title: the quoted one in the line.
-    page: { id: d.otherId, title: /"([^"]+)"/.exec(context)?.[1] ?? context },
-    read,
+    text,
+    href: `/a/${d.otherId}`,
+    createdAt: ago(at),
+    readAt: read ? ago(at - MIN) : null,
   });
   const design = {
     kind: "agent" as const,
     name: "OA Design",
-    key: "agent:design",
+    agentId: "agent:design",
   };
-  const sam = { kind: "user" as const, name: "Sam Rivera" };
-  let items: ForYouItem[] = [];
-  let away: ForYouAway | null = null;
-  if (d.variant === "mixed")
-    items = [
-      ask,
-      machine(false),
+  let needsYou: InboxItem[] = [];
+  let later: InboxItem[] = [];
+  let updates: InboxItem[] = [];
+  if (d.variant === "mixed") {
+    needsYou = [ask, machine(false)];
+    updates = [
       update(
-        "fy-reply",
+        "itm:reply1",
+        "reply",
         "OA Design replied",
-        'on "Landing page: direction B"',
+        "Landing page: direction B",
         60 * MIN,
         false,
         design,
       ),
       update(
-        "fy-decided",
+        "itm:decided1",
+        "decision",
         "Sam decided: Yearly first",
-        'on "Pricing table"',
+        "Pricing table",
         120 * MIN,
         true,
-        sam,
-        "decision",
+        { kind: "person", name: "Sam Rivera" },
       ),
     ];
+  }
   if (d.variant === "calm") {
-    const folded = Array.from({ length: 6 }, (_, i) =>
-      update(
-        `fy-away-${i + 1}`,
-        i % 2 ? "Sam replied" : "OA Design replied",
-        `on "Page ${(i % 3) + 1}"`,
-        (9 + i) * 60 * MIN,
-        false,
-        i % 2 ? sam : design,
-      ),
-    );
     // Since 22:00 the caller's time, the evening before.
     const since = new Date(now());
     if (since.getHours() < 22) since.setDate(since.getDate() - 1);
     since.setHours(22, 0, 0, 0);
-    away = {
-      updates: 6,
-      pages: 3,
-      since: since.toISOString(),
-      ids: folded.map((x) => x.id),
-    };
-    items = [
+    updates = [
+      {
+        id: "itm:away1",
+        level: "update",
+        kind: "away",
+        away: { since: since.toISOString(), count: 6 },
+        artifact: page("", ""),
+        actor: null,
+        text: "While you were away",
+        href: "/",
+        createdAt: ago(2 * MIN),
+        readAt: null,
+      },
       update(
-        "fy-version",
-        "OA Docs published v4",
-        'of "Setup guide", a page you follow',
+        "itm:reply2",
+        "reply",
+        "OA Docs replied",
+        "Setup guide",
         12 * MIN,
         false,
-        { kind: "agent", name: "OA Docs", key: "agent:docs" },
-        "version",
+        { kind: "agent", name: "OA Docs", agentId: "agent:docs" },
       ),
       update(
-        "fy-shared",
+        "itm:share1",
+        "share",
         "Maya shared a page with you",
-        '"Q4 launch plan"',
+        "Q4 launch plan",
         26 * 60 * MIN,
         true,
-        { kind: "user", name: "Maya Chen" },
-        "share",
+        { kind: "person", name: "Maya Chen" },
       ),
-      ...folded,
     ];
   }
-  if (d.variant === "back") items = [machine(true)];
+  if (d.variant === "back") needsYou = [machine(true)];
 
-  const visible = () =>
-    items.filter(
-      (x) => !x.ask || !x.page || d.askOpen(x.page.id, x.ask.thread),
-    );
-  /** 8:00 tomorrow, the caller's time. */
-  const morning = () => {
-    const t = new Date(now());
-    t.setDate(t.getDate() + 1);
-    t.setHours(8, 0, 0, 0);
-    return t.toISOString();
-  };
+  const open = () =>
+    needsYou.filter((x) => {
+      if (x.kind !== "ask") return true;
+      const thread = new URL(x.href, "https://x.invalid").searchParams.get(
+        "thread",
+      );
+      return !thread || d.askOpen(x.artifact.id, thread);
+    });
+  const counts = () => ({
+    needsYou: open().length,
+    unreadUpdates: updates.filter((x) => x.readAt === null).length,
+  });
+  const mutes: InboxMutes["items"] = [];
+  const done = () => new HttpResponse(null, { status: 204 });
+  const readNow = (x: InboxItem) =>
+    x.readAt === null ? { ...x, readAt: ago(0) } : x;
   return {
-    muted,
+    counts,
     handlers: [
-      http.get(`*${R.forYou}`, () =>
-        HttpResponse.json({ items: visible(), away }),
+      http.get(`*${R.meInbox}`, () =>
+        HttpResponse.json({
+          needsYou: open(),
+          later,
+          updates,
+          cursor: null,
+          counts: counts(),
+        } satisfies Inbox),
       ),
-      http.post(`*${R.forYouRead}`, async ({ request }) => {
-        const p = ForYouReadBodySchema.safeParse(await request.json());
+      http.post(`*${R.meInboxRead}`, async ({ request }) => {
+        const p = InboxReadBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
-        const ids = "ids" in p.data ? new Set(p.data.ids) : null;
-        items = items.map((x) =>
-          x.level === "update" && (!ids || ids.has(x.id))
-            ? { ...x, read: true }
-            : x,
-        );
-        return new HttpResponse(null, { status: 204 });
+        const ids = new Set(p.data.ids);
+        updates = updates.map((x) => (ids.has(x.id) ? readNow(x) : x));
+        return done();
       }),
-      http.post("*/api/v1/for-you/:id/later", async ({ request, params }) => {
-        const p = ForYouLaterBodySchema.safeParse(await request.json());
+      http.post(`*${R.meInboxReadAll}`, () => {
+        updates = updates.map(readNow);
+        return done();
+      }),
+      http.post("*/api/v1/me/inbox/:id/later", async ({ request, params }) => {
+        const p = InboxLaterBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
-        const it = items.find((x) => x.id === params.id);
-        if (!it || it.level !== "needs") return d.err("not_found", "Not found");
-        if (it.later) return d.err("conflict", "Already put off once");
-        const until =
-          p.data.when === "hour"
-            ? new Date(now() + 60 * MIN).toISOString()
-            : morning();
-        items = items.map((x) =>
-          x === it ? { ...x, later: { state: "snoozed", until } } : x,
-        );
-        return new HttpResponse(null, { status: 204 });
+        const it = needsYou.find((x) => x.id === params.id);
+        if (!it) return d.err("not_found", "Not found");
+        if (it.later || it.backFromLater)
+          return d.err("later_used", "Already put off once");
+        // "morning": 08:00 the next day (the server uses prefs.timeZone).
+        const t = new Date(now());
+        if (p.data.until === "hour") t.setTime(now() + 60 * MIN);
+        else {
+          t.setDate(t.getDate() + 1);
+          t.setHours(8, 0, 0, 0);
+        }
+        const moved: InboxItem = {
+          ...it,
+          later: { until: t.toISOString(), used: true },
+        };
+        needsYou = needsYou.filter((x) => x !== it);
+        later = [...later, moved];
+        return HttpResponse.json(moved);
       }),
-      http.post(`*${R.forYouMutes}`, async ({ request }) => {
-        const p = ForYouMuteBodySchema.safeParse(await request.json());
+      http.get(`*${R.meInboxMutes}`, () =>
+        HttpResponse.json({ items: mutes } satisfies InboxMutes),
+      ),
+      // A mute stops push only: every item stays listed.
+      http.post(`*${R.meInboxMutes}`, async ({ request }) => {
+        const p = InboxMuteBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
-        muted.push(p.data.agent);
-        return new HttpResponse(null, { status: 204 });
+        if (!mutes.some((m) => m.kind === p.data.kind && m.id === p.data.id))
+          mutes.push({ ...p.data, name: p.data.id });
+        return done();
       }),
-      http.delete("*/api/v1/artifacts/:id/follow", ({ params }) => {
-        // No more updates from the page; what needs you stays.
-        items = items.filter(
-          (x) => x.level !== "update" || x.page?.id !== params.id,
+      http.delete("*/api/v1/me/inbox/mutes/:kind/:id", ({ params }) => {
+        const i = mutes.findIndex(
+          (m) => m.kind === params.kind && m.id === params.id,
         );
-        return new HttpResponse(null, { status: 204 });
+        if (i >= 0) mutes.splice(i, 1);
+        return done();
       }),
     ],
   };

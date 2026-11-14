@@ -132,7 +132,7 @@ export type MockOptions = {
   commentPins?: "image" | "pdf";
   /** #2338: agent comments with markdown, a hostile body and a markdown ask. */
   commentMarkdown?: boolean;
-  /** #2512 (PROVISIONAL): For you's mock items; unset, For you answers 404 (no bell). */
+  /** #2512: For you's inbox (R.meInbox) with Design's examples, and Me.inbox counts; unset, no inbox (no bell). */
   forYou?: ForYouVariant;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
   commentersSignedIn?: boolean;
@@ -765,7 +765,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ...(h?.handlers ?? []),
     ...passkeyMock.handlers,
     ...commentMock.handlers,
-    http.get("*/api/v1/me", () => HttpResponse.json(me)),
+    // #2512: with a For you variant, Me carries the inbox counts for the bell.
+    http.get("*/api/v1/me", () => {
+      const inbox = forYouMock.counts();
+      return HttpResponse.json(inbox ? { ...me, inbox } : me);
+    }),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
       if (r.error) return r.error;

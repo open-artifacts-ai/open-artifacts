@@ -1,59 +1,66 @@
-// #2512: what the bell counts and how "For you" is ordered (PROVISIONAL shapes).
-import type { ForYouItem } from "@oa/shared";
+// #2512: what the bell shows and how a "For you" row reads (inbox contract, #2513).
+import type { InboxItem } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import {
   agoText,
+  askComment,
   awayText,
   backText,
   bellName,
   bellState,
   canLater,
-  laterItems,
-  needsYou,
-  updates,
-  visibleItems,
+  contextLine,
+  countsOf,
+  safePath,
+  waitMs,
   waitText,
 } from "../src/foryou/model";
 
 const NOW = new Date(2026, 10, 14, 15, 30).getTime();
 const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
-const item = (o: Partial<ForYouItem> & { id: string }): ForYouItem => ({
-  level: "needs",
+const item = (o: Partial<InboxItem> & { id: string }): InboxItem => ({
+  level: "needs_you",
   kind: "ask",
-  title: o.id,
-  context: "",
-  at: at(1),
-  read: false,
+  artifact: { id: "Cd5fGhJkLm6nPqRs", title: "Open Artifacts Asks" },
+  actor: { kind: "agent", name: "OA Manager", agentId: "agent:manager" },
+  text: o.id,
+  href: "/a/Cd5fGhJkLm6nPqRs",
+  createdAt: at(1),
+  readAt: null,
   ...o,
 });
-const upd = (id: string, read: boolean, min = 5) =>
-  item({ id, level: "update", kind: "reply", read, at: at(min) });
+const upd = (id: string, read: boolean) =>
+  item({ id, level: "update", kind: "reply", readAt: read ? at(0) : null });
 
 describe("the bell", () => {
   it("counts only Needs you; updates never add to it", () => {
-    const s = bellState([
-      item({ id: "a" }),
-      upd("u1", false),
-      upd("u2", false),
-    ]);
-    expect(s).toEqual({ count: 1, dot: false });
+    expect(bellState({ needsYou: 2, unreadUpdates: 3 })).toEqual({
+      count: 2,
+      dot: false,
+    });
   });
 
   it("shows a dot for unread updates when nothing needs you", () => {
-    expect(bellState([upd("u1", false)])).toEqual({ count: 0, dot: true });
-    expect(bellState([upd("u1", true)])).toEqual({ count: 0, dot: false });
+    expect(bellState({ needsYou: 0, unreadUpdates: 1 })).toEqual({
+      count: 0,
+      dot: true,
+    });
   });
 
   it("is quiet with nothing at all", () => {
-    expect(bellState([])).toEqual({ count: 0, dot: false });
+    expect(bellState({ needsYou: 0, unreadUpdates: 0 })).toEqual({
+      count: 0,
+      dot: false,
+    });
   });
 
-  it("does not count an item put off with Later", () => {
-    const later = item({
-      id: "m",
-      later: { state: "snoozed", until: at(-60) },
-    });
-    expect(bellState([later, item({ id: "a" })]).count).toBe(1);
+  it("recounts from the list after a change here (Later leaves Needs you)", () => {
+    expect(
+      countsOf({
+        needsYou: [item({ id: "a" })],
+        updates: [upd("u", false), upd("v", true)],
+      }),
+    ).toEqual({ needsYou: 1, unreadUpdates: 1 });
   });
 
   it("has an accessible name for each state", () => {
@@ -64,73 +71,53 @@ describe("the bell", () => {
   });
 });
 
-describe("Needs you", () => {
-  it("sorts the longest wait first, then the newest", () => {
-    const list = needsYou([
-      item({ id: "plain-new", at: at(1) }),
-      item({ id: "wait-4", waitingMs: 4 * 60_000 }),
-      item({ id: "plain-old", at: at(90) }),
-      item({ id: "wait-40", waitingMs: 40 * 60_000 }),
-    ]);
-    expect(list.map((x) => x.id)).toEqual([
-      "wait-40",
-      "wait-4",
-      "plain-new",
-      "plain-old",
-    ]);
+describe("Later", () => {
+  const machine = item({
+    id: "itm:m",
+    kind: "machine",
+    actor: null,
+    machine: { id: "m", name: "Box" },
   });
-
-  it("puts an item back from Later on top", () => {
-    const list = needsYou([
-      item({ id: "wait", waitingMs: 60 * 60_000 }),
-      item({ id: "back", later: { state: "returned" }, at: at(26 * 60) }),
-    ]);
-    expect(list.map((x) => x.id)).toEqual(["back", "wait"]);
-  });
-
-  it("offers Later once, and only on a single-action item", () => {
-    const machine = item({ id: "m", kind: "machine", action: { href: "/x" } });
+  it("is offered once, and only on a single-action item", () => {
     expect(canLater(machine)).toBe(true);
-    expect(canLater({ ...machine, later: { state: "returned" } })).toBe(false);
+    expect(canLater({ ...machine, backFromLater: true })).toBe(false);
     expect(
-      canLater({ ...machine, later: { state: "snoozed", until: at(-60) } }),
+      canLater({ ...machine, later: { until: at(-60), used: true } }),
     ).toBe(false);
-    expect(canLater(item({ id: "ask" }))).toBe(false);
+    expect(canLater(item({ id: "ask:c1" }))).toBe(false);
     expect(canLater(upd("u", false))).toBe(false);
-  });
-
-  it("folds put-off items into Later, soonest back first", () => {
-    const a = item({ id: "a", later: { state: "snoozed", until: at(-600) } });
-    const b = item({ id: "b", later: { state: "snoozed", until: at(-60) } });
-    const items = [a, b, item({ id: "c" })];
-    expect(laterItems(items).map((x) => x.id)).toEqual(["b", "a"]);
-    expect(needsYou(items).map((x) => x.id)).toEqual(["c"]);
   });
 });
 
-describe("billing", () => {
-  const bill = item({ id: "bill", kind: "billing", audience: "admins" });
-  it("shows only to owners and admins", () => {
-    expect(visibleItems([bill], "owner")).toHaveLength(1);
-    expect(visibleItems([bill], "admin")).toHaveLength(1);
-    expect(visibleItems([bill], "member")).toHaveLength(0);
-    expect(visibleItems([bill], "guest")).toHaveLength(0);
-    expect(visibleItems([{ ...bill, audience: undefined }], "member")).toEqual(
-      [],
+describe("asks", () => {
+  it("finds the comment from the item id", () => {
+    expect(askComment(item({ id: "ask:c1" }))).toBe("c1");
+    expect(askComment(item({ id: "itm:x", kind: "mention" }))).toBeNull();
+  });
+
+  it("takes the wait from the server's waitingSince, only when waiting", () => {
+    const w = item({ id: "ask:c1", urgency: "waiting", waitingSince: at(4) });
+    expect(waitMs(w, NOW)).toBe(4 * 60_000);
+    expect(waitMs({ ...w, urgency: "plain" }, NOW)).toBeUndefined();
+    expect(contextLine(w, NOW)).toBe(
+      'OA Manager asks · on "Open Artifacts Asks"',
+    );
+    expect(contextLine({ ...w, urgency: "plain" }, NOW)).toBe(
+      'OA Manager asks · on "Open Artifacts Asks" · 1 min ago',
     );
   });
 });
 
-describe("updates", () => {
-  it("hides those folded into While you were away until shown", () => {
-    const items = [upd("a", false, 1), upd("b", false, 600), upd("c", true, 2)];
-    const away = { updates: 1, pages: 1, since: at(700), ids: ["b"] };
-    expect(updates(items, away, false).map((x) => x.id)).toEqual(["a", "c"]);
-    expect(updates(items, away, true).map((x) => x.id)).toEqual([
-      "a",
-      "c",
-      "b",
-    ]);
+describe("hrefs", () => {
+  const o = "https://oa.example";
+  it("keeps same-origin paths", () => {
+    expect(safePath("/a/x?thread=t#c", o)).toBe("/a/x?thread=t#c");
+  });
+  it("refuses anything that leaves the origin", () => {
+    expect(safePath("/\t/evil.example", o)).toBeNull();
+    expect(safePath("//evil.example/a", o)).toBeNull();
+    expect(safePath("https://evil.example/", o)).toBeNull();
+    expect(safePath("/\\evil.example", o)).toBeNull();
   });
 });
 
@@ -150,6 +137,20 @@ describe("words", () => {
     expect(agoText(at(26 * 60), NOW)).toBe("yesterday");
   });
 
+  it("writes each kind's line", () => {
+    const m = item({ id: "itm:m", kind: "machine", createdAt: at(20) });
+    expect(contextLine(m, NOW)).toBe(
+      "It wants to connect agents as you · 20 min ago",
+    );
+    const r = item({
+      id: "itm:r",
+      level: "update",
+      kind: "reply",
+      createdAt: at(60),
+    });
+    expect(contextLine(r, NOW)).toBe('on "Open Artifacts Asks" · 1 h ago');
+  });
+
   it("says when Later brings it back", () => {
     const tomorrow8 = new Date(2026, 10, 15, 8, 0).toISOString();
     expect(backText(tomorrow8, NOW)).toBe("Back tomorrow at 8:00");
@@ -160,8 +161,6 @@ describe("words", () => {
 
   it("sums up While you were away", () => {
     const since = new Date(2026, 10, 13, 22, 0).toISOString();
-    expect(awayText({ updates: 6, pages: 3, since, ids: [] })).toBe(
-      "6 updates on 3 pages since 22:00",
-    );
+    expect(awayText({ since, count: 6 })).toBe("6 updates since 22:00");
   });
 });
