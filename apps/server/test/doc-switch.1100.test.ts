@@ -6,7 +6,7 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { SKILL_TEMPLATE } from "../src/mcp/skill.generated.js";
 import { DOC_SWITCH } from "../src/services/doc-switch.js";
-import { docsAvailable } from "../src/services/docs-available.js";
+import { docsAvailable, docsState } from "../src/services/docs-available.js";
 import { api, errOf, login } from "./helpers.js";
 import { close, connect, textOf, tool } from "./mcp-helpers.js";
 
@@ -29,6 +29,24 @@ describe("doc creation switch (off)", () => {
     expect(DOC_SWITCH.creation).toBe(false);
     for (const e of [{}, { PLAN: "paid" }, { HOSTED: "1" }])
       expect(docsAvailable(e)).toBe(false);
+  });
+
+  it("/me reports no docs state while the switch is off", async () => {
+    expect(docsState({ HOSTED: "1" })).toBeUndefined();
+    const r = await api(app, R.me, cookie);
+    expect(
+      ((await r.json()) as { instance: object }).instance,
+    ).not.toHaveProperty("docs");
+  });
+
+  it("docsState: on for paid, needs_paid for free, once the switch is on", () => {
+    DOC_SWITCH.creation = true;
+    try {
+      expect(docsState({ PLAN: "paid" })).toBe("on");
+      expect(docsState({})).toBe("needs_paid");
+    } finally {
+      DOC_SWITCH.creation = false;
+    }
   });
 
   it("REST: format doc is refused with the next step, nothing created", async () => {

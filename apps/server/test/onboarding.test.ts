@@ -16,6 +16,11 @@ const NONE = {
   agentConnected: false,
   firstArtifact: null,
   commented: false,
+  agentNamed: false,
+  agentName: null,
+  mentionReplied: false,
+  mentionStalled: false,
+  askAnswered: false,
 };
 
 const app = createApp();

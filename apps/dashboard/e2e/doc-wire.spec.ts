@@ -1,0 +1,704 @@
+// #1100: the client side of the room's wire spec (artifact UkN5r8hpoXu9DYxG),
+// against the mock room's flags: the hello frame's role, and the close codes
+// 4401, 4403, 4404, 1007 and 1013.
+import type { ChildProcess } from "node:child_process";
+import { expect, type Page, test } from "@playwright/test";
+import { roomLog, startRoom, stopRoom, tellRoom } from "./room";
+
+const LANDING = "Cd5fGhJkLm6nPqRs";
+test.use({ viewport: { width: 1280, height: 800 } });
+
+let room: ChildProcess | undefined;
+test.afterEach(async () => {
+  await stopRoom(room);
+});
+
+const open = async (
+  page: Page,
+  info: Parameters<typeof startRoom>[0],
+  args: string[],
+  query = "",
+) => {
+  room = await startRoom(info, page, args);
+  await page.goto(`/a/${LANDING}?mock=doc${query}`);
+  await expect(page.locator(".ProseMirror")).toBeVisible();
+};
+
+/** What the room printed: "conn n" per connection, "closing code" per close. */
+const log = () => (room ? (roomLog.get(room) ?? []) : []);
+
+/**
+ * After the room closed a connection with `code`: a NEW socket opened (a log
+ * line after the close), the doc is saved again, and nothing is shown.
+ */
+async function reconnectsAfter(page: Page, code: number) {
+  const closing = (l: string) => l.startsWith(`closing ${code} `);
+  await expect.poll(() => log().some(closing)).toBe(true);
+  const at = log().findIndex(closing);
+  await expect
+    .poll(() =>
+      log()
+        .slice(at)
+        .some((l) => l.startsWith("conn ")),
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+}
+
+/**
+ * The mock doc answers this currentVersion from ~600 ms in, before the room's
+ * frame (1.2 s after connect), as the server would once it had saved: so the
+ * pill can only tick if the page refetches on the event.
+ */
+const serverSavesAt = (page: Page, version: number) =>
+  page.addInitScript((v) => {
+    setTimeout(() => {
+      (window as unknown as { __oaDocVersion: number }).__oaDocVersion = v;
+    }, 600);
+  }, version);
+const pill = (page: Page, v: number) =>
+  page.getByRole("button", { name: new RegExp(`^Version: v${v}\\b`) });
+const prose = (page: Page) => page.locator(".ProseMirror");
+
+test("hello read/access: a viewer reads only, no toolbar, no banner", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--hello", "read:access"]);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  await expect(page.getByRole("toolbar")).toHaveCount(0);
+  await expect(page.getByText(/editing opens/)).toHaveCount(0);
+  // Product: a quiet "View only" where Saved sits, no banner.
+  await expect(
+    page.getByRole("status").filter({ hasText: /^View only$/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("hello edit: stays editable", async ({ page }, info) => {
+  await open(page, info, ["--hello", "edit"]);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await expect(page.getByRole("toolbar")).toBeVisible();
+});
+
+test("hello read/room_full: reads only, says why, Try again reconnects", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--hello", "read:room_full"]);
+  await expect(
+    page.getByText(
+      "This doc is full right now. You can read it, and editing opens when someone leaves.",
+    ),
+  ).toBeVisible();
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  await expect(page.getByRole("toolbar")).toHaveCount(0);
+  await page.getByRole("button", { name: "Try again" }).click();
+  // Back in: the room greets again, still full.
+  await expect(
+    page.getByText(
+      "This doc is full right now. You can read it, and editing opens when someone leaves.",
+    ),
+  ).toBeVisible();
+});
+
+test("hello near the cap: warns and stays editable", async ({ page }, info) => {
+  await open(page, info, ["--hello", "edit::1950000"]);
+  await expect(
+    page.getByText(
+      "This doc is almost full (1.9 of 2 MB). Images take the most space.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByRole("toolbar")).toBeVisible();
+});
+
+test("close 4403 (an access change): reconnects and stays editable", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--close-first", "4403"]);
+  await reconnectsAfter(page, 4403);
+});
+
+test("close 4403, then the reconnect is refused: no access, read-only", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--revoke"]);
+  await expect(page.getByRole("alert")).toHaveText(
+    "You no longer have access.",
+  );
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  await expect(page.getByRole("toolbar")).toHaveCount(0);
+});
+
+test("close 4404: the doc is gone", async ({ page }, info) => {
+  await open(page, info, ["--close", "4404"]);
+  await expect(page.getByRole("alert")).toHaveText(
+    "This doc was deleted. Its owner can restore it from Trash.",
+  );
+});
+
+test("close 1007 once: resyncs and stays editable", async ({ page }, info) => {
+  await open(page, info, ["--close-first", "1007"]);
+  await reconnectsAfter(page, 1007);
+});
+
+test("close 1007 every time: stops after one resync and reports", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--close", "1007"]);
+  await expect(page.getByRole("alert")).toHaveText(
+    "This doc can't sync right now. Reload the page to try again. Copy any unsaved changes first.",
+  );
+});
+
+test("close 4401 once: reconnects silently", async ({ page }, info) => {
+  await open(page, info, ["--close-first", "4401"]);
+  await reconnectsAfter(page, 4401);
+});
+
+test("close 1013 once: backs off and comes back", async ({ page }, info) => {
+  await open(page, info, ["--close-first", "1013"]);
+  await reconnectsAfter(page, 1013);
+});
+
+test("1013 on every connection: the reconnect gaps grow, not a steady 200 ms", async ({
+  page,
+}, info) => {
+  test.setTimeout(60_000);
+  // No jitter: the waits are exactly 750 ms, 1.5 s, 3 s, so a CI stall can
+  // only stretch a gap, never reorder them.
+  await page.addInitScript(() => {
+    (window as unknown as { __oaJitter: number }).__oaJitter = 0;
+  });
+  await open(page, info, ["--close", "1013"]);
+  // The room closes each settled connection 600 ms after it connected, and
+  // stamps each close. The gap between two closes is 600 ms plus the wait the
+  // client chose: 0.75 s, then 1.5 s, then 3 s (jitter fixed at 0).
+  const closes = () =>
+    log()
+      .filter((l) => l.startsWith("closing 1013 "))
+      .map((l) => Number(l.split(" ")[2]));
+  await expect
+    .poll(() => closes().length, { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(4);
+  const t = closes();
+  const gaps = t.slice(1).map((x, i) => x - t[i]);
+  const [g1, g2, g3] = gaps;
+  // Every gap is longer than y-websocket's own ~200 ms retry would give.
+  expect(g1).toBeGreaterThan(600 + 700);
+  expect(g2).toBeGreaterThan(g1);
+  expect(g3).toBeGreaterThan(g2);
+  // And each wait is well over the last (double, with the fixed 600 ms removed).
+  expect(g2 - 600).toBeGreaterThan((g1 - 600) * 1.2);
+  expect(g3 - 600).toBeGreaterThan((g2 - 600) * 1.2);
+});
+
+test("saved: the title bar says Saved as v5 for a moment and the version data refetches", async ({
+  page,
+}, info) => {
+  let artifactGets = 0;
+  page.on("request", (r) => {
+    if (
+      r.method() === "GET" &&
+      r.url().endsWith(`/api/v1/artifacts/${LANDING}`)
+    )
+      artifactGets++;
+  });
+  await open(page, info, ["--saved", "5"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved" }),
+  ).toBeVisible();
+  const before = artifactGets;
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved as v5" }),
+  ).toBeVisible();
+  await expect.poll(() => artifactGets).toBeGreaterThan(before);
+  // And it goes back to plain Saved.
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible({ timeout: 8000 });
+});
+
+test("restored by someone else: says so, the pill ticks, the doc stays editable", async ({
+  page,
+}, info) => {
+  await serverSavesAt(page, 7);
+  await open(page, info, ["--restored", "3:7"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Restored v3 as v7" }),
+  ).toBeVisible();
+  await expect(pill(page, 7)).toBeVisible();
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a named save shows its name and the pill ticks", async ({
+  page,
+}, info) => {
+  await serverSavesAt(page, 6);
+  await open(page, info, ["--saved", "6:Before launch"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved as v6 (Before launch)" }),
+  ).toBeVisible();
+  await expect(pill(page, 6)).toBeVisible();
+  if (process.env.SHOTS_DIR)
+    await page.screenshot({
+      path: `${process.env.SHOTS_DIR}/doc-titlebar-saved-named-1280.png`,
+      clip: { x: 0, y: 0, width: 1280, height: 100 },
+    });
+});
+
+test("an auto-save is quiet but the version pill still ticks", async ({
+  page,
+}, info) => {
+  await serverSavesAt(page, 9);
+  await open(page, info, ["--saved", "9::auto"]);
+  await expect(pill(page, 9)).toBeVisible();
+  // No note at all: the status line stays plain.
+  await expect(page.getByText(/Saved as v9/)).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+});
+
+test("without StrictMode the editor opens exactly one room socket", async ({
+  page,
+}, info) => {
+  // The dev build's StrictMode mounts the editor twice, and the first room is
+  // destroyed at once. Under the mock, MSW's passthrough still opens that
+  // first socket a moment later (its stack is MSW's createConnection), which
+  // is why two sockets show in dev. A build without StrictMode, as production
+  // is, makes one.
+  const created: string[] = [];
+  page.on("websocket", (ws) => {
+    if (ws.url().endsWith("/doc")) created.push(ws.url());
+  });
+  await open(page, info, ["--hello", "edit"], "&strict=off");
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  // Rooms are created once (useDocRoom): the room log shows one connection.
+  await expect
+    .poll(() => log().filter((l) => l.startsWith("conn ")).length)
+    .toBe(1);
+  expect(created.length).toBe(1);
+});
+
+test.describe("phone", () => {
+  test.use({ viewport: { width: 390, height: 800 } });
+  test("the restore note fits the title bar at 390", async ({ page }, info) => {
+    await open(page, info, ["--restored", "3:7"]);
+    // Where Share sits before the note: the note must not push it down a row.
+    const shareY = async () =>
+      (await page.getByRole("button", { name: "Share" }).boundingBox())?.y;
+    const before = await shareY();
+    const note = page
+      .getByRole("status")
+      .filter({ hasText: "Restored v3 as v7" });
+    await expect(note).toBeVisible();
+    expect(await shareY()).toBe(before);
+    const box = await note.boundingBox();
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    // The page does not scroll sideways, and the title bar's buttons stay in.
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    for (const name of [/Share/, /Comments/]) {
+      const b = await page.getByRole("button", { name }).first().boundingBox();
+      expect((b?.x ?? 0) + (b?.width ?? 0)).toBeLessThanOrEqual(390);
+    }
+    if (process.env.SHOTS_DIR)
+      await page.screenshot({
+        path: `${process.env.SHOTS_DIR}/doc-restore-note-390.png`,
+      });
+  });
+});
+
+// Design (#1100): a checklist box cannot be ticked by a reader or after the
+// doc is gone. The click must not change the box, and must not send anything
+// the room applies (its "doc changed" lines, counted after the page settled).
+for (const [name, args, ready] of [
+  [
+    "View only",
+    ["--hello", "read:access"],
+    (page: Page) =>
+      expect(
+        page.getByRole("status").filter({ hasText: /^View only$/ }),
+      ).toBeVisible(),
+  ],
+  [
+    "a full room",
+    ["--hello", "read:room_full"],
+    (page: Page) =>
+      expect(page.getByRole("button", { name: "Try again" })).toBeVisible(),
+  ],
+  [
+    "a deleted doc",
+    ["--close", "4404"],
+    (page: Page) =>
+      expect(page.getByRole("alert")).toHaveText(
+        "This doc was deleted. Its owner can restore it from Trash.",
+      ),
+  ],
+] as const)
+  test(`a checklist box cannot be ticked in ${name}`, async ({
+    page,
+  }, info) => {
+    await open(page, info, [...args]);
+    await ready(page);
+    await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+    const box = prose(page).getByRole("checkbox").nth(1);
+    await expect(box).not.toBeChecked();
+    // Settled: no change has reached the room for 500 ms.
+    const changes = () =>
+      log().filter((l) => l.startsWith("doc changed ")).length;
+    let last = -1;
+    await expect
+      .poll(
+        async () => {
+          const n = changes();
+          const same = n === last;
+          last = n;
+          return same;
+        },
+        { intervals: [500] },
+      )
+      .toBe(true);
+    const before = changes();
+    await box.click();
+    await page.waitForTimeout(500);
+    await expect(box).not.toBeChecked();
+    expect(changes()).toBe(before);
+  });
+
+test("control: an editor's tick checks the box and reaches the room", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--hello", "edit"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  const box = prose(page).getByRole("checkbox").nth(1);
+  await expect(box).not.toBeChecked();
+  const changes = () =>
+    log().filter((l) => l.startsWith("doc changed ")).length;
+  const before = changes();
+  await box.click();
+  await expect(box).toBeChecked();
+  await expect.poll(changes).toBeGreaterThan(before);
+});
+
+test("a deleted doc shows no status where Saved sits", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--close", "4404"]);
+  await expect(page.getByRole("alert")).toHaveText(
+    "This doc was deleted. Its owner can restore it from Trash.",
+  );
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+});
+
+test("a full room shows View only where Saved sits, and its banner", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--hello", "read:room_full"]);
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: /^View only$/ }),
+  ).toBeVisible();
+});
+
+test("4401, then the session is gone: logged out, Log in, no loop", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--expire-auth"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  // The session ends: /me now answers 401 (set before the 4401 at 600 ms
+  // lands; the check runs on each refused reconnect, so the order is safe).
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "You've been logged out. Your changes are saved. Log in again to keep editing.",
+  );
+  const login = page.getByRole("link", { name: "Log in" });
+  await expect(login).toHaveAttribute(
+    "href",
+    `/auth/login?next=${encodeURIComponent(`/a/${LANDING}?mock=doc`)}`,
+  );
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+  // It stopped: at least one refused reconnect happened, then no more
+  // attempts (accepted or refused) reach the room.
+  const tries = () =>
+    log().filter((l) => l.startsWith("conn ") || l.startsWith("refused "))
+      .length;
+  expect(log().some((l) => l.startsWith("refused 401 "))).toBe(true);
+  const n = tries();
+  await page.waitForTimeout(2000);
+  expect(tries()).toBe(n);
+});
+
+test("access removed shows no status where Saved sits", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--revoke"]);
+  await expect(page.getByRole("alert")).toHaveText(
+    "You no longer have access.",
+  );
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+});
+
+/**
+ * Logged out with an edit typed after the 4401 (so unsent): the unsent
+ * notice, read-only. Returns how many doc changes the room had applied.
+ */
+async function loggedOutUnsent(
+  page: Page,
+  info: Parameters<typeof startRoom>[0],
+) {
+  await open(page, info, ["--expire-auth"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect
+    .poll(() => log().some((l) => l.startsWith("closing 4401 ")))
+    .toBe(true);
+  await prose(page).locator("p").first().click();
+  // The caret at the end of that paragraph (a click can land mid-word).
+  await page.evaluate(() => {
+    const p = document.querySelector(".ProseMirror p");
+    if (!p) throw new Error("no paragraph");
+    const r = document.createRange();
+    r.selectNodeContents(p);
+    r.collapse(false);
+    const sel = getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(r);
+  });
+  await page.keyboard.type(" Typed offline.");
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Offline$/ }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
+  );
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  const link = page.getByRole("link", { name: "Log in" });
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noopener");
+  return log().filter((l) => l.startsWith("doc changed ")).length;
+}
+
+const signInAgain = (page: Page) =>
+  page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+  });
+const focusBack = (page: Page) =>
+  page.evaluate(() => window.dispatchEvent(new Event("focus")));
+
+test("logged out, then signed in again in another tab: focus resumes and the edit typed offline reaches the room", async ({
+  page,
+}, info) => {
+  const before = await loggedOutUnsent(page, info);
+  tellRoom(room, "login");
+  await expect
+    .poll(() => log().some((l) => l.startsWith("logged in ")))
+    .toBe(true);
+  await signInAgain(page);
+  await focusBack(page);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect
+    .poll(() => log().filter((l) => l.startsWith("doc changed ")).length)
+    .toBeGreaterThan(before);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await expect(prose(page)).toContainText("Typed offline.");
+});
+
+test("signed in again but the room still refuses: couldn't save, Try again works once it accepts", async ({
+  page,
+}, info) => {
+  const before = await loggedOutUnsent(page, info);
+  // Signed in (/me is fine) but the room still refuses the socket.
+  await signInAgain(page);
+  await focusBack(page);
+  await expect(page.getByRole("alert")).toHaveText(
+    "Couldn't save your latest changes. Copy them before leaving this page.",
+  );
+  expect(log().filter((l) => l.startsWith("doc changed ")).length).toBe(before);
+  tellRoom(room, "login");
+  await expect
+    .poll(() => log().some((l) => l.startsWith("logged in ")))
+    .toBe(true);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect
+    .poll(() => log().filter((l) => l.startsWith("doc changed ")).length)
+    .toBeGreaterThan(before);
+});
+
+test("signed in again, nothing unsent, the room still refuses: Reconnecting…, the quiet line at 30 s, both clear on reconnect", async ({
+  page,
+}, info) => {
+  // Playwright's clock: time flows, and fastForward jumps the 30 s.
+  await page.clock.install();
+  await open(page, info, ["--expire-auth"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect
+    .poll(() => log().some((l) => l.startsWith("closing 4401 ")))
+    .toBe(true);
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "You've been logged out. Your changes are saved. Log in again to keep editing.",
+  );
+  // Signed in again (/me fine), but the room still refuses.
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Reconnecting…$/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  const line =
+    "Can't connect right now. You can read, and editing comes back when it reconnects.";
+  await expect(page.getByText(line)).toHaveCount(0);
+  await page.clock.fastForward("00:30");
+  await expect(
+    page.getByRole("status").filter({ hasText: line }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
+  // Still retrying.
+  const refused = () => log().filter((l) => l.startsWith("refused ")).length;
+  const n = refused();
+  await expect.poll(refused).toBeGreaterThan(n);
+  // The room takes us again: both clear.
+  tellRoom(room, "login");
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect(page.getByText(line)).toHaveCount(0);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+});
+
+/**
+ * A team or public doc: after the 4401 the logged-out viewer is admitted
+ * read (#2490) and the room drops what it sends. The page's timers are
+ * paused across the cut so a line can be typed while the socket is down;
+ * resumed, the reconnect is admitted read with that edit unsent.
+ */
+async function admittedReadWithUnsent(
+  page: Page,
+  info: Parameters<typeof startRoom>[0],
+  loggedOut: boolean,
+) {
+  await page.clock.install();
+  await open(page, info, ["--expire-auth-read"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  const changes = () =>
+    log().filter((l) => l.startsWith("doc changed ")).length;
+  const before = changes();
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(now + 100);
+  tellRoom(room, "expire");
+  await expect
+    .poll(() => log().some((l) => l.startsWith("closing 4401 ")))
+    .toBe(true);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Offline$/ }),
+  ).toBeVisible();
+  await prose(page).locator("p").first().click();
+  await page.evaluate(() => {
+    const p = document.querySelector(".ProseMirror p");
+    if (!p) throw new Error("no paragraph");
+    const r = document.createRange();
+    r.selectNodeContents(p);
+    r.collapse(false);
+    getSelection()?.removeAllRanges();
+    getSelection()?.addRange(r);
+  });
+  await page.keyboard.type(" Typed offline.");
+  await page.evaluate((v) => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = v;
+  }, loggedOut);
+  // Every status the page shows from here on (it must never be Saved).
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { __oaSeen: string[] }).__oaSeen = seen;
+    new MutationObserver(() => {
+      const s = document.querySelector(".oa-docstate")?.textContent;
+      if (s) seen.push(s);
+    }).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+  await page.clock.resume();
+  await expect
+    .poll(() => log().some((l) => l.startsWith("dropped read update ")))
+    .toBe(true);
+  return { before, changes };
+}
+
+const seenStatuses = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __oaSeen: string[] }).__oaSeen);
+
+test("admitted read after a 4401 with an edit unsent, and logged out: never Saved, the logged-out (unsent) warning", async ({
+  page,
+}, info) => {
+  const { before, changes } = await admittedReadWithUnsent(page, info, true);
+  const alert = page.getByRole("alert");
+  await expect(alert).toHaveText(
+    "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
+  );
+  await expect(
+    page.locator('.oa-doc-error[data-tone="warning"]'),
+  ).toBeVisible();
+  expect(await seenStatuses(page)).not.toContain("Saved");
+  expect(changes()).toBe(before);
+  // Signed in again: the edit reaches the room, then Saved.
+  tellRoom(room, "login");
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect.poll(changes).toBeGreaterThan(before);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+});
+
+test("admitted read after a 4401 with an edit unsent, still signed in: never Saved, couldn't save", async ({
+  page,
+}, info) => {
+  const { before, changes } = await admittedReadWithUnsent(page, info, false);
+  await expect(page.getByRole("alert")).toHaveText(
+    "Couldn't save your latest changes. Copy them before leaving this page.",
+  );
+  await expect(
+    page.locator('.oa-doc-error[data-tone="warning"]'),
+  ).toBeVisible();
+  expect(await seenStatuses(page)).not.toContain("Saved");
+  expect(changes()).toBe(before);
+});

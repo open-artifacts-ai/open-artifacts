@@ -13,6 +13,14 @@ import { appOrigin } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import { WELCOME_TITLE, welcomeHtml } from "../onboarding/welcome.js";
 import { publish } from "./artifacts.js";
+import { busView } from "./bus.js";
+import {
+  askAnsweredKey,
+  MENTION_STALLED_MS,
+  mentionedKey,
+  mentionRepliedKey,
+  namedKey,
+} from "./onboarding-firsts.js";
 
 export const DISMISSED_KEY = "onboarding:dismissed";
 export const COMPLETED_KEY = "onboarding:completed";
@@ -25,7 +33,7 @@ export const WELCOME_OPENED_KEY = "onboarding:welcome-opened";
  * the owner holds, #2422). It is not the user's work: it never makes an
  * instance "not fresh" and never counts as their first artifact.
  */
-const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
+export const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
 
 /** One row per user who has posted a comment (any thread or reply). */
 export const commentedKey = (userId: string) =>
@@ -44,7 +52,7 @@ export async function getOnboarding(
   env: Env,
   userId: string,
 ): Promise<Onboarding> {
-  const [flags, own, agent, first, commented] = await env.DB.batch([
+  const [flags, own, agent, first, commented, firsts] = await env.DB.batch([
     stmt(
       env.DB,
       "select key, value from settings where key in (?1, ?2, ?3, ?4)",
@@ -72,6 +80,16 @@ export async function getOnboarding(
     stmt(env.DB, "select 1 as x from settings where key = ?1").bind(
       commentedKey(userId),
     ),
+    // #2478: the first times of the three new steps, and of the first mention.
+    stmt(
+      env.DB,
+      "select key, value from settings where key in (?1, ?2, ?3, ?4)",
+    ).bind(
+      namedKey(userId),
+      mentionedKey(userId),
+      mentionRepliedKey(userId),
+      askAnsweredKey(userId),
+    ),
   ]);
   const rows = flags.results as { key: string; value: string }[];
   const keys = new Set(rows.map((r) => r.key));
@@ -88,6 +106,15 @@ export async function getOnboarding(
     welcomeId = live ? w.artifactId : null;
   }
   const f = first.results[0] as { id: string; title: string } | undefined;
+  const at = new Map(
+    (firsts.results as { key: string; value: string }[]).map((r) => [
+      r.key,
+      Number(r.value),
+    ]),
+  );
+  const agentNamed = at.has(namedKey(userId));
+  const mentionReplied = at.has(mentionRepliedKey(userId));
+  const mentionedAt = at.get(mentionedKey(userId));
   return {
     dismissed: keys.has(DISMISSED_KEY),
     completed: keys.has(COMPLETED_KEY),
@@ -97,7 +124,35 @@ export async function getOnboarding(
     agentConnected: agent.results.length > 0,
     firstArtifact: f ? { id: f.id, title: f.title } : null,
     commented: commented.results.length > 0,
+    agentNamed,
+    agentName:
+      agentNamed && !keys.has(COMPLETED_KEY)
+        ? await agentName(env, userId)
+        : null,
+    mentionReplied,
+    mentionStalled:
+      !mentionReplied &&
+      mentionedAt !== undefined &&
+      Date.now() - mentionedAt >= MENTION_STALLED_MS,
+    askAnswered: at.has(askAnsweredKey(userId)),
   };
+}
+
+/**
+ * The name the checklist calls the owner's agent: the most recently active
+ * agent that is not on a harness default name. Read live, never stored; null
+ * when none or the hub can't be read (the page then says "your agent").
+ */
+async function agentName(env: Env, userId: string): Promise<string | null> {
+  try {
+    const { agents } = await busView(env, userId);
+    const named = agents
+      .filter((a) => a.unnamed !== true)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
+    return named?.name ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function parseWelcome(

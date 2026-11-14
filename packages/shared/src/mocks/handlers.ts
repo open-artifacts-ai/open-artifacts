@@ -114,6 +114,8 @@ export type MockOptions = {
   emailEnabled?: boolean;
   /** Me.instance.plan, and GET /usage `plan` and its limits (default "free"). */
   plan?: Plan;
+  /** Me.instance.docs (#1100): New doc, or the note that docs need Workers Paid. */
+  docs?: "on" | "needs_paid";
   update?: InstanceUpdate | null;
   /** Comments writes answer 429 with this Retry-After, in seconds (#682). */
   commentsRateLimit?: number;
@@ -158,6 +160,12 @@ export type MockOptions = {
         agentConnected?: boolean;
         published?: boolean;
         commented?: boolean;
+        /** #2478 */
+        named?: boolean;
+        agentName?: string;
+        mentionReplied?: boolean;
+        mentionStalled?: boolean;
+        askAnswered?: boolean;
         opened?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
@@ -376,6 +384,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   if (opts.emailEnabled !== undefined)
     me.instance.emailEnabled = opts.emailEnabled;
   me.instance.plan = plan;
+  if (opts.docs) me.instance.docs = opts.docs;
   if (opts.update !== undefined) me.instance.update = opts.update;
   const artifacts: ArtifactSummary[] = f.artifacts;
   if (opts.events)
@@ -397,9 +406,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       }
   const files = new Map(Object.entries(f.files));
   const shares = f.shares;
-  const members: Member[] = f.members;
-  const tokens = f.tokens;
-  const clients = f.oauthClients;
+  // ?mock=welcome is a fresh instance: nobody invited yet, and no agent token
+  // until the connect tick is on (#2478).
+  const fresh = opts.welcome
+    ? opts.welcome === true
+      ? {}
+      : opts.welcome
+    : null;
+  const members: Member[] = fresh
+    ? f.members.filter((m) => m.role === "owner")
+    : f.members;
+  const tokens = fresh && !fresh.agentConnected ? [] : f.tokens;
+  const clients = fresh ? [] : f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
   // R.onboarding: install-wide, the owner only (anyone else 404).
   const onboarding: Onboarding = {
@@ -410,6 +428,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     agentConnected: false,
     firstArtifact: null,
     commented: false,
+    // #2478: without ?mock=welcome the instance is established: the three new steps are done.
+    agentNamed: !opts.welcome,
+    agentName: opts.welcome ? null : "Atlas",
+    mentionReplied: !opts.welcome,
+    mentionStalled: false,
+    askAnswered: !opts.welcome,
   };
   if (opts.welcome) {
     const w = opts.welcome === true ? {} : opts.welcome;
@@ -425,6 +449,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       firstArtifact:
         w.published && first ? { id: first.id, title: first.title } : null,
       commented: w.commented ?? false,
+      agentNamed: w.named ?? false,
+      agentName: w.named ? (w.agentName ?? "Atlas") : null,
+      mentionReplied: w.mentionReplied ?? false,
+      mentionStalled: w.mentionStalled ?? false,
+      askAnswered: w.askAnswered ?? false,
     });
   }
   if (opts.bus) {
