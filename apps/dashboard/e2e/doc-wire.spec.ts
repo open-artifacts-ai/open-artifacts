@@ -105,8 +105,17 @@ test("hello near the cap: warns and stays editable", async ({ page }, info) => {
   await expect(page.getByRole("toolbar")).toBeVisible();
 });
 
-test("close 4403: no access, read-only, no retry", async ({ page }, info) => {
-  await open(page, info, ["--close", "4403"]);
+test("close 4403 (an access change): reconnects and stays editable", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--close-first", "4403"]);
+  await reconnectsAfter(page, 4403);
+});
+
+test("close 4403, then the reconnect is refused: no access, read-only", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--revoke"]);
   await expect(page.getByRole("alert")).toHaveText(
     "You no longer have access.",
   );

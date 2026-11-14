@@ -1008,9 +1008,23 @@ describe("DocEditor", () => {
       expect(screen.getByRole("toolbar")).toBeVisible();
     });
 
-    it("4403 says you no longer have access and stops editing", async () => {
+    it("4403 after a hello reconnects; a hello keeps it editable (an access change, #2490)", async () => {
       const { f } = await open();
+      const before = f.connects;
       act(() => f.close(4403));
+      await waitFor(() => expect(f.connects).toBe(before + 1));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(await screen.findByRole("toolbar")).toBeVisible();
+    });
+
+    it("4403, then a reconnect refused before any hello, says you no longer have access", async () => {
+      const { f } = await open();
+      const before = f.connects;
+      f.autoHello = null;
+      act(() => f.close(4403));
+      await waitFor(() => expect(f.connects).toBe(before + 1));
+      // A browser sees the route's 404 as a 1006 close.
+      act(() => f.close(1006));
       expect(await screen.findByRole("alert")).toHaveTextContent(
         "You no longer have access.",
       );

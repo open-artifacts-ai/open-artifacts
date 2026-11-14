@@ -83,6 +83,8 @@ export const showsNote = (e: VersionEvent): boolean =>
  * a connection has stayed up 10 s.
  */
 export const BUSY_BASE_MS = 1000;
+/** The wait before reconnecting after a bare 4403 (an access change). */
+export const ACCESS_RECHECK_MS = 250;
 export const BUSY_MAX_MS = 30_000;
 export const BUSY_STABLE_MS = 10_000;
 /**
@@ -204,11 +206,12 @@ export const roomName = (artifactId: string) => `${artifactId}/doc`;
 /**
  * Which server closes y-websocket reconnects after. Its default treats every
  * 4400-4499 close as final, but the wire spec's 4401 auth_expired means "the
- * cookie re-authorizes: reconnect silently". Only 4403 (access removed) and
- * 4404 (doc deleted) are final; 1007 and 1013 reconnect (1007 once, see the
- * room), with the provider's backoff. A 4403 whose reason is
- * accessChangedCloseReason (the room, #2154: authorized just before an access
- * change) is not final: the room reconnects after the wait it names.
+ * cookie re-authorizes: reconnect silently". 4403 and 4404 stop
+ * y-websocket's own retry; 1007 and 1013 reconnect (1007 once, see the room),
+ * with the provider's backoff. The room itself reconnects after a 4403 that
+ * follows a hello (an access change closes every socket, #2490) and after
+ * one whose reason is accessChangedCloseReason (authorized just before an
+ * access change, #2154), after the wait it names.
  */
 export const roomShouldReconnect = (e: {
   code: number;
@@ -266,6 +269,12 @@ export function createDocRoom(
   let fullFromHello = false;
   let ended: RoomEnd | null = null;
   let badFrames = 0;
+  // A bare 4403 after a hello: the room closes every socket on any access
+  // change (#2490), so reconnect to re-authorize. Set until the next hello; a
+  // socket that closes before one meanwhile means access really went.
+  let probing = false;
+  // Sockets that got a hello (the room accepted them).
+  const welcomed = new WeakSet<object>();
   // 1013: how many busy closes in a row, the pending reconnect, and the timer
   // that forgives them once a connection has stayed up.
   let busyCloses = 0;
@@ -394,8 +403,9 @@ export function createDocRoom(
     wrapped.add(ws);
     const binary = ws.onmessage;
     // Close codes from the room (wire spec): 4401 auth_expired is the cookie
-    // re-authorizing, so y-websocket's own reconnect is right; 4403 and 4404
-    // end it; 1007 gets one resync; 1013 waits its own growing delay.
+    // re-authorizing, so y-websocket's own reconnect is right; 4404 ends it;
+    // 4403 reconnects once to re-check access (see probing); 1007 gets one
+    // resync; 1013 waits its own growing delay.
     ws.addEventListener?.("close", (ev) => {
       if (destroyed) return;
       const stop = (why: RoomEnd) => {
@@ -411,9 +421,24 @@ export function createDocRoom(
         busyTimer = setTimeout(() => {
           if (!destroyed) provider.connect?.();
         }, retry);
-      } else if (ev.code === 4403) stop("access_removed");
-      else if (ev.code === 4404) stop("not_found");
-      else if (ev.code === 1013) {
+      } else if (ev.code === 4404) stop("not_found");
+      else if (probing && !welcomed.has(ws)) {
+        // The reconnect after a 4403 was refused (a browser sees 1006 for the
+        // route's 404) or closed again before its hello: access is gone.
+        stop("access_removed");
+      } else if (ev.code === 4403) {
+        if (!welcomed.has(ws)) stop("access_removed");
+        else {
+          // Every socket closes on any access change (a share removed, the
+          // visibility changed): reconnect; the room says whether we may stay.
+          probing = true;
+          provider.disconnect?.();
+          clearTimeout(busyTimer);
+          busyTimer = setTimeout(() => {
+            if (!destroyed) provider.connect?.();
+          }, ACCESS_RECHECK_MS);
+        }
+      } else if (ev.code === 1013) {
         // Take over from y-websocket's backoff (disconnect() stops its retry).
         provider.disconnect?.();
         clearTimeout(busyTimer);
@@ -447,6 +472,8 @@ export function createDocRoom(
           from?: unknown;
         };
         if (frame.type === "hello") {
+          welcomed.add(ws);
+          probing = false;
           // The first frame: the role comes from the server only.
           role = frame.role === "edit" ? "edit" : "read";
           reason =

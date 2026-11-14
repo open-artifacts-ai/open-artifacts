@@ -364,6 +364,25 @@ describe("the wire spec: hello and close codes", () => {
     room.destroy();
   });
 
+  it("4403 after a hello reconnects; the next hello clears it; a close before one ends it", () => {
+    const room = ready();
+    fake.frame(JSON.stringify({ type: "hello", role: "edit" }));
+    fake.close(4403);
+    expect(room.getSnapshot().ended).toBeNull();
+    vi.advanceTimersByTime(250);
+    expect(fake.connects).toBe(2);
+    fake.frame(JSON.stringify({ type: "hello", role: "edit" }));
+    // Another access change: same again, but this time the reconnect fails.
+    fake.close(4403);
+    vi.advanceTimersByTime(250);
+    expect(fake.connects).toBe(3);
+    fake.close(1006);
+    expect(room.getSnapshot().ended).toBe("access_removed");
+    vi.advanceTimersByTime(5000);
+    expect(fake.connects).toBe(3);
+    room.destroy();
+  });
+
   it("4404 not_found ends it with the gone copy", () => {
     const room = ready();
     fake.close(4404);

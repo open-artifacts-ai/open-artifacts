@@ -13,7 +13,7 @@
 // Wire spec frames (artifact UkN5r8hpoXu9DYxG): --hello role[:reason[:bytes]]
 // sends the hello frame first (read:room_full, read:access:1950000, edit);
 // --close <code> closes every connection with that code, --close-first <code>
-// only the first that settles, i.e. is still open and the newest 600 ms after it connected (4401 4403 4404 1007 1013). It logs "conn n" for
+// only the first that settles (--revoke: 4403, then refuse every upgrade), i.e. is still open and the newest 600 ms after it connected (4401 4403 4404 1007 1013). It logs "conn n" for
 // each connection and "closing <code>" for each close it makes, each with a
 // millisecond timestamp. --saved n[:name[:auto]] and
 // --restored from:version send the version broadcasts. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
@@ -52,6 +52,7 @@ export function startDocRoom({
   hello = null,
   close = null,
   closeFirst = null,
+  revoke = false,
   saved = null,
   restored = null,
 }) {
@@ -96,7 +97,13 @@ export function startDocRoom({
     for (const ws of conns.keys()) send(ws, msg);
   });
 
-  const wss = new WebSocketServer({ port });
+  // --revoke: access is gone after the first 4403, so later upgrades are
+  // refused with 404, as #2490's route does (a browser sees a 1006 close).
+  let revoked = false;
+  const wss = new WebSocketServer({
+    port,
+    verifyClient: (_info, cb) => (revoked ? cb(false, 404) : cb(true)),
+  });
   wss.on("connection", (ws) => {
     connections++;
     // A log line per connection, so a test can tell a NEW socket opened.
@@ -156,9 +163,11 @@ export function startDocRoom({
       // Still open, and still the newest: a StrictMode socket the page has
       // torn down (or is tearing down) is neither.
       if (ws.readyState !== 1 || mine !== connections) return;
-      const code = close ?? (!closedFirst ? closeFirst : null);
+      const code =
+        close ?? (!closedFirst ? (revoke ? "4403" : closeFirst) : null);
       if (!code) return;
       if (close === null) closedFirst = true;
+      if (revoke) revoked = true;
       console.log(`closing ${code} ${Date.now()}`);
       ws.close(Number(code), "wire spec");
     }, 600);
@@ -306,6 +315,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     hello: ((h) => (h === "none" ? null : h))(arg("--hello") ?? "edit"),
     close: arg("--close"),
     closeFirst: arg("--close-first"),
+    revoke: process.argv.includes("--revoke"),
     saved: arg("--saved"),
     restored: arg("--restored"),
   });
