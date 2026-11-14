@@ -695,8 +695,9 @@ export const useCreateSpace = () =>
     (input: SpaceCreateInput) => api.send("POST", R.spaces, input, SpaceSchema),
     () => [["spaces"], qk.me],
     "Couldn't create the space.",
-    // A refused name shows under the field.
-    (e) => e.status === 400,
+    // A refused name shows under the field; a plan refusal in the dialog,
+    // with its links (#2472): a toast's can't be reached past the dialog.
+    (e) => e.status === 400 || e.code === "plan_required",
   );
 /** Trash: the caller's deleted artifacts and those in spaces they manage, newest first. */
 export const useTrash = (spaceId?: string) =>
@@ -1091,13 +1092,15 @@ export const useUnsnoozeHeld = () =>
       ),
     "Couldn't cancel the snooze.",
   );
-export const useDisconnectDirectory = () =>
+export const useDisconnectDirectory = (
+  success = "Directory disconnected. Members are now managed here.",
+) =>
   useInvalidating(
     () => api.send("DELETE", R.directory, undefined),
     () => [qk.directory, qk.me],
     "Couldn't disconnect.",
     directoryInline,
-    "Directory disconnected. Members are now managed here.",
+    success,
   );
 /** Refreshes on failure too: a refused move may mean the page is stale. */
 /** `quiet`: the caller shows failures itself (the Move dialog does, inline). */
@@ -1175,7 +1178,7 @@ export const useResetIdentity = () => {
       // The Members row says these itself, naming the person.
       if (e instanceof ApiClientError && (e.status === 404 || e.status === 403))
         return;
-      failureToast(qc, "Couldn't reset the sign-in.", e);
+      failureToast(qc, "Couldn't reset the login.", e);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
   });

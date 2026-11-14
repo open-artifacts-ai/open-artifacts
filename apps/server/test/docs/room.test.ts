@@ -303,15 +303,33 @@ describe("DocRoom storage", () => {
 
   it("compacts past the row threshold", async () => {
     const stub = roomStub();
-    const a = await connect(stub);
-    for (let i = 0; i <= COMPACT_ROWS; i++) {
-      a.doc.getText("t").insert(0, "k");
-      await a.ping();
-      await inRoom(stub, (r) => r.flush());
-      if (i < COMPACT_ROWS) expect(await snapRows(stub)).toBe(0);
-    }
+    // One synchronous pass inside the room: no socket timing, no clock.
+    const out = await inRoom(stub, (r) => {
+      const x = r as unknown as {
+        sql: SqlStorage;
+        buffer: Uint8Array[];
+        bufferBytes: number;
+      };
+      const snaps = () =>
+        x.sql.exec<{ n: number }>("SELECT count(*) AS n FROM snapshot").one().n;
+      const d = new Y.Doc();
+      let pending: Uint8Array | null = null;
+      d.on("update", (u: Uint8Array) => {
+        pending = u;
+      });
+      const before: number[] = [];
+      for (let i = 0; i <= COMPACT_ROWS; i++) {
+        d.getText("t").insert(0, "k");
+        x.buffer.push(pending as unknown as Uint8Array);
+        x.bufferBytes += (pending as unknown as Uint8Array).byteLength;
+        r.flush();
+        if (i < COMPACT_ROWS) before.push(snaps());
+      }
+      return { before, after: snaps() };
+    });
+    expect(out.before.every((n) => n === 0)).toBe(true);
+    expect(out.after).toBe(1);
     expect(await rows(stub)).toBe(0);
-    expect(await snapRows(stub)).toBe(1);
     const j = await connect(stub);
     await j.until(() => textOf(j).length === COMPACT_ROWS + 1);
   });
@@ -829,16 +847,10 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
         [AUTHZ_AT_HEADER]: String(Date.now()),
       },
     });
+    if (res.status !== 101) return { status: res.status, opened: false };
     const ws = res.webSocket as WebSocket;
     ws.accept();
-    return new Promise<{ code: number | null; opened: boolean }>((resolve) => {
-      let opened = false;
-      ws.addEventListener("message", (e) => {
-        if (typeof e.data !== "string") opened = true;
-        if (opened) resolve({ code: null, opened });
-      });
-      ws.addEventListener("close", (e) => resolve({ code: e.code, opened }));
-    });
+    return { status: 101, opened: true };
   };
 
   it("budgets full-state work per actor across reconnects, refills, spares others", async () => {
@@ -852,17 +864,106 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
       const c = await connect(stub, { actor, strict: true, role: "read" });
       c.ws.close();
     }
-    expect((await rawOpen(stub, actor)).code).toBe(1013);
-    const other = await rawOpen(stub, "u:someone-else");
-    expect(other.opened).toBe(true);
+    expect((await rawOpen(stub, actor)).status).toBe(429);
+    expect((await rawOpen(stub, "u:someone-else")).opened).toBe(true);
     t += 61_000;
     expect((await rawOpen(stub, actor)).opened).toBe(true);
   });
 
-  it("an over-budget step 1 gets rate_limited and a 1013 close", async () => {
+  const rawOpenAs = async (
+    stub: Stub,
+    actor: string,
+    role: "read" | "edit" = "read",
+  ) =>
+    stub.fetch("https://room/ws", {
+      headers: {
+        Upgrade: "websocket",
+        [ACTOR_HEADER]: actor,
+        [DOC_ROLE_HEADER]: role,
+        [AUTHZ_AT_HEADER]: String(Date.now()),
+      },
+    });
+
+  it("one token left refuses the upgrade with 429 (no half-admission)", async () => {
     const stub = roomStub();
     await inRoom(stub, (r) => {
+      r.budgetCap = 1; // fewer than the two an admission reserves
       (r as unknown as { now: () => number }).now = () => 9_000_000;
+    });
+    const res = await rawOpenAs(stub, "u:starved");
+    expect(res.status).toBe(429);
+    expect(res.webSocket).toBeNull();
+    expect(
+      await inRoom(
+        stub,
+        (r) =>
+          (r as unknown as { ctx: DurableObjectState }).ctx.getWebSockets()
+            .length,
+      ),
+    ).toBe(0);
+  });
+
+  it("an admitted socket's first sync reply survives other sockets draining the bucket", async () => {
+    const stub = roomStub();
+    const w = await connect(stub);
+    type(w, "stored");
+    await w.ping();
+    await runDurableObjectAlarm(stub);
+    await inRoom(stub, (r) => {
+      r.budgetCap = 2; // exactly one admission
+      (r as unknown as { now: () => number }).now = () => 9_000_000;
+    });
+    const res = await rawOpenAs(stub, "u:reserved");
+    expect(res.status).toBe(101);
+    const ws = res.webSocket as WebSocket;
+    ws.accept();
+    // Another socket of the same actor is refused: the bucket is empty.
+    expect((await rawOpenAs(stub, "u:reserved")).status).toBe(429);
+    const doc = new Y.Doc();
+    const subs: number[] = [];
+    let code = 0;
+    ws.addEventListener("close", (e) => {
+      code = e.code;
+    });
+    const got = new Promise<void>((resolve) =>
+      ws.addEventListener("message", (e) => {
+        if (typeof e.data === "string") return;
+        const dec = decoding.createDecoder(
+          new Uint8Array(e.data as ArrayBuffer),
+        );
+        if (decoding.readVarUint(dec) !== 0) return;
+        subs.push(decoding.peekVarUint(dec));
+        syncProtocol.readSyncMessage(dec, encoding.createEncoder(), doc, "r");
+        if (subs.includes(1)) resolve();
+      }),
+    );
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, 0);
+    syncProtocol.writeSyncStep1(enc, new Y.Doc());
+    ws.send(encoding.toUint8Array(enc));
+    await got;
+    expect(code).toBe(0);
+    expect(doc.getText("t").toString()).not.toBe("");
+  });
+
+  it("one anonymous IP exhausting its budget does not block another IP", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 9_200_000;
+    });
+    // Per-IP cap 6 = three admissions; the shared anonymous cap (10) is not hit.
+    for (let i = 0; i < 3; i++)
+      expect((await rawOpenAs(stub, "ip:203.0.113.7")).status).toBe(101);
+    expect((await rawOpenAs(stub, "ip:203.0.113.7")).status).toBe(429);
+    // A verified anonId suffix is the same IP.
+    expect((await rawOpenAs(stub, "ip:203.0.113.7|abcdefgh")).status).toBe(429);
+    expect((await rawOpenAs(stub, "ip:198.51.100.9")).status).toBe(101);
+  });
+
+  it("surplus step 1s on a synced socket are ignored", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 9_100_000;
     });
     const a = await connect(stub, { strict: true, role: "read" });
     const enc = encoding.createEncoder();
@@ -870,8 +971,47 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
     syncProtocol.writeSyncStep1(enc, new Y.Doc());
     const frame = encoding.toUint8Array(enc);
     for (let i = 0; i < 8; i++) a.ws.send(frame);
-    await a.closed;
-    expect(a.texts.some((x) => x.includes("rate_limited"))).toBe(true);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(a.ws.readyState).toBe(WebSocket.OPEN);
+    expect(a.texts).toEqual([]);
+  });
+
+  it("retries a failed compaction on the next alarm", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    type(a, "compact me");
+    await a.ping();
+    await runDurableObjectAlarm(stub);
+    expect(await rows(stub)).toBe(1);
+    await inRoom(stub, async (r) => {
+      const x = r as unknown as { sql: SqlStorage; squeeze: boolean };
+      const real = x.sql;
+      (globalThis as { __cfail?: boolean }).__cfail = true;
+      x.sql = {
+        exec: (q: string, ...args: unknown[]) => {
+          if (
+            (globalThis as { __cfail?: boolean }).__cfail &&
+            /INSERT OR REPLACE INTO snapshot/.test(q)
+          )
+            throw new Error("boom");
+          return real.exec(q, ...args);
+        },
+      } as unknown as SqlStorage;
+      x.squeeze = true;
+    });
+    await runInDurableObject(stub, (_r, st) =>
+      st.storage.setAlarm(Date.now() + 60_000),
+    );
+    await runDurableObjectAlarm(stub);
+    expect(await snapRows(stub)).toBe(0);
+    expect(
+      await runInDurableObject(stub, (_r, st) => st.storage.getAlarm()),
+    ).not.toBeNull();
+    await inRoom(stub, () => {
+      (globalThis as { __cfail?: boolean }).__cfail = false;
+    });
+    await runDurableObjectAlarm(stub);
+    expect(await snapRows(stub)).toBe(1);
   });
 
   it("refuses ip: and agent: actors without a trusted authorization time", async () => {

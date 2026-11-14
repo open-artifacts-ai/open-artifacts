@@ -35,5 +35,15 @@ export function toDocNode(doc: PMNode | DocJSON): PMNode {
     doc instanceof PMNode || "check" in doc
       ? ((doc as PMNode).toJSON() as DocJSON)
       : (doc as DocJSON);
-  return docFromJSON(json);
+  return docFromJSON(withoutBreakMarks(json));
+}
+
+/** A hardBreak carries no marks: strip any (an editor applies bold across one). */
+function withoutBreakMarks(node: DocJSON): DocJSON {
+  const content = node.content?.map(withoutBreakMarks);
+  if (node.type === "hardBreak") {
+    const { marks: _marks, ...rest } = node;
+    return rest;
+  }
+  return content ? { ...node, content } : node;
 }

@@ -52,6 +52,18 @@ type Opts = {
   onCommentOpen: (id: string) => void;
 };
 const opts: Opts[] = [];
+// #2229: count how often a thread's problems are worked out (passes through).
+const problemCalls = vi.hoisted(() => [] as unknown[]);
+vi.mock("../src/viewer/comments/asks", async (orig) => {
+  const m = await orig<typeof import("../src/viewer/comments/asks")>();
+  return {
+    ...m,
+    newProblems: (cs: Parameters<typeof m.newProblems>[0]) => {
+      problemCalls.push(cs);
+      return m.newProblems(cs);
+    },
+  };
+});
 const setMode = vi.fn();
 const setComments = vi.fn();
 const focus = vi.fn();
@@ -75,6 +87,11 @@ vi.mock("../src/viewer/bridge", async () => {
     },
   };
 });
+
+vi.mock("../src/auth/webauthn", async (orig) => ({
+  ...(await orig<typeof import("../src/auth/webauthn")>()),
+  getAssertion: vi.fn(async () => ({ id: "cred" })),
+}));
 
 installHarness();
 
@@ -191,6 +208,44 @@ describe("asks on the comments column", () => {
     expect(a.getAttribute("href")).toBe("https://a.com/x");
     expect(a.getAttribute("target")).toBe("_blank");
     expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+  it("option details have no links, keep other formatting, and a click anywhere picks", async () => {
+    let answered: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            {
+              id: "a",
+              label: "List only",
+              detail:
+                "See https://a.com/x and [the doc](https://b.com/y) with **bold** and `code`",
+            },
+            { id: "b", label: "Side by side" },
+          ],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          answered = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const btn = await within(c).findByRole("button", { name: /List only/ });
+    expect(btn.querySelector("a")).toBeNull();
+    expect(btn.querySelector("strong")?.textContent).toBe("bold");
+    expect(btn.querySelector("code")?.textContent).toBe("code");
+    expect(btn.textContent).toContain("https://a.com/x");
+    expect(btn.textContent).toContain("the doc");
+    fireEvent.click(btn.querySelector("strong") as HTMLElement);
+    await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
   });
   it("shows the question, options, recommendation and why, and answers with the option id", async () => {
     let answered: unknown = null;
@@ -462,9 +517,11 @@ describe("asks on the comments column", () => {
     await waitFor(() => expect(sent).toEqual({ optionId: "a" }));
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
     // The new answer ends Change mode: the others lock again.
-    expect(
-      within(c).getByRole("button", { name: /Side by side/ }),
-    ).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        within(c).getByRole("button", { name: /Side by side/ }),
+      ).toBeDisabled(),
+    );
     expect(
       within(c).getByRole("button", { name: "Change" }),
     ).toBeInTheDocument();
@@ -659,6 +716,353 @@ describe("asks on the comments column", () => {
   });
 });
 
+describe("#2381 deciders on the card", () => {
+  const person = (id: string, name: string, me = false) => ({
+    kind: "user" as const,
+    id,
+    name,
+    me,
+  });
+  const maya = person("maya", "Maya");
+  const sam = person("sam", "Sam");
+  const priya = person("priya", "Priya");
+  const me = person("me", "Me", true);
+  const pick = (by: ReturnType<typeof person>, optionId: string) => ({
+    by,
+    optionId,
+    at: "2026-11-05T11:00:00Z",
+    typed: true,
+  });
+
+  it("someone weighing in sees 'who decides', names under options, and posts a weigh-in", async () => {
+    let answered: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [maya, priya, me],
+          decider: maya,
+          role: "weigh",
+          picks: [pick(priya, "b")],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          answered = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText("Maya decides")).toBeInTheDocument();
+    expect(
+      within(c).getByText(/Pick an option to weigh in/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText(/Priya weighed in/)).toBeInTheDocument();
+    fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
+    await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
+    // A weigh-in is not shown as the decision before the server says so.
+    expect(within(c).queryByText(/decided/)).toBeNull();
+  });
+
+  it("the decider's card says 'You decide'; the named decider's is 'asked ... to decide'", async () => {
+    serveThreads(() => [
+      askThread({}, { to: [me, sam], decider: me, role: "decide", picks: [] }),
+      {
+        ...askThread(
+          {},
+          {
+            to: [sam, me],
+            decider: sam,
+            chosenBy: me,
+            role: "weigh",
+            canTakeBack: true,
+            picks: [],
+          },
+        ),
+        id: "t-two",
+      },
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText("You decide")).toBeInTheDocument();
+    expect(within(c).getByText("You asked Sam to decide")).toBeInTheDocument();
+  });
+
+  it("'I'll decide this' shows only with canTakeBack and posts the take back", async () => {
+    let body: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [sam, me],
+          decider: sam,
+          chosenBy: me,
+          role: "weigh",
+          canTakeBack: true,
+          picks: [],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAskDecider(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          body = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "I'll decide this" }),
+    );
+    await waitFor(() => expect(body).toEqual({ takeBack: true }));
+  });
+
+  it("draws bars and a tally at four or more people, names at three or fewer", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [me, maya, sam, priya, person("lee", "Lee")],
+          decider: me,
+          role: "decide",
+          picks: [pick(maya, "a"), pick(sam, "a"), pick(priya, "b")],
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText(/3 of 4 weighed in/)).toBeInTheDocument();
+    expect(c.querySelectorAll("[data-option-bar]").length).toBe(2);
+    expect(within(c).queryByText(/Maya weighed in/)).toBeNull();
+  });
+
+  it("a guest's weigh-in is marked, and the decision shows a tick by the decider", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [maya, person("dana", "Dana"), me],
+          decider: maya,
+          role: "weigh",
+          picks: [{ ...pick(person("dana", "Dana"), "a"), guest: true }],
+          answer: {
+            optionId: "b",
+            by: maya,
+            at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: false,
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByText(/Dana \(guest\) weighed in/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText(/Maya decided/)).toBeInTheDocument();
+  });
+
+  it("explains not_decider in plain words", async () => {
+    serveThreads(() => [
+      askThread({}, { to: [me], decider: me, role: "decide", picks: [] }),
+    ]);
+    server.use(
+      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () =>
+        HttpResponse.json(
+          { error: { code: "not_decider", message: "x" } },
+          { status: 403 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      /can't decide this any more/,
+    );
+  });
+});
+
+describe("#2381 a pick that needs the decider's own passkey", () => {
+  it("a plain pick answered passkey_required asks to pick again, and the next click runs the passkey flow", async () => {
+    const posts: { optionId?: string; assertion?: unknown }[] = [];
+    let challenged = 0;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [{ kind: "user", id: "me", name: "Me", me: true }],
+          decider: { kind: "user", id: "me", name: "Me", me: true },
+          role: "decide",
+          picks: [],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
+        challenged++;
+        return HttpResponse.json({
+          options: { challenge: "x" },
+          expiresAt: "2099-01-01T00:00:00Z",
+        });
+      }),
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          const b = (await request.json()) as {
+            optionId?: string;
+            assertion?: unknown;
+          };
+          posts.push(b);
+          if (!b.assertion)
+            return HttpResponse.json(
+              { error: { code: "passkey_required", message: "x" } },
+              { status: 403 },
+            );
+          return HttpResponse.json(askThread().comments[0]);
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    // No prompt from the failed pick: it needs a click of its own.
+    expect(
+      await within(c).findByText("This now needs your passkey. Pick again."),
+    ).toBeInTheDocument();
+    expect(posts).toEqual([{ optionId: "b" }]);
+    expect(challenged).toBe(0);
+    fireEvent.click(within(c).getByRole("button", { name: /Side by side/ }));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1]).toMatchObject({
+      optionId: "b",
+      assertion: { id: "cred" },
+    });
+    expect(challenged).toBe(1);
+    expect(within(c).queryByRole("alert")?.textContent).toBeUndefined();
+  });
+});
+
+describe("#2344 the comment body on an ask", () => {
+  const STEPS = "Steps:\n1. Open the page\n2. Compare the layouts";
+  const withBody = (body: string, over: object = {}, askOver: object = {}) => {
+    const t = askThread(over, askOver) as {
+      comments: { body: string }[];
+    };
+    t.comments[0].body = body;
+    return t;
+  };
+  it("shows the body above the question, line breaks kept", async () => {
+    serveThreads(() => [withBody(STEPS)]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/Open the page/);
+    const body = c.querySelector("[data-ask-body]") as HTMLElement;
+    expect(body.textContent).toContain("Steps:");
+    expect(body.querySelectorAll("ol > li").length).toBe(2);
+    const q = within(c).getByText("Which layout?");
+    expect(
+      body.compareDocumentPosition(q) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+  it("renders markdown in the ask body, links allowed, hostile text inert, option buttons link-free", async () => {
+    const hostile = [
+      "Plan:",
+      "- **first** see https://a.com/x",
+      "- second [the doc](https://b.com/y)",
+      "",
+      '<img src=x onerror="alert(1)"> [bad](javascript:alert(1)) [paypal.com ](https://evil.example)',
+    ].join("\n");
+    serveThreads(() => [
+      withBody(
+        hostile,
+        {},
+        {
+          options: [
+            {
+              id: "a",
+              label: "List only",
+              detail: "see https://a.com/x [d](https://b.com)",
+            },
+            { id: "b", label: "Side by side" },
+          ],
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    const body = c.querySelector("[data-ask-body]") as HTMLElement;
+    expect(body.querySelectorAll("ul > li").length).toBe(2);
+    expect(body.querySelector("li strong")?.textContent).toBe("first");
+    expect(
+      [...body.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+    ).toEqual(["https://a.com/x", "https://b.com/y", "https://evil.example"]);
+    expect(body.querySelectorAll("a")[2]?.textContent).toBe(
+      "https://evil.example",
+    );
+    expect(body.querySelector("img, script, iframe")).toBeNull();
+    expect(body.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(body.textContent).toContain("[bad](javascript:alert(1))");
+    for (const b of within(c).getAllByRole("button"))
+      expect(b.querySelector("a")).toBeNull();
+  });
+  it("hides the body when it only repeats the question", async () => {
+    serveThreads(() => [withBody("  Which   layout?\n")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+  });
+  it("hides the body when empty", async () => {
+    serveThreads(() => [withBody("")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+  });
+  it("a collapsed decided ask hides the body, expanding shows it", async () => {
+    serveThreads(() => [
+      withBody(
+        STEPS,
+        { status: "resolved" },
+        {
+          closed: true,
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Show resolved/ }),
+    );
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+    fireEvent.click(line);
+    expect(c.querySelector("[data-ask-body]")).not.toBeNull();
+  });
+});
+
 describe("@mentions in the composer", () => {
   it("puts the caret right after a picked name at once (#1795)", async () => {
     server.use(
@@ -743,8 +1147,11 @@ describe("@mentions in the composer", () => {
       (e) => e.textContent,
     );
     expect(chips).toEqual(["@C++ Bot", "@OA Design"]);
-    const p = c.querySelector("[data-mention-chip]")?.parentElement;
-    expect(p?.textContent).toBe(
+    const p = c.querySelector("[data-mention-chip]")?.closest("p");
+    // The marks' descriptions (hidden, #2247) are not part of what is read or copied.
+    const copy = p?.cloneNode(true) as HTMLElement;
+    for (const h of copy.querySelectorAll("[hidden]")) h.remove();
+    expect(copy.textContent).toBe(
       "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby",
     );
     expect(p?.querySelector("b")).toBeNull();
@@ -762,10 +1169,11 @@ describe("@mentions in the composer", () => {
     expect(c.querySelector("[data-mention-chip]")).toBeNull();
   });
 
-  it("renders each mention's delivery", async () => {
+  it("renders each mention's delivery as a mark in its chip, and the problem once", async () => {
     const t = askThread();
     const root = t.comments[0] as Record<string, unknown>;
     delete root.ask;
+    root.body = "cc @OA Product and @OA Design";
     root.mentions = [
       { key: "agent:a", name: "OA Product", delivery: "queued" },
       { key: "agent:b", name: "OA Design", delivery: "seen" },
@@ -775,16 +1183,124 @@ describe("@mentions in the composer", () => {
     const c = await col();
     expect(
       await within(c).findByText(
-        /OA Product is offline · it will get this when it's back/,
+        "OA Product is offline. Held until it's back.",
       ),
     ).toBeInTheDocument();
+    const chip = (n: string) =>
+      [...c.querySelectorAll("[data-mention-chip]")].find((e) =>
+        e.textContent?.includes(n),
+      ) as HTMLElement;
     expect(
-      within(c).getByText(
-        "OA Product is offline · it will get this when it's back",
-      ),
-    ).toBeInTheDocument();
-    expect(within(c).getByText("OA Design: Seen")).toBeInTheDocument();
+      chip("OA Product").querySelector('[data-mark="wait"]'),
+    ).not.toBeNull();
+    expect(chip("OA Design").querySelector('[data-mark="ok"]')).not.toBeNull();
+    expect(within(c).queryByText(/OA Design: Seen/)).toBeNull();
     expect(within(c).queryByText(/Assigned to/)).toBeNull();
+  });
+});
+
+describe("#2229 delivery marks in a thread", () => {
+  const person = (id: string, over: object) => ({
+    id,
+    body: "plain reply",
+    author: { kind: "user", id: "u", name: "Leo", me: false },
+    createdAt: "2026-11-05T10:00:00Z",
+    editedAt: null,
+    typed: false,
+    can: { edit: false, delete: false },
+    ...over,
+  });
+  const told = (d: string) => [
+    {
+      key: "agent:s",
+      name: "Sirius",
+      linked: true,
+      animal: { id: "fox", color: 1 },
+      delivery: d,
+    },
+    {
+      key: "agent:v",
+      name: "Vega",
+      linked: true,
+      animal: { id: "fox", color: 2 },
+      delivery: "delivered",
+    },
+  ];
+  it("faces and a summary on a person's reply, the sentence once, none on an agent's reply", async () => {
+    const t = askThread();
+    t.comments = [
+      person("c1", { notified: told("queued") }),
+      person("c2", { notified: told("queued") }),
+      person("c3", {
+        author: {
+          kind: "agent",
+          id: "a",
+          name: "Vega",
+          me: false,
+          linked: true,
+        },
+        notified: told("queued"),
+      }),
+    ] as never;
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("plain reply");
+    const rows = [...c.querySelectorAll("[data-comment]")];
+    const faces = rows.map((r) => r.querySelector("[data-delivery-faces]"));
+    expect(faces[0]).not.toBeNull();
+    expect(faces[1]).not.toBeNull();
+    expect(faces[2]).toBeNull();
+    expect(
+      within(c).getAllByText("Sirius is offline. Held until it's back."),
+    ).toHaveLength(1);
+    expect(rows[0]?.querySelector("[data-summary]")?.textContent).toBe(
+      "1 of 2",
+    );
+  });
+  it("a thread's problems are worked out once, not per comment", async () => {
+    const t = askThread();
+    t.comments = [
+      person("c1", { notified: told("queued") }),
+      person("c2", { notified: told("queued") }),
+      person("c3", { notified: told("queued") }),
+      person("c4", { notified: told("queued") }),
+    ] as never;
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("plain reply");
+    const mine = problemCalls.filter((x) => (x as unknown[]).length === 4);
+    expect(mine.length).toBeGreaterThan(0);
+    // One call per distinct comments list: more comments does not mean more work.
+    expect(new Set(mine).size).toBe(mine.length);
+  });
+  it("a tight header gives way: time, then faces, only then the name", async () => {
+    const proto = HTMLElement.prototype;
+    const sw = Object.getOwnPropertyDescriptor(proto, "scrollWidth");
+    Object.defineProperty(proto, "scrollWidth", {
+      configurable: true,
+      get() {
+        return this.hasAttribute("data-author-name") ? 200 : 0;
+      },
+    });
+    try {
+      const t = askThread();
+      t.comments = [person("c1", { notified: told("queued") })] as never;
+      serveThreads(() => [t]);
+      mount(viewerPath(OWNED));
+      const c = await col();
+      await within(c).findAllByText("plain reply");
+      const head = c.querySelector("[data-header-stage]") as HTMLElement;
+      // The name stays cut off, so it steps to the end: no time, no faces, the count stays.
+      await waitFor(() => expect(head.dataset.headerStage).toBe("2"));
+      expect(c.querySelector("[data-face]")).toBeNull();
+      expect(c.querySelector("[data-summary]")?.textContent).toBe("1 of 2");
+      expect(head.querySelector("time, .sr-only")).not.toBeNull();
+    } finally {
+      if (sw) Object.defineProperty(proto, "scrollWidth", sw);
+      else delete (proto as unknown as Record<string, unknown>).scrollWidth;
+    }
   });
 });
 
@@ -1667,10 +2183,12 @@ describe("asks for you: reveal, surfaces, gone (#1614)", () => {
 
   it("an already-active ask in an open column scrolls and takes focus on click", async () => {
     const scroll = vi.fn();
-    Element.prototype.scrollIntoView = scroll;
     serveThreads(() => [askThread()]);
     mount(viewerPath(OWNED));
     const c = await col();
+    // The column scrolls itself, never the document.
+    c.style.overflowY = "auto";
+    c.scrollTo = scroll;
     const b = (
       await screen.findAllByRole("button", { name: /1 ask for you$/ })
     )[0] as HTMLElement;

@@ -33,6 +33,7 @@ export {
   claudeProcStartOf,
   claudeSessionsDir,
   findSession,
+  nameWasChosen,
   notASession,
   ProcStartUnknownError,
   PS_TIMEOUT_MS,

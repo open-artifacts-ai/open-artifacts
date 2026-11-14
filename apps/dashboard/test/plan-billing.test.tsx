@@ -2,11 +2,16 @@
 // view-only lock in the dashboard. The owner carries no cap under that lock,
 // so useCan and the Library read the billing reason.
 
-import type { ArtifactSummary, Me } from "@oa/shared";
+import {
+  type ArtifactSummary,
+  BUSINESS_CONTACT_URL,
+  type Me,
+} from "@oa/shared";
 import {
   act,
   cleanup,
   fireEvent,
+  render,
   renderHook,
   screen,
   waitFor,
@@ -23,6 +28,7 @@ import {
 } from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
 import { planStatus } from "../src/settings/Plan";
+import { type Column, PlanCompare } from "../src/settings/PlanCompare";
 import {
   arts,
   calls,
@@ -190,9 +196,14 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
   // Solo is a flat price per instance: no creator count.
   expect(screen.queryByText("Creators this month")).toBeNull();
   expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeVisible();
+  // #2404: Business is by contact only.
+  expect(screen.getByRole("link", { name: "Contact us" })).toHaveAttribute(
+    "href",
+    BUSINESS_CONTACT_URL,
+  );
   expect(
-    screen.getByRole("button", { name: "Upgrade to Business" }),
-  ).toBeVisible();
+    screen.queryByRole("button", { name: "Upgrade to Business" }),
+  ).toBeNull();
   expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
 });
 
@@ -283,6 +294,217 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
     expect(screen.queryByRole("button", { name: "Pay $10/year" })).toBeNull();
     expect(screen.queryByText(/set up this plan for you/)).toBeNull();
   });
+  it("a Solo in its free month with soloCheckedOut: Manage billing and the first charge date, no Pay", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, hasCustomer: true, soloCheckedOut: true },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    ).toBeVisible();
+    expect(screen.getByText("First charge on Dec 1, 2026.")).toBeVisible();
+    expect(screen.getByText("Your free month ends Dec 1, 2026.")).toBeVisible();
+    expect(screen.queryByText(/Then \$1\/month/)).toBeNull();
+    expect(pay()).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay $10/year" })).toBeNull();
+  });
+  it("a free-month Solo with soloCheckedOut false or absent keeps Pay and no charge date", async () => {
+    for (const extra of [{ soloCheckedOut: false }, {}]) {
+      cleanup();
+      mountHosted("/settings/plan", {
+        billing: { ...TRIAL, hasCustomer: true, ...extra },
+      });
+      await payShown();
+      expect(screen.queryByText(/First charge on/)).toBeNull();
+    }
+  });
+  describe("a scheduled cancel (cancelsAt)", () => {
+    const ENDS = "2026-12-20T00:00:00.000Z";
+    const NOTE =
+      "Your plan ends on Dec 20, 2026. After that you can still read everything, but nothing new can be published or edited. To keep it, resume in Manage billing.";
+    it("a free-month Solo that cancelled: the pill, the warning in place of the free-month banner, Manage billing, no first charge", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TRIAL,
+          hasCustomer: true,
+          soloCheckedOut: true,
+          cancelsAt: ENDS,
+        },
+      });
+      expect(await screen.findByText(NOTE)).toBeVisible();
+      expect(screen.getByText("Ends Dec 20")).toBeVisible();
+      expect(screen.queryByText("Free month")).toBeNull();
+      expect(screen.queryByText(/Your free month ends/)).toBeNull();
+      expect(screen.queryByText(/First charge on/)).toBeNull();
+      expect(screen.queryByText(/^Ends on /)).toBeNull();
+      expect(screen.queryByText(/Then \$1\/month/)).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Manage billing" }),
+      ).toBeVisible();
+      expect(pay()).toBeNull();
+    });
+    it("a paid Solo that cancelled", async () => {
+      mountHosted("/settings/plan", { billing: { ...PAID, cancelsAt: ENDS } });
+      expect(await screen.findByText(NOTE)).toBeVisible();
+      expect(screen.getByText("Ends Dec 20")).toBeVisible();
+      expect(screen.queryByText("Active")).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Manage billing" }),
+      ).toBeVisible();
+    });
+    it("a Team plan that cancelled", async () => {
+      mountHosted("/settings/plan", {
+        billing: { ...TEAM, hasCustomer: true, cancelsAt: ENDS },
+      });
+      expect(await screen.findByText(NOTE)).toBeVisible();
+      expect(screen.getByText("Ends Dec 20")).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Manage billing" }),
+      ).toBeVisible();
+    });
+    it("a Business plan that cancelled", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TEAM,
+          tier: "business",
+          hasCustomer: true,
+          cancelsAt: ENDS,
+        },
+      });
+      expect(await screen.findByText(NOTE)).toBeVisible();
+    });
+    it("null, absent or a past date: the Active pill and no warning", async () => {
+      for (const cancelsAt of [null, undefined, "2026-01-01T00:00:00.000Z"]) {
+        cleanup();
+        mountHosted("/settings/plan", {
+          billing: { ...TEAM, hasCustomer: true, cancelsAt },
+        });
+        await screen.findByRole("button", { name: "Manage billing" });
+        expect(screen.getByText("Active")).toBeVisible();
+        expect(screen.queryByText(/^Ends /)).toBeNull();
+        expect(screen.queryByText(/Your plan ends on/)).toBeNull();
+      }
+    });
+    it("planStatus: a warn pill and a warning note; a read-only plan keeps its own status", () => {
+      const r = planStatus({ ...TEAM, cancelsAt: ENDS });
+      expect(r.pill).toEqual({ label: "Ends Dec 20", tone: "warn" });
+      expect(r.note).toEqual({ tone: "warning", text: NOTE });
+      expect(
+        planStatus({
+          ...TEAM,
+          readOnly: true,
+          reason: "suspended",
+          cancelsAt: ENDS,
+        }).pill.label,
+      ).toBe("Suspended");
+    });
+  });
+  describe("the price a paying plan pays and its renewal (#2135)", () => {
+    const RENEWS = "2027-12-01T00:00:00.000Z";
+    const priceRow = () => screen.getByText("Price").nextElementSibling;
+    it("a paid Solo on the yearly interval", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...PAID,
+          soloCheckedOut: true,
+          interval: "year",
+          renewsAt: RENEWS,
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent("$10 a year, renews Dec 1, 2027");
+    });
+    it("a paid Solo on the monthly interval", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...PAID,
+          soloCheckedOut: true,
+          interval: "month",
+          renewsAt: "2026-12-01T00:00:00.000Z",
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent("$1 a month, renews Dec 1, 2026");
+    });
+    it("a free-month Solo with a card on file (soloCheckedOut)", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TRIAL,
+          hasCustomer: true,
+          soloCheckedOut: true,
+          interval: "year",
+          renewsAt: RENEWS,
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent("$10 a year");
+      expect(screen.queryByText(/renews/)).toBeNull();
+      expect(screen.getByText("First charge on Dec 1, 2026.")).toBeVisible();
+    });
+    it("a Team row with a future soloTrialEndsAt still shows renews", async () => {
+      mountHosted("/settings/plan", {
+        billing: {
+          ...TEAM,
+          hasCustomer: true,
+          soloTrialEndsAt: "2026-12-01T00:00:00.000Z",
+          interval: "year",
+          renewsAt: RENEWS,
+        },
+      });
+      await screen.findByRole("button", { name: "Manage billing" });
+      expect(priceRow()).toHaveTextContent(
+        "$100 per creator per year, renews Dec 1, 2027",
+      );
+    });
+    it("a no-card Solo trial shows no renewal, whatever billing sends", async () => {
+      mountHosted("/settings/plan", {
+        billing: { ...TRIAL, interval: "month", renewsAt: RENEWS },
+      });
+      await payShown();
+      expect(priceRow()).toHaveTextContent("$1 a month or $10 a year");
+      expect(screen.queryByText(/renews/)).toBeNull();
+    });
+    it("Team and Business show the per-creator price and interval", async () => {
+      for (const [tier, interval, text] of [
+        ["team", "month", "$10 per creator per month, renews Dec 1, 2027"],
+        ["team", "year", "$100 per creator per year, renews Dec 1, 2027"],
+        ["business", "month", "$25 per creator per month, renews Dec 1, 2027"],
+        ["business", "year", "$250 per creator per year, renews Dec 1, 2027"],
+      ] as const) {
+        cleanup();
+        mountHosted("/settings/plan", {
+          billing: {
+            ...TEAM,
+            tier,
+            hasCustomer: true,
+            interval,
+            renewsAt: RENEWS,
+          },
+        });
+        await screen.findByRole("button", { name: "Manage billing" });
+        expect(priceRow(), `${tier} ${interval}`).toHaveTextContent(text);
+      }
+    });
+    it("without renewsAt or interval (a cancel, an older answer) the price row is unchanged", async () => {
+      for (const extra of [
+        {},
+        { interval: "year" as const, renewsAt: null },
+        { interval: null, renewsAt: RENEWS },
+      ]) {
+        cleanup();
+        mountHosted("/settings/plan", {
+          billing: { ...TEAM, hasCustomer: true, ...extra },
+        });
+        await screen.findByRole("button", { name: "Manage billing" });
+        expect(priceRow()).toHaveTextContent("$10 per creator per month");
+        expect(screen.queryByText(/renews/)).toBeNull();
+      }
+    });
+  });
+  it("a paid Solo past its free month shows no charge date", async () => {
+    mountHosted("/settings/plan", { billing: PAID });
+    await screen.findByRole("button", { name: "Manage billing" });
+    expect(screen.queryByText(/First charge on/)).toBeNull();
+  });
   it("a Solo whose free month has passed counts as paid", async () => {
     pinNovember();
     mountHosted("/settings/plan", {
@@ -318,6 +540,26 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
     const { hasCustomer: _, ...unknown } = PAID;
     mountHosted("/settings/plan", { billing: unknown });
     await payShown();
+  });
+  it("past_due Solo with no customer: Pay buttons, never the operator line (#2137)", async () => {
+    mountHosted("/settings/plan", {
+      billing: {
+        ...PAUSED,
+        status: "past_due",
+        readOnly: true,
+        hasCustomer: false,
+      },
+    });
+    await payShown();
+    expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
+  });
+  it("paused Solo (solo_unpaid, no customer): Pay buttons, the way the banner points (#2137)", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...PAUSED, hasCustomer: false },
+    });
+    await payShown();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
   });
   it("tier free with a customer keeps the Pay buttons", async () => {
     mountHosted("/settings/plan", { billing: { ...PAID, tier: "free" } });
@@ -376,7 +618,7 @@ it("Plan and billing: Upgrade starts Checkout for the chosen tier", async () => 
 it("Plan and billing: a 503 billing_unavailable toasts and stays", async () => {
   mountHosted("/settings/plan", { billing: TRIAL, billingDown: true });
   fireEvent.click(
-    await screen.findByRole("button", { name: "Upgrade to Business" }),
+    await screen.findByRole("button", { name: "Upgrade to Team" }),
   );
   await findVisibleToast(
     "Billing isn't reachable right now. Try again in a minute.",
@@ -437,9 +679,7 @@ it("owners and admins reach Plan and billing while the instance is locked at the
     await screen.findByRole("heading", { name: "Plan and billing" }),
   ).toBeVisible();
   // The tab is in the settings nav and the buttons are live, not locked.
-  expect(
-    screen.getByRole("button", { name: "Upgrade to Business" }),
-  ).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeEnabled();
 });
 
 it("a member is sent away from Plan and billing", async () => {
@@ -484,9 +724,11 @@ it("Plan and billing: Pay $1/month is the primary button, the rest are outline",
   mountHosted("/settings/plan", { billing: TRIAL });
   const month = await screen.findByRole("button", { name: "Pay $1/month" });
   const cls = (n: string) =>
-    screen.getByRole("button", { name: n }).getAttribute("data-variant");
+    screen
+      .getByRole(n === "Contact us" ? "link" : "button", { name: n })
+      .getAttribute("data-variant");
   expect(month.getAttribute("data-variant")).toBe("default");
-  for (const n of ["Pay $10/year", "Upgrade to Business"])
+  for (const n of ["Pay $10/year", "Contact us"])
     expect(cls(n)).toBe("outline");
   // #2007: Team is the plan for most teams, so its card's button leads.
   expect(cls("Upgrade to Team")).toBe("default");
@@ -513,11 +755,15 @@ it("Plan and billing: a lapsed Team restarts through Checkout, its own tier prim
   });
   const restart = await screen.findByRole("button", { name: "Restart Team" });
   expect(restart.getAttribute("data-variant")).toBe("default");
+  // #2404: Business has no checkout, even to switch to.
   expect(
     screen
-      .getByRole("button", { name: "Switch to Business" })
+      .getByRole("link", { name: "Contact us" })
       .getAttribute("data-variant"),
   ).toBe("outline");
+  expect(
+    screen.queryByRole("button", { name: "Switch to Business" }),
+  ).toBeNull();
   expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
   fireEvent.click(restart);
   await waitFor(() =>
@@ -750,13 +996,16 @@ describe("plan cards and comparison (#2007)", () => {
     const year = await screen.findByRole("button", { name: "Yearly" });
     expect(year).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("2 months free on Solo")).toBeVisible();
-    expect(card("solo")).toHaveTextContent("$10 a year");
+    expect(card("solo")).toHaveTextContent("$0.83 a month");
+    expect(card("solo")).toHaveTextContent("$10 billed yearly");
+    expect(card("solo")).toHaveTextContent("2 months free");
     // No price checkout can't charge: Team and Business stay monthly.
     expect(card("team")).toHaveTextContent("$10 per creator a month");
     expect(card("business")).toHaveTextContent("$25 per creator a month");
-    expect(screen.queryByText(/\$8|\$20|Proposed/)).toBeNull();
+    expect(screen.queryByText(/\$100|\$250|Proposed/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
     expect(card("solo")).toHaveTextContent("$1 a month");
+    expect(card("solo")).toHaveTextContent("or $10 a year");
     expect(card("team")).toHaveTextContent("$10 per creator a month");
   });
 
@@ -768,14 +1017,15 @@ describe("plan cards and comparison (#2007)", () => {
       within(card("team")).getByRole("button", { name: "Current plan" }),
     ).toBeDisabled();
     expect(within(card("solo")).queryByRole("button")).toBeNull();
-    fireEvent.click(
-      within(card("business")).getByRole("button", {
+    // #2404: Business is a Contact us link, not a portal or checkout trip.
+    expect(
+      within(card("business")).getByRole("link", { name: "Contact us" }),
+    ).toHaveAttribute("href", BUSINESS_CONTACT_URL);
+    expect(
+      within(card("business")).queryByRole("button", {
         name: "Upgrade to Business",
       }),
-    );
-    await waitFor(() =>
-      expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true),
-    );
+    ).toBeNull();
     expect(posts.some((c) => c.path.endsWith("/billing/checkout"))).toBe(false);
   });
 
@@ -808,10 +1058,8 @@ describe("plan cards and comparison (#2007)", () => {
       within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
     ).toBeEnabled();
     expect(
-      within(card("business")).getByRole("button", {
-        name: "Upgrade to Business",
-      }),
-    ).toBeEnabled();
+      within(card("business")).getByRole("link", { name: "Contact us" }),
+    ).toHaveAttribute("href", BUSINESS_CONTACT_URL);
     expect(screen.queryByRole("button", { name: "Current plan" })).toBeNull();
   });
 
@@ -834,5 +1082,257 @@ describe("plan cards and comparison (#2007)", () => {
     await screen.findByTestId("plan-card-team");
     for (const c of ["solo", "team", "business"])
       expect(within(card(c)).queryByRole("button")).toBeNull();
+  });
+});
+
+// Yearly Team and Business when billing says yearlyTeamBusiness: the seat step (#2007).
+describe("yearly Team and Business seat step", () => {
+  const card = (c: string) => screen.getByTestId(`plan-card-${c}`);
+  const checkout = (posts: ReturnType<typeof calls>) =>
+    posts.find((c) => c.path.endsWith("/billing/checkout"))?.body;
+  const renderPlanCompare = (props: { column: Column }) => {
+    const view = (p: { column: Column }) => (
+      <PlanCompare
+        column={p.column}
+        busy={false}
+        yearly
+        seatsDefault={3}
+        upgrade={() => {}}
+      />
+    );
+    const r = render(view(props));
+    return { rerender: (p: { column: Column }) => r.rerender(view(p)) };
+  };
+  const open = async (tier = "Team") => {
+    fireEvent.click(
+      within(card(tier.toLowerCase())).getByRole("button", {
+        name: `Upgrade to ${tier}`,
+      }),
+    );
+    return (await screen.findByLabelText("Creators")) as HTMLInputElement;
+  };
+
+  it("shows the yearly prices and asks for seats, defaulting to creatorsThisMonth", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true, creatorsThisMonth: 7 },
+    });
+    await screen.findByTestId("plan-card-team");
+    expect(card("team")).toHaveTextContent("$8.33 per creator a month");
+    expect(card("team")).toHaveTextContent("$100 per creator, billed yearly");
+    expect(card("business")).toHaveTextContent("$20.83 per creator a month");
+    expect(card("business")).toHaveTextContent(
+      "$250 per creator, billed yearly",
+    );
+    const input = await open();
+    expect(
+      screen.getByRole("dialog", { name: "How many creators on Team?" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Creators are people who publish or edit live data. Viewers are free. You can change this later in billing.",
+      ),
+    ).toBeVisible();
+    expect(input.value).toBe("7");
+    expect(input).toHaveFocus();
+    expect(screen.getByText("7 creators × $100 = $700 a year")).toBeVisible();
+    fireEvent.change(input, { target: { value: "12" } });
+    expect(
+      screen.getByText("12 creators × $100 = $1,200 a year"),
+    ).toBeVisible();
+    expect(checkout(posts)).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(checkout(posts)).toEqual({
+        tier: "team",
+        interval: "year",
+        seats: 12,
+      }),
+    );
+  });
+
+  it("Business opens no seat step: Contact us is a link (#2404)", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TEAM, yearlyTeamBusiness: true, tier: "trial" },
+    });
+    const link = await within(
+      await screen.findByTestId("plan-card-business"),
+    ).findByRole("link", { name: "Contact us" });
+    expect(link).toHaveAttribute("href", BUSINESS_CONTACT_URL);
+    expect(link).not.toHaveAttribute("target");
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    expect(checkout(posts)).toBeUndefined();
+  });
+
+  it("defaults to at least 1 creator", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true, creatorsThisMonth: 0 },
+    });
+    await screen.findByTestId("plan-card-team");
+    expect((await open()).value).toBe("1");
+  });
+
+  it.each(["0", "10001", "2.5", ""])(
+    "refuses %j with an inline error",
+    async (v) => {
+      const posts = calls("POST");
+      mountHosted("/settings/plan", {
+        billing: { ...TRIAL, yearlyTeamBusiness: true },
+      });
+      await screen.findByTestId("plan-card-team");
+      const input = await open();
+      fireEvent.change(input, { target: { value: v } });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Enter a whole number from 1 to 10,000.",
+      );
+      expect(checkout(posts)).toBeUndefined();
+    },
+  );
+
+  it("Cancel and Esc send nothing and return focus to the button", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    const button = within(card("team")).getByRole("button", {
+      name: "Upgrade to Team",
+    });
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(button).toHaveFocus());
+    const input = await open();
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(button).toHaveFocus());
+    expect(checkout(posts)).toBeUndefined();
+  });
+
+  it("formats a large count with a thousands separator", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    const input = await open();
+    fireEvent.change(input, { target: { value: "10000" } });
+    expect(
+      screen.getByText("10,000 creators × $100 = $1,000,000 a year"),
+    ).toBeVisible();
+  });
+
+  it("closes the step when the plan changes under it, and reopens at the default", async () => {
+    const { rerender } = renderPlanCompare({ column: "solo" });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Team" }));
+    fireEvent.change(await screen.findByLabelText("Creators"), {
+      target: { value: "9" },
+    });
+    rerender({ column: "team" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    rerender({ column: "solo" });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Team" }));
+    expect(
+      ((await screen.findByLabelText("Creators")) as HTMLInputElement).value,
+    ).toBe("3");
+  });
+
+  it("monthly sends only the tier and asks nothing", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
+    // The yearly alternative is per creator on Team and Business, not on Solo.
+    expect(card("team")).toHaveTextContent("or $100 per creator a year");
+    expect(card("business")).toHaveTextContent("or $250 per creator a year");
+    expect(card("solo")).toHaveTextContent("or $10 a year");
+    expect(card("solo")).not.toHaveTextContent("per creator a year");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() => expect(checkout(posts)).toEqual({ tier: "team" }));
+  });
+
+  it("a paid plan still goes to the portal with no seat step", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TEAM, yearlyTeamBusiness: true },
+    });
+    await screen.findByTestId("plan-card-team");
+    // #2404: Business is Contact us; no seat step, no portal, no checkout.
+    fireEvent.click(
+      within(card("business")).getByRole("link", { name: "Contact us" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    expect(posts.length).toBe(0);
+  });
+
+  it("yearlyTeamBusiness absent: sends only the tier and shows no seat step", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() => expect(checkout(posts)).toEqual({ tier: "team" }));
+  });
+
+  it("yearlyTeamBusiness false: sends only the tier and shows no seat step", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", {
+      billing: { ...TRIAL, yearlyTeamBusiness: false },
+    });
+    await screen.findByTestId("plan-card-team");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    expect(screen.queryByLabelText("Creators")).toBeNull();
+    await waitFor(() => expect(checkout(posts)).toEqual({ tier: "team" }));
+  });
+});
+
+// #2326: a hosted install with no billing answer cannot pay yet.
+describe("hosted install with no billing answer", () => {
+  const LINE = "Paid plans open soon. We'll email you before anything changes.";
+
+  it("hosted without billing: the line, no buttons", async () => {
+    mountHosted("/settings/plan", true, (m) => {
+      const { billing: _, ...instance } = m.instance;
+      return { ...m, instance };
+    });
+    expect(await screen.findByText(LINE)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^Pay / })).toBeNull();
+    expect(screen.queryByTestId("plan-card-team")).toBeNull();
+  });
+
+  it("hosted without billing still has the Plan and billing tab", async () => {
+    mountHosted("/settings/profile", true, (m) => {
+      const { billing: _, ...instance } = m.instance;
+      return { ...m, instance };
+    });
+    expect(
+      await screen.findByRole("link", { name: "Plan and billing" }),
+    ).toBeVisible();
+  });
+
+  it("self-hosted keeps its own line", async () => {
+    mountHosted("/settings/plan", { selfHosted: true });
+    expect(
+      await screen.findByText("This install has no plan to manage."),
+    ).toBeVisible();
+    expect(screen.queryByText(LINE)).toBeNull();
+  });
+
+  it("hosted with billing is unchanged", async () => {
+    mountHosted("/settings/plan", { billing: { ...TRIAL } });
+    expect(
+      await screen.findByRole("button", { name: "Pay $1/month" }),
+    ).toBeVisible();
+    expect(screen.queryByText(LINE)).toBeNull();
   });
 });

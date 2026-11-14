@@ -23,14 +23,25 @@ import {
 import { addThread } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
-import { api, login } from "./helpers.js";
+import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { api as baseApi, login } from "./helpers.js";
+
+const api = (
+  app: Parameters<typeof baseApi>[0],
+  path: string,
+  auth: string | null,
+  init: Parameters<typeof baseApi>[3] = {},
+) => baseApi(app, path, auth, init, E);
 
 // #1797: `typed` is set from the credential kind (a browser session), and the
 // notice tier follows it: "your user" only for a typed comment or answer by the
 // user who owns the agent notified.
 
 const app = createApp();
-const E = env as unknown as Env;
+const real = env as unknown as Env;
+const hubs = new FakeHubs();
+/** The stub hubs (#2224): the asker's address is read fresh from its owner's hub. */
+const E = hubs.env();
 const tag = newId().slice(0, 6).toLowerCase();
 const NOTE = { kind: "note" };
 
@@ -72,6 +83,7 @@ beforeAll(async () => {
   editor = await mk("t-editor");
   ownerPat = (await createPat(E, owner.userId, "owner token")).token;
   ownerBlankPat = (await createPat(E, owner.userId, "")).token;
+  for (const u of [owner, editor]) await connectedMachine(real.DB, u.userId);
 });
 
 /** A team artifact: the editor is shared in, the owner's agent Claude and the editor's Codex follow. */
@@ -87,6 +99,18 @@ async function setup() {
   await api(app, R.shares(a.id), owner.cookie, {
     method: "PUT",
     body: { email: editor.email, role: "editor" },
+  });
+  hubs.set({
+    owner: owner.userId,
+    identityId: "id-ns-owner-Claude",
+    namespace: "ns-owner",
+    name: "Claude",
+  });
+  hubs.set({
+    owner: editor.userId,
+    identityId: "id-ns-editor-Codex",
+    namespace: "ns-editor",
+    name: "Codex",
   });
   await follow(
     E,
@@ -151,7 +175,17 @@ const mcpWho = (u: U) =>
   ({
     kind: "user",
     id: u.userId,
-    agent: { name: "owner token", version: null, via: null },
+    agent: {
+      name: "owner token",
+      version: null,
+      via: null,
+      identity: {
+        identityId: "id-ns-owner-Claude",
+        namespace: "ns-owner",
+        name: "Claude",
+        kind: "x",
+      },
+    },
   }) as never;
 const art = (id: string) =>
   ({ id, format: "html", currentVersion: 1 }) as never;
@@ -328,7 +362,8 @@ describe("notice tier", () => {
     bus.sent = [];
     const r = await answer(s.id, t.id, cid, owner.cookie);
     expect(r.status).toBe(200);
-    expect(((await r.json()) as Comment).ask?.answer?.typed).toBe(true);
+    // #2381: a teammate's pick is a weigh-in, not the decision.
+    expect(((await r.json()) as Comment).ask?.picks?.[0]?.typed).toBe(true);
     const n = sentTo("Claude");
     expect(n).toHaveLength(1);
     expect(n[0]?.text).toBe(
@@ -403,7 +438,7 @@ describe("notice tier", () => {
     const r = await answer(s.id, t.id, cid, editor.cookie);
     expect(r.status).toBe(200);
     // The pick is typed, but by someone else than the agent's own user.
-    expect(((await r.json()) as Comment).ask?.answer?.typed).toBe(true);
+    expect(((await r.json()) as Comment).ask?.picks?.[0]?.typed).toBe(true);
     const n = sentTo("Claude");
     expect(n).toHaveLength(1);
     expect(n[0]?.text).toBe(
@@ -453,13 +488,13 @@ describe("notice tier", () => {
       owner.cookie,
     );
     expect(r.status).toBe(200);
-    const a = ((await r.json()) as Comment).ask?.answer;
-    // Typed by you, on someone else's ask: not a yes for your agents.
-    expect(a).toMatchObject({ typed: true, yes: false });
+    const ask = ((await r.json()) as Comment).ask;
+    // Typed by you, on someone else's ask: a weigh-in, never a decision or a yes.
+    expect(ask?.picks?.[0]).toMatchObject({ typed: true });
+    expect(ask?.answer).toBeUndefined();
     expect(
-      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer
-        ?.yes,
-    ).toBe(false);
+      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer,
+    ).toBeUndefined();
   });
 
   it("answer.yes is false for the owner when an editor picks in the browser on the owner's agent's ask", async () => {
@@ -472,9 +507,9 @@ describe("notice tier", () => {
       editor.cookie,
     );
     expect(r.status).toBe(200);
-    expect(
-      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer,
-    ).toMatchObject({ typed: true, yes: false });
+    const ask = (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask;
+    expect(ask?.picks?.[0]).toMatchObject({ typed: true });
+    expect(ask?.answer).toBeUndefined();
   });
 
   describe("asker notice (toAsker, #1614)", () => {

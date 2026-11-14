@@ -1,6 +1,6 @@
 // After a release deploys: prod /healthz and the landing's oa-version meta must
 // both show the released version, else open a `blocker` issue and fail.
-// Usage: node --experimental-strip-types scripts/ci/verify-release.ts --tag vX.Y.Z --repo owner/name [--demo-url URL] [--skip-prod]
+// Usage: node --experimental-strip-types scripts/ci/verify-release.ts --tag vX.Y.Z --repo owner/name [--demo-url URL] [--skip-prod] [--skip-landing]
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -100,6 +100,8 @@ export async function verifyRelease(
     demoUrl?: string;
     /** deploy-prod skipped because prod is not installed: do not check it. */
     skipProd?: boolean;
+    /** deploy-landing did not succeed (it alerts on its own): do not check open-artifacts.com. */
+    skipLanding?: boolean;
     timeoutMs?: number;
     intervalMs?: number;
   },
@@ -114,7 +116,12 @@ export async function verifyRelease(
           string,
           () => Promise<string | undefined>,
         ][])),
-    ["landing", () => landingVersion(o, want)],
+    ...(o.skipLanding
+      ? []
+      : ([["landing", () => landingVersion(o, want)]] as [
+          string,
+          () => Promise<string | undefined>,
+        ][])),
     ...(o.demoUrl
       ? ([
           ["demo", () => healthVersion(o, o.demoUrl as string, "demo", want)],
@@ -287,14 +294,20 @@ async function main(argv: string[]) {
   const repo = arg("--repo");
   if (!tag || !repo) {
     console.error(
-      "usage: verify-release.ts --tag vX.Y.Z --repo owner/name [--demo-url URL] [--skip-prod]",
+      "usage: verify-release.ts --tag vX.Y.Z --repo owner/name [--demo-url URL] [--skip-prod] [--skip-landing]",
     );
     return 2;
   }
+  const skipLanding = argv.includes("--skip-landing");
+  if (skipLanding)
+    console.log(
+      "skipping the open-artifacts.com check: deploy-landing did not succeed (it reports that itself)",
+    );
   const r = await verifyRelease({
     tag,
     demoUrl: arg("--demo-url"),
     skipProd: argv.includes("--skip-prod"),
+    skipLanding,
     fetch,
     sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
     now: Date.now,

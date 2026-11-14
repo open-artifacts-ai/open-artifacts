@@ -435,7 +435,7 @@ describe("@ menu: per-session state, last active and machine", () => {
     }
   });
 
-  it("a guest or signed-out viewer gets no machine and no last active", async () => {
+  it("a guest or logged-out viewer gets no machine and no last active", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
     const t = new Date().toISOString();
@@ -925,5 +925,32 @@ describe("comment notice text", () => {
         "version",
       ].sort(),
     );
+  });
+});
+
+describe("roster: unnamed agents (#2311, #2309)", () => {
+  it("hides an offline unnamed agent, shows a live one and an offline renamed one; running first, then newest", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const unnamed = (n: string, running: boolean) => ({
+      ...agentRow("ns-o", n, running),
+      unnamed: true,
+    });
+    const old = new Date(Date.now() - 5 * 3_600_000).toISOString();
+    const recent = new Date(Date.now() - 1 * 3_600_000).toISOString();
+    const h = hubs({
+      [s.owner.userId]: [
+        { ...agentRow("ns-o", "OldNamed", false), since: old },
+        unnamed("claude-1", false),
+        unnamed("claude-2", true),
+        { ...agentRow("ns-o", "NewNamed", false), since: recent },
+      ],
+    });
+    const own = await viewerRosterAgents(h.env, s.id, s.owner.userId);
+    expect(own.map((x) => x.name)).toEqual([
+      "claude-2",
+      "NewNamed",
+      "OldNamed",
+    ]);
   });
 });

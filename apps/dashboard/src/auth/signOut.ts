@@ -22,7 +22,7 @@ export function useSignOut() {
       await api.send("POST", AUTH.logout, undefined);
     } catch {
       toast({
-        title: "Couldn't sign out",
+        title: "Couldn't log out",
         description: "Try again.",
         tone: "danger",
       });

@@ -69,6 +69,7 @@ import {
 } from "./departed";
 import { EraseDialog } from "./EraseDialog";
 import { restrictionReason } from "./restriction";
+import { ThawBanner } from "./ThawBanner";
 import { TransferDialog } from "./Transfer";
 import { errorText, muted, ReadOnlyNote, SettingsCard, STACK } from "./ui";
 
@@ -267,12 +268,12 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             ? `Invite sent to ${added.email}`
             : added.emailed
               ? `Invitation sent to ${added.email}`
-              : `${added.email} can now sign in`
+              : `${added.email} can now log in`
         }
         description={
           added.emailed
-            ? `They can also sign in at ${url} with ${added.with ?? "a one-time code"}.`
-            : `Send them this link. They'll sign in at ${url} with ${added.with ?? "a one-time code sent to that address"}.`
+            ? `They can also log in at ${url} with ${added.with ?? "a one-time code"}.`
+            : `Send them this link. They'll log in at ${url} with ${added.with ?? "a one-time code sent to that address"}.`
         }
         footer={<Button onClick={onClose}>Done</Button>}
       >
@@ -286,7 +287,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             The email didn't send. Copy the link and share it yourself.
           </p>
         )}
-        <CopyLink link={url} label="Sign-in link" />
+        <CopyLink link={url} label="Login link" />
       </Modal>
     );
   }
@@ -298,8 +299,8 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
       title="Add a member"
       description={
         sends
-          ? `We'll email them a link to ${me?.instance.name}. They'll sign in with a one-time code.`
-          : "Open Artifacts doesn't send invitations. Add their email here, then send them the sign-in link yourself."
+          ? `We'll email them a link to ${me?.instance.name}. They'll log in with a one-time code.`
+          : "Open Artifacts doesn't send invitations. Add their email here, then send them the login link yourself."
       }
       footer={
         <>
@@ -341,7 +342,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               {removed.email} was removed. Restore them to bring back their
               account and the {spaces && "personal "}artifacts you haven't
               transferred. They come back with the access they had (no admin
-              role) and sign in again.
+              role) and log in again.
             </p>
             <Button
               type="button"
@@ -353,7 +354,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
                 restore.mutate(removed.userId, {
                   onSuccess: () => {
                     toast({
-                      title: `${removed.email} is restored. They can sign in again.`,
+                      title: `${removed.email} is restored. They can log in again.`,
                       tone: "success",
                     });
                     onClose();
@@ -386,7 +387,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
 }
 
 const lastSeen = (iso: string | null) => {
-  if (!iso) return "Never signed in";
+  if (!iso) return "Never logged in";
   const when = relativeTime(iso);
   return when ? `Active ${when}` : "Last active unknown";
 };
@@ -608,8 +609,8 @@ function Row({
         title={`Reset Google link for ${label}?`}
         body={
           <p>
-            {label} stays a member with the same roles but is signed out
-            everywhere. Their next Google sign-in links their account again. Use
+            {label} stays a member with the same roles but is logged out
+            everywhere. Their next Google login links their account again. Use
             this if they changed Google accounts or the link points to the wrong
             one.
           </p>
@@ -620,7 +621,7 @@ function Row({
           resetGoogle.mutate(m.id, {
             onSuccess: () =>
               toast({
-                title: `Google link reset for ${label}. They're signed out and link again at their next Google sign-in.`,
+                title: `Google link reset for ${label}. They're logged out and link again at their next Google login.`,
                 tone: "success",
               }),
             onError: (e) => {
@@ -628,7 +629,7 @@ function Row({
               const status = e instanceof ApiClientError ? e.status : 0;
               if (status === 404)
                 toast({
-                  title: `No Google sign-in is linked to ${label}, so there's nothing to reset.`,
+                  title: `No Google login is linked to ${label}, so there's nothing to reset.`,
                   tone: "danger",
                 });
               else if (code === "owner_only") denyMember(m.id, RESET_ONLY);
@@ -746,6 +747,7 @@ export function Members() {
   return (
     <div className={STACK}>
       <ReadOnlyNote />
+      <ThawBanner me={state.status === "authed" ? state.me : null} />
       {(departed.people.length > 0 || departed.failed) && (
         <DepartedCard
           people={departed.people}
@@ -1201,7 +1203,7 @@ function RestoreDialog({
             {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
             with any manual restriction kept, and gets back the{" "}
             {spaces && "personal "}artifacts you haven't transferred. Their old
-            tokens and agent connections stay off, so they sign in again.
+            tokens and agent connections stay off, so they log in again.
           </p>
           {trial && <TrialNotice endsOn={trialEndsOn()} />}
         </>
@@ -1211,7 +1213,7 @@ function RestoreDialog({
         restore.mutate(m.id, {
           onSuccess: () =>
             toast({
-              title: `${label} is restored. They can sign in again.`,
+              title: `${label} is restored. They can log in again.`,
               tone: "success",
             }),
           onError: (e) =>

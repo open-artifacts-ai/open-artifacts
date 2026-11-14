@@ -1,7 +1,7 @@
 ---
 title: Privacy Policy
 description: What data hosted Open Artifacts and this website collect, why, and how long we keep it.
-updated: "October 28, 2026"
+updated: "November 13, 2026"
 ---
 
 This policy explains what **Leo Urbina Consulting LLC** ("we", "us") collects when you use:
@@ -14,7 +14,7 @@ This policy explains what **Leo Urbina Consulting LLC** ("we", "us") collects wh
 **Who decides.** On the Service, each organization's workspace (an "instance") belongs to its owner. The owner and admins decide who's a member and what's shared, and we process the instance's content and member data to run the Service for them.
 
 - For each organization's **content and member data**, we're a **processor**: we act for the instance's owner, on their instructions.
-- For **account, sign-in and billing data**, we're a **controller**: we decide how it's used, as this policy describes.
+- For **account, login and billing data**, we're a **controller**: we decide how it's used, as this policy describes.
 
 A data processing agreement is available on request at [privacy@open-artifacts.com](mailto:privacy@open-artifacts.com).
 
@@ -22,10 +22,10 @@ A data processing agreement is available on request at [privacy@open-artifacts.c
 
 ### Your account
 
-- Your **email address** and **name**, from Google sign-in or from the email you enter for a sign-in code. You can set a separate display name.
-- From Google sign-in, your Google account id and your Google Workspace domain. We don't read or keep your profile picture.
+- Your **email address** and **name**, from Google login or from the email you enter for a login code. You can set a separate display name.
+- From Google login, your Google account id and your Google Workspace domain. We don't read or keep your profile picture.
 - Your **role** (owner, admin, member or guest), your status, and when you joined and were last active.
-- For sign-in codes, we keep only a one-way hash of your email and of the code, never the code itself, and codes expire after 10 minutes.
+- For login codes, we keep only a one-way hash of your email and of the code, never the code itself, and codes expire after 10 minutes.
 
 We store no passwords.
 
@@ -35,7 +35,7 @@ We store no passwords.
 - Each artifact's **title, description and text**, so you can search it. Search covers only artifacts you can open.
 - Who published each version, and the name of the AI agent that published it.
 - **Sharing**: the email addresses you share with, and their roles.
-- **Live data** that viewers write in live pages, with the writer's account id, or an anonymous id for viewers who aren't signed in. We don't store their IP address with it.
+- **Live data** that viewers write in live pages, with the writer's account id, or an anonymous id for viewers who aren't logged in. We don't store their IP address with it.
 
 ### Connected AI agents and tokens
 
@@ -52,7 +52,11 @@ We don't keep your IP address or full browser details for this. For personal acc
 
 - An **audit log** of changes to the instance: who did what (for example, changed a role or a space), recorded with account ids.
 - **Service logs** for running and fixing the Service. They contain ids and event types. We remove email addresses, links and tokens from error messages, and we don't log IP addresses.
-- To limit abuse, we count sign-in code requests per email and per network. These counters use one-way hashes, and they're deleted after a day.
+- To limit abuse, we count login code requests per email and per network. These counters use one-way hashes, and they're deleted after a day.
+
+### Billing
+
+Payments are processed by Stripe. You type your card, billing email and address into Stripe's own checkout, so Stripe holds them and we never see your card. On our side we keep your plan and its dates, the ids Stripe gives us for your account and subscription, which accounts counted as creators each month (as internal ids, not names or emails), and whether each invoice was paid.
 
 ### Cookies and browser storage
 
@@ -60,12 +64,12 @@ The Service uses only cookies it needs to work. All are `HttpOnly`, `Secure` and
 
 | Cookie | What it's for | How long |
 |---|---|---|
-| `__Host-oa_session` | Keeps you signed in | 7 days (1 day for guests) |
-| `__Host-oa_oidc_…` | Protects a Google sign-in in progress | 15 minutes |
-| `__Host-oa_code` | Protects a sign-in code in progress | 10 minutes |
+| `__Host-oa_session` | Keeps you logged in | 7 days (1 day for guests) |
+| `__Host-oa_oidc_…` | Protects a Google login in progress | 15 minutes |
+| `__Host-oa_code` | Protects a login code in progress | 10 minutes |
 | `__Host-oa_dir` | Protects a Google directory connection in progress | 10 minutes |
 
-The Service also keeps a few things in your browser's local storage: an anonymous id, so live pages can tell your edits apart if you aren't signed in, and display preferences such as the theme. Artifacts are served from a separate host that sets no cookies.
+The Service also keeps a few things in your browser's local storage: an anonymous id, so live pages can tell your edits apart if you aren't logged in, and display preferences such as the theme. Artifacts are served from a separate host that sets no cookies.
 
 **This website** (open-artifacts.com) sets no cookies and has no analytics or tracking beacon.
 
@@ -80,7 +84,7 @@ This section describes how we use data from Google APIs.
 - **What we ask for:** the `openid`, `email` and `profile` scopes.
 - **What we use:** your Google account id, your email address (only if Google has verified it), your name, and your Google Workspace domain.
 - **Why:** to sign you in, to check that you belong to the organization's domain, and to show your name to people you work with.
-- **How it's stored:** in the instance's database on Cloudflare, described below. We use Google's ID token once, to sign you in, and don't keep it. We don't keep any Google access token or refresh token for sign-in.
+- **How it's stored:** in the instance's database on Cloudflare, described below. We use Google's ID token once, to sign you in, and don't keep it. We don't keep any Google access token or refresh token for login.
 
 ### Google Workspace directory (only if your organization connects it)
 
@@ -97,7 +101,7 @@ An admin who is a **Google Workspace super admin** can connect the organization'
 - **How often:** we check for changes every 2 minutes and do a full check every hour.
 - **The refresh token:** encrypted (AES-GCM) with a key only that instance holds, and stored in the instance's database.
 - **We never change anything in Google.** Every scope is read-only.
-- **Disconnecting:** the owner can choose **Disconnect** in Settings, Directory, while signed in themselves (not through a token or an AI agent). That revokes our access at Google and deletes the stored token, and we email the owner to confirm. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls.
+- **Disconnecting:** the owner can choose **Disconnect** in Settings, Directory, while logged in themselves (not through a token or an AI agent). That revokes our access at Google and deletes the stored token, and we email the owner to confirm. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls.
 
 ### What we never do with Google data
 
@@ -108,7 +112,7 @@ We don't sell Google user data. We don't use it for advertising, and we don't us
 We use data only to:
 
 - run the Service: sign you in, store, show, share and search your artifacts, and run live pages;
-- send the emails the Service needs: sign-in codes, invitations, share notices, and directory alerts. An invitation or share email includes the sender's name and the artifact's title, and replies go to the sender;
+- send the emails the Service needs: login codes, invitations, share notices, and directory alerts. An invitation or share email includes the sender's name and the artifact's title, and replies go to the sender;
 - keep the Service secure: limit abuse, investigate problems, and keep the audit log;
 - comply with the law.
 
@@ -124,8 +128,9 @@ The providers that process data for us:
 
 | Provider | What for |
 |---|---|
-| Cloudflare | Hosting and storage; service logs; sending email; Turnstile, a bot check on sign-in code requests, which receives your IP address; and Browser Run, which renders artifacts in a remote browser to make thumbnails |
-| Google | Sign-in, and the Google Workspace directory if your organization connects it |
+| Cloudflare | Hosting and storage; service logs; sending email; Turnstile, a bot check on login code requests, which receives your IP address; and Browser Run, which renders artifacts in a remote browser to make thumbnails |
+| Stripe | Payments: it receives your card details, billing email and address, and creates your invoices |
+| Google | Login, and the Google Workspace directory if your organization connects it |
 | GitHub | Checking for new Open Artifacts releases; no personal data is sent |
 
 Fonts are served by us, not by a third party.
@@ -137,19 +142,20 @@ Fonts are served by us, not by a third party.
 | Artifacts and their versions | Until you delete the artifact. Every version is kept while it exists. |
 | Deleted artifacts | 30 days in trash, then deleted for good, with their files, thumbnails, live data and search text |
 | Unused uploads | 24 hours |
-| Sign-in codes | 10 minutes |
-| Sign-in abuse counters | 1 day |
-| Sessions | 7 days, or until you sign out or are removed |
+| Login codes | 10 minutes |
+| Login abuse counters | 1 day |
+| Sessions | 7 days, or until you log out or are removed |
 | A pending Google directory connection | 24 hours |
 | Audit log | 400 days, then deleted by a daily job |
-| Service logs | The hosted services that route requests and handle sign-in keep no request logs. Each instance keeps only the app's own log lines, with no record per request, for at most 7 days. |
+| Service logs | The hosted services that route requests and handle login keep no request logs. Each instance keeps only the app's own log lines, with no record per request, for at most 7 days. |
 | Database backups | Cloudflare keeps a 30-day restore window for the database, so deleted database records can be restored for up to 30 days. Files and live data aren't backed up. |
 | The owner's email after an instance is deleted | 30 days |
+| Billing records | The plan and invoice records above are kept for as long as tax and accounting law requires, also after an instance is deleted. Stripe keeps its own records under its privacy policy. |
 | An instance's former address | Kept, reserved, so nobody else can reuse it |
 
 ## Removing people, and deleting an instance
 
-- **When someone is removed** from an instance, by an admin or because they left the Google directory, their access ends at once, their tokens and agents are revoked, and they're signed out. Their name and email stay in the instance's member list, marked as removed, so work they published still shows who made it. If they were removed because they left the Google directory, their email is replaced with a placeholder. Their past live-data edits stay, with their account id. The removed record is kept while the instance exists, and is deleted with it.
+- **When someone is removed** from an instance, by an admin or because they left the Google directory, their access ends at once, their tokens and agents are revoked, and they're logged out. Their name and email stay in the instance's member list, marked as removed, so work they published still shows who made it. If they were removed because they left the Google directory, their email is replaced with a placeholder. Their past live-data edits stay, with their account id. The removed record is kept while the instance exists, and is deleted with it.
 - **When an owner deletes an instance**, we delete its artifacts, files, members, settings and database, and revoke our access to its Google directory. We delete the owner's email 30 days after an instance is deleted. We keep the instance's former address reserved so it can't be reused by someone else.
 
 ## Your choices and rights
@@ -166,7 +172,7 @@ The Service isn't meant for anyone under **16**, and we don't knowingly collect 
 
 ## Security
 
-Artifacts run in a sandbox on a separate host, so they can't read your session or the dashboard. Sign-in sessions are signed and expire, tokens and codes are stored only as hashes, and the Google directory token is encrypted. Our [security model](/docs/security/) has the details.
+Artifacts run in a sandbox on a separate host, so they can't read your session or the dashboard. Login sessions are signed and expire, tokens and codes are stored only as hashes, and the Google directory token is encrypted. Our [security model](/docs/security/) has the details.
 
 ## Changes
 

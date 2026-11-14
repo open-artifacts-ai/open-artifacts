@@ -2,6 +2,7 @@ import {
   COMMENT_THREADS_MAX,
   CommentIdSchema,
   type CommentThread,
+  type PinBadge,
   type ShellToArtifact,
 } from "@oa/shared";
 
@@ -40,6 +41,8 @@ export function frameThreads(
   threads: readonly CommentThread[],
   active: string | null,
   versionHash?: string | null,
+  /** #2019: what a pin's bubble shows; image and pdf pins only. */
+  badgeOf?: (t: CommentThread) => PinBadge | undefined,
 ): Extract<ShellToArtifact, { type: "comments.set" }>["threads"] {
   const n = numbering(threads);
   const pins = pinNumbering(threads);
@@ -58,6 +61,12 @@ export function frameThreads(
       ...(t.anchor.kind === "pin" &&
       pinChanged(t.anchor.contentHash, versionHash)
         ? { changed: true }
+        : {}),
+      ...(t.anchor.kind === "pin" && badgeOf
+        ? (() => {
+            const badge = badgeOf(t);
+            return badge ? { badge } : {};
+          })()
         : {}),
     });
     if (out.length >= COMMENT_THREADS_MAX) break;

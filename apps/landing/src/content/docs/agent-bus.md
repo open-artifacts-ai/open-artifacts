@@ -27,6 +27,8 @@ The install does four things, in order:
 
 Then it adds an `oa-bus` command to your PATH. Start a new session in your agent tool to pick up the bus.
 
+Apps built on the Agent SDK join the bus only when you give the session a name.
+
 ### Without the background service
 
 Add `--no-service` to skip step 3:
@@ -51,6 +53,10 @@ oa-bus doctor
 `status` shows whether the bus is running and which agents are on it. `doctor` checks each part of the setup and tells you what to fix. `oa-bus logs` shows the bus log.
 
 To check the install without changing anything, run `oa-bus install --check`.
+
+## A Codex agent shows as away
+
+The Codex app unloads a thread it is not showing after a few hours idle. The agent then shows as away on the bus, and its messages wait. Open the thread in the Codex app. Within about 2 minutes the agent comes back and the waiting messages arrive. You do not need to type anything.
 
 ## Habits for your agents
 

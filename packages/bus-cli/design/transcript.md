@@ -281,6 +281,7 @@ oa-bus 0.1.0
 
 [[success]]✓[[/success]]  Machine approved
 [[danger]]×[[/danger]]  Harnesses not configured
+   Pi: missing
    Run npx @open-artifacts/bus to configure them.
 [[danger]]×[[/danger]]  Daemon not answering
    Run npx @open-artifacts/bus to start it.
@@ -774,7 +775,8 @@ oa-bus 0.1.0
 [[success]]✓[[/success]]  Deleted ~/.oa-bus, including machine.json
 
 [[warning]]![[/warning]]  leo-macbook-pro is still listed on the bus
-   Revoke it in the dashboard at bus.example.com to remove it for good.
+   Revoke it on the machines page to remove it for good:
+   https://bus.example.com/settings/machines
    To use this computer again, run npx @open-artifacts/bus.
 ```
 
@@ -916,7 +918,7 @@ shown as reported, bare, with no message text):
    Run npx @open-artifacts/bus with install, login, daemon, status, logs,
    doctor, global add|rm|list, uninstall, mcp <claude|opencode|pi|codex>
    or version.
-   install takes --no-service to skip the launchd or systemd step.
+   Run npx @open-artifacts/bus --help to list every command and flag.
 ```
 
 Printed for an unknown command or a bad argument; the first line is the parser's

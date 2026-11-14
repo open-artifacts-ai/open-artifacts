@@ -112,7 +112,7 @@ describe("enforcement", () => {
 
   const artifactRoutes = guarded.filter(([, p]) => "artifact" in p);
   it.each(artifactRoutes)(
-    "a signed-in non-member gets 404 on %s",
+    "a logged-in non-member gets 404 on %s",
     async (key) => {
       const [method, path] = key.split(" ") as [string, string];
       const r = await send(app, method, fill(path, id), strangerCookie);

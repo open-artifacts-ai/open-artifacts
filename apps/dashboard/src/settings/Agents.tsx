@@ -28,10 +28,10 @@ import {
 import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { Modal } from "../layout/Modal";
+import { TabStrip } from "../layout/TabStrip";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
-import { TabStrip } from "../viewer/panels/SidePanel";
 import { AgentRow } from "./AgentRow";
 import {
   AgentSetupCard,
@@ -39,6 +39,7 @@ import {
   useRevokeOnly,
 } from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { GoogleWorkspaceRow } from "./GoogleWorkspaceRow";
 import { saveTokenCommand, snippets, tokenFile } from "./snippets";
 import {
   Code,
@@ -122,7 +123,7 @@ function SnippetTabs({
         >
           {!s ? (
             <p className={muted}>
-              {agent} signs in with OAuth, so it doesn't need a token.
+              {agent} logs in with OAuth, so it doesn't need a token.
             </p>
           ) : (
             <>
@@ -514,6 +515,8 @@ export function Connections() {
       )}
       <OAuthClients />
       <Tokens />
+      {/* A rare leftover: last, after what people come here for (Design). */}
+      <GoogleWorkspaceRow />
     </div>
   );
 }

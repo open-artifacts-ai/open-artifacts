@@ -51,3 +51,28 @@ describe("ArtifactToShell nonce", () => {
     ).toBeNull();
   });
 });
+
+describe("parseArtifactMessage with unknown top-level keys (#2408)", () => {
+  const pin = { oa: 1, type: "comment.pin", pin: { x: 0.5, y: 0.5 } };
+  it("drops the unknown key, not the message", () => {
+    expect(parseArtifactMessage({ ...pin, later: { a: 1 } })).toEqual(pin);
+    expect(parseArtifactMessage({ ...pin, a: 1, b: 2 })).toEqual(pin);
+  });
+  it("keeps known optional fields", () => {
+    const at = { ...pin, at: { x: 1, y: 2 } };
+    expect(parseArtifactMessage({ ...at, later: 1 })).toEqual(at);
+  });
+  it("still refuses a bad value, a nested unknown key and an unknown type", () => {
+    expect(
+      parseArtifactMessage({ ...pin, pin: { x: 2, y: 0 }, later: 1 }),
+    ).toBeNull();
+    expect(
+      parseArtifactMessage({
+        ...pin,
+        pin: { x: 0, y: 0, text: "t" },
+        later: 1,
+      }),
+    ).toBeNull();
+    expect(parseArtifactMessage({ oa: 1, type: "nope", later: 1 })).toBeNull();
+  });
+});

@@ -77,22 +77,22 @@ describe("#1890 a mentioned agent shows its face", () => {
     expect(container.querySelector("[data-avatar]")).toBeNull();
     expect(container.querySelectorAll("[data-mention-chip]")).toHaveLength(2);
   });
-  it("the delivery line carries the same face, and legacy and guests none", () => {
+  it("the problem sentence carries the same face, and legacy and guests none", () => {
     const c = {
-      mentions: [linked, unlinked, legacy],
+      id: "c1",
+      mentions: [linked, unlinked, { ...legacy, delivery: "queued" as const }],
     } as unknown as Parameters<typeof Delivery>[0]["c"];
     const { container, rerender } = render(<Delivery c={c} />);
     const row = (k: string) =>
       container.querySelector(`[data-mention="${k}"]`) as HTMLElement;
-    expect(
-      row("agent:fox").querySelector('[data-linked="true"]'),
-    ).not.toBeNull();
+    // Delivered agents have no line; only the two held ones do.
+    expect(row("agent:fox")).toBeNull();
     expect(
       row("agent:bot").querySelector('[data-linked="false"]'),
     ).not.toBeNull();
     expect(row("agent:old").querySelector("[data-avatar]")).toBeNull();
     expect(row("agent:bot").textContent).toBe(
-      "Claude Code is offline · it will get this when it's back",
+      "Claude Code is offline. Held until it's back.",
     );
     rerender(<Delivery c={c} guest />);
     expect(container.querySelector("[data-avatar]")).toBeNull();
@@ -204,7 +204,7 @@ describe("#1890 an ask's addressees", () => {
     expect(to.textContent).toContain("OA Product");
     expect(to.textContent).toContain("Claude Code");
   });
-  it("an outsider's payload (agents without face fields) adds no To line, signed in or not", async () => {
+  it("an outsider's payload (agents without face fields) adds no To line, logged in or not", async () => {
     serve([
       { kind: "agent", id: "agent:x", name: "Leo's agent", me: false },
       { kind: "user", id: "u", name: "Bea", me: false },

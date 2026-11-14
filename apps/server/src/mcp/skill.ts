@@ -62,16 +62,24 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
   env.SKILL_MD?.trim().toLowerCase() !== "off";
 
 /**
- * The skill's lines on the bus, or "" without the bus. The caller passes
- * busOn (BUS_HUB bound and not hosted, the routes' own switch), so the skill
- * can never teach the bus with the hub off, or hide it with the hub on. The
- * tools it names come from the harness, not from /mcp.
+ * The skill's words on the bus being part of setup. OA Product edits this;
+ * plain words, no em dashes.
  */
-export const busLine = (on: boolean): string =>
+export const busSetupLine = (origin: string): string =>
+  `- The bus is part of Open Artifacts setup, not an extra. If you find no bus tools (oa_bus), setup is not finished: tell your person, and when they say go, run \`npx @open-artifacts/bus install --instance ${origin}\`. They approve this machine once in their browser. See https://open-artifacts.com/docs/agent-bus/.`;
+
+/** #2476, #2477: the naming and first-page habits, taught only with the bus on. */
+const FIRST_PAGE_HABIT =
+  '- On first setup, ask your person what to call you (suggest a short name from the project) and check the bus `self` tool shows it. On the first page you ever publish for them, right after publishing, post a comment ("I\'m {name}, your agent. Type @{name} in any comment and I\'ll answer in the thread. Try it here.") and an ask ("What should I publish next?", options fitted to the project, such as "A status page for this project", "A summary of the README", "Nothing for now"). When they pick, do it and reply in the thread; "Nothing for now" gets a one-line reply. Do this once, never on later pages. Use your session name if they skipped naming, and follow that page so the mention and the pick reach you.';
+
+export const busLine = (on: boolean, origin: string): string =>
   on
     ? "- Find peers by bus name with the oa_bus list_agents tool (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n" +
       "- To message agents, use the bus tools installed for your harness: the oa_bus MCP server, or the oa-bus extension. Don't borrow another harness's config to get them. If they fail, report it to your human with the error and any fix it suggests; don't run that fix without their yes.\n" +
-      "- If this machine has no bus tools, your user installs them with `npx @open-artifacts/bus install --instance <this instance's URL>`; see https://open-artifacts.com/docs/agent-bus/.\n"
+      busSetupLine(origin) +
+      "\n" +
+      FIRST_PAGE_HABIT +
+      "\n"
     : "";
 
 export const skillUrl = (env: SkillEnv): string | undefined =>
@@ -131,7 +139,7 @@ export function renderSkill(
         hostSlug: hostSlug(env.APP_HOST),
         version: VERSION,
         upgradeLine: upgradeLine(env),
-        busPeers: busLine(bus),
+        busPeers: busLine(bus, skillOrigin(env.APP_HOST)),
       };
       const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
       const md = tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);

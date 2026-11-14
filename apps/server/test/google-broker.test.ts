@@ -6,7 +6,7 @@ import {
   publicFromPkcs8,
   signRedeem,
 } from "@oa/auth-core";
-import { AUTH, SIGN_IN_PAGE } from "@oa/shared";
+import { AUTH, R, SIGN_IN_PAGE } from "@oa/shared";
 import { generateKeyPair } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import broker, { type Env as BrokerEnv } from "../../auth-broker/src/index.js";
@@ -16,7 +16,13 @@ import { googleProvider } from "../src/auth/providers/google.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import { b64urlEncode } from "../src/util/crypto.js";
-import { CID, direct, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
+import {
+  CID,
+  direct,
+  seedUser,
+  TEST_BROKER_KEY,
+  uniq,
+} from "./auth-helpers.js";
 import { type FakeGoogle, fakeGoogle } from "./fixtures/fake-google.js";
 
 // P2 Task 11, install side: Google through the hosted broker. The real broker
@@ -162,18 +168,50 @@ describe("Google through the broker", () => {
     expect(g.tokenCalls.at(-1)?.get("client_secret")).toBe("broker-secret");
   });
 
-  it("break-glass reauth (P3 T18) through the broker: max_age=0 at Google; a recent auth_time marks the session", async () => {
-    const e = installEnv();
-    const plain = await begin(e);
-    expect(plain.toBroker.searchParams.get("reauth")).toBeNull();
-    expect(plain.google.get("max_age")).toBeNull();
-    const b = await begin(e, "&reauth=1");
-    expect(b.toBroker.searchParams.get("reauth")).toBe("1");
-    expect(b.google.get("max_age")).toBe("0");
+  it("hosted: the owner's sign-in seeds one Welcome, and a second sign-in adds none (#2287)", async () => {
+    await env.DB.prepare(
+      "delete from settings where key = 'onboarding:welcome'",
+    ).run();
+    await env.DB.prepare("delete from artifacts").run();
+    const email = uniq("welcome-own");
+    const id = await seedUser(email, "owner", { googleSub: `b-${email}` });
+    const e = installEnv(undefined, { HOSTED: "1" });
+    const rows = () =>
+      env.DB.prepare(
+        "select id from artifacts where owner_id = ? and title = 'Welcome'",
+      )
+        .bind(id)
+        .all();
+    for (let n = 0; n < 2; n++) {
+      const b = await begin(e);
+      const code = g.issueCode(
+        { nonce: b.nonce, email, sub: `b-${email}` },
+        b.challenge,
+      );
+      const back = await broker.fetch(
+        new Request(
+          `${BROKER}/google/callback?code=${code}&state=${encodeURIComponent(b.bstate)}`,
+        ) as never,
+        brokerEnv,
+      );
+      const u = new URL(loc(back));
+      const r = await get(e, `${AUTH.callbackGoogle}${u.search}`, b.cookie);
+      expect(loc(r)).toBe("/a/x");
+      expect((await rows()).results).toHaveLength(1);
+    }
+  });
+
+  /** A full broker sign-in (`extra` on the login URL, an ID token with auth_time `ageS` s old); returns the session cookie. */
+  async function signIn(e: Env, extra: string, ageS: number) {
+    const b = await begin(e, extra);
     const email = uniq("bg");
-    const authTime = Math.floor(Date.now() / 1000) - 30;
     const code = g.issueCode(
-      { nonce: b.nonce, email, sub: `bg-${email}`, auth_time: authTime },
+      {
+        nonce: b.nonce,
+        email,
+        sub: `bg-${email}`,
+        auth_time: Math.floor(Date.now() / 1000) - ageS,
+      },
       b.challenge,
     );
     const back = await broker.fetch(
@@ -187,15 +225,48 @@ describe("Google through the broker", () => {
       `${AUTH.callbackGoogle}${new URL(loc(back)).search}`,
       b.cookie,
     );
-    const sess = r.headers
-      .getSetCookie()
-      .find((c) => c.startsWith(`${SESSION}=`))
-      ?.split(";")[0]
-      ?.split("=")[1];
-    expect(await readSession(e, sess)).toMatchObject({
-      p: "google",
-      a: authTime * 1000,
-    });
+    const sess =
+      r.headers
+        .getSetCookie()
+        .find((c) => c.startsWith(`${SESSION}=`))
+        ?.split(";")[0]
+        ?.split("=")[1] ?? "";
+    return { sess, b };
+  }
+
+  it("break-glass reauth (P3 T18) through the broker: max_age=0 at Google; a completed reauth flow marks the session", async () => {
+    const e = installEnv();
+    const plain = await begin(e);
+    expect(plain.toBroker.searchParams.get("reauth")).toBeNull();
+    expect(plain.google.get("max_age")).toBeNull();
+    const { sess, b } = await signIn(e, "&reauth=1", 30);
+    expect(b.toBroker.searchParams.get("reauth")).toBe("1");
+    expect(b.google.get("max_age")).toBe("0");
+    const marked = (await readSession(e, sess))?.a ?? 0;
+    expect(Math.abs(marked - Date.now())).toBeLessThan(60_000);
+  });
+
+  it("#2470: a reauth flow marks the session even when Google's auth_time is hours old, and Add a passkey no longer asks again", async () => {
+    const e = installEnv();
+    const { sess } = await signIn(e, "&reauth=1", 6 * 3600);
+    const marked = (await readSession(e, sess))?.a ?? 0;
+    expect(Math.abs(marked - Date.now())).toBeLessThan(60_000);
+    const begun = await app.fetch(
+      new Request(`${APP}${R.passkeyRegisterBegin}`, {
+        method: "POST",
+        headers: { cookie: `${SESSION}=${sess}`, origin: APP },
+      }),
+      e,
+      ctx,
+    );
+    expect(begun.status).not.toBe(401);
+  });
+
+  it("a plain sign-in gets no re-auth marker, even with a fresh auth_time", async () => {
+    const e = installEnv();
+    const { sess } = await signIn(e, "", 30);
+    expect(sess).not.toBe("");
+    expect((await readSession(e, sess))?.a).toBeUndefined();
   });
 
   /** The broker answers with `idToken`, whatever it was asked: a compromised broker. */
@@ -352,7 +423,7 @@ describe("Google through the broker", () => {
     ).toBe(false);
   });
 
-  it("a broker refusal (401) is a failed sign-in", async () => {
+  it("a broker refusal (401) is a failed login", async () => {
     const e = installEnv(async () =>
       Response.json({ error: "unauthorized" }, { status: 401 }),
     );
@@ -397,7 +468,7 @@ describe("Google through the broker", () => {
     });
   });
 
-  it("a broker state from another flow (hash mismatch) is a failed sign-in", async () => {
+  it("a broker state from another flow (hash mismatch) is a failed login", async () => {
     const e = installEnv();
     const victim = await begin(e);
     const other = await begin(e);
@@ -480,7 +551,7 @@ describe("hosted: the redeem through the dispatch props (AUTH_BROKER)", () => {
       .map((c) => new Request(c[0] as RequestInfo, c[1]).url)
       .filter((u) => u.startsWith(BROKER));
 
-  it("signs in with only POST /google/redeem through the capability, never HTTPS", async () => {
+  it("logs in with only POST /google/redeem through the capability, never HTTPS", async () => {
     const e = hosted();
     const b = await begin(e);
     const search = await toInstall(b);

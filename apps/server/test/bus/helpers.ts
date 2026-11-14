@@ -113,13 +113,24 @@ export type Daemon = {
   closed: Promise<{ code: number; reason: string }>;
 };
 
+let connectIpSeq = 0;
+/** A fresh client IP per connect, so the per-IP /bus/connect limit (#2359) never trips a suite. */
+const nextConnectIp = () => {
+  const n = ++connectIpSeq;
+  return `10.${(n >> 16) & 255}.${(n >> 8) & 255}.${n & 255}`;
+};
+
 /** Upgrades GET /bus/connect through the Worker entry point, as the local client does. */
 export function upgrade(
   token: string | null,
   extra: Record<string, string> = {},
   ev: unknown = env,
 ): Promise<Response> {
-  const headers: Record<string, string> = { Upgrade: "websocket", ...extra };
+  const headers: Record<string, string> = {
+    Upgrade: "websocket",
+    "cf-connecting-ip": nextConnectIp(),
+    ...extra,
+  };
   if (token !== null) headers.Authorization = `Bearer ${token}`;
   return workerFetch(
     new Request("http://app.localhost/bus/connect", { headers }),

@@ -6,6 +6,7 @@ import {
   isId,
   NewThreadBodySchema,
   ReplyBodySchema,
+  TakeBackBodySchema,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { z } from "zod";
@@ -17,6 +18,7 @@ import {
   canCtx,
   capOfCaller,
   interactiveSession,
+  meetsLevel,
 } from "../auth/authz.js";
 import {
   can,
@@ -35,6 +37,7 @@ import {
   addReply,
   addThread,
   answerAsk,
+  answerChallenge,
   artifactAgents,
   type CommentViewer,
   type CommentWho,
@@ -43,6 +46,7 @@ import {
   listComments,
   setStatus,
   setThreadAgent,
+  takeBackAsk,
 } from "../services/comments.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
@@ -60,6 +64,8 @@ const THREAD = `${COMMENTS}/:threadId`;
 const REPLIES = `${THREAD}/replies`;
 const COMMENT = `${THREAD}/comments/:commentId`;
 const ANSWER = `${COMMENT}/answer`;
+const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
+const ASK_DECIDER = `${COMMENT}/ask/decider`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -112,7 +118,7 @@ async function open(
   // #2080: where only signed-in people may comment, a signed-out caller
   // (anonymous id header included) may read but never write.
   if (write && artifact.commentAccess === "signed-in" && !c.var.user)
-    throw new ApiError("comments_signed_in_only", "Sign in to comment.");
+    throw new ApiError("comments_signed_in_only", "Log in to comment.");
   return { id, who, level, artifact };
 }
 
@@ -144,6 +150,9 @@ async function identity(
         moderator,
         guest: isGuestRole(user.role),
         capped: capsReads(capOfCaller(callerOf(user))),
+        // #2224: a token is an agent, not the person: its `answer.yes` is for
+        // asks that same agent posted. Only a browser session reads as the person.
+        agent: interactiveSession(c) ? undefined : agentOf(c),
       },
       issued: null,
     };
@@ -186,6 +195,9 @@ const StatusQuery = z.object({
 });
 const StatusPatch = z.strictObject({ status: z.enum(["open", "resolved"]) });
 const EditBody = z.strictObject({ body: z.string() });
+const ChallengeBodySchema = z.strictObject({
+  optionId: z.string().regex(COMMENT_KEY_RE),
+});
 
 /** A body that failed its schema: the anchor's issues are invalid_anchor, the body's invalid_body. */
 const bad = (issues: { path: PropertyKey[] }[]): never => {
@@ -230,7 +242,7 @@ export function mountComments(app: AppType): void {
     const moderator = modOf(cw, level, artifact);
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
-    if (!who) throw new ApiError("unauthorized", "Sign in to comment");
+    if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const named = raw.data.guestName;
     const w: CommentWho =
       who.kind === "guest" && named !== undefined
@@ -264,7 +276,7 @@ export function mountComments(app: AppType): void {
       );
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
-    if (!who) throw new ApiError("unauthorized", "Sign in to comment");
+    if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const w: CommentWho =
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
@@ -375,8 +387,64 @@ export function mountComments(app: AppType): void {
       viewer,
       raw.data.optionId,
       { version: artifact.currentVersion, ctx: execCtx(c) },
+      // #2263: only a browser session can carry a passkey assertion.
+      { interactive: interactiveSession(c), assertion: raw.data.assertion },
+      // #2381: a decider must edit the page; a guest-role member's pick is marked.
+      {
+        canDecide: meetsLevel(level, "editor"),
+        guest: capsReads(capOfCaller(cw)),
+      },
     );
     return c.json(out);
+  });
+
+  // #2381: the asker's own user takes the decision back.
+  app.post(ASK_DECIDER, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const raw = TakeBackBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    const { who, viewer } = await identity(
+      c,
+      id,
+      false,
+      modOf(cw, level, artifact),
+    );
+    if (!who)
+      throw new ApiError("forbidden", "Only the person who asked can do this");
+    return c.json(
+      await takeBackAsk(c.env, id, threadId, commentId, who, viewer),
+    );
+  });
+
+  // #2263: the WebAuthn challenge for a pick on a confirm ask.
+  app.post(ANSWER_CHALLENGE, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const raw = ChallengeBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    const { who: signed } = await identity(
+      c,
+      id,
+      false,
+      modOf(cw, level, artifact),
+    );
+    // A guest is never asked: the same 403 the answer gives.
+    if (!signed)
+      throw new ApiError("forbidden", "Only the people asked can answer");
+    return c.json(
+      await answerChallenge(
+        c.env,
+        id,
+        threadId,
+        commentId,
+        signed,
+        raw.data.optionId,
+        interactiveSession(c),
+      ),
+    );
   });
 
   // The agents that can be mentioned: for the owner and editors,
@@ -419,6 +487,7 @@ export function mountComments(app: AppType): void {
         key,
         { ...viewer, owner: level === "owner" },
         removed,
+        execCtx(c),
       );
       return c.body(null, 204);
     });

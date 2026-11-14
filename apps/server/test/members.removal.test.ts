@@ -170,7 +170,7 @@ describe.each([
       expect((await call(e, R.artifact(id), session)).status).toBe(404);
   });
 
-  it("the removed row is refused at every sign-in, its shares are kept, and a re-share never revives it", async () => {
+  it("the removed row is refused at every login, its shares are kept, and a re-share never revives it", async () => {
     const s = await sharer();
     const [old, fresh] = [await s.pub(), await s.pub()];
     const email = uniq("g", "x.com");

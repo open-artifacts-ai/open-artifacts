@@ -419,7 +419,7 @@ describe("break-glass", () => {
     }
   }
 
-  it("break-glass: the reauth sign-in asks Google for max_age=0; its session opens only the break-glass routes", async () => {
+  it("break-glass: the reauth login asks Google for max_age=0; its session opens only the break-glass routes", async () => {
     const owner = await synced("owner");
     await mismatch();
     const { authorize, session } = await googleSignIn(owner, {
@@ -431,7 +431,7 @@ describe("break-glass", () => {
     expect((await call(R.me, session)).status).toBe(401);
   });
 
-  it("break-glass: a silent SSO is not enough (no reauth, or an old or missing auth_time)", async () => {
+  it("break-glass: a silent SSO is not enough (no reauth); a completed reauth flow counts whatever auth_time says (#2470)", async () => {
     const owner = await synced("owner");
     await mismatch();
     const plain = await googleSignIn(owner, {
@@ -439,16 +439,18 @@ describe("break-glass", () => {
       authTime: Date.now(),
     });
     expect(plain.authorize.searchParams.get("max_age")).toBeNull();
+    const r = await call(R.directory, plain.session);
+    expect(r.status).toBe(401);
+    expect((await errOf(r)).code).toBe("reauth_required");
+    // Google ignores max_age=0 for a signed-in user: an old or missing
+    // auth_time on a reauth flow still counts.
     const old = await googleSignIn(owner, {
       reauth: true,
       authTime: Date.now() - 2 * 3600_000,
     });
     const none = await googleSignIn(owner, { reauth: true });
-    for (const s of [plain.session, old.session, none.session]) {
-      const r = await call(R.directory, s);
-      expect(r.status).toBe(401);
-      expect((await errOf(r)).code).toBe("reauth_required");
-    }
+    for (const s of [old.session, none.session])
+      expect((await call(R.directory, s)).status).toBe(200);
     // A cookie without the forced re-authentication mark: the same.
     const unforced = await call(
       R.directory,
@@ -457,7 +459,7 @@ describe("break-glass", () => {
     expect((await errOf(unforced)).code).toBe("reauth_required");
   });
 
-  it("break-glass: fresh Google sign-in (9 min) reaches R.directory; 11 min → 401 reauth_required", async () => {
+  it("break-glass: fresh Google login (9 min) reaches R.directory; 11 min → 401 reauth_required", async () => {
     const owner = await synced("owner");
     await mismatch();
     const fresh = await cookieFor(owner.id, { age: 9 * MIN });

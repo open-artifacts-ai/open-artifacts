@@ -12,7 +12,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "../deps.ts";
-import { claudeSettingsFile, selectOutputStyle } from "./output-style.ts";
+import {
+  claudeSettingsFile,
+  clearOutputStyleIfOurs,
+  selectOutputStyle,
+} from "./output-style.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 export const MARKETPLACE = "open-artifacts";
@@ -35,6 +39,8 @@ type Where = {
   env?: Record<string, string | undefined>;
   exec: Exec;
 };
+
+type Options = { instanceUrl?: string; mcpServer?: string };
 
 type Record_ = { marketplace?: boolean; plugins?: string[] };
 
@@ -200,6 +206,9 @@ const originOf = (url: string): string | undefined => {
  * this instance, and moves the output style over to the plugin. Only when
  * Claude Code is among the harnesses. Never throws on a claude failure: the
  * result carries the notes.
+ *
+ * This step follows CLAUDE_CONFIG_DIR / HOME, like claude itself. It is deliberately
+ * not gated on the bus service isolation (the "xdg" case of #2216 is a real-HOME install).
  */
 export async function installClaudePlugins(
   deps: Where & {
@@ -265,22 +274,87 @@ export async function installClaudePlugins(
       "--json",
     ]);
   let marketplace = prior?.marketplace ?? false;
+  // A re-pin removed our plugins; whatever happens next, the style must follow them.
+  let repinned = false;
+  // A re-pin whose add failed: re-add the old ref and reinstall what the remove took
+  // away, with the shortcuts' saved options. The record then matches what is installed.
+  // outputStyle must not point at a style that is not installed.
+  const clearStyle = () => {
+    const cleared = clearOutputStyleIfOurs({
+      home: deps.home,
+      env: deps.env,
+      busHome: deps.busHome,
+    });
+    out.notes.push(...cleared.notes);
+    if (cleared.cleared) out.notes.push(...copy.pluginsStyleCleared());
+  };
+  // Remembers a custom mcpServer a double failure would lose: only a note, no storage.
+  const noteLost = (opts: Options | undefined) => {
+    if (opts?.mcpServer && opts.mcpServer !== DEFAULT_MCP_SERVER)
+      out.notes.push(...copy.pluginsLostOptions(opts.mcpServer));
+  };
+  const rollBack = async (
+    ids: string[],
+    oldRef: string | undefined,
+    opts: Options | undefined,
+  ) => {
+    const back = await claude(exec, [
+      "plugin",
+      "marketplace",
+      "add",
+      oldRef ? `${PLUGIN_REPO_URL}#${oldRef}` : PLUGIN_REPO_URL,
+      "--sparse",
+      ...SPARSE,
+      "--json",
+    ]);
+    if (!back.ok) {
+      // Both failed. A rollback that timed out may still have landed: record it as ours.
+      // If the list fails too, it may have: keep it recorded so uninstall can clean it up.
+      if ((await recordIfLanded([])) === undefined)
+        saveRecord(deps.busHome, true, []);
+      out.notes.push(...copy.pluginsRolledBack("none", back.message));
+      noteLost(opts);
+      clearStyle();
+      return;
+    }
+    const restored: string[] = [];
+    for (const id of ids) {
+      const cfg: string[] = [];
+      if (id === SHORTCUTS_PLUGIN) {
+        if (opts?.instanceUrl)
+          cfg.push("--config", `instanceUrl=${opts.instanceUrl}`);
+        if (opts?.mcpServer)
+          cfg.push("--config", `mcpServer=${opts.mcpServer}`);
+      }
+      const i = await claude(exec, ["plugin", "install", id, ...cfg, "--json"]);
+      if (i.ok) restored.push(id);
+      else out.notes.push(...copy.pluginsFailed(`reinstall ${id}`, i.message));
+    }
+    saveRecord(deps.busHome, true, restored);
+    const all = restored.length === ids.length;
+    out.notes.push(...copy.pluginsRolledBack(all ? "all" : "some", ""));
+    if (!restored.includes(STYLE_PLUGIN)) clearStyle();
+  };
   // A failed or timed-out add may still have landed: if it did, it is ours and recorded.
-  const recordIfLanded = async (plugins: string[]) => {
+  // undefined: the list itself failed, so nobody knows; the record is left as it is.
+  const recordIfLanded = async (
+    plugins: string[],
+  ): Promise<boolean | undefined> => {
     const again = await claude(exec, [
       "plugin",
       "marketplace",
       "list",
       "--json",
     ]);
-    const landed =
-      again.ok &&
-      Array.isArray(again.data) &&
-      (again.data as Market[]).some((m) => m.name === MARKETPLACE && isOurs(m));
+    if (!again.ok || !Array.isArray(again.data)) return undefined;
+    const landed = (again.data as Market[]).some(
+      (m) => m.name === MARKETPLACE && isOurs(m),
+    );
     if (landed) saveRecord(deps.busHome, true, plugins);
+    return landed;
   };
   // The shortcuts' saved options, read before a re-pin deletes them.
-  let saved: { instanceUrl?: string; mcpServer?: string } | undefined;
+  let saved: Options | undefined;
   if (!there) {
     const r = await addSource();
     if (!r.ok) {
@@ -315,22 +389,70 @@ export async function installClaudePlugins(
         out.notes.push(
           ...copy.pluginsFailed("move the plugin source", gone.message),
         );
+        // A remove that timed out may still have landed and taken the plugins with it.
+        const now = await listInstalled(exec);
+        if (now !== undefined)
+          saveRecord(
+            deps.busHome,
+            true,
+            (prior?.plugins ?? []).filter((id) => now.includes(id)),
+          );
+        if (now === undefined || !now.includes(STYLE_PLUGIN)) clearStyle();
         return out;
       }
+      repinned = true;
       // Nothing of ours is left in Claude Code; the record follows.
       writeRecord(deps.busHome, undefined);
       prior = undefined;
       marketplace = false;
+      // The remove also deleted each plugin's saved options and any data dir
+      // (Claude Code keeps both with the plugin). Only the shortcuts' options are
+      // read back (above, `saved`) and set again below. No plugin of ours keeps
+      // a data dir today; one that does must be saved here before the remove.
       const r = await addSource();
       if (!r.ok) {
-        await recordIfLanded([]);
-        out.notes.push(
-          ...copy.pluginsFailed("add the plugin source", r.message),
-        );
-        return out;
+        // The add may have landed anyway (a timeout): then the new ref is in place.
+        const landed = await recordIfLanded([]);
+        if (landed === undefined) {
+          // The list failed too: do not guess, and do not roll back over a marketplace
+          // that may be there. The record is not touched.
+          out.notes.push(...copy.pluginsAddUnknown(r.message));
+          // A marketplace that did land stays ours (uninstall re-lists and removes it only
+          // if it is there and ours), and the style plugin is already gone.
+          saveRecord(deps.busHome, true, []);
+          noteLost(saved);
+          clearStyle();
+          return out;
+        }
+        if (!landed) {
+          out.notes.push(
+            ...copy.pluginsFailed("add the plugin source", r.message),
+          );
+          // Nothing is left of ours: put the old ref and its plugins back.
+          await rollBack(fromIt, there.ref, saved);
+          return out;
+        }
       }
       marketplace = true;
     }
+  }
+
+  // A dev build follows the default branch, and install does not refresh an unpinned
+  // marketplace: refresh it so the update check below sees the newest version.
+  // Only a marketplace that is unpinned (no ref) and wanted unpinned: a pinned release is
+  // never refreshed, and a dev build over an older release pin is the re-pin path's job.
+  if (there && !wantRef && !there.ref) {
+    const u = await claude(exec, [
+      "plugin",
+      "marketplace",
+      "update",
+      MARKETPLACE,
+      "--json",
+    ]);
+    if (!u.ok)
+      out.notes.push(
+        ...copy.pluginsFailed("refresh the plugin source", u.message),
+      );
   }
 
   // The plugins: only ones that were not there are ours.
@@ -338,6 +460,8 @@ export async function installClaudePlugins(
   if (before === undefined) {
     out.notes.push(...copy.pluginsFailed("list the plugins", "no list"));
     saveRecord(deps.busHome, marketplace, prior?.plugins ?? []);
+    // After a re-pin the plugins are gone and we cannot tell what came back.
+    if (repinned) clearStyle();
     return out;
   }
   const mine = new Set(prior?.plugins ?? []);
@@ -418,6 +542,8 @@ export async function installClaudePlugins(
     }
   }
   saveRecord(deps.busHome, marketplace, [...mine]);
+  // One rule: a style we set is never left pointing at a plugin that is not installed.
+  if (!live.has(STYLE_PLUGIN) && !before.includes(STYLE_PLUGIN)) clearStyle();
 
   if (live.has(STYLE_PLUGIN)) {
     try {
@@ -461,6 +587,14 @@ export type ClaudeCopy = {
     fallback: string,
   ) => string[];
   pluginsKeptSource: (ref: string | undefined) => string[];
+  /** A re-pin's add failed; the old source and all, some or none of the plugins were put back. */
+  pluginsRolledBack: (state: "all" | "some" | "none", why: string) => string[];
+  /** The output style we had turned on was cleared because its plugin is gone. */
+  pluginsStyleCleared: () => string[];
+  /** A custom mcpServer was lost with the removed plugins. */
+  pluginsLostOptions: (mcpServer: string) => string[];
+  /** A re-pin's add failed and the marketplace list failed too. */
+  pluginsAddUnknown: (why: string) => string[];
   pluginsBadInstance: () => string[];
 };
 
@@ -572,8 +706,6 @@ export async function claudePluginsState(
   }
   return { missing, unconfigured };
 }
-
-type Options = { instanceUrl?: string; mcpServer?: string };
 
 /** The shortcuts' saved options from settings.json (keys instanceUrl and mcpServer only); undefined when the file cannot be read. */
 function readShortcutOptions(deps: Where): Options | undefined {

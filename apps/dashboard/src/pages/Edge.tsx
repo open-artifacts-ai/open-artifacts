@@ -19,7 +19,7 @@ export function SignedInAs() {
     <div className="oa-who">
       <UserAvatar name={name ?? undefined} email={email} size={32} />
       <div>
-        <small>Signed in as</small>
+        <small>Logged in as</small>
         <b>{email}</b>
       </div>
     </div>

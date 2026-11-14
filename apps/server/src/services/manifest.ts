@@ -18,6 +18,7 @@ import {
   textHead,
   UNSUPPORTED_FORMAT_MESSAGE,
 } from "@oa/shared";
+import { putIdempotent } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { decodeBase64 } from "../util/base64.js";
@@ -623,9 +624,12 @@ export async function materialize(
       ...(o.digest ? { digest: await digestOf(f.source) } : {}),
     });
     puts.push(
-      env.FILES.put(key, "text" in f.source ? f.source.text : f.source.bytes, {
-        httpMetadata: { contentType },
-      }),
+      putIdempotent(
+        env.FILES,
+        key,
+        "text" in f.source ? f.source.text : f.source.bytes,
+        { httpMetadata: { contentType } },
+      ),
     );
   }
   const res = await Promise.allSettled(puts);

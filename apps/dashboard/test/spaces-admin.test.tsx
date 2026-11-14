@@ -4,8 +4,15 @@
 import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { expect, it } from "vitest";
-import { calls, installHarness, mount, mountHosted } from "./harness";
+import { beforeEach, expect, it } from "vitest";
+import { qk } from "../src/api/queries";
+import {
+  calls,
+  installHarness,
+  lastClient,
+  mount,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -612,4 +619,117 @@ it("no copy contains an em dash", async () => {
   mountHosted(`/settings/spaces?space=${ENG}`);
   await screen.findByRole("heading", { level: 2, name: "Engineering" });
   expect(document.body.textContent).not.toContain("—");
+});
+
+// #2472: Spaces on Solo refused a create with no way forward. The dialog now
+// says why and links where the owner can act: Invite people and See plans
+// with the trial offer, See plans alone without it. In the dialog, not a
+// toast: the dialog's overlay keeps a toast's links out of reach. Solo hides
+// New space, so this is the fallback: the dialog was opened while /me still
+// read Team, and the instance is Solo by the time it's sent.
+let seenSolo = false;
+beforeEach(() => {
+  seenSolo = false;
+});
+/** /me reads Team until `seenSolo`, then the instance's real (Solo) plan. */
+const teamUntilSolo = (m: Me): Me =>
+  seenSolo || !m.instance.billing
+    ? m
+    : {
+        ...m,
+        instance: {
+          ...m.instance,
+          billing: { ...m.instance.billing, tier: "team", reason: undefined },
+        },
+      };
+const soloPlan = (trialEndsAt: string | null) => ({
+  billing: {
+    tier: "solo" as const,
+    status: "active" as const,
+    trialEndsAt,
+    graceUntil: null,
+    creatorsThisMonth: 1,
+    readOnly: false,
+    reason: "solo" as const,
+  },
+});
+const refuseCreate = http.post("*/api/v1/spaces", () =>
+  HttpResponse.json(
+    {
+      error: {
+        code: "plan_required",
+        message: "server text",
+        details: { tier: "solo", reason: "solo" },
+      },
+    },
+    { status: 403 },
+  ),
+);
+const createRefused = async () => {
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  seenSolo = true;
+  await lastClient.invalidateQueries({ queryKey: qk.me });
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "New space" })).toBeNull(),
+  );
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Design" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  const t = await within(d).findByRole("alert");
+  // One message, in the dialog: no toast as well.
+  expect(document.querySelector("[data-sonner-toast]")).toBeNull();
+  return t;
+};
+
+it("a Solo owner whose trial never ran: the refusal links Invite people and See plans (#2472)", async () => {
+  mountHosted("/settings/spaces", soloPlan(null), teamUntilSolo, [
+    refuseCreate,
+  ]);
+  const t = await createRefused();
+  expect(t).toHaveTextContent(
+    "Spaces are a team feature. Invite someone to start your free 30-day trial, or choose a plan.",
+  );
+  expect(
+    within(t)
+      .getAllByRole("link")
+      .map((l) => [l.textContent, l.getAttribute("href")]),
+  ).toEqual([
+    ["Invite people", "/settings/members"],
+    ["See plans", "/settings/plan"],
+  ]);
+});
+
+it("Invite people opens Members from the dialog (#2472)", async () => {
+  const router = mountHosted(
+    "/settings/spaces",
+    soloPlan(null),
+    teamUntilSolo,
+    [refuseCreate],
+  );
+  const t = await createRefused();
+  fireEvent.click(within(t).getByRole("link", { name: "Invite people" }));
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/members"),
+  );
+  expect(screen.queryByRole("dialog", { name: "New space" })).toBeNull();
+});
+
+it("a Solo owner after a trial: the refusal links See plans only (#2472)", async () => {
+  mountHosted(
+    "/settings/spaces",
+    soloPlan("2026-10-01T00:00:00.000Z"),
+    teamUntilSolo,
+    [refuseCreate],
+  );
+  const t = await createRefused();
+  expect(t).toHaveTextContent(
+    "Spaces are a team feature. Choose a plan to continue.",
+  );
+  expect(
+    within(t)
+      .getAllByRole("link")
+      .map((l) => [l.textContent, l.getAttribute("href")]),
+  ).toEqual([["See plans", "/settings/plan"]]);
 });

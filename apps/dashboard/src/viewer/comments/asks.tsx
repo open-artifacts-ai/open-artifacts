@@ -1,21 +1,38 @@
 import type {
   ArtifactAgent,
   CommentMention,
+  CommentNotified,
   Comment as CommentT,
   CommentThread,
   KeyRef,
+  MentionDelivery,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { useEffect, useId, useState } from "react";
+import {
+  CheckCheck,
+  Clock,
+  KeyRound,
+  Loader2,
+  Minus,
+  ShieldCheck,
+} from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ApiClientError } from "../../api/client";
 import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
+  usePasskeyAnswer,
+  useTakeBackAsk,
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
-import { PartyFace } from "./AuthorFace";
-import { linkify } from "./linkify";
+import { AuthorFace, PartyFace } from "./AuthorFace";
+import { type Face, FaceStack } from "./FaceStack";
+import { lastWasTouch, useInputKind } from "./inputKind";
+import { Markdown, MarkdownInline } from "./Markdown";
+import { PasskeyBlocked } from "./PasskeyParts";
+import { passkeyFailure, passkeyLine } from "./passkey";
 
 const MUTED = "text-muted-foreground";
 
@@ -26,15 +43,29 @@ export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
 });
 
+/** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
+export const isSendingAnswer = (a: object | undefined) =>
+  !!a && (a as { sending?: boolean }).sending === true;
+
+type AskT = NonNullable<CommentT["ask"]>;
+
+/** #2381: the viewer's own current pick on an ask, if they have weighed in. */
+const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
+
+/** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
+const needsMe = (ask: AskT): boolean => {
+  if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
+  if (ask.role === "weigh") return !myPickOf(ask) && !ask.answer;
+  return (
+    (!ask.answer || isSendingAnswer(ask.answer)) && ask.to.some((a) => a.me)
+  );
+};
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
-    .filter((t) =>
-      t.comments.some(
-        (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
-      ),
-    )
+    .filter((t) => t.comments.some((c) => c.ask && needsMe(c.ask)))
     .map((t) => t.id);
 }
 
@@ -63,55 +94,379 @@ export function nextAskFor(
   );
 }
 
-const OFFLINE = "offline · it will get this when it's back";
+type DState = MentionDelivery;
+/** What a mark shows: a queued notice is "sending" until the comment is HELD_AFTER_MS old. */
+type Shown = DState | "sending";
+const isWait = (d: Shown) => d === "queued" || d === "gone";
 
-/** "Codex is offline · it will get this when it's back", "Claude Code: Delivered". */
-const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
-  d === "queued"
-    ? `${name} is ${OFFLINE}`
-    : d === "gone"
-      ? `${name} is gone · mention another agent`
-      : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-/** #2035: how a reply reached an agent the thread already notifies. */
-const notifiedWord = (d: CommentMention["delivery"]) =>
-  d === "queued"
-    ? "Held until it's back"
-    : d === "gone"
-      ? "Expired"
-      : "Delivered";
+/** A queued notice is delivered within moments; it is "held" only after this long. */
+export const HELD_AFTER_MS = 30_000;
 
-/** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
+/** Maps each state to what to show now; re-renders once when the oldest pending one turns held. */
+function useShown(createdAt: string | undefined, states: readonly DState[]) {
+  const [, tick] = useState(0);
+  const born = createdAt ? Date.parse(createdAt) : Number.NaN;
+  // The end of "sending", fixed on first sight and clamped: a client clock running
+  // behind cannot stretch it past HELD_AFTER_MS from now.
+  const until = useRef<number | null>(null);
+  if (until.current === null)
+    until.current = Number.isNaN(born)
+      ? 0
+      : Date.now() + Math.min(HELD_AFTER_MS, born + HELD_AFTER_MS - Date.now());
+  const end = until.current;
+  const sending = Date.now() < end;
+  const pending = sending && states.includes("queued");
+  useEffect(() => {
+    if (!pending) return;
+    const t = setTimeout(() => tick((n) => n + 1), end - Date.now() + 5);
+    return () => clearTimeout(t);
+  }, [pending, end]);
+  return (d: DState): Shown => (d === "queued" && sending ? "sending" : d);
+}
+
+/** #2229: the details a mark opens, always "<agent>: <state>". A mention's gone is its own word. */
+export const markText = (name: string, d: Shown, mention = false) =>
+  `${name}: ${
+    d === "sending"
+      ? "sending"
+      : d === "queued"
+        ? "held until it's back"
+        : d === "gone"
+          ? mention
+            ? "not on the bus"
+            : "expired, offline too long"
+          : d === "withdrawn"
+            ? "removed before delivery"
+            : d === "seen"
+              ? "seen"
+              : "delivered"
+  }`;
+
+/** Two ticks for delivered or seen, a clock for held or expired. */
+export function DeliveryIcon({ d }: { d: Shown }) {
+  if (d === "sending")
+    return (
+      <Clock
+        aria-hidden="true"
+        data-mark="sending"
+        className="size-3.5 text-muted-foreground"
+      />
+    );
+  if (d === "withdrawn")
+    return (
+      <Minus
+        aria-hidden="true"
+        data-mark="removed"
+        className="size-3.5 text-muted-foreground"
+      />
+    );
+  return isWait(d) ? (
+    <Clock
+      aria-hidden="true"
+      data-mark="wait"
+      className="size-3.5 text-[var(--oa-warning)]"
+    />
+  ) : (
+    <CheckCheck
+      aria-hidden="true"
+      data-mark="ok"
+      className="size-3.5 text-[var(--oa-success)]"
+    />
+  );
+}
+
+/**
+ * Open on hover and focus, toggle on tap or click, close on Escape or leaving.
+ * A touch tap toggles on its own (a second tap closes), whatever hover or focus
+ * the browser fakes after it; the next keydown or mouse move (a hybrid device)
+ * ends "touch", so the keyboard and the mouse open it again (#2247). Escape while open is swallowed, so it does not
+ * also close the panel, sheet or full screen behind it. `float` keeps the
+ * details inside the comment's column.
+ */
+function useDetail() {
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [tap, setTap] = useState(false);
+  useInputKind();
+  const float = useRef<HTMLSpanElement>(null);
+  const [shift, setShift] = useState(0);
+  const open = hover || focus || tap;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: measured once per opening
+  useLayoutEffect(() => {
+    const t = float.current;
+    const box = t?.closest("[data-comment]");
+    if (!open || !t || !box) {
+      setShift(0);
+      return;
+    }
+    const r = t.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    const left = r.left - shift;
+    const right = r.right - shift;
+    setShift(
+      right > b.right ? b.right - right : left < b.left ? b.left - left : 0,
+    );
+  }, [open]);
+  return {
+    open,
+    float: {
+      ref: float,
+      style: shift ? { transform: `translateX(${shift}px)` } : undefined,
+    },
+    props: {
+      onMouseEnter: () => {
+        if (!lastWasTouch()) setHover(true);
+      },
+      onMouseLeave: () => {
+        setHover(false);
+        setTap(false);
+      },
+      onFocus: () => {
+        if (!lastWasTouch()) setFocus(true);
+      },
+      onBlur: () => {
+        setFocus(false);
+        setTap(false);
+      },
+      onClick: () => setTap((t) => !t),
+      onKeyDown: (e: React.KeyboardEvent) => {
+        if (e.key === "Escape" && open) {
+          e.preventDefault();
+          e.stopPropagation();
+          setHover(false);
+          setFocus(false);
+          setTap(false);
+        }
+      },
+    },
+  };
+}
+
+const FLOAT =
+  "absolute top-full z-20 mt-1 flex min-w-max flex-col gap-1 rounded-md border bg-popover px-2 py-1.5 text-popover-foreground shadow-md";
+
+/** A mention chip with its delivery mark inside, details floating over the thread. */
+function MarkedChip({
+  text,
+  face,
+  p,
+  guest,
+  createdAt,
+}: {
+  text: string;
+  face: Parameters<typeof PartyFace>[0]["p"] & {
+    name: string;
+    delivery: DState;
+  };
+  p: Parameters<typeof PartyFace>[0]["p"];
+  guest: boolean;
+  createdAt?: string;
+}) {
+  const { open, props, float } = useDetail();
+  const shown = useShown(createdAt, [face.delivery])(face.delivery);
+  const detail = markText(face.name, shown, true);
+  const did = useId();
+  return (
+    <span className="relative inline-block align-middle">
+      {/* #2247: the name stays the chip's own text; the state is its description. */}
+      <span id={did} hidden>
+        {detail}
+      </span>
+      <button
+        type="button"
+        data-mention-chip=""
+        data-delivery={face.delivery}
+        aria-describedby={did}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-full border-0 bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)] font-[inherit] text-[length:inherit]"
+        {...props}
+      >
+        <PartyFace p={p} guest={guest} />
+        {text}
+        <DeliveryIcon d={shown} />
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          data-delivery-detail=""
+          className={`${FLOAT} left-0 ${TXT}`}
+          {...float}
+        >
+          {detail}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** #2229: a problem's sentence, shown on the first comment it happens in. */
+const problemLine = (name: string, d: DState, notified: boolean) =>
+  d === "queued"
+    ? `${name} is offline. Held until it's back.`
+    : notified
+      ? `${name} didn't get this: it was offline too long. @-mention it to try again.`
+      : `${name} isn't on the bus anymore. Mention another agent.`;
+
+type Problem = { id: string; m: CommentNotified; notified: boolean };
+
+/** Per comment, the problems that are new in it: an agent held or expired in an
+    earlier comment of the thread is not told again, only marked. */
+export function newProblems(comments: readonly CommentT[]) {
+  const seen = new Set<string>();
+  const out = new Map<string, Problem[]>();
+  for (const c of comments) {
+    const list: Problem[] = [];
+    const add = (m: CommentMention, notified: boolean) => {
+      if (!m.delivery || !isWait(m.delivery)) return;
+      const id = `${m.key}:${m.delivery}`;
+      if (seen.has(id)) return;
+      seen.add(id);
+      list.push({
+        id: `${notified ? "n" : "m"}-${m.key}`,
+        m: m as CommentNotified,
+        notified,
+      });
+    };
+    for (const m of c.mentions ?? []) add(m, false);
+    for (const m of c.notified ?? []) add(m, true);
+    if (list.length) out.set(c.id, list);
+  }
+  return out;
+}
+
+/** The sentence for each new problem. Marks live on the chip and in the header. Names are text, never HTML. */
 export function Delivery({
   c,
   guest = false,
+  problems,
 }: {
   c: CommentT;
   guest?: boolean;
+  /** What is new in this comment; by default whatever is wrong in it. */
+  problems?: readonly Problem[];
 }) {
-  if (!c.mentions?.length && !c.notified?.length) return null;
+  const all = problems ?? newProblems([c]).get(c.id) ?? [];
+  // A queued notice is only "held" once the comment is HELD_AFTER_MS old.
+  const shownOf = useShown(
+    c.createdAt,
+    all.map((p) => p.m.delivery),
+  );
+  const list = all.filter((p) => shownOf(p.m.delivery) !== "sending");
+  if (!list.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
-      {c.mentions?.map((m) => (
+      {list.map(({ id, m, notified }) => (
         <li
-          key={m.key}
-          data-mention={m.key}
+          key={id}
+          {...(notified
+            ? { "data-notified": m.key }
+            : { "data-mention": m.key })}
           className="flex items-center gap-1"
         >
           <PartyFace p={m} guest={guest} />
-          {deliveryLine(m.name, m.delivery)}
-        </li>
-      ))}
-      {c.notified?.map((m) => (
-        <li
-          key={`n-${m.key}`}
-          data-notified={m.key}
-          className="flex items-center gap-1"
-        >
-          <PartyFace p={m} guest={guest} />
-          {m.name}: {notifiedWord(m.delivery)}
+          {problemLine(m.name, m.delivery, notified)}
         </li>
       ))}
     </ul>
+  );
+}
+
+/** #2229: everyone a comment notified (the agents it @-mentions, then the thread agents told by a reply), as up to three faces and one summary mark in the header. */
+export function DeliveryFaces({
+  mentions = [],
+  told = [],
+  createdAt,
+  compact = false,
+}: {
+  mentions?: readonly CommentNotified[];
+  told?: readonly CommentNotified[];
+  /** The comment's createdAt: a queued notice reads "sending" until it is HELD_AFTER_MS old. */
+  createdAt?: string;
+  /** A tight header: the summary mark and its count, no faces. */
+  compact?: boolean;
+}) {
+  const { open, props, float } = useDetail();
+  const did = useId();
+  const seen = new Set<string>();
+  // A mention keeps its own wording for a gone agent ("not on the bus"), as its chip does.
+  const merged = [
+    ...mentions.map((m) => ({ ...m, mention: true })),
+    ...told.map((m) => ({ ...m, mention: false })),
+  ].filter((m) => !seen.has(m.key) && seen.add(m.key));
+  const shownOf = useShown(
+    createdAt,
+    merged.map((m) => m.delivery),
+  );
+  if (!merged.length) return null;
+  const all = merged.map((m) => ({ ...m, shown: shownOf(m.delivery) }));
+  // A removed notice was never sent: it is listed in the details, not counted.
+  const told2 = all.filter((m) => m.shown !== "withdrawn");
+  const rank = (d: Shown) => (isWait(d) ? 2 : d === "sending" ? 1 : 0);
+  const sorted = [...told2].sort((a, b) => rank(b.shown) - rank(a.shown));
+  const ok = told2.filter((m) => rank(m.shown) === 0).length;
+  const held = told2.filter((m) => isWait(m.shown)).length;
+  const sending = told2.length - ok - held;
+  const rows = [...sorted, ...all.filter((m) => m.shown === "withdrawn")];
+  const faces: Face[] = sorted.map((m) => ({
+    key: m.key,
+    round: false,
+    el: <PartyFace p={m} />,
+  }));
+  const label = !told2.length
+    ? "Removed before delivery"
+    : `${ok} of ${told2.length} delivered`;
+  return (
+    <span className="relative inline-flex shrink-0" data-delivery-faces="">
+      {/* #2247: the label is the name; each agent's state is the description. */}
+      <span id={did} hidden>
+        {rows.map((m) => markText(m.name, m.shown, m.mention)).join(". ")}
+      </span>
+      <button
+        type="button"
+        aria-label={label}
+        aria-describedby={did}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent p-0.5 text-muted-foreground"
+        {...props}
+      >
+        {!compact && <FaceStack faces={faces} moreClass={TXT} more />}
+        <DeliveryIcon
+          d={
+            !told2.length
+              ? "withdrawn"
+              : held
+                ? "queued"
+                : sending
+                  ? "sending"
+                  : "delivered"
+          }
+        />
+        {held + sending > 0 && (
+          <span className={TXT} data-summary="">
+            {ok} of {told2.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          data-delivery-detail=""
+          className={`${FLOAT} right-0 ${TXT}`}
+          {...float}
+        >
+          {rows.map((m) => (
+            <span
+              key={m.key}
+              data-told={m.key}
+              className="flex items-center gap-1.5"
+            >
+              <PartyFace p={m} />
+              {markText(m.name, m.shown, m.mention)}
+            </span>
+          ))}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -140,6 +495,75 @@ const showLetters = (opts: { id: string; label: string }[]) =>
     (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
   );
 
+const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+/** An ask's comment body is worth showing unless empty or just the question again. */
+export const showsAskBody = (body: string, question: string) =>
+  squash(body) !== "" && squash(body) !== squash(question);
+
+/**
+ * #2381: who weighed in on an option, as names (3 people or fewer) or a bar and
+ * a count (4 or more), and the decider's tick on the chosen one. No vote total.
+ */
+function OptionViews({
+  views,
+  total,
+  bars,
+  decided,
+}: {
+  views: NonNullable<AskT["picks"]>;
+  total: number;
+  bars: boolean;
+  decided: string | null;
+}) {
+  if (views.length === 0 && !decided && !bars) return null;
+  return (
+    <div
+      data-option-views=""
+      className={`flex flex-col gap-0.5 px-2 pt-0.5 ${TXT} ${MUTED}`}
+    >
+      {decided && (
+        <span className="font-medium text-[var(--oa-success-fg)]">
+          ✓ {decided} decided
+        </span>
+      )}
+      {bars ? (
+        <span className="flex items-center gap-2" data-option-bar="">
+          <span
+            aria-hidden="true"
+            className="h-1.5 rounded bg-[var(--oa-accent)]"
+            style={{
+              width: `${total ? Math.max(4, (views.length / total) * 60) : 4}%`,
+              opacity: views.length ? 1 : 0.25,
+            }}
+          />
+          <span className="font-medium text-foreground">{views.length}</span>
+        </span>
+      ) : (
+        views.map((p, i) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: two guests can share a name and have no id
+            key={`${p.by.id ?? p.by.name}-${i}`}
+            data-view-by={p.by.id ?? p.by.name}
+            className="inline-flex items-center gap-1"
+          >
+            <FaceStack
+              faces={[
+                {
+                  key: String(p.by.id ?? p.by.name),
+                  round: p.by.kind !== "agent",
+                  el: <AuthorFace a={p.by} small />,
+                },
+              ]}
+            />
+            {p.by.me ? "You" : p.by.name}
+            {p.guest ? " (guest)" : ""} weighed in
+          </span>
+        ))
+      )}
+    </div>
+  );
+}
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
@@ -149,8 +573,11 @@ export function AskBlock({
   reply,
   askQuestion,
   guest = false,
+  body,
 }: {
   artifactId: string;
+  /** The comment's own text (its steps), shown above the question; the caller renders it. */
+  body?: React.ReactNode;
   /** A guest sees the masked name and no tile (#1890). */
   guest?: boolean;
   thread: CommentThread;
@@ -163,21 +590,56 @@ export function AskBlock({
   askQuestion?: () => void;
 }) {
   const ask = c.ask;
-  const answer = useAnswerAsk(artifactId);
+  const plain = useAnswerAsk(artifactId);
+  const passkey = usePasskeyAnswer(artifactId);
+  const takeBack = useTakeBackAsk(artifactId);
+  // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
+  // #2381: an ask with no `confirm` mark can still need the decider's own passkey at pick
+  // time (their switches changed after it was posted): a plain pick that comes back
+  // passkey_required switches this ask to the passkey path and asks to pick again, so
+  // the passkey prompt starts from a click (Safari needs the gesture).
+  const [viaPasskey, setViaPasskey] = useState(false);
+  const [repick, setRepick] = useState(false);
+  const answer = ask?.confirm === "passkey" || viaPasskey ? passkey : plain;
+  const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
-  const picked = ask?.answer?.optionId;
+  // #2381: what the viewer's own controls show: their weigh-in, or the decision.
+  const myPick = ask ? myPickOf(ask) : undefined;
+  const picked =
+    ask?.role === "weigh" ? myPick?.optionId : ask?.answer?.optionId;
+  const opts = useRef<HTMLUListElement>(null);
+  const [refocus, setRefocus] = useState<string | null>(null);
+  // Once the failed pick is rolled back and its option is enabled again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` changes when the rollback lands
+  useEffect(() => {
+    if (!refocus || answer.isPending) return;
+    const el = opts.current?.querySelector<HTMLButtonElement>(
+      `[data-option="${CSS.escape(refocus)}"]`,
+    );
+    if (!el || el.disabled) return;
+    el.focus({ preventScroll: true });
+    setRefocus(null);
+  }, [refocus, answer.isPending, picked]);
   // A later answer, even one made elsewhere, ends the old failure and the Change mode.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` is the trigger.
   useEffect(() => {
+    // The rollback after a failed pick (or a 409's refetch) sets it back to
+    // unanswered: that failure stays. A new answer ends the old one.
+    if (picked === undefined) return;
     setErr(null);
     setChanging(false);
   }, [picked]);
   if (!ask) return null;
-  const mine = ask.to.some((a) => a.me);
+  const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
+  // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
+  const pk = ask.confirm === "passkey" || viaPasskey;
+  const pkErr = pk && err != null ? passkeyFailure(err) : null;
+  const pkLine = pkErr ? passkeyLine(pkErr) : null;
+  const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
@@ -186,12 +648,71 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  // The decision itself (the decider's pick), for the closed line and the tick.
+  const decisionIdx = ask.options.findIndex(
+    (o) => o.id === ask.answer?.optionId,
+  );
+  const decisionOpt = ask.options[decisionIdx];
+  const weighing = ask.role === "weigh";
+  const decider = ask.decider;
+  // A risky ask (an action option or a passkey) shows no one else: no who-line,
+  // weigh-ins or take back. It is the asker's own user's call.
+  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const deciderLine =
+    !decider || risky
+      ? null
+      : ask.role === "decide"
+        ? "You decide"
+        : ask.chosenBy
+          ? `${ask.chosenBy.me ? "You" : ask.chosenBy.name} asked ${decider.name} to decide`
+          : `${decider.name} decides`;
+  // Who was asked to weigh in (people, not the decider), shown before anyone picks.
+  const weighers = ask.to
+    .filter((p) => p.kind !== "agent" && p.id !== decider?.id)
+    .sort((x, y) => Number(y.me) - Number(x.me));
+  const names = weighers.map((p) => (p.me ? "You" : p.name));
+  const weighersText =
+    names.length <= 1
+      ? (names[0] ?? "")
+      : names.length <= 3
+        ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+        : `${names.slice(0, 2).join(", ")} and ${names.length - 2} others`;
+  // Weighing in: everyone's latest view but the decider's own pick (that is the decision).
+  const views = (ask.picks ?? []).filter((p) => p.by.id !== decider?.id);
+  // Someone asked through their agent, or a pick kept from someone no longer
+  // asked, still counts: never "5 of 3 weighed in".
+  const people = Math.max(
+    ask.to.filter((p) => p.kind !== "agent" && p.id !== decider?.id).length,
+    views.length,
+  );
+  const bars = people >= 4;
+  const slot = answer.isPending ? (
+    <p role="status" data-passkey-verifying="" className={`m-0 ${MUTED}`}>
+      Waiting for your passkey…
+    </p>
+  ) : pkErr && (pkLine || pkErr.kind === "other") ? (
+    <p
+      role="alert"
+      data-passkey-error={pkErr.kind}
+      className={`m-0 ${pkLine?.danger || !pkLine ? "text-destructive" : MUTED}`}
+    >
+      {pkLine?.text ?? answerError(err, errCtx)}
+    </p>
+  ) : !pickedOpt && !blocked ? (
+    <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
+      <KeyRound aria-hidden="true" className="size-3.5" />
+      {repick
+        ? "This now needs your passkey. Pick again."
+        : "Approving this needs your passkey."}
+    </p>
+  ) : null;
   const recIdx = ask.options.findIndex(
     (o) => o.id === ask.recommended?.optionId,
   );
   const letters = showLetters(ask.options);
+  const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
-  const decided = ask.closed && pickedOpt;
+  const decided = ask.closed && decisionOpt;
   const line = decided && (
     <>
       <button
@@ -205,8 +726,8 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {letters ? `${letter(pickedIdx)}, ` : ""}
-          {pickedOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
+          {letters ? `${letter(decisionIdx)}, ` : ""}
+          {decisionOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -233,10 +754,14 @@ export function AskBlock({
         <div
           // Amber only while it needs this reader: an ask for you with no pick yet.
           className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
-            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+            canAnswer && (!pickedOpt || sendingPick)
+              ? "ring-[var(--oa-warning)]"
+              : "ring-border"
           }`}
           data-ask=""
-          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
+          data-needs-you={
+            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
+          }
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
             {c.author.name}
@@ -253,37 +778,147 @@ export function AskBlock({
             )}{" "}
             asks{askedWho(ask.to, mine)}
           </p>
-          <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {linked(ask.question, 0)}
-          </p>
+          {body}
+          <div id={qid} className={`${TXT} font-semibold break-words`}>
+            <Markdown body={ask.question} />
+          </div>
+          {deciderLine && decider && (
+            <div
+              data-ask-decider=""
+              className={`flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5 ${TXT}`}
+            >
+              <span className="flex flex-wrap items-center gap-1.5">
+                <FaceStack
+                  faces={[
+                    {
+                      key: decider.id ?? decider.name,
+                      round: decider.kind !== "agent",
+                      el: <AuthorFace a={decider} small />,
+                    },
+                  ]}
+                />
+                <span className="font-medium text-foreground">
+                  {deciderLine}
+                </span>
+              </span>
+              {weighers.length > 0 && (
+                <span
+                  data-ask-weighers=""
+                  className={`flex flex-wrap items-center gap-1.5 ${MUTED}`}
+                >
+                  <FaceStack
+                    faces={weighers.map((p, i) => ({
+                      key: `${p.id ?? p.name}-${i}`,
+                      round: true,
+                      el: <AuthorFace a={p} small />,
+                    }))}
+                  />
+                  <span>{weighersText} weigh in</span>
+                </span>
+              )}
+            </div>
+          )}
+          {ask.canTakeBack && !risky && (
+            <p className={TXT}>
+              <Button
+                size="xs"
+                variant="link"
+                className="h-auto p-0 font-normal text-primary underline"
+                disabled={takeBack.isPending}
+                onClick={() => {
+                  setErr(null);
+                  takeBack.mutate(
+                    { thread: thread.id, comment: c.id },
+                    { onError: setErr },
+                  );
+                }}
+              >
+                I'll decide this
+              </Button>
+            </p>
+          )}
+          {ask.role && !risky && !ask.closed && !pickedOpt && (
+            <p data-ask-verb="" className={`${TXT} ${MUTED}`}>
+              {weighing
+                ? `Pick an option to weigh in. ${decider?.name ?? "The decider"} decides.`
+                : "Pick an option to decide."}
+            </p>
+          )}
+          {bars && !risky && (
+            <p data-ask-tally="" className={`${TXT} ${MUTED}`}>
+              {views.length} of {people} weighed in. The tally decides nothing.
+            </p>
+          )}
+          {pk && slot && (
+            // One slot for the idle line, the wait and the failure; absent when empty.
+            <div className={`min-h-5 ${TXT}`} data-passkey-slot="">
+              {slot}
+            </div>
+          )}
+          {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
           <ul
+            ref={opts}
             aria-labelledby={qid}
+            aria-busy={answer.isPending || undefined}
+            data-sending={answer.isPending ? "" : undefined}
             className="m-0 flex list-none flex-col gap-1 p-0"
           >
             {ask.options.map((o, i) => {
               const rec = ask.recommended?.optionId === o.id;
               const sel = picked === o.id;
+              // The decision keeps full strength in green; only unpicked options fade.
+              const isDecision =
+                ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
               return (
                 <li key={o.id}>
                   <Button
                     variant="outline"
                     size="sm"
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
-                      sel
-                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
-                        : ""
-                    }`}
+                      isDecision
+                        ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
+                        : sel
+                          ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
+                          : ""
+                    } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
-                      !canAnswer || answer.isPending || sel || (locked && !sel)
+                      !canAnswer ||
+                      answer.isPending ||
+                      sel ||
+                      (locked && !sel) ||
+                      blocked
                     }
                     aria-pressed={sel}
                     data-option={o.id}
                     onClick={() => {
                       setErr(null);
-                      answer.mutate(
-                        { thread: thread.id, comment: c.id, optionId: o.id },
-                        { onError: setErr },
-                      );
+                      setLastPick(o.id);
+                      const v = {
+                        thread: thread.id,
+                        comment: c.id,
+                        optionId: o.id,
+                      };
+                      const failed = (e: unknown) => {
+                        setErr(e);
+                        // Back to unanswered: focus returns to the option.
+                        setRefocus(o.id);
+                      };
+                      setRepick(false);
+                      answer.mutate(v, {
+                        onError: (e) => {
+                          if (
+                            answer === plain &&
+                            e instanceof ApiClientError &&
+                            e.code === "passkey_required"
+                          ) {
+                            setErr(null);
+                            setViaPasskey(true);
+                            setRepick(true);
+                            return;
+                          }
+                          failed(e);
+                        },
+                      });
                     }}
                   >
                     {letters && (
@@ -295,21 +930,56 @@ export function AskBlock({
                       </span>
                     )}
                     <span className="min-w-0 flex-1 break-words">
-                      <b>{o.label}</b>
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <b>{o.label}</b>
+                        {rec && (
+                          <span
+                            className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                          >
+                            Recommended
+                          </span>
+                        )}
+                      </span>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
-                          {o.detail}
+                          <MarkdownInline body={o.detail} links={false} />
                         </span>
                       )}
                     </span>
-                    {rec && (
+                    {pk && !sel && (
                       <span
-                        className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                        data-passkey-hint=""
+                        role="img"
+                        aria-label={
+                          answer.isPending && lastPick === o.id
+                            ? "Waiting for your passkey"
+                            : "Needs a passkey"
+                        }
+                        className={`ml-auto shrink-0 ${MUTED}`}
                       >
-                        Recommended
+                        {answer.isPending && lastPick === o.id ? (
+                          <Loader2
+                            aria-hidden="true"
+                            className="size-3.5 animate-spin motion-reduce:animate-none"
+                          />
+                        ) : (
+                          <KeyRound aria-hidden="true" className="size-3.5" />
+                        )}
                       </span>
                     )}
                   </Button>
+                  <OptionViews
+                    views={views.filter((p) => p.optionId === o.id)}
+                    total={views.length}
+                    bars={bars}
+                    decided={
+                      !risky &&
+                      ask.answer?.optionId === o.id &&
+                      !isSendingAnswer(ask.answer)
+                        ? actor(ask.answer.by, "You")
+                        : null
+                    }
+                  />
                 </li>
               );
             })}
@@ -320,12 +990,9 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer && pickedOpt && (
-            <p className={`${TXT} font-medium`} data-ask-answer="">
-              {actor(ask.answer.by, "You")} picked{" "}
-              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-              {versionDate(ask.answer.at)}
-              {ask.closed ? " · closed" : ""}
+          {weighing && myPick && !answer.isPending && (
+            <p className={TXT} data-ask-answer="">
+              Your view is in. {decider?.name ?? "The decider"} decides.
               {canAnswer && locked && (
                 <>
                   {" · "}
@@ -341,6 +1008,43 @@ export function AskBlock({
               )}
             </p>
           )}
+          {!weighing &&
+            ask.answer &&
+            pickedOpt &&
+            !isSendingAnswer(ask.answer) &&
+            !answer.isPending && (
+              <>
+                <p className={`${TXT} font-medium`} data-ask-answer="">
+                  {actor(ask.answer.by, "You")}{" "}
+                  {ask.decider && !risky ? "decided" : "picked"}{" "}
+                  {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                  {versionDate(ask.answer.at)}
+                  {ask.closed ? " · closed" : ""}
+                  {canAnswer && locked && (
+                    <>
+                      {" · "}
+                      <Button
+                        size="xs"
+                        variant="link"
+                        className="h-auto p-0"
+                        onClick={() => setChanging(true)}
+                      >
+                        Change
+                      </Button>
+                    </>
+                  )}
+                </p>
+                {ask.answer.verified === "passkey" && (
+                  <span
+                    data-ask-verified=""
+                    className={`inline-flex w-fit items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                  >
+                    <ShieldCheck aria-hidden="true" className="size-3" />
+                    Verified with passkey
+                  </span>
+                )}
+              </>
+            )}
           {asked.length > 0 && (
             <p
               data-ask-to=""
@@ -358,12 +1062,12 @@ export function AskBlock({
               ))}
             </p>
           )}
-          {!mine && !ask.closed && (
+          {!mine && !ask.closed && !ask.role && (
             <p className={`${TXT} ${MUTED}`}>
               Only the people asked can answer.
             </p>
           )}
-          {err != null && (
+          {err != null && !pk && (
             <p role="alert" className={`${TXT} text-destructive`}>
               {answerError(err, errCtx)}
             </p>
@@ -427,8 +1131,17 @@ export function mentionedKeys(
   text: string,
   agents: readonly ArtifactAgent[],
 ): string[] {
+  return mentionSpans(text, agents).map((s) => s.key);
+}
+
+/** Where each counted `@name` sits in the text (`start` at the "@", `end`
+    after the name), in the order `mentionedKeys` lists them. */
+export function mentionSpans(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { key: string; start: number; end: number }[] {
   let rest = text;
-  const keys: string[] = [];
+  const out: { key: string; start: number; end: number }[] = [];
   for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
     const re = new RegExp(
       `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
@@ -436,14 +1149,46 @@ export function mentionedKeys(
     );
     const m = re.exec(rest);
     if (!m) continue;
-    keys.push(a.key);
     const at = m.index + (m[1]?.length ?? 0);
+    out.push({ key: a.key, start: at, end: at + a.name.length + 1 });
     rest =
       rest.slice(0, at) +
       " ".repeat(a.name.length + 1) +
       rest.slice(at + a.name.length + 1);
   }
-  return keys;
+  return out;
+}
+
+/** #2317: split the text into plain runs and counted mentions (the pills),
+    in text order. Joining the `text` of every segment gives the input back. */
+export function mentionSegments(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): { text: string; key?: string }[] {
+  const spans = mentionSpans(text, agents).sort((x, y) => x.start - y.start);
+  const out: { text: string; key?: string }[] = [];
+  let last = 0;
+  for (const s of spans) {
+    if (s.start > last) out.push({ text: text.slice(last, s.start) });
+    out.push({ text: text.slice(s.start, s.end), key: s.key });
+    last = s.end;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
+}
+
+/** #2317: Backspace with the caret right after a pill: the range of the whole
+    `@name`, to select so the native delete removes it (and stays in the undo
+    stack). Null when the key should act normally. */
+export function atomicBackspace(
+  text: string,
+  start: number,
+  end: number,
+  agents: readonly ArtifactAgent[],
+): { start: number; end: number } | null {
+  if (start !== end) return null;
+  const s = mentionSpans(text, agents).find((m) => m.end === start);
+  return s ? { start: s.start, end: s.end } : null;
 }
 
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
@@ -479,21 +1224,34 @@ export function removeMention(
   return atStart ? out.trimStart() : out;
 }
 
-/** A posted body with each `@name` from its mentions as a chip. Text spans only,
-    never HTML; a body with no mentions is the plain string. */
-export function MentionedText({
-  body,
-  mentions,
-  guest = false,
-}: {
+/** A posted body as the safe markdown subset (#2338), with each `@name` from its
+    mentions as a chip in its text. Text spans and elements only, never HTML. */
+export function MentionedText(props: MentionedProps) {
+  return (
+    <Markdown body={props.body} text={(s) => <>{mentioned(s, props)}</>} />
+  );
+}
+
+type MentionedProps = {
   body: string;
   mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
     key: string;
     name: string;
+    delivery?: DState;
   })[];
   guest?: boolean;
-}) {
-  if (!mentions?.length) return <>{linked(body, 0)}</>;
+  /** #2229: show each mention's delivery in its chip. */
+  marks?: boolean;
+  /** The comment's createdAt, for "sending" before a queued notice is held. */
+  createdAt?: string;
+};
+
+/** One run of plain text with its mention chips. Links were cut out by the parser. */
+function mentioned(
+  body: string,
+  { mentions, guest = false, marks, createdAt }: MentionedProps,
+): React.ReactNode[] {
+  if (!mentions?.length) return [body];
   const names = [...new Set(mentions.map((m) => m.name))]
     .sort((x, y) => y.length - x.length)
     .map(esc);
@@ -509,7 +1267,21 @@ export function MentionedText({
       (x) => x.name.toLowerCase() === (m[2] ?? "").toLowerCase(),
     );
     const face = same.length === 1 ? same[0] : undefined;
-    if (at > last) out.push(...linked(body.slice(last, at), last));
+    if (at > last) out.push(body.slice(last, at));
+    if (marks && !guest && face?.delivery) {
+      out.push(
+        <MarkedChip
+          key={at}
+          text={body.slice(at, end)}
+          face={face as typeof face & { delivery: DState }}
+          p={face}
+          guest={guest}
+          createdAt={createdAt}
+        />,
+      );
+      last = end;
+      continue;
+    }
     out.push(
       <span
         key={at}
@@ -522,31 +1294,9 @@ export function MentionedText({
     );
     last = end;
   }
-  if (last === 0) return <>{linked(body, 0)}</>;
-  if (last < body.length) out.push(...linked(body.slice(last), last));
-  return <>{out}</>;
-}
-
-/** Plain text with its http(s) URLs as links that open in a new tab. */
-function linked(text: string, base: number): React.ReactNode[] {
-  let at = base;
-  return linkify(text).map((p) => {
-    const key = at;
-    at += p.text.length;
-    return p.url ? (
-      <a
-        key={key}
-        href={p.text}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="break-all underline"
-      >
-        {p.text}
-      </a>
-    ) : (
-      p.text
-    );
-  });
+  if (last === 0) return [body];
+  if (last < body.length) out.push(body.slice(last));
+  return out;
 }
 
 /** Who gets notified: the mentioned agents. */

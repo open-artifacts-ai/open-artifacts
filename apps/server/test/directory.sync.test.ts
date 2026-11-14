@@ -1856,7 +1856,7 @@ describe("P2.5 #15: a pending reconnect keeps the live binding synced and enforc
     expect(await statusOf(uid)).toBe("suspended");
   });
 
-  it("sign-in still checks the directory: a user suspended in Google is refused", async () => {
+  it("login still checks the directory: a user suspended in Google is refused", async () => {
     const [u] = dirUsers(1, "pend-signin");
     const t0 = Date.now();
     await connected(t0);

@@ -126,6 +126,25 @@ it("no shared spaces: Personal, the empty note, and Set up spaces for admins", a
     within(sw).getByRole("link", { name: "Set up spaces" }),
   ).toHaveAttribute("href", "/settings/spaces");
   expect(sw).toHaveTextContent("No spaces yet");
+  // #2472: an owner or admin is the one who sets them up.
+  expect(sw).toHaveTextContent(
+    "You haven't set up spaces. What you publish stays in Personal until you do.",
+  );
+  expect(sw).not.toHaveTextContent("Your admin");
+});
+
+it("no shared spaces, an admin (not the owner): the you wording too (#2472)", async () => {
+  mountHosted("/", true, (m) => ({
+    ...m,
+    user: { ...m.user, role: "admin" },
+    spaces: [],
+  }));
+  const sw = await nav();
+  await waitFor(() =>
+    expect(sw).toHaveTextContent(
+      "You haven't set up spaces. What you publish stays in Personal until you do.",
+    ),
+  );
 });
 
 it("no shared spaces, not an admin: the note without the button", async () => {
@@ -136,6 +155,9 @@ it("no shared spaces, not an admin: the note without the button", async () => {
   }));
   const sw = await nav();
   await waitFor(() => expect(sw).toHaveTextContent("No spaces yet"));
+  expect(sw).toHaveTextContent(
+    "Your admin hasn't set up spaces. What you publish stays in Personal until they do.",
+  );
   expect(within(sw).queryByRole("link", { name: "Set up spaces" })).toBeNull();
 });
 
@@ -283,7 +305,7 @@ it("visibilityHint", () => {
     "Only you, and anyone you add",
   );
   expect(visibilityHint("public", eng, "Acme")).toBe(
-    "Anyone with the link, no sign-in",
+    "Anyone with the link, no login",
   );
   expect(visibilityHint("team", undefined, "Acme")).toBeNull();
 });

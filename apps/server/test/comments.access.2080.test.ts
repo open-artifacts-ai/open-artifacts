@@ -86,7 +86,7 @@ const patch = (id: string, comments: unknown) =>
 
 const SIGN_IN = {
   code: "comments_signed_in_only",
-  message: "Sign in to comment.",
+  message: "Log in to comment.",
 };
 async function expectRefused(r: Response) {
   expect(r.status).toBe(403);
@@ -99,7 +99,7 @@ beforeAll(async () => {
 });
 
 describe("default and storage", () => {
-  it("new artifacts default to signed-in; the column default keeps migrated rows at everyone", async () => {
+  it("new artifacts default to logged-in; the column default keeps migrated rows at everyone", async () => {
     const id = await pub();
     expect(await art(id)).toMatchObject({
       comments: true,
@@ -159,8 +159,8 @@ describe("default and storage", () => {
   });
 });
 
-describe("signed-in only", () => {
-  it("the artifact DTO says a signed-out viewer cannot comment; a member can", async () => {
+describe("logged-in only", () => {
+  it("the artifact DTO says a logged-out viewer cannot comment; a member can", async () => {
     const id = await pub();
     expect((await art(id, null)).can?.comment).toBe(false);
     expect((await art(id, guest)).can?.comment).toBe(true);
@@ -168,7 +168,7 @@ describe("signed-in only", () => {
     expect((await art(open, null)).can).toBeUndefined();
   });
 
-  it("refuses a signed-out write on every route with comments_signed_in_only; reads stay open", async () => {
+  it("refuses a logged-out write on every route with comments_signed_in_only; reads stay open", async () => {
     const id = await pub();
     const t = (await (await post(id, owner, "root")).json()) as Thread;
     const cid = t.comments[0]?.id as string;
@@ -221,7 +221,7 @@ describe("signed-in only", () => {
     expect(((await r.json()) as CommentList).threads).toHaveLength(1);
   });
 
-  it("a signed-out caller cannot stop or undo a thread's agent (#2035)", async () => {
+  it("a logged-out caller cannot stop or undo a thread's agent (#2035)", async () => {
     const id = await pub();
     const t = (await (await post(id, owner, "root")).json()) as Thread;
     for (const method of ["DELETE", "PUT"])
@@ -241,7 +241,7 @@ describe("signed-in only", () => {
       }
   });
 
-  it("a signed-in member who is not the owner can still comment", async () => {
+  it("a logged-in member who is not the owner can still comment", async () => {
     const id = await pub();
     expect((await post(id, guest)).status).toBe(201);
     expect((await post(id, owner)).status).toBe(201);
@@ -275,7 +275,7 @@ describe("signed-in only", () => {
     );
   });
 
-  it("everyone: a signed-out visitor posts; off: comments_off", async () => {
+  it("everyone: a logged-out visitor posts; off: comments_off", async () => {
     const open = await pub({ comments: "everyone" });
     expect((await post(open, null)).status).toBe(201);
     const off = await pub({ comments: "off" });

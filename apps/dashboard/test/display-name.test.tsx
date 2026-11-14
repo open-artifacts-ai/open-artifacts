@@ -177,7 +177,7 @@ describe("display-name dialog", () => {
     );
   });
 
-  it("sign-out forgets Not now, so the next sign-in asks again", async () => {
+  it("sign-out forgets Not now, so the next login asks again", async () => {
     serveMe(needsName());
     sessionStorage.setItem("unrelated", "keep");
     mount("/");
@@ -187,7 +187,7 @@ describe("display-name dialog", () => {
     sessionStorage.setItem("oa:display-name-skipped:u_other", "1");
     const menu = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.keyDown(menu, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
     await waitFor(() =>
       expect(
         Object.keys(sessionStorage).filter((k) =>
@@ -214,8 +214,8 @@ describe("display-name dialog", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const menu = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.keyDown(menu, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByText("Couldn't sign out")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
+    expect(await screen.findByText("Couldn't log out")).toBeInTheDocument();
     expect(
       sessionStorage.getItem(`oa:display-name-skipped:${fixtures.me.user.id}`),
     ).toBe("1");
@@ -295,6 +295,43 @@ describe("Settings → Profile", () => {
       "Ada Lovelace",
     );
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  const HIDDEN = (who: string) =>
+    `Others see your ${who} instead of this name, because it looks like an agent's name. Pick a different display name to show it.`;
+
+  it("says others see the email when the name reads as an agent's (#2277)", async () => {
+    serveMe(
+      needsName({
+        needsDisplayName: false,
+        displayName: "Ada's agent",
+        nameHiddenAs: "email",
+      }),
+    );
+    mount("/settings/profile");
+    const input = await field();
+    const hint = await screen.findByText(HIDDEN("email"));
+    expect(input.getAttribute("aria-describedby")).toContain(hint.id);
+  });
+
+  it("says others see the login name when that shows instead (#2277)", async () => {
+    serveMe(
+      needsName({
+        needsDisplayName: false,
+        displayName: "Ada's agent",
+        nameHiddenAs: "sso",
+      }),
+    );
+    mount("/settings/profile");
+    await field();
+    expect(await screen.findByText(HIDDEN("login name"))).toBeInTheDocument();
+  });
+
+  it("shows no hint when the name passes", async () => {
+    serveMe(needsName({ needsDisplayName: false, nameHiddenAs: null }));
+    mount("/settings/profile");
+    await field();
+    expect(screen.queryByText(/looks like an agent/)).toBeNull();
   });
 
   it("disables Save until the name changes", async () => {

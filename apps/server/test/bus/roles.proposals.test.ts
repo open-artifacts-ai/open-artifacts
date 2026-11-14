@@ -501,7 +501,7 @@ describe("role proposals over MCP (#1372)", () => {
     mallory.d.close();
   });
 
-  it("a stale session can't confirm: signed out everywhere, not an interactive sign-in, or a form token past its time", async () => {
+  it("a stale session can't confirm: logged out everywhere, not an interactive login, or a form token past its time", async () => {
     const { who, d, pat } = await withBus();
     const n = ns("rp");
     const alice = await open(who.userId, d, n);
@@ -1199,7 +1199,7 @@ describe("role proposals: revoking the proposing credential (#1403)", () => {
   });
 });
 
-describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
+describe("role proposals: a fresh login, bound names (#1372 review)", () => {
   async function pending() {
     const { who, d, pat } = await withBus();
     const n = ns("rp");
@@ -1215,7 +1215,7 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
     return { who, d, pat, n, alice, p };
   }
 
-  it("a sign-in older than 10 minutes can neither load nor post the form; the page asks for a forced sign-in", async () => {
+  it("a login older than 10 minutes can neither load nor post the form; the page asks for a forced login", async () => {
     const { who, d, p } = await pending();
     const csrf = await forgedCsrf(who.userId, p.secret);
     const next = encodeURIComponent(BASE);
@@ -1251,7 +1251,7 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
     d.close();
   });
 
-  it("Google: a fresh session also needs a forced re-authentication (auth_time) under 10 minutes", async () => {
+  it("Google: a fresh session also needs a forced re-authentication marker (a completed reauth flow) under 10 minutes", async () => {
     const { who, d, p } = await pending();
     const now = Date.now();
     const silent = await sessionAt(who.userId, now - MIN, "google");
@@ -1269,7 +1269,7 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
     d.close();
   });
 
-  it("a sign-in under 10 minutes old with its re-auth marker confirms (Access, an email code); without the marker it is refused", async () => {
+  it("a login under 10 minutes old with its re-auth marker confirms (Access, an email code); without the marker it is refused", async () => {
     for (const provider of ["access", "code"] as const) {
       const { who, d, p } = await pending();
       const at = Date.now() - 9 * MIN;
@@ -1289,7 +1289,7 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
     }
   });
 
-  it("the forced sign-in: Access is asked for prompt=login and max_age=0; a plain sign-in isn't", async () => {
+  it("the forced login: Access is asked for prompt=login and max_age=0; a plain login isn't", async () => {
     const at = async (q: string) =>
       new URL(
         (
@@ -1421,7 +1421,7 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
   });
 });
 
-describe("role proposals: the forced sign-in marker, through the real sign-in (#1372 re-review)", () => {
+describe("role proposals: the forced login marker, through the real login (#1372 re-review)", () => {
   afterEach(() => vi.restoreAllMocks());
 
   /** A member signed in through Access (fake IdP), with a pending proposal. */
@@ -1448,7 +1448,7 @@ describe("role proposals: the forced sign-in marker, through the real sign-in (#
     return { who, d: bus.d, p, cookie: set.split(";")[0] as string };
   }
 
-  it("a plain Access sign-in (silent SSO, no reauth=1) is refused at confirm", async () => {
+  it("a plain Access login (silent SSO, no reauth=1) is refused at confirm", async () => {
     const { who, d, p, cookie } = await viaAccess(false);
     const g = await get(p.secret, { cookie });
     expect(g.status).toBe(403);
@@ -1462,7 +1462,7 @@ describe("role proposals: the forced sign-in marker, through the real sign-in (#
     d.close();
   });
 
-  it("an Access sign-in with reauth=1 confirms", async () => {
+  it("an Access login with reauth=1 confirms", async () => {
     const { who, d, p, cookie } = await viaAccess(true);
     expect((await confirmInBrowser(cookie, p.secret)).status).toBe(200);
     expect(await roles(who.userId)).toHaveLength(1);
@@ -1599,7 +1599,7 @@ describe("role proposals: the secret rides in the URL fragment (#1426)", () => {
     d.close();
   });
 
-  it("signed out, the hop keeps the secret out of the sign-in's next; the page script holds it in sessionStorage, not the URL", async () => {
+  it("logged out, the hop keeps the secret out of the login's next; the page script holds it in sessionStorage, not the URL", async () => {
     const { p } = await pending();
     const b = confirmBrowser(app, APP, BASE);
     const hop = await b.send(env, `${APP}${BASE}`);
@@ -1635,7 +1635,7 @@ describe("role proposals: the secret rides in the URL fragment (#1426)", () => {
     expect(stale.headers.get("content-type")).toContain("application/json");
     const j = (await stale.json()) as { html: string; keep: boolean };
     expect(j.keep).toBe(true);
-    expect(j.html).toContain("Sign in again");
+    expect(j.html).toContain("Log in again");
     expect(j.html).not.toContain(p.secret);
     const out = await b.postJson(env, BASE, {}, body);
     expect(out.status).toBe(401);

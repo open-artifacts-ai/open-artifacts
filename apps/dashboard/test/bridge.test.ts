@@ -1,4 +1,10 @@
-import { ANON_ID_HEADER, type ArtifactSummary, LIMITS, R } from "@oa/shared";
+import {
+  ANON_ID_HEADER,
+  type ArtifactSummary,
+  LIMITS,
+  PROTOCOL_VERSION,
+  R,
+} from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ANON_ID_KEY,
@@ -155,6 +161,20 @@ describe("hello / welcome", () => {
       }),
       "*",
     );
+  });
+
+  it("announces its own protocol after welcome (#2408)", () => {
+    mk();
+    send({ oa: 1, type: "hello", protocol: PROTOCOL_VERSION, kind: "html" });
+    const types = post.mock.calls.map((c) => c[0].type);
+    expect(types.slice(0, 2)).toEqual(["welcome", "shell.protocol"]);
+    expect(post.mock.calls[1]?.[0].protocol).toBe(PROTOCOL_VERSION);
+  });
+
+  it("does not announce to a runtime older than the announcement (#2408)", () => {
+    mk();
+    send({ oa: 1, type: "hello", protocol: 5, kind: "html" });
+    expect(post.mock.calls.map((c) => c[0].type)).toEqual(["welcome"]);
   });
 
   it("viewer is null when capabilities.viewer is false", () => {
@@ -383,25 +403,97 @@ describe("comments (#682)", () => {
     });
     expect(o.onCommentSelect).toHaveBeenCalledWith(sel);
     expect(o.onCommentOpen).toHaveBeenCalledWith("t1");
-    expect(o.onCommentPositions).toHaveBeenCalledWith([
-      { id: "t1", state: "exact", top: 5 },
-    ]);
+    expect(o.onCommentPositions).toHaveBeenCalledWith(
+      [{ id: "t1", state: "exact", top: 5 }],
+      undefined,
+    );
+  });
+
+  it("a newer runtime's extra top-level field no longer drops the message (#2408)", () => {
+    const o = withCb();
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: 10, y: 20 },
+      someFutureField: { a: 1 },
+    });
+    expect(o.onCommentPin).toHaveBeenCalledWith(
+      { x: 0.5, y: 0.25 },
+      {
+        x: 10,
+        y: 20,
+      },
+    );
+    send({
+      oa: 1,
+      type: "comment.positions",
+      positions: [{ id: "t1", state: "exact", top: 5 }],
+      someFutureField: 1,
+    });
+    expect(o.onCommentPositions).toHaveBeenCalledTimes(1);
+    // Still strict where it counts: a bad value, a key inside a nested object,
+    // an unknown key plus a second fault, and another message's field on this type.
+    send({ oa: 1, type: "comment.pin", pin: { x: 9, y: 0 }, future: 1 });
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0, y: 0, text: "hi" },
+      future: 1,
+    });
+    send({ oa: 1, type: "comment.open", id: "bad id!", future: 1 });
+    // `at` belongs to comment.pin: on comment.open it is unknown, but the open is fine without it.
+    send({ oa: 1, type: "comment.open", id: "t1", at: { x: 1, y: 1 } });
+    // `ghost` belongs to comment.positions; with a bad positions value it stays refused.
+    send({ oa: 1, type: "comment.open", id: "bad id!", ghost: { x: 1, y: 1 } });
+    expect(o.onCommentPin).toHaveBeenCalledTimes(1);
+    expect(o.onCommentOpen).toHaveBeenCalledTimes(1);
+    expect(o.onCommentOpen).toHaveBeenCalledWith("t1");
   });
 
   it("forwards a valid comment.pin and drops one that fails the schema", () => {
     const o = withCb();
     send({ oa: 1, type: "comment.pin", pin: { x: 0.5, y: 0.25, page: 2 } });
-    expect(o.onCommentPin).toHaveBeenCalledWith({ x: 0.5, y: 0.25, page: 2 });
+    expect(o.onCommentPin).toHaveBeenCalledWith(
+      { x: 0.5, y: 0.25, page: 2 },
+      undefined,
+    );
     send({ oa: 1, type: "comment.pin", pin: { x: 1.5, y: 0 } });
     send({ oa: 1, type: "comment.pin", pin: { x: 0, y: 0, text: "hi" } });
     send({ oa: 1, type: "comment.pin", pin: { x: 0, y: 0 } }, { raw: true });
     expect(o.onCommentPin).toHaveBeenCalledTimes(1);
   });
 
+  it("passes where the pin was clicked (#2019) and drops a bad position", () => {
+    const o = withCb();
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: 120, y: 80 },
+    });
+    expect(o.onCommentPin).toHaveBeenCalledWith(
+      { x: 0.5, y: 0.25 },
+      { x: 120, y: 80 },
+    );
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: -1, y: 80 },
+    });
+    send({
+      oa: 1,
+      type: "comment.pin",
+      pin: { x: 0.5, y: 0.25 },
+      at: { x: 1, y: 2, z: 3 },
+    });
+    expect(o.onCommentPin).toHaveBeenCalledTimes(1);
+  });
+
   it("drops comment messages that fail the shared schemas, or lack the nonce", () => {
     const o = withCb();
     send({ oa: 1, type: "comment.open", id: "not valid!" });
-    send({ oa: 1, type: "comment.open", id: "t1", extra: "<b>" });
     send({ oa: 1, type: "comment.select", anchor: { ...sel, body: "text" } });
     send({ oa: 1, type: "comment.select", anchor: { ...sel, exact: "" } });
     send({ oa: 1, type: "comment.open", id: "t1" }, { raw: true });
@@ -1081,7 +1173,7 @@ describe("anonymous id", () => {
     );
   });
 
-  it("no header when signed in, even with a stored token", async () => {
+  it("no header when logged in, even with a stored token", async () => {
     vi.stubGlobal("localStorage", okStorage);
     store.set(ANON_ID_KEY, TOKEN);
     fetchMock.mockImplementation(async () => withToken(TOKEN2));
@@ -1273,6 +1365,7 @@ describe("the frame can't change the bridge's artifact", () => {
     expect(typeof b.setArtifact).toBe("function");
     expect(Object.keys(b).sort()).toEqual(
       [
+        "clearSelection",
         "commentOnSelection",
         "dispose",
         "focusComment",

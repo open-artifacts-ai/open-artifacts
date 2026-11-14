@@ -81,6 +81,41 @@ export const PlanViewSchema = z.object({
    * predates it (unknown: the dashboard keeps showing Manage billing).
    */
   hasCustomer: z.boolean().optional(),
+  /**
+   * Billing sets this true when yearly Team and Business prices are configured
+   * in this environment; absent or false hides yearly Team and Business.
+   * Owner and admins only.
+   */
+  yearlyTeamBusiness: z.boolean().optional(),
+  /**
+   * Billing says a Checkout already put a card on file (a Solo that paid during
+   * its free days: it is charged when the trial ends). Absent (an older answer)
+   * or false: the Pay buttons stay. Owner and admins only.
+   */
+  soloCheckedOut: z.boolean().optional(),
+  /**
+   * ISO date a scheduled cancel (cancel at period end) takes effect, or null
+   * when none; absent from an older answer. Owner and admins only.
+   */
+  cancelsAt: z.string().nullable().optional(),
+  /**
+   * The interval a paying subscription bills on, and the ISO date it renews
+   * (null while a cancel is scheduled). Absent from an older answer. Owner and
+   * admins only.
+   */
+  interval: z.enum(["month", "year"]).nullable().optional(),
+  renewsAt: z.string().nullable().optional(),
+  /**
+   * Extra-creator charges that failed and are unpaid: the total in cents and
+   * the months ("YYYY-MM"), oldest first. Absent when nothing is due. A notice
+   * only: it never moves tier or access. Owner and admins only.
+   */
+  overageDue: z
+    .object({
+      amountCents: z.number().int().nonnegative(),
+      months: z.array(z.string().regex(/^\d{4}-\d{2}$/)).min(1),
+    })
+    .optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

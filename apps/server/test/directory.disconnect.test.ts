@@ -476,7 +476,7 @@ describe("races and retries", () => {
     });
   });
 
-  it("an owner signed in through Cloudflare Access (self-host) or Google disconnects; a bearer beside it is still refused", async () => {
+  it("an owner logged in through Cloudflare Access (self-host) or Google disconnects; a bearer beside it is still refused", async () => {
     // login() issues a real Access session cookie (p "access").
     const { token: pat } = await createPat(env, owner.userId, "pat");
     expect(
@@ -773,7 +773,7 @@ describe("during customer_mismatch", () => {
     expect((await me({ cookie: u.cookie })).status).toBe(200);
   });
 
-  it("a tenant change: the pending status names both Workspaces, confirm audits both ids, old users stay refused at sign-in", async () => {
+  it("a tenant change: the pending status names both Workspaces, confirm audits both ids, old users stay refused at login", async () => {
     // A directory user of the first Workspace, bound to it.
     const oldSub = `g-old-${crypto.randomUUID()}`;
     const oldEmail = uniq("old-ws");
@@ -910,7 +910,7 @@ describe("during customer_mismatch", () => {
     expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
   }
 
-  it("P2.5 #16: reconnect to customer B and confirm: A's users' sessions, PATs and grants stay dead once the tombstone lifts; sign-in refused", async () => {
+  it("P2.5 #16: reconnect to customer B and confirm: A's users' sessions, PATs and grants stay dead once the tombstone lifts; login refused", async () => {
     const a = await boundUser("ws-a");
     const first = g.customerId;
     expect((await meAs(e, { cookie: a.cookie })).status).toBe(200);

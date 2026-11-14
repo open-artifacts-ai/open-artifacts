@@ -8,7 +8,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import type { GroupMapping, Space, SpaceRole } from "../../api/contract";
-import { errorCopy } from "../../api/errorCopy";
+import { billingContext, errorCopy, planLinks } from "../../api/errorCopy";
 import {
   useAddSelfToSpace,
   useCreateSpace,
@@ -28,6 +28,13 @@ import { Modal } from "../../layout/Modal";
 import { groupSyncHidden, shownDirectoryMode } from "../../layout/SyncBanner";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
+import {
+  isHostedSolo,
+  SOLO_SPACES_LINE,
+  SOLO_SPACES_TITLE,
+  type SoloLink,
+  soloSettingsLinks,
+} from "../../spaces/solo";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
 import {
@@ -76,6 +83,7 @@ function NewSpace({
   onClose: () => void;
 }) {
   const create = useCreateSpace();
+  const state = useMe();
   const [name, setName] = useState("");
   const [allMembersRole, setAll] = useState<SpaceRole | null>(null);
   const [publicLinks, setPublic] = useState(true);
@@ -84,6 +92,11 @@ function NewSpace({
   const addMeId = useId();
   const [touched, setTouched] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
+  // A plan refusal (#2472): the line and where to go from it.
+  const [plan, setPlan] = useState<{
+    text: string;
+    links: { label: string; to: string }[];
+  } | null>(null);
   const hint = useId();
   const nameId = useId();
   const checked = checkName(name);
@@ -94,11 +107,24 @@ function NewSpace({
     const clean = checked.name;
     if (clean === null) return;
     setRefused(null);
+    setPlan(null);
     create.mutate(
       { name: clean, allMembersRole, publicLinks, addMe },
       {
         onSuccess: onClose,
-        onError: (e) => setRefused(nameRefusal(e, name)),
+        onError: (e) => {
+          if (e instanceof ApiClientError && e.code === "plan_required") {
+            const ctx = billingContext(
+              state.status === "authed" ? state.me : null,
+            );
+            setPlan({
+              text: errorCopy(e, e.message, ctx),
+              links: planLinks(e, ctx),
+            });
+            return;
+          }
+          setRefused(nameRefusal(e, name));
+        },
       },
     );
   };
@@ -176,6 +202,24 @@ function NewSpace({
           checked={addMe}
           onCheckedChange={setAddMe}
         />
+        {plan && (
+          <div role="alert" className="grid gap-[6px]">
+            <p className={`m-0 ${errorText}`}>{plan.text}</p>
+            {plan.links.length > 0 && (
+              <p className="m-0 flex flex-wrap gap-x-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
+                {plan.links.map((l) => (
+                  <AppLink
+                    key={l.to}
+                    href={l.to}
+                    className="font-medium underline underline-offset-2"
+                  >
+                    {l.label}
+                  </AppLink>
+                ))}
+              </p>
+            )}
+          </div>
+        )}
       </form>
     </Modal>
   );
@@ -349,12 +393,15 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
 function SpaceList({
   spaces,
   admin,
+  solo,
   error,
   onRetry,
   onNew,
 }: {
   spaces: Space[];
   admin: boolean;
+  /** Hosted Solo (#2472): no New space; what spaces come with, and its links. */
+  solo: SoloLink[] | null;
   /** The list failed to load: said instead of the count and rows. */
   error: unknown;
   onRetry: () => void;
@@ -365,7 +412,8 @@ function SpaceList({
       id="oa-spaces-list"
       title="Spaces"
       action={
-        admin && (
+        admin &&
+        !solo && (
           <WriteLock>
             <Button
               size="sm"
@@ -384,6 +432,22 @@ function SpaceList({
           error={error}
           onRetry={onRetry}
         />
+      ) : admin && solo ? (
+        <div className="grid gap-[6px]">
+          <p className="m-0 font-medium">{SOLO_SPACES_TITLE}</p>
+          <p className={`m-0 ${muted}`}>{SOLO_SPACES_LINE}</p>
+          <p className="m-0 flex flex-wrap gap-x-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
+            {solo.map((l) => (
+              <AppLink
+                key={l.to}
+                href={l.to}
+                className="font-medium underline underline-offset-2"
+              >
+                {l.label}
+              </AppLink>
+            ))}
+          </p>
+        </div>
       ) : (
         admin && (
           <p className={muted}>
@@ -508,7 +572,7 @@ function General({ space }: { space: Space }) {
             Public links
           </b>
           <small id="oa-space-public-hint" className={muted}>
-            Anyone with the link can view, no sign-in.
+            Anyone with the link can view, no login.
           </small>
         </div>
         <WriteLock>
@@ -729,6 +793,8 @@ export function Spaces() {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
+  // Hosted Solo (#2472): only the Spaces card, saying what spaces come with.
+  const solo = isHostedSolo(me);
   const syncOn = !!me && shownDirectoryMode(me) === "google";
   const orgName = me?.instance.name ?? "your organization";
   const { space: spaceId } = useSearch({ strict: false }) as { space?: string };
@@ -769,15 +835,16 @@ export function Spaces() {
   return (
     <div className={STACK}>
       <ReadOnlyNote />
-      {admin && <EverySpace syncOn={syncOn} />}
+      {admin && !solo && <EverySpace syncOn={syncOn} />}
       <SpaceList
         spaces={all}
         admin={admin}
+        solo={solo ? soloSettingsLinks(me) : null}
         error={list.isError ? list.error : null}
         onRetry={() => void list.refetch()}
         onNew={() => setCreating(true)}
       />
-      {admin && <AccessSwitch />}
+      {admin && !solo && <AccessSwitch />}
       {creating && (
         <NewSpace orgName={orgName} onClose={() => setCreating(false)} />
       )}

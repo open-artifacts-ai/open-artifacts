@@ -28,13 +28,63 @@ import { utf8Exceeds } from "./utf8.js";
  * know (all of them, not the field): bump this when a shell message gains one,
  * and have the shell leave that field out for a runtime that said an earlier
  * number. #1698: 2 adds `changed` on `comments.set` threads. #1834: 3 adds
- * `draft` on `comments.set`.
+ * `draft` on `comments.set`. 4 adds `comments.clear`. #2019: 5 adds `badge`
+ * on `comments.set` pins and its ghost, and `at` on `comment.pin`. #2408: 6
+ * has the shell announce its own protocol after `hello` (`shell.protocol`), so
+ * the runtime adds a field to a frame message only for a shell that said it
+ * knows it (a tab opened before a deploy keeps its old, strict shell), and the
+ * shell drops unknown keys from a frame message instead of the whole message.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 6;
+/** The first protocol whose shell announces itself, and whose frame messages may carry fields an older shell would refuse (`at`, `ghost`). */
+export const PROTOCOL_SHELL_ANNOUNCES = 6;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
 export const PROTOCOL_PIN_CHANGED = 2;
 /** The first protocol whose runtime draws the quote being commented on (#1834). */
 export const PROTOCOL_COMMENT_DRAFT = 3;
+/** The first protocol whose runtime clears its selection on `comments.clear`. */
+export const PROTOCOL_COMMENT_CLEAR = 4;
+/** The first protocol whose runtime draws a pin's badge and reports where a pin was clicked (#2019). */
+export const PROTOCOL_PIN_BADGE = 5;
+
+/**
+ * #2019: what a pin's bubble shows, drawn by the shell's choice: one or two
+ * initials, or an agent's face as the inner markup of a 24px line icon. The
+ * frame parses `icon` against an element allowlist and never runs it. `label`
+ * is the bubble's accessible name ("Comment by Sam"). Image and pdf pages only,
+ * whose frame holds no author script: text comments carry no identity into the
+ * frame.
+ */
+export const PinBadgeSchema = z.union([
+  z.strictObject({
+    initials: z.string().min(1).max(4),
+    label: z.string().max(120).optional(),
+  }),
+  z.strictObject({
+    icon: z.string().min(1).max(6000),
+    label: z.string().max(120).optional(),
+    /** The agent's palette slot (0..PRESENCE_PALETTE_SIZE-1) as a CSS colour. */
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    /** An agent with no face the viewer may see: the dashed outline mark, as the card draws it. */
+    dashed: z.boolean().optional(),
+  }),
+]);
+export type PinBadge = z.infer<typeof PinBadgeSchema>;
+
+/**
+ * #2287: what the Welcome page ticks. `onboarding.get` is a new call, not a
+ * new field on a shell message, so PROTOCOL_VERSION stays: a runtime that
+ * knows it against an older shell gets no answer for it, and the page keeps
+ * its checklist unticked.
+ */
+export const OnboardingProgressSchema = z.strictObject({
+  agentConnected: z.boolean(),
+  firstArtifact: z
+    .strictObject({ id: z.string().max(64), title: z.string().max(500) })
+    .nullable(),
+  commented: z.boolean(),
+});
+export type OnboardingProgress = z.infer<typeof OnboardingProgressSchema>;
 
 export const RUNTIME_METHODS = [
   "db.get",
@@ -47,6 +97,7 @@ export const RUNTIME_METHODS = [
   "db.unsubscribe",
   "viewer.get",
   "viewer.anonId",
+  "onboarding.get",
   "storage.get",
   "storage.set",
   "storage.delete",
@@ -226,6 +277,13 @@ export const ArtifactToShellSchema = z.union([
         }),
       )
       .max(COMMENT_THREADS_MAX),
+    /** #2386: where the new-pin flag is now, in frame-viewport pixels, so the box beside it follows a scroll. */
+    ghost: z
+      .strictObject({
+        x: z.number().finite().min(-100_000).max(100_000),
+        y: z.number().finite().min(-100_000).max(100_000),
+      })
+      .optional(),
   }),
   /** The reader clicked a highlight, collapsed mark or pin. */
   z.strictObject({
@@ -256,6 +314,15 @@ export const ArtifactToShellSchema = z.union([
     has: z.boolean(),
     bottom: z.number().finite().min(-10_000_000).max(10_000_000),
   }),
+  /**
+   * A pointer went down in the frame outside the runtime's own button: the
+   * shell drops an unsent draft, as Google Docs does. Carries no data.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.away"),
+  }),
   /** A click in pin mode on an image or pdf page; x and y are 0..1 of the image or page. */
   z.strictObject({
     oa: z.literal(1),
@@ -266,6 +333,13 @@ export const ArtifactToShellSchema = z.union([
       y: z.number().min(0).max(1),
       page: z.number().int().min(1).max(100_000).optional(),
     }),
+    /** #2019: the click in frame-viewport pixels, so the shell can open the box beside it. */
+    at: z
+      .strictObject({
+        x: z.number().finite().min(0).max(100_000),
+        y: z.number().finite().min(0).max(100_000),
+      })
+      .optional(),
   }),
 ]);
 export type ArtifactToShell = z.infer<typeof ArtifactToShellSchema>;
@@ -361,6 +435,8 @@ export const ShellToArtifactSchema = z.union([
           resolved: z.boolean().optional(),
           /** #1657: a pin whose page changed since it was placed (the card says so too). */
           changed: z.boolean().optional(),
+          /** #2019: what the pin's bubble shows (pins on images and pdfs only). */
+          badge: PinBadgeSchema.optional(),
         }),
       )
       .max(COMMENT_THREADS_MAX),
@@ -370,6 +446,7 @@ export const ShellToArtifactSchema = z.union([
         x: z.number().min(0).max(1),
         y: z.number().min(0).max(1),
         page: z.number().int().min(1).max(100_000).optional(),
+        badge: PinBadgeSchema.optional(),
       })
       .optional(),
     /**
@@ -379,8 +456,16 @@ export const ShellToArtifactSchema = z.union([
      */
     draft: selectionAnchorSchema.optional(),
   }),
+  /** #2408: the shell's own protocol, sent once after `hello`. Absent: an older shell, which refuses frame messages with fields it does not know. */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("shell.protocol"),
+    protocol: z.number().int().min(1).max(1000),
+  }),
   /** The reader tapped the shell's "Comment on selection": run the frame's Comment path (#1732). */
   z.strictObject({ oa: z.literal(1), type: z.literal("comments.comment") }),
+  /** Clear the frame's live text selection (the reader clicked elsewhere in the shell). */
+  z.strictObject({ oa: z.literal(1), type: z.literal("comments.clear") }),
   /** Scroll the thread's highlight or pin into view and flash it. */
   z.strictObject({
     oa: z.literal(1),
@@ -401,6 +486,8 @@ export const METHOD_CAPABILITY: Record<RuntimeMethod, keyof Capabilities> = {
   "db.unsubscribe": "db",
   "viewer.get": "viewer",
   "viewer.anonId": "viewer",
+  // The shell also answers only for the Welcome artifact and its owner (#2287).
+  "onboarding.get": "viewer",
   "storage.get": "storage",
   "storage.set": "storage",
   "storage.delete": "storage",
@@ -414,9 +501,73 @@ export function sendToShell(msg: ArtifactToShell): void {
   window.parent.postMessage(n ? { ...msg, nonce: n } : msg, "*");
 }
 
+type Issue = {
+  code: string;
+  path: PropertyKey[];
+  keys?: string[];
+  errors?: Issue[][];
+};
+
+/** The unknown keys to drop, when unknown keys are the only thing wrong (null: something else is). */
+function unknownKeys(
+  issues: Issue[],
+): { path: PropertyKey[]; keys: string[] }[] | null {
+  const out: { path: PropertyKey[]; keys: string[] }[] = [];
+  for (const i of issues) {
+    // Top level only: a key inside `pin`, `anchor` or `positions` stays refused.
+    if (i.code === "unrecognized_keys" && i.keys && i.path.length === 0) {
+      out.push({ path: i.path, keys: i.keys });
+    } else if (i.code === "invalid_union" && i.errors) {
+      // The branch that matched but for its extra keys.
+      let found: ReturnType<typeof unknownKeys> = null;
+      for (const branch of i.errors) {
+        const k = unknownKeys(branch);
+        if (k && k.length > 0) {
+          found = k;
+          break;
+        }
+      }
+      if (!found) return null;
+      out.push(...found);
+    } else return null;
+  }
+  return out;
+}
+
+const without = (v: unknown, path: PropertyKey[], keys: string[]): unknown => {
+  if (v === null || typeof v !== "object") return v;
+  const copy: Record<PropertyKey, unknown> | unknown[] = Array.isArray(v)
+    ? [...v]
+    : { ...(v as object) };
+  if (path.length === 0) {
+    for (const k of keys) delete (copy as Record<string, unknown>)[k];
+    return copy;
+  }
+  const [head, ...rest] = path;
+  (copy as Record<PropertyKey, unknown>)[head as PropertyKey] = without(
+    (copy as Record<PropertyKey, unknown>)[head as PropertyKey],
+    rest,
+    keys,
+  );
+  return copy;
+};
+
+/**
+ * #2408: the shell's strict schemas refuse a message that carries a field this
+ * version does not know, which would drop all of it. A newer runtime (a frame
+ * loaded after a deploy) may add one: take the unknown keys out, once, and
+ * validate what is left as strictly as before. Top-level keys only: an unknown
+ * key inside a nested object still refuses the message.
+ */
 export function parseArtifactMessage(data: unknown): ArtifactToShell | null {
   const r = ArtifactToShellSchema.safeParse(data);
-  return r.success ? r.data : null;
+  if (r.success) return r.data;
+  const drop = unknownKeys(r.error.issues as Issue[]);
+  if (!drop || drop.length === 0) return null;
+  let cleaned = data;
+  for (const d of drop) cleaned = without(cleaned, d.path, d.keys);
+  const again = ArtifactToShellSchema.safeParse(cleaned);
+  return again.success ? again.data : null;
 }
 
 export function parseShellMessage(data: unknown): ShellToArtifact | null {
@@ -448,6 +599,7 @@ export const RUNTIME_PARAMS = {
   "db.unsubscribe": z.strictObject(col),
   "viewer.get": z.strictObject({}),
   "viewer.anonId": z.strictObject({}),
+  "onboarding.get": z.strictObject({}),
   "storage.get": z.strictObject({ key: StorageKeyNameSchema }),
   "storage.set": z.strictObject({
     key: StorageKeyNameSchema,
@@ -478,6 +630,7 @@ export const RUNTIME_RESULTS = {
     .object({ email: z.string(), name: z.string().nullable() })
     .nullable(),
   "viewer.anonId": AnonIdSchema.nullable(),
+  "onboarding.get": OnboardingProgressSchema,
   "storage.get": z.unknown(),
   "storage.set": z.null(),
   "storage.delete": z.null(),

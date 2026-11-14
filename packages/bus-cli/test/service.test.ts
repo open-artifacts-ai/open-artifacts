@@ -29,6 +29,7 @@ import {
   type ServiceDeps,
   SYSTEMD_UNIT,
   serviceNames,
+  servicePath,
   systemService,
   type Unit,
 } from "../src/steps/service.ts";
@@ -254,7 +255,7 @@ describe("systemService: launchd", () => {
       `<string>${home}/bin/node</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
     );
     expect(plist).toContain(
-      "<key>PATH</key><string>/opt/x/bin:/usr/bin</string>",
+      "<key>PATH</key><string>/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin</string>",
     );
     expect(plist).not.toContain("OA_BUS_HOME");
     expect(plist).toContain(`${home}/logs/daemon.log`);
@@ -313,7 +314,7 @@ describe("systemService: launchd", () => {
       `<key>CODEX_HOME</key><string>${codex}</string>`,
     );
     expect(s.env?.()).toEqual({
-      PATH: "/opt/x/bin:/usr/bin",
+      PATH: "/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin",
       CODEX_HOME: codex,
     });
     // The default Codex home is not passed.
@@ -323,7 +324,9 @@ describe("systemService: launchd", () => {
     });
     await t.ensure();
     expect(readFileSync(plistOf(userHome), "utf8")).not.toContain("CODEX_HOME");
-    expect(t.env?.()).toEqual({ PATH: "/opt/x/bin:/usr/bin" });
+    expect(t.env?.()).toEqual({
+      PATH: "/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin",
+    });
   });
 
   it("boots out and writes the same label under a symlinked, missing home", async () => {
@@ -398,13 +401,72 @@ describe("systemService: systemd", () => {
     expect(u).toContain(
       `ExecStart="${home}/bin/node" "${home}/bin/dist/index.js" daemon`,
     );
-    expect(u).toContain('Environment="PATH=/opt/x/bin:/usr/bin"');
+    expect(u).toContain(
+      'Environment="PATH=/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/bin"',
+    );
     expect(calls).toEqual([
       ["systemctl", ["--user", "daemon-reload"]],
       ["systemctl", ["--user", "enable", SYSTEMD_UNIT]],
       ["systemctl", ["--user", "restart", SYSTEMD_UNIT]],
     ]);
     expect(s.kind).toBe("systemd");
+  });
+
+  describe("alive (#2358)", () => {
+    const show = (active: string, sub: string, n = 0) =>
+      `ActiveState=${active}\nSubState=${sub}\nNRestarts=${n}\n`;
+    const aliveOn = async (
+      platform: NodeJS.Platform,
+      stdout: string,
+      code = 0,
+    ) => {
+      const { d } = deps(platform);
+      const s = systemService({
+        ...d,
+        exec: vi.fn(async (_c: string, a: string[]) =>
+          a.includes("show") || a.includes("print")
+            ? { code, stdout, stderr: "" }
+            : { code: 0, stdout: "", stderr: "" },
+        ),
+      });
+      await s.ensure();
+      return s.alive?.();
+    };
+    it.each([
+      ["active", show("active", "running"), true],
+      ["activating/start", show("activating", "start"), true],
+      ["activating/auto-restart", show("activating", "auto-restart"), false],
+      ["activating with restarts", show("activating", "start", 2), false],
+      ["failed", show("failed", "failed"), false],
+    ])("systemd %s", async (_n, out, want) => {
+      expect(await aliveOn("linux", out)).toBe(want);
+    });
+    it("systemd show failing is not alive", async () => {
+      expect(await aliveOn("linux", "", 1)).toBe(false);
+    });
+    it("launchd: a pid line is alive, none is not", async () => {
+      expect(await aliveOn("darwin", "state = running\n\tpid = 123\n")).toBe(
+        true,
+      );
+      expect(await aliveOn("darwin", "state = spawn scheduled\n")).toBe(false);
+      expect(await aliveOn("darwin", "", 113)).toBe(false);
+    });
+    it("fallback daemon: its recorded pid", async () => {
+      const mk = (args: string | undefined) => {
+        const { d } = deps(
+          "linux",
+          { processArgs: () => args, spawnDaemon: () => 4242 },
+          (c) => c === "systemctl",
+        );
+        return systemService(d);
+      };
+      const up = mk("node oa-bus daemon");
+      await up.ensure();
+      expect(await up.alive?.()).toBe(true);
+      const gone = mk(undefined);
+      await gone.ensure();
+      expect(await gone.alive?.()).toBe(false);
+    });
   });
 
   it("honours XDG_CONFIG_HOME", async () => {
@@ -427,7 +489,7 @@ describe("systemService: systemd", () => {
       join(home, "bin/node"),
       [join(home, "bin/dist/index.js"), "daemon"],
       {
-        env: { PATH: "/opt/x/bin:/usr/bin" },
+        env: { PATH: "/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/bin" },
         out: join(home, "logs/daemon.log"),
         err: join(home, "logs/daemon.log"),
       },
@@ -1089,5 +1151,252 @@ describe("round 3: homes", () => {
     expect(disable).toBeGreaterThanOrEqual(0);
     expect(disable).toBeLessThan(reload);
     expect(existsSync(join(x1, "systemd/user", SYSTEMD_UNIT))).toBe(false);
+  });
+});
+
+describe("#2099: another HOME never reaches the real service manager", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    it(`${platform}: ensure and remove make no call when HOME is not the account's`, async () => {
+      const { d, calls } = deps(platform, {
+        accountHome: tmp(),
+        tmpDir: "/nonexistent-tmp",
+      });
+      const s = systemService(d);
+      expect(s.isolated).toBe("home");
+      // The bus still runs, as a plain daemon.
+      expect(await s.ensure()).toEqual({ skipped: "home" });
+      expect(d.spawnDaemon).toHaveBeenCalledOnce();
+      expect(s.kind).toBeUndefined();
+      expect(await s.remove()).toEqual({ skipped: "home" });
+      expect(calls).toEqual([]);
+      expect(d.exec).not.toHaveBeenCalled();
+      expect(d.kill).not.toHaveBeenCalled();
+    });
+
+    it(`${platform}: a real HOME with XDG_CONFIG_HOME elsewhere drops no unit and runs no manager`, async () => {
+      const account = tmp();
+      const xdg = tmp();
+      const { d, calls, home } = deps(platform, {
+        userHome: account,
+        accountHome: account,
+        home: () => join(account, ".oa-bus"),
+        env: { PATH: "/usr/bin", XDG_CONFIG_HOME: xdg },
+      });
+      // A unit install recorded under the old XDG: it must survive.
+      const old = join(account, ".config/systemd/user", SYSTEMD_UNIT);
+      mkdirSync(join(old, ".."), { recursive: true });
+      writeFileSync(old, "[Unit]\n");
+      mkdirSync(join(account, ".oa-bus"), { recursive: true });
+      writeFileSync(
+        join(account, ".oa-bus/install.json"),
+        JSON.stringify({ service: { kind: "systemd", unit: old } }),
+      );
+      const s = systemService(d);
+      void home;
+      if (platform === "linux") {
+        expect(s.isolated).toBe("xdg");
+        await s.ensure();
+        expect(calls).toEqual([]);
+        expect(existsSync(old)).toBe(true);
+      } else expect(s.isolated).toBeUndefined();
+    });
+
+    it(`${platform}: a bus home outside the account's home makes no call`, async () => {
+      const account = tmp();
+      const { d, calls } = deps(platform, {
+        userHome: account,
+        accountHome: account,
+        home: () => join(tmp(), "bus"),
+        tmpDir: "/nonexistent-tmp",
+      });
+      const s = systemService(d);
+      expect(await s.ensure()).toEqual({ skipped: "bus-home" });
+      expect(await s.remove()).toEqual({ skipped: "bus-home" });
+      expect(calls).toEqual([]);
+    });
+
+    it(`${platform}: the account's own home still installs`, async () => {
+      const account = tmp();
+      const { d, calls } = deps(platform, {
+        userHome: account,
+        accountHome: account,
+        home: () => join(account, ".oa-bus"),
+      });
+      const s = systemService(d);
+      expect(s.isolated).toBeUndefined();
+      await s.ensure();
+      expect(calls.length).toBeGreaterThan(0);
+    });
+  }
+});
+
+describe("#2099: a bus home that is the account's own is never touched", () => {
+  const seed = (home: string, install: object) => {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "install.json"), JSON.stringify(install));
+    return join(home, "install.json");
+  };
+  const real = { service: { kind: "systemd", unit: "/x/oa-bus.service" } };
+
+  for (const platform of ["darwin", "linux"] as const) {
+    it(`${platform}: a throwaway HOME with the real OA_BUS_HOME kills, writes and spawns nothing`, async () => {
+      const account = tmp();
+      const home = join(account, ".oa-bus");
+      const file = seed(home, real);
+      const before = readFileSync(file, "utf8");
+      const { d, calls } = deps(platform, {
+        userHome: tmp(),
+        accountHome: account,
+        home: () => home,
+        daemonPid: vi.fn(async () => 4242),
+      });
+      const s = systemService(d);
+      expect(await s.ensure()).toEqual({ skipped: "home", idle: true });
+      expect(calls).toEqual([]);
+      expect(d.kill).not.toHaveBeenCalled();
+      expect(d.spawnDaemon).not.toHaveBeenCalled();
+      expect(existsSync(join(home, "bin"))).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    });
+  }
+
+  it("linux: the real HOME with a throwaway XDG_CONFIG_HOME kills, writes and spawns nothing", async () => {
+    const account = tmp();
+    const home = join(account, ".oa-bus");
+    const file = seed(home, real);
+    const before = readFileSync(file, "utf8");
+    const { d, calls } = deps("linux", {
+      userHome: account,
+      accountHome: account,
+      home: () => home,
+      env: { PATH: "/usr/bin", XDG_CONFIG_HOME: tmp() },
+      daemonPid: vi.fn(async () => 4242),
+    });
+    expect(await systemService(d).ensure()).toEqual({
+      skipped: "xdg",
+      idle: true,
+    });
+    expect(calls).toEqual([]);
+    expect(d.kill).not.toHaveBeenCalled();
+    expect(d.spawnDaemon).not.toHaveBeenCalled();
+    expect(existsSync(join(home, "bin"))).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("a bus home under the temp dir starts no daemon", async () => {
+    // deps() homes live under os.tmpdir(): the default tmpDir applies.
+    const { d, calls, home } = deps("linux", { accountHome: tmp() });
+    expect(await systemService(d).ensure()).toEqual({
+      skipped: "home",
+      idle: true,
+    });
+    expect(d.spawnDaemon).not.toHaveBeenCalled();
+    expect(d.kill).not.toHaveBeenCalled();
+    expect(existsSync(join(home, "bin"))).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  describe("a container-style HOME: the bus home is outside the account's", () => {
+    it("never signals a daemon this home did not record", async () => {
+      const { d, calls, home } = deps("linux", {
+        accountHome: tmp(),
+        tmpDir: "/nonexistent-tmp",
+        daemonPid: vi.fn(async () => 4242),
+      });
+      // A daemon of ours by its command line, but not recorded here.
+      expect(await systemService(d).ensure()).toEqual({ running: 4242 });
+      void home;
+      expect(d.kill).not.toHaveBeenCalled();
+      expect(d.spawnDaemon).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+    });
+
+    it("stops only its recorded fallback pid, then starts its own daemon", async () => {
+      let alive = true;
+      const { d, calls, home } = deps("linux", {
+        accountHome: tmp(),
+        tmpDir: "/nonexistent-tmp",
+        daemonPid: vi.fn(async () => (alive ? 4242 : undefined)),
+        processArgs: () => undefined,
+        kill: vi.fn(() => {
+          alive = false;
+        }),
+        spawnDaemon: vi.fn(() => 5151),
+      });
+      seed(home, { service: { fallback: true, pid: 4242 } });
+      expect(await systemService(d).ensure()).toEqual({ skipped: "home" });
+      expect(d.kill).toHaveBeenCalledExactlyOnceWith(4242);
+      expect(d.spawnDaemon).toHaveBeenCalledOnce();
+      expect(calls).toEqual([]);
+    });
+  });
+});
+
+describe("#2099: the real context", () => {
+  it("is isolated under a sentinel HOME that is not the account's", () => {
+    expect(realCtx(true).service.isolated).toBe("home");
+  });
+});
+
+describe("#2105: the service PATH drops only transient folders", () => {
+  const PATH = [
+    "/home/u/.npm/_npx/abc/node_modules/.bin",
+    "/proj/node_modules/.bin",
+    "/x/node-gyp-bin",
+    "relative/bin",
+    "/home/u/.local/bin",
+    "/home/u/.cargo/bin",
+    "/usr/bin",
+    "/home/u/.local/bin",
+  ].join(":");
+
+  it("keeps the user's folders in order, node's first, system folders last", () => {
+    expect(servicePath({ PATH }, "/opt/node/bin/node", "linux")).toBe(
+      "/opt/node/bin:/home/u/.local/bin:/home/u/.cargo/bin:/usr/bin:/usr/local/bin:/bin",
+    );
+    expect(servicePath({ PATH }, "/home/u/.cargo/bin/node", "darwin")).toBe(
+      "/home/u/.local/bin:/home/u/.cargo/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin",
+    );
+  });
+
+  it("keeps win32's PATH as is", () => {
+    expect(servicePath({ PATH }, "C:\\n\\node.exe", "win32")).toBe(PATH);
+  });
+
+  it("writes none of them into the plist or the unit", async () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      const { d, userHome } = deps(platform, { env: { PATH } });
+      await systemService(d).ensure();
+      const text = readFileSync(
+        platform === "darwin"
+          ? join(userHome, "Library/LaunchAgents", `${LAUNCHD_LABEL}.plist`)
+          : join(userHome, ".config/systemd/user", SYSTEMD_UNIT),
+        "utf8",
+      );
+      expect(text).not.toMatch(/_npx|node_modules|node-gyp-bin/);
+      expect(text).toContain("/home/u/.cargo/bin");
+    }
+  });
+});
+
+describe("systemService: others (#2425)", () => {
+  it("lists the other homes' hashed units, not its own or the default", async () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      const { d, userHome } = deps(platform);
+      const a = join(userHome, "bus-a");
+      const b = join(userHome, "bus-b");
+      await systemService({ ...d, home: () => a }).ensure();
+      await systemService({ ...d, home: () => b }).ensure();
+      await systemService(d).ensure();
+      const na = serviceNames(a, userHome);
+      const nb = serviceNames(b, userHome);
+      const key = platform === "darwin" ? "label" : "unit";
+      expect(systemService(d).others?.()).toEqual(
+        [na[key], nb[key]].map((n) => n.replace(/\.service$/, "")).sort(),
+      );
+      expect(systemService({ ...d, home: () => a }).others?.()).toEqual(
+        [nb[key]].map((n) => n.replace(/\.service$/, "")),
+      );
+    }
   });
 });

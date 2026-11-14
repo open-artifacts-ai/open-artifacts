@@ -318,7 +318,10 @@ describe("share panel", () => {
     for (const [name, hint] of [
       ["Database", "Lets the page store shared data."],
       ["Viewer identity", "Lets the page see who is viewing."],
-      ["File storage", "Lets the page keep uploaded files."],
+      [
+        "Viewer's own data",
+        "Lets the page save data for each logged-in viewer, such as their own ticked boxes.",
+      ],
     ] as const) {
       expect(
         screen.getByRole("checkbox", { name }),
@@ -350,7 +353,7 @@ describe("share panel", () => {
     });
     await waitFor(() => expect(everyone).toBeChecked());
     expect(group).toHaveAccessibleDescription(
-      "Anyone with the link, signed in or not.",
+      "Anyone with the link, logged in or not.",
     );
     fireEvent.click(within(group).getByRole("radio", { name: "Only editors" }));
     await waitFor(() => expect(bodies).toEqual([{ dataWriters: "editors" }]));
@@ -750,19 +753,19 @@ describe("share panel: who can comment (#2080)", () => {
     const radios = within(group).getAllByRole("radio");
     expect(radios.map((r) => r.parentElement?.textContent)).toEqual([
       "Anyone who can open it",
-      "Signed-in people",
+      "Logged-in people",
       "Off",
     ]);
     expect(
       within(group).getByText(
-        "Visitors who aren't signed in can read comments but not add them.",
+        "Visitors who aren't logged in can read comments but not add them.",
       ),
     ).toBeInTheDocument();
     expect(
       within(group).getByText("Comments are hidden and nobody can add them."),
     ).toBeInTheDocument();
     fireEvent.click(
-      within(group).getByRole("radio", { name: "Signed-in people" }),
+      within(group).getByRole("radio", { name: "Logged-in people" }),
     );
     await waitFor(() =>
       expect(bodies).toContainEqual({ comments: "signed-in" }),

@@ -27,7 +27,7 @@ const COPY: Partial<Record<ErrorCode, string>> = {
   binary_entry:
     "This file isn't text, so it can't open as a web page, Markdown or code. Check that its file extension matches what it is.",
   reauth_required:
-    "For your security, sign in with Google again to manage the directory.",
+    "For your security, log in with Google again to manage the directory.",
 };
 
 /** Billing's wording; `owner` swaps "ask your instance owner" for the action. */
@@ -209,6 +209,32 @@ export const errorCopy = (
         : "This photo",
     );
   return (e.code !== "cpu_limit" && COPY[e.code]) || e.message || fallback;
+};
+
+export const MEMBERS_SETTINGS = "/settings/members";
+export const PLAN_SETTINGS = "/settings/plan";
+
+/**
+ * The links that go with plan_required's Spaces copy (#2472), for an owner or
+ * admin: the trial offer gets Invite people and See plans; the plain refusal,
+ * See plans. A member, a capped admin's trial and an invite refusal get none
+ * beyond what their copy says.
+ */
+export const planLinks = (
+  e: unknown,
+  ctx?: ErrorContext,
+): { label: string; to: string }[] => {
+  if (
+    !(e instanceof ApiClientError) ||
+    e.code !== "plan_required" ||
+    ctx?.owner !== true ||
+    ctx.refused === "invite"
+  )
+    return [];
+  const plans = { label: "See plans", to: PLAN_SETTINGS };
+  return ctx.trialNeverRan === true
+    ? [{ label: "Invite people", to: MEMBERS_SETTINGS }, plans]
+    : [plans];
 };
 
 /** A link to show with the copy: off the Directory page, `directory_sync_off` points there. */

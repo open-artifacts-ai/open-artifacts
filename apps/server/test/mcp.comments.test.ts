@@ -445,6 +445,51 @@ describe("add_comment with an ask (#1535)", () => {
     expect(ok.isError, textOf(ok)).toBeFalsy();
   });
 
+  it("names a decider who can edit the page (#2381); a viewer or an action ask is refused", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    await putShare(E, owner.member, id, {
+      email: stranger.email,
+      role: "editor",
+    });
+    const ok = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "x",
+        ask: { ...ASK([reader.userId]), decider: { key: stranger.userId } },
+      }),
+    ).thread;
+    expect(ok.comments[0]?.ask).toMatchObject({
+      decider: { id: stranger.userId },
+      chosenBy: { id: owner.userId },
+    });
+    const viewer = await tool(owner.client, "add_comment", {
+      id,
+      body: "x",
+      ask: { ...ASK([owner.userId]), decider: { key: reader.userId } },
+    });
+    expect(viewer.isError).toBe(true);
+    expect(textOf(viewer)).toMatch(/can edit this page/);
+    const risky = await tool(owner.client, "add_comment", {
+      id,
+      body: "x",
+      ask: {
+        question: "Merge it?",
+        options: [
+          { id: "merge", label: "Merge", action: "merge" },
+          { id: "wait", label: "Wait" },
+        ],
+        to: [{ key: owner.userId }],
+        decider: { key: stranger.userId },
+      },
+    });
+    expect(risky.isError).toBe(true);
+    expect(textOf(risky)).toMatch(/decided by you/);
+  });
+
   it("someone who cannot open the artifact is refused", async () => {
     const id = await pub({ visibility: "private" });
     const r = await tool(stranger.client, "add_comment", {
@@ -735,5 +780,53 @@ describe("the comment notice", () => {
     expect(heardBy("bystander").map((s) => s.notice.kind)).toEqual([
       "commented",
     ]);
+  });
+
+  it("list_comments shows a member a removed agent, marked; a restricted caller gets no agents (#2174)", async () => {
+    const id = await pub({ visibility: "team" });
+    await follow(E, owner.userId, { namespace: "ns/r", name: "removable" }, id);
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "editor",
+    });
+    const roster = (await (
+      await api(app, R.artifactAgents(id), reader.cookie)
+    ).json()) as { key: string; name: string }[];
+    const key = roster.find((a) => a.name.startsWith("removable"))?.key;
+    expect(key).toBeTruthy();
+    const t = (await (
+      await api(app, comments(id), owner.cookie, {
+        method: "POST",
+        body: { anchor: { kind: "note" }, body: "hey", mentions: [{ key }] },
+      })
+    ).json()) as Thread;
+    const gone = await api(
+      app,
+      R.commentThreadAgent(id, t.id, key as string),
+      owner.cookie,
+      { method: "DELETE" },
+    );
+    expect(gone.status).toBe(204);
+    for (const who of [owner, reader]) {
+      const l = sc<CommentList>(
+        await tool(who.client, "list_comments", { id, status: "open" }),
+      );
+      expect(l.threads[0]?.agents?.map((a) => [a.name, a.removed])).toEqual([
+        [expect.stringContaining("removable"), true],
+      ]);
+    }
+    await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(reader.userId)
+      .run();
+    try {
+      // The capped caller is refused outright (as with #2151), never shown the roster.
+      await expect(
+        tool(reader.client, "list_comments", { id, status: "open" }),
+      ).rejects.toThrow(/Only members can connect agents/);
+    } finally {
+      await E.DB.prepare("update users set restricted_manual = 0 where id = ?")
+        .bind(reader.userId)
+        .run();
+    }
   });
 });

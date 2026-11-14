@@ -50,6 +50,7 @@ import { CpuBanner } from "./CpuBanner";
 import { DisplayNamePrompt } from "./DisplayNamePrompt";
 import { GuestSharesBanner } from "./GuestSharesBanner";
 import { PlanBanner } from "./PlanBanner";
+import { PlanChip } from "./PlanChip";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
@@ -218,11 +219,13 @@ function Layout() {
           <MenuTrigger me={me} />
           <TopBar me={me} />
         </header>
-        {/* Focusable (not tabbable) so the keyboard can scroll it. */}
+        {/* Focusable (not tabbable) so the keyboard can scroll it. Positioned
+            from 768px, where it scrolls: an absolute .sr-only inside sits in
+            this scroller instead of stretching the document past it (#2191). */}
         <main
           id="oa-main"
           tabIndex={-1}
-          className="min-w-0 flex-1 outline-none md:min-h-0 md:overflow-auto md:rounded-b-[calc(var(--oa-radius-lg)-1px)] md:[scrollbar-gutter:stable]"
+          className="min-w-0 flex-1 outline-none md:relative md:min-h-0 md:overflow-auto md:rounded-b-[calc(var(--oa-radius-lg)-1px)] md:[scrollbar-gutter:stable]"
         >
           <QuotaBanner />
           <div className="oa-page">
@@ -545,6 +548,7 @@ function TopBar({ me }: { me: Me | null }) {
           alignItems: "center",
         }}
       >
+        <PlanChip me={me} />
         {/* Below 640px the avatar alone (it opens the account menu), so the
             search and its space chip get the room. */}
         <span data-header-email="" className="max-[640px]:hidden">
@@ -571,12 +575,12 @@ function TopBar({ me }: { me: Me | null }) {
             align="end"
             className="min-w-[200px] text-[length:var(--oa-text-sm)]"
           >
-            {/* Who's signed in: a label, not an item (the header hides it on phones). */}
+            {/* Who's logged in: a label, not an item (the header hides it on phones). */}
             <DropdownMenuLabel className="truncate font-normal text-muted-foreground">
               {me.user.email}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={signOut}>Sign out</DropdownMenuItem>
+            <DropdownMenuItem onSelect={signOut}>Log out</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

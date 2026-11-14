@@ -1,5 +1,6 @@
 import { displayKind, type StatusFields, statusSaysText } from "@oa/bus-ipc";
 import { type AgentKind, BUS_CMD, BUS_ROUTES } from "@oa/bus-protocol";
+import type { Isolation } from "./context.ts";
 import { box, glyph, paint, type Style, type Tone } from "./term.ts";
 
 /**
@@ -164,7 +165,15 @@ const listing = (names: string[], last: "and" | "or") =>
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} ${last} ${names.at(-1)}`;
 
-export function copy(style: Style, bus: string = BUS_CMD) {
+export function copy(
+  style: Style,
+  bus: string = BUS_CMD,
+  /**
+   * A second bus home (#2425): the command that approves it again. `install` would
+   * rewire every session's settings, so the errors name this instead.
+   */
+  approve?: string,
+) {
   const p = (tone: Tone, s: string) => paint(style, tone, s);
   const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
   const more = g("more");
@@ -247,6 +256,19 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       next(`Install one, then run ${bus} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
+    // Run from inside OpenCode, where a restart would end the session running this.
+    opencodeRestartYourself: (isolated = false) => [
+      warn(
+        isolated
+          ? "OpenCode was not restarted: this install is not on your account's home"
+          : "OpenCode was not restarted: this ran inside an OpenCode session",
+      ),
+      next(
+        isolated
+          ? "To load the plugin, run on your account: opencode service restart"
+          : "Outside OpenCode, in a terminal, run: opencode service restart",
+      ),
+    ],
     // After the configured line, when PI_CODING_AGENT_DIR points both at one folder.
     sharedPiFile: () =>
       next(
@@ -329,6 +351,18 @@ export function copy(style: Style, bus: string = BUS_CMD) {
               next(`Run ${bus} install.`),
             ],
     // install --no-service: the service step is skipped, nothing is started.
+    // install: the bus then runs as a plain daemon (daemonRunning says so).
+    serviceOtherHome: (why: Isolation, removing = false, plain = false) => [
+      warn(
+        `Skipped ${removing ? "removing " : ""}the background service: ${
+          why === "home"
+            ? "this HOME isn't your account's home"
+            : why === "bus-home"
+              ? "the bus home is outside your account's home"
+              : "XDG_CONFIG_HOME is outside your account's home"
+        }.${removing ? "" : plain ? " It never gets a background service there, so the bus runs as a plain daemon." : " Use --no-service to skip it on purpose."}`,
+      ),
+    ],
     serviceSkipped: () => [
       warn("Skipped the service, so no daemon is running."),
       next(`Start it with ${bus} daemon, and again after a reboot.`),
@@ -372,9 +406,14 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       fail(`The instance reports a problem: ${displayKind(problem)}`),
       next("Ask the instance's admin to check it."),
     ],
-    daemonTimeout: () => [
-      fail("The daemon did not start within 10 seconds."),
+    daemonTimeout: (seconds: number) => [
+      fail(`The daemon did not start within ${seconds} seconds.`),
       next(`Run ${bus} doctor to see why.`),
+    ],
+    // The process is up but has not answered yet (a busy machine, #2358).
+    daemonStarting: () => [
+      warn("The daemon is still starting."),
+      next(`Check ${bus} status in a minute.`),
     ],
 
     rosterHeader: (namespace: string, live: number, queued: number) => {
@@ -435,6 +474,20 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     },
     lateQuote: (excerpt: string) => `    "${excerpt}"`,
 
+    // install --home <dir> for a second bus: no harness config is touched.
+    secondBus: (home: string) => [
+      done("Left every session's settings alone."),
+      next(`Start a session on this bus with: OA_BUS_HOME=${home} pi`),
+      next("It works the same for claude, opencode and omp."),
+      next(
+        "Codex, Hermes and OpenClaw do not follow it: they stay on your first bus.",
+      ),
+    ],
+    otherHomes: (names: string[]) =>
+      p(
+        "muted",
+        `Other bus homes have a service here: ${names.join(", ")}. Check one with ${bus} --home <dir> doctor.`,
+      ),
     statusHint: () =>
       p("muted", `Check this machine anytime with ${bus} status.`),
 
@@ -489,7 +542,43 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         "doctor, global add|rm|list, uninstall, mcp <claude|opencode|pi|codex>",
       ),
       next("or version."),
-      next("install takes --no-service to skip the launchd or systemd step."),
+      next(`Run ${bus} --help to list every command and flag.`),
+    ],
+    help: () => [
+      `usage: ${bus} [command] [flags]`,
+      "",
+      "Commands",
+      "  install      Approve this machine, wire your harnesses, start the daemon (the default)",
+      "  login        Approve this machine again",
+      "  uninstall    Remove what install added",
+      "  status       Who is on the bus, from this folder",
+      "  logs         The daemon log",
+      "  doctor       Check the install and say what to fix",
+      "  daemon       Run the daemon in this terminal",
+      "  global       add <dir>, rm <dir> or list: folders shared across namespaces",
+      "  namespace    approve [dir], revoke <dir> or list",
+      "  link         <dir> <dir> or list; unlink <dir> <dir>",
+      "  leads        check [name]",
+      "  mcp          <claude|opencode|codex|pi>: the MCP server a harness runs",
+      "  version      Print the version",
+      "  help         This text",
+      "",
+      "Flags",
+      "  install      --instance <url>   the instance to connect to",
+      "               --check            only report what is set up; change nothing",
+      "               --habits | --no-habits | --show-habits",
+      "                                  add, decline or show the always-on habit lines",
+      "               --no-service       skip the launchd or systemd step",
+      "               --alongside        with --home <dir>: set up this bus next to your main one,",
+      "                                  and leave every harness setting alone",
+      "               --no-open          do not open a browser for approval",
+      "               --json             the result as one JSON line on stdout",
+      "               --yes, -y          answer yes where install asks",
+      "  login        --instance <url>, --no-open",
+      "  daemon       --instance <url>",
+      "  uninstall    --purge            also delete the bus home and what install made",
+      "  namespace    --yes, -y          approve without asking (namespace approve)",
+      "  every command: --home <dir> (bus home), --no-color, --help, -h, --version, -v",
     ],
     skipped: (h: HarnessName, reason: string) => [
       warn(
@@ -512,8 +601,18 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         next(`${bus} --instance ${clip(askedUrl, 39)}.`),
       ];
     },
-    checkOk: (label: string) => done(label),
-    checkFailed: (label: string, action: string) => [fail(label), next(action)],
+    checkOk: (label: string, details: string[] = []) => [
+      done(label),
+      ...details.map((d) => next(d)),
+    ],
+    checkFailed: (label: string, action: string, details: string[] = []) => [
+      fail(label),
+      ...details.map((d) => next(d)),
+      next(action),
+    ],
+    // One harness under the harnesses line of `install --check`.
+    checkHarness: (h: HarnessName, state: string) =>
+      `${HARNESS_LABEL[h]}: ${state}`,
     noNamespace: () =>
       p(
         "muted",
@@ -574,11 +673,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     notRegistered: () => [
       fail("This computer is not connected to a bus."),
-      next(`Run ${bus} to approve it.`),
+      next(`Run ${approve ?? bus} to approve it.`),
     ],
     revoked: () => [
       fail("This machine was revoked."),
-      next(`Run ${bus} install to approve it again.`),
+      next(`Run ${approve ?? `${bus} install`} to approve it again.`),
     ],
 
     // 8. doctor
@@ -591,11 +690,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       done(`Credentials at ${clip(path, 37)}`, tokenTail(token, more)),
     noCredentials: (path: string) => [
       fail(`No credentials at ${clip(path, 21)}`),
-      next(`Run ${bus} to approve this machine.`),
+      next(`Run ${approve ?? bus} to approve this machine.`),
     ],
     revokedCheck: () => [
       fail("This machine was revoked"),
-      next(`Run ${bus} install to approve it again.`),
+      next(`Run ${approve ?? `${bus} install`} to approve it again.`),
     ],
     // DRAFT: the short socket folder a long OA_BUS_HOME needs is not ours.
     socketFolderUnsafe: (dir: string, why: string) => [
@@ -720,6 +819,30 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     pluginsKeptSource: (ref?: string) => [
       warn(
         `Kept the Open Artifacts plugins on ${ref ?? "their default branch"}, as you set them.`,
+      ),
+    ],
+    pluginsRolledBack: (state: "all" | "some" | "none", why: string) => [
+      warn(
+        state === "all"
+          ? "Put the previous Open Artifacts plugin source back, so your plugins are as they were. Run the install again to retry the move."
+          : state === "some"
+            ? "Put the previous Open Artifacts plugin source back, but only some of the plugins came back. Run the install again to finish."
+            : `Couldn't put the previous plugin source back either (${why}), so the Open Artifacts plugins are not installed. Run the install again.`,
+      ),
+    ],
+    pluginsStyleCleared: () => [
+      warn(
+        "Turned the Artifacts Teammate output style off again, because its plugin is not installed. The install turns it back on.",
+      ),
+    ],
+    pluginsLostOptions: (mcpServer: string) => [
+      warn(
+        `The shortcuts' saved server name "${mcpServer}" was lost with the removed plugins. Run: claude plugin configure open-artifacts-shortcuts and enter it again.`,
+      ),
+    ],
+    pluginsAddUnknown: (why: string) => [
+      warn(
+        `Couldn't add the plugin source (${why}) and couldn't check what is installed, so nothing was changed back. Run the install again.`,
       ),
     ],
     pluginsBadInstance: () => [
@@ -938,11 +1061,10 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     deleted: (home: string) =>
       done(`Deleted ${clip(home, 35)}, including machine.json`),
-    stillListed: (label: string, host: string) => [
+    stillListed: (label: string, origin: string) => [
       warn(`${clip(label, 30)} is still listed on the bus`),
-      next(
-        `Revoke it in the dashboard at ${clip(host, 56)} to remove it for good.`,
-      ),
+      next("Revoke it on the machines page to remove it for good:"),
+      next(clip(`${origin}/settings/machines`, 3)),
       next(`To use this computer again, run ${bus}.`),
     ],
 

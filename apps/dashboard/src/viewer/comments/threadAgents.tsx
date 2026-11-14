@@ -1,12 +1,17 @@
 import type { CommentThread, ThreadAgent } from "@oa/shared";
 import {
-  Button,
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@oa/ui/shadcn";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   commentError,
   useCommentErrorCtx,
@@ -25,7 +30,7 @@ const CHIP =
 const chipPad = (a: ThreadAgent) => (a.canRemove ? "pr-0.5" : "pr-2.5");
 
 /** A tooltip on hover and focus (Radix wires aria-describedby). */
-function Tip({
+export function Tip({
   text,
   children,
   open,
@@ -128,30 +133,24 @@ function useFit(count: number, deps: string) {
 }
 
 /**
- * #2035: "Notifying" and a chip for each agent the thread already tells on a
- * reply. The agent's person and the artifact's owner can take one out (after a
- * confirm); everyone else sees the chip with a tooltip that says who can.
- * Removal is for the whole thread and lasts until someone @-mentions the agent.
+ * The removal flow shared by the "Notifying" chips and the participants list
+ * (#2174): remove at once, "won't get replies" with Undo. One set of rules.
  */
-export function ThreadAgents({
-  t,
-  api,
-}: {
-  t: CommentThread;
-  api: CommentsApi;
-}) {
+export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
   const set = useThreadAgent(api.artifactId, api.guest);
   const errCtx = useCommentErrorCtx();
-  const [confirm, setConfirm] = useState<ThreadAgent | null>(null);
   const [gone, setGone] = useState<ThreadAgent | null>(null);
-  const [all, setAll] = useState(false);
   const [err, setErr] = useState<unknown>(null);
-  const back = useRef<HTMLButtonElement | null>(null);
+  const undo = useRef<HTMLButtonElement | null>(null);
   // The list refetches after a removal; until then the removed chip stays hidden.
-  const agents = (t.agents ?? []).filter((x) => x.key !== gone?.key);
+  const agents = (t.agents ?? []).filter(
+    (x) => !x.removed && x.key !== gone?.key,
+  );
   // An @-mention puts the agent back: once the list has dropped it, seeing it again ends the note.
   const dropped = useRef(false);
-  const listed = (t.agents ?? []).some((x) => x.key === gone?.key);
+  const listed = (t.agents ?? []).some(
+    (x) => !x.removed && x.key === gone?.key,
+  );
   useEffect(() => {
     if (!gone) {
       dropped.current = false;
@@ -160,6 +159,111 @@ export function ThreadAgents({
     if (!listed) dropped.current = true;
     else if (dropped.current) setGone(null);
   }, [listed, gone]);
+  // Optimistic: the chip goes (and Undo shows) at once; a refusal puts it back
+  // and shows the error line.
+  const run = (a: ThreadAgent, removed: boolean) => {
+    setErr(null);
+    setGone(removed ? a : null);
+    set.mutate(
+      { thread: t.id, key: a.key, removed },
+      {
+        onError: (e) => {
+          setGone(removed ? null : a);
+          setErr(e);
+        },
+      },
+    );
+  };
+  return {
+    set,
+    errCtx,
+    undo,
+    gone,
+    err,
+    agents,
+    run,
+  };
+}
+
+/** The "won't get replies" line with Undo, and an error. */
+export function RemovalNotices({
+  rm,
+  api,
+  fallback,
+}: {
+  rm: ReturnType<typeof useAgentRemoval>;
+  api: CommentsApi;
+  /** Where focus goes after Undo when the restored row's × is not there. */
+  fallback?: RefObject<HTMLElement | null>;
+}) {
+  const { set, errCtx, undo, gone, err, run } = rm;
+  // The × that removed the chip is gone; Undo is the next stop.
+  const key = gone?.key;
+  const prev = useRef<{ key: string; scope: Element | Document } | null>(null);
+  useEffect(() => {
+    if (key) {
+      undo.current?.focus({ preventScroll: true });
+      prev.current = {
+        key,
+        scope: undo.current?.closest("[data-thread]") ?? document,
+      };
+      return;
+    }
+    // Undo unmounted with the focus: give it back to the restored ×, or the fallback.
+    const was = prev.current;
+    prev.current = null;
+    if (!was) return;
+    const a = document.activeElement;
+    if (a && a !== document.body) return;
+    const x = was.scope.querySelector<HTMLElement>(
+      `[data-agent-x="${CSS.escape(was.key)}"]`,
+    );
+    (x ?? fallback?.current)?.focus({ preventScroll: true });
+  }, [key, undo, fallback]);
+  return (
+    <>
+      {gone && (
+        <p className="m-0" aria-live="polite" data-thread-agent-gone="">
+          {gone.name} won&apos;t get replies in this thread.{" "}
+          <button
+            ref={undo}
+            type="button"
+            className="cursor-pointer border-0 bg-transparent p-0 text-[var(--oa-accent-fg)] underline"
+            // aria-disabled, not disabled: a disabled button cannot hold focus,
+            // and Undo takes it while the removal is on its way.
+            aria-disabled={set.isPending || undefined}
+            onClick={() => {
+              if (!set.isPending) run(gone, false);
+            }}
+          >
+            Undo
+          </button>
+        </p>
+      )}
+      {err != null && (
+        <p role="alert" className="m-0 text-destructive">
+          {commentError(err, api.capped, errCtx)}
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * #2035: "Notifying" and a chip for each agent the thread already tells on a
+ * reply. The agent's person and the artifact's owner can take one out;
+ * everyone else sees the chip with a tooltip that says who can. Removal is for the whole thread and lasts until someone @-mentions the agent.
+ */
+export function ThreadAgents({
+  t,
+  api,
+}: {
+  t: CommentThread;
+  api: CommentsApi;
+}) {
+  const rm = useAgentRemoval(t, api);
+  const { run, set, gone, agents } = rm;
+  const [all, setAll] = useState(false);
   const { row, ghost, fit } = useFit(
     agents.length,
     agents.map((x) => `${x.key}:${x.name}:${x.canRemove}`).join("|"),
@@ -167,16 +271,6 @@ export function ThreadAgents({
   if (agents.length === 0 && !gone) return null;
   const visible = all ? agents : agents.slice(0, fit);
   const more = agents.length - visible.length;
-  const run = (a: ThreadAgent, removed: boolean) => {
-    setErr(null);
-    set.mutate(
-      { thread: t.id, key: a.key, removed },
-      {
-        onSuccess: () => setGone(removed ? a : null),
-        onError: setErr,
-      },
-    );
-  };
   return (
     <div
       data-thread-agents=""
@@ -204,9 +298,14 @@ export function ThreadAgents({
                     type="button"
                     aria-label={`Stop notifying ${a.name}`}
                     className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
-                    onClick={(e) => {
-                      back.current = e.currentTarget;
-                      setConfirm(a);
+                    data-agent-x={a.key}
+                    aria-disabled={
+                      (set.isPending && set.variables?.key === a.key) ||
+                      undefined
+                    }
+                    onClick={() => {
+                      if (!(set.isPending && set.variables?.key === a.key))
+                        run(a, true);
                     }}
                   >
                     ×
@@ -240,67 +339,7 @@ export function ThreadAgents({
           </div>
         </div>
       )}
-      {confirm && (
-        <section
-          aria-label={`Remove ${confirm.name} from this thread`}
-          data-thread-agent-confirm=""
-          className="flex flex-col gap-2 rounded-lg border border-border bg-background p-2.5 text-foreground shadow-md"
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.stopPropagation();
-              setConfirm(null);
-              back.current?.focus();
-            }
-          }}
-        >
-          <p className="m-0">
-            Remove {confirm.name} from this thread? It won&apos;t get replies
-            here until someone @-mentions it.
-          </p>
-          <div className="flex gap-1.5">
-            <Button
-              size="xs"
-              variant="destructive"
-              disabled={set.isPending}
-              autoFocus
-              onClick={() => {
-                const a = confirm;
-                setConfirm(null);
-                run(a, true);
-              }}
-            >
-              Remove
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                setConfirm(null);
-                back.current?.focus();
-              }}
-            >
-              Keep
-            </Button>
-          </div>
-        </section>
-      )}
-      {gone && (
-        <p className="m-0" aria-live="polite" data-thread-agent-gone="">
-          {gone.name} won&apos;t get replies in this thread.{" "}
-          <button
-            type="button"
-            className="cursor-pointer border-0 bg-transparent p-0 text-[var(--oa-accent-fg)] underline"
-            onClick={() => run(gone, false)}
-          >
-            Undo
-          </button>
-        </p>
-      )}
-      {err != null && (
-        <p role="alert" className="m-0 text-destructive">
-          {commentError(err, api.capped, errCtx)}
-        </p>
-      )}
+      <RemovalNotices rm={rm} api={api} />
     </div>
   );
 }

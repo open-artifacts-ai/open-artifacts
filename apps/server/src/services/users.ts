@@ -37,11 +37,15 @@ export function effectiveName(u: NameFields): string {
 
 /**
  * effectiveName for anyone but the user themselves: a name that reads as an
- * agent ("X's agent", set or from SSO, #1894) falls back to the email.
+ * agent ("X's agent", set or from SSO, #1894) falls back to a real SSO name,
+ * then the email.
  */
 export function shownEffectiveName(u: NameFields): string {
   const n = effectiveName(u);
-  return readsAsAgent(n) ? u.email : n;
+  if (!readsAsAgent(n)) return n;
+  // The display name reads as an agent: a real SSO name still shows.
+  const idp = idpName(u.name, u.email);
+  return idp && !readsAsAgent(idp) ? idp : u.email;
 }
 
 /**
@@ -408,12 +412,23 @@ export async function getUser(env: Env, id: string): Promise<Member | null> {
   return (await getUserWithEpoch(env, id))?.user ?? null;
 }
 
+export type NameHiddenAs = "sso" | "email" | null;
+
+/** null when others see the user's effective name; else what they see instead (#2277). */
+export function nameHiddenAs(u: NameFields): NameHiddenAs {
+  const shown = shownEffectiveName(u);
+  if (shown === effectiveName(u)) return null;
+  return shown === u.email ? "email" : "sso";
+}
+
 export type Profile = {
   displayName: string | null;
   suggestedName: string | null;
   needsDisplayName: boolean;
   /** Email me about comments (#1467); on unless turned off. */
   commentEmail: boolean;
+  /** #2277: what others see instead of the user's name because it reads as an agent's. */
+  nameHiddenAs: NameHiddenAs;
 };
 
 function toProfile(r: NameFields & { commentEmail: number }): Profile {
@@ -423,6 +438,7 @@ function toProfile(r: NameFields & { commentEmail: number }): Profile {
     suggestedName,
     needsDisplayName: !r.displayName && !suggestedName,
     commentEmail: r.commentEmail !== 0,
+    nameHiddenAs: nameHiddenAs(r),
   };
 }
 

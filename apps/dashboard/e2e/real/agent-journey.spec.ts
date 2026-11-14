@@ -225,7 +225,7 @@ test("5. public with anonymous writes; the anon write limit is enforced", async 
     writers.getByRole("radio", { name: "Everyone who can see it" }),
   ).toBeChecked();
   await expect(writers).toHaveAccessibleDescription(
-    "Anyone with the link, signed in or not.",
+    "Anyone with the link, logged in or not.",
   );
   await ctx.close();
 

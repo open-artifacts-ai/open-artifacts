@@ -144,7 +144,7 @@ describe("GET /llms.txt", () => {
   });
 
   it("has Connect, Restart, Verify and Troubleshoot, in order, for this instance", async () => {
-    const txt = await guide();
+    const txt = await guide(E({ BUS_HUB: undefined }));
     expect(txt.startsWith(`# Open Artifacts at ${HOST}\n`)).toBe(true);
     expect([...sections(txt).keys()]).toEqual([
       "Connect",
@@ -159,8 +159,56 @@ describe("GET /llms.txt", () => {
   });
 
   it("works the same on hosted and self-hosted", async () => {
-    const self = await guide(E({ HOSTED: undefined }));
-    expect(await guide(E({ HOSTED: "1" }))).toBe(self);
+    const self = await guide(E({ HOSTED: undefined, BUS_HUB: undefined }));
+    expect(await guide(E({ HOSTED: "1", BUS_HUB: undefined }))).toBe(self);
+  });
+
+  it("bus on: a numbered Setup steps section first, with connect then the bus install as one sequence", async () => {
+    const txt = await guide(E({ HOSTED: undefined }));
+    expect([...sections(txt).keys()]).toEqual([
+      "Setup steps",
+      "Connect",
+      "Restart",
+      "Verify",
+      "Troubleshoot",
+    ]);
+    const steps = sections(txt).get("Setup steps") ?? "";
+    expect(steps).toMatch(/1\. \*\*Connect\.\*\*/);
+    expect(steps).toMatch(/2\. \*\*Install the bus\.\*\*/);
+    expect(steps).toContain(
+      `npx @open-artifacts/bus install --instance ${skillOrigin(HOST)}`,
+    );
+    expect(steps).toContain("They approve this machine once, in their browser");
+    expect(steps).toContain("QUESTION FOR YOUR USER");
+    expect(steps).toContain(
+      "5. **Ask what to call you.** Ask your person what to call you. Suggest a short name from the project, such as \"Acme Web\". Tell them it's the name they'll type after @ in comments. Set it, then check that the bus `self` tool shows it.",
+    );
+    expect(steps).toContain("`/rename <name>`");
+    expect(steps).toContain("`/name <name>`");
+    expect(steps).toContain(
+      "After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.",
+    );
+    expect(steps).toMatch(/6\. \*\*Publish a first page\.\*\*/);
+    expect(steps).toContain("On this first page only");
+    expect(steps).toContain("bus `follow` tool");
+    expect(steps).toContain("I'm {name}, your agent.");
+    expect(steps).toContain("What should I publish next?");
+    expect(steps).toContain("Nothing for now");
+    expect(steps).not.toMatch(/optional/i);
+    expect(steps).toContain("don't stop to offer the bus as an option");
+    expect(steps).not.toContain("\u2014");
+    expect(steps).toContain("Open Artifacts is connected, but the bus isn't");
+  });
+
+  it("bus off (no hub, or hosted without the bus feature): no Agent bus section", async () => {
+    for (const e of [
+      E({ BUS_HUB: undefined }),
+      E({ HOSTED: "1", FEATURES: "" }),
+    ]) {
+      const txt = await guide(e);
+      expect(txt).not.toContain("Setup steps");
+      expect(txt).not.toContain("@open-artifacts/bus");
+    }
   });
 
   it("SKILL_MD=off: still served, without the /skill.md step", async () => {
@@ -255,7 +303,7 @@ describe("Claude Code plugin switch", () => {
   it("is off by default, and the served guide omits the block", async () => {
     expect(CLAUDE_PLUGIN_ENABLED).toBe(false);
     const txt = await guide();
-    expect(txt).toBe(renderLlms(HOST, { plugin: false }));
+    expect(txt).toBe(renderLlms(HOST, { plugin: false, bus: true }));
     expect(txt).not.toContain("claude plugin");
     expect(txt).not.toContain("prefer the plugin");
     expect(txt).not.toContain(CLAUDE_PLUGIN.option);

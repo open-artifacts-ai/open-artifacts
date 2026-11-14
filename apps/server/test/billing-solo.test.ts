@@ -116,6 +116,38 @@ describe("effectivePlan: solo", () => {
 
 // #1756: the end of the Business trial returns to Solo, never a full lock,
 // until billing answers.
+describe("effectivePlan: billing has no row (version 0)", () => {
+  const v0 = at({ version: 0 });
+  const withTier = (r: StoredPlan, tier: string | undefined) =>
+    effectivePlan(r, null, tier, mid);
+
+  it("keeps a provisioned Team or Business, with no lock", () => {
+    for (const tier of ["team", "business"] as const) {
+      const p = withTier(v0, tier);
+      expect(p.tier).toBe(tier);
+      expect(p.lock).toBeNull();
+      expect(p.readOnly).toBe(false);
+    }
+  });
+
+  it("still counts as a good read for the 7-day clock", () => {
+    const old = at({ version: 0, asOf: mid - PLAN_STALE_MS - 1 });
+    expect(withTier(old, "team").lock?.reason).toBe("billing_unreachable");
+  });
+
+  it("a trial, solo or unset TIER stays Solo, as before", () => {
+    for (const tier of ["trial", "solo", undefined]) {
+      expect(withTier(v0, tier).lock).toMatchObject({ mode: "solo" });
+    }
+  });
+
+  it("a real row (version 1) wins over TIER", () => {
+    const p = withTier(at({ version: 1 }), "team");
+    expect(p.tier).toBe("solo");
+    expect(p.lock).toMatchObject({ mode: "solo" });
+  });
+});
+
 describe("effectivePlan: a cached Business trial that has passed", () => {
   const passed = { tier: "trial", trialEndsAt: mid - 1 } as const;
 

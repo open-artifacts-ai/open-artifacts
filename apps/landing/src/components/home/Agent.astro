@@ -1,0 +1,13 @@
+---
+// The small agent badge used across the demos (#2471): the product's agent
+// tile, an animal on its presence colour. Decorative.
+import { type Animal, agentBadge } from "../../lib/agents";
+
+interface Props {
+  animal: Animal;
+  color: number;
+  class?: string;
+}
+const { animal, color, class: cls = "" } = Astro.props;
+---
+<Fragment set:html={agentBadge(animal, color, cls)} />

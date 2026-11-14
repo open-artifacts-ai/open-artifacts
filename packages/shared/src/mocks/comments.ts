@@ -113,8 +113,21 @@ type Deps = {
   contentHash?: (id: string, version: number) => string | null | undefined;
   /** Also seed an open ask addressed to the caller on "Landing page" (default off: list responses stay byte-identical to the fixtures). */
   seedAsk?: boolean;
+  /** #2381: also seed asks in each decider state on "Landing page" (Weigh in, Decide, decided, bars, take back). */
+  seedDeciders?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
+  /**
+   * #2263: with seedAsk, also seed a `confirm: "passkey"` ask. The mode picks what the
+   * server says to a pick: "ok" verifies, "none" 409 no_passkey, "cooling" 409
+   * passkey_cooling, "expired" 410 on the answer, "many" 429 on the challenge. Also seeds
+   * two answered dangerous asks: one the server marks verified, one for a viewer who gets no mark.
+   */
+  passkeyMode?: "ok" | "none" | "cooling" | "expired" | "many";
+  /** #2338: also seed an agent comment with every markdown feature, a hostile one and an ask with markdown. */
+  seedMarkdown?: boolean;
+  /** #2019: pins on the "Landing page" image (or pdf): a person, a linked agent, an unlinked agent and a resolved one. */
+  seedPins?: "image" | "pdf";
 };
 
 const iso = () => new Date().toISOString();
@@ -131,13 +144,19 @@ export function createCommentMock({
   rateLimit,
   contentHash,
   seedAsk,
+  seedDeciders,
   seedAgents,
+  passkeyMode,
+  seedMarkdown,
+  seedPins,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
   asksForYou: (id: string) => number;
 } {
   const threads = new Map<string, CommentThread[]>();
+  /** Comment ids of asks with no `confirm` whose decider's switches ask for a passkey at pick time (#2381). */
+  const pickTimePasskey = new Set<string>();
   const mine = (): CommentAuthor => ({
     kind: "user",
     id: me.user.id,
@@ -173,7 +192,14 @@ export function createCommentMock({
     const a = comment("Can we tighten this headline?", other, m);
     const b = comment("Agreed, shorter is better.", mine());
     const c = comment("Looks good overall.", other, m);
-    const d = comment("Which layout do we ship?", other, m);
+    // #2344: the steps an agent puts in the body, shown above the question.
+    const d = comment(
+      seedAsk
+        ? "Steps to compare:\n1. Open the Landing page\n2. Resize to 390 px wide\n3. Check the hero in both layouts"
+        : "Which layout do we ship?",
+      other,
+      m,
+    );
     d.ask = {
       question: "Which layout do we ship?",
       options: [
@@ -194,8 +220,90 @@ export function createCommentMock({
       to: [other],
       closed: false,
     };
+    const f = comment("Merge the release PR?", mine());
+    f.ask = {
+      question: "Merge the release PR?",
+      options: [
+        { id: "merge", label: "Merge it" },
+        { id: "hold", label: "Hold" },
+      ],
+      to: [mine()],
+      confirm: "passkey",
+      // As the server sends every ask (#2381): the card shows none of it on a risky ask.
+      decider: mine(),
+      role: "decide",
+      picks: [],
+      closed: false,
+    };
+    const answered = (q: string, verified: boolean) => {
+      const x = comment(q, mine());
+      x.ask = {
+        question: q,
+        options: [
+          { id: "go", label: "Go" },
+          { id: "stop", label: "Stop" },
+        ],
+        to: [mine()],
+        ...(verified
+          ? {
+              confirm: "passkey" as const,
+              decider: mine(),
+              role: "decide" as const,
+              picks: [],
+            }
+          : {}),
+        answer: {
+          optionId: "go",
+          by: mine(),
+          at: iso(),
+          typed: true,
+          yes: true,
+          ...(verified ? { verified: "passkey" as const } : {}),
+        },
+        closed: false,
+      };
+      return x;
+    };
+    // #2381: no `confirm` mark, but the decider's own switches ask for a passkey at pick time.
+    const late = comment("Ship the changelog?", mine());
+    late.ask = {
+      question: "Ship the changelog?",
+      options: [
+        { id: "ship", label: "Ship it" },
+        { id: "wait", label: "Wait" },
+      ],
+      to: [mine()],
+      closed: false,
+    };
+    pickTimePasskey.add(late.id);
+    const g = answered("Deploy to production?", true);
+    const h = answered("Delete the old build?", false);
     const asked: CommentThread[] = seedAsk
       ? [
+          ...(passkeyMode
+            ? [
+                {
+                  id: newId(),
+                  anchor: { kind: "note" as const },
+                  version: 1,
+                  status: "open" as const,
+                  resolvedBy: null,
+                  resolvedAt: null,
+                  createdAt: f.createdAt,
+                  comments: [f],
+                },
+                ...[g, h, late].map((x) => ({
+                  id: newId(),
+                  anchor: { kind: "note" as const },
+                  version: 1,
+                  status: "open" as const,
+                  resolvedBy: null,
+                  resolvedAt: null,
+                  createdAt: x.createdAt,
+                  comments: [x],
+                })),
+              ]
+            : []),
           {
             id: newId(),
             anchor: { kind: "note" },
@@ -218,6 +326,130 @@ export function createCommentMock({
           },
         ]
       : [];
+    // #2381: one ask per decider state, as the viewer ("You") sees it.
+    const deciderAsks: CommentThread[] = [];
+    if (seedDeciders) {
+      const person = (id: string, name: string): CommentAuthor => ({
+        kind: "user",
+        id,
+        name,
+        me: false,
+      });
+      const maya = person("maya", "Maya Chen");
+      const priya = person("priya", "Priya Nair");
+      const lee = person("lee", "Lee Park");
+      const dana = person("dana", "Dana Ortiz");
+      const agentOf = (who: string): CommentAuthor => ({
+        kind: "agent",
+        name: `${who}'s Claude`,
+        for: who,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      });
+      const at = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+      const OPTS2 = [
+        {
+          id: "a",
+          label: "A: three columns",
+          detail: "Solo, Team and Business side by side.",
+        },
+        {
+          id: "b",
+          label: "B: two columns",
+          detail: "Solo and Team; Business as a line under them.",
+        },
+      ];
+      const add = (
+        q: string,
+        author: CommentAuthor,
+        ask: Partial<NonNullable<Comment["ask"]>>,
+      ) => {
+        const c = comment(q, author);
+        c.ask = {
+          question: q,
+          options: OPTS2,
+          recommended: { optionId: "b", why: "It reads faster on a phone." },
+          to: [maya, mine()],
+          decider: maya,
+          closed: false,
+          picks: [],
+          ...ask,
+        };
+        deciderAsks.push({
+          id: newId(),
+          anchor: { kind: "note" },
+          version: 1,
+          status: "open",
+          resolvedBy: null,
+          resolvedAt: null,
+          createdAt: c.createdAt,
+          comments: [c],
+        });
+      };
+      // You weigh in; Maya decides; Priya has weighed in.
+      add("Which pricing table goes on the landing page?", agentOf("Maya"), {
+        to: [maya, priya, mine()],
+        role: "weigh",
+        picks: [{ by: priya, optionId: "b", at: at(20), typed: true }],
+      });
+      // You decide; Sam and Priya weighed in.
+      add("Which hero image goes on the launch post?", agentOf("Leo"), {
+        to: [mine(), other, priya],
+        decider: mine(),
+        role: "decide",
+        picks: [
+          { by: other, optionId: "a", at: at(30), typed: true },
+          { by: priya, optionId: "b", at: at(25), typed: true },
+        ],
+      });
+      // Decided by Maya; Priya differed; a guest weighed in.
+      add("Which plan card is shown first?", agentOf("Maya"), {
+        to: [maya, priya, dana, mine()],
+        role: "weigh",
+        closed: true,
+        answer: {
+          optionId: "b",
+          by: maya,
+          at: at(60),
+          typed: true,
+          yes: false,
+        },
+        picks: [
+          { by: priya, optionId: "a", at: at(90), typed: true },
+          { by: dana, optionId: "b", at: at(80), typed: true, guest: true },
+          { by: maya, optionId: "b", at: at(60), typed: true },
+        ],
+      });
+      // You decide, six asked, four weighed in: bars.
+      add("What do we call the weekly email?", agentOf("Maya"), {
+        options: [
+          { id: "a", label: "The Changelog" },
+          { id: "b", label: "Shipped" },
+          { id: "c", label: "What's new" },
+        ],
+        recommended: undefined,
+        to: [mine(), maya, other, priya, lee, dana],
+        decider: mine(),
+        role: "decide",
+        picks: [
+          { by: maya, optionId: "a", at: at(50), typed: true },
+          { by: other, optionId: "a", at: at(45), typed: true },
+          { by: priya, optionId: "a", at: at(40), typed: true },
+          { by: lee, optionId: "b", at: at(35), typed: true },
+        ],
+      });
+      // Your agent asked Sam to decide: take it back.
+      add("Monthly or yearly shown first?", mine(), {
+        to: [other, mine()],
+        decider: other,
+        chosenBy: mine(),
+        role: "weigh",
+        canTakeBack: true,
+        picks: [],
+      });
+    }
     const faces: CommentThread[] = [];
     if (seedAgents) {
       const agent = (linked: boolean): CommentAuthor => ({
@@ -250,7 +482,7 @@ export function createCommentMock({
         closed: false,
       };
       const mention = comment(
-        "Looping in @OA Product and @Claude Code on this.",
+        "Looping in @OA Product and @Claude Code on this, and @OA Bus is off it.",
         other,
         m,
       );
@@ -269,12 +501,61 @@ export function createCommentMock({
           for: "Leo Urbina",
           delivery: "queued",
         },
+        {
+          key: "agent:bus",
+          name: "OA Bus",
+          linked: true,
+          product: "Codex",
+          animal: { id: "owl", color: 4 },
+          for: "Sam Rivera",
+          delivery: "withdrawn",
+        },
       ];
+      // A comment can notify both: the mentions above, then thread agents told by it
+      // (one is also mentioned, and counts once in the header).
+      mention.notified = (
+        [
+          ["agent:product", "OA Product", 2],
+          ["agent:design", "OA Design", 1],
+          ["agent:release", "OA Release", 0],
+        ] as const
+      ).map(([key, name, color]) => ({
+        key,
+        name,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color },
+        delivery: "delivered" as const,
+      }));
+      // #2229: a reply that told six agents without mentioning any.
+      const six = comment(
+        "Everyone: please confirm your part is ready.",
+        other,
+        m,
+      );
+      six.notified = (
+        [
+          ["agent:product", "OA Product", 2, "delivered"],
+          ["agent:bus", "OA Bus", 4, "delivered"],
+          ["agent:polish", "OA Polish", 5, "queued"],
+          ["agent:design", "OA Design", 1, "delivered"],
+          ["agent:billing", "OA Billing", 3, "gone"],
+          ["agent:release", "OA Release", 0, "delivered"],
+        ] as const
+      ).map(([key, name, color, delivery]) => ({
+        key,
+        name,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color },
+        delivery,
+      }));
       const f = [
         comment("Can the pricing section be shorter?", other, m),
         comment("Shortened to three sentences.", agent(true)),
         comment("Also fixed the footer typo.", agent(false)),
         mention,
+        six,
         ask,
         // #2172: a long run of linked-agent replies (each has an sr-only "linked, " span).
         ...Array.from({ length: 8 }, (_, i) =>
@@ -308,6 +589,160 @@ export function createCommentMock({
         comments: one,
         agents: THREAD_AGENTS.slice(0, 1).map((x) => ({ ...x })),
       });
+      // #2174: a thread of one person and one agent, and one of nine participants (five people, four agents: Sam, Maya, Noor, Ben, you).
+      const solo = [
+        comment("Solo note: is the footer link right?", mine()),
+        comment("Yes, it points at /pricing.", agent(true)),
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: solo[0]?.createdAt ?? iso(),
+        comments: solo,
+        agents: THREAD_AGENTS.slice(0, 1).map((x) => ({ ...x })),
+      });
+      const crowd = ["Maya Chen", "Noor Ali", "Ben Ortiz"].map((name, i) =>
+        comment(`Nine-person review: my part is ready (${i + 1}).`, {
+          kind: "user",
+          id: `crowd-${i}`,
+          name,
+          me: false,
+        }),
+      );
+      const nine = [
+        comment("Nine-person review: is everyone ready for launch?", other),
+        ...crowd,
+        comment("I am ready too.", mine()),
+        comment("Checked the release notes.", agent(true)),
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: nine[0]?.createdAt ?? iso(),
+        comments: nine,
+        agents: THREAD_AGENTS.map((x) => ({ ...x })),
+      });
+    }
+    if (seedPins) {
+      const fox: CommentAuthor = {
+        kind: "agent",
+        name: "OA Product",
+        for: "Leo Urbina",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const cur = artifacts.find((x) => x.id === id)?.currentVersion ?? 1;
+      let n = 0;
+      const pin = (
+        x: number,
+        y: number,
+        by: CommentAuthor,
+        text: string,
+        status: "open" | "resolved" = "open",
+      ): CommentThread => {
+        const c = comment(text, by);
+        return {
+          id: newId(),
+          anchor: {
+            kind: "pin",
+            version: cur,
+            x,
+            y,
+            ...(seedPins === "pdf" ? { page: 1 } : {}),
+            contentHash: contentHash?.(id, cur) ?? null,
+          },
+          version: cur,
+          status,
+          resolvedBy: null,
+          resolvedAt: null,
+          // In order, so the pins number 1 to 4 as listed.
+          createdAt: new Date(Date.now() - (4 - n++) * 60_000).toISOString(),
+          comments: [c],
+        };
+      };
+      faces.push(
+        pin(0.22, 0.34, other, "Is this Q4 or year to date?"),
+        pin(0.7, 0.62, fox, "The December bar includes the pre-orders."),
+        pin(
+          0.5,
+          0.2,
+          { kind: "agent", name: "Claude Code", linked: false, me: false },
+          "Title is cut off on narrow screens.",
+        ),
+        pin(0.4, 0.8, mine(), "Axis label looks wrong.", "resolved"),
+      );
+    }
+    if (seedMarkdown) {
+      const bot: CommentAuthor = {
+        kind: "agent",
+        name: "OA Product",
+        for: "Leo Urbina",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const rich = comment(
+        [
+          "## Review notes",
+          "I **checked** the *pricing* page with `pnpm test`. See https://example.com/docs or [the guide](https://example.com/guide).",
+          "- first point with **bold**",
+          "- second point with `code`",
+          "1. step one",
+          "2. step two",
+          "> A quoted line from the brief.",
+          '```ts\nconst total = items.reduce((a, b) => a + b, 0); // **not bold**\nconst long = [1, 2, 3].map((n) => n * 2).join(", "); // a long line that scrolls\n```',
+          "Raw HTML stays text: <img src=x onerror=alert(1)> and [x](javascript:alert(1)).",
+        ].join("\n\n"),
+        bot,
+      );
+      const hostile = comment(
+        '<script>alert(1)</script> <img src=x onerror="alert(1)"> ![pic](https://example.com/p.png) &lt;b&gt;',
+        bot,
+      );
+      const ask = comment(
+        "Steps:\n\n- Open the **pricing** page\n- Compare with [the spec](https://example.com/spec)\n\nThen pick below. Raw <b>html</b> stays text.",
+        bot,
+      );
+      ask.ask = {
+        question:
+          "Which `layout` should we **ship**? See https://example.com/spec",
+        options: [
+          {
+            id: "a",
+            label: "Wide",
+            detail: "Uses *full-bleed* image, see `hero.css`",
+          },
+          {
+            id: "b",
+            label: "Compact",
+            detail: "Loads faster; [details](https://example.com/b)",
+          },
+        ],
+        to: [mine()],
+        closed: false,
+      };
+      for (const c of [rich, hostile, ask])
+        faces.push({
+          id: newId(),
+          anchor: { kind: "note" },
+          version: 1,
+          status: "open",
+          resolvedBy: null,
+          resolvedAt: null,
+          createdAt: c.createdAt,
+          comments: [c],
+        });
     }
     return [
       {
@@ -337,6 +772,7 @@ export function createCommentMock({
         comments: [c],
       },
       ...asked,
+      ...deciderAsks,
       ...faces,
     ];
   };
@@ -418,7 +854,32 @@ export function createCommentMock({
   const rep = `${A}/:tid/replies`;
   const one = `${A}/:tid/comments/:cid`;
   const answer = `${A}/:tid/comments/:cid/answer`;
+  const challenge = `${A}/:tid/comments/:cid/answer/challenge`;
   const handlers = [
+    http.post(challenge, async ({ params }) => {
+      const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
+      if (bad) return bad;
+      if (passkeyMode === "many") return err("rate_limited", "Too many tries");
+      if (passkeyMode === "none")
+        return err("no_passkey", "Add a passkey to approve this");
+      if (passkeyMode === "cooling")
+        return HttpResponse.json(
+          {
+            error: {
+              code: "passkey_cooling",
+              message: "This passkey is new",
+              details: {
+                usableAt: new Date(Date.now() + 20 * 3600_000).toISOString(),
+              },
+            },
+          },
+          { status: 409 },
+        );
+      return HttpResponse.json({
+        options: { challenge: "bW9jay1jaGFsbGVuZ2U", rpId: "localhost" },
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      });
+    }),
     http.get("*/api/v1/artifacts/:id/agents", ({ params }) => {
       if (!art(params.id)) return err("not_found", "Not found");
       return HttpResponse.json(MOCK_AGENTS);
@@ -430,7 +891,7 @@ export function createCommentMock({
         .find((x) => x.id === params.tid)
         ?.comments.find((x) => x.id === params.cid);
       if (!c?.ask) return err("not_found", "Not found");
-      if (!c.ask.to.some((a) => a.me))
+      if (!c.ask.role && !c.ask.to.some((a) => a.me))
         return err("forbidden", "Only the people asked can answer");
       if (c.ask.closed) return err("conflict", "This ask is closed");
       const j = AnswerBodySchema.safeParse(
@@ -438,13 +899,40 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      c.ask.answer = {
-        optionId: j.data.optionId,
+      const needsPasskey =
+        c.ask.confirm === "passkey" || pickTimePasskey.has(c.id);
+      if (needsPasskey) {
+        if (!j.data.assertion)
+          return err("passkey_required", "This pick needs a passkey");
+        if (passkeyMode === "expired")
+          return err("challenge_expired", "That approval timed out");
+      }
+      const pick = {
+        ...(needsPasskey ? { verified: "passkey" as const } : {}),
         by: mine(),
+        optionId: j.data.optionId,
         at: iso(),
         typed: true,
-        yes: c.author.me,
       };
+      // #2381: a weigh-in is kept beside the decision, never the decision.
+      c.ask.picks = [...(c.ask.picks ?? []).filter((p) => !p.by.me), pick];
+      if (c.ask.role !== "weigh") c.ask.answer = { ...pick, yes: c.author.me };
+      emit(String(params.id), open(String(params.id)));
+      return HttpResponse.json(c);
+    }),
+    http.post(`${A}/:tid/comments/:cid/ask/decider`, ({ params }) => {
+      const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
+      if (bad) return bad;
+      const c = list(String(params.id))
+        .find((x) => x.id === params.tid)
+        ?.comments.find((x) => x.id === params.cid);
+      if (!c?.ask) return err("not_found", "Not found");
+      if (!c.ask.canTakeBack)
+        return err("forbidden", "Only the person who asked can take it back");
+      c.ask.decider = mine();
+      c.ask.role = "decide";
+      c.ask.chosenBy = undefined;
+      c.ask.canTakeBack = undefined;
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c);
     }),
@@ -522,20 +1010,40 @@ export function createCommentMock({
       // The root plus MAX_REPLIES replies: the next one is a conflict.
       if (t.comments.length > MAX_REPLIES)
         return err("conflict", "This thread has too many replies");
-      const c = comment(j.body, mine());
+      // #2179: a test or shot can reply as someone else (x-mock-as: other |
+      // agent), so the page sees another person's or an agent's live reply.
+      const as = request.headers.get("x-mock-as");
+      const by: CommentAuthor =
+        as === "other"
+          ? other
+          : as === "agent"
+            ? {
+                kind: "agent",
+                name: "OA Product",
+                for: "Sam Rivera",
+                linked: true,
+                product: "Claude Code",
+                animal: { id: "fox", color: 2 },
+                me: false,
+              }
+            : mine();
+      const c = comment(j.body, by);
       const bad2 = decorate(c, j, String(params.id));
       if (bad2) return bad2;
       // #2035: a reply also tells the thread's agents; the mock varies the outcome.
-      if (t.agents?.length)
-        c.notified = t.agents.map((x, i) => ({
-          key: x.key,
-          name: x.name,
-          ...(x.for ? { for: x.for } : {}),
-          ...(x.linked !== undefined ? { linked: x.linked } : {}),
-          ...(x.product ? { product: x.product } : {}),
-          ...(x.animal ? { animal: x.animal } : {}),
-          delivery: i % 3 === 0 ? "delivered" : i % 3 === 1 ? "queued" : "gone",
-        }));
+      if (t.agents?.some((x) => !x.removed))
+        c.notified = t.agents
+          .filter((x) => !x.removed)
+          .map((x, i) => ({
+            key: x.key,
+            name: x.name,
+            ...(x.for ? { for: x.for } : {}),
+            ...(x.linked !== undefined ? { linked: x.linked } : {}),
+            ...(x.product ? { product: x.product } : {}),
+            ...(x.animal ? { animal: x.animal } : {}),
+            delivery:
+              i % 3 === 0 ? "delivered" : i % 3 === 1 ? "queued" : "gone",
+          }));
       t.comments.push(c);
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c, { status: 201 });
@@ -554,13 +1062,15 @@ export function createCommentMock({
             "forbidden",
             "Only the person whose agent it is, or the owner, can change this",
           );
-        const now = (t.agents ?? []).filter((x) => x.key !== key);
-        t.agents =
-          method === "delete"
-            ? now
-            : THREAD_AGENTS.filter(
-                (x) => x.key === key || now.some((y) => y.key === x.key),
-              ).map((x) => ({ ...x }));
+        // #2174: a removed agent stays in the list, marked.
+        const base = t.agents ?? THREAD_AGENTS.map((x) => ({ ...x }));
+        t.agents = base.map((x) =>
+          x.key !== key
+            ? x
+            : method === "delete"
+              ? { ...x, removed: true }
+              : { ...x, removed: undefined },
+        );
         emit(String(params.id), open(String(params.id)));
         return new HttpResponse(null, { status: 204 });
       }),

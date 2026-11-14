@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { useBusCmd } from "./bus-cmd.ts";
+import { copyFor, useBusCmd } from "./bus-cmd.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
 import { global } from "./commands/global.ts";
@@ -26,6 +26,7 @@ const TERMINAL = new Set([
   "link",
   "leads",
   "version",
+  "help",
 ]);
 
 /**
@@ -46,6 +47,8 @@ export async function main(
   }
   const ctx = makeCtx(cmd.noColor);
   if (cmd.home) ctx.home = resolve(cmd.home);
+  // A moved home no harness config points at gets `login --home` hints (#2425).
+  ctx.copy = copyFor(ctx);
   // Only commands whose text goes to a person's terminal print oa-bus. The
   // daemon writes daemon.log, and mcp, mcp-proxy and mcp-proof write to an
   // agent's MCP stderr, so they keep npx. An install prints npx until its shim
@@ -70,6 +73,7 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
           noOpen: cmd.noOpen,
           check: cmd.check,
           noService: cmd.noService,
+          alongside: cmd.alongside,
           habits: cmd.habits,
           json: cmd.json,
         },
@@ -142,6 +146,9 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return link(cmd, ctx);
     case "version":
       say(ctx, ctx.copy.header(ctx.version));
+      return 0;
+    case "help":
+      say(ctx, ctx.copy.help());
       return 0;
   }
 }

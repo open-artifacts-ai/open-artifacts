@@ -45,7 +45,7 @@ const nudge = () => screen.queryByText(COPY);
 describe("sign-up nudge in the viewer (#1564)", () => {
   beforeEach(() => localStorage.clear());
 
-  it("a signed-out viewer of a public link on a hosted install sees it", async () => {
+  it("a logged-out viewer of a public link on a hosted install sees it", async () => {
     anonymous(true);
     mount(viewerPath(PUBLIC));
     expect(await screen.findByText(COPY)).toBeVisible();
@@ -55,7 +55,7 @@ describe("sign-up nudge in the viewer (#1564)", () => {
     );
   });
 
-  it("a signed-out viewer on a self-hosted install does not", async () => {
+  it("a logged-out viewer on a self-hosted install does not", async () => {
     anonymous(false);
     mount(viewerPath(PUBLIC));
     await frame();

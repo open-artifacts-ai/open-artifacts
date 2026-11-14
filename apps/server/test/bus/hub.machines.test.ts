@@ -107,6 +107,7 @@ const RPC_ALLOWLIST = [
   "viewReachProposal",
   "viewRoleProposal",
   "wipe",
+  "withdrawHeld",
 ];
 
 /**

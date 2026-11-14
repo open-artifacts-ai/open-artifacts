@@ -1079,6 +1079,23 @@ describe("uninstall: transcript states 9 and 10", () => {
     expect(ctx.service.remove).toHaveBeenCalledOnce();
   });
 
+  it("#2099: another HOME removes no service and says why", async () => {
+    const ctx = fakeCtx({
+      service: {
+        ...launchd(),
+        remove: vi.fn(async () => ({ skipped: "home" as const })),
+      },
+      which: ALL,
+      exec: execWith(),
+    });
+    approve(ctx);
+    expect(await uninstall({ purge: false }, ctx)).toBe(0);
+    expect(ctx.all().join("\n")).toContain(
+      "Skipped removing the background service: this HOME isn't your account's home.",
+    );
+    expect(ctx.all().join("\n")).not.toContain("No service to remove");
+  });
+
   it("9: a second run has nothing to remove; exit 0", async () => {
     const ctx = fakeCtx({
       service: launchd(false),
@@ -1144,7 +1161,12 @@ describe("uninstall: transcript states 9 and 10", () => {
     mkdirSync(join(ctx.home, "logs"), { recursive: true });
     writeFileSync(join(ctx.home, "logs/daemon.log"), "theirs");
     expect(await uninstall({ purge: true }, ctx)).toBe(1);
-    expect(ctx.all()).toEqual(transcript("## 10. uninstall --purge")[2]);
+    // A non-default home never wired a harness (#2425), so that line is not printed.
+    expect(ctx.all()).toEqual(
+      (transcript("## 10. uninstall --purge")[2] as string[]).filter(
+        (l) => !l.includes("No harness had the bus wired"),
+      ),
+    );
     expect(existsSync(join(ctx.home, "logs/daemon.log"))).toBe(true);
   });
 
@@ -1278,7 +1300,7 @@ describe("logs, mcp, version", () => {
       "[[warning]]![[/warning]]  No daemon log yet at ~/.oa-bus/logs/daemon.log",
     );
     const b = fakeCtx();
-    mkdirSync(join(b.home, "logs"), { recursive: true });
+    mkdirSync(join(b.home, "logs"), { recursive: true, mode: 0o700 });
     writeFileSync(
       join(b.home, "logs/daemon.log"),
       `${Array.from({ length: 60 }, (_, i) => `l${i}`).join("\n")}\n`,
@@ -1290,7 +1312,7 @@ describe("logs, mcp, version", () => {
 
   it("logs skips an events.log that is a symlink, and prints none of its target", async () => {
     const c = fakeCtx();
-    mkdirSync(join(c.home, "logs"), { recursive: true });
+    mkdirSync(join(c.home, "logs"), { recursive: true, mode: 0o700 });
     writeFileSync(join(c.home, "logs/daemon.log"), "d\n");
     const secret = join(c.home, "secret.txt");
     writeFileSync(secret, "TOP-SECRET\n");
@@ -1298,6 +1320,26 @@ describe("logs, mcp, version", () => {
     expect(await logs(c)).toBe(0);
     expect(c.out().join("\n")).not.toContain("TOP-SECRET");
     expect(c.out().join("\n")).toContain("not a regular file");
+  });
+
+  it("logs refuses a logs folder that is a symlink, and prints none of its target", async () => {
+    const c = fakeCtx();
+    const other = join(c.home, "other");
+    mkdirSync(other, { recursive: true, mode: 0o700 });
+    writeFileSync(join(other, "events.log"), "TOP-SECRET\n");
+    symlinkSync(other, join(c.home, "logs"));
+    expect(await logs(c)).toBe(1);
+    expect(c.out().join("\n")).not.toContain("TOP-SECRET");
+    expect(c.out().join("\n")).toContain("symlink");
+  });
+
+  it("logs refuses a logs folder open to other users", async () => {
+    const c = fakeCtx();
+    mkdirSync(join(c.home, "logs"), { recursive: true, mode: 0o755 });
+    chmodSync(join(c.home, "logs"), 0o755);
+    writeFileSync(join(c.home, "logs/events.log"), "x\n");
+    expect(await logs(c)).toBe(1);
+    expect(c.out().join("\n")).toContain("0700");
   });
 
   it("mcp runs the adapter entry, and explains Pi", async () => {

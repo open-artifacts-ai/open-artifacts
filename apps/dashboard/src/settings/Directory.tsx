@@ -3,7 +3,7 @@
 // access and offers the one fix; below it, held sweeps, restricted groups,
 // then the connection with Disconnect last. Copy: build spec t6cjQuskQ6zrZaJd
 // v5. Losing sync never cuts access, so `staleAt` is never shown.
-import { HELD_SNOOZE_REASON_MAX, R } from "@oa/shared";
+import { BUSINESS_CONTACT_URL, HELD_SNOOZE_REASON_MAX, R } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
   AlertDialog,
@@ -150,8 +150,8 @@ export const connectCopy = (
       return "Connect with a Google super admin account. Other accounts can't see every group.";
     case "domain_mismatch":
       return domain
-        ? `That Google Workspace isn't ${domain}. Sign in with a ${domain} super admin.`
-        : "That Google Workspace isn't your organization's. Sign in with your organization's super admin.";
+        ? `That Google Workspace isn't ${domain}. Log in with a ${domain} super admin.`
+        : "That Google Workspace isn't your organization's. Log in with your organization's super admin.";
     case "customer_mismatch":
       return "That Google Workspace belongs to a different organization. Reconnect the one you connected before.";
     case "scopes":
@@ -304,16 +304,16 @@ function PendingConfirm({
           title="This is a different Google Workspace than before."
           icon={<TriangleAlertIcon aria-hidden="true" />}
         >
-          People who signed in through{" "}
+          People who logged in through{" "}
           {change.previous.domain ?? "the previous Workspace"} won't carry over
-          and stay signed out. People in {change.next.domain} are linked when
+          and stay logged out. People in {change.next.domain} are linked when
           you confirm.
         </Notice>
       )}
       <p>
         This adds {capped ? "more than 500 people" : people(n)}
         {domains ? ` from ${domains}` : ""} as{" "}
-        {!capped && n === 1 ? "a member" : "members"}. They can sign in with
+        {!capped && n === 1 ? "a member" : "members"}. They can log in with
         Google right away.
       </p>
       {sync.pendingExpiresAt && (
@@ -384,16 +384,16 @@ function UpgradeLine() {
       Google group sync is part of Business.{" "}
       {plan ? (
         <>
-          <AppLink
-            href="/settings/plan"
+          <a
+            href={BUSINESS_CONTACT_URL}
             className="underline underline-offset-2"
           >
-            Upgrade to Business
-          </AppLink>{" "}
+            Contact us about Business
+          </a>{" "}
           to sync again.
         </>
       ) : (
-        "Upgrade to Business to sync again."
+        "Contact us about Business to sync again."
       )}
     </p>
   );
@@ -601,7 +601,7 @@ function StatusHeader({
           )}
           <p className={muted}>
             Nobody loses access while sync is down. While sync is down, people
-            sign in again every 24 hours.
+            log in again every 24 hours.
           </p>
           {tokensUnverified && (
             <p className={muted}>
@@ -1053,7 +1053,7 @@ export const DISCONNECT_COPY = {
   access:
     "Everyone keeps the access they have now, and you manage members here from now on.",
   mismatch:
-    "Your directory reports a different Google organization, so people who sign in through it stay signed out until you connect again.",
+    "Your directory reports a different Google organization, so people who log in through it stay logged out until you connect again.",
   again: "You can connect again later.",
   leaving:
     "People who leave in Google keep their access until you remove them in Members, and restricted groups stay in force until you lift them.",
@@ -1117,9 +1117,9 @@ function Connection({ sync, owner }: { sync: SyncStatus; owner: boolean }) {
 
 function Reauth() {
   return (
-    <SettingsCard id="oa-dir-reauth" title="Sign in again to continue">
+    <SettingsCard id="oa-dir-reauth" title="Log in again to continue">
       <p>
-        For your security, sign in with Google again to manage the directory.
+        For your security, log in with Google again to manage the directory.
       </p>
       <div>
         <Button asChild size="sm" className="text-[length:var(--oa-text-sm)]">

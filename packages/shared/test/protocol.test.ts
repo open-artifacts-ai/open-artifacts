@@ -50,9 +50,10 @@ describe("parseArtifactMessage", () => {
         params: 1,
       }),
     ).toBeNull();
+    // #2408: an unknown top-level key is dropped, not the message.
     expect(
       parseArtifactMessage({ oa: 1, type: "resize", height: 1, extra: 1 }),
-    ).toBeNull();
+    ).toEqual({ oa: 1, type: "resize", height: 1 });
     expect(
       parseArtifactMessage({
         oa: 1,

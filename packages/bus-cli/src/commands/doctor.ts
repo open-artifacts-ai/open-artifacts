@@ -50,7 +50,7 @@ import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
 import { outputStyleState } from "../steps/output-style.ts";
 import { shimState } from "../steps/path-shim.ts";
-import { MIN_NODE } from "../steps/service.ts";
+import { isDefaultHome, MIN_NODE } from "../steps/service.ts";
 import { codexSkillState } from "../steps/skill.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
@@ -353,6 +353,12 @@ export async function doctor(ctx: Ctx): Promise<number> {
     else if (sh?.kind === "other") warn(c.shimDoctorOther(tilde(ctx, sh.path)));
     else if (sh?.kind === "missing") warn(c.shimDoctorMissing());
   }
+
+  // Other homes' services on this machine, in one line; from the first bus only.
+  const others = isDefaultHome(ctx.home, ctx.userHome)
+    ? (ctx.service.others?.() ?? [])
+    : [];
+  if (others.length > 0) say(ctx, c.otherHomes(others));
 
   // Not a pass or a warning: the habits are the user's choice either way.
   const habits = habitsLine(ctx);

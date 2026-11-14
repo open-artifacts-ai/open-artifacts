@@ -1,7 +1,7 @@
 ---
 title: Terms of Service
 description: The rules for using hosted Open Artifacts and this website.
-updated: "November 11, 2026"
+updated: "November 13, 2026"
 ---
 
 These terms are an agreement between you and **Leo Urbina Consulting LLC** ("we", "us"), 8913 Bar K Ranch Road, Leander, Texas 78645, USA. They cover:
@@ -21,14 +21,14 @@ We may change, add or remove features. If we remove something you rely on, we'll
 
 ## Accounts
 
-- You sign in with Google, or with a one-time code sent to your email.
-- Keep your sign-in and any tokens you create secure. You're responsible for what happens under your account.
+- You log in with Google, or with a one-time code sent to your email.
+- Keep your login and any tokens you create secure. You're responsible for what happens under your account.
 - The instance owner and admins decide who's a member, what they can do, and whether a Google directory controls membership. They can see the members list and the audit log.
 - Tell us at [security@open-artifacts.com](mailto:security@open-artifacts.com) if you think your account was used without permission.
 
 ## AI agents you connect
 
-You can connect any AI agent to your account, through MCP sign-in or a token. A connected agent acts as you: it can do anything your account can, such as publish, share or delete. You're responsible for what your agents do. You can see and revoke connected agents in Settings, Connections.
+You can connect any AI agent to your account, through MCP login or a token. A connected agent acts as you: it can do anything your account can, such as publish, share or delete. You're responsible for what your agents do. You can see and revoke connected agents in Settings, Connections.
 
 We don't control the AI agents you connect or the companies that make them. Their own terms and privacy policies apply to what you send them.
 
@@ -57,11 +57,27 @@ We may remove content or suspend access that breaks these rules, or that puts th
 
 ## Plans and payment
 
-- **Solo:** free for 30 days, then $1 a month or $10 a year.
-- **Team:** $10 per creator per month, or $100 per creator per year, with a 30-day free trial that starts when you invite someone.
-- **Business:** $25 per creator per month, or $250 per creator per year.
+- **Solo:** free for 30 days with no card needed, then $1 a month or $10 a year.
+- **Team:** $10 per creator per month, or $100 per creator per year, with a 30-day free trial that starts the first time you invite someone.
+- **Business:** $25 per creator per month, or $250 per creator per year. Contact us to start.
 
-Paid plans aren't on sale yet. Before we charge anyone, we'll add billing, renewal, refund and tax terms here, and tell instance owners first.
+A creator is a person who, in a calendar month, publishes a page or a new version of one, or changes a page's live data as its owner or editor. What your AI agents do counts as you. Each person counts once a month. Viewers are free on every plan: reading, commenting, or a viewer's vote in a poll doesn't make someone a creator.
+
+**Free trials.** If you don't pay when the Solo trial ends, nothing is charged. Publishing pauses, you can still read and share what you made, and nothing is deleted. The Team trial happens once for each instance. If it ends without a Team plan, the instance goes back to Solo.
+
+**Billing.** Prices are in US dollars. You pay by card through Stripe, our payment processor. We don't store your card number. A plan renews automatically each month or each year until you cancel it. If you start paying for Solo during its trial, the first charge comes when the trial ends.
+
+On monthly Team, each renewal charges for the number of creators you had the month before, with a minimum of one. On yearly Team, you pay up front for the number of creators you choose. Creators above that number are billed after each month they occur, at the monthly price.
+
+**Taxes.** Prices don't include taxes, and we don't add tax to invoices today. If that changes, we'll tell instance owners first. You're responsible for any taxes you owe on your purchase.
+
+**Cancelling.** The instance owner or an admin can cancel at any time in Settings, Plan and billing. The plan keeps working until the end of the period already paid for, and doesn't renew. After that, Solo pauses publishing, and on Team or Business the team features become read-only. You can still read and share everything, and nothing is deleted.
+
+**Refunds.** If you ask within 14 days of your first payment, we'll refund it in full. Write to [hello@open-artifacts.com](mailto:hello@open-artifacts.com) from the instance owner's address. After those 14 days, payments aren't refunded, and we don't give credit for part of a period, for moving to a cheaper plan, or for having fewer creators, except where the law requires it. If a charge looks wrong, write to the same address and we'll look into it.
+
+**Failed payments.** If a payment fails, you have 7 days to update your card. After that the instance becomes read-only until the payment goes through. Nothing is deleted.
+
+**Price changes.** We may change prices. We'll email instance owners at least 30 days before a new price applies to them, and it applies from their next renewal.
 
 ## Privacy
 

@@ -90,6 +90,12 @@ type Row = {
   trialEndsAt: number | null;
   soloTrialEndsAt?: number | null;
   hasCustomer?: boolean;
+  yearlyTeamBusiness?: boolean;
+  soloCheckedOut?: boolean;
+  cancelsAt?: number | null;
+  interval?: "month" | "year" | null;
+  renewsAt?: number | null;
+  overageDue?: { amountCents: number; months: string[] } | null;
   graceUntil: number | null;
   version: number;
 };
@@ -1710,6 +1716,171 @@ describe("Me.instance.billing and the billing routes", () => {
     );
   });
 
+  it("yearlyTeamBusiness: a GET /tier answer reaches the owner through the parse, never a member; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ version: 30, yearlyTeamBusiness: true });
+    expect(
+      (await getMe(owner.cookie)).instance.billing?.yearlyTeamBusiness,
+    ).toBe(true);
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "yearlyTeamBusiness",
+    );
+    await read({ version: 31, yearlyTeamBusiness: false });
+    expect(
+      (await getMe(owner.cookie)).instance.billing?.yearlyTeamBusiness,
+    ).toBe(false);
+    const { yearlyTeamBusiness: _, ...without } = row;
+    row = { ...without, version: 32 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "yearlyTeamBusiness",
+    );
+  });
+
+  it("soloCheckedOut: a GET /tier answer reaches the owner through the parse, never a member; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    await read({ version: 50, soloCheckedOut: true });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      true,
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
+    );
+    await read({ version: 51, soloCheckedOut: false });
+    expect((await getMe(owner.cookie)).instance.billing?.soloCheckedOut).toBe(
+      false,
+    );
+    const { soloCheckedOut: _, ...without } = row;
+    row = { ...without, version: 52 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "soloCheckedOut",
+    );
+  });
+
+  it("cancelsAt: ms from billing reaches the owner as an ISO date, never a member; null stays null; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const at = Date.UTC(2026, 11, 20);
+    await read({ version: 60, cancelsAt: at });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBe(
+      new Date(at).toISOString(),
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
+    );
+    await read({ version: 61, cancelsAt: null });
+    expect((await getMe(owner.cookie)).instance.billing?.cancelsAt).toBeNull();
+    const { cancelsAt: _, ...without } = row;
+    row = { ...without, version: 62 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "cancelsAt",
+    );
+  });
+
+  it("overageDue (#2246): reaches the owner, never a member; null and absent send nothing", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const one = { amountCents: 4200, months: ["2026-10"] };
+    await read({ version: 40, overageDue: one });
+    expect((await getMe(owner.cookie)).instance.billing?.overageDue).toEqual(
+      one,
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "overageDue",
+    );
+    const many = { amountCents: 11850, months: ["2026-09", "2026-10"] };
+    await read({ version: 41, overageDue: many });
+    expect((await getMe(owner.cookie)).instance.billing?.overageDue).toEqual(
+      many,
+    );
+    await read({ version: 42, overageDue: null });
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "overageDue",
+    );
+    const { overageDue: _, ...without } = row;
+    row = { ...without, version: 43 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "overageDue",
+    );
+  });
+
+  it("interval and renewsAt: reach the owner (renewsAt as an ISO date), never a member; null stays null; absent stays absent", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const at = Date.UTC(2027, 11, 1);
+    await read({ version: 70, interval: "year", renewsAt: at });
+    const b = (await getMe(owner.cookie)).instance.billing;
+    expect(b?.interval).toBe("year");
+    expect(b?.renewsAt).toBe(new Date(at).toISOString());
+    const m = (await getMe(member.cookie)).instance.billing;
+    expect(m).not.toHaveProperty("interval");
+    expect(m).not.toHaveProperty("renewsAt");
+    await read({ version: 71, interval: null, renewsAt: null });
+    const n = (await getMe(owner.cookie)).instance.billing;
+    expect(n?.interval).toBeNull();
+    expect(n?.renewsAt).toBeNull();
+    const { interval: _i, renewsAt: _r, ...without } = row;
+    row = { ...without, version: 72 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    const a2 = (await getMe(owner.cookie)).instance.billing;
+    expect(a2).not.toHaveProperty("interval");
+    expect(a2).not.toHaveProperty("renewsAt");
+  });
+
+  it("yearlyTeamBusiness rides the version rule: a later asOf at the same version updates it; an earlier or equal asOf or a lower version changes nothing; absent reads as off", async () => {
+    const stored = async () =>
+      JSON.parse(
+        (
+          await env.DB.prepare("select value from settings where key = ?")
+            .bind(PLAN_KEY)
+            .first<{ value: string }>()
+        )?.value ?? "null",
+      );
+    const t = Date.now();
+    await cache({ tier: "business", version: 5, yearlyTeamBusiness: false }, t);
+    // (a) same version, later asOf: the flag updates.
+    await cache({ version: 5, yearlyTeamBusiness: true }, t + 1000);
+    expect(await stored()).toMatchObject({
+      version: 5,
+      yearlyTeamBusiness: true,
+    });
+    // (b) same version, earlier or equal asOf: nothing changes.
+    await cache({ version: 5, yearlyTeamBusiness: false }, t + 500);
+    await cache({ version: 5, yearlyTeamBusiness: false }, t + 1000);
+    expect(await stored()).toMatchObject({ yearlyTeamBusiness: true });
+    // (c) a lower version: nothing changes, tier included.
+    await cache(
+      { version: 4, tier: "team", yearlyTeamBusiness: false },
+      t + 5000,
+    );
+    expect(await stored()).toMatchObject({
+      tier: "business",
+      version: 5,
+      yearlyTeamBusiness: true,
+    });
+    // (d) a later asOf with the field absent: the field is gone (reads as off).
+    const { yearlyTeamBusiness: _, ...without } = row;
+    await storePlan(H, { ...without, version: 5, asOf: t + 2000 }, t + 2000);
+    const gone = await stored();
+    expect(gone).not.toHaveProperty("yearlyTeamBusiness");
+    expect(gone).toMatchObject({ tier: "business", version: 5 });
+  });
+
   it("hasCustomer follows the same-version, later-read rule", async () => {
     const t = Date.now();
     await cache({ tier: "business", version: 20, hasCustomer: false }, t);
@@ -1888,7 +2059,7 @@ describe("Me.instance.billing and the billing routes", () => {
     ).not.toHaveProperty("interval");
   });
 
-  it("checkout team and business: yearly needs seats; interval and seats forwarded; bad bodies 400 before billing", async () => {
+  it("checkout team (business is refused, #2404): yearly needs seats; interval and seats forwarded; bad bodies 400 before billing", async () => {
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
     const post = (body: unknown) =>
       send(R.billingCheckout, owner.cookie, { method: "POST", body });
@@ -1918,12 +2089,57 @@ describe("Me.instance.billing and the billing routes", () => {
       interval: "year",
       seats: 7,
     });
-    expect((await post({ tier: "business", interval: "month" })).status).toBe(
-      200,
-    );
-    const last = calls.filter((c) => c.path === "/checkout").at(-1)?.body;
-    expect(last).toMatchObject({ plan: "business", interval: "month" });
-    expect(last).not.toHaveProperty("seats");
+    // #2404: Business has no self-serve checkout; billing is never called.
+    const beforeBiz = n();
+    for (const body of [
+      { tier: "business", interval: "month" },
+      { tier: "business", interval: "year", seats: 3 },
+      { tier: "business" },
+    ]) {
+      const r = await post(body);
+      expect(r.status).toBe(409);
+      expect(await errOf(r)).toMatchObject({ code: "business_contact_only" });
+    }
+    expect(n()).toBe(beforeBiz);
+  });
+
+  it("checkout monthly team sends this month's creator count, counted server side (#2123)", async () => {
+    await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
+    const post = (body: unknown) =>
+      send(R.billingCheckout, owner.cookie, { method: "POST", body });
+    const last = () => calls.filter((c) => c.path === "/checkout").at(-1)?.body;
+    const n = () => calls.filter((c) => c.path === "/checkout").length;
+    // No creators yet this month: 0 (billing bills at least 1).
+    expect((await post({ tier: "team" })).status).toBe(200);
+    expect(last()).toMatchObject({ plan: "team", creators: 0 });
+    // Three this month, one last month (not counted).
+    const month = monthOf(Date.now());
+    await env.DB.prepare(
+      "insert into creator_months (month, user_id, source, first_at) values (?1, 'uA', 'version', 1), (?1, 'uB', 'data', 2), (?1, 'uC', 'version', 3), (?2, 'uD', 'version', 4)",
+    )
+      .bind(month, previousMonth(month))
+      .run();
+    expect((await post({ tier: "team" })).status).toBe(200);
+    expect(last()).toMatchObject({ plan: "team", creators: 3 });
+    // Yearly prepays seats; Solo is not per creator: neither sends creators.
+    expect(
+      (await post({ tier: "team", interval: "year", seats: 7 })).status,
+    ).toBe(200);
+    expect(last()).not.toHaveProperty("creators");
+    expect((await post({ tier: "solo", interval: "month" })).status).toBe(200);
+    expect(last()).not.toHaveProperty("creators");
+    // The count never comes from the request: a body naming creators is 400,
+    // before billing.
+    const before = n();
+    for (const body of [
+      { tier: "team", creators: 1 },
+      { tier: "business", interval: "month", creators: 99 },
+    ]) {
+      const r = await post(body);
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toMatchObject({ code: "bad_request" });
+    }
+    expect(n()).toBe(before);
   });
 
   it("checkout solo is refused (409) on a Team or Business instance, allowed on solo, free and trial", async () => {
@@ -2049,7 +2265,7 @@ describe("Me.instance.billing and the billing routes", () => {
     const checkout = () =>
       send(R.billingCheckout, owner.cookie, {
         method: "POST",
-        body: { tier: "business" },
+        body: { tier: "team" },
       });
     try {
       // Retry, then the session: 200, the same body twice, one backoff.

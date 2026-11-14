@@ -98,7 +98,7 @@ export async function codesKey(
   if (typeof s !== "string" || s.length < MIN_SECRET_LENGTH)
     throw new ApiError(
       "code_unavailable",
-      "Code sign-in is unavailable on this install",
+      "Code login is unavailable on this install",
     );
   return deriveKey(env, label);
 }

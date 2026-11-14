@@ -12,6 +12,7 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
+import { withdrawTargets } from "../src/runtime/comments-store.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import type { AgentAttr } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
@@ -25,6 +26,7 @@ import {
   addReply,
   addThread,
   type CommentWho,
+  listComments,
   setThreadAgent,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
@@ -717,7 +719,7 @@ describe("the publishing agent joins page-wide threads (#1968)", () => {
 });
 
 describe("the thread's agents, removable (#2035)", () => {
-  const list = async (id: string, u: U | null) =>
+  const list = async (id: string, u: { cookie: string } | null) =>
     (await (await api(app, R.comments(id), u?.cookie ?? null)).json()) as {
       threads: Thread[];
     };
@@ -753,7 +755,12 @@ describe("the thread's agents, removable (#2035)", () => {
       await post(s.id, owner, { mentions: [{ key: s.codex }] })
     ).json()) as Thread;
     expect((await stop(s.id, t.id, s.codex, editor)).status).toBe(204);
-    expect((await list(s.id, owner)).threads[0]?.agents).toBeUndefined();
+    expect(
+      (await list(s.id, owner)).threads[0]?.agents?.map((a) => [
+        a.name,
+        a.removed,
+      ]),
+    ).toEqual([["Codex", true]]);
   });
 
   it("a removed agent hears no later reply; an @-mention puts it back", async () => {
@@ -767,14 +774,25 @@ describe("the thread's agents, removable (#2035)", () => {
     bus.clear();
     await reply(s.id, t.id, viewer);
     expect(names()).toEqual(["Pi"]);
-    expect(
-      (await list(s.id, owner)).threads[0]?.agents?.map((a) => a.name),
-    ).toEqual(["Pi"]);
+    // #2174: the removed agent stays listed, marked; the live ones are the others.
+    const after = (await list(s.id, owner)).threads[0]?.agents ?? [];
+    expect(after.filter((a) => !a.removed).map((a) => a.name)).toEqual(["Pi"]);
+    expect(after.filter((a) => a.removed).map((a) => a.name)).toEqual([
+      "Claude",
+    ]);
     // Mentioned again: it is back and hears this one as the mention.
     await reply(s.id, t.id, editor, { mentions: [{ key: s.claude }] });
     expect(
-      (await list(s.id, owner)).threads[0]?.agents?.map((a) => a.name).sort(),
-    ).toEqual(["Claude", "Pi"]);
+      (await list(s.id, owner)).threads[0]?.agents?.map((a) => [
+        a.name,
+        a.removed,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["Claude", undefined],
+        ["Pi", undefined],
+      ]),
+    );
     bus.clear();
     await reply(s.id, t.id, viewer);
     expect(names()).toEqual(["Claude", "Pi"]);
@@ -792,12 +810,126 @@ describe("the thread's agents, removable (#2035)", () => {
     expect(names()).toEqual(["Claude"]);
   });
 
+  it("a removed agent is listed for every member, a viewer-role one included, and for no outsider (#2174)", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    await stop(s.id, t.id, s.claude, owner);
+    for (const u of [owner, editor, viewer]) {
+      const a = (await list(s.id, u)).threads[0]?.agents;
+      expect(a?.map((x) => [x.name, x.removed])).toEqual([["Claude", true]]);
+    }
+    // The owner can still bring it back: canRemove stays true on the removed row.
+    expect((await list(s.id, owner)).threads[0]?.agents?.[0]?.canRemove).toBe(
+      true,
+    );
+    expect((await list(s.id, editor)).threads[0]?.agents?.[0]?.canRemove).toBe(
+      false,
+    );
+  });
+
   it("an agent that is not in the thread is 404", async () => {
     const s = await setup();
     const t = (await (
       await post(s.id, owner, { mentions: [{ key: s.claude }] })
     ).json()) as Thread;
     expect((await stop(s.id, t.id, s.pi, owner)).status).toBe(404);
+  });
+
+  describe("a reply notice the hub refuses gives its spend back (#2197)", () => {
+    /** Fills the thread's reply cap with held notices; returns the last reply's comment id. */
+    const fill = async () => {
+      const s = await setup();
+      const t = (await (
+        await post(s.id, editor, { mentions: [{ key: s.claude }] })
+      ).json()) as Thread;
+      bus.clear();
+      bus.outcome = "held";
+      let last = "";
+      for (let i = 0; i < THREAD_REPLY_NOTICES_MAX; i++) {
+        if (i === THREAD_REPLY_NOTICES_MAX - 1) await age(s.id);
+        last = ((await (await reply(s.id, t.id, viewer)).json()) as Comment).id;
+      }
+      return { s, t, last };
+    };
+    const settle = (
+      id: string,
+      commentId: string,
+      key: string,
+      kind: "mention" | "asker" | "reply" = "reply",
+    ) =>
+      runtimeStub(E, id).commentsTargetSettle({
+        commentId,
+        kind,
+        key,
+        state: "gone",
+      });
+    const sql = <T>(id: string, f: (q: SqlStorage) => T) =>
+      runInDurableObject(
+        runtimeStub(E, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (_i, state) => f(state.storage.sql),
+      );
+
+    it("frees one unit of the cap, once", async () => {
+      const { s, t, last } = await fill();
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX);
+      expect(await settle(s.id, last, s.claude)).toBe(true);
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX - 1);
+      // A repeat settle moves nothing and refunds nothing more.
+      expect(await settle(s.id, last, s.claude)).toBe(false);
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX - 1);
+      await age(s.id);
+      bus.clear();
+      expect((await reply(s.id, t.id, viewer)).status).toBe(201);
+      expect(threadReplies()).toHaveLength(1);
+    });
+
+    it("settling spaced replies gone oldest first refunds each", async () => {
+      const s = await setup();
+      const t = (await (
+        await post(s.id, editor, { mentions: [{ key: s.claude }] })
+      ).json()) as Thread;
+      bus.clear();
+      bus.outcome = "held";
+      const r1 = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+      await age(s.id);
+      const r2 = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+      expect(await counts(s.id)).toBe(2);
+      await settle(s.id, r1.id, s.claude);
+      await settle(s.id, r2.id, s.claude);
+      expect(await counts(s.id)).toBe(0);
+    });
+
+    it("gone then withdrawn does not refund again", async () => {
+      const { s, t, last } = await fill();
+      await settle(s.id, last, s.claude);
+      const before = await counts(s.id);
+      await sql(s.id, (q) =>
+        withdrawTargets(q, t.id, s.claude, [
+          { commentId: last, kind: "reply" },
+        ]),
+      );
+      expect(await counts(s.id)).toBe(before);
+      const st = await sql(
+        s.id,
+        (q) =>
+          q
+            .exec<{ state: string }>(
+              "select state from comment_targets where comment_id = ? and kind = 'reply'",
+              last,
+            )
+            .toArray()[0]?.state,
+      );
+      expect(st).toBe("withdrawn");
+    });
+
+    it("a mention going gone does not touch the reply bound", async () => {
+      const { s, t } = await fill();
+      const root = t.comments[0] as Comment;
+      await settle(s.id, root.id, s.claude, "mention");
+      expect(await counts(s.id)).toBe(THREAD_REPLY_NOTICES_MAX);
+    });
   });
 
   it("the reply carries a delivery line per agent it told", async () => {
@@ -879,6 +1011,25 @@ describe("the thread's agents, removable (#2035)", () => {
         ),
       ).rejects.toMatchObject({ code: "forbidden" });
     expect((await list(s.id, owner)).threads[0]?.agents).toHaveLength(1);
+    // #2174: a removed agent is no more visible to an outsider than a live one.
+    await stop(s.id, t.id, s.claude, owner);
+    expect((await list(s.id, null)).threads[0]?.agents).toBeUndefined();
+    expect((await list(s.id, gr)).threads[0]?.agents).toBeUndefined();
+    expect((await list(s.id, owner)).threads[0]?.agents?.[0]?.removed).toBe(
+      true,
+    );
+    // A capped (restricted) member reading through the service gets no agents, live or removed.
+    const asCapped = await listComments(E, s.id, "open", {
+      userId: viewer.userId,
+      short: null,
+      capped: true,
+    });
+    expect(asCapped.threads[0]?.agents).toBeUndefined();
+    const asMember = await listComments(E, s.id, "open", {
+      userId: viewer.userId,
+      short: null,
+    });
+    expect(asMember.threads[0]?.agents?.[0]?.removed).toBe(true);
   });
 
   it("a third member's @-mention puts back an agent another person removed (by design)", async () => {
@@ -887,12 +1038,17 @@ describe("the thread's agents, removable (#2035)", () => {
       await post(s.id, owner, { mentions: [{ key: s.claude }] })
     ).json()) as Thread;
     expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
-    expect((await list(s.id, owner)).threads[0]?.agents).toBeUndefined();
+    expect((await list(s.id, owner)).threads[0]?.agents?.[0]?.removed).toBe(
+      true,
+    );
     // The editor, a third person, @-mentions it: it is back for everyone.
     await reply(s.id, t.id, editor, { mentions: [{ key: s.claude }] });
     expect(
-      (await list(s.id, viewer)).threads[0]?.agents?.map((a) => a.name),
-    ).toEqual(["Claude"]);
+      (await list(s.id, viewer)).threads[0]?.agents?.map((a) => [
+        a.name,
+        a.removed,
+      ]),
+    ).toEqual([["Claude", undefined]]);
     bus.clear();
     await reply(s.id, t.id, viewer);
     expect(names()).toEqual(["Claude"]);

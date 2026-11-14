@@ -160,6 +160,21 @@ async function startMocks() {
       http.post("*/api/v1/artifacts/:id/move", conflict),
     );
   }
+  // ?mock=create-503: creating an artifact answers 503 temporarily_unavailable (the upload itself works).
+  if (params.get("mock") === "create-503")
+    extra.push(
+      http.post("*/api/v1/artifacts", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "temporarily_unavailable",
+              message: "Try again shortly",
+            },
+          },
+          { status: 503, headers: { "Retry-After": "5" } },
+        ),
+      ),
+    );
   // ?mock=name: no display name yet (suggested "Ada Lovelace"); after a PATCH the shared mock answers.
   if (params.get("mock") === "name") {
     let named = false;
@@ -176,6 +191,25 @@ async function startMocks() {
       ),
       http.patch("*/api/v1/me", () => {
         named = true;
+        return undefined;
+      }),
+    );
+  }
+  // ?mock=agent-name (#2277): a stored name that reads as an agent's, so others see the email; after a PATCH the shared mock answers.
+  if (params.get("mock") === "agent-name") {
+    let saved = false;
+    extra.push(
+      http.get("*/api/v1/me", () =>
+        saved
+          ? undefined
+          : HttpResponse.json({
+              ...fixtures.me,
+              displayName: "Ada's agent",
+              nameHiddenAs: "email",
+            }),
+      ),
+      http.patch("*/api/v1/me", () => {
+        saved = true;
         return undefined;
       }),
     );
@@ -454,10 +488,52 @@ async function startMocks() {
       // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
       hosted: parseHostedParam(params.get("hosted")),
       events,
+      // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
+      // &ticks=connect,publish,comment sets how far it is; &opened=1 skips the first-open redirect.
+      welcome:
+        params.get("mock") === "welcome"
+          ? {
+              agentConnected: params.get("ticks")?.includes("connect"),
+              published: params.get("ticks")?.includes("publish"),
+              commented: params.get("ticks")?.includes("comment"),
+              opened: params.get("opened") === "1",
+            }
+          : false,
       // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
       commentAsks: params.get("mock") === "asks",
+      // ?mock=deciders (#2381): asks in each decider state.
+      commentDeciders: params.get("mock") === "deciders",
+      // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
+      commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
+        params.get("passkey") ?? "",
+      )
+        ? (params.get("passkey") as
+            | "ok"
+            | "none"
+            | "cooling"
+            | "expired"
+            | "many")
+        : undefined,
+      // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
+      passkeys:
+        params.get("mock") === "passkey-cooling"
+          ? "cooling"
+          : params.get("mock") === "passkey-usable"
+            ? "usable"
+            : params.get("mock") === "passkey-pending"
+              ? "pending"
+              : "none",
       // ?mock=agents (#1822): agent-authored comments, linked and not.
       commentAgents: params.get("mock") === "agents",
+      // ?mock=pins and ?mock=pins-pdf (#2019): the "Landing page" is an image (or a pdf) with pins on it.
+      commentPins:
+        params.get("mock") === "pins"
+          ? "image"
+          : params.get("mock") === "pins-pdf"
+            ? "pdf"
+            : undefined,
+      // ?mock=markdown (#2338): agent comments with markdown and a hostile one.
+      commentMarkdown: params.get("mock") === "markdown",
       // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
       commentersSignedIn: params.get("mock") === "signed-out",
       // ?mock=bus (#1293): the bus is on, with machines and agents.

@@ -161,6 +161,10 @@ export type CanCtx = {
 export const capsReads = (cap: CapReason | null | undefined): boolean =>
   cap === "guest" || cap === "restricted";
 
+/** The instance owner (the one org owner), by role. */
+export const isInstanceOwner = (u: { role: Role }): boolean =>
+  u.role === "owner";
+
 /**
  * Hosted billing: who a plan lock caps (read-only): everyone but the org
  * owner, whose own artifacts stay writable.

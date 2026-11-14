@@ -5,7 +5,7 @@ import {
   pinAnchorSchema,
   textAnchorSchema,
 } from "./anchor.js";
-import { IdSchema } from "./schemas.js";
+import { IdSchema, PasskeyAssertionSchema } from "./schemas.js";
 
 // Comments REST contract (#682): /api/v1/artifacts/:id/comments. The shell and
 // the MSW mocks build against these; the Backend implements the same shapes.
@@ -54,10 +54,29 @@ const key = z.string().regex(COMMENT_KEY_RE);
 export const KeyRefSchema = z.object({ key });
 export type KeyRef = z.infer<typeof KeyRefSchema>;
 
+/**
+ * #2263: the risky action an option carries out, named by the agent that
+ * wrote the ask. The server turns the actions an ask names, and the member's
+ * "ask for a passkey to approve" switches, into `confirm`. `command` is
+ * running a command on the member's computer (always confirmed).
+ */
+export const ASK_ACTIONS = [
+  "merge",
+  "deploy",
+  "delete",
+  "share",
+  "public",
+  "command",
+] as const;
+export const AskActionSchema = z.enum(ASK_ACTIONS);
+export type AskAction = z.infer<typeof AskActionSchema>;
+
 export const AskOptionSchema = z.object({
   id: key,
   label: z.string().min(1).max(ASK_LABEL_MAX),
   detail: z.string().max(ASK_DETAIL_MAX).optional(),
+  /** #2263: the risky action this option carries out. Only the author sets it; a pick on an ask whose options name an action the picker's switches cover needs their passkey. */
+  action: AskActionSchema.optional(),
 });
 export type AskOption = z.infer<typeof AskOptionSchema>;
 
@@ -88,6 +107,19 @@ const recommendedMsg = {
   path: ["recommended", "optionId"],
 };
 
+/** #2381: one person's current pick on an ask: a weigh-in, or the decision when `by` is the decider. */
+export const AskPickSchema = z.object({
+  by: CommentAuthorSchema,
+  optionId: key,
+  at: z.string(),
+  /** Picked in the web app (a browser session). */
+  typed: z.boolean(),
+  verified: z.literal("passkey").optional(),
+  /** The picker is a guest-role member: input only, never a decider. Outsiders see the mark, not the role. */
+  guest: z.boolean().optional(),
+});
+export type AskPick = z.infer<typeof AskPickSchema>;
+
 /** An ask on a comment (#1535). `closed` means the thread is resolved. */
 export const CommentAskSchema = z
   .object({
@@ -95,6 +127,17 @@ export const CommentAskSchema = z
     options: askOptions,
     recommended: askRecommended,
     to: z.array(CommentAuthorSchema),
+    /** #2381: who decides. Absent on a client built before it: read the asker's own user. */
+    decider: CommentAuthorSchema.optional(),
+    /** #2381: set when the asker named someone other than its own user as decider: the asker, as an author. */
+    chosenBy: CommentAuthorSchema.optional(),
+    /** #2381: the viewer's part: they decide, weigh in, or neither (absent). */
+    role: z.enum(["decide", "weigh"]).optional(),
+    /** #2381: the asker's own user may say "I'll decide this" (decider is someone else, no decision yet). */
+    canTakeBack: z.boolean().optional(),
+    /** #2381: the latest pick of each person, oldest first. The decider's is the decision's source. */
+    picks: z.array(AskPickSchema).optional(),
+    /** The decision: the decider's pick (before #2381, the last pick of anyone asked). */
     answer: z
       .object({
         optionId: key,
@@ -102,6 +145,8 @@ export const CommentAskSchema = z
         at: z.string(),
         /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
         typed: z.boolean(),
+        /** #2263: set by the server when a passkey assertion for this pick verified. */
+        verified: z.literal("passkey").optional(),
         /**
          * #1797: your user's yes, computed for the caller by the server: typed,
          * picked by the caller's own person, on an ask the caller's own person
@@ -111,6 +156,8 @@ export const CommentAskSchema = z
       })
       .optional(),
     closed: z.boolean(),
+    /** #2263: a pick needs the picker's passkey (POST R.commentAnswerChallenge, then R.commentAnswer with the assertion). Set by the server when the ask is created, from its options' actions and the addressees' switches; never by a client, never removed by an edit. */
+    confirm: z.literal("passkey").optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type CommentAsk = z.infer<typeof CommentAskSchema>;
@@ -120,7 +167,9 @@ export const MentionDeliverySchema = z.enum([
   "queued",
   "seen",
   "gone",
+  "withdrawn",
 ]);
+export type MentionDelivery = z.infer<typeof MentionDeliverySchema>;
 /** #1890: a mentioned or asked agent's identity fields, as an author's (CommentAuthorSchema). Absent: unknown. */
 const partyFace = {
   linked: z.boolean().optional(),
@@ -135,9 +184,15 @@ export const CommentMentionSchema = z.object({
   ...partyFace,
   /** The person the agent acts for, set by the server (#1822). */
   for: z.string().optional(),
-  delivery: MentionDeliverySchema,
+  /** Members only (#2004): an outsider gets no delivery state of an agent. */
+  delivery: MentionDeliverySchema.optional(),
 });
 export type CommentMention = z.infer<typeof CommentMentionSchema>;
+/** A thread agent a reply also told: members only, so the delivery is always there. */
+export const CommentNotifiedSchema = CommentMentionSchema.required({
+  delivery: true,
+});
+export type CommentNotified = z.infer<typeof CommentNotifiedSchema>;
 
 export const CommentSchema = z.object({
   id: z.string(),
@@ -155,7 +210,7 @@ export const CommentSchema = z.object({
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
   /** #2035: the thread's agents a person's reply also told, with delivery. Members only. */
-  notified: z.array(CommentMentionSchema).optional(),
+  notified: z.array(CommentNotifiedSchema).optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -167,6 +222,8 @@ export const ThreadAgentSchema = z.object({
   /** The person the agent acts for. */
   for: z.string().optional(),
   canRemove: z.boolean(),
+  /** #2174: a person took it out of this thread; it gets no replies until an @-mention or Undo. Absent when it is notified. */
+  removed: z.boolean().optional(),
 });
 export type ThreadAgent = z.infer<typeof ThreadAgentSchema>;
 
@@ -225,6 +282,8 @@ export const AskInputSchema = z
     options: optionRules(AskInputOptionSchema),
     recommended: askRecommended,
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
+    /** #2381: a person (member who can edit the page) who decides. Default: the asker's own user. Never on an ask that names an action. */
+    decider: KeyRefSchema.optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
@@ -251,7 +310,7 @@ export const ReplyBodySchema = z.object({
   /**
    * Address the reply to the thread root's ask author (#1614): anyone who may
    * reply, viewers included. 400 not_an_ask when the root has no ask or its
-   * author is not an agent; 400 with mentions or assign. Its agents get a
+   * author is not an agent; 400 when combined with mentions or ask. Its agents get a
    * fixed notice; `mentions` on the returned comment says who and how it went.
    */
   toAsker: z.boolean().optional(),
@@ -259,8 +318,22 @@ export const ReplyBodySchema = z.object({
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
 /** POST R.commentAnswer body. */
-export const AnswerBodySchema = z.object({ optionId: key });
+export const AnswerBodySchema = z.object({
+  optionId: key,
+  /** #2263: the WebAuthn assertion (PublicKeyCredential.toJSON()) for the challenge of R.commentAnswerChallenge; required on an ask with confirm "passkey". */
+  assertion: PasskeyAssertionSchema.optional(),
+});
 export type AnswerBody = z.infer<typeof AnswerBodySchema>;
+
+/** POST R.commentAskDecider body (#2381): the asker's own user takes the decision back. */
+export const TakeBackBodySchema = z.object({ takeBack: z.literal(true) });
+export type TakeBackBody = z.infer<typeof TakeBackBodySchema>;
+/** POST R.commentAnswerChallenge response (#2263): WebAuthn PublicKeyCredentialRequestOptionsJSON. */
+export const AnswerChallengeSchema = z.object({
+  options: z.object({ challenge: z.string() }).passthrough(),
+  expiresAt: z.string(),
+});
+export type AnswerChallenge = z.infer<typeof AnswerChallengeSchema>;
 
 /** GET R.artifactAgents: the agents that follow or publish to the artifact. */
 export const ArtifactAgentSchema = z.object({

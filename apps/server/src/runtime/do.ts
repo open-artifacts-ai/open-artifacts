@@ -49,14 +49,18 @@ import {
 } from "../services/thumbs.js";
 import {
   addParticipants,
+  addPick,
+  askAuthors,
   askerNoticeDue,
   askRow,
   bodyOk,
   COMMENTS_SCHEMA,
   claimEmail,
+  clearDecider,
   deleteExtras,
   getComment,
   getThread,
+  heldTargets,
   insertComment,
   insertExtras,
   insertThread,
@@ -64,12 +68,15 @@ import {
   type NewExtras,
   openCount,
   type ParticipantRow,
+  PICKS_PER_PERSON_MAX,
   participantsOf,
+  pickCount,
   recordReplyTargets,
   refundAsker,
   refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
+  refundThreadReplyCount,
   replyCount,
   rootId,
   type StoredActor,
@@ -86,6 +93,7 @@ import {
   threadExists,
   threadStatus,
   touchThread,
+  withdrawTargets,
 } from "./comments-store.js";
 import {
   INDEX_REPORT_MS,
@@ -569,6 +577,26 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "select name from pragma_table_info('comment_participants')",
         )
         .toArray();
+      // #2263: comment_asks.confirm, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "confirm")
+      )
+        sql.exec("alter table comment_asks add column confirm text");
+      // #2381: comment_asks.decider, for DOs created before it (the picks table is in the schema).
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "decider")
+      )
+        sql.exec("alter table comment_asks add column decider text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -2154,34 +2182,142 @@ export class ArtifactRuntime extends DurableObject<Env> {
     by: StoredActor;
     optionId: string;
     rate: string;
-  }): { comment: StoredComment; unchanged: boolean } {
+    /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
+    verified?: "passkey";
+    /** #2381: the caller's own switches ask for a passkey on this ask though it carries no `confirm` (an older ask, or a switch turned on later): a decider's pick needs one. */
+    needsPasskey?: boolean;
+    /** #2381: the caller may edit the page (a decider must still). */
+    canDecide: boolean;
+    /** #2381: the caller is a guest-role member (marked on a weigh-in). */
+    guest: boolean;
+  }): { comment: StoredComment; unchanged: boolean; decided: boolean } {
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       this.countComment(a.rate, false);
       const r = askRow(this.sql, a.threadId, a.commentId);
       if (!r) fail("not_found", "Not found");
+      const author = r.author;
+      const decider = r.ask.decider ?? author;
+      const isDecider = a.by.kind === "user" && a.by.ref === decider;
       const asked =
         a.by.kind === "user" &&
         r.ask.to.some(
           (p) => (p.kind === "user" ? p.key : p.owner) === a.by.ref,
         );
-      if (!asked) fail("forbidden", "Only the people asked can answer");
+      if (!asked && !isDecider)
+        fail("forbidden", "Only the people asked can answer");
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
+      // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
+      const risky =
+        r.ask.confirm === "passkey" || r.ask.options.some((o) => o.action);
+      if (risky && !isDecider)
+        fail(
+          "forbidden",
+          "Only the person this was asked of can answer a risky ask",
+        );
+      if (isDecider && !a.canDecide)
+        fail(
+          "not_decider",
+          "You can no longer decide this: you cannot edit the page",
+        );
+      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
+      if (r.ask.confirm === "passkey" || (isDecider && a.needsPasskey)) {
+        if (a.verified !== "passkey")
+          fail("passkey_required", "This pick needs your passkey");
+        if (r.ask.answer?.optionId === a.optionId)
+          fail("already_answered", "This ask is answered with that option");
+      }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
-      const unchanged = r.ask.answer?.optionId === a.optionId;
+      const mine = [...(r.ask.history ?? [])]
+        .reverse()
+        .find((p) => p.by.ref === a.by.ref);
+      const typedNow =
+        a.by.kind === "user" && a.by.typed === true && !a.by.agent;
+      // The decider's repeat is a no-op only when it would change neither the pick
+      // nor the decision (same option, same typed and verified): else both are written.
+      const unchanged = isDecider
+        ? mine?.optionId === a.optionId &&
+          r.ask.answer?.optionId === a.optionId &&
+          (r.ask.answer.by.kind === "user" &&
+            r.ask.answer.by.typed === true) === typedNow &&
+          (r.ask.answer.verified ?? null) === (a.verified ?? null)
+        : mine?.optionId === a.optionId;
       const now = this.iso();
-      setAnswer(this.sql, a.commentId, {
-        optionId: a.optionId,
-        by: a.by,
-        at: now,
-      });
-      touchThread(this.sql, a.threadId, now);
+      // The cap is for weigh-ins: a decision is never refused by it.
+      if (
+        !unchanged &&
+        !isDecider &&
+        a.by.kind === "user" &&
+        pickCount(this.sql, a.commentId, a.by.ref) >= PICKS_PER_PERSON_MAX
+      )
+        fail(
+          "rate_limited",
+          "You have changed your view on this ask too many times.",
+        );
+      if (!unchanged) {
+        // An answer from before deciders becomes the first pick on record.
+        if (r.legacy && r.ask.history?.[0])
+          addPick(this.sql, a.commentId, r.ask.history[0]);
+        addPick(this.sql, a.commentId, {
+          optionId: a.optionId,
+          by: a.by,
+          at: now,
+          ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
+          ...(a.guest ? { guest: true } : {}),
+        });
+        if (isDecider)
+          setAnswer(this.sql, a.commentId, {
+            optionId: a.optionId,
+            by: a.by,
+            at: now,
+            ...(a.verified === "passkey"
+              ? { verified: "passkey" as const }
+              : {}),
+          });
+      }
+      if (!unchanged) touchThread(this.sql, a.threadId, now);
       return {
         comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
         unchanged,
+        decided: isDecider,
       };
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /**
+   * #2381: the asker's own user takes the decision back from the person the
+   * asking agent named. Not found without an ask; forbidden unless the caller
+   * is the ask's own user; conflict once closed; already_decided once the
+   * decider picked; bad_request when the asker already decides.
+   */
+  commentsTakeBack(a: {
+    threadId: string;
+    commentId: string;
+    by: StoredActor;
+    rate: string;
+  }): StoredComment {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      this.countComment(a.rate, false);
+      const r = askRow(this.sql, a.threadId, a.commentId);
+      if (!r) fail("not_found", "Not found");
+      if (a.by.kind !== "user" || a.by.ref !== r.author)
+        fail(
+          "forbidden",
+          "Only the person who asked can take the decision back",
+        );
+      if (r.status === "resolved") fail("conflict", "This ask is closed");
+      if (!r.ask.decider || r.ask.decider === a.by.ref)
+        fail("bad_request", "You already decide this");
+      if (r.ask.answer) fail("already_decided", "This is already decided");
+      if (!clearDecider(this.sql, a.commentId, r.ask.decider))
+        fail("already_decided", "This is already decided");
+      touchThread(this.sql, a.threadId, this.iso());
+      return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
     });
     this.broadcastComments();
     return out;
@@ -2220,6 +2356,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // A refused asker notice gives the asker bound back (#1614).
       if (m && a.kind === "asker" && a.state === "gone")
         refundAskerIfAllGone(this.sql, a.commentId);
+      // A refused thread-reply notice gives its per-key spend back (#2197).
+      // Only queued->gone moves, so a repeat settle never refunds twice.
+      if (m && a.kind === "reply" && a.state === "gone") {
+        const c = this.sql
+          .exec<{ threadId: string; at: string }>(
+            "select thread_id as threadId, created_at as at from comments where id = ?",
+            a.commentId,
+          )
+          .toArray()[0];
+        if (c) refundThreadReplyCount(this.sql, c.threadId, a.key, c.at);
+      }
       return m;
     });
     if (moved) this.broadcastComments();
@@ -2303,6 +2450,37 @@ export class ArtifactRuntime extends DurableObject<Env> {
     );
     if (ok) this.broadcastComments();
     return ok;
+  }
+
+  /** #2175: this thread's targets for `key` still held. */
+  commentsHeldTargets(a: {
+    threadId: string;
+    key: string;
+  }): { commentId: string; kind: "mention" | "asker" | "reply" }[] {
+    this.ensureSchema();
+    return heldTargets(this.sql, a.threadId, a.key);
+  }
+
+  /** #2240: the ask comments of a thread with their authors. */
+  commentsAskAuthors(a: { threadId: string }): {
+    commentId: string;
+    author: StoredActor;
+  }[] {
+    this.ensureSchema();
+    return askAuthors(this.sql, a.threadId);
+  }
+
+  /** #2175: marks the targets the hub withdrew and gives back their spends. */
+  commentsTargetsWithdraw(a: {
+    threadId: string;
+    key: string;
+    targets: { commentId: string; kind: "mention" | "asker" | "reply" }[];
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      withdrawTargets(this.sql, a.threadId, a.key, a.targets),
+    );
+    this.broadcastComments();
   }
 
   /** #2035: records who a person's reply also told, and how it went; returns the comment. */
@@ -2521,6 +2699,7 @@ type RpcMethods =
   | "commentsAdd"
   | "commentsReply"
   | "commentsAnswer"
+  | "commentsTakeBack"
   | "commentsTargetStates"
   | "commentsTargetSettle"
   | "commentsAskerRefund"
@@ -2530,6 +2709,9 @@ type RpcMethods =
   | "commentsThreadReplyRefund"
   | "commentsParticipants"
   | "commentsParticipantSet"
+  | "commentsHeldTargets"
+  | "commentsAskAuthors"
+  | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
   | "commentsStatus"
   | "commentsEdit"
