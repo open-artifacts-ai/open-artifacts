@@ -2061,6 +2061,7 @@ export async function takeBackAsk(
       c.ask.to,
       c.author.ref,
       deciderOf(before.ask, before.author),
+      c.ask.confirm === "passkey" || c.ask.options.some((o) => o.action),
     );
   return commentView(env, c, viewer);
 }

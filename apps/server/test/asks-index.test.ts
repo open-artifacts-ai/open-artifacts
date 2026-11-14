@@ -689,6 +689,24 @@ describe("taking a decision back (#2527)", () => {
     });
   });
 
+  it("on a risky ask the old decider's row goes even when asked", async () => {
+    const s = await decided([reader], other);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec(
+          "update comment_asks set confirm = 'passkey' where comment_id = ?",
+          s.cid,
+        );
+      },
+    );
+    expect((await byWho(s.id))[other.userId]).toBeDefined();
+    expect((await takeBack(s, owner)).status).toBe(200);
+    const by = await byWho(s.id);
+    expect(by[other.userId]).toBeUndefined();
+    expect(by[owner.userId]).toMatchObject({ open: 1 });
+  });
+
   it("a refused take back changes no rows", async () => {
     const s = await decided([reader], other);
     const before = JSON.stringify(await byWho(s.id));

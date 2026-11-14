@@ -90,7 +90,7 @@ export const indexWeighed = (
 /**
  * #2527: the asker took the decision back. The asker's row is open (they
  * decide now); the old decider's row goes unless they are still an addressee
- * (then it stays as it is: open, or closed by their own weigh-in).
+ * (then it stays as it is: open, or closed by their own weigh-in). On a risky ask it always goes.
  */
 export const indexTakenBack = (
   env: Env,
@@ -100,11 +100,14 @@ export const indexTakenBack = (
   to: StoredParty[],
   asker: string,
   oldDecider: string,
+  /** A confirm or action ask: only the decider has a row, so the old decider's goes even if asked. */
+  risky = false,
 ) =>
   guarded("take_back", artifactId, () =>
     env.DB.batch([
       stmt(env.DB, INSERT).bind(artifactId, threadId, commentId, asker, 1, 0),
-      ...(oldDecider !== asker && !addressees(to).includes(oldDecider)
+      ...(oldDecider !== asker &&
+      (risky || !addressees(to).includes(oldDecider))
         ? [
             stmt(
               env.DB,
