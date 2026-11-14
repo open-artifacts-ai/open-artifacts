@@ -105,7 +105,12 @@ it("publish, new version and index alarm write the #248 row counts", async () =>
 it("a Google login writes the user touch plus the auth.signin audit row", async () => {
   const sub = `sub-${crypto.randomUUID()}`;
   const email = uniq("rows-signin");
-  await seedUser(email, "member", { googleSub: sub });
+  const uid = await seedUser(email, "member", { googleSub: sub });
+  // A returning member: a never-seen row is an invite, whose first sign-in
+  // also writes invite.accept.
+  await env.DB.prepare("update users set last_seen_at = 1 where id = ?")
+    .bind(uid)
+    .run();
   rows.n = 0;
   const r = await admit(counted, authConfig(direct()), {
     provider: "google",
