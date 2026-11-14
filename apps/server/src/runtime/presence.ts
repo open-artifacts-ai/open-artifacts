@@ -68,6 +68,8 @@ export const SECOND_PASS_MS = LATER_PASSES_MS[0];
  * such a hub's sockets (BusHub.closeAll) instead of an artifact's.
  */
 export const BUS_INDEX_PREFIX = "bus:";
+/** #1100: a doc room's presence key is this prefix plus the artifact id. */
+export const DOC_PRESENCE_PREFIX = "doc:";
 /**
  * #1299: a bus hub's daemon sockets are long-lived and hibernate, so its row
  * must outlive INDEX_WINDOW_MS (the hub reports on accept, not on a timer).
@@ -160,6 +162,17 @@ export class UserPresence extends DurableObject<Env> {
         closeAll(reason: string, kind: BusCloseKind): Promise<number>;
       };
       return hub.closeAll(reason, busCloseKind(reason));
+    }
+    if (artifactId.startsWith(DOC_PRESENCE_PREFIX)) {
+      // #1100: a doc room (docs/room.ts), keyed "doc:{artifact id}".
+      const rooms = env.DOC_ROOM;
+      if (!rooms) return Promise.resolve(0);
+      const room = rooms.get(
+        rooms.idFromName(artifactId.slice(DOC_PRESENCE_PREFIX.length)),
+      ) as unknown as ActorCloser;
+      return actor === null
+        ? room.closeAllSockets(reason)
+        : room.closeActor(actor, reason);
     }
     const ns = env.ARTIFACT_RUNTIME;
     const s = ns.get(ns.idFromName(artifactId)) as unknown as ActorCloser;
