@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.182.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.181.0...v0.182.0) (2026-11-14)
+
+
+### Features
+
+* **shared:** inbox proposals replace machine approvals ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512)) ([#2522](https://github.com/open-artifacts-ai/open-artifacts/issues/2522)) ([3cc190d](https://github.com/open-artifacts-ai/open-artifacts/commit/3cc190d228a1bb29493ec182666ed2bda31ed60d))
+
 ## [0.181.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.180.1...v0.181.0) (2026-11-14)
 
 
