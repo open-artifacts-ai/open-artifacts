@@ -14,6 +14,8 @@ import {
 import { X } from "lucide-react";
 import { type ReactNode, useEffect, useRef } from "react";
 import { TabStrip } from "../../layout/TabStrip";
+import { useCommentsApi } from "../comments/useComments";
+import { useWide } from "../comments/useWide";
 import { TXT } from "../ui";
 import { Details } from "./Details";
 import { Share } from "./Share";
@@ -62,9 +64,15 @@ export function SidePanel({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const cmt = useCommentsApi();
   const tabs = PANEL_TABS.filter((t) =>
     t === "comments" ? comments !== undefined : authed,
   );
+  // #2381: Decisions joins the row after Comments under 960px (wider, the comments body has its own tabs).
+  const wide = useWide();
+  const withDecisions = comments !== undefined && !wide;
+  const shown =
+    tab === "comments" && cmt.view === "decisions" ? "decisions" : tab;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   // Focus moves to the active tab's search, else the active tab, on open (the
@@ -134,43 +142,64 @@ export function SidePanel({
         </Tooltip>
       </TooltipProvider>
       <Tabs
-        value={tab}
-        onValueChange={(t) => isPanelTab(t) && onTab(t)}
+        value={shown}
+        onValueChange={(t) => {
+          if (t === "decisions") {
+            cmt.setView("decisions");
+            onTab("comments");
+          } else if (isPanelTab(t)) {
+            if (t === "comments") cmt.setView("comments");
+            onTab(t);
+          }
+        }}
         className="min-h-0 flex-1 gap-0"
       >
         {/* The tabs end before the close button (mr-9) and scroll sideways
             when the panel is too narrow for all four, never running under it. */}
         <div className="px-4 pt-[11px]">
           <div className="border-b border-border">
-            <TabStrip tab={tab} count={tabs.length}>
+            <TabStrip tab={shown} count={tabs.length + (withDecisions ? 1 : 0)}>
               <TabsList
                 variant="line"
                 className="flex h-auto w-auto justify-start group-data-[orientation=horizontal]/tabs:h-auto gap-0 overflow-x-auto overflow-y-hidden border-0 p-0 pb-[5px] [scrollbar-width:none]"
               >
-                {tabs.map((t) => (
-                  <TabsTrigger
-                    key={t}
-                    value={t}
-                    className={`h-[34px] flex-none rounded-sm px-2 focus-visible:-outline-offset-2 ${TXT} ${PROGRAMMATIC}`}
-                    aria-label={
-                      t === "comments" && commentsCount
-                        ? `Comments, ${commentsCount} open`
-                        : undefined
-                    }
-                  >
-                    {LABELS[t]}
-                    {/* A space: the visible "Comments 3" is inside the name "Comments, 3 open". */}
-                    {t === "comments" && !!commentsCount && " "}
-                    {t === "comments" && !!commentsCount && (
-                      <span
-                        data-tab-count=""
-                        className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground"
-                      >
-                        {commentsCount}
-                      </span>
-                    )}
-                  </TabsTrigger>
-                ))}
+                {tabs.flatMap((t) => {
+                  const trigger = (v: string) => (
+                    <TabsTrigger
+                      key={v}
+                      value={v}
+                      className={`h-[34px] flex-none rounded-sm px-2 focus-visible:-outline-offset-2 ${TXT} ${PROGRAMMATIC}`}
+                      aria-label={
+                        v === "comments" && commentsCount
+                          ? `Comments, ${commentsCount} open`
+                          : undefined
+                      }
+                    >
+                      {v === "decisions" ? "Decisions" : LABELS[t]}
+                      {/* A space: the visible "Comments 3" is inside the name "Comments, 3 open". */}
+                      {v === "comments" && !!commentsCount && " "}
+                      {v === "comments" && !!commentsCount && (
+                        <span
+                          data-tab-count=""
+                          className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground"
+                        >
+                          {commentsCount}
+                        </span>
+                      )}
+                      {v === "decisions" && !cmt.loading && (
+                        <span
+                          data-decisions-count=""
+                          className="ml-1 font-normal text-muted-foreground"
+                        >
+                          {cmt.decisions.length}
+                        </span>
+                      )}
+                    </TabsTrigger>
+                  );
+                  return t === "comments" && withDecisions
+                    ? [trigger(t), trigger("decisions")]
+                    : [trigger(t)];
+                })}
               </TabsList>
             </TabStrip>
           </div>
@@ -186,13 +215,14 @@ export function SidePanel({
             </div>
           </TabsContent>
         )}
-        {comments !== undefined && (
-          <TabsContent value="comments" className="min-h-0">
-            <ScrollArea className="h-full [&>[data-slot=scroll-area-viewport]>div]:!block">
-              {comments}
-            </ScrollArea>
-          </TabsContent>
-        )}
+        {comments !== undefined &&
+          (["comments", "decisions"] as const).map((v) => (
+            <TabsContent key={v} value={v} className="min-h-0">
+              <ScrollArea className="h-full [&>[data-slot=scroll-area-viewport]>div]:!block">
+                {comments}
+              </ScrollArea>
+            </TabsContent>
+          ))}
         {(
           [
             ["share", <Share key="share" artifact={artifact} />],

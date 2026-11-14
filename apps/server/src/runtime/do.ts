@@ -597,6 +597,33 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "decider")
       )
         sql.exec("alter table comment_asks add column decider text");
+      // #2381 S2: comment_ask_picks.decision (made as the decider), for DOs created before it.
+      // Backfill: a pick by the person who decides (the named decider, else the asker) was a decision.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_ask_picks')",
+          )
+          .toArray()
+          .some((c) => c.name === "decision")
+      ) {
+        sql.exec(
+          "alter table comment_ask_picks add column decision integer not null default 0",
+        );
+        sql.exec(`update comment_ask_picks set decision = 1 where user_id = coalesce(
+          (select a.decider from comment_asks a where a.comment_id = comment_ask_picks.comment_id),
+          (select json_extract(c.author, '$.ref') from comments c where c.id = comment_ask_picks.comment_id))`);
+      }
+      // #2323: comment_asks.replaces, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "replaces")
+      )
+        sql.exec("alter table comment_asks add column replaces text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -2266,6 +2293,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           at: now,
           ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
           ...(a.guest ? { guest: true } : {}),
+          ...(isDecider ? { decision: true as const } : {}),
         });
         if (isDecider)
           setAnswer(this.sql, a.commentId, {

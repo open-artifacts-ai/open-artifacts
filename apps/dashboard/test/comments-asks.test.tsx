@@ -956,6 +956,315 @@ describe("#2381 a pick that needs the decider's own passkey", () => {
   });
 });
 
+describe("#2381 S2 the Decisions tab", () => {
+  const person = (id: string, name: string, me = false) => ({
+    kind: "user" as const,
+    id,
+    name,
+    me,
+  });
+  const maya = person("maya", "Maya");
+  const sam = person("sam", "Sam");
+  const priya = person("priya", "Priya");
+  const decided = (
+    key: string,
+    question: string,
+    at: string,
+    over: object = {},
+    askOver: object = {},
+  ) => {
+    const t = askThread(
+      { id: `t-${key}` },
+      {
+        question,
+        to: [maya, sam, priya],
+        decider: maya,
+        picks: [],
+        answer: {
+          optionId: "b",
+          by: maya,
+          at,
+          typed: true,
+          yes: false,
+        },
+        ...askOver,
+      },
+    ) as ReturnType<typeof askThread> & { comments: { id: string }[] };
+    t.comments[0].id = `c-${key}`;
+    return Object.assign(t, over);
+  };
+  const open = async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("tab", { name: /Decisions/ }));
+    return c;
+  };
+
+  it("two tabs with counts; Decisions lists decided asks newest first and hides the composer", async () => {
+    serveThreads(() => [
+      askThread({}, {}),
+      decided("old", "Older question?", "2026-11-05T09:00:00Z"),
+      decided("new", "Newer question?", "2026-11-05T12:00:00Z"),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const tabs = await within(c).findAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/Comments/), "Decisions2"]),
+    );
+    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(c).getByRole("tab", { name: /Decisions/ }));
+    const rows = c.querySelectorAll("[data-decision]");
+    expect([...rows].map((r) => r.getAttribute("data-decision"))).toEqual([
+      "c-new",
+      "c-old",
+    ]);
+    expect(within(c).getByRole("tab", { name: /Decisions/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(within(c).queryByText(/^Show resolved/)).toBeNull();
+    expect(
+      within(c).queryByRole("button", { name: /ask.* for you/ }),
+    ).toBeNull();
+  });
+
+  it("arrow keys move between the tabs", async () => {
+    serveThreads(() => [decided("a", "Q?", "2026-11-05T09:00:00Z")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const first = await within(c).findByRole("tab", { name: /Comments/ });
+    fireEvent.keyDown(first, { key: "ArrowRight" });
+    expect(within(c).getByRole("tab", { name: /Decisions/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("an arrow key on a tab never throws when the pane goes away before focus moves", async () => {
+    const errors: unknown[] = [];
+    const on = (e: PromiseRejectionEvent | ErrorEvent) => errors.push(e);
+    window.addEventListener("error", on);
+    serveThreads(() => [decided("a", "Q?", "2026-11-05T09:00:00Z")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const first = await within(c).findByRole("tab", { name: /Comments/ });
+    fireEvent.keyDown(first, { key: "ArrowRight" });
+    cleanup();
+    await new Promise((r) => setTimeout(r, 0));
+    window.removeEventListener("error", on);
+    expect(errors).toEqual([]);
+  });
+
+  it("a row reads 'Maya decided', the weigh-ins without names, the time and the asker", async () => {
+    serveThreads(() => [
+      decided(
+        "a",
+        "Which?",
+        "2026-11-05T09:00:00Z",
+        {},
+        {
+          picks: [
+            { by: sam, optionId: "b", at: "x", typed: true },
+            { by: priya, optionId: "a", at: "x", typed: true },
+            { by: maya, optionId: "b", at: "x", typed: true },
+          ],
+        },
+      ),
+      decided(
+        "b",
+        "Solo?",
+        "2026-11-05T08:00:00Z",
+        {},
+        {
+          picks: [{ by: sam, optionId: "b", at: "x", typed: true }],
+        },
+      ),
+      decided("c", "Nobody?", "2026-11-05T07:00:00Z"),
+    ]);
+    const c = await open();
+    const meta = (k: string) =>
+      c.querySelector(`[data-decision="c-${k}"] [data-decision-meta]`)
+        ?.textContent ?? "";
+    expect(meta("a")).toContain("Maya decided");
+    expect(meta("a")).toContain("2 weighed in · 1 differed");
+    expect(meta("a")).toContain("Asked by Leo");
+    expect(meta("a")).not.toMatch(/Sam|Priya/);
+    expect(meta("b")).toContain("1 weighed in");
+    expect(meta("b")).not.toContain("differed");
+    expect(meta("c")).not.toContain("weighed in");
+    expect(within(c).getAllByText("Side by side").length).toBeGreaterThan(0);
+  });
+
+  it("'You decided' for the viewer's own decision, and a passkey-verified pill", async () => {
+    serveThreads(() => [
+      decided(
+        "a",
+        "Deploy?",
+        "2026-11-05T09:00:00Z",
+        {},
+        {
+          decider: person("me", "Me", true),
+          answer: {
+            optionId: "b",
+            by: person("me", "Me", true),
+            at: "2026-11-05T09:00:00Z",
+            typed: true,
+            yes: true,
+            verified: "passkey",
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(within(c).getByText("You decided")).toBeInTheDocument();
+    expect(c.querySelector('[data-chip="verified"]')?.textContent).toContain(
+      "Verified with passkey",
+    );
+  });
+
+  it("a resolved thread keeps its decision with a chip, and a row opens the thread with a back row", async () => {
+    serveThreads(() => [
+      decided("a", "Resolved one?", "2026-11-05T09:00:00Z", {
+        status: "resolved",
+      }),
+    ]);
+    const c = await open();
+    expect(c.querySelector('[data-chip="resolved"]')?.textContent).toBe(
+      "Thread resolved",
+    );
+    fireEvent.click(within(c).getByRole("button", { name: /Side by side/ }));
+    expect(
+      await within(c).findByRole("button", { name: "Decisions" }),
+    ).toBeInTheDocument();
+    expect(c.querySelector("[data-decision-thread]")).not.toBeNull();
+    fireEvent.click(within(c).getByRole("button", { name: "Decisions" }));
+    expect(c.querySelector("[data-decision-thread]")).toBeNull();
+    expect(c.querySelector('[data-decision="c-a"]')).not.toBeNull();
+  });
+
+  it("shows 'Was: <old>, <date>' and a 'Changed' chip for a changed decision", async () => {
+    serveThreads(() => [
+      decided(
+        "a",
+        "Changed?",
+        "2026-11-05T09:00:00Z",
+        {},
+        {
+          answer: {
+            optionId: "b",
+            by: maya,
+            at: "2026-11-05T09:00:00Z",
+            typed: true,
+            yes: false,
+            was: { optionId: "a", at: "2026-11-04T09:00:00Z" },
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(c.querySelector("[data-was]")?.textContent).toMatch(
+      /^Was: List only, /,
+    );
+    expect(c.querySelector('[data-chip="changed"]')?.textContent).toMatch(
+      /^Changed /,
+    );
+  });
+
+  it("a replaced decision strikes its pick and links 'Replaced' to the replacing row", async () => {
+    serveThreads(() => [
+      decided(
+        "old",
+        "Old?",
+        "2026-11-05T09:00:00Z",
+        {},
+        { replacedBy: "c-new" },
+      ),
+      decided("new", "New?", "2026-11-05T10:00:00Z", {}, { replaces: "c-old" }),
+    ]);
+    const c = await open();
+    const old = c.querySelector('[data-decision="c-old"]') as HTMLElement;
+    const link = old.querySelector('a[data-chip="replaced"]') as HTMLElement;
+    expect(link.textContent).toBe("Replaced");
+    expect(old.querySelector(".line-through")).not.toBeNull();
+    expect(c.querySelector('[data-decision="c-new"] .line-through')).toBeNull();
+    // The link is not inside the row's button.
+    expect(link.closest("button")).toBeNull();
+    fireEvent.click(link);
+    // Focus lands on the replacing row's button.
+    expect(document.activeElement).toBe(
+      c.querySelector('[data-decision="c-new"] button'),
+    );
+  });
+
+  it("puts ' · ' between every part of the meta line", async () => {
+    serveThreads(() => [
+      decided(
+        "a",
+        "Which?",
+        "2026-11-05T09:00:00Z",
+        {},
+        {
+          picks: [
+            { by: sam, optionId: "b", at: "x", typed: true },
+            { by: priya, optionId: "a", at: "x", typed: true },
+          ],
+        },
+      ),
+    ]);
+    const c = await open();
+    const meta =
+      c.querySelector('[data-decision="c-a"] [data-decision-meta]')
+        ?.textContent ?? "";
+    expect(meta).toMatch(
+      /Maya decided · 2 weighed in · 1 differed · .+ · Asked by Leo$/,
+    );
+  });
+
+  it("copes with replaces/replacedBy ids that point at nothing (the other ask was deleted)", async () => {
+    serveThreads(() => [
+      decided(
+        "a",
+        "Old?",
+        "2026-11-05T09:00:00Z",
+        {},
+        {
+          replacedBy: "c-deleted",
+        },
+      ),
+      decided(
+        "b",
+        "New?",
+        "2026-11-05T10:00:00Z",
+        {},
+        {
+          replaces: "c-deleted",
+        },
+      ),
+    ]);
+    const c = await open();
+    // The replaced row says so, as plain text: there is no row to link to.
+    const old = c.querySelector('[data-decision="c-a"]') as HTMLElement;
+    expect(old.querySelector('[data-chip="replaced"]')?.tagName).toBe("SPAN");
+    expect(old.querySelector("a")).toBeNull();
+    // The replacing row shows nothing odd.
+    const fresh = c.querySelector('[data-decision="c-b"]') as HTMLElement;
+    expect(fresh.querySelector('[data-chip="replaced"]')).toBeNull();
+    expect(fresh.querySelector(".line-through")).toBeNull();
+  });
+
+  it("says 'No decisions yet' when no ask is answered, and still shows the tab", async () => {
+    serveThreads(() => [askThread({}, {})]);
+    const c = await open();
+    expect(within(c).getByText("No decisions yet")).toBeInTheDocument();
+    expect(
+      within(c).getByText(
+        "When an ask on this page is answered, the decision stays here.",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("#2344 the comment body on an ask", () => {
   const STEPS = "Steps:\n1. Open the page\n2. Compare the layouts";
   const withBody = (body: string, over: object = {}, askOver: object = {}) => {

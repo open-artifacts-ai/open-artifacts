@@ -33,14 +33,14 @@ create index if not exists comments_thread on comments (thread_id, created_at);
 create table if not exists comment_asks (
   comment_id text primary key, thread_id text not null, question text not null,
   options text not null, recommended text, addressees text not null, answer text,
-  confirm text, decider text
+  confirm text, decider text, replaces text
 );
 create index if not exists comment_asks_thread on comment_asks (thread_id);
 create table if not exists comment_ask_picks (
   seq integer primary key autoincrement, comment_id text not null,
   user_id text not null, option_id text not null, by text not null,
   at text not null, typed integer not null default 0, verified text,
-  guest integer not null default 0
+  guest integer not null default 0, decision integer not null default 0
 );
 create index if not exists comment_ask_picks_person on comment_ask_picks (comment_id, user_id, at, seq);
 create table if not exists comment_targets (
@@ -127,6 +127,8 @@ export type StoredPick = {
   at: string;
   verified?: "passkey";
   guest?: boolean;
+  /** Made as the decider (it set the decision), not a weigh-in made before they decided (#2381 S2: "Was"). */
+  decision?: true;
 };
 
 export type StoredAsk = {
@@ -145,6 +147,10 @@ export type StoredAsk = {
   confirm?: "passkey";
   /** #2381: the user id who decides when the asker named someone else; absent: the asker's own user. Taking the decision back clears it. */
   decider?: string;
+  /** #2323: the comment id of the ask this one replaces. */
+  replaces?: string;
+  /** #2323: the comment id of the ask that replaces this one (read from the other row, never stored here). */
+  replacedBy?: string;
   /** #2381: every pick in order, append-only (a change is a new entry); a legacy ask's lone answer reads as one. */
   history?: StoredPick[];
   /** The thread is resolved. */
@@ -175,7 +181,7 @@ export type StoredComment = {
 /** What a new comment carries besides its text (#1535). */
 export type StoredAgent = Extract<StoredParty, { kind: "agent" }>;
 export type NewExtras = {
-  ask?: Omit<StoredAsk, "answer" | "closed" | "history">;
+  ask?: Omit<StoredAsk, "answer" | "closed" | "history" | "replacedBy">;
   mentions?: StoredAgent[];
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
@@ -360,6 +366,7 @@ type AskRow = {
   answer: string | null;
   confirm: string | null;
   decider: string | null;
+  replaces: string | null;
   status: string;
 };
 type TargetRow = {
@@ -379,6 +386,7 @@ type PickRow = {
   at: string;
   verified: string | null;
   guest: number;
+  decision: number;
 };
 const pickOf = (r: PickRow): StoredPick => ({
   optionId: r.option_id,
@@ -386,6 +394,7 @@ const pickOf = (r: PickRow): StoredPick => ({
   at: r.at,
   ...(r.verified === "passkey" ? { verified: "passkey" as const } : {}),
   ...(r.guest ? { guest: true } : {}),
+  ...(r.decision ? { decision: true as const } : {}),
 });
 /** An ask answered before #2381 has no pick rows: its answer is its one pick. */
 const withLegacy = (
@@ -393,12 +402,16 @@ const withLegacy = (
   rows: StoredPick[],
   author: string,
 ): StoredPick[] => {
-  const legacy = ask.answer ? { ...ask.answer } : undefined;
+  const legacy: StoredPick | undefined = ask.answer
+    ? { ...ask.answer, decision: true }
+    : undefined;
   // Before deciders anyone asked could answer: only the decider's own answer
   // (the asker's own user's, unless another was named) is the decision now. A
   // stored answer by anyone else reads as their weigh-in, with or without pick rows.
-  if (ask.answer && ask.answer.by.ref !== (ask.decider ?? author))
+  if (ask.answer && ask.answer.by.ref !== (ask.decider ?? author)) {
     delete ask.answer;
+    if (legacy) delete legacy.decision;
+  }
   return rows.length || !legacy ? rows : [legacy];
 };
 
@@ -416,6 +429,7 @@ const askOf = (r: AskRow): StoredAsk => ({
   to: JSON.parse(r.addressees) as StoredParty[],
   ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.decider ? { decider: r.decider } : {}),
+  ...(r.replaces ? { replaces: r.replaces } : {}),
   ...(r.answer
     ? { answer: JSON.parse(r.answer) as NonNullable<StoredAsk["answer"]> }
     : {}),
@@ -432,7 +446,7 @@ function attachExtras(
   const ids = JSON.stringify(threadIds);
   const byId = new Map(comments.map((c) => [c.id, c]));
   for (const r of sql.exec<AskRow>(
-    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, t.status
+    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, t.status
      from comment_asks a join comment_threads t on t.id = a.thread_id
      where a.thread_id in (select value from json_each(?))`,
     ids,
@@ -442,9 +456,16 @@ function attachExtras(
   }
   const asked = comments.filter((c) => c.ask).map((c) => c.id);
   if (asked.length) {
+    for (const r of sql.exec<{ comment_id: string; replaces: string }>(
+      "select comment_id, replaces from comment_asks where replaces in (select value from json_each(?))",
+      JSON.stringify(asked),
+    )) {
+      const old = comments.find((c) => c.id === r.replaces);
+      if (old?.ask) old.ask.replacedBy = r.comment_id;
+    }
     const hist = new Map<string, StoredPick[]>();
     for (const r of sql.exec<PickRow>(
-      `select comment_id, option_id, by, at, verified, guest from comment_ask_picks
+      `select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks
        where comment_id in (select value from json_each(?)) order by seq`,
       JSON.stringify(asked),
     )) {
@@ -488,6 +509,63 @@ export function withExtras(
   return c;
 }
 
+/** Who is behind an actor: null for a person, else the agent's identity (or its name and via when it has none). */
+const agentKey = (a: StoredActor): string | null =>
+  a.agent
+    ? (a.agent.identity?.identityId ?? `${a.agent.name}|${a.agent.via}`)
+    : null;
+
+/** The same asker: the same person, and either both are people or both the same agent. */
+const same = (a: StoredActor, b: StoredActor): boolean =>
+  a.kind === "user" &&
+  b.kind === "user" &&
+  a.ref === b.ref &&
+  agentKey(a) === agentKey(b);
+
+/**
+ * #2323: `replaces` must name an ask of this artifact, posted by the same
+ * asker (the same person, and the same agent when an agent posted it), not the
+ * new comment itself and not already replaced by another ask. Thrown inside the
+ * caller's transaction, so a refusal writes nothing.
+ */
+// comment_asks.replaces has no index on purpose: `taken` below and the replacedBy
+// read in attachExtras each scan the table, which holds one row per ask of one
+// page. Index it if a page ever holds enough asks for that to show.
+function checkReplaces(sql: SqlStorage, commentId: string, old: string): void {
+  const refuse = (code: string, why: string): never => {
+    throw new Error(`oa:${code}:${why}`);
+  };
+  if (old === commentId) refuse("bad_request", "An ask cannot replace itself");
+  const row = sql
+    .exec<{ author: string }>(
+      "select c.author as author from comment_asks a join comments c on c.id = a.comment_id where a.comment_id = ?",
+      old,
+    )
+    .toArray()[0];
+  if (!row) refuse("bad_request", "`replaces` must be an ask on this artifact");
+  const me = sql
+    .exec<{ author: string }>(
+      "select author from comments where id = ?",
+      commentId,
+    )
+    .toArray()[0];
+  if (
+    !me ||
+    !same(
+      JSON.parse((row as { author: string }).author) as StoredActor,
+      JSON.parse(me.author) as StoredActor,
+    )
+  )
+    refuse("bad_request", "`replaces` must be an ask you posted yourself");
+  const taken = sql
+    .exec<{ n: number }>(
+      "select count(*) as n from comment_asks where replaces = ?",
+      old,
+    )
+    .one().n;
+  if (taken > 0) refuse("already_replaced", "That ask is already replaced");
+}
+
 /** Stores the ask and mentions of a new comment, in the caller's transaction. */
 export function insertExtras(
   sql: SqlStorage,
@@ -495,10 +573,11 @@ export function insertExtras(
   commentId: string,
   x: NewExtras,
 ): void {
+  if (x.ask?.replaces) checkReplaces(sql, commentId, x.ask.replaces);
   if (x.ask)
     sql.exec(
-      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees, confirm, decider)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees, confirm, decider, replaces)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       commentId,
       threadId,
       x.ask.question,
@@ -507,6 +586,7 @@ export function insertExtras(
       JSON.stringify(x.ask.to),
       x.ask.confirm === "passkey" ? "passkey" : null,
       x.ask.decider ?? null,
+      x.ask.replaces ?? null,
     );
   const put = (kind: "mention" | "asker", p: StoredAgent) =>
     sql.exec(
@@ -1033,7 +1113,7 @@ export function addPick(
   p: StoredPick,
 ): void {
   sql.exec(
-    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest) values (?, ?, ?, ?, ?, ?, ?, ?)",
+    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     commentId,
     p.by.ref,
     p.optionId,
@@ -1042,6 +1122,7 @@ export function addPick(
     p.by.kind === "user" && p.by.typed === true && !p.by.agent ? 1 : 0,
     p.verified ?? null,
     p.guest ? 1 : 0,
+    p.decision ? 1 : 0,
   );
 }
 
@@ -1086,7 +1167,7 @@ export function askRow(
 ): { ask: StoredAsk; status: string; author: string; legacy: boolean } | null {
   const r = sql
     .exec<AskRow & { status: string; author: string }>(
-      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, t.status, c.author
+      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, t.status, c.author
        from comment_asks a join comment_threads t on t.id = a.thread_id join comments c on c.id = a.comment_id
        where a.comment_id = ? and a.thread_id = ?`,
       commentId,
@@ -1097,7 +1178,7 @@ export function askRow(
   const ask = askOf(r);
   const rows = sql
     .exec<PickRow>(
-      "select comment_id, option_id, by, at, verified, guest from comment_ask_picks where comment_id = ? order by seq",
+      "select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks where comment_id = ? order by seq",
       commentId,
     )
     .toArray()

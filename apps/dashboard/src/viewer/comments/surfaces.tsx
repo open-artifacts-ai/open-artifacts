@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TXT } from "../ui";
 import { ActionRowOutlet, ActionRowProvider } from "./actionRow";
 import { CommentsBody } from "./CommentsBody";
+import { CommentsTabs } from "./Decisions";
 import { useCommentsApi } from "./useComments";
 
 /** Where the comments list lives (Design's 1C + 3D). */
@@ -123,7 +124,7 @@ export function CommentsDialog({
   pinReplies?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
-  const open = useCommentsApi().listedOpen;
+  const api = useCommentsApi();
   const [full, setFull] = useState(false);
   // #1657: reading a pin card shrinks the sheet, so the image and that pin
   // stay visible; dragging it back up still works. Keyed on the pin, so
@@ -210,12 +211,7 @@ export function CommentsDialog({
           data-comments-header=""
           className={`flex flex-none items-center justify-between bg-[var(--oa-bg)] px-4 pt-3 ${TXT}`}
         >
-          <div className="flex items-baseline gap-2">
-            <h2 className="m-0 font-semibold">Comments</h2>
-            {open > 0 && (
-              <span className="text-muted-foreground">{open} open</span>
-            )}
-          </div>
+          <CommentsTabs api={api} />
           <Button
             variant="ghost"
             size="icon-sm"

@@ -115,6 +115,8 @@ type Deps = {
   seedAsk?: boolean;
   /** #2381: also seed asks in each decider state on "Landing page" (Weigh in, Decide, decided, bars, take back). */
   seedDeciders?: boolean;
+  /** #2381 S2: also seed decided asks on "Landing page" (resolved, replaced, passkey-verified, changed) for the Decisions tab. */
+  seedDecisions?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
   /**
@@ -145,6 +147,7 @@ export function createCommentMock({
   contentHash,
   seedAsk,
   seedDeciders,
+  seedDecisions,
   seedAgents,
   passkeyMode,
   seedMarkdown,
@@ -449,6 +452,184 @@ export function createCommentMock({
         canTakeBack: true,
         picks: [],
       });
+    }
+    // #2381 S2: decided asks for the Decisions tab.
+    const decided: CommentThread[] = [];
+    if (seedDecisions) {
+      const person = (id: string, name: string): CommentAuthor => ({
+        kind: "user",
+        id,
+        name,
+        me: false,
+      });
+      const maya = person("maya", "Maya Chen");
+      const priya = person("priya", "Priya Nair");
+      const sam = person("sam", "Sam Rivera");
+      const agent: CommentAuthor = {
+        kind: "agent",
+        name: "Maya's Claude",
+        for: "Maya Chen",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const ago = (h: number) =>
+        new Date(Date.now() - h * 3_600_000).toISOString();
+      const thread = (
+        c: Comment,
+        status: "open" | "resolved" = "open",
+      ): CommentThread => ({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status,
+        resolvedBy: status === "resolved" ? maya : null,
+        resolvedAt: status === "resolved" ? ago(1) : null,
+        createdAt: c.createdAt,
+        comments: [c],
+      });
+      const decide = (
+        q: string,
+        options: { id: string; label: string }[],
+        pick: string,
+        hoursAgo: number,
+        extra: Partial<NonNullable<Comment["ask"]>> = {},
+        by: CommentAuthor = maya,
+        weigh: { by: CommentAuthor; optionId: string }[] = [],
+      ) => {
+        const c = comment(q, agent);
+        c.ask = {
+          question: q,
+          options,
+          to: [maya, priya, sam],
+          decider: by,
+          closed: false,
+          answer: {
+            optionId: pick,
+            by,
+            at: ago(hoursAgo),
+            typed: true,
+            yes: false,
+          },
+          picks: [
+            ...weigh.map((w) => ({
+              by: w.by,
+              optionId: w.optionId,
+              at: ago(hoursAgo + 1),
+              typed: true,
+            })),
+            { by, optionId: pick, at: ago(hoursAgo), typed: true },
+          ],
+          ...extra,
+        };
+        return c;
+      };
+      const PRICE = [
+        { id: "a", label: "A: three columns" },
+        { id: "b", label: "B: two columns" },
+      ];
+      const price = decide(
+        "Which pricing table goes on the landing page?",
+        PRICE,
+        "b",
+        2,
+        {},
+        maya,
+        [
+          { by: sam, optionId: "b" },
+          { by: priya, optionId: "a" },
+        ],
+      );
+      const email = decide(
+        "What do we call the weekly email?",
+        [
+          { id: "a", label: "The Changelog" },
+          { id: "b", label: "Shipped" },
+        ],
+        "a",
+        30,
+        {},
+        maya,
+        [{ by: sam, optionId: "a" }],
+      );
+      const hero = decide(
+        "Which hero image goes on the launch post?",
+        [
+          { id: "a", label: "The dashboard" },
+          { id: "b", label: "The comment thread" },
+        ],
+        "b",
+        50,
+      );
+      const oldPlan = decide(
+        "Monthly or yearly shown first on the pricing table?",
+        [
+          { id: "m", label: "Monthly first" },
+          { id: "y", label: "Yearly first" },
+        ],
+        "m",
+        80,
+      );
+      const newPlan = decide(
+        "Yearly or monthly first, now that the discount is live?",
+        [
+          { id: "m", label: "Monthly first" },
+          { id: "y", label: "Yearly first" },
+        ],
+        "y",
+        4,
+        { replaces: oldPlan.id },
+      );
+      oldPlan.ask = {
+        ...(oldPlan.ask as NonNullable<Comment["ask"]>),
+        replacedBy: newPlan.id,
+      };
+      const verified = decide(
+        "Deploy v0.171 to production?",
+        [
+          { id: "go", label: "Deploy it" },
+          { id: "hold", label: "Hold" },
+        ],
+        "go",
+        6,
+        { confirm: "passkey" },
+        mine(),
+      );
+      (verified.ask as NonNullable<Comment["ask"]>).answer = {
+        ...(verified.ask?.answer as NonNullable<
+          NonNullable<Comment["ask"]>["answer"]
+        >),
+        verified: "passkey",
+        yes: true,
+      };
+      const changed = decide(
+        "Welcome artifact or checklist for new members?",
+        [
+          { id: "w", label: "Welcome artifact" },
+          { id: "c", label: "Checklist" },
+        ],
+        "w",
+        3,
+        {},
+        maya,
+        [{ by: priya, optionId: "c" }],
+      );
+      (changed.ask as NonNullable<Comment["ask"]>).answer = {
+        ...(changed.ask?.answer as NonNullable<
+          NonNullable<Comment["ask"]>["answer"]
+        >),
+        was: { optionId: "c", at: ago(40) },
+      };
+      decided.push(
+        thread(price),
+        thread(email, "resolved"),
+        thread(hero),
+        thread(oldPlan),
+        thread(newPlan),
+        thread(verified),
+        thread(changed),
+      );
     }
     const faces: CommentThread[] = [];
     if (seedAgents) {
@@ -773,6 +954,7 @@ export function createCommentMock({
       },
       ...asked,
       ...deciderAsks,
+      ...decided,
       ...faces,
     ];
   };
