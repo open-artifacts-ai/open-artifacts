@@ -1,3 +1,5 @@
+import { type Animal, agentBadge } from "./agents";
+
 // The hero's pinned scroll scene (#1457): one piece of work in four moments,
 // shown as a transcript beside an artifact, then a turn where the transcript
 // leaves and the story goes on as the artifact's chapters (steps 5 to 9). The
@@ -116,10 +118,9 @@ export const SCENE_TURN: [string, string] = [
 export const SCENE_NOTE =
   "Same work. One is a scroll you search. The other is a page your team works on.";
 
-const AGENT =
-  '<svg viewBox="0 0 14 14" fill="currentColor" aria-hidden="true"><path d="M2 2l3 2h4l3-2v6a5 5 0 0 1-10 0z"></path></svg>';
-const agent = (from?: number) =>
-  `<span class="ag"${from ? ` data-from="${from}"` : ""}>${AGENT}</span>`;
+/** An agent badge; the scene's only agent is OA Product, the fox on colour 2. */
+const agent = (animal: Animal, color: number, extra = "", attrs = "") =>
+  agentBadge(animal, color, extra, attrs);
 
 /** The comment thread on the launch-day line, as it stands at moment t. */
 function thread(t: number): string {
@@ -127,7 +128,7 @@ function thread(t: number): string {
   return (
     `<div class="card sa-th"><div class="q">Launch day: Tuesday, Dec 1</div>` +
     `<div class="cm${off(t < 30)}" data-at="30"><span class="pp" aria-hidden="true">SR</span><div><div class="w">Sam Rivera</div><div class="x">Can we move this to Thursday? Tuesday is the board meeting.</div></div></div>` +
-    `<div class="cm${off(t < 40)}" data-at="40">${agent()}<div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 3. That is v3.</div></div></div>` +
+    `<div class="cm${off(t < 40)}" data-at="40">${agent("fox", 2)}<div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 3. That is v3.</div></div></div>` +
     `<div class="rf">Reply</div></div>`
   );
 }
@@ -154,10 +155,10 @@ export function sceneHtml(t: number): string {
     `<figure class="x-side"><figcaption><b>In an artifact</b><span class="x-stat ok" data-k="as">${S.a}</span></figcaption>` +
     `<div class="x-art sc-art"><div class="x-abar"><span class="t">Launch plan</span><span class="chip" data-k="chip">${S.chip}</span><span class="x-sp"></span>` +
     `<span class="pp${off(s < 3)}" data-from="3" aria-hidden="true">SR</span><span class="pp${off(s < 3)}" data-from="3" aria-hidden="true">MC</span>` +
-    agent(3).replace('class="ag"', `class="ag${off(s < 3)}"`) +
+    agent("fox", 2, off(s < 3).trim(), ' data-from="3"') +
     `<span class="chip ver" data-k="ver">${S.ver}</span><span class="sbtn sa-share">Share</span></div>` +
     `<div class="sa-main"><div class="sa-doc"><div class="x-abody">` +
-    `<h3 class="sa-h1">Q4 launch plan</h3><p class="sa-by">${agent()}OA Product, for Maya Chen</p>` +
+    `<h3 class="sa-h1">Q4 launch plan</h3><p class="sa-by">${agent("fox", 2)}OA Product, for Maya Chen</p>` +
     `<div class="x-blk hit${off(s < 4)}" data-from="4"><h4>Decision</h4><p class="x-dec"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span>Launch day is Thursday, Dec 3.</span></p><p class="x-sub">Sam asked for the change. OA Product updated the plan.</p></div>` +
     `<p class="sa-p sa-intro">We're opening sign-ups with a free first month on Solo. This plan is the one place the team and the agents work from.</p>` +
     `<p class="sa-p sa-ld${off(s > 1)}" data-until="1">Launch day: Tuesday, Dec 1.</p>` +

@@ -41,6 +41,7 @@ import {
   type CommentViewer,
   type CommentWho,
   listComments,
+  takeBackAsk,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
@@ -480,16 +481,25 @@ describe("asks", () => {
         )
       ).status,
     ).toBe(404);
-    // The people asked answer, and may change it.
+    // #2381: the person asked weighs in (kept, never the decision); the asker's own user decides.
     const ok = await answer(s.id, t.id, cid, viewer, "wide");
     expect(ok.status).toBe(200);
-    const a = ((await ok.json()) as Comment).ask;
+    const w = ((await ok.json()) as Comment).ask;
+    expect(w?.answer).toBeUndefined();
+    expect(w?.role).toBe("weigh");
+    expect(w?.picks).toMatchObject([
+      { optionId: "wide", by: { id: viewer.userId, me: true } },
+    ]);
+    const dec = await answer(s.id, t.id, cid, owner, "wide");
+    expect(dec.status).toBe(200);
+    const a = ((await dec.json()) as Comment).ask;
     expect(a?.answer).toMatchObject({
       optionId: "wide",
-      by: { id: viewer.userId, me: true },
+      by: { id: owner.userId, me: true },
     });
+    expect(a?.role).toBe("decide");
     const again = (await (
-      await answer(s.id, t.id, cid, viewer, "compact")
+      await answer(s.id, t.id, cid, owner, "compact")
     ).json()) as Comment;
     expect(again.ask?.answer?.optionId).toBe("compact");
     // Resolving closes it: 409, and the list says closed.
@@ -497,7 +507,7 @@ describe("asks", () => {
       method: "PATCH",
       body: { status: "resolved" },
     });
-    const late = await answer(s.id, t.id, cid, viewer, "wide");
+    const late = await answer(s.id, t.id, cid, owner, "wide");
     expect(late.status).toBe(409);
     expect((await errOf(late)).code).toBe("conflict");
     const l = (await (
@@ -712,6 +722,416 @@ describe("asks", () => {
     ]);
     for (const leak of [owner.userId, editor.userId, "ns-", "@"])
       expect(text).not.toContain(leak);
+  });
+});
+
+describe("deciders (#2381)", () => {
+  const takeBack = (id: string, tid: string, cid: string, u: U) =>
+    api(app, R.commentAskDecider(id, tid, cid), u.cookie, {
+      method: "POST",
+      body: { takeBack: true },
+    });
+  const listAsk = async (id: string, u: U | null, cid: string) => {
+    const l = (await (
+      await api(
+        app,
+        R.comments(id),
+        u?.cookie ?? null,
+        u ? {} : { headers: { "cf-connecting-ip": "198.51.100.9" } },
+      )
+    ).json()) as CommentList;
+    return l.threads.flatMap((t) => t.comments).find((c) => c.id === cid)?.ask;
+  };
+  const cidOf = (t: Thread) => (t.comments[0] as Comment).id;
+
+  it("the asker's own user decides by default; the others weigh in", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId, editor.userId]);
+    const a = t.comments[0]?.ask;
+    expect(a?.decider).toMatchObject({ id: owner.userId, me: true });
+    expect(a?.chosenBy).toBeUndefined();
+    expect(a?.role).toBe("decide");
+    expect(a?.canTakeBack).toBeUndefined();
+    const w = await answer(s.id, t.id, cidOf(t), editor, "compact");
+    expect(w.status).toBe(200);
+    const after = await listAsk(s.id, owner, cidOf(t));
+    expect(after?.answer).toBeUndefined();
+    expect(after?.picks).toMatchObject([
+      { optionId: "compact", by: { id: editor.userId } },
+    ]);
+    const d = await answer(s.id, t.id, cidOf(t), owner, "wide");
+    const decided = ((await d.json()) as Comment).ask;
+    expect(decided?.answer).toMatchObject({ optionId: "wide", yes: true });
+    // The weigh-in stays by name beside the decision.
+    expect(decided?.picks?.map((p) => p.optionId)).toEqual(["compact", "wide"]);
+  });
+
+  it("a named decider decides; the asker weighs in and may take it back", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId], {
+      decider: { key: editor.userId },
+    });
+    const cid = cidOf(t);
+    const a = t.comments[0]?.ask;
+    expect(a?.decider).toMatchObject({ id: editor.userId });
+    expect(a?.chosenBy).toMatchObject({ id: owner.userId });
+    expect(a?.canTakeBack).toBe(true);
+    expect(a?.to.map((p) => p.id).sort()).toEqual(
+      [viewer.userId, editor.userId, owner.userId].sort(),
+    );
+    // The asker's own pick is a weigh-in, and never the yes of its agent.
+    const mine = await answer(s.id, t.id, cid, owner, "wide");
+    expect(mine.status).toBe(200);
+    expect(((await mine.json()) as Comment).ask?.answer).toBeUndefined();
+    // Only the asker takes it back.
+    expect((await takeBack(s.id, t.id, cid, editor)).status).toBe(403);
+    const r = await takeBack(s.id, t.id, cid, owner);
+    expect(r.status).toBe(200);
+    const back = ((await r.json()) as Comment).ask;
+    expect(back?.decider).toMatchObject({ id: owner.userId });
+    expect(back?.chosenBy).toBeUndefined();
+    expect(back?.canTakeBack).toBeUndefined();
+    // Nothing to take back now.
+    expect((await takeBack(s.id, t.id, cid, owner)).status).toBe(400);
+    // The old decider can only weigh in.
+    await answer(s.id, t.id, cid, editor, "compact");
+    expect((await listAsk(s.id, owner, cid))?.answer).toBeUndefined();
+  });
+
+  it("a teammate's decision is the answer but never the asker's yes; no take back after it", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId], {
+      decider: { key: editor.userId },
+    });
+    const cid = cidOf(t);
+    const d = await answer(s.id, t.id, cid, editor, "wide");
+    expect(d.status).toBe(200);
+    expect(((await d.json()) as Comment).ask?.answer).toMatchObject({
+      optionId: "wide",
+      yes: false,
+    });
+    expect((await listAsk(s.id, owner, cid))?.answer).toMatchObject({
+      optionId: "wide",
+      yes: false,
+    });
+    const late = await takeBack(s.id, t.id, cid, owner);
+    expect(late.status).toBe(409);
+    expect((await errOf(late)).code).toBe("already_decided");
+  });
+
+  it("refuses a decider who cannot edit, and a decider on an ask that names an action", async () => {
+    const s = await setup();
+    for (const who of [viewer.userId, stranger.userId, "nobody"]) {
+      await expect(
+        ask(s.id, [viewer.userId], { decider: { key: who } }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+    }
+    await expect(
+      ask(s.id, [viewer.userId], {
+        decider: { key: editor.userId },
+        recommended: undefined,
+        options: [
+          { id: "merge", label: "Merge", action: "merge" },
+          { id: "wait", label: "Wait" },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    // Naming yourself is the default.
+    const t = await ask(s.id, [viewer.userId], {
+      decider: { key: owner.userId },
+    });
+    expect(t.comments[0]?.ask?.chosenBy).toBeUndefined();
+  });
+
+  it("a decider who lost edit rights is 403 not_decider; the asker takes it back", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId], {
+      decider: { key: editor.userId },
+    });
+    const cid = cidOf(t);
+    await api(app, R.shares(s.id), owner.cookie, {
+      method: "PUT",
+      body: { email: editor.email, role: "viewer" },
+    });
+    const r = await answer(s.id, t.id, cid, editor, "wide");
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("not_decider");
+    expect((await takeBack(s.id, t.id, cid, owner)).status).toBe(200);
+  });
+
+  it("a risky ask goes to the asker's own user only; nobody else weighs in", async () => {
+    const s = await setup();
+    const risky = {
+      recommended: undefined,
+      options: [
+        { id: "merge", label: "Merge it", action: "merge" },
+        { id: "wait", label: "Not yet" },
+      ],
+    };
+    await expect(
+      ask(s.id, [viewer.userId, editor.userId], risky),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    const t = await ask(s.id, [owner.userId], risky);
+    const cid = cidOf(t);
+    const w = await answer(s.id, t.id, cid, viewer, "merge");
+    expect(w.status).toBe(403);
+    const asView = await listAsk(s.id, viewer, cid);
+    expect(asView?.role).toBeUndefined();
+    expect(asView?.picks).toEqual([]);
+    expect((await answer(s.id, t.id, cid, owner, "merge")).status).toBe(200);
+  });
+
+  it("takes the decision back only from a person's own browser session", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId], {
+      decider: { key: editor.userId },
+    });
+    const pat = await api(
+      app,
+      R.commentAskDecider(s.id, t.id, cidOf(t)),
+      null,
+      {
+        method: "POST",
+        body: { takeBack: true },
+      },
+    );
+    expect(pat.status).toBeGreaterThanOrEqual(401);
+    const r = await takeBackAsk(
+      E,
+      s.id,
+      t.id,
+      cidOf(t),
+      { kind: "user", id: owner.userId, agent: null, typed: false } as never,
+      view(owner),
+    ).catch((e) => e);
+    expect(r).toMatchObject({ code: "forbidden" });
+  });
+
+  it("a legacy answer by someone else is a weigh-in, and the first new pick keeps it in the history", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec(
+          "update comment_asks set answer = ? where comment_id = ?",
+          JSON.stringify({
+            optionId: "wide",
+            by: { kind: "user", ref: viewer.userId, typed: true },
+            at: new Date().toISOString(),
+          }),
+          cid,
+        );
+      },
+    );
+    const before = await listAsk(s.id, owner, cid);
+    expect(before?.answer).toBeUndefined();
+    expect(before?.picks).toMatchObject([
+      { optionId: "wide", by: { id: viewer.userId } },
+    ]);
+    await answer(s.id, t.id, cid, owner, "compact");
+    const after = await listAsk(s.id, owner, cid);
+    expect(after?.answer).toMatchObject({ optionId: "compact" });
+    const n = await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) =>
+        state.storage.sql
+          .exec<{ n: number }>(
+            "select count(*) as n from comment_ask_picks where comment_id = ?",
+            cid,
+          )
+          .one().n,
+    );
+    expect(n).toBe(2);
+  });
+
+  it("keeps every pick, appended, and shows the latest of each person", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [editor.userId, viewer.userId]);
+    const cid = cidOf(t);
+    for (const [u, o] of [
+      [editor, "wide"],
+      [viewer, "wide"],
+      [editor, "compact"],
+      [editor, "compact"],
+      [editor, "wide"],
+    ] as const)
+      await answer(s.id, t.id, cid, u, o);
+    const picks = (await listAsk(s.id, owner, cid))?.picks;
+    expect(picks?.map((p) => [p.by.id, p.optionId])).toEqual([
+      [viewer.userId, "wide"],
+      [editor.userId, "wide"],
+    ]);
+    const n = await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) =>
+        state.storage.sql
+          .exec<{ n: number }>(
+            "select count(*) as n from comment_ask_picks where comment_id = ?",
+            cid,
+          )
+          .one().n,
+    );
+    // The repeated "compact" was a retry: four entries.
+    expect(n).toBe(4);
+  });
+
+  it("a legacy answer by B is dropped even once C has weighed in; A can decide B's option", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId, editor.userId]);
+    const cid = cidOf(t);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec(
+          "update comment_asks set answer = ? where comment_id = ?",
+          JSON.stringify({
+            optionId: "wide",
+            by: { kind: "user", ref: viewer.userId, typed: true },
+            at: new Date().toISOString(),
+          }),
+          cid,
+        );
+      },
+    );
+    // C weighs in: that writes pick rows, and B's stale answer must stay dropped.
+    expect((await answer(s.id, t.id, cid, editor, "compact")).status).toBe(200);
+    const a = await listAsk(s.id, owner, cid);
+    expect(a?.answer).toBeUndefined();
+    expect(a?.picks?.map((p) => [p.by.id, p.optionId]).sort()).toEqual(
+      [
+        [viewer.userId, "wide"],
+        [editor.userId, "compact"],
+      ].sort(),
+    );
+    const d = await answer(s.id, t.id, cid, owner, "wide");
+    expect(d.status).toBe(200);
+    expect(((await d.json()) as Comment).ask?.answer).toMatchObject({
+      optionId: "wide",
+      by: { id: owner.userId },
+    });
+  });
+
+  it("the cap never refuses the decider's decision, and its message does not say to wait", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    const fill = (user: string) =>
+      runInDurableObject(
+        runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (_i, state) => {
+          for (let n = 0; n < 50; n++)
+            state.storage.sql.exec(
+              "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed) values (?, ?, 'wide', ?, ?, 1)",
+              cid,
+              user,
+              JSON.stringify({ kind: "user", ref: user }),
+              new Date().toISOString(),
+            );
+        },
+      );
+    await fill(owner.userId);
+    const d = await answer(s.id, t.id, cid, owner, "compact");
+    expect(d.status).toBe(200);
+    await fill(viewer.userId);
+    const w = await answer(s.id, t.id, cid, viewer, "compact");
+    expect(w.status).toBe(429);
+    expect((await errOf(w)).message).not.toMatch(/try again/i);
+  });
+
+  it("caps picks at 50 a person on an ask, then 429", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        for (let n = 0; n < 50; n++)
+          state.storage.sql.exec(
+            "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed) values (?, ?, 'wide', ?, ?, 1)",
+            cid,
+            viewer.userId,
+            JSON.stringify({ kind: "user", ref: viewer.userId }),
+            new Date().toISOString(),
+          );
+      },
+    );
+    const r = await answer(s.id, t.id, cid, viewer, "compact");
+    expect(r.status).toBe(429);
+    expect((await errOf(r)).code).toBe("rate_limited");
+  });
+
+  it("works on a DO created before deciders: the column and table are added", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i, state) => {
+        state.storage.sql.exec("drop table comment_ask_picks");
+        state.storage.sql.exec("alter table comment_asks drop column decider");
+        (i as unknown as { ready: boolean }).ready = false;
+      },
+    );
+    expect((await answer(s.id, t.id, cid, viewer, "wide")).status).toBe(200);
+    const a = await listAsk(s.id, owner, cid);
+    expect(a?.decider).toMatchObject({ id: owner.userId });
+    expect(a?.picks).toHaveLength(1);
+  });
+
+  it("an ask answered before deciders reads with the asker as decider and its answer as a pick", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = cidOf(t);
+    await answer(s.id, t.id, cid, owner, "wide");
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec("delete from comment_ask_picks");
+        state.storage.sql.exec("update comment_asks set decider = null");
+      },
+    );
+    const a = await listAsk(s.id, viewer, cid);
+    expect(a?.decider).toMatchObject({ id: owner.userId });
+    expect(a?.answer).toMatchObject({ optionId: "wide" });
+    expect(a?.picks).toMatchObject([
+      { optionId: "wide", by: { id: owner.userId } },
+    ]);
+    expect(a?.role).toBe("weigh");
+  });
+
+  it("outsiders see no roles, and the asking agent as '<person>'s agent'", async () => {
+    const s = await setup({ visibility: "public" });
+    const art = { id: s.id, format: "html", currentVersion: 1 } as never;
+    const t = await addThread(
+      E,
+      art,
+      agentOf(owner, "Claude", "ns-owner"),
+      view(owner),
+      {
+        anchor: NOTE,
+        body: "Which?",
+        ask: {
+          question: "Which layout?",
+          options: OPTS,
+          to: [{ key: viewer.userId }],
+          decider: { key: editor.userId },
+        },
+      },
+      { moderator: true },
+    );
+    const cid = cidOf(t);
+    await answer(s.id, t.id, cid, editor, "wide");
+    await answer(s.id, t.id, cid, viewer, "compact");
+    const out = await listAsk(s.id, null, cid);
+    expect(out?.role).toBeUndefined();
+    expect(out?.canTakeBack).toBeUndefined();
+    expect(out?.picks).toHaveLength(2);
+    expect(out?.picks?.every((p) => p.verified === undefined)).toBe(true);
+    expect(out?.chosenBy?.kind).toBe("agent");
+    expect(JSON.stringify(out)).not.toContain("ns-owner");
+    expect(JSON.stringify(out?.chosenBy)).not.toContain('"name":"Claude"');
   });
 });
 
@@ -1095,8 +1515,8 @@ describe("ask_answered notice (#1535)", () => {
       await api(app, R.comments(s.id), owner.cookie)
     ).json()) as CommentList;
     expect(
-      l.threads.find((x) => x.id === t.id)?.comments[0]?.ask?.answer,
-    ).toMatchObject({ optionId: "compact" });
+      l.threads.find((x) => x.id === t.id)?.comments[0]?.ask?.picks,
+    ).toMatchObject([{ optionId: "compact" }]);
   });
 
   it("the text carries no question, option label, detail or name", async () => {
@@ -1163,8 +1583,9 @@ describe("ask_answered notice (#1535)", () => {
       "wide",
       { version: 1 },
       { interactive: true },
+      { canDecide: true, guest: false },
     );
-    expect(out.ask?.answer?.optionId).toBe("wide");
+    expect(out.ask?.picks?.[0]?.optionId).toBe("wide");
     expect(answered()).toHaveLength(0);
   });
 
