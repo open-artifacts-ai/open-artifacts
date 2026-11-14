@@ -471,6 +471,11 @@ export const R = {
 /** R.auditExport response header naming the cursor of the next request (absent when done). */
 export const AUDIT_NEXT_CURSOR_HEADER = "X-OA-Next-Cursor";
 
+/** Hosted Team (and its trial) read only the last AUDIT_TEAM_WINDOW_DAYS days of the log. */
+export const AUDIT_TEAM_WINDOW_DAYS = 30;
+/** R.audit and R.auditExport response header: the window in days, present only when the plan limits it (Team). */
+export const AUDIT_WINDOW_HEADER = "X-OA-Audit-Window-Days";
+
 export const AUTH = {
   login: "/auth/login",
   /** GET (Access OIDC) -> 302 next; a refusal goes to PAGES.noAccess on Access-only installs, else (direct mode) SIGN_IN_PAGE?error=no_access&next&via=access. */
