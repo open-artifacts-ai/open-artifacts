@@ -4,6 +4,8 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
+import { grantTargetId } from "../src/mcp/oauth.js";
+import { auditText } from "../src/services/audit.js";
 import { admit } from "../src/services/identity.js";
 import { upsertOnLogin } from "../src/services/users.js";
 import { direct, seedUser, uniq } from "./auth-helpers.js";
@@ -154,6 +156,70 @@ describe("personal access tokens", () => {
       .bind(u.userId)
       .first<{ n: number }>();
     expect(n?.n).toBe(0);
+  });
+});
+
+describe("free text in a row", () => {
+  const BIDI = "\u202Eevil\u2066x\u200Bz";
+  it("a token label is stripped of control and bidi characters and capped at 80", async () => {
+    const u = await login(uniq("ev-text"));
+    const r = await api(app, R.tokens, u.cookie, {
+      method: "POST",
+      body: { label: `ok${BIDI}` },
+    });
+    expect(r.status).toBe(201);
+    const t = (await r.json()) as { id: string };
+    const [c] = await rows("token.create", t.id);
+    expect(JSON.parse(c?.detail ?? "").label).toBe("okevilxz");
+
+    // A stored label (older rows, or a path that skipped the schema): long and bidi.
+    const long = await createPat(env, u.userId, `${BIDI}${"n".repeat(200)}`);
+    expect(
+      (await api(app, R.token(long.id), u.cookie, { method: "DELETE" })).status,
+    ).toBe(204);
+    const [v] = await rows("token.revoke", long.id);
+    const label = JSON.parse(v?.detail ?? "").label as string;
+    expect(label).not.toMatch(/[\u202E\u2066\u200B]/);
+    expect([...label].length).toBe(80);
+    expect(label.startsWith("evilxz")).toBe(true);
+  });
+
+  it("auditText strips control, bidi and zero-width characters and caps at 80", () => {
+    expect(auditText(` \u202EBot\u0007\u200B\u2066 name `)).toBe("Bot name");
+    const out = auditText(`\u202E${"m".repeat(200)}`);
+    expect([...out]).toHaveLength(80);
+    expect(out).not.toMatch(/\u202E/);
+    // Astral characters count once, never cut in half.
+    expect([...auditText("\u{1F600}".repeat(100))]).toHaveLength(80);
+  });
+
+  it("an agent's client name reaches both rows through it", async () => {
+    const name = "Audit Agent (build 42)";
+    const t = await oauthToken(uniq("ev-agent-text"), name);
+    const grantId = t.accessToken.split(":")[1] ?? "";
+    const [g] = await rows("agent.grant", grantId);
+    expect(JSON.parse(g?.detail ?? "").clientName).toBe(name);
+    await api(app, R.oauthClient(grantId), t.member.cookie, {
+      method: "DELETE",
+    });
+    const [v] = await rows("agent.revoke", grantId);
+    expect(JSON.parse(v?.detail ?? "").clientName).toBe(name);
+  });
+
+  it("the grant row's target is the grant id, else the client id", () => {
+    expect(
+      grantTargetId(
+        "https://x.test/cb?code=user1:grantA_b-9:secret&state=s",
+        "client1",
+      ),
+    ).toBe("grantA_b-9");
+    for (const bad of [
+      "https://x.test/cb?state=s",
+      "https://x.test/cb?code=nocolons",
+      "https://x.test/cb?code=u::s",
+      "not a url",
+    ])
+      expect(grantTargetId(bad, "client1")).toBe("client1");
   });
 });
 

@@ -17,7 +17,15 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Maximize2, MessageSquare, MessageSquarePlus } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ApiClientError } from "../api/client";
 import {
   qk,
@@ -37,6 +45,112 @@ import { useOfferUndo } from "./useOfferUndo";
 import { versionDate } from "./versionDate";
 
 const TITLE_MAX = 200;
+/** #2503: the title keeps at least this many characters before anything else gives way. */
+const TITLE_FLOOR = 10;
+/**
+ * Between the phone layout and the wide one (#2486): the bar stays one row.
+ * The exact complement of PHONE_QUERY (width <= 600px) and WIDE_QUERY
+ * (width >= 960px), as are the `[@media(width>600px)_and_(width<960px)]`
+ * classes, so no width (a zoom between 600 and 601px) mixes two layouts.
+ */
+export const BETWEEN = "(width > 600px) and (width < 960px)";
+const between = {
+  subscribe: (cb: () => void) => {
+    const m = window.matchMedia?.(BETWEEN);
+    m?.addEventListener?.("change", cb);
+    return () => m?.removeEventListener?.("change", cb);
+  },
+  get: () => window.matchMedia?.(BETWEEN).matches ?? false,
+};
+/** Stages the one-row bar gives way in (#2503): Comments to its icon, then the visibility chip, then the pill's "for you". */
+export const BAR_STAGES = 3;
+
+/**
+ * #2503: the one-row bar (over 600px, under 960px) gives way a step at a time while it
+ * overflows or cuts the title below its floor (see shortfall). Each step notes the width the row needed at the
+ * step before, and steps back only once the bar is that wide again, so no
+ * width flips between two stages. A change of content starts again from 0;
+ * every step runs in a layout effect, before paint, and stops at BAR_STAGES.
+ */
+/**
+ * How much wider the bar would need to be: its own overflow, or how far the
+ * title is cut below TITLE_FLOOR characters (the first TITLE_FLOOR characters
+ * plus room for the ellipsis; a shorter title, its whole width).
+ */
+const shortfall = (el: HTMLElement) => {
+  const over = el.scrollWidth - el.clientWidth;
+  const h1 = el.querySelector("h1");
+  const text = (h1?.querySelector("button") ?? h1) as HTMLElement | null;
+  const node = text?.firstChild;
+  let cut = 0;
+  if (text && node?.nodeType === Node.TEXT_NODE) {
+    const r = document.createRange();
+    r.setStart(node, 0);
+    r.setEnd(node, Math.min(TITLE_FLOOR, node.textContent?.length ?? 0));
+    const em = Number.parseFloat(getComputedStyle(text).fontSize) || 16;
+    const floor = Math.min(
+      text.scrollWidth,
+      r.getBoundingClientRect().width + 0.8 * em,
+    );
+    cut = Math.ceil(floor - text.clientWidth);
+  }
+  return Math.max(0, over, cut);
+};
+
+export function useBarStage(
+  ref: RefObject<HTMLElement | null>,
+  active: boolean,
+  content: string,
+) {
+  const [stage, setStage] = useState(0);
+  const [, tick] = useState(0);
+  const need = useRef<number[]>([]);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !active || typeof ResizeObserver === "undefined") return;
+    let w = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== w) {
+        w = el.clientWidth;
+        setStage((s) => {
+          let n = s;
+          while (n > 0 && w >= (need.current[n] ?? Number.POSITIVE_INFINITY))
+            n--;
+          return n;
+        });
+      }
+      // Either way a render re-checks the overflow below.
+      tick((t) => t + 1);
+    });
+    ro.observe(el);
+    // A group changing size (a late font, the live chip) re-checks too.
+    for (const c of Array.from(el.children)) ro.observe(c);
+    return () => ro.disconnect();
+  }, [ref, active]);
+  const key = `${active}|${content}`;
+  const was = useRef(key);
+  // After every render: one step while the row overflows. New content (the
+  // pill comes or goes, a count, the title) measures afresh from 0, in this
+  // same effect so no step lands on top of the reset.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (was.current !== key) {
+      was.current = key;
+      need.current = [];
+      if (stage !== 0) {
+        setStage(0);
+        return;
+      }
+    }
+    if (!active || !el || stage >= BAR_STAGES) return;
+    const over = shortfall(el);
+    if (over > 0) {
+      need.current[stage + 1] = el.clientWidth + over;
+      setStage(stage + 1);
+    }
+  });
+  return active ? stage : 0;
+}
 /** The page h1: Design's 20/600. */
 const H1 =
   "min-w-0 truncate text-[length:var(--oa-text-xl)] leading-tight font-semibold";
@@ -114,6 +228,11 @@ function EditableTitle({ artifact }: { artifact: ArtifactSummary }) {
 
 /** Full screen's icon: lucide Maximize2 at 14px, 4px from the label. */
 const MAXIMIZE = <Maximize2 className="size-3.5" aria-hidden="true" />;
+/** #2486: over 600px and under 960px Full screen is its icon; the label stays its name. */
+const FS_LABEL = "[@media(width>600px)_and_(width<960px)]:sr-only";
+/** #2486: the Comments button looks pressed while the panel shows the list (over 600px, under 960px). */
+const PRESSED =
+  "[@media(width>600px)_and_(width<960px)]:aria-expanded:border-[var(--oa-border-strong)] [@media(width>600px)_and_(width<960px)]:aria-expanded:bg-[var(--oa-sunken)] [@media(width>600px)_and_(width<960px)]:aria-expanded:shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)]";
 
 export function TitleBar({
   artifact,
@@ -129,8 +248,11 @@ export function TitleBar({
   comments,
   asks,
 }: {
-  /** #1614: unanswered asks addressed to the viewer; absent when the page has no asks. */
-  asks?: { count: number; onClick: () => void };
+  /**
+   * #1614: unanswered asks addressed to the viewer; absent when the page has no asks.
+   * `inPanel` (#2486): the open panel shows the pill itself, so the bar doesn't.
+   */
+  asks?: { count: number; onClick: () => void; inPanel?: boolean };
   /** The Comments button (#682): the open count, and what it toggles. Absent when comments are off. */
   comments?: {
     open: number;
@@ -157,6 +279,28 @@ export function TitleBar({
 }) {
   const narrow = useNarrow();
   const navigate = useNavigate();
+  // #2503: the one-row bar gives way in steps before the title drops below ~10 characters.
+  const bar = useRef<HTMLDivElement>(null);
+  const inBetween = useSyncExternalStore(
+    between.subscribe,
+    between.get,
+    () => false,
+  );
+  const pill = comments && asks && asks.count > 0 && !asks.inPanel;
+  const stage = useBarStage(
+    bar,
+    inBetween,
+    [
+      artifact.title,
+      artifact.visibility,
+      pill ? asks.count : "",
+      comments?.open,
+      comments?.selecting,
+      version,
+      !!live,
+      authed,
+    ].join("|"),
+  );
   const qc = useQueryClient();
   const del = useDeleteArtifact(artifact.id);
   const offerUndo = useOfferUndo();
@@ -240,7 +384,12 @@ export function TitleBar({
   ];
 
   return (
-    <div className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4">
+    // #2486: between phones and wide windows the title and the buttons share one line; the title truncates.
+    <div
+      ref={bar}
+      data-bar-stage={inBetween ? stage : undefined}
+      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 [@media(width>600px)_and_(width<960px)]:flex-nowrap"
+    >
       <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
         {iconFormat && <FormatIcon format={iconFormat} />}
         {canEdit ? (
@@ -248,7 +397,10 @@ export function TitleBar({
         ) : (
           <h1 className={H1}>{artifact.title}</h1>
         )}
-        <VisibilityBadge visibility={artifact.visibility} />
+        <VisibilityBadge
+          visibility={artifact.visibility}
+          iconOnly={stage >= 2}
+        />
         {viewOnly && (
           <TooltipProvider>
             <Tooltip>
@@ -273,8 +425,8 @@ export function TitleBar({
           </span>
         )}
       </div>
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%]">
-        {comments && asks && asks.count > 0 && (
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
+        {pill && (
           <ShButton
             variant="outline"
             size="xs"
@@ -285,7 +437,7 @@ export function TitleBar({
             onClick={asks.onClick}
           >
             {asks.count} ask{asks.count === 1 ? "" : "s"}
-            {narrow ? "" : " for you"}
+            {narrow || stage >= 3 ? "" : " for you"}
           </ShButton>
         )}
         {comments && asks?.count === 0 && (
@@ -303,7 +455,7 @@ export function TitleBar({
             className={
               comments.selecting
                 ? `${BAR} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
-                : BAR
+                : `${BAR} ${PRESSED}`
             }
             aria-label={
               comments.selecting
@@ -325,11 +477,18 @@ export function TitleBar({
             ) : (
               <MessageSquare aria-hidden="true" className="size-3.5" />
             )}
-            {comments.selecting
-              ? narrow
-                ? "Comment"
-                : "Comment on selection"
-              : "Comments"}{" "}
+            {comments.selecting ? (
+              narrow ? (
+                "Comment"
+              ) : (
+                "Comment on selection"
+              )
+            ) : (
+              // #2503: the first to give way in a tight bar: the icon and count alone; the name stays "Comments, 3 open".
+              <span className={stage >= 1 ? "sr-only" : undefined}>
+                Comments
+              </span>
+            )}{" "}
             {!comments.selecting && comments.open > 0 && (
               <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">
                 {comments.open}
@@ -352,7 +511,7 @@ export function TitleBar({
             v{version}
             {/* Phones show the number alone. */}
             {suffix && (
-              <span className="-ml-1 whitespace-pre max-[600px]:hidden">{` · ${suffix}`}</span>
+              <span className="-ml-1 whitespace-pre max-[960px]:hidden">{` · ${suffix}`}</span>
             )}
             {newer && !gone && <VersionsDot />}
           </ShButton>
@@ -368,7 +527,7 @@ export function TitleBar({
             disabled
           >
             {MAXIMIZE}
-            Full screen
+            <span className={FS_LABEL}>Full screen</span>
           </ShButton>
         ) : (
           <ShButton
@@ -379,7 +538,7 @@ export function TitleBar({
           >
             <a href={full} target="_blank" rel="noopener noreferrer">
               {MAXIMIZE}
-              Full screen
+              <span className={FS_LABEL}>Full screen</span>
             </a>
           </ShButton>
         )}

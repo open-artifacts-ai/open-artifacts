@@ -12,6 +12,28 @@ const seg = (s: string): string => {
 export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
+  /** GET (?cursor) -> Inbox: needs-you, later and update items for the caller. */
+  meInbox: "/api/v1/me/inbox",
+  /** POST InboxReadBody (`{ ids }`, at most 200) -> 204. Marks those items read. */
+  meInboxRead: "/api/v1/me/inbox/read",
+  /** POST -> 204. Marks every update read. */
+  meInboxReadAll: "/api/v1/me/inbox/read-all",
+  /** POST InboxLaterBody (`{ until: "hour" | "morning" }`) -> 200 InboxItem (the deferred item). Defers a needs-you item once; a second time is 409 later_used. */
+  meInboxLater: (id: string) => `/api/v1/me/inbox/${seg(id)}/later`,
+  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204. A mute stops push only: a muted agent's or page's items (asks and updates) stay in the inbox list. */
+  meInboxMutes: "/api/v1/me/inbox/mutes",
+  /** DELETE -> 204. Unmutes one agent or page. */
+  meInboxMute: (kind: "agent" | "page", id: string) =>
+    `/api/v1/me/inbox/mutes/${seg(kind)}/${seg(id)}`,
+  /** GET -> NotificationPrefs; PUT NotificationPrefs -> NotificationPrefs. */
+  meNotificationPrefs: "/api/v1/me/notification-prefs",
+  /** GET -> PushKey (`{ publicKey }`); 404 push_unavailable when the server has no push key. */
+  mePushKey: "/api/v1/me/push/key",
+  /** GET -> PushSubscriptions; POST PushSubscribeBody -> 201 `{ id }`. */
+  mePushSubscriptions: "/api/v1/me/push/subscriptions",
+  /** DELETE -> 204. The caller's own subscription only. */
+  mePushSubscription: (id: string) =>
+    `/api/v1/me/push/subscriptions/${seg(id)}`,
   /** GET -> ShareNoticeAgents; PUT ShareNoticeAgents -> ShareNoticeAgents (replaces the list; 400 bad_request on an invalid address, details { path: "agents[i].name", reason: "invalid" | "reserved" }, or more than SHARE_NOTICE_MAX, details { path: "agents", reason: "too_many" }). The bus addresses that get "shared with you" notices; empty (the default) drops them. Callers who may connect agents (mcp.connect), their own list only; PUT takes an interactive cookie session (a PAT or OAuth grant gets 404) (#1292). */
   shareNotices: "/api/v1/bus/share-notices",
   /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. Create only: an existing artifact's id is 400 bad_request (details { path: "id", reason: "not_reserved" }); publish a new version with POST R.versions(id). (MCP publish_artifact with an id does publish a new version.) */
