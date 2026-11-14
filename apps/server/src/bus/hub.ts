@@ -4558,6 +4558,37 @@ export class BusHub extends DurableObject<Env> {
     return out;
   }
 
+  /**
+   * #2512: the agents of `identityIds` in this member's own hub that say they
+   * wait on their owner right now (a live row with status waiting_on_owner),
+   * and since when (ms). Returns ONLY `{identityId, since}`. At most
+   * NAMES_OF_MAX ids are read. Worker only.
+   */
+  async waitingOf(
+    identityIds: string[],
+  ): Promise<{ identityId: string; since: number }[]> {
+    if (!Array.isArray(identityIds)) return [];
+    const ids = [
+      ...new Set(identityIds.filter((x) => typeof x === "string" && x !== "")),
+    ].slice(0, NAMES_OF_MAX);
+    if (ids.length === 0) return [];
+    const rows = this.ctx.storage.sql
+      .exec<{ identityId: string; since: number | null }>(
+        `select identity_id as identityId, status_at as since from agents
+         where org_id = ? and live = 1 and status = 'waiting_on_owner'
+           and identity_id in (${ids.map(() => "?").join(",")})
+         order by status_at`,
+        OWNER_ORG_ID,
+        ...ids,
+      )
+      .toArray();
+    const out = new Map<string, number>();
+    for (const r of rows)
+      if (!out.has(r.identityId))
+        out.set(r.identityId, Number(r.since ?? this.#now()));
+    return [...out].map(([identityId, since]) => ({ identityId, since }));
+  }
+
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */
   ping(): true {
     return true;

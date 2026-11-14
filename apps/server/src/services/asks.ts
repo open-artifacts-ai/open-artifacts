@@ -1,7 +1,11 @@
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
-import type { StoredParty, StoredThread } from "../runtime/comments-store.js";
+import type {
+  StoredComment,
+  StoredParty,
+  StoredThread,
+} from "../runtime/comments-store.js";
 
 /**
  * The asks index (#1623): artifact_asks, in D1, so the library can count and
@@ -26,16 +30,50 @@ async function guarded(
   op: string,
   artifactId: string,
   run: () => Promise<unknown>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await run();
+    return true;
   } catch (e) {
     logWarn("asks_index_failed", e, { op, artifactId });
+    return false;
   }
 }
 
+/** #2512: what the inbox shows of an ask, kept on its rows. */
+export type AskInfo = {
+  question: string;
+  asker: string;
+  askedAt: string;
+  confirm: number;
+};
+
+/** The inbox fields of the ask on `c` (the caller checked it has one). */
+export const askInfo = (c: StoredComment): AskInfo => ({
+  question: c.ask?.question ?? "",
+  asker: JSON.stringify(c.author),
+  askedAt: c.createdAt,
+  confirm:
+    c.ask?.confirm === "passkey" || c.ask?.options.some((o) => o.action)
+      ? 1
+      : 0,
+});
+
+/**
+ * Who holds a row for an ask: its addressees and decider, but a risky ask
+ * (confirm = 1) only its decider, as no one else's pick can stand in (#2512).
+ */
+const rowPeople = (
+  to: StoredParty[],
+  decider: string | undefined,
+  confirm: number,
+): string[] =>
+  confirm === 1 && decider
+    ? [decider]
+    : [...new Set([...addressees(to), ...(decider ? [decider] : [])])];
+
 const INSERT =
-  "insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered) values (?, ?, ?, ?, ?, ?)";
+  "insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 /** A new ask: one open row per addressee. */
 export const indexAsk = (
@@ -45,13 +83,24 @@ export const indexAsk = (
   commentId: string,
   to: StoredParty[],
   /** #2381: the decider (default: the asker's own user) waits on the ask too, asked or not. */
-  decider?: string,
+  decider: string | undefined,
+  info: AskInfo,
 ) =>
   guarded("create", artifactId, () =>
     env.DB.batch(
-      [...new Set([...addressees(to), ...(decider ? [decider] : [])])].map(
-        (who) =>
-          stmt(env.DB, INSERT).bind(artifactId, threadId, commentId, who, 1, 0),
+      rowPeople(to, decider, info.confirm).map((who) =>
+        stmt(env.DB, INSERT).bind(
+          artifactId,
+          threadId,
+          commentId,
+          who,
+          1,
+          0,
+          info.question,
+          info.asker,
+          info.askedAt,
+          info.confirm,
+        ),
       ),
     ),
   );
@@ -100,14 +149,25 @@ export const indexTakenBack = (
   to: StoredParty[],
   asker: string,
   oldDecider: string,
-  /** A confirm or action ask: only the decider has a row, so the old decider's goes even if asked. */
-  risky = false,
+  /** A confirm or action ask (info.confirm 1): only the decider has a row, so the old decider's goes even if asked. */
+  info: AskInfo,
 ) =>
   guarded("take_back", artifactId, () =>
     env.DB.batch([
-      stmt(env.DB, INSERT).bind(artifactId, threadId, commentId, asker, 1, 0),
+      stmt(env.DB, INSERT).bind(
+        artifactId,
+        threadId,
+        commentId,
+        asker,
+        1,
+        0,
+        info.question,
+        info.asker,
+        info.askedAt,
+        info.confirm,
+      ),
       ...(oldDecider !== asker &&
-      (risky || !addressees(to).includes(oldDecider))
+      (info.confirm === 1 || !addressees(to).includes(oldDecider))
         ? [
             stmt(
               env.DB,
@@ -163,6 +223,10 @@ type Row = {
   addressee: string;
   open: number;
   answered: number;
+  question: string | null;
+  asker: string | null;
+  asked_at: string | null;
+  confirm: number | null;
 };
 
 /** The artifact's index rows, or null when D1 fails (then nothing is reconciled). */
@@ -173,7 +237,7 @@ export async function askRows(
   try {
     const { results } = await stmt(
       env.DB,
-      "select thread_id, comment_id, addressee, open, answered from artifact_asks where artifact_id = ?",
+      "select thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm from artifact_asks where artifact_id = ?",
     )
       .bind(artifactId)
       .all<Row>();
@@ -205,7 +269,8 @@ export const reconcileAsks = (
       for (const c of t.comments) {
         if (!c.ask) continue;
         const decider = c.ask.decider ?? c.author.ref;
-        for (const who of new Set([...addressees(c.ask.to), decider])) {
+        const info = askInfo(c);
+        for (const who of rowPeople(c.ask.to, decider, info.confirm)) {
           // The decision closes it for all; a weigh-in only for the one who made it (#2381).
           const answered =
             c.ask.answer || c.ask.history?.some((p) => p.by.ref === who)
@@ -218,6 +283,10 @@ export const reconcileAsks = (
             addressee: who,
             open,
             answered,
+            question: info.question,
+            asker: info.asker,
+            asked_at: info.askedAt,
+            confirm: info.confirm,
           });
         }
       }
@@ -227,7 +296,15 @@ export const reconcileAsks = (
     const ops: D1PreparedStatement[] = [];
     for (const [k, w] of want) {
       const h = have.get(k);
-      if (!h || h.open !== w.open || h.answered !== w.answered)
+      if (
+        !h ||
+        h.open !== w.open ||
+        h.answered !== w.answered ||
+        h.question !== w.question ||
+        h.asker !== w.asker ||
+        h.asked_at !== w.asked_at ||
+        h.confirm !== w.confirm
+      )
         ops.push(
           stmt(env.DB, INSERT).bind(
             artifactId,
@@ -236,6 +313,10 @@ export const reconcileAsks = (
             w.addressee,
             w.open,
             w.answered,
+            w.question,
+            w.asker,
+            w.asked_at,
+            w.confirm,
           ),
         );
     }

@@ -27,7 +27,7 @@ import {
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logError, logInfo } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import {
   bodyOk,
   type NewExtras,
@@ -60,6 +60,7 @@ import { activation } from "./analytics.js";
 import {
   addresseeOf,
   addressees,
+  askInfo,
   askRows,
   indexAnswered,
   indexAsk,
@@ -953,6 +954,53 @@ export async function listComments(
   };
 }
 
+/**
+ * #2512: repairs the artifact's asks index from its Durable Object (the same
+ * reconcile a full comments read runs). True only when the read and the write
+ * both succeeded and the list was complete (not truncated): only then does a
+ * row still unfilled mean the comment is not an open ask.
+ */
+export async function repairAsks(
+  env: Env,
+  artifactId: string,
+): Promise<boolean> {
+  const rows = await askRows(env, artifactId);
+  if (!rows) return false;
+  let r: Awaited<ReturnType<ReturnType<typeof stub>["commentsList"]>>;
+  try {
+    r = await call(() => stub(env, artifactId).commentsList("all"));
+  } catch (e) {
+    logWarn("asks_repair_read_failed", e, { artifactId });
+    return false;
+  }
+  if (r.truncated) {
+    await reconcileAsks(env, artifactId, r.threads, true, rows);
+    return false;
+  }
+  return reconcileAsks(env, artifactId, r.threads, false, rows);
+}
+
+/**
+ * #2512: the asker of each inbox ask as the comments API shows them to
+ * `viewer` (the same builder, so masking and current agent names apply alike).
+ * One call for all of them.
+ */
+export async function askerFaces(
+  env: Env,
+  viewer: CommentViewer,
+  actors: StoredActor[],
+): Promise<CommentAuthor[]> {
+  const ids = new Set<string>();
+  for (const a of actors) if (a.kind === "user") ids.add(a.ref);
+  const ctx = await ctxFor(
+    env,
+    ids,
+    actors.some((a) => a.agent),
+    { comments: [], actors },
+  );
+  return actors.map((a) => authorView(a, viewer, ctx));
+}
+
 // ------------------------------------------------------------------- writes
 
 /** Where a new comment's `comment` notice goes: after the response when there is a ctx. */
@@ -1503,6 +1551,7 @@ async function addThreadInner(
       root.id,
       root.ask.to,
       root.ask.decider ?? root.author.ref,
+      askInfo(root),
     );
   if (root && r.agents.length > 0) {
     const sent = await deliver(env, a, t.id, root, r);
@@ -1776,6 +1825,7 @@ async function addReplyInner(
       c.id,
       c.ask.to,
       c.ask.decider ?? c.author.ref,
+      askInfo(c),
     );
   const row = await stmt(
     env.DB,
@@ -2061,7 +2111,7 @@ export async function takeBackAsk(
       c.ask.to,
       c.author.ref,
       deciderOf(before.ask, before.author),
-      c.ask.confirm === "passkey" || c.ask.options.some((o) => o.action),
+      askInfo(c),
     );
   return commentView(env, c, viewer);
 }

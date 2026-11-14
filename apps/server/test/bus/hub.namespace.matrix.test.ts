@@ -662,6 +662,8 @@ describe("RPC surface", () => {
       "viewLinkProposal",
       "viewReachProposal",
       "viewRoleProposal",
+      // #2512: read-only; returns identity ids and times only.
+      "waitingOf",
       "wipe",
       "withdrawHeld",
     ]);
