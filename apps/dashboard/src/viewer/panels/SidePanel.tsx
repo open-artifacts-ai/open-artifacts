@@ -46,9 +46,12 @@ export function SidePanel({
   onTab,
   onClose,
   comments,
+  commentsCount,
 }: {
   /** The Comments tab's body; without it the tab is not offered. */
   comments?: ReactNode;
+  /** #2486: the open count, shown on the Comments tab (between phones and wide windows). */
+  commentsCount?: number;
   artifact: ArtifactSummary;
   /** The version the viewer shows. */
   version: number;
@@ -149,8 +152,23 @@ export function SidePanel({
                     key={t}
                     value={t}
                     className={`h-[34px] flex-none rounded-sm px-2 focus-visible:-outline-offset-2 ${TXT} ${PROGRAMMATIC}`}
+                    aria-label={
+                      t === "comments" && commentsCount
+                        ? `Comments, ${commentsCount} open`
+                        : undefined
+                    }
                   >
                     {LABELS[t]}
+                    {/* A space: the visible "Comments 3" is inside the name "Comments, 3 open". */}
+                    {t === "comments" && !!commentsCount && " "}
+                    {t === "comments" && !!commentsCount && (
+                      <span
+                        data-tab-count=""
+                        className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground"
+                      >
+                        {commentsCount}
+                      </span>
+                    )}
                   </TabsTrigger>
                 ))}
               </TabsList>

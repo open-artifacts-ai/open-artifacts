@@ -30,7 +30,12 @@ import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
-import { CommentsBody, PinBar, PinBeside } from "./comments/CommentsBody";
+import {
+  CommentsBody,
+  CompactComments,
+  PinBar,
+  PinBeside,
+} from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -676,6 +681,8 @@ function Viewer({
     commentsOn && asks
       ? {
           count: asks.count,
+          // #2486: between phones and wide windows the open list has its own pill.
+          inPanel: surface === "panel" && panelOpen && tab === "comments",
           onClick: () => {
             const id = nextAskFor(cmt, cmt.active, { includeSelf: true });
             if (!id) return;
@@ -889,8 +896,14 @@ function Viewer({
               authed={authed}
               comments={
                 commentsTab ? (
-                  <CommentsBody textFormat={textFormat} />
+                  <CompactComments value={surface === "panel"}>
+                    <CommentsBody textFormat={textFormat} />
+                  </CompactComments>
                 ) : undefined
+              }
+              // #2486: between phones and wide windows the open count is on the tab, not in a band.
+              commentsCount={
+                surface === "panel" && commentsTab ? cmt.listedOpen : undefined
               }
               tab={tab}
               onTab={(t) => setPanel(true, t)}
