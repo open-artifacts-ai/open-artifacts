@@ -181,12 +181,9 @@ describe("between phones and wide windows (#2486)", () => {
     );
   });
 
-  it("the icon-only Comments button (601px to 639px) keeps its name", async () => {
+  it("Full screen is its icon and keeps its name", async () => {
     mount(viewerPath(OWNED));
-    const b = await screen.findByRole("button", { name: "Comments, 1 open" });
-    const label = within(b).getByText("Comments");
-    expect(label.className).toContain("min-[601px]:max-[639.98px]:sr-only");
-    // Full screen is its icon, named by its sr-only label.
+    await screen.findByRole("button", { name: "Comments, 1 open" });
     const fs = screen.getByRole("link", { name: "Full screen" });
     expect(within(fs).getByText("Full screen").className).toContain(
       "min-[601px]:max-[959.98px]:sr-only",

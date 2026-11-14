@@ -17,7 +17,15 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Maximize2, MessageSquare, MessageSquarePlus } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ApiClientError } from "../api/client";
 import {
   qk,
@@ -37,6 +45,107 @@ import { useOfferUndo } from "./useOfferUndo";
 import { versionDate } from "./versionDate";
 
 const TITLE_MAX = 200;
+/** #2503: the title keeps at least this many characters before anything else gives way. */
+const TITLE_FLOOR = 10;
+/** Between the phone layout and the wide one (#2486): the bar stays one row. */
+const BETWEEN = "(min-width: 601px) and (max-width: 959.98px)";
+const between = {
+  subscribe: (cb: () => void) => {
+    const m = window.matchMedia?.(BETWEEN);
+    m?.addEventListener?.("change", cb);
+    return () => m?.removeEventListener?.("change", cb);
+  },
+  get: () => window.matchMedia?.(BETWEEN).matches ?? false,
+};
+/** Stages the one-row bar gives way in (#2503): Comments to its icon, then the visibility chip, then the pill's "for you". */
+export const BAR_STAGES = 3;
+
+/**
+ * #2503: the one-row bar (601px to 959px) gives way a step at a time while it
+ * overflows or cuts the title below its floor (see shortfall). Each step notes the width the row needed at the
+ * step before, and steps back only once the bar is that wide again, so no
+ * width flips between two stages. A change of content starts again from 0;
+ * every step runs in a layout effect, before paint, and stops at BAR_STAGES.
+ */
+/**
+ * How much wider the bar would need to be: its own overflow, or how far the
+ * title is cut below TITLE_FLOOR characters (the first TITLE_FLOOR characters
+ * plus room for the ellipsis; a shorter title, its whole width).
+ */
+const shortfall = (el: HTMLElement) => {
+  const over = el.scrollWidth - el.clientWidth;
+  const h1 = el.querySelector("h1");
+  const text = (h1?.querySelector("button") ?? h1) as HTMLElement | null;
+  const node = text?.firstChild;
+  let cut = 0;
+  if (text && node?.nodeType === Node.TEXT_NODE) {
+    const r = document.createRange();
+    r.setStart(node, 0);
+    r.setEnd(node, Math.min(TITLE_FLOOR, node.textContent?.length ?? 0));
+    const em = Number.parseFloat(getComputedStyle(text).fontSize) || 16;
+    const floor = Math.min(
+      text.scrollWidth,
+      r.getBoundingClientRect().width + 0.8 * em,
+    );
+    cut = Math.ceil(floor - text.clientWidth);
+  }
+  return Math.max(0, over, cut);
+};
+
+export function useBarStage(
+  ref: RefObject<HTMLElement | null>,
+  active: boolean,
+  content: string,
+) {
+  const [stage, setStage] = useState(0);
+  const [, tick] = useState(0);
+  const need = useRef<number[]>([]);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !active || typeof ResizeObserver === "undefined") return;
+    let w = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== w) {
+        w = el.clientWidth;
+        setStage((s) => {
+          let n = s;
+          while (n > 0 && w >= (need.current[n] ?? Number.POSITIVE_INFINITY))
+            n--;
+          return n;
+        });
+      }
+      // Either way a render re-checks the overflow below.
+      tick((t) => t + 1);
+    });
+    ro.observe(el);
+    // A group changing size (a late font, the live chip) re-checks too.
+    for (const c of Array.from(el.children)) ro.observe(c);
+    return () => ro.disconnect();
+  }, [ref, active]);
+  const key = `${active}|${content}`;
+  const was = useRef(key);
+  // After every render: one step while the row overflows. New content (the
+  // pill comes or goes, a count, the title) measures afresh from 0, in this
+  // same effect so no step lands on top of the reset.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (was.current !== key) {
+      was.current = key;
+      need.current = [];
+      if (stage !== 0) {
+        setStage(0);
+        return;
+      }
+    }
+    if (!active || !el || stage >= BAR_STAGES) return;
+    const over = shortfall(el);
+    if (over > 0) {
+      need.current[stage + 1] = el.clientWidth + over;
+      setStage(stage + 1);
+    }
+  });
+  return active ? stage : 0;
+}
 /** The page h1: Design's 20/600. */
 const H1 =
   "min-w-0 truncate text-[length:var(--oa-text-xl)] leading-tight font-semibold";
@@ -165,6 +274,28 @@ export function TitleBar({
 }) {
   const narrow = useNarrow();
   const navigate = useNavigate();
+  // #2503: the one-row bar gives way in steps before the title drops below ~10 characters.
+  const bar = useRef<HTMLDivElement>(null);
+  const inBetween = useSyncExternalStore(
+    between.subscribe,
+    between.get,
+    () => false,
+  );
+  const pill = comments && asks && asks.count > 0 && !asks.inPanel;
+  const stage = useBarStage(
+    bar,
+    inBetween,
+    [
+      artifact.title,
+      artifact.visibility,
+      pill ? asks.count : "",
+      comments?.open,
+      comments?.selecting,
+      version,
+      !!live,
+      authed,
+    ].join("|"),
+  );
   const qc = useQueryClient();
   const del = useDeleteArtifact(artifact.id);
   const offerUndo = useOfferUndo();
@@ -249,7 +380,11 @@ export function TitleBar({
 
   return (
     // #2486: between phones and wide windows the title and the buttons share one line; the title truncates.
-    <div className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 min-[601px]:max-[959.98px]:flex-nowrap">
+    <div
+      ref={bar}
+      data-bar-stage={inBetween ? stage : undefined}
+      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 min-[601px]:max-[959.98px]:flex-nowrap"
+    >
       <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
         {iconFormat && <FormatIcon format={iconFormat} />}
         {canEdit ? (
@@ -257,7 +392,10 @@ export function TitleBar({
         ) : (
           <h1 className={H1}>{artifact.title}</h1>
         )}
-        <VisibilityBadge visibility={artifact.visibility} />
+        <VisibilityBadge
+          visibility={artifact.visibility}
+          iconOnly={stage >= 2}
+        />
         {viewOnly && (
           <TooltipProvider>
             <Tooltip>
@@ -283,7 +421,7 @@ export function TitleBar({
         )}
       </div>
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] min-[601px]:max-[959.98px]:flex-none min-[601px]:max-[959.98px]:flex-nowrap">
-        {comments && asks && asks.count > 0 && !asks.inPanel && (
+        {pill && (
           <ShButton
             variant="outline"
             size="xs"
@@ -294,7 +432,7 @@ export function TitleBar({
             onClick={asks.onClick}
           >
             {asks.count} ask{asks.count === 1 ? "" : "s"}
-            {narrow ? "" : " for you"}
+            {narrow || stage >= 3 ? "" : " for you"}
           </ShButton>
         )}
         {comments && asks?.count === 0 && (
@@ -341,8 +479,8 @@ export function TitleBar({
                 "Comment on selection"
               )
             ) : (
-              // #2486: from 601px to 639px the icon and the count alone; the name stays "Comments, 3 open".
-              <span className="min-[601px]:max-[639.98px]:sr-only">
+              // #2503: the first to give way in a tight bar: the icon and count alone; the name stays "Comments, 3 open".
+              <span className={stage >= 1 ? "sr-only" : undefined}>
                 Comments
               </span>
             )}{" "}

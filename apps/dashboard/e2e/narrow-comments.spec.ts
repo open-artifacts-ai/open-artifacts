@@ -120,7 +120,7 @@ for (const w of [760, 620])
       const label = page
         .locator(".oa-vt")
         .getByText("Comments", { exact: true });
-      // Under 640px the button keeps its icon and count; its name is unchanged.
+      // #2503: a tight bar gives way (at 620 every step is taken); the name is unchanged.
       if (w < 640) await expect(label).toHaveClass(/sr-only/);
       else await expect(label).toBeVisible();
       await expect(commentsButton(page)).toHaveAccessibleName(
@@ -273,4 +273,84 @@ for (const w of [390, 1280])
       );
       await expect(page.locator(".oa-vt [data-asks-for-you]")).toBeVisible();
     }
+  });
+
+// #2503: as the one-row bar runs out of room it gives way in order (Comments
+// to its icon, the visibility chip to its lock, the pill to "1 ask"), and the
+// title keeps about 10 characters.
+async function barState(page: Page) {
+  // Two frames: the resize observer, then the layout effects it starts.
+  await page.evaluate(
+    () =>
+      new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+  );
+  return page.evaluate(() => {
+    const bar = document.querySelector<HTMLElement>(".oa-vt");
+    const h1 = bar?.querySelector<HTMLElement>("h1");
+    const text = h1?.querySelector("button")?.firstChild ?? h1?.firstChild;
+    const r = document.createRange();
+    if (text) {
+      r.setStart(text, 0);
+      r.setEnd(text, Math.min(10, text.textContent?.length ?? 0));
+    }
+    const sr = (el: Element | null | undefined) =>
+      !!el && getComputedStyle(el).position === "absolute";
+    const badge = [...(bar?.querySelectorAll("[data-slot=badge]") ?? [])].find(
+      (b) => b.textContent?.includes("Private"),
+    );
+    const comments = [...(bar?.querySelectorAll("button span") ?? [])].find(
+      (s) => s.textContent === "Comments",
+    );
+    const pill = bar?.querySelector<HTMLElement>("[data-asks-for-you]");
+    return {
+      stage: Number(bar?.dataset.barStage),
+      over: (bar?.scrollWidth ?? 0) - (bar?.clientWidth ?? 0),
+      title: h1?.clientWidth ?? 0,
+      ten: r.getBoundingClientRect().width,
+      commentsIcon: sr(comments),
+      lockIcon: sr(badge?.querySelector("span.sr-only")),
+      pill: pill?.innerText.trim(),
+      pillName: pill?.getAttribute("aria-label"),
+    };
+  });
+}
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: the bar gives way in order and the title keeps ~10 characters`, async ({
+    page,
+  }) => {
+    await open(page, 959, theme);
+    const seen = new Map<number, number>();
+    const widths = [
+      959, 900, 840, 800, 760, 740, 720, 700, 680, 660, 640, 630, 620, 610, 601,
+    ];
+    for (const w of [...widths, ...[...widths].reverse()]) {
+      await page.setViewportSize({ width: w, height: 800 });
+      await page.waitForFunction((w) => window.innerWidth === w, w);
+      const s = await barState(page);
+      const at = `${w}px ${JSON.stringify(s)}`;
+      // The same width always lands on the same stage, shrinking or growing.
+      if (seen.has(w)) expect(s.stage, at).toBe(seen.get(w));
+      seen.set(w, s.stage);
+      expect(s.over, at).toBeLessThanOrEqual(0);
+      expect(s.title, at).toBeGreaterThanOrEqual(Math.floor(s.ten));
+      expect(s.commentsIcon, at).toBe(s.stage >= 1);
+      expect(s.lockIcon, at).toBe(s.stage >= 2);
+      expect(s.pill, at).toBe(s.stage >= 3 ? "1 ask" : "1 ask for you");
+      expect(s.pillName, at).toBe("1 ask for you");
+    }
+    // Narrower never means an earlier stage, and every step is taken somewhere.
+    const stages = widths.map((w) => seen.get(w) ?? -1);
+    for (let i = 1; i < stages.length; i++)
+      expect(stages[i], `${widths[i]}px`).toBeGreaterThanOrEqual(
+        stages[i - 1] ?? 0,
+      );
+    expect(new Set(stages)).toEqual(new Set([0, 1, 2, 3]));
+    // The chip's name stays "Private".
+    await expect(page.locator(".oa-vt").getByText("Private")).toBeAttached();
+    // Opening the panel takes the pill out of the bar: Comments has room again.
+    await page.setViewportSize({ width: 700, height: 800 });
+    await commentsButton(page).click();
+    const s = await barState(page);
+    expect(s.stage).toBeLessThan(1);
   });
