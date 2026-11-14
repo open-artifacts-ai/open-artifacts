@@ -114,6 +114,11 @@ function EditableTitle({ artifact }: { artifact: ArtifactSummary }) {
 
 /** Full screen's icon: lucide Maximize2 at 14px, 4px from the label. */
 const MAXIMIZE = <Maximize2 className="size-3.5" aria-hidden="true" />;
+/** #2486: between 601px and 959px Full screen is its icon; the label stays its name. */
+const FS_LABEL = "min-[601px]:max-[959.98px]:sr-only";
+/** #2486: the Comments button looks pressed while the panel shows the list (601px to 959px). */
+const PRESSED =
+  "min-[601px]:max-[959.98px]:aria-expanded:border-[var(--oa-border-strong)] min-[601px]:max-[959.98px]:aria-expanded:bg-[var(--oa-sunken)] min-[601px]:max-[959.98px]:aria-expanded:shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)]";
 
 export function TitleBar({
   artifact,
@@ -129,8 +134,11 @@ export function TitleBar({
   comments,
   asks,
 }: {
-  /** #1614: unanswered asks addressed to the viewer; absent when the page has no asks. */
-  asks?: { count: number; onClick: () => void };
+  /**
+   * #1614: unanswered asks addressed to the viewer; absent when the page has no asks.
+   * `inPanel` (#2486): the open panel shows the pill itself, so the bar doesn't.
+   */
+  asks?: { count: number; onClick: () => void; inPanel?: boolean };
   /** The Comments button (#682): the open count, and what it toggles. Absent when comments are off. */
   comments?: {
     open: number;
@@ -240,7 +248,8 @@ export function TitleBar({
   ];
 
   return (
-    <div className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4">
+    // #2486: between phones and wide windows the title and the buttons share one line; the title truncates.
+    <div className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 min-[601px]:max-[959.98px]:flex-nowrap">
       <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
         {iconFormat && <FormatIcon format={iconFormat} />}
         {canEdit ? (
@@ -273,8 +282,8 @@ export function TitleBar({
           </span>
         )}
       </div>
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%]">
-        {comments && asks && asks.count > 0 && (
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] min-[601px]:max-[959.98px]:flex-none min-[601px]:max-[959.98px]:flex-nowrap">
+        {comments && asks && asks.count > 0 && !asks.inPanel && (
           <ShButton
             variant="outline"
             size="xs"
@@ -303,7 +312,7 @@ export function TitleBar({
             className={
               comments.selecting
                 ? `${BAR} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
-                : BAR
+                : `${BAR} ${PRESSED}`
             }
             aria-label={
               comments.selecting
@@ -325,11 +334,18 @@ export function TitleBar({
             ) : (
               <MessageSquare aria-hidden="true" className="size-3.5" />
             )}
-            {comments.selecting
-              ? narrow
-                ? "Comment"
-                : "Comment on selection"
-              : "Comments"}{" "}
+            {comments.selecting ? (
+              narrow ? (
+                "Comment"
+              ) : (
+                "Comment on selection"
+              )
+            ) : (
+              // #2486: from 601px to 639px the icon and the count alone; the name stays "Comments, 3 open".
+              <span className="min-[601px]:max-[639.98px]:sr-only">
+                Comments
+              </span>
+            )}{" "}
             {!comments.selecting && comments.open > 0 && (
               <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">
                 {comments.open}
@@ -352,7 +368,7 @@ export function TitleBar({
             v{version}
             {/* Phones show the number alone. */}
             {suffix && (
-              <span className="-ml-1 whitespace-pre max-[600px]:hidden">{` · ${suffix}`}</span>
+              <span className="-ml-1 whitespace-pre max-[959.98px]:hidden">{` · ${suffix}`}</span>
             )}
             {newer && !gone && <VersionsDot />}
           </ShButton>
@@ -368,7 +384,7 @@ export function TitleBar({
             disabled
           >
             {MAXIMIZE}
-            Full screen
+            <span className={FS_LABEL}>Full screen</span>
           </ShButton>
         ) : (
           <ShButton
@@ -379,7 +395,7 @@ export function TitleBar({
           >
             <a href={full} target="_blank" rel="noopener noreferrer">
               {MAXIMIZE}
-              Full screen
+              <span className={FS_LABEL}>Full screen</span>
             </a>
           </ShButton>
         )}

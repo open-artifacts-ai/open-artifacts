@@ -12,6 +12,8 @@ import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, FileText } from "lucide-react";
 import {
+  createContext,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -40,6 +42,7 @@ import { AuthorFace, AuthorSub, initials } from "./AuthorFace";
 import { useActionRowSlot } from "./actionRow";
 import {
   AskBlock,
+  AskFrom,
   actor,
   asksForMe,
   atomicBackspace,
@@ -159,6 +162,13 @@ export function PinBar() {
 }
 
 const MUTED = "text-muted-foreground";
+
+/**
+ * #2486: the side panel between phones and wide windows. No band, a one-line
+ * new-comment box, one box around an ask, and a 720px thread column.
+ */
+const Compact = createContext(false);
+export const CompactComments = Compact.Provider;
 
 /**
  * #1657: in the phone sheet's short height (a pin's card), the action row
@@ -424,7 +434,13 @@ function Composer({
   instant = false,
   seed,
   onLost,
+  collapse = false,
 }: {
+  /**
+   * #2486: an empty box is one line (the field alone) until it is focused,
+   * and goes back to one line when focus leaves it still empty.
+   */
+  collapse?: boolean;
   /**
    * Posting is optimistic: the box clears at once and the text comes back if
    * `onSubmit` rejects. Off for an edit, which the server may refuse.
@@ -476,6 +492,7 @@ function Composer({
   const errCtx = useCommentErrorCtx();
   const [text, setText] = useState(seed?.text ?? restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
+  const [grown, setGrown] = useState(false);
   const [error, setError] = useState<unknown>(seed?.error ?? null);
   const mounted = useRef(true);
   // A seed is used up when a box takes it: at mount it is the starting text; a
@@ -645,6 +662,19 @@ function Composer({
       }
     }
   };
+  // Words, an error or a seed keep the box grown.
+  const shut = collapse && !grown && text === "" && error == null;
+  // Focus leaving the box (field, hint, button) for somewhere else shrinks it.
+  const wrap = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = wrap.current;
+    if (!collapse || !el) return;
+    const out = (e: FocusEvent) => {
+      if (!el.contains(e.relatedTarget as Node | null)) setGrown(false);
+    };
+    el.addEventListener("focusout", out);
+    return () => el.removeEventListener("focusout", out);
+  }, [collapse]);
   const cancel = () => {
     setText(initial);
     setError(null);
@@ -654,11 +684,13 @@ function Composer({
   return (
     <div
       className={
-        card
+        card && !shut
           ? `flex flex-col gap-2 rounded-lg bg-card p-3${flat ? "" : " border border-input"}`
           : "flex flex-col gap-2"
       }
+      ref={wrap}
       data-oa-composing={composing ? "" : undefined}
+      data-collapsed={collapse ? (shut ? "" : undefined) : undefined}
     >
       {quote}
       <div className="relative rounded-md bg-card">
@@ -677,6 +709,7 @@ function Composer({
           className={`${CTXT} ${FIELD} relative z-[1] bg-transparent`}
           onFocus={() => {
             setOpen(true);
+            setGrown(true);
             retryAgents();
           }}
           onChange={(e) => {
@@ -685,7 +718,7 @@ function Composer({
             setMenuOff(false);
             setActiveOpt(0);
           }}
-          aria-describedby={card && !coarse ? hintId : undefined}
+          aria-describedby={card && !coarse && !shut ? hintId : undefined}
           aria-controls={menuOpen ? menuId : undefined}
           aria-activedescendant={
             menuOpen ? `${menuId}-${activeOpt}` : undefined
@@ -796,6 +829,7 @@ function Composer({
         </p>
       )}
       {open &&
+        !shut &&
         (() => {
           const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>
@@ -999,6 +1033,9 @@ function CommentRow({
     marks && (mentioned.length > 0 || told.length > 0),
   );
   const roving = useRoving<HTMLParagraphElement>();
+  // #2486: in the compact panel an ask's own line is the header ("X asks you ·
+  // yesterday") and its text takes the full width; replies keep face and indent.
+  const askHead = useContext(Compact) && root && !!c.ask && mode !== "edit";
   return (
     <li
       className={`flex flex-col gap-1 transition-opacity${isSending(c.id) ? " opacity-60" : ""}`}
@@ -1012,12 +1049,16 @@ function CommentRow({
         data-header-stage={tight.stage}
         className="flex items-start justify-between gap-2"
       >
-        <Who
-          a={c.author}
-          at={c.createdAt}
-          edited={c.editedAt !== null}
-          hideTime={tight.stage >= 1}
-        />
+        {askHead ? (
+          <AskFrom c={c} when className="m-0 min-w-0 self-center" />
+        ) : (
+          <Who
+            a={c.author}
+            at={c.createdAt}
+            edited={c.editedAt !== null}
+            hideTime={tight.stage >= 1}
+          />
+        )}
         <div className="flex shrink-0 items-center gap-1">
           {marks && (mentioned.length > 0 || told.length > 0) ? (
             <DeliveryFaces
@@ -1041,7 +1082,10 @@ function CommentRow({
         </div>
       </div>
       {/* #2118: the face hangs in its own column; the text lines up with the name. */}
-      <div className="flex flex-col gap-1 pl-8" data-comment-body="">
+      <div
+        className={`flex flex-col gap-1 ${askHead ? "" : "pl-8"}`}
+        data-comment-body=""
+      >
         {menu && mode === "view" && (
           <div className="flex gap-2">
             {c.can.edit && (
@@ -1099,6 +1143,8 @@ function CommentRow({
             }
             askQuestion={askQuestion}
             guest={api.guest}
+            from={!askHead}
+            boxed={!askHead}
             body={
               showsAskBody(c.body, c.ask.question) ? (
                 <div
@@ -1230,6 +1276,8 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
+  // #2486: the card is the ask's one box, gold while it needs this reader.
+  const compact = useContext(Compact);
   const reply = useReply(api.artifactId, api.guest);
   const lostReply = useLost(lostKey.reply(api.artifactId, t.id));
   const lostAsk = useLost(lostKey.ask(api.artifactId, t.id));
@@ -1346,7 +1394,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       data-thread={t.id}
       data-active={isActive ? "" : undefined}
       tabIndex={-1}
-      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-card p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
+      className={`rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-card p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring${compact ? " has-[[data-needs-you]]:border-[var(--oa-warning)] data-[active]:has-[[data-needs-you]]:border-[var(--oa-warning)]" : ""}`}
     >
       <div className="flex flex-col gap-2">
         <div className="flex items-start gap-2">
@@ -1537,7 +1585,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </>
         ) : (
           canAct && (
-            <div className="flex gap-2 pl-8">
+            // #2486: under a compact ask the row lines up with the ask's full-width text.
+            <div className={`flex gap-2 ${compact && first.ask ? "" : "pl-8"}`}>
               <Button
                 size="xs"
                 variant="outline"
@@ -1715,6 +1764,7 @@ function NewThread({
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   const lost = useLost(lostKey.note(api.artifactId));
+  const compact = useContext(Compact);
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -1730,6 +1780,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
         instant
+        collapse={compact}
         seed={lost.lost}
         onLost={lost.onLost}
         onSubmit={(body, x) => {
@@ -1775,7 +1826,7 @@ export function CommentsBody({
   /** The phone sheet's short height, kept for reading one pinned card (#1783). */
   short = false,
   /** The "Comments" heading with the open count; the phone sheet has its own row. */
-  heading = true,
+  heading: headingProp = true,
 }: {
   heading?: boolean;
   textFormat?: boolean;
@@ -1783,6 +1834,9 @@ export function CommentsBody({
   short?: boolean;
 }) {
   const api = useCommentsApi();
+  // #2486: in the compact panel the tab carries the count (CompactComments).
+  const compact = useContext(Compact);
+  const heading = headingProp && !compact;
   const resolvedCount = api.threads.filter(
     (t) => t.status === "resolved",
   ).length;
@@ -1804,7 +1858,8 @@ export function CommentsBody({
     // when a card is scrolled into view. Every other surface grows as before.
     <div
       ref={box}
-      className={`flex ${grow ? "min-h-fit flex-1" : "min-h-0 flex-none"} flex-col gap-3 p-4 [overflow-anchor:none]`}
+      data-compact={compact ? "" : undefined}
+      className={`flex ${grow ? "min-h-fit flex-1" : "min-h-0 flex-none"} flex-col gap-3 p-4 [overflow-anchor:none]${compact ? " mx-auto w-full max-w-[720px]" : ""}`}
       style={
         { "--oa-live-tint-ms": `${LIVE_TINT_MS}ms` } as React.CSSProperties
       }
