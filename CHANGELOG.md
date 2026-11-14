@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.180.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.180.0...v0.180.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **landing:** one tagline everywhere ([#2505](https://github.com/open-artifacts-ai/open-artifacts/issues/2505)) ([#2507](https://github.com/open-artifacts-ai/open-artifacts/issues/2507)) ([f6033cf](https://github.com/open-artifacts-ai/open-artifacts/commit/f6033cfd89519e0f224d4ba45a12df59f1c07107))
+
 ## [0.180.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.179.0...v0.180.0) (2026-11-14)
 
 
