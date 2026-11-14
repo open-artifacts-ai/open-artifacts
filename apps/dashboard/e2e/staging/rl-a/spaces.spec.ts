@@ -201,9 +201,11 @@ test("public links off in t19-exec: Public is disabled, and anonymous /full gets
   const page = mgr.page;
   await page.goto(`/a/${id}`);
   await page.getByRole("button", { name: "Share" }).click();
-  await expect(page.getByRole("radio", { name: "Public" })).toBeDisabled();
   await expect(
-    page.getByText(`Public links are off for ${exec.name}.`),
+    page.getByRole("radio", { name: "Anyone with the link" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText(`Sharing by link is off for ${exec.name}.`),
   ).toBeVisible();
   const pub = await api(mgr, R.artifact(id), {
     method: "PATCH",

@@ -15,7 +15,7 @@ const openShare = async (page: Page) => {
   await page.waitForURL(/\/a\//);
   await page.goto(`${page.url().split("?")[0]}?panel=open&tab=share`);
   await expect(
-    page.getByRole("radiogroup", { name: "Visibility" }),
+    page.getByRole("radiogroup", { name: "General access" }),
   ).toBeVisible();
 };
 
@@ -203,11 +203,13 @@ for (const width of [1280, 375, 390])
       await page.getByRole("link", { name: "Meeting notes" }).first().click();
       await page.waitForURL(/\/a\//);
       await page.getByRole("button", { name: "Share" }).click();
-      const group = page.getByRole("radiogroup", { name: "Visibility" });
-      await expect(group.getByRole("radio", { name: "Public" })).toBeDisabled();
+      const group = page.getByRole("radiogroup", { name: "General access" });
+      await expect(
+        group.getByRole("radio", { name: "Anyone with the link" }),
+      ).toBeDisabled();
       await expect(
         page.getByText(
-          "Public links are off for Engineering. A space manager can turn them on.",
+          "Sharing by link is off for Engineering. A space manager can turn it on.",
         ),
       ).toBeVisible();
       const over = await page.evaluate(

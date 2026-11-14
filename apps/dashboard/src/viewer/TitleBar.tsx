@@ -247,7 +247,10 @@ export function TitleBar({
   gone = false,
   comments,
   asks,
+  org = "",
 }: {
+  /** #2509: the instance's name, which a team badge shows. */
+  org?: string;
   /**
    * #1614: unanswered asks addressed to the viewer; absent when the page has no asks.
    * `inPanel` (#2486): the open panel shows the pill itself, so the bar doesn't.
@@ -293,6 +296,7 @@ export function TitleBar({
     [
       artifact.title,
       artifact.visibility,
+      org,
       pill ? asks.count : "",
       comments?.open,
       comments?.selecting,
@@ -400,6 +404,7 @@ export function TitleBar({
         <VisibilityBadge
           visibility={artifact.visibility}
           iconOnly={stage >= 2}
+          org={org}
         />
         {viewOnly && (
           <TooltipProvider>

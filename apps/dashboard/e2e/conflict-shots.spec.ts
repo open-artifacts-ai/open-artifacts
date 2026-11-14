@@ -54,13 +54,15 @@ for (const scheme of ["light", "dark"] as const)
 
       test("share visibility", async ({ page }, info) => {
         await page.goto(url("share"));
-        const group = page.getByRole("radiogroup", { name: "Visibility" });
-        await group.getByRole("radio", { name: "Team" }).click();
+        const group = page.getByRole("radiogroup", { name: "General access" });
+        await group
+          .getByRole("radio", { name: "Anyone at Acme Artifacts" })
+          .click();
         await page.getByRole("button", { name: "Save visibility" }).click();
         const note = page.getByRole("status").filter({ hasText: COPY });
         await expect(note).toBeVisible();
         await expect(
-          group.getByRole("radio", { name: "Private" }),
+          group.getByRole("radio", { name: "Restricted" }),
         ).toBeChecked();
         await note.scrollIntoViewIfNeeded();
         await shot(page, info, "conflict-share");
