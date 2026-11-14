@@ -18,9 +18,9 @@ export const R = {
   meInboxRead: "/api/v1/me/inbox/read",
   /** POST -> 204. Marks every update read. */
   meInboxReadAll: "/api/v1/me/inbox/read-all",
-  /** POST InboxLaterBody (`{ until: "hour" | "morning" }`) -> 204. Defers a needs-you item once; a second time is 409 later_used. */
+  /** POST InboxLaterBody (`{ until: "hour" | "morning" }`) -> 200 InboxItem (the deferred item). Defers a needs-you item once; a second time is 409 later_used. */
   meInboxLater: (id: string) => `/api/v1/me/inbox/${seg(id)}/later`,
-  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204. Muted agents and pages stop producing update items. */
+  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204. A mute stops push only: a muted agent's or page's items (asks and updates) stay in the inbox list. */
   meInboxMutes: "/api/v1/me/inbox/mutes",
   /** DELETE -> 204. Unmutes one agent or page. */
   meInboxMute: (kind: "agent" | "page", id: string) =>

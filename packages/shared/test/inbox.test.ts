@@ -95,6 +95,20 @@ describe("notifications contract", () => {
     ).toBe(false);
   });
 
+  it("checks href by resolution", () => {
+    const el = InboxSchema.shape.needsYou.element;
+    for (const href of [
+      "/\t/evil.example",
+      "/\n/evil.example",
+      "/\r/evil.example",
+    ])
+      expect(el.safeParse({ ...item, href }).success).toBe(false);
+    const enc = "/%09/evil.example";
+    expect(new URL(enc, "https://x.invalid").origin).toBe("https://x.invalid");
+    expect(el.safeParse({ ...item, href: enc }).success).toBe(true);
+    expect(el.safeParse({ ...item, href: "/a/x#c" }).success).toBe(true);
+  });
+
   it("parses machine, away, agentId and mutes", () => {
     const el = InboxSchema.shape.needsYou.element;
     expect(

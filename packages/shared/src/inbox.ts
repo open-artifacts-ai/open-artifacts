@@ -5,13 +5,26 @@ const SameOriginPath = z
   .string()
   .max(2048)
   .refine(
-    (h) => h.startsWith("/") && !h.startsWith("//") && !h.includes("\\"),
+    (h) => {
+      if (!h.startsWith("/") || h.startsWith("//") || h.includes("\\"))
+        return false;
+      // Control characters, space and DEL are refused: URL parsers strip tabs and newlines.
+      for (let i = 0; i < h.length; i++) {
+        const c = h.charCodeAt(i);
+        if (c <= 0x20 || c === 0x7f) return false;
+      }
+      try {
+        return new URL(h, "https://x.invalid").origin === "https://x.invalid";
+      } catch {
+        return false;
+      }
+    },
     {
       message: "href must be a same-origin path",
     },
   );
 
-const Iso = z.string();
+const Iso = z.string().datetime({ offset: true });
 const Base64Url = z.string().regex(/^[A-Za-z0-9_-]+$/);
 const Hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 
@@ -50,7 +63,7 @@ export const InboxItemSchema = z.object({
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 
 export const InboxSchema = z.object({
-  needsYou: z.array(InboxItemSchema),
+  needsYou: z.array(InboxItemSchema).max(200),
   later: z.array(InboxItemSchema),
   updates: z.array(InboxItemSchema),
   cursor: z.string().nullable(),
