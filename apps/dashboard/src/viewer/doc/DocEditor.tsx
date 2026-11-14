@@ -13,6 +13,7 @@ import { clearFresh, NEW_DOC_TOAST } from "./fresh";
 import { TitleField } from "./TitleField";
 import { Toolbar } from "./Toolbar";
 import {
+  AUTH_POLL_MS,
   DOC_TOO_LARGE_CODE,
   type DocSnapshot,
   type DocStatus,
@@ -89,7 +90,8 @@ export function DocEditor(props: DocEditorProps) {
   const label: DocLabel | null =
     ended === "not_found" ||
     ended === "access_removed" ||
-    ended === "signed_out"
+    ended === "signed_out" ||
+    ended === "save_failed"
       ? null
       : !props.canEdit || role === "read"
         ? "view"
@@ -98,6 +100,24 @@ export function DocEditor(props: DocEditorProps) {
     onStatus?.(room ? label : null);
   }, [onStatus, room, label]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
+  // Logged out: Log in opens another tab. Ask again whenever this tab comes
+  // back (focus, visible) and slowly meanwhile; signed in, the room resumes
+  // and sends what this tab still holds.
+  useEffect(() => {
+    if (!room || ended !== "signed_out") return;
+    const recheck = () => room.recheckAuth();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") recheck();
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", onVisible);
+    const poll = setInterval(recheck, AUTH_POLL_MS);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(poll);
+    };
+  }, [room, ended]);
   if (!room) return <div className="oa-doc" aria-busy="true" />;
   return <Loaded {...props} room={room} snap={snap} />;
 }
@@ -211,7 +231,11 @@ function Loaded({
           {notice.login && (
             <div className="oa-doc-error-actions">
               <Button asChild size="sm" variant="outline">
-                <a href={loginHref(location.pathname + location.search)}>
+                <a
+                  href={loginHref(location.pathname + location.search)}
+                  target="_blank"
+                  rel="noopener"
+                >
                   {notice.login}
                 </a>
               </Button>

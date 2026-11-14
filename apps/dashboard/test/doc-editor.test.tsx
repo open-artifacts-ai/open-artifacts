@@ -1065,15 +1065,16 @@ describe("DocEditor", () => {
       expect(seen.at(-1)).toBeNull();
     });
 
-    it("logged out: the notice, a Log in link back here, read-only, no status", async () => {
+    it("logged out: the notice, a Log in link (new tab) back here, read-only, no status; focus after signing in resumes", async () => {
       const p = fakeProviders();
       const seen: (string | null)[] = [];
+      let signedIn = false;
       render(
         <DocEditor
           {...base}
           canEdit
           makeProvider={p.make}
-          checkAuth={async () => false}
+          checkAuth={async () => signedIn}
           onStatus={(s) => seen.push(s)}
         />,
       );
@@ -1085,15 +1086,27 @@ describe("DocEditor", () => {
       await waitFor(() => expect(f.connects).toBe(2), { timeout: 2000 });
       act(() => f.close(1006));
       expect(await screen.findByRole("alert")).toHaveTextContent(
-        "You've been logged out. Log in again to keep editing. Your changes are saved.",
+        "You've been logged out. Your changes are saved. Log in again to keep editing.",
       );
       expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute(
         "href",
         `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`,
       );
+      const link = screen.getByRole("link", { name: "Log in" });
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener");
       readOnly();
       expect(screen.queryByRole("toolbar")).toBeNull();
       expect(seen.at(-1)).toBeNull();
+      // Signed in in the other tab; this one gets focus back.
+      signedIn = true;
+      f.refuse = false;
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+      expect(await screen.findByRole("toolbar")).toBeVisible();
+      await waitFor(() => expect(seen.at(-1)).toBe("saved"));
     });
 
     it("a deleted doc shows no status where Saved sits", async () => {

@@ -3,7 +3,7 @@
 // 4401, 4403, 4404, 1007 and 1013.
 import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
-import { roomLog, startRoom, stopRoom } from "./room";
+import { roomLog, startRoom, stopRoom, tellRoom } from "./room";
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -425,7 +425,7 @@ test("4401, then the session is gone: logged out, Log in, no loop", async ({
     (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
   });
   await expect(page.getByRole("alert")).toHaveText(
-    "You've been logged out. Log in again to keep editing. Your changes are saved.",
+    "You've been logged out. Your changes are saved. Log in again to keep editing.",
   );
   const login = page.getByRole("link", { name: "Log in" });
   await expect(login).toHaveAttribute(
@@ -453,4 +453,98 @@ test("access removed shows no status where Saved sits", async ({
     "You no longer have access.",
   );
   await expect(page.locator(".oa-docstate")).toHaveCount(0);
+});
+
+/**
+ * Logged out with an edit typed after the 4401 (so unsent): the unsent
+ * notice, read-only. Returns how many doc changes the room had applied.
+ */
+async function loggedOutUnsent(
+  page: Page,
+  info: Parameters<typeof startRoom>[0],
+) {
+  await open(page, info, ["--expire-auth"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect
+    .poll(() => log().some((l) => l.startsWith("closing 4401 ")))
+    .toBe(true);
+  await prose(page).locator("p").first().click();
+  // The caret at the end of that paragraph (a click can land mid-word).
+  await page.evaluate(() => {
+    const p = document.querySelector(".ProseMirror p");
+    if (!p) throw new Error("no paragraph");
+    const r = document.createRange();
+    r.selectNodeContents(p);
+    r.collapse(false);
+    const sel = getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(r);
+  });
+  await page.keyboard.type(" Typed offline.");
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Offline$/ }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
+  );
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  const link = page.getByRole("link", { name: "Log in" });
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noopener");
+  return log().filter((l) => l.startsWith("doc changed ")).length;
+}
+
+const signInAgain = (page: Page) =>
+  page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+  });
+const focusBack = (page: Page) =>
+  page.evaluate(() => window.dispatchEvent(new Event("focus")));
+
+test("logged out, then signed in again in another tab: focus resumes and the edit typed offline reaches the room", async ({
+  page,
+}, info) => {
+  const before = await loggedOutUnsent(page, info);
+  tellRoom(room, "login");
+  await expect
+    .poll(() => log().some((l) => l.startsWith("logged in ")))
+    .toBe(true);
+  await signInAgain(page);
+  await focusBack(page);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  await expect
+    .poll(() => log().filter((l) => l.startsWith("doc changed ")).length)
+    .toBeGreaterThan(before);
+  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+  await expect(prose(page)).toContainText("Typed offline.");
+});
+
+test("signed in again but the room still refuses: couldn't save, Try again works once it accepts", async ({
+  page,
+}, info) => {
+  const before = await loggedOutUnsent(page, info);
+  // Signed in (/me is fine) but the room still refuses the socket.
+  await signInAgain(page);
+  await focusBack(page);
+  await expect(page.getByRole("alert")).toHaveText(
+    "Couldn't save your latest changes. Copy them before leaving this page.",
+  );
+  expect(log().filter((l) => l.startsWith("doc changed ")).length).toBe(before);
+  tellRoom(room, "login");
+  await expect
+    .poll(() => log().some((l) => l.startsWith("logged in ")))
+    .toBe(true);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect
+    .poll(() => log().filter((l) => l.startsWith("doc changed ")).length)
+    .toBeGreaterThan(before);
 });

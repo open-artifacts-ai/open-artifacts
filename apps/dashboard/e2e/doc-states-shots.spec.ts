@@ -16,7 +16,10 @@ test.afterEach(async () => {
 const status = (page: Page, text: RegExp) =>
   page.getByRole("status").filter({ hasText: text });
 
-const LOGGED_OUT = "You've been logged out. Log in again to keep editing.";
+const LOGGED_OUT_SAVED =
+  "You've been logged out. Your changes are saved. Log in again to keep editing.";
+const LOGGED_OUT_UNSENT =
+  "You've been logged out. Keep this page open and log in; your latest changes will be saved after.";
 
 /**
  * Logged out (--expire-auth: 4401, then every upgrade refused 401). With
@@ -34,6 +37,17 @@ const loggedOut = (unsent: boolean) => async (page: Page) => {
     .toBe(true);
   if (unsent) {
     await page.locator(".ProseMirror p").first().click();
+    // The caret at the end of that paragraph (a click can land mid-word).
+    await page.evaluate(() => {
+      const p = document.querySelector(".ProseMirror p");
+      if (!p) throw new Error("no paragraph");
+      const r = document.createRange();
+      r.selectNodeContents(p);
+      r.collapse(false);
+      const sel = getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(r);
+    });
     await page.keyboard.type(" Typed offline.");
     await expect(status(page, /^Offline$/)).toBeVisible();
   }
@@ -42,7 +56,7 @@ const loggedOut = (unsent: boolean) => async (page: Page) => {
     (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
   });
   await expect(page.getByRole("alert")).toHaveText(
-    unsent ? LOGGED_OUT : `${LOGGED_OUT} Your changes are saved.`,
+    unsent ? LOGGED_OUT_UNSENT : LOGGED_OUT_SAVED,
   );
   await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
   await expect(page.locator(".oa-docstate")).toHaveCount(0);
@@ -50,9 +64,24 @@ const loggedOut = (unsent: boolean) => async (page: Page) => {
   await page.locator(".ProseMirror").blur();
 };
 
+/** Logged out with edits unsent, signed in again, and the room still refuses. */
+const saveFailed = async (page: Page) => {
+  await loggedOut(true)(page);
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "Couldn't save your latest changes. Copy them before leaving this page.",
+  );
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+};
+
 const STATES: [string, string[], (page: Page) => Promise<void>][] = [
   ["logged-out-saved", ["--expire-auth"], loggedOut(false)],
   ["logged-out-unsent", ["--expire-auth"], loggedOut(true)],
+  ["save-failed", ["--expire-auth"], saveFailed],
   [
     "editing",
     ["--hello", "edit"],

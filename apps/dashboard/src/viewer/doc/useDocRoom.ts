@@ -48,13 +48,24 @@ export const NOT_FOUND =
 /** Product's copy: close 1007 bad_frame, the second time. */
 export const BAD_FRAME =
   "This doc can't sync right now. Reload the page to try again. Copy any unsaved changes first.";
-/** Product's copy: the session ended (4401, then the cookie no longer signs in). */
-export const LOGGED_OUT =
-  "You've been logged out. Log in again to keep editing.";
-/** Added to LOGGED_OUT only when nothing written here was still unsent. */
-export const LOGGED_OUT_SAVED = "Your changes are saved.";
-/** Product's copy: the link beside LOGGED_OUT. */
+/**
+ * Product's copy: the session ended (4401, then the cookie no longer signs
+ * in) and everything written here had reached the room.
+ */
+export const LOGGED_OUT_SAVED =
+  "You've been logged out. Your changes are saved. Log in again to keep editing.";
+/** Product's copy: as LOGGED_OUT_SAVED, with edits still unsent in this tab. */
+export const LOGGED_OUT_UNSENT =
+  "You've been logged out. Keep this page open and log in; your latest changes will be saved after.";
+/** Product's copy: the link beside either (opens a new tab). */
 export const LOG_IN = "Log in";
+/** Product's copy: signed in again, but the reconnect failed with edits unsent. */
+export const SAVE_FAILED =
+  "Couldn't save your latest changes. Copy them before leaving this page.";
+/** Product's copy: the button beside SAVE_FAILED. */
+export const SAVE_FAILED_RETRY = "Try again";
+/** While logged out, how often to ask whether the viewer signed in again. */
+export const AUTH_POLL_MS = 15_000;
 /** Where LOG_IN goes: sign in, then back to this page. */
 export const loginHref = (next: string) =>
   `${AUTH.login}?next=${encodeURIComponent(next)}`;
@@ -120,7 +131,8 @@ export type RoomEnd =
   | "access_removed"
   | "not_found"
   | "bad_frame"
-  | "signed_out";
+  | "signed_out"
+  | "save_failed";
 
 export interface DocSnapshot {
   status: DocStatus;
@@ -139,9 +151,9 @@ export interface DocSnapshot {
   ended: RoomEnd | null;
   /**
    * When it ended signed_out: true if nothing written in this tab was still
-   * unsent (all of it reached the room), false if some was. Edits live only in
-   * this tab's memory (no IndexedDB), so signing in again (a page load) drops
-   * any unsent ones. Null otherwise.
+   * unsent (all of it reached the room), false if some was. Unsent edits stay
+   * in this tab's Y.Doc (memory only) and are sent when the room resumes
+   * after the viewer signs in again (in another tab). Null otherwise.
    */
   endSaved: boolean | null;
 }
@@ -152,9 +164,11 @@ export function roomNotice(
 ): { text: string; retry?: string; login?: string } | null {
   if (s.ended === "signed_out")
     return {
-      text: s.endSaved ? `${LOGGED_OUT} ${LOGGED_OUT_SAVED}` : LOGGED_OUT,
+      text: s.endSaved ? LOGGED_OUT_SAVED : LOGGED_OUT_UNSENT,
       login: LOG_IN,
     };
+  if (s.ended === "save_failed")
+    return { text: SAVE_FAILED, retry: SAVE_FAILED_RETRY };
   if (s.ended === "access_removed") return { text: ACCESS_REMOVED };
   if (s.ended === "not_found") return { text: NOT_FOUND };
   if (s.ended === "bad_frame") return { text: BAD_FRAME };
@@ -205,8 +219,16 @@ export interface DocRoom {
    * no reload; the events are for the version list and the title bar.
    */
   onVersion(cb: (e: VersionEvent) => void): () => void;
-  /** Close and reopen the socket (the "Try again" beside a full room). */
+  /**
+   * Close and reopen the socket (the "Try again" beside a full room). After
+   * signed_out or save_failed: resume, sending the unsent edits.
+   */
   reconnect(): void;
+  /**
+   * Logged out: ask whether the viewer has signed in again (another tab);
+   * if so, resume. A no-op otherwise.
+   */
+  recheckAuth(): void;
   /** discard: drop unsent edits instead of sending them (a resync). */
   destroy(discard?: boolean): void;
 }
@@ -317,6 +339,9 @@ export function createDocRoom(
   // whether we are still signed in (one check at a time).
   let authProbe = false;
   let authChecking = false;
+  // Resumed after signing in again: until its hello, a refused reconnect
+  // with edits unsent is save_failed (not another logged-out).
+  let resuming = false;
   // A bare 4403 after a hello: the room closes every socket on any access
   // change (#2490), so reconnect to re-authorize. Set until the next hello; a
   // socket that closes before one meanwhile means access really went.
@@ -479,11 +504,17 @@ export function createDocRoom(
           authChecking = true;
           void checkAuth()
             .then((signedIn) => {
-              if (destroyed || signedIn || !authProbe || ended) return;
-              // Nothing pending (buffered, draining or written offline): all
-              // of it reached the room before the cut.
-              endSaved = !(buffer || draining || unsent);
-              stop("signed_out");
+              if (destroyed || !authProbe || ended) return;
+              // Pending: buffered, draining or written offline.
+              const pending = !!(buffer || draining || unsent);
+              if (!signedIn) {
+                endSaved = !pending;
+                stop("signed_out");
+              } else if (resuming) {
+                // Signed in, and still the room will not take us.
+                resuming = false;
+                if (pending) stop("save_failed");
+              }
             })
             .finally(() => {
               authChecking = false;
@@ -542,6 +573,7 @@ export function createDocRoom(
           welcomed.add(ws);
           probing = false;
           authProbe = false;
+          resuming = false;
           // The first frame: the role comes from the server only.
           role = frame.role === "edit" ? "edit" : "read";
           reason =
@@ -639,6 +671,17 @@ export function createDocRoom(
     }
     publish();
   };
+  // Signed in again: reopen the socket. The sync exchange sends what the
+  // room lacks, so edits written before the cut (kept in this Y.Doc) arrive.
+  function resume() {
+    ended = null;
+    endSaved = null;
+    badFrames = 0;
+    resuming = true;
+    authProbe = true;
+    publish();
+    provider.connect?.();
+  }
   provider.on("status", onStatus);
   provider.on("sync", onSync);
   watchSocket();
@@ -657,10 +700,25 @@ export function createDocRoom(
     },
     reconnect() {
       if (destroyed) return;
+      if (ended === "signed_out" || ended === "save_failed") {
+        resume();
+        return;
+      }
       ended = null;
       badFrames = 0;
       provider.disconnect?.();
       provider.connect?.();
+    },
+    recheckAuth() {
+      if (destroyed || ended !== "signed_out" || authChecking) return;
+      authChecking = true;
+      void checkAuth()
+        .then((signedIn) => {
+          if (signedIn && ended === "signed_out" && !destroyed) resume();
+        })
+        .finally(() => {
+          authChecking = false;
+        });
     },
     destroy(discard = false) {
       destroyed = true;

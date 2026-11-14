@@ -704,7 +704,7 @@ describe("4401, then the session is gone (logged out)", () => {
     const s = room.getSnapshot();
     expect([s.ended, s.endSaved]).toEqual(["signed_out", true]);
     expect(roomNotice(s)).toEqual({
-      text: "You've been logged out. Log in again to keep editing. Your changes are saved.",
+      text: "You've been logged out. Your changes are saved. Log in again to keep editing.",
       login: "Log in",
     });
     // No more reconnects: it stopped.
@@ -714,7 +714,7 @@ describe("4401, then the session is gone (logged out)", () => {
     room.destroy();
   });
 
-  it("signed out with an edit written after the cut: no 'saved' line, and the edit exists only in this tab's memory", async () => {
+  it("signed out with an edit written after the cut: the unsent notice, and the edit stays in this tab, unsent", async () => {
     const { room } = withAuth(false);
     fake.close(4401);
     fake.refuse = true;
@@ -729,7 +729,7 @@ describe("4401, then the session is gone (logged out)", () => {
     const s = room.getSnapshot();
     expect([s.ended, s.endSaved]).toEqual(["signed_out", false]);
     expect(roomNotice(s)?.text).toBe(
-      "You've been logged out. Log in again to keep editing.",
+      "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
     );
     // Evidence: it never left (the fake records every send), and nothing
     // keeps it across a page load: a new room (signing in reloads the page)
@@ -744,6 +744,101 @@ describe("4401, then the session is gone (logged out)", () => {
     const after = open();
     expect(after.ydoc.getText("t").toString()).toBe("");
     after.destroy();
+    room.destroy();
+  });
+
+  it("signed in again (another tab): resumes, and the edit written after the cut reaches the room", async () => {
+    let signedIn = false;
+    const checkAuth = vi.fn(async () => signedIn);
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { checkAuth },
+    );
+    const server = new Y.Doc();
+    fake.server = server;
+    fake.connect();
+    fake.frame(HELLO);
+    type(room, "before ");
+    vi.advanceTimersByTime(UPDATE_BATCH_MS + 100);
+    expect(server.getText("t").toString()).toBe("before ");
+    fake.close(4401);
+    fake.refuse = true;
+    type(room, "after ");
+    vi.advanceTimersByTime(UPDATE_BATCH_MS + 10);
+    vi.advanceTimersByTime(200);
+    fake.close(1006);
+    await flush();
+    expect(room.getSnapshot()).toMatchObject({
+      ended: "signed_out",
+      endSaved: false,
+    });
+    expect(roomNotice(room.getSnapshot())?.text).toBe(
+      "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
+    );
+    // Not in the room yet; kept in this tab.
+    expect(server.getText("t").toString()).toBe("before ");
+    expect(room.ydoc.getText("t").toString()).toBe("after before ");
+    // Still logged out: a recheck does nothing.
+    room.recheckAuth();
+    await flush();
+    expect(room.getSnapshot().ended).toBe("signed_out");
+    const n = fake.connects;
+    // Logged in in another tab; this tab comes back.
+    signedIn = true;
+    fake.refuse = false;
+    room.recheckAuth();
+    await flush();
+    expect(fake.connects).toBe(n + 1);
+    fake.frame(HELLO);
+    const s = room.getSnapshot();
+    expect([s.ended, s.status]).toEqual([null, "saved"]);
+    expect(roomNotice(s)).toBeNull();
+    expect(server.getText("t").toString()).toBe("after before ");
+    room.destroy();
+  });
+
+  it("signed in again but the room still refuses, with edits unsent: save_failed, and Try again resumes", async () => {
+    let signedIn = false;
+    const checkAuth = vi.fn(async () => signedIn);
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { checkAuth },
+    );
+    const server = new Y.Doc();
+    fake.server = server;
+    fake.connect();
+    fake.frame(HELLO);
+    fake.close(4401);
+    fake.refuse = true;
+    type(room, "unsent ");
+    vi.advanceTimersByTime(UPDATE_BATCH_MS + 10);
+    vi.advanceTimersByTime(200);
+    fake.close(1006);
+    await flush();
+    expect(room.getSnapshot().ended).toBe("signed_out");
+    signedIn = true;
+    room.recheckAuth();
+    await flush();
+    // The resumed socket is refused too.
+    fake.close(1006);
+    await flush();
+    expect(room.getSnapshot().ended).toBe("save_failed");
+    expect(roomNotice(room.getSnapshot())).toEqual({
+      text: "Couldn't save your latest changes. Copy them before leaving this page.",
+      retry: "Try again",
+    });
+    expect(server.getText("t").toString()).toBe("");
+    fake.refuse = false;
+    room.reconnect();
+    fake.frame(HELLO);
+    expect(room.getSnapshot().ended).toBeNull();
+    expect(server.getText("t").toString()).toBe("unsent ");
     room.destroy();
   });
 });

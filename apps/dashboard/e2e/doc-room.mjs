@@ -109,6 +109,13 @@ export function startDocRoom({
   // --expire-auth: the first settled socket closes 4401 (TTL) and the session
   // is gone, so later upgrades are refused 401, as the route does.
   let expired = false;
+  // stdin "login": the viewer signed in again, so upgrades are accepted.
+  process.stdin.on("data", (d) => {
+    if (String(d).split("\n").includes("login")) {
+      expired = false;
+      console.log(`logged in ${Date.now()}`);
+    }
+  });
   const wss = new WebSocketServer({
     port,
     verifyClient: (_info, cb) => {

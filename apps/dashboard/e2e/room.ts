@@ -20,7 +20,8 @@ export async function startRoom(
   const port = roomPort(info);
   const room = spawn(process.execPath, ["e2e/doc-room.mjs", ...args], {
     env: { ...process.env, OA_DOC_PORT: String(port) },
-    stdio: ["ignore", "pipe", "inherit"],
+    // stdin: commands to the room (see doc-room.mjs), e.g. "login".
+    stdio: ["pipe", "pipe", "inherit"],
   });
   const lines: string[] = [];
   roomLog.set(room, lines);
@@ -47,4 +48,9 @@ export async function stopRoom(room: ChildProcess | undefined) {
   const closed = new Promise((r) => room.once("close", r));
   room.kill("SIGTERM");
   await closed;
+}
+
+/** Tells a room (doc-room.mjs) something: "login" ends --expire-auth's refusals. */
+export function tellRoom(room: ChildProcess | undefined, command: string) {
+  room?.stdin?.write(`${command}\n`);
 }

@@ -1,5 +1,5 @@
 import { Awareness } from "y-protocols/awareness";
-import type * as Y from "yjs";
+import * as Y from "yjs";
 import {
   type RoomProvider,
   roomShouldReconnect,
@@ -44,6 +44,12 @@ export class FakeProvider implements RoomProvider {
   autoHello: Record<string, unknown> | null = null;
   /** Upgrades are refused (a browser's 1006): sockets never open. */
   refuse = false;
+  /**
+   * The room's copy of the doc, when a test wants one: every update sent
+   * while connected lands here, and each successful sync sends it what it
+   * lacks (y-protocols' sync step 2 answering the room's step 1).
+   */
+  server: Y.Doc | null = null;
   constructor(
     public doc: Y.Doc,
     public shouldReconnect: (e: {
@@ -54,7 +60,10 @@ export class FakeProvider implements RoomProvider {
     this.awareness = new Awareness(doc);
     this._updateHandler = (update, origin) => {
       // Like y-websocket's broadcastMessage: a closed socket drops it.
-      if (origin !== this && this.wsconnected) this.sentUpdates.push(update);
+      if (origin !== this && this.wsconnected) {
+        this.sentUpdates.push(update);
+        if (this.server) Y.applyUpdate(this.server, update);
+      }
     };
     this.doc.on("update", this._updateHandler);
     this._awarenessUpdateHandler = ({ added, updated, removed }) => {
@@ -102,6 +111,11 @@ export class FakeProvider implements RoomProvider {
         }),
       );
     if (sync) {
+      if (this.server)
+        Y.applyUpdate(
+          this.server,
+          Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(this.server)),
+        );
       this.synced = true;
       this.emit("sync", true);
     }
