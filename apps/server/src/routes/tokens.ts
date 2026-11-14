@@ -16,7 +16,7 @@ import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { revokeUserLive } from "../runtime/revoke.js";
-import { audit, userActor } from "../services/audit.js";
+import { audit, auditText, userActor } from "../services/audit.js";
 import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { sha256Hex } from "../util/crypto.js";
 import type { AppType } from "./index.js";
@@ -140,17 +140,19 @@ export function mountTokens(app: AppType): void {
     const user = requireUser(c);
     const id = c.req.param("id");
     // token.revoke (id and label) is written in the same batch, only when the
-    // revoke changed a row.
+    // revoke changed a row. The label is read first so it is stored cleaned.
+    const was = await c.env.DB.prepare(
+      "select label from tokens where id = ? and user_id = ?",
+    )
+      .bind(id, user.id)
+      .first<{ label: string }>();
     const [res] = await c.env.DB.batch([
       c.env.DB.prepare(
         "update tokens set revoked_at = ?1 where id = ?2 and user_id = ?3 and revoked_at is null",
       ).bind(Date.now(), id, user.id),
       audit(c.env, "token.revoke", { type: "token", id }, userActor(user.id), {
         when: { sql: "changes() > 0", args: [] },
-        detailSql: {
-          sql: "json_object('label', (select label from tokens where id = ?))",
-          args: [id],
-        },
+        detail: { label: auditText(was?.label ?? "") },
       }),
     ]);
     if (!res || res.meta.changes === 0)

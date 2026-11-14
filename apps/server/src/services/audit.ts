@@ -10,6 +10,7 @@ import {
   isId,
   newId,
   type Page,
+  stripNameControls,
 } from "@oa/shared";
 import { sql } from "drizzle-orm";
 import { type Cred, currentCred } from "../auth/cred.js";
@@ -55,6 +56,17 @@ export const withRequestCred = (actor: AuditActor): AuditActor => ({
   ...actor,
   cred: credOf(actor),
 });
+
+/** Longest free-text value (a token label, an agent's name) an audit row keeps. */
+export const AUDIT_TEXT_MAX = 80;
+
+/**
+ * Free text for a row's detail: control, bidi and zero-width characters
+ * stripped (the shared name stripper), trimmed, at most AUDIT_TEXT_MAX
+ * characters.
+ */
+export const auditText = (s: string): string =>
+  [...stripNameControls(s).trim()].slice(0, AUDIT_TEXT_MAX).join("");
 
 export type AuditExtra = {
   spaceId?: string | null;
