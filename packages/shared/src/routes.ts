@@ -250,6 +250,9 @@ export const R = {
    */
   commentAnswerChallenge: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer/challenge`,
+  /** POST TakeBackBody { takeBack: true } -> Comment (#2381). Only the ask's own asker (the person the asking agent acts for) while someone else decides; 409 already_decided / conflict once closed. */
+  commentAskDecider: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/ask/decider`,
   /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */
   artifactAgents: (id: string) => `${A}/${seg(id)}/agents`,
   /** GET Upgrade: websocket; frames are DataChange */

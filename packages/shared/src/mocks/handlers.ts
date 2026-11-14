@@ -119,6 +119,8 @@ export type MockOptions = {
   commentsRateLimit?: number;
   /** Seed an open ask for the caller on "Landing page" (#1535). */
   commentAsks?: boolean;
+  /** #2381: seed asks in each decider state on "Landing page". */
+  commentDeciders?: boolean;
   /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
   commentPasskey?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
@@ -708,6 +710,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     emit: (id, open) => opts.events?.emitComments(id, open),
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
+    seedDeciders: opts.commentDeciders,
     passkeyMode: opts.commentPasskey,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
