@@ -3,735 +3,399 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Where are you from</title>
+<title>Open Artifacts stargazers</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-  /* Studio tokens (packages/ui/src/tokens/tokens.css), inlined: no external fonts. */
   :root {
-    color-scheme: light;
-    --oa-bg: #eef0f3;
-    --oa-surface: #ffffff;
-    --oa-surface-2: #f6f7f9;
-    --oa-divider: #e0e3e8;
-    --oa-border: #bec4cd;
-    --oa-border-strong: #848b95;
-    --oa-text: #15181c;
-    --oa-text-2: #454c56;
-    --oa-text-muted: #5f6670;
-    --oa-accent: #2350d0;
-    --oa-accent-soft: #e7edfc;
-    --oa-accent-text: #ffffff;
-    --oa-focus: #2350d0;
-    --oa-danger: #be2f1c;
-    --oa-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    --oa-font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-    --oa-radius: 6px;
-    --oa-radius-lg: 8px;
-    --oa-duration: 200ms;
-    --oa-ease: cubic-bezier(0.2, 0, 0, 1);
-    --map-land: #c9ced6;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --oa-bg: #131518;
-      --oa-surface: #1c1f23;
-      --oa-surface-2: #212429;
-      --oa-divider: #2c3037;
-      --oa-border: #3b414a;
-      --oa-border-strong: #676e78;
-      --oa-text: #e9ebee;
-      --oa-text-2: #b7bdc6;
-      --oa-text-muted: #9097a1;
-      --oa-accent: #7f9cff;
-      --oa-accent-soft: #1f2a4a;
-      --oa-accent-text: #131518;
-      --oa-focus: #7f9cff;
-      --oa-danger: #ff7f6b;
-      --map-land: #474e58;
-    }
+    --bg: #f7f6f3; --panel: #ffffff; --ink: #1d1c1a; --muted: #6b6860; --line: #e4e1da;
+    --accent: #d9822b; --ok: #2f8f5b; --warn: #b5541c;
   }
   :root[data-theme="dark"] {
-    color-scheme: dark;
-    --oa-bg: #131518;
-    --oa-surface: #1c1f23;
-    --oa-surface-2: #212429;
-    --oa-divider: #2c3037;
-    --oa-border: #3b414a;
-    --oa-border-strong: #676e78;
-    --oa-text: #e9ebee;
-    --oa-text-2: #b7bdc6;
-    --oa-text-muted: #9097a1;
-    --oa-accent: #7f9cff;
-    --oa-accent-soft: #1f2a4a;
-    --oa-accent-text: #131518;
-    --oa-focus: #7f9cff;
-    --oa-danger: #ff7f6b;
-    --map-land: #474e58;
+    --bg: #141413; --panel: #1e1d1b; --ink: #ecebe6; --muted: #9c998f; --line: #34322e;
+    --accent: #f0a04b; --ok: #5cc28a; --warn: #f08a5b;
   }
-
   * { box-sizing: border-box; }
-  html, body { margin: 0; }
-  body {
-    min-height: 100vh;
-    background: var(--oa-bg);
-    color: var(--oa-text);
-    font-family: var(--oa-font-sans);
-    font-size: 14px;
-    line-height: 1.45;
-    -webkit-font-smoothing: antialiased;
-    padding: 20px 16px;
-  }
-  main { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: auto 1fr; height: 100vh; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 24px; padding: 14px 20px;
+    border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  h1 a { color: inherit; text-decoration: none; }
+  h1 a:hover { text-decoration: underline; }
+  .stats { display: flex; gap: 22px; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .live { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 0 var(--ok); }
+  .dot.busy { animation: pulse 1.2s infinite; }
+  .dot.warn { background: var(--warn); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); }
+    100% { box-shadow: 0 0 0 8px transparent; } }
+  button { font: inherit; font-size: 12px; color: var(--ink); background: transparent; border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button:disabled { opacity: .5; cursor: default; }
+  #map { height: 100%; background: var(--bg); }
+  aside { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 16px 18px; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
+  aside h2:first-child { margin-top: 0; }
+  .bar { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 7px; font-size: 13px; }
+  .bar i { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--accent); display: block; }
+  .bar small { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .person { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .person:first-of-type { border-top: 0; }
+  .person img { width: 28px; height: 28px; border-radius: 50%; flex: none; }
+  .person div { min-width: 0; }
+  .person b { font-weight: 600; font-size: 13px; }
+  .person span { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .person.nomap { cursor: default; }
+  .note { color: var(--muted); font-size: 12px; }
+  .pin { position: relative; }
+  .pin i { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--accent); background: var(--panel) center / cover no-repeat;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25); display: block; box-sizing: border-box; }
+  .pin em { position: absolute; top: -6px; right: -8px; min-width: 18px; height: 18px; border-radius: 9px; padding: 0 5px;
+    background: var(--accent); color: #fff; font: 600 11px/18px system-ui, sans-serif; text-align: center; font-style: normal; }
+  .pin.new i { animation: pop 1.4s ease-out 3; }
+  @keyframes pop { 0% { transform: scale(1); } 30% { transform: scale(1.35); } 100% { transform: scale(1); } }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--ink); }
+  .leaflet-popup-content { margin: 10px 12px; }
+  .pop h3 { margin: 0 0 6px; font-size: 13px; }
+  .pop a { display: flex; gap: 8px; align-items: center; color: var(--ink); text-decoration: none; padding: 3px 0; }
+  .pop a:hover b { text-decoration: underline; }
+  .pop img { width: 22px; height: 22px; border-radius: 50%; }
+  .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+  .leaflet-control-attribution { background: color-mix(in srgb, var(--panel) 80%, transparent) !important; color: var(--muted) !important; }
+  .leaflet-control-attribution a { color: var(--muted) !important; }
+  :root[data-theme="dark"] .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.9) contrast(.85) saturate(.5); }
 
-  .kicker { margin: 0; font-family: var(--oa-font-mono); font-size: 13px; color: var(--oa-text-muted); }
-  h1 { margin: 4px 0 2px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  h2 { margin: 8px 0 0; font-size: 14px; font-weight: 600; }
-
-  /* The map: land is one dashed path (a round dot per grid cell), pins sit on top. */
-  .map { margin: 0; padding: 12px; background: var(--oa-surface); border: 1px solid var(--oa-divider); border-radius: var(--oa-radius-lg); }
-  .map svg { display: block; width: 100%; height: auto; overflow: visible; }
-  .land { fill: none; stroke: var(--map-land); stroke-width: 0.62; stroke-linecap: round; stroke-dasharray: 0 1; }
-  .pin { fill: var(--oa-accent); fill-opacity: 0.78; stroke: var(--oa-surface); stroke-width: 0.18; transform-box: fill-box; transform-origin: center; }
-  .pin.me { fill-opacity: 1; stroke: var(--oa-text); stroke-width: 0.32; }
-  .pin.pop { animation: pop 700ms var(--oa-ease); }
-  @keyframes pop { 0% { transform: scale(0.2); } 55% { transform: scale(1.35); } 100% { transform: scale(1); } }
-
-  /* Picker: an ARIA combobox over the built-in country list. */
-  .picker { display: flex; gap: 8px; align-items: stretch; }
-  .combo { position: relative; flex: 1 1 auto; min-width: 0; }
-  .combo input {
-    width: 100%;
-    min-height: 44px;
-    padding: 10px 36px 10px 12px;
-    border: 1px solid var(--oa-border);
-    border-radius: var(--oa-radius-lg);
-    background: var(--oa-surface);
-    color: var(--oa-text);
-    font: inherit;
-    font-size: 15px;
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 55vh auto; height: auto; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+    .live { margin-left: 0; }
   }
-  .combo input::placeholder { color: var(--oa-text-muted); }
-  .combo input:hover { border-color: var(--oa-border-strong); }
-  .combo input:focus-visible { outline: 2px solid var(--oa-focus); outline-offset: 1px; }
-  .combo input:disabled { opacity: 0.6; }
-  .caret { position: absolute; right: 12px; top: 50%; width: 10px; height: 10px; margin-top: -5px; pointer-events: none; fill: none; stroke: var(--oa-text-muted); stroke-width: 1.6; }
-  .list {
-    position: absolute;
-    z-index: 5;
-    left: 0; right: 0; top: calc(100% + 4px);
-    max-height: 260px;
-    overflow-y: auto;
-    margin: 0; padding: 4px;
-    list-style: none;
-    background: var(--oa-surface);
-    border: 1px solid var(--oa-border);
-    border-radius: var(--oa-radius-lg);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
-  }
-  .list[hidden] { display: none; }
-  .list li { display: flex; gap: 8px; align-items: center; padding: 7px 8px; border-radius: var(--oa-radius); cursor: pointer; }
-  .list li[aria-selected="true"] { background: var(--oa-accent-soft); }
-  .list li.none { color: var(--oa-text-muted); cursor: default; }
-  .flag { flex: none; width: 1.4em; text-align: center; }
-  .btn {
-    flex: none;
-    min-height: 44px;
-    padding: 0 20px;
-    border: 1px solid var(--oa-accent);
-    border-radius: var(--oa-radius-lg);
-    background: var(--oa-accent);
-    color: var(--oa-accent-text);
-    font: inherit;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    touch-action: manipulation;
-  }
-  .btn:focus-visible { outline: 2px solid var(--oa-focus); outline-offset: 2px; }
-  .btn:disabled { opacity: 0.5; cursor: default; }
-
-  .note { margin: 0; color: var(--oa-text-muted); font-size: 13px; text-wrap: pretty; font-variant-numeric: tabular-nums; }
-  .note b { color: var(--oa-text); font-weight: 600; }
-  .error { margin: 0; color: var(--oa-danger); font-size: 13px; }
-  .error:empty { display: none; }
-
-  .top { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-  .top li { position: relative; display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--oa-divider); font-size: 15px; }
-  .top li:last-child { border-bottom: 0; }
-  .top .name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-  .top .you { color: var(--oa-text-muted); font-size: 13px; margin-left: 6px; }
-  .top .meter { flex: 0 1 140px; height: 6px; border-radius: 3px; background: var(--oa-surface-2); overflow: hidden; }
-  .top .meter span { display: block; height: 100%; background: var(--oa-accent); border-radius: 3px; transition: width 420ms var(--oa-ease); }
-  .top .n { flex: none; min-width: 3ch; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .top .empty { color: var(--oa-text-muted); font-size: 14px; }
-  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-
-  @media (max-width: 480px) {
-    .map { padding: 8px; }
-    .top .meter { flex-basis: 72px; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .pin.pop { animation: none; }
-    .top .meter span { transition: none; }
-  }
-  .demo-links { margin: 20px auto 0; text-align: center; font-size: 12.5px; }
-  .demo-links a { color: var(--oa-text-muted); text-decoration: none; border-radius: 2px; }
-  .demo-links a:hover { color: var(--oa-text-2); text-decoration: underline; text-underline-offset: 2px; }
-  .demo-links a:focus-visible { outline: 2px solid var(--oa-focus); outline-offset: 2px; }
 </style>
 </head>
 <body>
-<main>
-  <p class="kicker">Today's map · resets 00:00 UTC</p>
-  <h1 id="title">Where are you from?</h1>
-  <figure class="map">
-    <svg id="map" viewBox="-1 -1 121 47" role="img" aria-labelledby="mapLabel" focusable="false">
-      <title id="mapLabel">World map of today's pins</title>
-      <path class="land" d="M22 0h1M25 0h28M63 0h5M76 0h0M91 0h3M20 1h13M37 1h16M65 1h0M67 1h0M79 1h1M82 1h0M90 1h7M106 1h2M18 2h6M26 2h8M41 2h12M78 2h1M83 2h0M85 2h0M87 2h15M107 2h1M0 3h0M6 3h7M16 3h3M21 3h4M27 3h10M42 3h10M66 3h4M78 3h0M80 3h0M82 3h33M117 3h1M0 4h2M5 4h27M34 4h4M42 4h8M64 4h55M1 5h1M4 5h28M34 5h4M42 5h4M52 5h3M63 5h56M5 6h23M32 6h0M34 6h3M43 6h2M61 6h4M67 6h51M6 7h3M13 7h15M34 7h4M58 7h0M62 7h3M67 7h47M15 8h25M57 8h2M62 8h43M112 8h1M16 9h25M56 9h51M112 9h0M17 10h24M58 10h49M18 11h21M59 11h46M107 11h0M18 12h18M38 12h0M57 12h12M73 12h31M107 12h0M18 13h17M57 13h3M62 13h40M106 13h1M19 14h15M57 14h7M67 14h0M69 14h31M102 14h0M105 14h1M19 15h15M57 15h6M72 15h27M102 15h4M21 16h11M56 16h44M103 16h0M21 17h6M32 17h0M56 17h19M77 17h23M22 18h5M33 18h0M55 18h21M78 18h21M24 19h3M32 19h1M54 19h17M73 19h6M83 19h15M100 19h0M25 20h2M29 20h1M34 20h2M54 20h25M84 20h4M91 20h5M26 21h5M54 21h18M74 21h3M84 21h3M91 21h4M100 21h0M29 22h2M54 22h21M85 22h1M92 22h4M100 22h1M31 23h1M34 23h5M55 23h21M85 23h1M92 23h0M94 23h1M99 23h0M101 23h0M32 24h8M56 24h20M86 24h1M93 24h0M101 24h0M34 25h8M57 25h2M62 25h13M92 25h2M98 25h1M33 26h9M63 26h11M93 26h1M96 26h4M102 26h0M33 27h11M63 27h10M93 27h7M102 27h0M104 27h2M33 28h14M64 28h8M94 28h1M99 28h0M104 28h4M110 28h0M33 29h15M64 29h8M95 29h5M106 29h3M34 30h13M64 30h9M109 30h1M34 31h12M64 31h9M76 31h0M102 31h3M107 31h0M35 32h11M64 32h12M101 32h7M36 33h10M64 33h7M74 33h2M99 33h10M36 34h9M64 34h7M74 34h1M98 34h11M36 35h7M65 35h6M75 35h0M97 35h13M36 36h7M65 36h5M98 36h13M36 37h6M66 37h3M98 37h12M36 38h5M66 38h2M98 38h2M105 38h5M35 39h5M106 39h3M118 39h0M35 40h4M108 40h0M117 40h1M35 41h3M108 41h0M116 41h1M35 42h2M116 42h0M35 43h2M35 44h1M40 44h0M36 45h1"/>
-      <g id="pins"></g>
-    </svg>
-  </figure>
-  <form class="picker" id="form" novalidate>
-    <div class="combo">
-      <label class="sr" for="country">Your country</label>
-      <input id="country" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="list" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Pick your country" disabled>
-      <svg class="caret" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M1.5 3.5 5 7l3.5-3.5"/></svg>
-      <!-- biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: the combobox popup is a listbox of option items; the list markup keeps them items when scripts or ARIA fail -->
-      <ul class="list" id="list" role="listbox" aria-label="Countries" hidden></ul>
+<div class="app">
+  <header>
+    <h1><a href="https://github.com/open-artifacts-ai/open-artifacts/stargazers" target="_blank" rel="noopener">Open Artifacts stargazers</a></h1>
+    <div class="stats">
+      <div class="stat"><b id="sStars">-</b><span>stars</span></div>
+      <div class="stat"><b id="sMapped">-</b><span>on the map</span></div>
+      <div class="stat"><b id="sCountries">-</b><span>countries</span></div>
     </div>
-    <button class="btn" id="pin" type="submit" disabled>Pin</button>
-  </form>
-  <p class="note" id="note">Connecting…</p>
-  <p class="error" id="error" role="alert"></p>
-  <h2 id="topTitle">Top countries today</h2>
-  <ol class="top" id="top" aria-labelledby="topTitle"></ol>
-  <p class="sr" id="announce" aria-live="polite"></p>
-</main>
-<footer class="demo-links" data-demo-links="gallery" hidden></footer>
-
+    <div class="live"><i class="dot" id="dot"></i><span id="liveText">Starting</span><button id="refresh" type="button">Check now</button></div>
+  </header>
+  <div id="map"></div>
+  <aside>
+    <h2>Countries</h2>
+    <div id="countries"></div>
+    <h2>Latest stars</h2>
+    <div id="latest"></div>
+    <p class="note" id="nomap"></p>
+    <p class="note" data-demo-links="gallery" hidden></p>
+    <p class="note">While this page is open it checks GitHub every 5 minutes for new stars and rechecks one profile for a moved location. What it finds is shared live with everyone viewing.</p>
+  </aside>
+</div>
 <script>
-(() => {
-  "use strict";
+const SEED = [{"login":"cowsecurity","name":"HoLee Cow","avatar":"https://avatars.githubusercontent.com/u/74612612?v=4","location":"Location","lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-10-19T08:51:23Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"ab5813","name":null,"avatar":"https://avatars.githubusercontent.com/u/283585317?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-10-27T11:14:32Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"natea","name":"Nate Aune","avatar":"https://avatars.githubusercontent.com/u/118984?v=4","location":"Boston, MA","lat":42.3588336,"lon":-71.0578303,"place":"Boston, Suffolk County, Massachusetts, United States","country":"United States","starredAt":"2026-10-28T14:23:23Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"NakePranob","name":"Pranob Onphaeng","avatar":"https://avatars.githubusercontent.com/u/169991242?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-10-29T06:31:56Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"we1l1n","name":null,"avatar":"https://avatars.githubusercontent.com/u/13299466?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-05T15:35:18Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"eugenea-trackforce","name":"Eugene A","avatar":"https://avatars.githubusercontent.com/u/329121668?v=4","location":"Atlanta, GA","lat":33.7544657,"lon":-84.3898151,"place":"Atlanta, Fulton County, Georgia, United States","country":"United States","starredAt":"2026-11-05T20:06:10Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"iml885203","name":"Logan","avatar":"https://avatars.githubusercontent.com/u/17023091?v=4","location":"Taipei, Taiwan","lat":25.0375198,"lon":121.5636796,"place":"Taipei, Taiwan","country":"Taiwan","starredAt":"2026-11-07T04:10:10Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"leourbina","name":"Leo Urbina","avatar":"https://avatars.githubusercontent.com/u/434020?v=4","location":"Paris, France","lat":48.8588897,"lon":2.320041,"place":"Paris, Ile-de-France, Metropolitan France, France","country":"France","starredAt":"2026-11-07T23:21:58Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"garc33","name":"Marc Herman","avatar":"https://avatars.githubusercontent.com/u/1409740?v=4","location":"Paris, France","lat":48.8588897,"lon":2.320041,"place":"Paris, Ile-de-France, Metropolitan France, France","country":"France","starredAt":"2026-11-08T13:35:52Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"ArikRahman","name":"Arik","avatar":"https://avatars.githubusercontent.com/u/40479733?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T13:48:26Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"cynial","name":null,"avatar":"https://avatars.githubusercontent.com/u/323831?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T14:15:45Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"adamcstephens","name":"Adam C. Stephens","avatar":"https://avatars.githubusercontent.com/u/2071575?v=4","location":"heart","lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T14:34:14Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"NicoJuicy","name":"Nico Sap","avatar":"https://avatars.githubusercontent.com/u/445937?v=4","location":"Belgium ( Bruges )","lat":51.2085526,"lon":3.226772,"place":"Bruges, Brugge, West Flanders, Flanders, Belgium","country":"Belgium","starredAt":"2026-11-08T15:37:20Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"lukasgoebel-impower","name":"Lukas Goebel","avatar":"https://avatars.githubusercontent.com/u/338462033?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T15:40:45Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"moikeygraham","name":"Michael Graham","avatar":"https://avatars.githubusercontent.com/u/5245503?v=4","location":"Bristol, UK","lat":51.4430141,"lon":-2.5816622,"place":"Bristol, West of England, England, United Kingdom","country":"United Kingdom","starredAt":"2026-11-08T16:18:40Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"3j27","name":null,"avatar":"https://avatars.githubusercontent.com/u/346161426?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T16:33:54Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"amandeepjutla","name":"Amandeep Jutla","avatar":"https://avatars.githubusercontent.com/u/8096041?v=4","location":"New York","lat":40.7127281,"lon":-74.0060152,"place":"New York, United States","country":"United States","starredAt":"2026-11-08T16:47:21Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"cf8","name":null,"avatar":"https://avatars.githubusercontent.com/u/500454?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T17:04:37Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"m8e","name":null,"avatar":"https://avatars.githubusercontent.com/u/20573272?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T17:33:47Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"guido4000","name":"Guido","avatar":"https://avatars.githubusercontent.com/u/505155?v=4","location":"Amsterdam","lat":52.3730796,"lon":4.8924534,"place":"Amsterdam, North Holland, Netherlands","country":"Netherlands","starredAt":"2026-11-08T17:38:57Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"seruman","name":"Selman","avatar":"https://avatars.githubusercontent.com/u/7118751?v=4","location":"Istanbul, Turkey","lat":41.006381,"lon":28.9758715,"place":"Istanbul, Fatih, Istanbul, Marmara Region, 34122, Turkey","country":"Turkey","starredAt":"2026-11-08T18:45:03Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"jlisee","name":"Joseph Lisee","avatar":"https://avatars.githubusercontent.com/u/780321?v=4","location":"Falls Church, VA","lat":38.882334,"lon":-77.1710914,"place":"Falls Church, Virginia, 22046, United States","country":"United States","starredAt":"2026-11-08T19:04:43Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"azell","name":"Adam Zell","avatar":"https://avatars.githubusercontent.com/u/489196?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T19:15:10Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"YoungiiJC","name":"Jon Young","avatar":"https://avatars.githubusercontent.com/u/16216219?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T19:32:22Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"joffilyfe","name":"Joffily","avatar":"https://avatars.githubusercontent.com/u/4604104?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T20:07:05Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"giodamelio","name":"Gio d'Amelio","avatar":"https://avatars.githubusercontent.com/u/441646?v=4","location":"Seattle, WA","lat":47.6038321,"lon":-122.330062,"place":"Seattle, King County, Washington, United States","country":"United States","starredAt":"2026-11-08T20:54:15Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"roessland","name":"Andreas Røssland","avatar":"https://avatars.githubusercontent.com/u/210712?v=4","location":"Norway, Oslo","lat":59.9133301,"lon":10.7389701,"place":"Oslo, Norway","country":"Norway","starredAt":"2026-11-08T21:36:00Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"jgbrwn","name":null,"avatar":"https://avatars.githubusercontent.com/u/11037782?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-08T23:18:00Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"FrankGerold","name":"Frank","avatar":"https://avatars.githubusercontent.com/u/56416023?v=4","location":"New York","lat":40.7127281,"lon":-74.0060152,"place":"New York, United States","country":"United States","starredAt":"2026-11-09T00:39:10Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"pvela","name":"prabhu","avatar":"https://avatars.githubusercontent.com/u/475013?v=4","location":"superior, co","lat":39.9527634,"lon":-105.1685977,"place":"Superior, Boulder County, Colorado, United States","country":"United States","starredAt":"2026-11-09T04:18:06Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"conbrad","name":"Conor Brady","avatar":"https://avatars.githubusercontent.com/u/1447136?v=4","location":"Vancouver, BC","lat":49.2608724,"lon":-123.113952,"place":"Vancouver, Metro Vancouver Regional District, British Columbia, Canada","country":"Canada","starredAt":"2026-11-09T06:20:37Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"camh-","name":"Cam Hutchison","avatar":"https://avatars.githubusercontent.com/u/919357?v=4","location":"Melbourne, Australia","lat":-37.8142454,"lon":144.9631732,"place":"Melbourne, Victoria, Australia","country":"Australia","starredAt":"2026-11-09T06:26:11Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"simonheimlicher","name":"Simon Heimlicher","avatar":"https://avatars.githubusercontent.com/u/475568?v=4","location":"Zurich, Switzerland","lat":47.3744489,"lon":8.5410422,"place":"Zurich, District Zurich, Zurich, Switzerland","country":"Switzerland","starredAt":"2026-11-09T06:40:29Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"awinabi","name":"Awin Abi","avatar":"https://avatars.githubusercontent.com/u/483298?v=4","location":"Kochi","lat":9.9679032,"lon":76.2444378,"place":"Kochi, Ernakulam, Kerala, 682001, India","country":"India","starredAt":"2026-11-09T07:59:56Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"tmenguy","name":null,"avatar":"https://avatars.githubusercontent.com/u/2277897?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T10:14:09Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"jabdinghoff","name":"Jona Abdinghoff","avatar":"https://avatars.githubusercontent.com/u/171670246?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T11:22:47Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"matrixik","name":"Dobrosław Żybort","avatar":"https://avatars.githubusercontent.com/u/201930?v=4","location":"Łódź, Poland","lat":51.7687323,"lon":19.4569911,"place":"Łódź, Łódź Voivodeship, Poland","country":"Poland","starredAt":"2026-11-09T12:35:55Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"dakouan18","name":null,"avatar":"https://avatars.githubusercontent.com/u/34407054?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T12:38:06Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"harshav167","name":"Harsha Vardhan","avatar":"https://avatars.githubusercontent.com/u/80092815?v=4","location":"Sydney, Australia","lat":-33.8698439,"lon":151.2082848,"place":"Sydney, New South Wales, Australia","country":"Australia","starredAt":"2026-11-09T12:53:59Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"NikoWoot","name":"Nicolas GAUTIER","avatar":"https://avatars.githubusercontent.com/u/4091197?v=4","location":"Laval, Mayenne, FR","lat":48.0706687,"lon":-0.7734022,"place":"Laval, Mayenne, Pays de la Loire, Metropolitan France, 53000, France","country":"France","starredAt":"2026-11-09T14:04:27Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"prashant-yi","name":"Prashant","avatar":"https://avatars.githubusercontent.com/u/26407503?v=4","location":"India","lat":22.3511148,"lon":78.6677428,"place":"India","country":"India","starredAt":"2026-11-09T15:02:27Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"lucas-stellet","name":"Lucas Stellet","avatar":"https://avatars.githubusercontent.com/u/41764705?v=4","location":"Florianopolis, Brazil","lat":-27.5973002,"lon":-48.5496098,"place":"Florianópolis, Santa Catarina, South Region, Brazil","country":"Brazil","starredAt":"2026-11-09T17:01:59Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"antonioc-cl","name":"Antonio Correa","avatar":"https://avatars.githubusercontent.com/u/69760923?v=4","location":"Puerto Varas, Chile","lat":-41.317802,"lon":-72.9829073,"place":"Puerto Varas, Provincia de Llanquihue, Los Lagos Region, Chile","country":"Chile","starredAt":"2026-11-09T17:03:50Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"hirajanwin","name":"rajan","avatar":"https://avatars.githubusercontent.com/u/36818845?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T17:38:06Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"fardeenxyz","name":"Fardeen Khan","avatar":"https://avatars.githubusercontent.com/u/66341435?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T18:14:12Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"whatif-dev","name":"WhatIfDev","avatar":"https://avatars.githubusercontent.com/u/139566763?v=4","location":"West Coast","lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T18:18:48Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"tangoren","name":"Osman Tangören","avatar":"https://avatars.githubusercontent.com/u/44809140?v=4","location":"Samsun, Turkey","lat":41.2303557,"lon":35.9683338,"place":"Samsun, Black Sea Region, Turkey","country":"Turkey","starredAt":"2026-11-09T18:32:39Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"sucrose","name":"sucrose","avatar":"https://avatars.githubusercontent.com/u/5590958?v=4","location":"Midwest, USA","lat":43.411391,"lon":-106.280075,"place":"Midwest, Natrona County, Wyoming, United States","country":"United States","starredAt":"2026-11-09T19:33:22Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"EdyTheCow","name":"Eddy","avatar":"https://avatars.githubusercontent.com/u/5132667?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T21:29:40Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"gvannest","name":"Gautier Vanneste","avatar":"https://avatars.githubusercontent.com/u/34040196?v=4","location":"Paris","lat":48.8534951,"lon":2.3483915,"place":"Paris, Ile-de-France, Metropolitan France, France","country":"France","starredAt":"2026-11-09T22:24:06Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"dlbroadfoot","name":"David Broadfoot","avatar":"https://avatars.githubusercontent.com/u/449369?v=4","location":"Sydney","lat":-33.8698439,"lon":151.2082848,"place":"Sydney, New South Wales, Australia","country":"Australia","starredAt":"2026-11-09T23:30:59Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"jdgiles3","name":null,"avatar":"https://avatars.githubusercontent.com/u/198238051?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-09T23:55:52Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"netinlet","name":"Doug Bryant","avatar":"https://avatars.githubusercontent.com/u/4622?v=4","location":"Tulsa, OK","lat":36.1563122,"lon":-95.9927516,"place":"Tulsa, Oklahoma, United States","country":"United States","starredAt":"2026-11-10T00:11:24Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"devrsa","name":null,"avatar":"https://avatars.githubusercontent.com/u/72177264?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-10T03:08:32Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"DeluxeOwl","name":"Andrei Surugiu","avatar":"https://avatars.githubusercontent.com/u/54327698?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-10T08:42:45Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"itsApurba360","name":"Apurba Adhikary ⚡","avatar":"https://avatars.githubusercontent.com/u/181961589?v=4","location":null,"lat":null,"lon":null,"place":null,"country":null,"starredAt":"2026-11-10T10:08:08Z","checkedAt":"2026-11-10T18:57:57Z"},{"login":"gwbx","name":null,"avatar":"https://avatars.githubusercontent.com/u/9652899?v=4","location":"Paris","lat":48.8534951,"lon":2.3483915,"place":"Paris, Ile-de-France, Metropolitan France, France","country":"France","starredAt":"2026-11-10T10:46:27Z","checkedAt":"2026-11-10T18:57:57Z"}];
+const REPO = "open-artifacts-ai/open-artifacts";
+const POLL_MS = 5 * 60 * 1000;
+const STALE_MS = 6 * 60 * 60 * 1000;
+const RECHECK_PER_POLL = 1;
+const JUNK = new Set(["location", "heart", "west coast", "earth", "internet", "remote", "worldwide", "planet earth", "localhost", "the internet"]);
 
-  /* ISO 3166-1 alpha-2 code, name, latitude, longitude. Pins outside this list are ignored. */
-  const DATA = "AF:Afghanistan:33:65|AX:Åland Islands:60.1:19.9|AL:Albania:41:20|DZ:Algeria:28:3|AS:American Samoa:-14.3:-170|AD:Andorra:42.5:1.5|AO:Angola:-12.5:18.5|AI:Anguilla:18.3:-63.2|AG:Antigua and Barbuda:17.1:-61.8|AR:Argentina:-34:-64|AM:Armenia:40:45|AW:Aruba:12.5:-70|AU:Australia:-27:133|AT:Austria:47.3:13.3|AZ:Azerbaijan:40.5:47.5|BS:Bahamas:24.3:-76|BH:Bahrain:26:50.6|BD:Bangladesh:24:90|BB:Barbados:13.2:-59.5|BY:Belarus:53:28|BE:Belgium:50.8:4|BZ:Belize:17.3:-88.7|BJ:Benin:9.5:2.3|BM:Bermuda:32.3:-64.7|BT:Bhutan:27.5:90.5|BO:Bolivia:-17:-65|BA:Bosnia and Herzegovina:44:18|BW:Botswana:-22:24|BR:Brazil:-10:-55|IO:British Indian Ocean Territory:-6:71.5|VG:British Virgin Islands:18.4:-64.6|BN:Brunei:4.5:114.7|BG:Bulgaria:43:25|BF:Burkina Faso:13:-2|BI:Burundi:-3.5:30|KH:Cambodia:13:105|CM:Cameroon:6:12|CA:Canada:60:-95|CV:Cape Verde:16:-24|BQ:Caribbean Netherlands:12.2:-68.2|KY:Cayman Islands:19.5:-80.5|CF:Central African Republic:7:21|TD:Chad:15:19|CL:Chile:-30:-71|CN:China:35:105|CX:Christmas Island:-10.5:105.7|CC:Cocos (Keeling) Islands:-12.5:96.8|CO:Colombia:4:-72|KM:Comoros:-12.2:44.3|CK:Cook Islands:-21.2:-159.8|CR:Costa Rica:10:-84|HR:Croatia:45.2:15.5|CU:Cuba:21.5:-80|CW:Curaçao:12.1:-68.9|CY:Cyprus:35:33|CZ:Czechia:49.8:15.5|DK:Denmark:56:10|DJ:Djibouti:11.5:43|DM:Dominica:15.4:-61.3|DO:Dominican Republic:19:-70.7|CD:DR Congo:0:25|EC:Ecuador:-2:-77.5|EG:Egypt:27:30|SV:El Salvador:13.8:-88.9|GQ:Equatorial Guinea:2:10|ER:Eritrea:15:39|EE:Estonia:59:26|SZ:Eswatini:-26.5:31.5|ET:Ethiopia:8:38|FK:Falkland Islands:-51.7:-59|FO:Faroe Islands:62:-7|FJ:Fiji:-18:175|FI:Finland:64:26|FR:France:46:2|GF:French Guiana:4:-53|PF:French Polynesia:-15:-140|GA:Gabon:-1:11.8|GM:Gambia:13.5:-16.6|GE:Georgia:42:43.5|DE:Germany:51:9|GH:Ghana:8:-2|GI:Gibraltar:36.1:-5.3|GR:Greece:39:22|GL:Greenland:72:-40|GD:Grenada:12.1:-61.7|GP:Guadeloupe:16.3:-61.6|GU:Guam:13.5:144.8|GT:Guatemala:15.5:-90.2|GG:Guernsey:49.5:-2.6|GN:Guinea:11:-10|GW:Guinea-Bissau:12:-15|GY:Guyana:5:-59|HT:Haiti:19:-72.4|HN:Honduras:15:-86.5|HK:Hong Kong:22.3:114.2|HU:Hungary:47:20|IS:Iceland:65:-18|IN:India:20:77|ID:Indonesia:-5:120|IR:Iran:32:53|IQ:Iraq:33:44|IE:Ireland:53:-8|IM:Isle of Man:54.3:-4.5|IL:Israel:31.5:35.1|IT:Italy:42.8:12.8|CI:Ivory Coast:8:-5|JM:Jamaica:18.3:-77.5|JP:Japan:36:138|JE:Jersey:49.3:-2.2|JO:Jordan:31:36|KZ:Kazakhstan:48:68|KE:Kenya:1:38|KI:Kiribati:1.4:173|XK:Kosovo:42.7:21.2|KW:Kuwait:29.5:45.8|KG:Kyrgyzstan:41:75|LA:Laos:18:105|LV:Latvia:57:25|LB:Lebanon:33.8:35.8|LS:Lesotho:-29.5:28.5|LR:Liberia:6.5:-9.5|LY:Libya:25:17|LI:Liechtenstein:47.3:9.5|LT:Lithuania:56:24|LU:Luxembourg:49.8:6.2|MO:Macau:22.2:113.6|MG:Madagascar:-20:47|MW:Malawi:-13.5:34|MY:Malaysia:2.5:112.5|MV:Maldives:3.3:73|ML:Mali:17:-4|MT:Malta:35.8:14.6|MH:Marshall Islands:9:168|MQ:Martinique:14.7:-61|MR:Mauritania:20:-12|MU:Mauritius:-20.3:57.6|YT:Mayotte:-12.8:45.2|MX:Mexico:23:-102|FM:Micronesia:6.9:158.3|MD:Moldova:47:29|MC:Monaco:43.7:7.4|MN:Mongolia:46:105|ME:Montenegro:42.5:19.3|MS:Montserrat:16.8:-62.2|MA:Morocco:32:-5|MZ:Mozambique:-18.2:35|MM:Myanmar:22:98|NA:Namibia:-22:17|NR:Nauru:-0.5:166.9|NP:Nepal:28:84|NL:Netherlands:52.5:5.8|NC:New Caledonia:-21.5:165.5|NZ:New Zealand:-41:174|NI:Nicaragua:13:-85|NE:Niger:16:8|NG:Nigeria:10:8|NU:Niue:-19:-169.9|NF:Norfolk Island:-29:168|KP:North Korea:40:127|MK:North Macedonia:41.8:22|MP:Northern Mariana Islands:15.2:145.8|NO:Norway:62:10|OM:Oman:21:57|PK:Pakistan:30:70|PW:Palau:7.5:134.5|PS:Palestine:31.9:35.2|PA:Panama:9:-80|PG:Papua New Guinea:-6:147|PY:Paraguay:-23:-58|PE:Peru:-10:-76|PH:Philippines:13:122|PN:Pitcairn Islands:-25.1:-130.1|PL:Poland:52:20|PT:Portugal:39.5:-8|PR:Puerto Rico:18.3:-66.5|QA:Qatar:25.5:51.3|CG:Republic of the Congo:-1:15|RE:Réunion:-21.1:55.5|RO:Romania:46:25|RU:Russia:60:100|RW:Rwanda:-2:30|BL:Saint Barthélemy:18.5:-63.4|SH:Saint Helena, Ascension and Tristan da Cunha:-15.9:-5.7|KN:Saint Kitts and Nevis:17.3:-62.7|LC:Saint Lucia:13.9:-61|MF:Saint Martin:18.1:-63.9|PM:Saint Pierre and Miquelon:46.8:-56.3|VC:Saint Vincent and the Grenadines:13.3:-61.2|WS:Samoa:-13.6:-172.3|SM:San Marino:43.8:12.4|ST:São Tomé and Príncipe:1:7|SA:Saudi Arabia:25:45|SN:Senegal:14:-14|RS:Serbia:44:21|SC:Seychelles:-4.6:55.7|SL:Sierra Leone:8.5:-11.5|SG:Singapore:1.4:103.8|SX:Sint Maarten:18:-63|SK:Slovakia:48.7:19.5|SI:Slovenia:46.1:14.8|SB:Solomon Islands:-8:159|SO:Somalia:10:49|ZA:South Africa:-29:24|GS:South Georgia:-54.5:-37|KR:South Korea:37:127.5|SS:South Sudan:7:30|ES:Spain:40:-4|LK:Sri Lanka:7:81|SD:Sudan:15:30|SR:Suriname:4:-56|SJ:Svalbard and Jan Mayen:78:20|SE:Sweden:62:15|CH:Switzerland:47:8|SY:Syria:35:38|TW:Taiwan:23.5:121|TJ:Tajikistan:39:71|TZ:Tanzania:-6:35|TH:Thailand:15:100|TL:Timor-Leste:-8.8:125.9|TG:Togo:8:1.2|TK:Tokelau:-9:-172|TO:Tonga:-20:-175|TT:Trinidad and Tobago:11:-61|TN:Tunisia:34:9|TR:Türkiye:39:35|TM:Turkmenistan:40:60|TC:Turks and Caicos Islands:21.8:-71.6|TV:Tuvalu:-8:178|UG:Uganda:1:32|UA:Ukraine:49:32|AE:United Arab Emirates:24:54|GB:United Kingdom:54:-2|US:United States:38:-97|VI:United States Virgin Islands:18.4:-64.9|UY:Uruguay:-33:-56|UZ:Uzbekistan:41:64|VU:Vanuatu:-16:167|VA:Vatican City:41.9:12.5|VE:Venezuela:8:-66|VN:Vietnam:16.2:107.8|WF:Wallis and Futuna:-13.3:-176.2|EH:Western Sahara:24.5:-13|YE:Yemen:15:48|ZM:Zambia:-15:30|ZW:Zimbabwe:-20:30";
-  /* Other names people type. Search only; never stored. */
-  const ALIASES = {
-    US: "usa america united states of america", GB: "uk britain great britain england scotland wales northern ireland",
-    AE: "uae emirates", TR: "turkey", CZ: "czech republic", CI: "cote d'ivoire", MM: "burma", NL: "holland",
-    KR: "korea", CV: "cape verde", SZ: "swaziland", MK: "macedonia", VA: "holy see", CD: "drc congo", CG: "congo",
-  };
-  const GRID = { step: 3, top: 81, rows: 46 };
-  const COOLDOWN_MS = 2000; // keeps one visitor well under the per-IP write limit
-  const PAGE = 500;
-  const TOP_N = 10;
+const people = new Map();      // login -> record
+let starLogins = new Set(SEED.map((p) => p.login)); // current stargazers: seed, then meta and the events feed
+let starCount = SEED.length;
+const fresh = new Set();
+let coll = null, rateResetAt = 0, nextAt = 0, busy = false, offline = false;
+let liveStars = null;
 
-  const COUNTRIES = DATA.split("|").map((s) => {
-    const [code, name, lat, lon] = s.split(":");
-    return { code, name, lat: Number(lat), lon: Number(lon), key: fold(`${name} ${code} ${ALIASES[code] || ""}`) };
-  });
-  const BY_CODE = new Map(COUNTRIES.map((c) => [c.code, c]));
 
-  const OA = window.openArtifacts;
-  const $ = (id) => document.getElementById(id);
-  const el = { pins: $("pins"), mapLabel: $("mapLabel"), form: $("form"), input: $("country"), list: $("list"), pin: $("pin"), note: $("note"), error: $("error"), top: $("top"), announce: $("announce") };
-  const nf = new Intl.NumberFormat("en-US");
+for (const p of SEED) people.set(p.login, p);
 
-  function fold(s) { return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase(); }
-  function flag(code) { return String.fromCodePoint(...[...code].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65)); }
+const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+/* Exactly GitHub's avatar URL shape: it goes into a CSS url(), so no quotes or other hosts. */
+const AVATAR_RE = /^https:\/\/avatars\.githubusercontent\.com\/u\/\d{1,12}\?v=\d{1,3}$/;
+const str = (v, n) => (typeof v === "string" && v.length <= n ? v : null);
+const coord = (v, lim) => (typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= lim ? v : null);
+/* An ISO time no later than now, so a doc can't date itself into the future and dodge rechecks. */
+const iso = (v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(v) && Date.parse(v) <= Date.now() + 60_000 ? v : null);
+/* Live data is writable by any visitor, so a doc is only shown when it looks like a GitHub profile. */
+function clean(d) {
+  if (!d || typeof d !== "object" || typeof d.login !== "string" || !LOGIN_RE.test(d.login)) return null;
+  if (typeof d.avatar !== "string" || !AVATAR_RE.test(d.avatar)) return null;
+  const lat = coord(d.lat, 90), lon = coord(d.lon, 180);
+  return { login: d.login, name: str(d.name, 100), avatar: d.avatar, location: str(d.location, 100),
+    lat: lat !== null && lon !== null ? lat : null, lon: lat !== null && lon !== null ? lon : null,
+    place: str(d.place, 200), country: str(d.country, 80), starredAt: iso(d.starredAt), checkedAt: iso(d.checkedAt) };
+}
+function adopt(raw) {
+  const doc = clean(raw);
+  if (!doc) return;
+  // A saved profile is a stargazer: the events feed only reaches back about an hour, so saved
+  // docs are what keeps older stars. Only editors' windows can save them (writes are editors-only).
+  starLogins.add(doc.login); starCount = starLogins.size;
+  const cur = people.get(doc.login);
+  if (!cur || (doc.checkedAt || "") >= (cur.checkedAt || "")) people.set(doc.login, doc);
+}
 
-  let me = null;             // { id, signedIn }
-  let col = null;            // pins-YYYYMMDD
-  let key = "";
-  let unsub = null;
-  let dayTimer = null;
-  const pins = new Map();    // docId -> country code
-  let mine = null;           // my code (optimistic)
-  let pending = null;        // code waiting for the cooldown
-  let inFlight = false;
-  let lastWrite = 0;
-  let timer = null;
-  let readOnly = false;
-  let ready = false;         // identity resolved, subscribed and the first load done
-  let failText = "";         // why the map could not start, shown instead of "Connecting…"
-  let closed = false;
-  const popped = new Set();  // codes to animate on the next render
+// ---------- map ----------
+const map = L.map("map", { worldCopyJump: true, zoomControl: true }).setView([30, 0], 2);
+L.tileLayer("https://tile.openstreetmap.de/{z}/{x}/{y}.png", {
+  maxZoom: 18, crossOrigin: "anonymous",
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+}).addTo(map);
+function setTheme(t) { document.documentElement.dataset.theme = t; }
+setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+const markers = L.layerGroup().addTo(map);
+let fitted = false;
 
-  const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10).replace(/-/g, "");
-  const dayIndex = (t = Date.now()) => Math.floor(t / 86400000);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ago = (iso) => {
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+};
+const country = (p) => p.country || (p.place ? p.place.split(",").pop().trim() : null);
 
-  /* ---------- identity (as in the poll) ---------- */
+function current() {
+  const all = [...people.values()];
+  return starLogins ? all.filter((p) => starLogins.has(p.login)) : all;
+}
 
-  const safeId = (s) => String(s).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 100);
-  function randomId() {
-    const b = new Uint8Array(12);
-    crypto.getRandomValues(b);
-    return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+function render() {
+  const list = current();
+  const mapped = list.filter((p) => typeof p.lat === "number");
+  const groups = new Map();
+  for (const p of mapped) {
+    const k = p.lat.toFixed(2) + "," + p.lon.toFixed(2);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
   }
-  /** A per-browser id when storage works, else per tab. Used when viewer.anonId() has no id. */
-  function localId() {
-    for (const store of ["localStorage", "sessionStorage"]) {
-      try {
-        const s = window[store];
-        let id = s.getItem("oa-demo-id");
-        if (!id) { id = randomId(); s.setItem("oa-demo-id", id); }
-        return id;
-      } catch { /* sandboxed: try the next */ }
+  markers.clearLayers();
+  const bounds = [];
+  for (const g of groups.values()) {
+    const p = g[0];
+    const isNew = g.some((x) => fresh.has(x.login));
+    const icon = L.divIcon({
+      className: "", iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -18],
+      html: `<div class="pin${isNew ? " new" : ""}"><i style="background-image:url('${esc(p.avatar)}&s=68')"></i>${g.length > 1 ? `<em>${g.length}</em>` : ""}</div>`,
+    });
+    const html = `<div class="pop"><h3>${esc(p.place ? p.place.split(",").slice(0, 2).join(",") : p.location)}</h3>` +
+      g.map((x) => `<a href="https://github.com/${esc(x.login)}" target="_blank" rel="noopener"><img src="${esc(x.avatar)}&s=44" alt=""><span><b>${esc(x.name || x.login)}</b><br><small>@${esc(x.login)}</small></span></a>`).join("") + "</div>";
+    const m = L.marker([p.lat, p.lon], { icon }).bindPopup(html);
+    m.addTo(markers);
+    for (const x of g) x._marker = m;
+    bounds.push([p.lat, p.lon]);
+  }
+  if (!fitted && bounds.length) { map.fitBounds(bounds, { padding: [40, 40], maxZoom: 4 }); fitted = true; }
+
+  const counts = new Map();
+  for (const p of mapped) { const c = country(p); if (c) counts.set(c, (counts.get(c) || 0) + 1); }
+  const sorted = [...counts].sort((a, b) => b[1] - a[1]);
+  const max = sorted[0]?.[1] || 1;
+  document.getElementById("countries").innerHTML = sorted.map(([c, n]) =>
+    `<div class="bar"><span>${esc(c)}</span><small>${n}</small><i style="width:${(n / max) * 100}%"></i></div>`).join("") || '<p class="note">None yet</p>';
+
+  const latest = [...list].sort((a, b) => (b.starredAt || "").localeCompare(a.starredAt || "")).slice(0, 15);
+  const box = document.getElementById("latest");
+  box.innerHTML = latest.map((p) => `<div class="person${typeof p.lat === "number" ? "" : " nomap"}" data-login="${esc(p.login)}">
+      <img src="${esc(p.avatar)}&s=56" alt=""><div><b>${esc(p.name || p.login)}</b><span>${esc(p.location || "No location")} · ${p.starredAt ? ago(p.starredAt) : ""}</span></div></div>`).join("");
+  box.querySelectorAll(".person").forEach((el) => { el.onclick = () => {
+    const p = people.get(el.dataset.login);
+    if (p && p._marker) { map.setView(p._marker.getLatLng(), Math.max(map.getZoom(), 5)); p._marker.openPopup(); }
+  }; });
+
+  document.getElementById("sStars").textContent = liveStars ?? starCount;
+  document.getElementById("sMapped").textContent = mapped.length;
+  document.getElementById("sCountries").textContent = counts.size;
+  const missing = list.length - mapped.length;
+  const pending = liveStars != null ? liveStars - list.length : 0;
+  document.getElementById("nomap").textContent = (missing ? `${missing} stargazers have no location we could place. ` : "") +
+    (pending > 0 ? `${pending} new star${pending > 1 ? "s" : ""} will land on the map at the next refresh.` : "");
+}
+
+// ---------- status ----------
+let lastChecked = null, statusMsg = null;
+function status() {
+  const dot = document.getElementById("dot"), t = document.getElementById("liveText");
+  dot.className = "dot" + (busy ? " busy" : "") + (statusMsg || offline ? " warn" : "");
+  if (busy) t.textContent = "Checking GitHub";
+  else if (statusMsg) t.textContent = statusMsg;
+  else if (offline) t.textContent = "Live updates paused. Reload to retry.";
+  else if (lastChecked) {
+    const left = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
+    t.textContent = `Checked GitHub ${ago(lastChecked.toISOString())} · next in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  } else t.textContent = "Waiting";
+  document.getElementById("refresh").disabled = busy;
+}
+setInterval(status, 1000);
+
+// ---------- GitHub + geocoding ----------
+async function gh(path, accept) {
+  if (Date.now() < rateResetAt) throw new Error("rate");
+  const r = await fetch("https://api.github.com/" + path, { headers: { Accept: accept || "application/vnd.github+json" } });
+  const left = Number(r.headers.get("x-ratelimit-remaining"));
+  if (r.status === 403 || r.status === 429 || left === 0) {
+    rateResetAt = Number(r.headers.get("x-ratelimit-reset")) * 1000 || Date.now() + 15 * 60 * 1000;
+    if (!r.ok) throw new Error("rate");
+  }
+  if (!r.ok) throw new Error("http " + r.status);
+  return { body: await r.json(), left };
+}
+
+const geoCache = new Map();
+for (const p of people.values()) if (p.location) geoCache.set(p.location.trim().toLowerCase(), p);
+let lastGeo = 0;
+async function geocode(loc) {
+  const key = loc.trim().toLowerCase();
+  if (JUNK.has(key)) return { lat: null, lon: null, place: null, country: null };
+  const hit = geoCache.get(key);
+  if (hit) return { lat: hit.lat ?? null, lon: hit.lon ?? null, place: hit.place ?? null, country: hit.country ?? null };
+  const wait = lastGeo + 1100 - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastGeo = Date.now();
+  try {
+    const r = await fetch("https://photon.komoot.io/api/?limit=1&lang=en&q=" + encodeURIComponent(loc));
+    const j = await r.json();
+    const f = j.features && j.features[0];
+    const pr = f ? f.properties : null;
+    const out = f ? { lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], place: [pr.name, pr.state, pr.country].filter(Boolean).join(", "), country: pr.country || null }
+      : { lat: null, lon: null, place: null, country: null };
+    geoCache.set(key, out);
+    return out;
+  } catch { return { lat: null, lon: null, place: null, country: null }; }
+}
+
+/* Logins GitHub answered 404 for this session: never looked up again. */
+const gone = new Set();
+let firstPoll = true;
+
+/* One profile; a failure other than the rate limit skips it instead of stopping the poll. */
+async function tryLookup(login, starredAt) {
+  try { return await lookup(login, starredAt); }
+  catch (err) { if (err.message === "rate") throw err; console.warn("lookup failed", login, err); return null; }
+}
+
+async function lookup(login, starredAt) {
+  let u;
+  try { ({ body: u } = await gh("users/" + login)); }
+  catch (err) {
+    if (err.message !== "http 404") throw err;
+    // No such account (deleted, or a made-up doc): drop it everywhere.
+    gone.add(login); people.delete(login); starLogins.delete(login); starCount = starLogins.size;
+    if (coll) { try { await coll.delete(login); } catch {} }
+    return null;
+  }
+  const prev = people.get(login);
+  const loc = (u.location || "").trim() || null;
+  let geo = { lat: null, lon: null, place: null, country: null };
+  if (loc) geo = prev && prev.location === loc ? prev : await geocode(loc);
+  const rec = { login, name: u.name || null, avatar: u.avatar_url, location: loc, lat: geo.lat ?? null, lon: geo.lon ?? null,
+    place: geo.place ?? null, country: geo.country ?? null, starredAt: starredAt || prev?.starredAt || null, checkedAt: new Date().toISOString() };
+  people.set(login, rec);
+  if (coll) { try { await coll.set(login, rec); } catch (e) { console.warn("save failed", e); } }
+  return rec;
+}
+
+async function poll() {
+  if (busy) return;
+  busy = true; statusMsg = null; status();
+  try {
+    const { body } = await gh(`repos/${REPO}`);
+    liveStars = body.stargazers_count;
+    // New stars: GitHub's public events feed (the stargazer list itself needs sign-in).
+    // The feed keeps the last 300 events: read all of it once per window, then the newest page.
+    const events = [];
+    for (let page = 1; page <= (firstPoll ? 3 : 1); page++) {
+      const { body: batch } = await gh(`repos/${REPO}/events?per_page=100&page=${page}`);
+      events.push(...batch);
+      if (batch.length < 100) break;
     }
-    return randomId();
-  }
-  async function hash(s) {
-    try {
-      const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-      return Array.from(new Uint8Array(d).slice(0, 12), (x) => x.toString(16).padStart(2, "0")).join("");
-    } catch {
-      let h = 2166136261;
-      for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
-      return (h >>> 0).toString(16);
+    firstPoll = false;
+    for (const e of events.filter((x) => x.type === "WatchEvent").reverse()) {
+      const login = e.actor.login;
+      if (gone.has(login) || !LOGIN_RE.test(login)) continue;
+      if (!starLogins.has(login)) { starLogins.add(login); starCount = starLogins.size; }
+      if (!people.has(login)) { if (await tryLookup(login, e.created_at)) fresh.add(login); render(); }
     }
+    // Moved locations: recheck the stalest profile.
+    const stale = [...people.values()].filter((p) => (!starLogins || starLogins.has(p.login)) && Date.now() - new Date(p.checkedAt || 0) > STALE_MS)
+      .sort((a, b) => (a.checkedAt || "").localeCompare(b.checkedAt || "")).slice(0, RECHECK_PER_POLL);
+    for (const p of stale) await tryLookup(p.login, p.starredAt);
+    lastChecked = new Date();
+  } catch (e) {
+    statusMsg = e.message === "rate"
+      ? `GitHub rate limit hit; resuming ${new Date(rateResetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+      : "Couldn't reach GitHub; retrying";
+  } finally {
+    busy = false;
+    nextAt = Date.now() + POLL_MS;
+    render(); status();
   }
-  async function identify() {
-    let viewer = null;
-    try { viewer = await OA.viewer.get(); } catch { viewer = null; }
-    if (viewer && viewer.email) return { id: `u-${await hash(viewer.email)}`, signedIn: true };
-    // viewer.anonId(), else the { anonId } that viewer.get() returns on servers before it.
-    // Retried: a failed lookup (rate limited, offline) would leave a per-tab id, and a reload would lose a seat or a vote.
-    let anon = null;
-    for (let i = 0; i < 3; i += 1) {
-      try {
-        if (OA.viewer && typeof OA.viewer.anonId === "function") anon = await OA.viewer.anonId();
-        break;
-      } catch { await new Promise((r) => setTimeout(r, 1500 * (i + 1))); }
-    }
-    if (!anon && viewer && typeof viewer.anonId === "string") anon = viewer.anonId;
-    if (anon && safeId(anon)) return { id: safeId(anon), signedIn: false };
-    return { id: localId(), signedIn: false };
-  }
+}
 
-  /** A pin counts only when c is a code from the built-in list. */
-  function validPin(doc) {
-    const c = doc && doc.data && doc.data.c;
-    return typeof c === "string" && BY_CODE.has(c) ? c : null;
-  }
+document.getElementById("refresh").onclick = poll;
+setInterval(() => { if (!document.hidden && Date.now() >= nextAt) poll(); }, 15000);
 
-  /* ---------- data ---------- */
+// ---------- shared cache ----------
+async function loadShared() {
+  let cursor, pages = 0;
+  do {
+    const r = await coll.list({ cursor, limit: 100 });
+    for (const d of r.items) adopt(d.data);
+    cursor = r.nextCursor || null;
+  } while (cursor && ++pages < 20);
+}
 
-  async function loadAll() {
-    const next = new Map();
-    let cursor;
-    for (let i = 0; i < 100; i += 1) {
-      const page = await col.list(cursor ? { cursor, limit: PAGE } : { limit: PAGE });
-      for (const d of page.items) {
-        const c = validPin(d);
-        if (c !== null) next.set(d.id, c);
-      }
-      if (!page.nextCursor || page.items.length === 0) break;
-      cursor = page.nextCursor;
-    }
-    pins.clear();
-    for (const [k, v] of next) pins.set(k, v);
-    syncMine();
-  }
-  function syncMine() {
-    if (pending === null && !inFlight) mine = pins.has(me.id) ? pins.get(me.id) : null;
-  }
-
-  const PAUSED = "Live updates paused. Reload to retry.";
-  let paused = false; // the live feed is down (subscribe's offline), until a resync
-
-  function applyChange(e) {
-    // Never silently deaf: say so while the live feed is down; a resync clears it.
-    if (e.offline) { paused = true; showError(""); return; }
-    if (e.resync && paused) { paused = false; showError(""); }
-    if (e.resync) { loadAll().then(render, () => {}); return; }
-    let latest = null;
-    for (const d of e.docs) {
-      const c = validPin(d);
-      const was = pins.get(d.id);
-      if (c === null) pins.delete(d.id); else pins.set(d.id, c);
-      if (c !== null && c !== was) {
-        popped.add(c);
-        if (d.id !== me.id) latest = c;
-      }
-    }
-    for (const id of e.deleted) pins.delete(id);
-    syncMine();
-    render();
-    if (latest) say(`Someone picked ${BY_CODE.get(latest).name}.`);
-  }
-
-  async function openDay() {
-    clearTimeout(dayTimer);
-    if (unsub) unsub();
-    pins.clear();
-    mine = null;
-    closed = false;
-    key = `pins-${utcDay()}`;
-    col = OA.db.collection(key);
-    unsub = col.subscribe(applyChange);
-    await loadAll();
-    render();
-    // A new collection at 00:00 UTC; nothing gets wiped.
-    dayTimer = setTimeout(() => openDay().catch(() => fail()), (dayIndex() + 1) * 86400000 - Date.now() + 1000);
-  }
-
-  /* ---------- pinning ---------- */
-
-  /** Every write carries me.id: never write without one. */
-  const hasId = () => Boolean(me) && typeof me.id === "string" && me.id.length > 0;
-  function pinCountry(code) {
-    if (!ready) { hint(failText || "Still connecting, try again in a moment."); return; }
-    if (readOnly || closed) { hint(el.error.textContent || "This map can't save pins."); return; }
-    if (!hasId()) { hint("Can't tell who you are, so nothing was saved. Reload to try again."); return; }
-    if (!BY_CODE.has(code)) return;
-    if (code === mine && pending === null) { say(`Your pin is already ${BY_CODE.get(code).name}.`); return; }
-    mine = code;
-    pending = code;
-    pins.set(me.id, code);
-    popped.add(code);
-    showError("");
-    render();
-    const wait = lastWrite + COOLDOWN_MS - Date.now();
-    say(wait > 0 || inFlight ? `You picked ${BY_CODE.get(code).name}. Saving in a moment.` : `You picked ${BY_CODE.get(code).name}.`);
-    flush();
-  }
-  function flush() {
-    if (inFlight || pending === null || timer || !hasId()) return;
-    const wait = lastWrite + COOLDOWN_MS - Date.now();
-    if (wait > 0) { timer = setTimeout(() => { timer = null; flush(); }, wait); return; }
-    const c = pending;
-    pending = null;
-    inFlight = true;
-    lastWrite = Date.now();
-    const target = col;
-    target.set(me.id, { c })
-      // Adopt the saved doc: your pin never waits on the live feed.
-      .then((d) => {
-        if (target !== col || !d || pending !== null) return;
-        const saved = validPin(d);
-        if (saved !== null) pins.set(d.id, saved);
-      })
-      .catch((err) => {
-        if (target !== col) return;
-        handleWriteError(err);
-        // Roll back to what the server has, including your own pin.
-        pins.delete(me.id);
-        return loadAll().catch(() => {});
-      })
-      .finally(() => {
-        inFlight = false;
-        if (target === col) { syncMine(); render(); }
-        flush();
+(async () => {
+  render();
+  try {
+    if (window.openArtifacts) {
+      await openArtifacts.ready;
+      setTheme(openArtifacts.theme || "light");
+      openArtifacts.onTheme && openArtifacts.onTheme(setTheme);
+      coll = openArtifacts.db.collection("people");
+      await loadShared();
+      render();
+      coll.subscribe(async (ev) => {
+        if (ev.offline) { offline = true; status(); return; }
+        if (ev.resync) { offline = false; try { await loadShared(); } catch (err) { console.warn(err); } }
+        for (const d of ev.docs || []) { const c = clean(d.data); if (c && !people.has(c.login)) fresh.add(c.login); adopt(d.data); }
+        render();
       });
-  }
-
-  function handleWriteError(err) {
-    const code = err && err.code;
-    const msg = String((err && err.message) || "");
-    pending = null;
-    if ((code === "rate_limited" || code === "quota_exceeded") && /daily|day/i.test(msg)) {
-      closed = true;
-      showError("Pins are done for today. A fresh map opens at 00:00 UTC.");
-    } else if (code === "rate_limited") showError("Your pin didn't save. Too many pins from your network. Try again in a minute.");
-    else if (code === "unauthorized" || code === "data_editors_only") { readOnly = true; showError("This demo isn't accepting pins right now."); }
-    else if (code === "capability_denied") { readOnly = true; showError("This map can't save pins."); }
-    else showError("Your pin didn't save. Try again.");
-  }
-
-  /* ---------- combobox ---------- */
-
-  let matches = [];
-  let active = -1;
-  let chosen = null;         // code picked in the combobox, not yet pinned
-
-  function openList(q) {
-    const f = fold(q.trim());
-    matches = f ? COUNTRIES.filter((c) => c.key.includes(f)).sort((a, b) => rank(a, f) - rank(b, f)) : COUNTRIES.slice();
-    active = matches.length && f ? 0 : -1;
-    const frag = document.createDocumentFragment();
-    matches.forEach((c, i) => {
-      const li = document.createElement("li");
-      li.id = `opt-${c.code}`;
-      li.setAttribute("role", "option");
-      li.setAttribute("aria-selected", String(i === active));
-      li.innerHTML = '<span class="flag" aria-hidden="true"></span><span></span>';
-      li.firstChild.textContent = flag(c.code);
-      li.lastChild.textContent = c.name;
-      li.addEventListener("mousedown", (e) => e.preventDefault());
-      li.addEventListener("click", () => select(i));
-      frag.append(li);
-    });
-    if (!matches.length) {
-      const li = document.createElement("li");
-      li.className = "none";
-      li.textContent = "No country matches";
-      frag.append(li);
     }
-    el.list.replaceChildren(frag);
-    el.list.hidden = false;
-    el.input.setAttribute("aria-expanded", "true");
-    setActive(active);
-  }
-  /** Names that start with the query first, then words that do, then the rest. */
-  function rank(c, f) {
-    const n = fold(c.name);
-    return n.startsWith(f) ? 0 : (` ${c.key}`).includes(` ${f}`) ? 1 : 2;
-  }
-  function closeList() {
-    el.list.hidden = true;
-    el.input.setAttribute("aria-expanded", "false");
-    el.input.removeAttribute("aria-activedescendant");
-    active = -1;
-  }
-  function setActive(i) {
-    const prev = el.list.querySelector('[aria-selected="true"]');
-    if (prev) prev.setAttribute("aria-selected", "false");
-    active = i;
-    if (i < 0) { el.input.removeAttribute("aria-activedescendant"); return; }
-    const li = el.list.children[i];
-    li.setAttribute("aria-selected", "true");
-    el.input.setAttribute("aria-activedescendant", li.id);
-    li.scrollIntoView({ block: "nearest" });
-  }
-  function select(i) {
-    const c = matches[i];
-    if (!c) return;
-    chosen = c.code;
-    el.input.value = c.name;
-    closeList();
-    el.input.focus();
-    renderControls();
-  }
-  /** What the Pin button would pin: the chosen option, or typed text that names exactly one country. */
-  function resolveInput() {
-    const f = fold(el.input.value.trim());
-    if (!f) return null;
-    if (chosen && fold(BY_CODE.get(chosen).name) === f) return chosen;
-    const exact = COUNTRIES.find((c) => fold(c.name) === f || c.code.toLowerCase() === f);
-    if (exact) return exact.code;
-    const hits = COUNTRIES.filter((c) => c.key.includes(f));
-    return hits.length === 1 ? hits[0].code : null;
-  }
-
-  function wireCombo() {
-    el.input.addEventListener("input", () => { chosen = null; openList(el.input.value); renderControls(); });
-    el.input.addEventListener("click", () => { if (el.list.hidden) openList(chosen ? "" : el.input.value); });
-    el.input.addEventListener("blur", () => closeList());
-    el.input.addEventListener("keydown", (e) => {
-      const open = !el.list.hidden;
-      switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault();
-          if (!open) { openList(chosen ? "" : el.input.value); if (!matches.length) return; setActive(chosen ? Math.max(0, matches.findIndex((c) => c.code === chosen)) : 0); return; }
-          if (matches.length) setActive(Math.min(matches.length - 1, active + 1));
-          return;
-        case "ArrowUp":
-          e.preventDefault();
-          if (!open) { openList(chosen ? "" : el.input.value); if (matches.length) setActive(matches.length - 1); return; }
-          if (matches.length) setActive(Math.max(0, active - 1));
-          return;
-        case "Enter":
-          if (open && active >= 0) { e.preventDefault(); select(active); }
-          return; // otherwise the form submits and pins
-        case "Escape":
-          if (open) { e.preventDefault(); closeList(); }
-          else if (el.input.value) { e.preventDefault(); el.input.value = ""; chosen = null; renderControls(); }
-          return;
-        default:
-      }
-    });
-    el.form.addEventListener("submit", (e) => {
-      e.preventDefault();
-      closeList();
-      const code = resolveInput();
-      if (!code) { showError("Pick a country from the list."); return; }
-      chosen = code;
-      el.input.value = BY_CODE.get(code).name;
-      pinCountry(code);
-    });
-  }
-
-  /* ---------- render ---------- */
-
-  const SVGNS = "http://www.w3.org/2000/svg";
-  function place(c) {
-    const x = (c.lon + 180) / GRID.step - 0.5;
-    const y = Math.min(GRID.rows - 0.5, Math.max(-0.5, (GRID.top - c.lat) / GRID.step - 0.5));
-    return [x, y];
-  }
-  function tally() {
-    const counts = new Map();
-    for (const c of pins.values()) counts.set(c, (counts.get(c) || 0) + 1);
-    return [...counts].sort((a, b) => b[1] - a[1] || BY_CODE.get(a[0]).name.localeCompare(BY_CODE.get(b[0]).name));
-  }
-
-  function renderMap(ranked) {
-    const max = ranked.length ? ranked[0][1] : 1;
-    const frag = document.createDocumentFragment();
-    // Big circles first so small ones stay on top and visible.
-    for (const [code, n] of ranked) {
-      const c = BY_CODE.get(code);
-      const [x, y] = place(c);
-      const dot = document.createElementNS(SVGNS, "circle");
-      dot.setAttribute("cx", x.toFixed(2));
-      dot.setAttribute("cy", y.toFixed(2));
-      dot.setAttribute("r", (0.62 + 1.7 * Math.sqrt(n / max)).toFixed(2));
-      dot.setAttribute("class", `pin${code === mine ? " me" : ""}${popped.has(code) ? " pop" : ""}`);
-      dot.dataset.code = code;
-      const t = document.createElementNS(SVGNS, "title");
-      t.textContent = `${c.name}: ${nf.format(n)}`;
-      dot.append(t);
-      frag.append(dot);
-    }
-    popped.clear();
-    el.pins.replaceChildren(frag);
-    const total = pins.size;
-    el.mapLabel.textContent = total
-      ? `World map of today's pins: ${nf.format(total)} ${total === 1 ? "pin" : "pins"} in ${nf.format(ranked.length)} ${ranked.length === 1 ? "country" : "countries"}. The list below has the counts.`
-      : "World map of today's pins. No pins yet.";
-  }
-
-  function renderTop(ranked) {
-    const max = ranked.length ? ranked[0][1] : 1;
-    if (!ranked.length) {
-      const li = document.createElement("li");
-      li.className = "empty";
-      li.textContent = "No pins yet today. Be the first.";
-      el.top.replaceChildren(li);
-      return;
-    }
-    el.top.replaceChildren(...ranked.slice(0, TOP_N).map(([code, n]) => {
-      const c = BY_CODE.get(code);
-      const li = document.createElement("li");
-      li.innerHTML = '<span class="flag" aria-hidden="true"></span><span class="name"></span><span class="meter" aria-hidden="true"><span></span></span><span class="n"></span>';
-      li.querySelector(".flag").textContent = flag(code);
-      li.querySelector(".name").textContent = c.name;
-      if (code === mine) {
-        const you = document.createElement("span");
-        you.className = "you";
-        you.textContent = "(you)";
-        li.querySelector(".name").append(you);
-      }
-      li.querySelector(".meter span").style.width = `${(n / max) * 100}%`;
-      li.querySelector(".n").textContent = nf.format(n);
-      li.querySelector(".n").setAttribute("aria-label", `${nf.format(n)} ${n === 1 ? "pin" : "pins"}`);
-      return li;
-    }));
-  }
-
-  function renderControls() {
-    const off = readOnly || closed || !ready;
-    el.input.disabled = off;
-    el.pin.disabled = off;
-    el.pin.textContent = mine && chosen === mine ? "Pinned" : mine ? "Move pin" : "Pin";
-  }
-
-  function render() {
-    if (!ready) { renderControls(); el.note.textContent = failText || "Connecting…"; return; }
-    const ranked = tally();
-    renderMap(ranked);
-    renderTop(ranked);
-    renderControls();
-    const total = pins.size;
-    const head = `${nf.format(total)} ${total === 1 ? "pin" : "pins"} from ${nf.format(ranked.length)} ${ranked.length === 1 ? "country" : "countries"} today, one per browser.`;
-    el.note.replaceChildren();
-    if (mine) {
-      const b = document.createElement("b");
-      b.textContent = `${flag(mine)} ${BY_CODE.get(mine).name}`;
-      el.note.append("Your pin: ", b, `. ${head}`);
-    } else el.note.append(head);
-    if (closed) el.note.append(" Done for today.");
-    else if (!readOnly) el.note.append(mine ? " Change it any time." : "");
-  }
-
-  /* ---------- boot ---------- */
-
-  function say(m) { el.announce.textContent = ""; requestAnimationFrame(() => { el.announce.textContent = m; }); }
-  /** An empty message falls back to the paused notice while the live feed is down. */
-  function showError(m) { el.error.textContent = m || (paused ? PAUSED : ""); }
-  function fail(msg = "Could not reach the map. Reload to try again.") {
-    failText = msg;
-    el.note.textContent = msg;
-  }
-  let hintTimer = null;
-  /** Says why a pin did nothing, on the note line and to screen readers, then goes back to the usual note. */
-  function hint(msg) {
-    render();
-    el.note.textContent = msg;
-    say(msg);
-    clearTimeout(hintTimer);
-    hintTimer = setTimeout(render, 4000);
-  }
-
-  async function boot() {
-    wireCombo();
-    if (!OA || !OA.db) {
-      fail("Open this map from its view link to pin your country.");
-      return;
-    }
-    await OA.ready;
-    const setTheme = (t) => { document.documentElement.dataset.theme = t; };
-    setTheme(OA.theme);
-    OA.onTheme(setTheme);
-    me = await identify();
-    await openDay();
-    ready = true;
-    failText = "";
-    render();
-    // Timers sleep in background tabs: check the day again when the page comes back.
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && col && `pins-${utcDay()}` !== key) openDay().catch(() => fail());
-    });
-  }
-  setTimeout(() => { if (!ready && !failText) fail("Could not connect. Reload to try again."); }, 10000);
-  boot().catch(() => fail());
+  } catch (e) { console.warn("shared data unavailable", e); }
+  poll();
 })();
 </script>
 <script>
-/* Links to the other demos. The publish script fills APP_ORIGIN and each id from
-   ops/demo/ids.json; a link whose id is still a placeholder is never made. */
+/* Link to the gallery. The publish script fills APP_ORIGIN and the id from ops/demo/ids.json;
+   a link whose id is still a placeholder is never made. */
 (() => {
   "use strict";
   const APP_ORIGIN = "{{origin}}";
   const IDS = { gallery: "{{id:gallery}}" };
   const resolved = (v) => typeof v === "string" && !v.startsWith("{" + "{");
   const VALID_ID = /^[A-Za-z0-9_-]{4,64}$/;
-  function appOrigin() {
-    if (resolved(APP_ORIGIN) && /^https?:\/\/[^/]+$/.test(APP_ORIGIN)) return APP_ORIGIN;
-    try {
-      const anc = window.location.ancestorOrigins;
-      if (anc && anc.length && anc[anc.length - 1] !== "null") return anc[anc.length - 1];
-    } catch {}
-    return "";
-  }
-  const base = appOrigin();
-  const LABELS = { gallery: "All demos", tictactoe: "Tic-tac-toe", chess: "Chess" };
-  /* Links are built here, never in the markup, so an unfilled id leaves no link behind. */
-  function link(slug, text) {
-    const id = IDS[slug];
-    if (!resolved(id) || !VALID_ID.test(id)) return null;
-    const a = document.createElement("a");
-    a.href = `${base}/a/${id}`;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.dataset.demo = slug;
-    a.textContent = text;
-    if (slug === "gallery") a.insertAdjacentHTML("beforeend", '<span aria-hidden="true"> ↗</span>');
-    a.insertAdjacentHTML("beforeend", '<span class="sr"> (opens in new tab)</span>');
-    return a;
-  }
-  /* data-demo-link: the element's own text becomes the link. */
-  for (const el of document.querySelectorAll("[data-demo-link]")) {
-    const a = link(el.dataset.demoLink, el.textContent);
-    if (a) el.replaceChildren(a);
-  }
-  /* data-demo-links: a hidden list of links, shown once at least one resolves. */
+  let base = "";
+  if (resolved(APP_ORIGIN) && /^https?:\/\/[^/]+$/.test(APP_ORIGIN)) base = APP_ORIGIN;
+  else try {
+    const anc = window.location.ancestorOrigins;
+    if (anc && anc.length && anc[anc.length - 1] !== "null") base = anc[anc.length - 1];
+  } catch {}
   for (const el of document.querySelectorAll("[data-demo-links]")) {
-    for (const slug of el.dataset.demoLinks.split(" ")) {
-      const a = link(slug, LABELS[slug]);
-      if (a) el.append(a);
-    }
-    el.hidden = !el.children.length;
+    const id = IDS.gallery;
+    if (!resolved(id) || !VALID_ID.test(id)) continue;
+    const a = document.createElement("a");
+    a.href = `${base}/a/${id}`; a.target = "_blank"; a.rel = "noopener";
+    a.textContent = "All demos \u2197";
+    el.replaceChildren(a); el.hidden = false;
   }
 })();
 </script>
