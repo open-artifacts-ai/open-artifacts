@@ -244,6 +244,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/events`]: art("events"),
   // #1100: the doc room socket; the handler grants role edit by "publish".
   [`GET ${ARTS}/doc`]: art("events"),
+  // #1100: edit_doc over REST; the service checks "publish" (plan lock, caps).
+  [`POST ${ARTS}/doc/ops`]: art("publish", signedIn),
   [`GET ${ARTS}/storage`]: art("storage", { anon401: SAVE }),
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
@@ -523,6 +525,8 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   search_artifacts: { user: "filtered by listFilterSql" },
   list_versions: art("versions"),
   restore_version: art("restore"),
+  // #1100: offered only while docs are available; the service checks the doc.
+  edit_doc: art("publish"),
   share_artifact: art("share"),
   unshare_artifact: art("unshare"),
   set_visibility: art("visibility"),

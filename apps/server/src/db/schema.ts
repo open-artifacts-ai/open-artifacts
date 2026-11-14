@@ -446,6 +446,9 @@ export const versions = sqliteTable(
     // NULL only on rows written before 0002 (or by pre-0002 code): readers fall
     // back to artifacts.format.
     format: text("format"),
+    // #1100: JSON {kind: auto|named|before_agent|restore, by?: {...}} for a
+    // doc version saved by the room. NULL: not a doc, or a doc's first version.
+    docSave: text("doc_save"),
   },
   (t) => [
     primaryKey({ columns: [t.artifactId, t.version] }),

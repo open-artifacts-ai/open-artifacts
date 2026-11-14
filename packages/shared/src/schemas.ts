@@ -392,6 +392,18 @@ export const ArtifactPatchResultSchema = ArtifactSummarySchema.extend({
 });
 export type ArtifactPatchResult = z.infer<typeof ArtifactPatchResultSchema>;
 
+/**
+ * How the room saved a doc version (#1100): `auto` (a pause, 30 minutes, the
+ * last editor leaving), `named` (Save version), `before_agent` (people's
+ * edits saved before an agent edited; `by` is that agent) or `restore`.
+ * `by`: an agent ref when an agent, else the person's user ref.
+ */
+export const DocSaveSchema = z.object({
+  kind: z.enum(["auto", "named", "before_agent", "restore"]),
+  by: z.union([AgentRefSchema, UserRefSchema]).optional(),
+});
+export type DocSave = z.infer<typeof DocSaveSchema>;
+
 export const VersionInfoSchema = z.object({
   version: z.number().int(),
   message: z.string().nullable(),
@@ -410,6 +422,8 @@ export const VersionInfoSchema = z.object({
    * Pins carry the hash the server stamped from the same bytes (#1490).
    */
   contentHash: z.string().nullable(),
+  /** Docs only: how the room saved this version. Absent for other artifacts. */
+  docSave: DocSaveSchema.optional(),
 });
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
 
@@ -1418,6 +1432,32 @@ export const RestoreVersionInputSchema = z.strictObject({
   version: z.number().int().min(1),
 });
 export type RestoreVersionInput = z.infer<typeof RestoreVersionInputSchema>;
+
+/**
+ * edit_doc (#1100): small anchored operations on a doc, applied through its
+ * room. The operations are validated by @oa/doc-ops (too_many_ops,
+ * invalid_op, quote_not_found, ...), so here each is only an object.
+ */
+export const EditDocBodySchema = z.strictObject({
+  ops: z.array(z.record(z.string(), z.unknown())).min(1),
+  expectedVersion: z.number().int().min(1).optional(),
+});
+export type EditDocBody = z.infer<typeof EditDocBodySchema>;
+
+export const EditDocInputSchema = EditDocBodySchema.extend({ id: IdSchema });
+export type EditDocInput = z.infer<typeof EditDocInputSchema>;
+
+/** edit_doc's result: the version the edit sits on, the doc's stored bytes, and what each operation changed. */
+export interface EditDocResult {
+  id: string;
+  /** The artifact's current version. Edits show in the next saved version. */
+  version: number;
+  bytes: number;
+  applied: number;
+  /** A version saved first, because people had unsaved edits. */
+  savedVersion?: number;
+  changes: unknown[];
+}
 
 export const ShareArtifactInputSchema = ShareInputSchema.extend({
   id: IdSchema,

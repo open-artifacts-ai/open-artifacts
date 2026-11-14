@@ -588,6 +588,19 @@ export const SURFACES: readonly Surface[] = [
       ),
     ),
   },
+  // #1100: edit_doc over REST. The world's artifacts aren't docs, so an
+  // allowed caller reaches 400 not_a_doc after the publish check (nothing written).
+  rest(
+    "rest doc ops",
+    "publish",
+    [`POST ${ARTS}/doc/ops`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/ops`,
+      () => ({ body: { ops: [{ op: "delete", quote: "probe" }] } }),
+      badRequest,
+    ),
+  ),
   rest(
     "rest restore_version",
     "restore",

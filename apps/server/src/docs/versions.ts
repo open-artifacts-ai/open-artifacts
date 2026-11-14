@@ -49,7 +49,34 @@ export type SaveInput = {
   contributors: Contributor[];
   now: number;
   restoredFrom?: number;
+  /** How the room saved this version (stored as versions.doc_save). */
+  docSave: DocSaveKind;
+  /** Who docSave names, when not the author (before_agent: the agent about to edit). */
+  docSaveBy?: Contributor | null;
 };
+
+export type DocSaveKind = "auto" | "named" | "before_agent" | "restore";
+
+/** versions.doc_save: JSON {kind, by?}; `by` is the author when known. */
+export function docSaveJson(kind: DocSaveKind, by: Contributor | null): string {
+  return JSON.stringify({
+    kind,
+    ...(by
+      ? {
+          by:
+            by.kind === "agent"
+              ? {
+                  kind: "agent",
+                  name: by.agentName ?? "Agent",
+                  version: by.agentVersion ?? null,
+                  via: by.agentVia ?? null,
+                  userId: by.userId ?? null,
+                }
+              : { kind: "person", userId: by.userId ?? by.key },
+        }
+      : {}),
+  });
+}
 
 const FILES = [
   ["index.html", "text/html; charset=utf-8"],
@@ -143,6 +170,14 @@ export async function writeDocVersion(
         language: null,
         message: o.message,
       }),
+      env.DB.prepare(
+        `update versions set doc_save = ?
+         where artifact_id = ? and version = (select current_version from artifacts where id = ?)`,
+      ).bind(
+        docSaveJson(o.docSave, o.docSaveBy ?? author),
+        o.artifactId,
+        o.artifactId,
+      ),
       ...o.contributors.map((c) =>
         env.DB.prepare(
           `insert or ignore into version_contributors

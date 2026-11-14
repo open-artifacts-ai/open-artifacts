@@ -1,5 +1,6 @@
 import {
   ArtifactPatchSchema,
+  EditDocBodySchema,
   INLINE_TOO_LARGE_MESSAGE,
   isId,
   LIMITS,
@@ -36,6 +37,7 @@ import {
   softDelete,
   undelete,
 } from "../services/artifacts.js";
+import { editDoc } from "../services/doc-edit.js";
 import { planFiles, RESERVED_KEYS } from "../services/manifest.js";
 import { putExtractedText } from "../services/search.js";
 import {
@@ -313,6 +315,14 @@ export function mountArtifacts(app: AppType): void {
       await restoreVersion(c.env, user, id, v, agentOf(c), execCtx(c)),
       201,
     );
+  });
+
+  // #1100: agent edits to a doc, through its room (the REST twin of edit_doc).
+  app.post(`${ARTIFACT}/doc/ops`, async (c) => {
+    const user = requireUser(c);
+    const id = idParam(c);
+    const body = await jsonBody(c, EditDocBodySchema);
+    return c.json(await editDoc(c.env, user, agentOf(c), id, body));
   });
 
   // Signed-in viewer+ contributes a pdf version's text (text/plain, ≤ extractedTextBytes).

@@ -12,7 +12,18 @@
  * frames; errors are text frames `{"type":"error","code":...}`.
  */
 import { DurableObject } from "cloudflare:workers";
-import { docFragment, docFromJSON, docToYXmlFragment } from "@oa/doc-schema";
+import {
+  applyDocOps,
+  type DocOpError,
+  type OpImportChange,
+  readDoc,
+} from "@oa/doc-ops";
+import {
+  docFragment,
+  docFromJSON,
+  docToYXmlFragment,
+  markdownToDoc,
+} from "@oa/doc-schema";
 import {
   accessChangedCloseReason,
   type DocFrameActor,
@@ -34,7 +45,11 @@ import {
   presenceStub,
   SKEW_MS,
 } from "../runtime/presence.js";
-import { type Contributor, writeDocVersion } from "./versions.js";
+import {
+  type Contributor,
+  type DocSaveKind,
+  writeDocVersion,
+} from "./versions.js";
 
 /** Trusted headers from the route: the socket's role ("edit" | "read"). */
 export const DOC_ROLE_HEADER = "X-OA-Doc-Role";
@@ -1140,6 +1155,8 @@ export class DocRoom extends DurableObject<Env> {
     restoredFrom?: number;
     /** An automatic save with nothing unsaved is skipped. */
     auto: boolean;
+    /** How the version is recorded (versions.doc_save); default from the name and frame. */
+    docSave?: { kind: DocSaveKind; by?: Contributor | null };
   }): Promise<{ version: number } | null> {
     const v = this.vs;
     if (o.auto && !v.dirty) return null;
@@ -1161,6 +1178,10 @@ export class DocRoom extends DurableObject<Env> {
         author,
         message: o.name,
         contributors: captured.map((w) => w.c),
+        docSave:
+          o.docSave?.kind ??
+          (o.frame === "restored" ? "restore" : o.name ? "named" : "auto"),
+        ...(o.docSave?.by === undefined ? {} : { docSaveBy: o.docSave.by }),
         now: this.now(),
         ...(o.restoredFrom === undefined
           ? {}
@@ -1231,10 +1252,21 @@ export class DocRoom extends DurableObject<Env> {
    * Before an agent edit: saves only if people edited since the last version,
    * so their text is in history before the agent changes it.
    */
-  async saveBeforeAgentEdit(): Promise<{ version: number } | null> {
+  async saveBeforeAgentEdit(
+    agent?: Contributor,
+  ): Promise<{ version: number } | null> {
     const people = [...this.vs.who.values()].some((w) => w.c.kind === "person");
     if (!people) return null;
-    return this.save({ name: null, by: null, frame: "saved" });
+    const by = agent ? parseContributor(agent) : null;
+    return this.serial(() =>
+      this.doSave({
+        name: null,
+        by: null,
+        frame: "saved",
+        auto: true,
+        docSave: { kind: "before_agent", by },
+      }),
+    );
   }
 
   /**
@@ -1302,6 +1334,164 @@ export class DocRoom extends DurableObject<Env> {
       });
       return r as { version: number };
     });
+  }
+
+  /**
+   * edit_doc: applies agent operations to the live doc (#1100). People's
+   * unsaved edits get a version first, so history holds their text before the
+   * agent changes it. The operations run on a copy in one Yjs transaction
+   * (doc-ops), so an invalid anchor or an over-cap result applies nothing;
+   * the resulting update is stored and broadcast to every socket as a socket
+   * update would be.
+   */
+  async applyOps(o: { ops: unknown; by: Contributor }): Promise<
+    | {
+        ok: true;
+        version: number;
+        bytes: number;
+        applied: number;
+        savedVersion?: number;
+        changes: OpImportChange[];
+      }
+    | { ok: false; error: DocOpError }
+  > {
+    const by = parseContributor(o?.by);
+    return this.serial(async () => {
+      let savedVersion: number | undefined;
+      if ([...this.vs.who.values()].some((w) => w.c.kind === "person")) {
+        const saved = await this.doSave({
+          name: null,
+          by: null,
+          frame: "saved",
+          auto: true,
+          docSave: { kind: "before_agent", by },
+        });
+        savedVersion = saved?.version;
+      }
+      await this.seedIfEmpty();
+      const doc = this.loadDoc();
+      let update: Uint8Array;
+      let applied: number;
+      let changes: OpImportChange[];
+      try {
+        const before = Y.encodeStateVector(doc);
+        const r = applyDocOps(doc, o.ops, {
+          maxBytes: DOC_MAX_BYTES,
+          origin: "edit_doc",
+        });
+        if (!r.ok) return r;
+        update = Y.encodeStateAsUpdate(doc, before);
+        // The cap counts what the room stores, not only this copy.
+        if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
+          const size = this.storedBytes() + update.byteLength;
+          return {
+            ok: false as const,
+            error: {
+              code: "doc_too_large" as const,
+              message: `The doc would be about ${size} bytes; the limit is ${DOC_MAX_BYTES}. Remove content, or start a new doc for the rest.`,
+              limitBytes: DOC_MAX_BYTES,
+              sizeBytes: size,
+            },
+          };
+        }
+        this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
+        applied = r.applied;
+        changes = r.changes;
+      } finally {
+        doc.destroy();
+      }
+      if (update.byteLength > 0) {
+        this.buffer.push(update);
+        this.bufferBytes += update.byteLength;
+        const out = encoding.createEncoder();
+        encoding.writeVarUint(out, MSG_SYNC);
+        encoding.writeVarUint(out, SYNC_UPDATE);
+        encoding.writeVarUint8Array(out, update);
+        this.broadcast(encoding.toUint8Array(out), null);
+      }
+      this.noteEdit(by);
+      const row = await this.env.DB.prepare(
+        "select current_version as v from artifacts where id = ?",
+      )
+        .bind(this.artifactId())
+        .first<{ v: number }>();
+      return {
+        ok: true as const,
+        version: row?.v ?? 0,
+        bytes: this.storedBytes(),
+        applied,
+        ...(savedVersion === undefined ? {} : { savedVersion }),
+        changes,
+      };
+    });
+  }
+
+  /** The current version's saved text: Markdown, and doc.json when it has one. */
+  private async currentSaved(): Promise<{
+    md: string;
+    json: unknown | null;
+  } | null> {
+    const row = await this.env.DB.prepare(
+      `select v.manifest from versions v join artifacts a
+         on a.id = v.artifact_id and a.current_version = v.version
+       where a.id = ?`,
+    )
+      .bind(this.artifactId())
+      .first<{ manifest: string }>();
+    if (!row) return null;
+    const files = JSON.parse(row.manifest) as { path: string; key: string }[];
+    const read = async (path: string) => {
+      const f = files.find((e) => e.path === path);
+      const o = f ? await this.env.FILES.get(f.key) : null;
+      return o ? await o.text() : null;
+    };
+    const json = await read("doc.json");
+    return {
+      md: (await read("doc.md")) ?? "",
+      json: json === null ? null : JSON.parse(json),
+    };
+  }
+
+  /**
+   * A doc nobody has opened has no room state yet (the editor seeds it from
+   * the saved text on first open). An edit seeds it the same way, from the
+   * current version, so the agent edits the real text.
+   */
+  private async seedIfEmpty(): Promise<void> {
+    if (this.storedBytes() > 0) return;
+    const saved = await this.currentSaved();
+    if (!saved) return;
+    const node =
+      saved.json === null
+        ? markdownToDoc(saved.md).doc
+        : docFromJSON(saved.json as never);
+    const doc = new Y.Doc({ gc: true });
+    try {
+      docToYXmlFragment(node, docFragment(doc));
+      const update = Y.encodeStateAsUpdate(doc);
+      this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
+      this.buffer.push(update);
+      this.bufferBytes += update.byteLength;
+      const out = encoding.createEncoder();
+      encoding.writeVarUint(out, MSG_SYNC);
+      encoding.writeVarUint(out, SYNC_UPDATE);
+      encoding.writeVarUint8Array(out, update);
+      this.broadcast(encoding.toUint8Array(out), null);
+    } finally {
+      doc.destroy();
+    }
+  }
+
+  /** The doc as Markdown right now, unsaved edits included (get_artifact). */
+  async markdown(): Promise<string> {
+    // A room nobody has opened holds nothing yet: the saved text is the doc.
+    if (this.storedBytes() === 0) return (await this.currentSaved())?.md ?? "";
+    const doc = this.loadDoc();
+    try {
+      return readDoc(doc);
+    } finally {
+      doc.destroy();
+    }
   }
 
   /** Stored size in bytes: snapshot + rows + buffer (tests, route reads). */

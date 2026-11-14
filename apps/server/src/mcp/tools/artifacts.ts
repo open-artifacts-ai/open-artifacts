@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import {
   type ArtifactSummary,
+  DOC_ENTRY,
   type GetArtifactResult,
   viewerPath,
 } from "@oa/shared";
@@ -70,6 +71,7 @@ async function downloadUrl(
   return `${contentOrigin(env)}${p}`;
 }
 
+import { editDoc } from "../../services/doc-edit.js";
 import { docsAvailable } from "../../services/docs-available.js";
 
 export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
@@ -125,6 +127,15 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       ) {
         const { body } = await readVersionFile(env, caller, input.id, v, path);
         out.content = await body.text();
+        // A doc's room holds edits newer than its last saved version.
+        if (artifact.format === "doc" && v === artifact.currentVersion) {
+          const rooms = env.DOC_ROOM;
+          if (rooms && path === DOC_ENTRY && docsAvailable(env))
+            out.content = await rooms
+              .get(rooms.idFromName(input.id))
+              .markdown()
+              .catch(() => out.content as string);
+        }
       } else {
         out.downloadUrl = await downloadUrl(
           env,
@@ -223,6 +234,19 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
         );
       }),
   );
+
+  // #1100: offered only where docs are (as publish_artifact's doc format is).
+  if (docsAvailable(env))
+    server.registerTool("edit_doc", toolConfig("edit_doc", sp), (input) =>
+      guard(async () => {
+        const { id, ...body } = input;
+        const r = await editDoc(env, user, t.agentNow(), id, body);
+        return ok(
+          `Edited doc ${id} (${r.applied} operation${r.applied === 1 ? "" : "s"}, now ${r.bytes} bytes${r.savedVersion ? `; saved v${r.savedVersion} first` : ""}): ${viewUrl(env, id)}`,
+          r as unknown as Record<string, unknown>,
+        );
+      }),
+    );
 
   server.registerTool(
     "share_artifact",

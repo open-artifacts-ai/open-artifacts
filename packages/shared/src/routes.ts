@@ -256,6 +256,8 @@ export const R = {
    * 4404 not_found (deleted).
    */
   doc: (id: string) => `${A}/${seg(id)}/doc`,
+  /** POST EditDocBody { ops, expectedVersion? } -> EditDocResult (#1100): the REST twin of the edit_doc tool. Needs edit access (as publish: the plan lock and token caps apply). 400 for a non-doc or any doc-ops refusal (details.reason: quote_not_found, quote_ambiguous, too_many_ops, invalid_op, ...) with nothing applied; 413 too_large (details.reason doc_too_large) past the 2 MB cap; 409 version_conflict for a stale expectedVersion. */
+  docOps: (id: string) => `${A}/${seg(id)}/doc/ops`,
   /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
   comments: (id: string) => `${A}/${seg(id)}/comments`,
   /** PATCH { status } -> CommentThread. */
