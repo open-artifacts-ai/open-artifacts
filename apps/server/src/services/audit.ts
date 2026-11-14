@@ -158,6 +158,55 @@ export const signInAuditByEmail = (env: Env, email: string, provider: string) =>
         from users u where u.email = ${email}`,
     );
 
+/**
+ * invite.accept: the first sign-in of a person an owner or admin invited.
+ * Invited rows are created without a last-seen time, so this statement goes
+ * BEFORE the batch's last-seen update and writes only while that is still
+ * null on an active row. Ids and the role only, never the address; the invite
+ * is the user row it created, so its id is the user's.
+ */
+export const inviteAcceptAudit = (
+  env: Env,
+  userId: string,
+): D1PreparedStatement =>
+  audit(
+    env,
+    "invite.accept",
+    { type: "invite", id: userId },
+    { ...userActor(userId), cred: null },
+    {
+      detail: { userId },
+      detailSql: {
+        sql: "json_object('role', (select role from users where id = ?))",
+        args: [userId],
+      },
+      when: {
+        sql: "exists (select 1 from users where id = ? and status = 'active' and last_seen_at is null)",
+        args: [userId],
+      },
+    },
+  );
+
+/**
+ * invite.create, keyed by the (normalized) address, in the batch of the
+ * insert that made the row: only while that insert changed a row. Ids and the
+ * role only. A drizzle insert, in the table's column order (as signInAuditByEmail).
+ */
+export const inviteCreateAuditByEmail = (
+  env: Env,
+  email: string,
+  inviterId: string,
+  role: string,
+) => {
+  const cred = currentCred();
+  return getDb(env)
+    .insert(auditEvents)
+    .select(
+      sql`select ${newId()}, ${Date.now()}, 'user', ${inviterId}, 'invite.create', 'invite', u.id, null, ${JSON.stringify({ role })}, ${cred?.kind ?? null}, ${cred?.id ?? null}
+        from users u where u.email = ${email} and changes() > 0`,
+    );
+};
+
 // ------------------------------------------------------------------- read
 
 type Row = {
@@ -184,6 +233,11 @@ const TARGETS = new Set([
   "mapping",
   "group",
   "directory",
+  "token",
+  "agent_grant",
+  "invite",
+  "settings",
+  "audit",
 ]);
 
 /**
@@ -424,6 +478,8 @@ export async function exportAudit(
   env: Env,
   cursor: string | undefined,
   filters = auditFilters({}),
+  /** Who exports: recorded as audit.export before the first byte is read. */
+  by?: AuditActor,
 ): Promise<{ stream: ReadableStream<Uint8Array>; nextCursor: string | null }> {
   const scope: CursorScope = { kind: "export", filters };
   const after = cursor ? await decodeCursor(env, cursor, scope) : null;
@@ -434,10 +490,24 @@ export async function exportAudit(
       ? q.bind(limit, after.a, after.i, offset)
       : q.bind(limit, null, null, offset);
   };
-  const [first, edge] = await env.DB.batch<Cursor>([
-    keys(1, 0),
-    keys(2, n - 1),
-  ]);
+  // audit.export: who, how many rows (counted in the insert itself, before
+  // this row exists), the filters (known filter names only; none carry
+  // anything but ids and dates). It leads the batch, so the export reads the
+  // log with its own record already the newest row. Reading is not recorded.
+  const recorded = by
+    ? [
+        audit(env, "audit.export", { type: "audit", id: "log" }, by, {
+          detail: { continued: after !== null, filters: JSON.parse(filters) },
+          detailSql: {
+            sql: `json_object('rows', (select count(*) from (select 1 from audit_events e where ${KINDS}${after ? " and (e.at < ? or (e.at = ? and e.id < ?))" : ""} limit ?)))`,
+            args: after ? [after.a, after.a, after.i, n] : [n],
+          },
+        }),
+      ]
+    : [];
+  const [first, edge] = (
+    await env.DB.batch<Cursor>([...recorded, keys(1, 0), keys(2, n - 1)])
+  ).slice(recorded.length);
   const top = first?.results[0];
   const end = edge?.results[0] ?? null;
   const nextCursor =

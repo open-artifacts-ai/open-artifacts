@@ -15,6 +15,7 @@ import { tokens } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
+import { audit, userActor } from "../services/audit.js";
 import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { sha256Hex } from "../util/crypto.js";
 import type { AppType } from "./index.js";
@@ -73,15 +74,21 @@ export function mountTokens(app: AppType): void {
     // user is still active: a suspension that committed after this request's
     // user read already revoked their PATs, and this one must not outlive it
     // into an unsuspend (P3 T6).
-    const res = await c.env.DB.prepare(
-      `insert into tokens (id, user_id, label, token_hash, created_at)
+    // token.create (ids and the label, never the secret) joins the batch and
+    // lands only when the insert did.
+    const [res] = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `insert into tokens (id, user_id, label, token_hash, created_at)
        select ?1, ?2, ?3, ?4, ?5
        where (select count(*) from tokens where user_id = ?2 and revoked_at is null) < ?6
          and exists (select 1 from users where id = ?2 and status = 'active')`,
-    )
-      .bind(id, user.id, label, await sha256Hex(token), now, MAX_ACTIVE)
-      .run();
-    if (res.meta.changes === 0 && !(await isActive(c.env, user.id)))
+      ).bind(id, user.id, label, await sha256Hex(token), now, MAX_ACTIVE),
+      audit(c.env, "token.create", { type: "token", id }, userActor(user.id), {
+        detail: { label },
+        when: { sql: "changes() > 0", args: [] },
+      }),
+    ]);
+    if (!res || (res.meta.changes === 0 && !(await isActive(c.env, user.id))))
       throw new ApiError("unauthorized", "Log in again");
     if (res.meta.changes === 0)
       throw new ApiError(
@@ -130,18 +137,23 @@ export function mountTokens(app: AppType): void {
 
   app.delete("/api/v1/tokens/:id", async (c) => {
     const user = requireUser(c);
-    const res = await getDb(c.env)
-      .update(tokens)
-      .set({ revokedAt: Date.now() })
-      .where(
-        and(
-          eq(tokens.id, c.req.param("id")),
-          eq(tokens.userId, user.id),
-          isNull(tokens.revokedAt),
-        ),
-      )
-      .returning({ id: tokens.id });
-    if (res.length === 0) throw new ApiError("not_found", "Not found");
+    const id = c.req.param("id");
+    // token.revoke (id and label) is written in the same batch, only when the
+    // revoke changed a row.
+    const [res] = await c.env.DB.batch([
+      c.env.DB.prepare(
+        "update tokens set revoked_at = ?1 where id = ?2 and user_id = ?3 and revoked_at is null",
+      ).bind(Date.now(), id, user.id),
+      audit(c.env, "token.revoke", { type: "token", id }, userActor(user.id), {
+        when: { sql: "changes() > 0", args: [] },
+        detailSql: {
+          sql: "json_object('label', (select label from tokens where id = ?))",
+          args: [id],
+        },
+      }),
+    ]);
+    if (!res || res.meta.changes === 0)
+      throw new ApiError("not_found", "Not found");
     // #1403: the pending bus role proposals this PAT made lapse with it.
     await expireBusRoleProposalsOf(c.env, user.id, {
       kind: "token",
