@@ -695,8 +695,9 @@ export const useCreateSpace = () =>
     (input: SpaceCreateInput) => api.send("POST", R.spaces, input, SpaceSchema),
     () => [["spaces"], qk.me],
     "Couldn't create the space.",
-    // A refused name shows under the field.
-    (e) => e.status === 400,
+    // A refused name shows under the field; a plan refusal in the dialog,
+    // with its links (#2472): a toast's can't be reached past the dialog.
+    (e) => e.status === 400 || e.code === "plan_required",
   );
 /** Trash: the caller's deleted artifacts and those in spaces they manage, newest first. */
 export const useTrash = (spaceId?: string) =>
