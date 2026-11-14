@@ -3,7 +3,7 @@
 // (e2e/doc-room.mjs --full) reports doc_too_large to every client.
 import type { ChildProcess } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { startRoom, stopRoom } from "./room";
+import { roomLog, startRoom, stopRoom } from "./room";
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -18,6 +18,17 @@ test.afterEach(async () => {
 
 const open = async (page: import("@playwright/test").Page, query: string) => {
   await page.goto(`/a/${LANDING}?mock=doc${query}`);
+  // Each step waits on its own signal, so a slow (cold) start fails on the
+  // step that was slow: the editor mounted, the page reached the room, then
+  // the room's doc_too_large (sent 150 ms after a connection) shows.
+  await expect(page.locator(".ProseMirror")).toBeVisible();
+  await expect
+    .poll(() =>
+      (room ? (roomLog.get(room) ?? []) : []).some((l) =>
+        l.startsWith("conn "),
+      ),
+    )
+    .toBe(true);
   await expect(page.getByRole("alert")).toHaveText("This doc is full (2 MB).");
   await expect(
     page.getByRole("button", { name: "Version history" }),

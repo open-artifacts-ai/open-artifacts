@@ -218,6 +218,12 @@ for (const [scheme, width] of COMBOS) {
         el.innerHTML = html;
         scroll.append(el);
       }, ref);
+      // Measure only once every font is in: the inline code's mono webfont
+      // loads late, and its fallback's line box is 2 px shorter.
+      await page.evaluate(async () => {
+        document.body.getBoundingClientRect();
+        await document.fonts.ready;
+      });
       // The title field sits above the doc's first block in the editor, so
       // slide the rendered copy down by that much, then compare.
       await page.evaluate(() => {
