@@ -45,7 +45,6 @@ import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
-import { visibilityHint } from "../../spaces/SpaceMarker";
 
 const VIS: Visibility[] = ["private", "team", "public"];
 const ROLES: { value: ShareRole; label: string }[] = [
@@ -55,7 +54,7 @@ const ROLES: { value: ShareRole; label: string }[] = [
 /**
  * #2509 General access: what each choice is called and the line under it
  * (OA Product's strings). People read these; the value stays private, team
- * or public. In a shared space, Restricted keeps the space's own wording.
+ * or public. In a space, Restricted names who already has access.
  */
 const ACCESS = (
   v: Visibility,
@@ -66,8 +65,10 @@ const ACCESS = (
     ? [
         "Restricted",
         space?.kind === "shared"
-          ? (visibilityHint("private", space, org) ?? "")
-          : "Only people you add can open it.",
+          ? `People with access to ${space.name}, and anyone you add.`
+          : space
+            ? "Only you, and anyone you add"
+            : "Only people you add can open it.",
       ]
     : v === "team"
       ? [`Anyone at ${org}`, `Every member of ${org} can open it.`]

@@ -185,7 +185,7 @@ it("#2509: in a shared space Restricted keeps the space's wording; the others re
   expect(
     within(g).getByRole("radio", { name: "Restricted" }),
   ).toHaveAccessibleDescription(
-    "People with access to Engineering, and anyone you add",
+    "People with access to Engineering, and anyone you add.",
   );
   expect(
     within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
@@ -195,6 +195,29 @@ it("#2509: in a shared space Restricted keeps the space's wording; the others re
   ).toHaveAccessibleDescription(
     "No login needed. It won't appear in search engines.",
   );
+});
+
+it("#2509: a personal space's Restricted line is 'Only you, and anyone you add'", async () => {
+  open([
+    serve({
+      access: "owner",
+      space: {
+        id: "SpPerNpQrSt4uVwX",
+        kind: "personal",
+        name: "Personal",
+        publicLinks: true,
+      },
+      can: full,
+      visibility: "private",
+    }),
+  ]);
+  const g = await group();
+  expect(
+    within(g).getByRole("radio", { name: "Restricted" }),
+  ).toHaveAccessibleDescription("Only you, and anyone you add");
+  expect(
+    within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+  ).toHaveAccessibleDescription("Every member of Acme Artifacts can open it.");
 });
 
 it("#2509: self-hosted lines are General access's own", async () => {
