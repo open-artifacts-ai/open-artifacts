@@ -11,11 +11,11 @@ export const HERO_COPY = {
 };
 
 export const HOME_TITLE =
-  "Open Artifacts: where people and agents do their best work";
+  "Open Artifacts: where humans and agents get their best work done";
 export const HOME_DESCRIPTION =
   "Your agents put their work in an artifact. Your team reads it, comments and decides. Open source, works with any agent.";
 export const OG_ALT =
-  "Open Artifacts. Where people and agents do their best work. A launch plan artifact with a decision, comments and an ask.";
+  "Open Artifacts. Where humans and agents get their best work done. A launch plan artifact with a decision, comments and an ask.";
 
 /**
  * Whether Gemini's mark shows next to "coming soon". A logo can read as support

@@ -315,3 +315,40 @@ for (const width of [1280, 760, 390])
           path: `${OUT}/12-viewer-open-${width}-${theme}.png`,
         });
     });
+
+// Gap 1 (#2503): between 600 and 960px the viewer's bar is one row that gives way in
+// stages; the bell is part of what it measures, so it never wraps or overflows.
+for (const width of [640, 700, 820, 940])
+  test(`the viewer's one-row bar keeps the bell at ${width}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 800 });
+    // The Landing page: a long title row with the asks pill and Comments.
+    await page.goto("/a/Cd5fGhJkLm6nPqRs?mock=foryou");
+    await expect(bell(page)).toBeVisible();
+    const bar = page.locator(".oa-vt");
+    await expect(bar).toHaveAttribute("data-bar-stage", /\d/);
+    await expect
+      .poll(() =>
+        bar.evaluate((el) => {
+          const b = el
+            .querySelector("[data-for-you-bell]")
+            ?.getBoundingClientRect();
+          const h = el.querySelector("h1")?.getBoundingClientRect();
+          if (!b || !h) return Number.POSITIVE_INFINITY;
+          return Math.abs(b.top + b.height / 2 - (h.top + h.height / 2));
+        }),
+      )
+      .toBeLessThan(4);
+    // Nothing spills out of the bar.
+    expect(await bar.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+    await noSidewaysScroll(page);
+    if (OUT) {
+      mkdirSync(OUT, { recursive: true });
+      await settled(page);
+      await page.screenshot({
+        path: `${OUT}/13-viewer-one-row-${width}.png`,
+        clip: { x: 0, y: 0, width, height: 140 },
+      });
+    }
+  });

@@ -461,11 +461,25 @@ describe("an ask opened in the panel", () => {
     );
   });
 
-  it("a weigh-in shows who decides", async () => {
-    const { card } = await openAsk(
+  it("a weigh-in shows who decides, and weighing in leaves the list", async () => {
+    const posts = calls("POST");
+    const { panel, card, ids } = await openAsk(
       "Which pricing table goes on the landing page?",
     );
     expect(card).toHaveTextContent("Maya Chen decides");
+    fireEvent.click(
+      within(card).getByRole("button", { name: /B: two columns/ }),
+    );
+    // Weighed in: it no longer waits for you, so the card closes and the row goes.
+    await waitFor(() =>
+      expect(panel.querySelector("[data-for-you-ask]")).toBeNull(),
+    );
+    expect(posts.map((c) => c.path)).toContain(
+      R.commentAnswer(LANDING, ids.thread, ids.comment),
+    );
+    expect(
+      panel.querySelector(`[data-for-you-item="ask:${ids.comment}"]`),
+    ).toBeNull();
   });
 
   it("a pick that turns out to need a passkey asks to pick again", async () => {
@@ -479,6 +493,9 @@ describe("an ask opened in the panel", () => {
   it("a risky ask says it needs a passkey", async () => {
     const { card } = await openAsk("Merge the release PR?");
     expect(card).toHaveTextContent("Approving this needs your passkey.");
+    // A risky ask is its asker's own user's call: no who-line, no weigh-ins.
+    expect(card.querySelector("[data-ask-decider]")).toBeNull();
+    expect(card).not.toHaveTextContent(/decides|weighed in/);
   });
 
   it("a closed ask shows its decision", async () => {
@@ -513,6 +530,35 @@ describe("an ask opened in the panel", () => {
     expect(
       await within(panel).findByText("Couldn't open this ask."),
     ).toBeInTheDocument();
+  });
+
+  it("Try again loads the card after a failure", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    let fail = true;
+    server.use(
+      http.get(`*${R.comments(LANDING)}`, () =>
+        fail
+          ? HttpResponse.json(
+              { error: { code: "not_found", message: "Not found" } },
+              { status: 404 },
+            )
+          : undefined,
+      ),
+    );
+    mount("/");
+    const panel = await openPanel();
+    fireEvent.click(
+      within(panel).getByRole("button", {
+        name: "Ship the landing with the waitlist?",
+      }),
+    );
+    await within(panel).findByText("Couldn't open this ask.");
+    fail = false;
+    fireEvent.click(within(panel).getByRole("button", { name: "Try again" }));
+    expect(
+      await within(panel).findByRole("button", { name: /Yes, ship it/ }),
+    ).toBeInTheDocument();
+    expect(within(panel).queryByText("Couldn't open this ask.")).toBeNull();
   });
 });
 
@@ -568,6 +614,32 @@ describe("failures and announcements", () => {
         R.meInboxMute("agent", "agent:design"),
       ),
     );
+  });
+
+  it("an Undo that fails says so", async () => {
+    forYou("mixed");
+    server.use(
+      http.delete("*/api/v1/me/inbox/mutes/:kind/:id", () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "No" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    mount("/");
+    const panel = await openPanel();
+    const row = panel.querySelector(
+      '[data-for-you-item="itm:reply1"]',
+    ) as HTMLElement;
+    fireEvent.pointerDown(
+      within(row).getByRole("button", { name: "More actions" }),
+      { button: 0, pointerType: "mouse" },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Mute OA Design" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await findVisibleToast("Couldn't save that.");
   });
 
   it("announces a change in the count, politely", async () => {
