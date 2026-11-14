@@ -83,6 +83,12 @@ export const OnboardingProgressSchema = z.strictObject({
     .strictObject({ id: z.string().max(64), title: z.string().max(500) })
     .nullable(),
   commented: z.boolean(),
+  /** #2478: the five-step checklist. Absent from an older shell: read as not done. */
+  agentNamed: z.boolean().optional(),
+  agentName: z.string().max(200).nullable().optional(),
+  mentionReplied: z.boolean().optional(),
+  mentionStalled: z.boolean().optional(),
+  askAnswered: z.boolean().optional(),
 });
 export type OnboardingProgress = z.infer<typeof OnboardingProgressSchema>;
 

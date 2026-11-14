@@ -489,13 +489,17 @@ async function startMocks() {
       hosted: parseHostedParam(params.get("hosted")),
       events,
       // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
-      // &ticks=connect,publish,comment sets how far it is; &opened=1 skips the first-open redirect.
+      // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect.
       welcome:
         params.get("mock") === "welcome"
           ? {
               agentConnected: params.get("ticks")?.includes("connect"),
               published: params.get("ticks")?.includes("publish"),
               commented: params.get("ticks")?.includes("comment"),
+              named: params.get("ticks")?.includes("name"),
+              mentionReplied: params.get("ticks")?.includes("mention"),
+              mentionStalled: params.get("ticks")?.includes("stalled"),
+              askAnswered: params.get("ticks")?.includes("ask"),
               opened: params.get("opened") === "1",
             }
           : false,

@@ -141,6 +141,11 @@ describe("onboarding.get", () => {
       agentConnected: false,
       firstArtifact: null,
       commented: false,
+      agentNamed: false,
+      agentName: null,
+      mentionReplied: false,
+      mentionStalled: false,
+      askAnswered: false,
     });
   });
 });

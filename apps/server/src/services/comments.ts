@@ -40,6 +40,7 @@ import {
   type StoredParticipant,
   type StoredParty,
   type StoredPick,
+  type StoredTarget,
   type StoredThread,
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
@@ -94,6 +95,14 @@ import {
   notifyCommented,
 } from "./follows.js";
 import { noteCommented } from "./onboarding.js";
+import {
+  mentionedKey,
+  mentionRepliedKey,
+  noteAskAnswered,
+  noteMentioned,
+  noteMentionReplied,
+  pendingFirst,
+} from "./onboarding-firsts.js";
 import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
@@ -1003,6 +1012,8 @@ export type ExtrasOpts = {
   moderator?: boolean;
   /** Followers hear of the new comment (#682); absent: nobody is told. */
   after?: Announce;
+  /** #2478: called with the comment as stored (its mention rows included), before the view is built. */
+  written?: (c: StoredComment) => void;
 };
 
 type Resolved = {
@@ -1481,6 +1492,7 @@ async function addThreadInner(
     }),
   );
   const root = t.comments[0];
+  if (root) opts.written?.(root);
   if (root?.ask)
     await indexAsk(
       env,
@@ -1753,6 +1765,7 @@ async function addReplyInner(
   // (its own limits) is the only one.
   if (extras.toAsker && !c.mentions?.length)
     r = { ...r, agents: [], mentions: [] };
+  opts.written?.(c);
   if (c.ask)
     await indexAsk(
       env,
@@ -1973,6 +1986,18 @@ export async function answerAsk(
   if (decided) await indexAnswered(env, artifactId, commentId);
   else if (who.kind === "user")
     await indexWeighed(env, artifactId, commentId, who.id);
+  // #2478: the owner's own typed answer on an ask one of their own agents posted.
+  if (
+    !unchanged &&
+    who.kind === "user" &&
+    c.author.kind === "user" &&
+    c.author.ref === who.id &&
+    c.author.agent &&
+    c.ask?.answer &&
+    isTyped(c.ask.answer.by) &&
+    c.ask.answer.by.ref === who.id
+  )
+    await noteAskAnswered(env, who.id);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -2261,10 +2286,29 @@ export async function deleteComment(
 export async function addThread(
   ...args: Parameters<typeof addThreadInner>
 ): ReturnType<typeof addThreadInner> {
-  const t = await addThreadInner(...args);
+  let written: StoredComment | undefined;
+  const opts: ExtrasOpts = { ...args[5], written: (c) => (written = c) };
+  const t = await addThreadInner(
+    args[0],
+    args[1],
+    args[2],
+    args[3],
+    args[4],
+    opts,
+  );
   // Only the person's own comment counts, never one an agent posted for them.
   if (args[2].kind === "user" && !args[2].agent)
     await noteCommented(args[0], args[2].id);
+  // An agent's new thread can never be a reply to a mention.
+  if (args[2].kind === "user" && !args[2].agent)
+    await noteMentionActivity(
+      args[0],
+      args[1].id,
+      t.id,
+      args[2],
+      opts.after,
+      written,
+    );
   return t;
 }
 
@@ -2272,8 +2316,80 @@ export async function addThread(
 export async function addReply(
   ...args: Parameters<typeof addReplyInner>
 ): ReturnType<typeof addReplyInner> {
-  const c = await addReplyInner(...args);
+  let written: StoredComment | undefined;
+  const opts: ExtrasOpts = { ...args[7], written: (c) => (written = c) };
+  const c = await addReplyInner(
+    args[0],
+    args[1],
+    args[2],
+    args[3],
+    args[4],
+    args[5],
+    args[6],
+    opts,
+  );
   if (args[3].kind === "user" && !args[3].agent)
     await noteCommented(args[0], args[3].id);
+  await noteMentionActivity(
+    args[0],
+    args[1],
+    args[2],
+    args[3],
+    opts.after,
+    written,
+    true,
+  );
   return c;
+}
+
+/**
+ * #2478: after a comment lands, the two first-times that live in a thread.
+ * A person's comment that mentioned one of their own agents starts the
+ * "no reply yet" clock (read from the comment just written, no thread read);
+ * one of the owner's own agents (a verified bus identity, #1822) replying in a
+ * thread after the owner's typed comment that mentioned that exact agent is
+ * the step-4 reply. Cheap checks first (the owner, the first time still
+ * unset), then it runs off the response path like the asker notice. Never throws.
+ */
+async function noteMentionActivity(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  who: CommentWho,
+  after: Announce | undefined,
+  written: StoredComment | undefined,
+  reply = false,
+): Promise<void> {
+  if (who.kind !== "user") return;
+  const own = (t: StoredTarget): boolean => t.owner === who.id;
+  if (!who.agent) {
+    if (!written?.mentions?.some(own)) return;
+    await inBackground(
+      after?.ctx,
+      pendingFirst(env, who.id, mentionedKey(who.id)).then(
+        (pending) => pending && noteMentioned(env, who.id),
+      ),
+    );
+    return;
+  }
+  const me = who.agent.identity?.identityId;
+  if (!reply || !me) return;
+  await inBackground(
+    after?.ctx,
+    (async () => {
+      if (!(await pendingFirst(env, who.id, mentionRepliedKey(who.id)))) return;
+      const { comments } = await call(() =>
+        stub(env, artifactId).commentsGet(threadId),
+      );
+      const asked = comments
+        .slice(0, -1)
+        .some(
+          (c) =>
+            isTyped(c.author) &&
+            c.author.ref === who.id &&
+            c.mentions?.some((m) => own(m) && m.identity?.identityId === me),
+        );
+      if (asked) await noteMentionReplied(env, who.id);
+    })(),
+  );
 }
