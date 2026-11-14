@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.180.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.179.0...v0.180.0) (2026-11-14)
+
+
+### Features
+
+* **viewer:** Tiptap editor for docs with live cursors ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2115](https://github.com/open-artifacts-ai/open-artifacts/issues/2115)) ([db91de5](https://github.com/open-artifacts-ai/open-artifacts/commit/db91de511a1a9230cb1df097a62be2d00a31929e))
+
 ## [0.179.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.178.0...v0.179.0) (2026-11-14)
 
 
