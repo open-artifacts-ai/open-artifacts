@@ -20,10 +20,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@oa/ui/shadcn";
+import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
-import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
+import { hasFeature } from "../api/contract";
 import { billingContext, errorCopy } from "../api/errorCopy";
+import { useLoginSettings } from "../api/loginSettings";
 import {
   useInviteMember,
   useMembers,
@@ -36,18 +38,11 @@ import {
 import { trialEndsOn, trialWouldStart } from "../api/trial";
 import { emailEnabled } from "../auth/emailEnabled";
 import { useFrozen } from "../auth/permissions";
-import {
-  inviteRefusedCopy,
-  inviteUncertainCopy,
-  signInWith,
-  useSignInDomains,
-} from "../auth/reach";
+import { signInWith, useSignInDomains } from "../auth/reach";
 import { useMe } from "../auth/useMe";
-import { CopyLink } from "../layout/CopyLink";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
-import { PLAN_PAGE } from "../layout/PlanBanner";
 import {
   isReleased,
   personFirst,
@@ -57,7 +52,6 @@ import {
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
@@ -67,7 +61,14 @@ import {
   seesDeparted,
   useDeparted,
 } from "./departed";
+import { domainMarkWaiting } from "./domainJoin";
 import { EraseDialog } from "./EraseDialog";
+import {
+  InvitePeople,
+  inviteFailure,
+  inviteSent,
+  withPlanLink,
+} from "./InviteDialog";
 import { restrictionReason } from "./restriction";
 import { ThawBanner } from "./ThawBanner";
 import { TransferDialog } from "./Transfer";
@@ -146,26 +147,27 @@ function TrialNotice({ endsOn }: { endsOn: string }) {
   );
 }
 
-/**
- * "Choose a plan" in `text`, as a link to Plan and billing. Only the owner
- * wording of a plan refusal has those words (a member's says "choose a plan"
- * in lower case, as plain text).
- */
-function withPlanLink(text: string) {
-  const at = text.indexOf("Choose a plan");
-  if (at < 0) return text;
-  return (
-    <>
-      {text.slice(0, at)}
-      <AppLink href={PLAN_PAGE} className="underline">
-        Choose a plan
-      </AppLink>
-      {text.slice(at + "Choose a plan".length)}
-    </>
-  );
+function InviteDialog({ onClose }: { onClose: () => void }) {
+  const state = useMe();
+  const me = state.status === "authed" ? state.me : null;
+  // #2520: a server with login settings gets the list of addresses.
+  const login = useLoginSettings();
+  if (login.data)
+    return (
+      <InvitePeople
+        settings={login.data}
+        parse={parseInviteEmail}
+        restoreCopy={(e, email) => restoreRefusal(e, email, undefined, me)}
+        onClose={onClose}
+      />
+    );
+  // Until the server says whether it has them: never one dialog, then the other.
+  if (login.isPending) return null;
+  return <OneInviteDialog onClose={onClose} />;
 }
 
-function InviteDialog({ onClose }: { onClose: () => void }) {
+/** One address, on a server without #2520's login settings. */
+function OneInviteDialog({ onClose }: { onClose: () => void }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const sends = emailEnabled(me);
@@ -225,72 +227,12 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               ? MemberRemovedDetailsSchema.safeParse(e.details)
               : null;
           if (gone?.success) return setRemoved({ ...gone.data, email: parsed });
-          // Directory sync removed them: it revives them when Workspace restores the account (Manager's ruling).
-          if (e instanceof ApiClientError && e.code === "directory_managed")
-            return setError(
-              `Removed by your Google Workspace. They come back if their Workspace account is restored.`,
-            );
-          // A lapsed guest can't be restored: a new share brings them back.
-          if (e instanceof ApiClientError && e.code === "guest_lapsed")
-            return setError(
-              `${parsed} was a guest whose access lapsed. Share an artifact with them to bring them back.`,
-            );
-          // Nothing was created: Design's copy, not the server's message.
-          const refused =
-            e instanceof ApiClientError && e.code === "invite_unreachable"
-              ? InviteUnreachableDetailsSchema.safeParse(e.details)
-              : null;
-          setError(
-            refused?.success
-              ? inviteRefusedCopy(refused.data.reason, parsed, domains)
-              : e instanceof ApiClientError
-                ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
-                  ? errorCopy(e, e.message, {
-                      ...billingContext(me),
-                      refused: "invite",
-                    })
-                  : e.message
-                : "Couldn't add.",
-          );
+          setError(inviteFailure(e, parsed, domains, me));
         },
       },
     );
   };
-  if (added) {
-    // location.origin is the app host, where sign-in starts.
-    const url = location.origin;
-    return (
-      <Modal
-        onClose={onClose}
-        title={
-          // Design (#800): an uncertain invite is "Invite sent", emailed or not.
-          added.uncertain
-            ? `Invite sent to ${added.email}`
-            : added.emailed
-              ? `Invitation sent to ${added.email}`
-              : `${added.email} can now log in`
-        }
-        description={
-          added.emailed
-            ? `They can also log in at ${url} with ${added.with ?? "a one-time code"}.`
-            : `Send them this link. They'll log in at ${url} with ${added.with ?? "a one-time code sent to that address"}.`
-        }
-        footer={<Button onClick={onClose}>Done</Button>}
-      >
-        {added.uncertain && (
-          <Notice tone="warning" compact>
-            {inviteUncertainCopy(added.email, domains)}
-          </Notice>
-        )}
-        {sends && !added.emailed && (
-          <p role="status" className={errorText}>
-            The email didn't send. Copy the link and share it yourself.
-          </p>
-        )}
-        <CopyLink link={url} label="Login link" />
-      </Modal>
-    );
-  }
+  if (added) return inviteSent(added, sends, onClose);
   return (
     <Modal
       // Closing mid-request would drop a refusal nobody sees (the invite's,
@@ -714,7 +656,13 @@ export function Members() {
   useDocumentTitle("Members");
   const state = useMe();
   const q = useMembers();
-  const [inviting, setInviting] = useState(false);
+  // #2520: Get started's "Invite people" (?invite=1), or back from the login
+  // the first-invite step asked for, opens the dialog.
+  const search = useRouterState({ select: (s) => s.location.searchStr });
+  const [inviting, setInviting] = useState(
+    () =>
+      new URLSearchParams(search).get("invite") === "1" || domainMarkWaiting(),
+  );
   const me = state.status === "authed" ? state.me.user : null;
   // A capped owner (restricted) acts like an admin here, as the server does.
   const owner =
@@ -834,7 +782,9 @@ export function Members() {
             )}
           </>
         )}
-        {inviting && <InviteDialog onClose={() => setInviting(false)} />}
+        {inviting && !frozen && (
+          <InviteDialog onClose={() => setInviting(false)} />
+        )}
       </SettingsCard>
     </div>
   );

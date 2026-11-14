@@ -117,6 +117,24 @@ async function startMocks() {
       }),
     );
   }
+  // ?mock=login&login=<scenario> (with ?hosted=1): #2520's login settings, see
+  // mockLogin.ts. Any other mock: a server without them (the Login tab hides).
+  {
+    const { LOGIN_SCENARIOS, loginAbsentHandlers, loginHandlers } =
+      await import("./mockLogin");
+    const pick = params.get("login") as (typeof LOGIN_SCENARIOS)[number] | null;
+    extra.push(
+      ...(params.get("mock") === "login"
+        ? loginHandlers(
+            pick && LOGIN_SCENARIOS.includes(pick) ? pick : "owner-off",
+            createHandlers({
+              hosted: parseHostedParam(params.get("hosted")) ?? {},
+            }),
+            () => new URLSearchParams(location.search).get("reauthed") === "1",
+          )
+        : loginAbsentHandlers()),
+    );
+  }
   // ?mock=restricted and ?mock=restricted-rows (with ?hosted=1): see mockRestricted.ts.
   const restricted = params.get("mock");
   if (restricted === "restricted" || restricted === "restricted-rows") {

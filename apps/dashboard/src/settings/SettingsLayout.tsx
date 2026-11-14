@@ -1,6 +1,7 @@
 import type { Role } from "@oa/shared";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useEffect } from "react";
+import { useLoginSettings } from "../api/loginSettings";
 import { useMe } from "../auth/useMe";
 import { useMachinesAccess } from "../bus/access";
 import { ATTENTION, AttentionDot } from "../layout/AttentionDot";
@@ -29,6 +30,8 @@ const TABS: {
   spaces?: true;
   /** #1293: canUseBus, or revoke-only with a machine left (#1447). */
   bus?: true;
+  /** #2520: only once the server answers the login settings (an older one 404s). */
+  login?: true;
 }[] = [
   {
     to: "/settings/profile",
@@ -46,6 +49,12 @@ const TABS: {
     roles: ["owner", "admin", "member"],
   },
   { to: "/settings/members", label: "Members", roles: ["owner", "admin"] },
+  {
+    to: "/settings/login",
+    label: "Login",
+    roles: ["owner", "admin"],
+    login: true,
+  },
   {
     to: "/settings/spaces",
     label: "Spaces",
@@ -93,6 +102,9 @@ export function SettingsLayout() {
   ).people;
   const noAgents = useNoAgentsPage();
   const machines = useMachinesAccess();
+  const login = useLoginSettings(
+    role === "owner" || role === "admin",
+  ).isSuccess;
   if (role === "guest") return <Outlet />; // no chrome; the gate redirects
   return (
     // The 880px measure, centered in the shell gutter.
@@ -116,6 +128,7 @@ export function SettingsLayout() {
             (!t.plan || me?.instance.billing || me?.instance.hosted) &&
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || machines === "full" || machines === "revoke") &&
+            (!t.login || login) &&
             (t.to !== "/settings/connections" || !noAgents),
         ).map((t) => (
           <AppLink
