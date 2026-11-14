@@ -14,6 +14,8 @@ import {
   PROTOCOL_COMMENT_DRAFT,
   PROTOCOL_PIN_BADGE,
   PROTOCOL_PIN_CHANGED,
+  PROTOCOL_SHELL_ANNOUNCES,
+  PROTOCOL_VERSION,
   parseArtifactMessage,
   R,
   RUNTIME_PARAMS,
@@ -443,6 +445,11 @@ export function createBridge(opts: BridgeOptions) {
           agentConnected: o.agentConnected === true,
           firstArtifact: o.firstArtifact ?? null,
           commented: o.commented === true,
+          agentNamed: o.agentNamed === true,
+          agentName: o.agentName ?? null,
+          mentionReplied: o.mentionReplied === true,
+          mentionStalled: o.mentionStalled === true,
+          askAnswered: o.askAnswered === true,
         };
       }
       case "viewer.anonId":
@@ -539,6 +546,10 @@ export function createBridge(opts: BridgeOptions) {
           // The runtime turns plain links to this app into navigate requests.
           appOrigin: location.origin,
         });
+        // #2408: a runtime adds newer fields only for a shell that says it knows them.
+        // Only to a runtime that can read it (an older one would drop it).
+        if (frameProtocol >= PROTOCOL_SHELL_ANNOUNCES)
+          reply({ oa: 1, type: "shell.protocol", protocol: PROTOCOL_VERSION });
         onHello?.();
         break;
       case "call":

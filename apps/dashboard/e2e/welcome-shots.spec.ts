@@ -92,7 +92,7 @@ for (const { w, h } of SIZES)
         await shot(page, "1b-claude-tab", w, theme);
       });
 
-      test("the shell lets the page tick: one, then all three", async ({
+      test("the shell lets the page tick: one, then all five", async ({
         page,
       }) => {
         await page.goto(`/a/${ID}?mock=welcome&opened=1&ticks=connect`);
@@ -106,9 +106,9 @@ for (const { w, h } of SIZES)
         await shot(page, "2-one-ticked", w, theme);
 
         await page.goto(
-          `/a/${ID}?mock=welcome&opened=1&ticks=connect,publish,comment`,
+          `/a/${ID}?mock=welcome&opened=1&ticks=connect,name,publish,mention,ask`,
         );
-        await expect(frame.getByText("Commented")).toBeVisible({
+        await expect(frame.getByText("Answered")).toBeVisible({
           timeout: 15_000,
         });
         const link = frame.getByRole("link", { name: "Landing page" });
@@ -120,6 +120,76 @@ for (const { w, h } of SIZES)
           .scrollIntoViewIfNeeded();
         await shot(page, "3b-all-ticked-bottom", w, theme);
       });
+
+      // #2478: the five-step checklist on the page and on the Library card.
+      const STATES = [
+        { name: "0-of-5", ticks: "", done: 0 },
+        { name: "2-of-5", ticks: "connect,name", done: 2 },
+        {
+          name: "step4-stalled",
+          ticks: "connect,name,publish,stalled",
+          done: 3,
+        },
+        {
+          name: "5-of-5",
+          ticks: "connect,name,publish,mention,ask",
+          done: 5,
+        },
+      ];
+      for (const st of STATES) {
+        test(`five steps on the page: ${st.name}`, async ({ page }) => {
+          await page.goto(`/a/${ID}?mock=welcome&opened=1&ticks=${st.ticks}`);
+          const frame = page.frameLocator("iframe.oa-vframe");
+          await expect(
+            frame.getByText("Name your agent").or(frame.getByText(/^Named: /)),
+          ).toBeVisible({
+            timeout: 15_000,
+          });
+          await expect(
+            frame.locator('[data-step][data-done="true"]'),
+          ).toHaveCount(st.done);
+          await expect(frame.locator("[data-step]")).toHaveCount(5);
+          await expect(frame.getByText("Leave a comment")).toHaveCount(0);
+          if (st.name === "step4-stalled") {
+            await expect(
+              frame.getByText(
+                'No reply yet. Your agent may not be listening. Ask it: "Check the bus."',
+              ),
+            ).toBeVisible();
+            await expect(frame.getByText("Named: Atlas")).toBeVisible();
+          } else {
+            await expect(frame.getByText(/No reply yet/)).toBeHidden();
+          }
+          if (st.name === "5-of-5") {
+            await expect(frame.getByText("Atlas replied")).toBeVisible();
+            await expect(
+              frame.getByText(
+                "You're set. Your agent hears your comments and answers them.",
+              ),
+            ).toBeVisible();
+          }
+          // The checklist and its lines sit below the connect panel.
+          await frame
+            .getByText("You can delete this page any time")
+            .scrollIntoViewIfNeeded();
+          await shot(page, `6-welcome-${st.name}`, w, theme);
+        });
+        test(`five steps on the Library card: ${st.name}`, async ({ page }) => {
+          await page.goto(`/?mock=welcome&opened=1&ticks=${st.ticks}`);
+          const card = page.getByRole("region", { name: "Get started" });
+          if (st.name === "5-of-5") {
+            // Five done and only the optional invite left: the card stays.
+            await expect(card).toContainText("5 of 5");
+          } else {
+            await expect(card).toContainText(`${st.done} of 5`);
+          }
+          await expect(card).toContainText("Invite your team");
+          await expect(card).toContainText("(optional)");
+          if (st.name === "step4-stalled")
+            await expect(card).toContainText("No reply yet.");
+          await shot(page, `7-library-${st.name}`, w, theme);
+        });
+      }
 
       test("Library shows Welcome as a normal row", async ({ page }) => {
         await page.goto("/?mock=welcome&opened=1");

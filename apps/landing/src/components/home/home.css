@@ -58,7 +58,6 @@
 }
 .lp {
   --fade: #9aa1ab;
-  --ag2: #6b46c1;
   --sel: #fde68a;
   --selink: #15181c;
   --shadow:
@@ -71,7 +70,6 @@
 @media (prefers-color-scheme: dark) {
   .lp {
     --fade: #5d646e;
-    --ag2: #b79cff;
     --sel: #5c4a10;
     --selink: #fff;
     --shadow:
@@ -298,13 +296,37 @@
     color: var(--oa-bg);
     border-color: var(--oa-text);
   }
+  /* #2471: the product's agent tile; presence colours, same in light and dark. */
   .ag {
     border-radius: 6px;
-    background: var(--oa-accent);
-    color: var(--oa-accent-text);
+    color: #fff;
   }
-  .ag.b {
-    background: var(--ag2);
+  .ag[data-c="0"] {
+    background: #0e6e8c;
+  }
+  .ag[data-c="1"] {
+    background: #1f6f5a;
+  }
+  .ag[data-c="2"] {
+    background: #2456c4;
+  }
+  .ag[data-c="3"] {
+    background: #4d6b12;
+  }
+  .ag[data-c="4"] {
+    background: #5b48b8;
+  }
+  .ag[data-c="5"] {
+    background: #7a3f99;
+  }
+  .ag[data-c="6"] {
+    background: #8a4d0f;
+  }
+  .ag[data-c="7"] {
+    background: #a3305f;
+  }
+  .ag[data-c="8"] {
+    background: #b04a14;
   }
   .ag svg {
     width: 14px;
@@ -2917,6 +2939,11 @@ centred */
   .sc-cards .off {
     display: none !important;
   }
+  /* #2480: the stacked cards never animate, so a timeline grows to fit the
+     comment thread drawn inside it instead of spilling onto the checklist. */
+  .sc-cards .sc-art .sa-blk {
+    max-height: none;
+  }
   .sc-cards .sc-roll p.on {
     animation: none;
   }
@@ -3648,10 +3675,11 @@ centred */
   .sa-by .ag {
     width: 18px;
     height: 18px;
+    border-radius: 5px;
   }
   .sa-by .ag svg {
-    width: 11px;
-    height: 11px;
+    width: 10px;
+    height: 10px;
   }
   .sa-p {
     font-size: 13px;
@@ -3763,6 +3791,11 @@ centred */
   .sc-cards .sa-side,
   .pl-view .sa-side {
     display: none;
+  }
+  /* The phone's locked view animates max-height, so it keeps a cap, one with
+     room for the inline thread (#2480). */
+  .pl-view .sc-art .sa-blk {
+    max-height: 480px;
   }
   .sc-cards .tl li.sa-inline,
   .pl-view .tl li.sa-inline {
@@ -4208,8 +4241,8 @@ centred */
     border-radius: 8px;
   }
   .x-agc .ag svg {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
   }
   .x-agc b {
     font-size: 14.5px;
@@ -4219,9 +4252,6 @@ centred */
     font-size: 12.5px;
     color: var(--oa-text-muted);
     line-height: 1.3;
-  }
-  .x-g3 {
-    background: #0f766e;
   }
   .x-msg {
     grid-column: 1 / -1;

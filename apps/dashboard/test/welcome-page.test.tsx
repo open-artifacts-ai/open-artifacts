@@ -9,6 +9,11 @@ type Progress = {
   agentConnected: boolean;
   firstArtifact: { id: string; title: string } | null;
   commented: boolean;
+  agentNamed?: boolean;
+  agentName?: string | null;
+  mentionReplied?: boolean;
+  mentionStalled?: boolean;
+  askAnswered?: boolean;
 };
 let progress: Progress;
 let get: ReturnType<typeof vi.fn>;
@@ -46,7 +51,7 @@ describe("Welcome page", () => {
   it("starts with nothing ticked and takes the viewer's theme", async () => {
     await load();
     expect(get).toHaveBeenCalledTimes(1);
-    for (const k of ["connect", "publish", "comment"])
+    for (const k of ["connect", "name", "publish", "mention", "ask"])
       expect(step(k).dataset.done).toBe("false");
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(
@@ -72,21 +77,81 @@ describe("Welcome page", () => {
     // The title is text, never markup.
     expect(a.textContent).toBe("Q4 <b>report</b>");
     expect(step("publish").querySelector("b b")).toBeNull();
-    expect(step("comment").dataset.done).toBe("false");
+    expect(step("name").dataset.done).toBe("false");
+    expect(step("mention").dataset.done).toBe("false");
+    expect(step("ask").dataset.done).toBe("false");
+    expect(document.getElementById("all-done")?.hidden).toBe(true);
   });
 
-  it("says it is set when all three are done, then stops asking", async () => {
+  const five: Progress = {
+    agentConnected: true,
+    firstArtifact: { id: "Cd5fGhJkLm6nPqRs", title: "T" },
+    commented: false,
+    agentNamed: true,
+    agentName: "Atlas",
+    mentionReplied: true,
+    askAnswered: true,
+  };
+
+  it("ticks the three new steps one by one, with the agent's name", async () => {
     await load();
-    progress = {
-      agentConnected: true,
-      firstArtifact: { id: "Cd5fGhJkLm6nPqRs", title: "T" },
-      commented: true,
-    };
-    await vi.advanceTimersByTimeAsync(5000);
-    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(
-      false,
+    // Before a name exists, {name} reads "your agent".
+    expect(step("mention").textContent).toContain(
+      "type @ in a comment and pick your agent. It replies in the thread.",
     );
-    expect(step("comment").textContent).toContain("Commented");
+    expect(step("ask").textContent).toContain(
+      "Your first page has a question from your agent. Pick an option.",
+    );
+    progress = { ...five, mentionReplied: false, askAnswered: false };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(step("name").dataset.done).toBe("true");
+    expect(step("name").textContent).toBe("Named: Atlas");
+    expect(step("mention").textContent).toContain("pick Atlas.");
+    expect(step("ask").textContent).toContain("question from Atlas.");
+    progress = { ...five, askAnswered: false };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(step("mention").dataset.done).toBe("true");
+    expect(step("mention").textContent).toBe("Atlas replied");
+    expect(step("ask").dataset.done).toBe("false");
+    expect(document.getElementById("all-done")?.hidden).toBe(true);
+  });
+
+  it("capitalizes the step 4 done line when there is no name", async () => {
+    await load();
+    progress = { ...five, agentName: null };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(step("mention").textContent).toBe("Your agent replied");
+  });
+
+  it("shows the stalled line only while the mention has no reply", async () => {
+    // Shown only inside step 4's box, under its hint; out of the page otherwise.
+    const stalled = () => document.getElementById("stalled");
+    const shown = () => stalled() !== null && stalled()?.hidden === false;
+    await load();
+    expect(shown()).toBe(false);
+    progress = { ...five, mentionReplied: false, mentionStalled: true };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(shown()).toBe(true);
+    expect(stalled()?.closest('[data-step="mention"]')).not.toBeNull();
+    expect(stalled()?.previousElementSibling?.className).toBe("hint");
+    expect(stalled()?.textContent).toBe(
+      'No reply yet. Your agent may not be listening. Ask it: "Check the bus."',
+    );
+    progress = { ...five, mentionStalled: true };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(shown()).toBe(false);
+  });
+
+  it("says it is set when all five are done, then stops asking", async () => {
+    await load();
+    progress = five;
+    await vi.advanceTimersByTimeAsync(5000);
+    const line = document.getElementById("all-done") as HTMLElement;
+    expect(line.hidden).toBe(false);
+    expect(line.textContent).toBe(
+      "You're set. Your agent hears your comments and answers them.",
+    );
+    expect(step("ask").textContent).toBe("Answered");
     const n = get.mock.calls.length;
     await vi.advanceTimersByTimeAsync(20000);
     expect(get).toHaveBeenCalledTimes(n);
@@ -181,17 +246,22 @@ describe("welcome.html", () => {
       "Paste this into your agent. It connects to this instance and learns how to publish here.",
       "Get started",
       "Publish your first artifact",
-      "Leave a comment",
-      "Select this sentence and add a comment. Your agent can read it and reply in the thread.",
+      "Name your agent",
+      "Your agent will suggest a name. It's what you'll type after @ in comments.",
+      "Mention your agent",
+      "Open your first page, type @ in a comment and pick your agent. It replies in the thread.",
+      "Answer your agent's ask",
+      "Your first page has a question from your agent. Pick an option.",
+      "No reply yet. Your agent may not be listening. Ask it: &quot;Check the bus.&quot;",
       "You can delete this page any time. Nothing else depends on it.",
-      "You're set. Everything you publish is in the",
+      "You're set. Your agent hears your comments and answers them.",
       "Agent connected",
-      "Commented",
-      "Select the highlighted sentence below and comment on it.",
       "Ask your agent: &quot;Publish a page about what you're working on.&quot;",
     ])
       expect(html).toContain(t);
     expect(raw).not.toContain("\u2014");
+    expect(html).not.toContain("Leave a comment");
+    expect(html).not.toContain("Select this sentence");
   });
 
   it("bakes in the origin it is given", () => {

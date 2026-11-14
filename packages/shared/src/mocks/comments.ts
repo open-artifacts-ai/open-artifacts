@@ -113,6 +113,8 @@ type Deps = {
   contentHash?: (id: string, version: number) => string | null | undefined;
   /** Also seed an open ask addressed to the caller on "Landing page" (default off: list responses stay byte-identical to the fixtures). */
   seedAsk?: boolean;
+  /** #2381: also seed asks in each decider state on "Landing page" (Weigh in, Decide, decided, bars, take back). */
+  seedDeciders?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
   /**
@@ -142,6 +144,7 @@ export function createCommentMock({
   rateLimit,
   contentHash,
   seedAsk,
+  seedDeciders,
   seedAgents,
   passkeyMode,
   seedMarkdown,
@@ -152,6 +155,8 @@ export function createCommentMock({
   asksForYou: (id: string) => number;
 } {
   const threads = new Map<string, CommentThread[]>();
+  /** Comment ids of asks with no `confirm` whose decider's switches ask for a passkey at pick time (#2381). */
+  const pickTimePasskey = new Set<string>();
   const mine = (): CommentAuthor => ({
     kind: "user",
     id: me.user.id,
@@ -224,6 +229,10 @@ export function createCommentMock({
       ],
       to: [mine()],
       confirm: "passkey",
+      // As the server sends every ask (#2381): the card shows none of it on a risky ask.
+      decider: mine(),
+      role: "decide",
+      picks: [],
       closed: false,
     };
     const answered = (q: string, verified: boolean) => {
@@ -235,7 +244,14 @@ export function createCommentMock({
           { id: "stop", label: "Stop" },
         ],
         to: [mine()],
-        ...(verified ? { confirm: "passkey" as const } : {}),
+        ...(verified
+          ? {
+              confirm: "passkey" as const,
+              decider: mine(),
+              role: "decide" as const,
+              picks: [],
+            }
+          : {}),
         answer: {
           optionId: "go",
           by: mine(),
@@ -248,6 +264,18 @@ export function createCommentMock({
       };
       return x;
     };
+    // #2381: no `confirm` mark, but the decider's own switches ask for a passkey at pick time.
+    const late = comment("Ship the changelog?", mine());
+    late.ask = {
+      question: "Ship the changelog?",
+      options: [
+        { id: "ship", label: "Ship it" },
+        { id: "wait", label: "Wait" },
+      ],
+      to: [mine()],
+      closed: false,
+    };
+    pickTimePasskey.add(late.id);
     const g = answered("Deploy to production?", true);
     const h = answered("Delete the old build?", false);
     const asked: CommentThread[] = seedAsk
@@ -264,7 +292,7 @@ export function createCommentMock({
                   createdAt: f.createdAt,
                   comments: [f],
                 },
-                ...[g, h].map((x) => ({
+                ...[g, h, late].map((x) => ({
                   id: newId(),
                   anchor: { kind: "note" as const },
                   version: 1,
@@ -298,6 +326,130 @@ export function createCommentMock({
           },
         ]
       : [];
+    // #2381: one ask per decider state, as the viewer ("You") sees it.
+    const deciderAsks: CommentThread[] = [];
+    if (seedDeciders) {
+      const person = (id: string, name: string): CommentAuthor => ({
+        kind: "user",
+        id,
+        name,
+        me: false,
+      });
+      const maya = person("maya", "Maya Chen");
+      const priya = person("priya", "Priya Nair");
+      const lee = person("lee", "Lee Park");
+      const dana = person("dana", "Dana Ortiz");
+      const agentOf = (who: string): CommentAuthor => ({
+        kind: "agent",
+        name: `${who}'s Claude`,
+        for: who,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      });
+      const at = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+      const OPTS2 = [
+        {
+          id: "a",
+          label: "A: three columns",
+          detail: "Solo, Team and Business side by side.",
+        },
+        {
+          id: "b",
+          label: "B: two columns",
+          detail: "Solo and Team; Business as a line under them.",
+        },
+      ];
+      const add = (
+        q: string,
+        author: CommentAuthor,
+        ask: Partial<NonNullable<Comment["ask"]>>,
+      ) => {
+        const c = comment(q, author);
+        c.ask = {
+          question: q,
+          options: OPTS2,
+          recommended: { optionId: "b", why: "It reads faster on a phone." },
+          to: [maya, mine()],
+          decider: maya,
+          closed: false,
+          picks: [],
+          ...ask,
+        };
+        deciderAsks.push({
+          id: newId(),
+          anchor: { kind: "note" },
+          version: 1,
+          status: "open",
+          resolvedBy: null,
+          resolvedAt: null,
+          createdAt: c.createdAt,
+          comments: [c],
+        });
+      };
+      // You weigh in; Maya decides; Priya has weighed in.
+      add("Which pricing table goes on the landing page?", agentOf("Maya"), {
+        to: [maya, priya, mine()],
+        role: "weigh",
+        picks: [{ by: priya, optionId: "b", at: at(20), typed: true }],
+      });
+      // You decide; Sam and Priya weighed in.
+      add("Which hero image goes on the launch post?", agentOf("Leo"), {
+        to: [mine(), other, priya],
+        decider: mine(),
+        role: "decide",
+        picks: [
+          { by: other, optionId: "a", at: at(30), typed: true },
+          { by: priya, optionId: "b", at: at(25), typed: true },
+        ],
+      });
+      // Decided by Maya; Priya differed; a guest weighed in.
+      add("Which plan card is shown first?", agentOf("Maya"), {
+        to: [maya, priya, dana, mine()],
+        role: "weigh",
+        closed: true,
+        answer: {
+          optionId: "b",
+          by: maya,
+          at: at(60),
+          typed: true,
+          yes: false,
+        },
+        picks: [
+          { by: priya, optionId: "a", at: at(90), typed: true },
+          { by: dana, optionId: "b", at: at(80), typed: true, guest: true },
+          { by: maya, optionId: "b", at: at(60), typed: true },
+        ],
+      });
+      // You decide, six asked, four weighed in: bars.
+      add("What do we call the weekly email?", agentOf("Maya"), {
+        options: [
+          { id: "a", label: "The Changelog" },
+          { id: "b", label: "Shipped" },
+          { id: "c", label: "What's new" },
+        ],
+        recommended: undefined,
+        to: [mine(), maya, other, priya, lee, dana],
+        decider: mine(),
+        role: "decide",
+        picks: [
+          { by: maya, optionId: "a", at: at(50), typed: true },
+          { by: other, optionId: "a", at: at(45), typed: true },
+          { by: priya, optionId: "a", at: at(40), typed: true },
+          { by: lee, optionId: "b", at: at(35), typed: true },
+        ],
+      });
+      // Your agent asked Sam to decide: take it back.
+      add("Monthly or yearly shown first?", mine(), {
+        to: [other, mine()],
+        decider: other,
+        chosenBy: mine(),
+        role: "weigh",
+        canTakeBack: true,
+        picks: [],
+      });
+    }
     const faces: CommentThread[] = [];
     if (seedAgents) {
       const agent = (linked: boolean): CommentAuthor => ({
@@ -620,6 +772,7 @@ export function createCommentMock({
         comments: [c],
       },
       ...asked,
+      ...deciderAsks,
       ...faces,
     ];
   };
@@ -738,7 +891,7 @@ export function createCommentMock({
         .find((x) => x.id === params.tid)
         ?.comments.find((x) => x.id === params.cid);
       if (!c?.ask) return err("not_found", "Not found");
-      if (!c.ask.to.some((a) => a.me))
+      if (!c.ask.role && !c.ask.to.some((a) => a.me))
         return err("forbidden", "Only the people asked can answer");
       if (c.ask.closed) return err("conflict", "This ask is closed");
       const j = AnswerBodySchema.safeParse(
@@ -746,22 +899,40 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      if (c.ask.confirm === "passkey") {
+      const needsPasskey =
+        c.ask.confirm === "passkey" || pickTimePasskey.has(c.id);
+      if (needsPasskey) {
         if (!j.data.assertion)
           return err("passkey_required", "This pick needs a passkey");
         if (passkeyMode === "expired")
           return err("challenge_expired", "That approval timed out");
       }
-      c.ask.answer = {
-        ...(c.ask.confirm === "passkey"
-          ? { verified: "passkey" as const }
-          : {}),
-        optionId: j.data.optionId,
+      const pick = {
+        ...(needsPasskey ? { verified: "passkey" as const } : {}),
         by: mine(),
+        optionId: j.data.optionId,
         at: iso(),
         typed: true,
-        yes: c.author.me,
       };
+      // #2381: a weigh-in is kept beside the decision, never the decision.
+      c.ask.picks = [...(c.ask.picks ?? []).filter((p) => !p.by.me), pick];
+      if (c.ask.role !== "weigh") c.ask.answer = { ...pick, yes: c.author.me };
+      emit(String(params.id), open(String(params.id)));
+      return HttpResponse.json(c);
+    }),
+    http.post(`${A}/:tid/comments/:cid/ask/decider`, ({ params }) => {
+      const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
+      if (bad) return bad;
+      const c = list(String(params.id))
+        .find((x) => x.id === params.tid)
+        ?.comments.find((x) => x.id === params.cid);
+      if (!c?.ask) return err("not_found", "Not found");
+      if (!c.ask.canTakeBack)
+        return err("forbidden", "Only the person who asked can take it back");
+      c.ask.decider = mine();
+      c.ask.role = "decide";
+      c.ask.chosenBy = undefined;
+      c.ask.canTakeBack = undefined;
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c);
     }),

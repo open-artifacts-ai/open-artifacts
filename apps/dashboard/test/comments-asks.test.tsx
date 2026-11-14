@@ -88,6 +88,11 @@ vi.mock("../src/viewer/bridge", async () => {
   };
 });
 
+vi.mock("../src/auth/webauthn", async (orig) => ({
+  ...(await orig<typeof import("../src/auth/webauthn")>()),
+  getAssertion: vi.fn(async () => ({ id: "cred" })),
+}));
+
 installHarness();
 
 // Most waits here follow a write: the PATCH or POST, then the list refetch it
@@ -708,6 +713,246 @@ describe("asks on the comments column", () => {
     expect(
       await within(c).findByText("Text changed since this ask"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("#2381 deciders on the card", () => {
+  const person = (id: string, name: string, me = false) => ({
+    kind: "user" as const,
+    id,
+    name,
+    me,
+  });
+  const maya = person("maya", "Maya");
+  const sam = person("sam", "Sam");
+  const priya = person("priya", "Priya");
+  const me = person("me", "Me", true);
+  const pick = (by: ReturnType<typeof person>, optionId: string) => ({
+    by,
+    optionId,
+    at: "2026-11-05T11:00:00Z",
+    typed: true,
+  });
+
+  it("someone weighing in sees 'who decides', names under options, and posts a weigh-in", async () => {
+    let answered: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [maya, priya, me],
+          decider: maya,
+          role: "weigh",
+          picks: [pick(priya, "b")],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          answered = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText("Maya decides")).toBeInTheDocument();
+    expect(
+      within(c).getByText(/Pick an option to weigh in/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText(/Priya weighed in/)).toBeInTheDocument();
+    fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
+    await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
+    // A weigh-in is not shown as the decision before the server says so.
+    expect(within(c).queryByText(/decided/)).toBeNull();
+  });
+
+  it("the decider's card says 'You decide'; the named decider's is 'asked ... to decide'", async () => {
+    serveThreads(() => [
+      askThread({}, { to: [me, sam], decider: me, role: "decide", picks: [] }),
+      {
+        ...askThread(
+          {},
+          {
+            to: [sam, me],
+            decider: sam,
+            chosenBy: me,
+            role: "weigh",
+            canTakeBack: true,
+            picks: [],
+          },
+        ),
+        id: "t-two",
+      },
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText("You decide")).toBeInTheDocument();
+    expect(within(c).getByText("You asked Sam to decide")).toBeInTheDocument();
+  });
+
+  it("'I'll decide this' shows only with canTakeBack and posts the take back", async () => {
+    let body: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [sam, me],
+          decider: sam,
+          chosenBy: me,
+          role: "weigh",
+          canTakeBack: true,
+          picks: [],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAskDecider(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          body = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "I'll decide this" }),
+    );
+    await waitFor(() => expect(body).toEqual({ takeBack: true }));
+  });
+
+  it("draws bars and a tally at four or more people, names at three or fewer", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [me, maya, sam, priya, person("lee", "Lee")],
+          decider: me,
+          role: "decide",
+          picks: [pick(maya, "a"), pick(sam, "a"), pick(priya, "b")],
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText(/3 of 4 weighed in/)).toBeInTheDocument();
+    expect(c.querySelectorAll("[data-option-bar]").length).toBe(2);
+    expect(within(c).queryByText(/Maya weighed in/)).toBeNull();
+  });
+
+  it("a guest's weigh-in is marked, and the decision shows a tick by the decider", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [maya, person("dana", "Dana"), me],
+          decider: maya,
+          role: "weigh",
+          picks: [{ ...pick(person("dana", "Dana"), "a"), guest: true }],
+          answer: {
+            optionId: "b",
+            by: maya,
+            at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: false,
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByText(/Dana \(guest\) weighed in/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText(/Maya decided/)).toBeInTheDocument();
+  });
+
+  it("explains not_decider in plain words", async () => {
+    serveThreads(() => [
+      askThread({}, { to: [me], decider: me, role: "decide", picks: [] }),
+    ]);
+    server.use(
+      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () =>
+        HttpResponse.json(
+          { error: { code: "not_decider", message: "x" } },
+          { status: 403 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      /can't decide this any more/,
+    );
+  });
+});
+
+describe("#2381 a pick that needs the decider's own passkey", () => {
+  it("a plain pick answered passkey_required asks to pick again, and the next click runs the passkey flow", async () => {
+    const posts: { optionId?: string; assertion?: unknown }[] = [];
+    let challenged = 0;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          to: [{ kind: "user", id: "me", name: "Me", me: true }],
+          decider: { kind: "user", id: "me", name: "Me", me: true },
+          role: "decide",
+          picks: [],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
+        challenged++;
+        return HttpResponse.json({
+          options: { challenge: "x" },
+          expiresAt: "2099-01-01T00:00:00Z",
+        });
+      }),
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          const b = (await request.json()) as {
+            optionId?: string;
+            assertion?: unknown;
+          };
+          posts.push(b);
+          if (!b.assertion)
+            return HttpResponse.json(
+              { error: { code: "passkey_required", message: "x" } },
+              { status: 403 },
+            );
+          return HttpResponse.json(askThread().comments[0]);
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    // No prompt from the failed pick: it needs a click of its own.
+    expect(
+      await within(c).findByText("This now needs your passkey. Pick again."),
+    ).toBeInTheDocument();
+    expect(posts).toEqual([{ optionId: "b" }]);
+    expect(challenged).toBe(0);
+    fireEvent.click(within(c).getByRole("button", { name: /Side by side/ }));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1]).toMatchObject({
+      optionId: "b",
+      assertion: { id: "cred" },
+    });
+    expect(challenged).toBe(1);
+    expect(within(c).queryByRole("alert")?.textContent).toBeUndefined();
   });
 });
 

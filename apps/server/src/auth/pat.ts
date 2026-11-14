@@ -6,6 +6,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { USE_WRITE_MS } from "../services/agent-usage.js";
+import { noteInstanceFirst } from "../services/analytics.js";
 import { sha256Hex } from "../util/crypto.js";
 
 /** last_used_at is written at most this often (USE_WRITE_MS). */
@@ -66,6 +67,9 @@ export async function verifyPat(
       .then(() => undefined);
     if (ctx) ctx.waitUntil(upd);
     else await upd;
+    // #2479: the token's first use is an agent connecting (no-op unless analytics is on).
+    if (row.lastUsedAt == null)
+      await noteInstanceFirst(env, "agent_connected", ctx);
   }
   return { userId: row.userId, tokenId: row.id, label: row.label };
 }

@@ -224,8 +224,11 @@ function fillBadge(el: HTMLElement, badge: PinBadge): void {
   el.append(svg.cloneNode(true));
 }
 
+/** #2408: the first shell protocol that announces itself (shared PROTOCOL_SHELL_ANNOUNCES; not imported to keep this chunk small). */
+export const SHELL_ANNOUNCES = 6;
+
 export function createComments(
-  bridge: Pick<Bridge, "on" | "send">,
+  bridge: Pick<Bridge, "on" | "send"> & Partial<Pick<Bridge, "shellProtocol">>,
   signal?: AbortSignal,
   /** The viewer's theme (the shell's, not the OS's): the bubble follows it. */
   theme?: ThemeSource,
@@ -585,7 +588,12 @@ export function createComments(
     lastPositions.clear();
     for (const p of positions) lastPositions.set(p.id, p);
     // #2386: the new-pin flag's place, so the shell's box follows a scroll.
-    const at = ghostAt as { x: number; y: number } | null;
+    // #2408: only for a shell that said it knows the field; an older one
+    // refuses the whole message.
+    const at =
+      (bridge.shellProtocol?.() ?? 0) >= SHELL_ANNOUNCES
+        ? (ghostAt as { x: number; y: number } | null)
+        : null;
     const key = JSON.stringify([positions, at]);
     if (!force && key === lastReport) return;
     lastReport = key;
@@ -847,8 +855,12 @@ export function createComments(
         oa: 1,
         type: "comment.pin",
         pin: pg >= 1 ? { x, y, page: pg } : { x, y },
-        // #2019: where the click landed, so the shell can open the box beside it.
-        at: { x: Math.max(0, e.clientX), y: Math.max(0, e.clientY) },
+        // #2019: where the click landed, so the shell can open the box beside
+        // it. #2408: only for a shell that said it knows the field; an older
+        // one refuses the whole message.
+        ...((bridge.shellProtocol?.() ?? 0) >= SHELL_ANNOUNCES
+          ? { at: { x: Math.max(0, e.clientX), y: Math.max(0, e.clientY) } }
+          : {}),
       });
       return;
     }

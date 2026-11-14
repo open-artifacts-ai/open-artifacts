@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { AGENTS, ANIMALS, PRESENCE } from "../src/lib/agents";
 import { GEMINI_MARK } from "../src/lib/copy";
 
 // The landing page (#1457), read from the built HTML: no script runs here, so
@@ -423,6 +424,42 @@ describe("landing sections", () => {
     // The phone hand-over shows the timeline and its thread, no checklist.
     expect(index).toContain('.pl-view [data-s="4"] .sa-cl{display:none}');
     expect(index).not.toMatch(/\.plk\[data-beat="4"\] \.pl-view \.x-blk/);
+  });
+
+  it("each named agent keeps its own animal and presence colour everywhere (#2471)", () => {
+    const badge = (name: keyof typeof AGENTS) =>
+      `<span class="ag" data-animal="${AGENTS[name].animal}" data-c="${AGENTS[name].color}" aria-hidden="true">`;
+    // Every badge sits right before (or in the cell with) the agent's name.
+    const near = [
+      ...index.matchAll(
+        /<span class="ag[^"]*" data-animal="(\w+)" data-c="(\d)"[^>]*>[\s\S]*?<\/svg><\/span>(?=([\s\S]{0,160}))/g,
+      ),
+    ];
+    expect(near.length).toBeGreaterThanOrEqual(14);
+    const seen = new Set<string>();
+    for (const [, animal, c, after] of near) {
+      const name = (Object.keys(AGENTS) as (keyof typeof AGENTS)[]).find(
+        (n) => AGENTS[n].animal === animal,
+      );
+      expect(name, `unknown animal ${animal}`).toBeDefined();
+      if (!name) continue;
+      seen.add(name);
+      expect(c, name).toBe(String(AGENTS[name].color));
+      // The avatar stack and the scene's bar carry no name; the rest do.
+      if (!/^<span class="(more|chip ver)"/.test(after ?? ""))
+        expect(after, name).toContain(name);
+    }
+    expect([...seen].sort()).toEqual(Object.keys(AGENTS).sort());
+    // Bus section: one badge per agent card.
+    for (const name of ["Backend", "Reviewer", "Release"] as const)
+      expect(index).toContain(`<div class="x-agc">${badge(name)}`);
+    // The glyph is the product's: 24-unit stroke drawing, white on the colour.
+    expect(index).toContain(
+      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ANIMALS.fox}</svg>`,
+    );
+    expect(PRESENCE[2]).toBe("#2456c4");
+    expect(index).not.toContain("M2 2l3 2h4l3-2v6a5 5 0 0 1-10 0z");
+    expect(index).not.toMatch(/class="ag b"|x-g3/);
   });
 
   it("the phone chapter buttons say what to try", () => {

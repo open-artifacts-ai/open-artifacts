@@ -445,6 +445,51 @@ describe("add_comment with an ask (#1535)", () => {
     expect(ok.isError, textOf(ok)).toBeFalsy();
   });
 
+  it("names a decider who can edit the page (#2381); a viewer or an action ask is refused", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    await putShare(E, owner.member, id, {
+      email: stranger.email,
+      role: "editor",
+    });
+    const ok = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "x",
+        ask: { ...ASK([reader.userId]), decider: { key: stranger.userId } },
+      }),
+    ).thread;
+    expect(ok.comments[0]?.ask).toMatchObject({
+      decider: { id: stranger.userId },
+      chosenBy: { id: owner.userId },
+    });
+    const viewer = await tool(owner.client, "add_comment", {
+      id,
+      body: "x",
+      ask: { ...ASK([owner.userId]), decider: { key: reader.userId } },
+    });
+    expect(viewer.isError).toBe(true);
+    expect(textOf(viewer)).toMatch(/can edit this page/);
+    const risky = await tool(owner.client, "add_comment", {
+      id,
+      body: "x",
+      ask: {
+        question: "Merge it?",
+        options: [
+          { id: "merge", label: "Merge", action: "merge" },
+          { id: "wait", label: "Wait" },
+        ],
+        to: [{ key: owner.userId }],
+        decider: { key: stranger.userId },
+      },
+    });
+    expect(risky.isError).toBe(true);
+    expect(textOf(risky)).toMatch(/decided by you/);
+  });
+
   it("someone who cannot open the artifact is refused", async () => {
     const id = await pub({ visibility: "private" });
     const r = await tool(stranger.client, "add_comment", {

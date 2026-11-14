@@ -1023,6 +1023,18 @@ export const SURFACES: readonly Surface[] = [
       badRequest,
     ),
   ),
+  // #2381: the asker's own user takes the decision back; the service refuses an agent or a token. A malformed id stops at 400.
+  rest(
+    "comments ask decider",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/ask/decider`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/ask/decider`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
   rest(
     "artifact agents",
     "comments.read",
@@ -1108,6 +1120,15 @@ export const SURFACES: readonly Surface[] = [
       read((id) => `${A(id)}/events`, 426),
     ),
     socket((id) => `${A(id)}/events`),
+  ),
+  // #1100: the doc room socket (view to join; edit is a role inside it).
+  // The world's artifacts aren't docs: past the access check the route
+  // answers 400 not-a-doc, so 400 is the allowed answer (a denial is 404).
+  rest(
+    "ws doc",
+    "events",
+    [`GET ${ARTS}/doc`],
+    read((id) => `${A(id)}/doc`, 400, 426),
   ),
   // MCP (all 19 tools)
   mcp(

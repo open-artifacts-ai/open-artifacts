@@ -15,7 +15,14 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type MouseEvent, useState } from "react";
 import { hasFeature } from "../api/contract";
 import { useMe } from "../auth/useMe";
+import { isOrgAdmin } from "../settings/spaces/access";
 import { sharedSpaceName } from "./label";
+import {
+  isHostedSolo,
+  SEE_PLANS,
+  SOLO_SPACES_LINE,
+  SOLO_SPACES_TITLE,
+} from "./solo";
 
 const VISIBLE = 8;
 
@@ -66,7 +73,16 @@ export function SpaceSwitcher({ path }: { path: string }) {
     a.name.localeCompare(b.name),
   );
   const shown = all ? spaces : spaces.slice(0, VISIBLE);
-  const admin = me.user.role === "owner" || me.user.role === "admin";
+  const admin = isOrgAdmin(me);
+  // Hosted Solo (#2472): spaces come with Team. Admins are told so and
+  // pointed at the plans; members see no empty note at all.
+  const solo = isHostedSolo(me);
+  const go = (to: string) => (e: MouseEvent) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey) return;
+    e.preventDefault();
+    setOpenMobile(false);
+    void navigate({ to } as never);
+  };
   return (
     <nav aria-label="Spaces">
       <SidebarGroup>
@@ -100,23 +116,32 @@ export function SpaceSwitcher({ path }: { path: string }) {
               </SidebarMenuItem>
             )}
           </SidebarMenu>
-          {spaces.length === 0 && (
+          {spaces.length === 0 && solo && admin && (
+            <div className="grid gap-[6px] px-[var(--oa-space-2)] pt-[var(--oa-space-1)] text-[length:var(--oa-text-xs)] text-muted-foreground">
+              <b className="font-medium text-foreground">{SOLO_SPACES_TITLE}</b>
+              <span>{SOLO_SPACES_LINE}</span>
+              <a
+                href={SEE_PLANS.to}
+                className="w-fit underline underline-offset-2"
+                onClick={go(SEE_PLANS.to)}
+              >
+                {SEE_PLANS.label}
+              </a>
+            </div>
+          )}
+          {spaces.length === 0 && !solo && (
             <div className="grid gap-[6px] px-[var(--oa-space-2)] pt-[var(--oa-space-1)] text-[length:var(--oa-text-xs)] text-muted-foreground">
               <b className="font-medium text-foreground">No spaces yet</b>
               <span>
-                Your admin hasn't set up spaces. What you publish stays in
-                Personal until they do.
+                {admin
+                  ? "You haven't set up spaces. What you publish stays in Personal until you do."
+                  : "Your admin hasn't set up spaces. What you publish stays in Personal until they do."}
               </span>
               {admin && (
                 <a
                   href="/settings/spaces"
                   className="w-fit underline underline-offset-2"
-                  onClick={(e) => {
-                    if (e.button !== 0 || e.metaKey || e.ctrlKey) return;
-                    e.preventDefault();
-                    setOpenMobile(false);
-                    void navigate({ to: "/settings/spaces" });
-                  }}
+                  onClick={go("/settings/spaces")}
                 >
                   Set up spaces
                 </a>

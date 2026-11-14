@@ -1251,7 +1251,7 @@ describe("role proposals: a fresh login, bound names (#1372 review)", () => {
     d.close();
   });
 
-  it("Google: a fresh session also needs a forced re-authentication (auth_time) under 10 minutes", async () => {
+  it("Google: a fresh session also needs a forced re-authentication marker (a completed reauth flow) under 10 minutes", async () => {
     const { who, d, p } = await pending();
     const now = Date.now();
     const silent = await sessionAt(who.userId, now - MIN, "google");

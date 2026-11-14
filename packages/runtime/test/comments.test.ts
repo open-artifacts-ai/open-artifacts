@@ -1010,8 +1010,9 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ pin: { x: 0.5, y: 0.5 } });
   });
 
-  it("a pin click also says where it landed, so the box can open beside it (#2019)", async () => {
+  it("a pin click also says where it landed, so the box can open beside it (#2019, #2408)", async () => {
     await start("pin");
+    await send({ type: "shell.protocol", protocol: 6 });
     document.querySelector("img")?.dispatchEvent(
       new MouseEvent("click", {
         bubbles: true,
@@ -1024,8 +1025,90 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ at: { x: 120, y: 60 } });
   });
 
+  it("the runtime's copy of the announce protocol matches the shared one (#2408)", async () => {
+    const { SHELL_ANNOUNCES } = await import("../src/comments.js");
+    const { PROTOCOL_SHELL_ANNOUNCES } = await import("@oa/shared");
+    expect(SHELL_ANNOUNCES).toBe(PROTOCOL_SHELL_ANNOUNCES);
+  });
+
+  describe("an older shell (#2408)", () => {
+    // What a tab opened before the deploy still runs: strict, so a key it
+    // does not know refuses the whole message.
+    const oldShell = {
+      safeParse: (m: unknown) => ({
+        success: Object.keys(m as object).every((k) =>
+          ["oa", "nonce", "type", "pin"].includes(k),
+        ),
+      }),
+    };
+    const click = () =>
+      document.querySelector("img")?.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 120,
+          clientY: 60,
+        }),
+      );
+
+    it("never gets a field it would refuse: no `at` until the shell announces itself", async () => {
+      await start("pin");
+      click();
+      await flush();
+      const m = last("comment.pin");
+      expect(m).toBeDefined();
+      expect(m).not.toHaveProperty("at");
+      expect(oldShell.safeParse(m).success).toBe(true);
+    });
+
+    it("a shell that announces a protocol below 6 gets none either", async () => {
+      await start("pin");
+      await send({ type: "shell.protocol", protocol: 5 });
+      click();
+      await flush();
+      expect(last("comment.pin")).not.toHaveProperty("at");
+    });
+
+    it("comment.positions gets no `ghost` until the shell announces itself (#2408)", async () => {
+      // What an old shell accepts: positions only.
+      const oldPositions = (m: unknown) =>
+        Object.keys(m as object).every((k) =>
+          ["oa", "nonce", "type", "positions"].includes(k),
+        );
+      await start("pin");
+      await send({
+        type: "comments.set",
+        threads: [],
+        ghost: { x: 0.5, y: 0.5 },
+      });
+      const before = last("comment.positions");
+      expect(before).toBeDefined();
+      expect(before).not.toHaveProperty("ghost");
+      expect(oldPositions(before)).toBe(true);
+      // Once the shell says it knows the field, it is sent (and an old one would drop it).
+      await send({ type: "shell.protocol", protocol: 6 });
+      await send({
+        type: "comments.set",
+        threads: [],
+        ghost: { x: 0.5, y: 0.5 },
+      });
+      const after = last("comment.positions");
+      expect(after).toMatchObject({ ghost: { x: 120, y: 60 } });
+      expect(oldPositions(after)).toBe(false);
+    });
+
+    it("the same old shell would drop the message once `at` is on it", async () => {
+      await start("pin");
+      await send({ type: "shell.protocol", protocol: 6 });
+      click();
+      await flush();
+      expect(oldShell.safeParse(last("comment.pin")).success).toBe(false);
+    });
+  });
+
   it("reports where the new-pin flag is, and again when the page scrolls (#2386)", async () => {
     await start("pin");
+    await send({ type: "shell.protocol", protocol: 6 });
     await send({
       type: "comments.set",
       threads: [],

@@ -242,6 +242,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`PUT ${ARTS}/data`]: art("data.reset"),
   [`GET ${ARTS}/data-subscribe`]: art("subscribe"),
   [`GET ${ARTS}/events`]: art("events"),
+  // #1100: the doc room socket; the handler grants role edit by "publish".
+  [`GET ${ARTS}/doc`]: art("events"),
   [`GET ${ARTS}/storage`]: art("storage", { anon401: SAVE }),
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
@@ -268,6 +270,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   ),
   // #2263: the passkey challenge for a pick; the same rule as the answer.
   [`POST ${ARTS}/comments/:threadId/comments/:commentId/answer/challenge`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
+  // #2381: the asker's own user takes the decision back (the service).
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/ask/decider`]: art(
     "comments.write",
     { anon401: COMMENT },
   ),

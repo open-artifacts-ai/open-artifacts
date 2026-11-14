@@ -121,6 +121,8 @@ export type MockOptions = {
   commentsRateLimit?: number;
   /** Seed an open ask for the caller on "Landing page" (#1535). */
   commentAsks?: boolean;
+  /** #2381: seed asks in each decider state on "Landing page". */
+  commentDeciders?: boolean;
   /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
   commentPasskey?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
@@ -158,6 +160,12 @@ export type MockOptions = {
         agentConnected?: boolean;
         published?: boolean;
         commented?: boolean;
+        /** #2478 */
+        named?: boolean;
+        agentName?: string;
+        mentionReplied?: boolean;
+        mentionStalled?: boolean;
+        askAnswered?: boolean;
         opened?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
@@ -398,9 +406,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       }
   const files = new Map(Object.entries(f.files));
   const shares = f.shares;
-  const members: Member[] = f.members;
-  const tokens = f.tokens;
-  const clients = f.oauthClients;
+  // ?mock=welcome is a fresh instance: nobody invited yet, and no agent token
+  // until the connect tick is on (#2478).
+  const fresh = opts.welcome
+    ? opts.welcome === true
+      ? {}
+      : opts.welcome
+    : null;
+  const members: Member[] = fresh
+    ? f.members.filter((m) => m.role === "owner")
+    : f.members;
+  const tokens = fresh && !fresh.agentConnected ? [] : f.tokens;
+  const clients = fresh ? [] : f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
   // R.onboarding: install-wide, the owner only (anyone else 404).
   const onboarding: Onboarding = {
@@ -411,6 +428,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     agentConnected: false,
     firstArtifact: null,
     commented: false,
+    // #2478: without ?mock=welcome the instance is established: the three new steps are done.
+    agentNamed: !opts.welcome,
+    agentName: opts.welcome ? null : "Atlas",
+    mentionReplied: !opts.welcome,
+    mentionStalled: false,
+    askAnswered: !opts.welcome,
   };
   if (opts.welcome) {
     const w = opts.welcome === true ? {} : opts.welcome;
@@ -426,6 +449,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       firstArtifact:
         w.published && first ? { id: first.id, title: first.title } : null,
       commented: w.commented ?? false,
+      agentNamed: w.named ?? false,
+      agentName: w.named ? (w.agentName ?? "Atlas") : null,
+      mentionReplied: w.mentionReplied ?? false,
+      mentionStalled: w.mentionStalled ?? false,
+      askAnswered: w.askAnswered ?? false,
     });
   }
   if (opts.bus) {
@@ -711,6 +739,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     emit: (id, open) => opts.events?.emitComments(id, open),
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
+    seedDeciders: opts.commentDeciders,
     passkeyMode: opts.commentPasskey,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,

@@ -54,6 +54,7 @@ import { logError, logInfo } from "../log.js";
 import { runtimeStub } from "../runtime/do.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
 import { type AgentIdentity, NAMES_OF_MAX } from "../services/agent-usage.js";
+import { activation } from "../services/analytics.js";
 import {
   type BusCloseKind,
   busCloseKind,
@@ -69,6 +70,10 @@ import {
   pruneDeadFollows,
   unfollow,
 } from "../services/follows.js";
+import {
+  namedRecorded,
+  noteAgentNamed,
+} from "../services/onboarding-firsts.js";
 import { VERSION } from "../version.gen.js";
 import { isDefaultAgentName } from "./default-names.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
@@ -4011,6 +4016,7 @@ export class BusHub extends DurableObject<Env> {
       ),
     );
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
+    if (r.ok && agentId !== null) this.#noteNamed();
     return r;
   }
 
@@ -4781,6 +4787,8 @@ export class BusHub extends DurableObject<Env> {
       ),
     );
     logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    // A confirmed set (not a clear) names the holder.
+    if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
     return r;
   }
 
@@ -5493,6 +5501,8 @@ export class BusHub extends DurableObject<Env> {
         this.#adoptHeld(moved, registeredAgent(sql, machineId, f.agent_ref));
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
+        // #2478: the harness says a user or a peer named this session.
+        if (f.name_chosen === true) this.#noteNamed();
         const a = registeredAgent(sql, machineId, f.agent_ref);
         const rekeyed = a ? this.#rekeyFollows(before, a) : undefined;
         if (a) {
@@ -5647,6 +5657,27 @@ export class BusHub extends DurableObject<Env> {
       before.name.toLowerCase(),
     );
   }
+  /** #2478: this member now has a named agent (a chosen name or a role); records the first time, after the frame. */
+  #namedKnown = false;
+  #noteNamed(): void {
+    // Once recorded (written here, or already there) nothing more is asked of D1.
+    if (this.#namedKnown) return;
+    const userId = this.ctx.id.name?.startsWith("bus:")
+      ? this.ctx.id.name.slice(4)
+      : null;
+    if (userId === null) return;
+    this.ctx.waitUntil(
+      (async () => {
+        if (await noteAgentNamed(this.env, userId)) {
+          this.#namedKnown = true;
+          // #2479: the first time only; best effort, never fails the frame.
+          await activation(this.env, "agent_named", this.ctx);
+        } else if (await namedRecorded(this.env, userId))
+          this.#namedKnown = true;
+      })().catch(() => {}),
+    );
+  }
+
   #rekeyFollows(
     before: { namespace: string; name: string } | null,
     after: { namespace: string; name: string },
@@ -5910,6 +5941,8 @@ export class BusHub extends DurableObject<Env> {
           );
     sendFrame(ws, { ...reply, former });
     notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
+    // #2478: a rename that is not a default re-mint is a chosen name.
+    if (f.name_kind !== "default" && f.name_chosen !== false) this.#noteNamed();
     if (moved.length > 0) {
       this.#adoptHeld(moved, agent);
       this.#flush(ws, agent);
