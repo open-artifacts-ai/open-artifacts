@@ -64,8 +64,10 @@ for (const width of [1280, 390])
       ]);
       await expect(
         page.getByRole("switch", { name: "Needs you in this browser" }),
-      ).toHaveAttribute("aria-checked", "true");
-      await expect(page.getByText(/^On for \w+ on this \w+$/)).toBeVisible();
+      ).toHaveAttribute("aria-checked", "false");
+      await expect(
+        page.getByRole("switch", { name: "Needs you in this browser" }),
+      ).toBeDisabled();
       await expect(
         page.getByRole("switch", { name: "Updates in this browser" }),
       ).toBeDisabled();
@@ -123,16 +125,6 @@ for (const width of [1280, 390])
       await muted.getByRole("button", { name: "Unmute OA Polish" }).click();
       await expect(muted.getByRole("listitem")).toHaveCount(1);
 
-      // The browser switch is slice 3: it says so and stays as it was.
-      await page
-        .getByRole("switch", { name: "Needs you in this browser" })
-        .click();
-      await expect(
-        page.getByText("Browser notifications are coming soon."),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("switch", { name: "Needs you in this browser" }),
-      ).toHaveAttribute("aria-checked", "true");
       if (OUT) {
         await settled(page);
         await page.screenshot({

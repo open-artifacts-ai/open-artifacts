@@ -94,15 +94,30 @@ export function useInbox(open: boolean) {
   return { ...q, inbox: q.data ? flatInbox(q.data) : undefined };
 }
 
-/** Every page through `f` (index 0 is the first), with the counts recomputed, and the bell's counts on Me. */
+/**
+ * Every page through `f` (index 0 is the first). The counts move by what changed
+ * in the loaded pages, from the server's own counts: they also cover items not
+ * loaded (Needs you is capped, Updates page on), so they are never recounted here.
+ */
 function editPages(qc: QueryClient, f: (p: Inbox, i: number) => Inbox) {
   const cur = qc.getQueryData<Pages>(inboxKey);
-  if (!cur) return;
+  if (!cur?.pages[0]) return;
+  const tally = (pages: Inbox[]) =>
+    countsOf({
+      needsYou: pages[0]?.needsYou ?? [],
+      updates: pages.flatMap((p) => p.updates),
+    });
   const pages = cur.pages.map(f);
-  const counts = countsOf({
-    needsYou: pages[0]?.needsYou ?? [],
-    updates: pages.flatMap((p) => p.updates),
-  });
+  const was = tally(cur.pages);
+  const now = tally(pages);
+  const base = cur.pages[0].counts;
+  const counts = {
+    needsYou: Math.max(0, base.needsYou + now.needsYou - was.needsYou),
+    unreadUpdates: Math.max(
+      0,
+      base.unreadUpdates + now.unreadUpdates - was.unreadUpdates,
+    ),
+  };
   qc.setQueryData<Pages>(inboxKey, {
     ...cur,
     pages: pages.map((p, i) => (i === 0 ? { ...p, counts } : p)),
@@ -243,6 +258,7 @@ export const useMutes = (enabled: boolean) =>
     enabled,
   });
 
+/** Unmute an agent or a page (the mute toast's Undo; Settings' list). */
 export const useUnmute = () => {
   const qc = useQueryClient();
   return useMutation({

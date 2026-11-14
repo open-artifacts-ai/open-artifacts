@@ -210,7 +210,7 @@ export function createForYouMock(d: Deps): {
       : [];
   /** The server's defaults: browser off, quiet hours off, details hidden. */
   let prefs: NotificationPrefs = {
-    needsYou: { inApp: true, browser: d.variant === "mixed" },
+    needsYou: { inApp: true, browser: false },
     updates: { inApp: true, browser: false },
     browserAllAsks: false,
     quietHours: d.variant === "mixed" ? { start: "22:00", end: "07:30" } : null,

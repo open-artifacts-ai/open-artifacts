@@ -151,6 +151,10 @@ for (const width of [1280, 390])
       await expect(
         p.locator('[data-for-you-item="ask:fyAskComment1"]'),
       ).toHaveCount(0);
+      // Focus moves to the next row, never <body>.
+      await expect(page.locator(":focus")).toHaveAccessibleName(
+        /^OA Design replied\s*, unread$/,
+      );
       // Nothing needs you now: the unread update lights the dot instead.
       await expect(bell(page)).toHaveAttribute(
         "aria-label",

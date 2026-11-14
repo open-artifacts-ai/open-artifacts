@@ -27,7 +27,7 @@ export const HALF_HOURS = Array.from({ length: 48 }, (_, i) => {
   return { value: t, label: t };
 });
 
-/** "Chrome on this Mac": this browser, for the browser column. */
+/** "Chrome on this Mac": this browser, for the browser column's "On for …" (slice 3). */
 export function thisBrowser(ua = navigator.userAgent): string {
   const browser = /Edg\//.test(ua)
     ? "Edge"
@@ -86,10 +86,6 @@ function useSave() {
     );
 }
 
-/** The browser column's switch is slice 3: it says so and changes nothing. */
-const browserStub = () =>
-  toast({ title: "Browser notifications are coming soon.", tone: "neutral" });
-
 function Levels({ prefs }: { prefs: NotificationPrefs }) {
   const th =
     "px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-[var(--oa-text-muted)] max-[600px]:px-2.5";
@@ -123,19 +119,17 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             </th>
             <td className={td}>Always</td>
             <td className={td}>
+              {/* Browser notifications come in slice 3: shown, not yet usable. */}
               <Switch
                 label="Needs you in this browser"
-                describedBy={
-                  prefs.needsYou.browser ? "oa-needs-browser" : undefined
-                }
+                describedBy="oa-needs-browser"
                 checked={prefs.needsYou.browser}
-                onChange={browserStub}
+                disabled
+                onChange={() => {}}
               />
-              {prefs.needsYou.browser && (
-                <small id="oa-needs-browser" className={sub}>
-                  On for {thisBrowser()}
-                </small>
-              )}
+              <small id="oa-needs-browser" className={sub}>
+                Coming later
+              </small>
             </td>
           </tr>
           <tr>
@@ -156,7 +150,7 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
                 onChange={() => {}}
               />
               <small id="oa-updates-browser" className={sub}>
-                Not in this version
+                Coming later
               </small>
             </td>
           </tr>

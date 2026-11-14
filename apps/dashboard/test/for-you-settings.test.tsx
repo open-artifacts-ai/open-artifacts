@@ -7,7 +7,6 @@ import { thisBrowser } from "../src/settings/ForYouPrefs";
 import {
   calls,
   events,
-  findVisibleToast,
   installHarness,
   mount,
   server,
@@ -43,8 +42,7 @@ describe("For you settings", () => {
   it("shows the levels, quiet hours, interrupts, lock screens and mutes", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     const needs = await page();
-    expect(needs).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText(/^On for .+ on this .+$/)).toBeInTheDocument();
+    expect(needs).toHaveAttribute("aria-checked", "false");
     expect(
       screen.getByRole("switch", { name: "Updates in this browser" }),
     ).toBeDisabled();
@@ -73,7 +71,7 @@ describe("For you settings", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
     await waitFor(() =>
       expect(puts.find((c) => c.path === R.meNotificationPrefs)?.body).toEqual({
-        needsYou: { inApp: true, browser: true },
+        needsYou: { inApp: true, browser: false },
         updates: { inApp: true, browser: false },
         browserAllAsks: false,
         quietHours: null,
@@ -102,7 +100,7 @@ describe("For you settings", () => {
     );
   });
 
-  it("the browser switch is a stub until slice 3: no permission prompt, no change", async () => {
+  it("the browser switches wait for slice 3: disabled, Coming later, no prompt", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     const ask = vi.fn();
     vi.stubGlobal("Notification", {
@@ -111,9 +109,12 @@ describe("For you settings", () => {
     });
     const needs = await page();
     const puts = calls("PUT");
+    expect(needs).toBeDisabled();
+    expect(needs).toHaveAccessibleDescription("Coming later");
+    expect(
+      screen.getByRole("switch", { name: "Updates in this browser" }),
+    ).toHaveAccessibleDescription("Coming later");
     fireEvent.click(needs);
-    await findVisibleToast("Browser notifications are coming soon.");
-    expect(needs).toHaveAttribute("aria-checked", "true");
     expect(puts).toEqual([]);
     expect(ask).not.toHaveBeenCalled();
   });
