@@ -1,5 +1,6 @@
 import { Button } from "@oa/ui/shadcn";
 import { EditorContent, useEditor } from "@tiptap/react";
+import { TriangleAlertIcon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import type * as Y from "yjs";
 import { dismissToast } from "../../layout/toast";
@@ -19,6 +20,7 @@ import {
   type DocStatus,
   defaultProvider,
   errorCopy,
+  holdsUnsaved,
   loginHref,
   type RoomProvider,
   roomNotice,
@@ -104,6 +106,19 @@ export function DocEditor(props: DocEditorProps) {
     onStatus?.(room ? label : null);
   }, [onStatus, room, label]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
+  // Design: while this tab holds edits the room does not have, leaving or
+  // closing it asks first. Off again once they are delivered.
+  const holding = holdsUnsaved(snap);
+  useEffect(() => {
+    if (!holding) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Older browsers need a returnValue to show the prompt.
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [holding]);
   // Logged out: Log in opens another tab. Ask again whenever this tab comes
   // back (focus, visible) and slowly meanwhile; signed in, the room resumes
   // and sends what this tab still holds.
@@ -235,8 +250,16 @@ function Loaded({
         </div>
       )}
       {notice && (
-        <div className="oa-doc-error">
-          <p role={snap.ended ? "alert" : "status"}>{notice.text}</p>
+        <div className="oa-doc-error" data-tone={notice.tone}>
+          <div className="oa-doc-error-msg">
+            {notice.tone === "warning" && (
+              <TriangleAlertIcon
+                className="oa-doc-error-icon"
+                aria-hidden="true"
+              />
+            )}
+            <p role={snap.ended ? "alert" : "status"}>{notice.text}</p>
+          </div>
           {notice.login && (
             <div className="oa-doc-error-actions">
               <Button asChild size="sm" variant="outline">

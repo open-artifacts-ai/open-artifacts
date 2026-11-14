@@ -597,3 +597,108 @@ test("signed in again, nothing unsent, the room still refuses: Reconnecting…, 
   await expect(page.getByText(line)).toHaveCount(0);
   await expect(prose(page)).toHaveAttribute("contenteditable", "true");
 });
+
+/**
+ * A team or public doc: after the 4401 the logged-out viewer is admitted
+ * read (#2490) and the room drops what it sends. The page's timers are
+ * paused across the cut so a line can be typed while the socket is down;
+ * resumed, the reconnect is admitted read with that edit unsent.
+ */
+async function admittedReadWithUnsent(
+  page: Page,
+  info: Parameters<typeof startRoom>[0],
+  loggedOut: boolean,
+) {
+  await page.clock.install();
+  await open(page, info, ["--expire-auth-read"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  const changes = () =>
+    log().filter((l) => l.startsWith("doc changed ")).length;
+  const before = changes();
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(now + 100);
+  tellRoom(room, "expire");
+  await expect
+    .poll(() => log().some((l) => l.startsWith("closing 4401 ")))
+    .toBe(true);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Offline$/ }),
+  ).toBeVisible();
+  await prose(page).locator("p").first().click();
+  await page.evaluate(() => {
+    const p = document.querySelector(".ProseMirror p");
+    if (!p) throw new Error("no paragraph");
+    const r = document.createRange();
+    r.selectNodeContents(p);
+    r.collapse(false);
+    getSelection()?.removeAllRanges();
+    getSelection()?.addRange(r);
+  });
+  await page.keyboard.type(" Typed offline.");
+  await page.evaluate((v) => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = v;
+  }, loggedOut);
+  // Every status the page shows from here on (it must never be Saved).
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { __oaSeen: string[] }).__oaSeen = seen;
+    new MutationObserver(() => {
+      const s = document.querySelector(".oa-docstate")?.textContent;
+      if (s) seen.push(s);
+    }).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+  await page.clock.resume();
+  await expect
+    .poll(() => log().some((l) => l.startsWith("dropped read update ")))
+    .toBe(true);
+  return { before, changes };
+}
+
+const seenStatuses = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __oaSeen: string[] }).__oaSeen);
+
+test("admitted read after a 4401 with an edit unsent, and logged out: never Saved, the logged-out (unsent) warning", async ({
+  page,
+}, info) => {
+  const { before, changes } = await admittedReadWithUnsent(page, info, true);
+  const alert = page.getByRole("alert");
+  await expect(alert).toHaveText(
+    "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
+  );
+  await expect(
+    page.locator('.oa-doc-error[data-tone="warning"]'),
+  ).toBeVisible();
+  expect(await seenStatuses(page)).not.toContain("Saved");
+  expect(changes()).toBe(before);
+  // Signed in again: the edit reaches the room, then Saved.
+  tellRoom(room, "login");
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect.poll(changes).toBeGreaterThan(before);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+});
+
+test("admitted read after a 4401 with an edit unsent, still signed in: never Saved, couldn't save", async ({
+  page,
+}, info) => {
+  const { before, changes } = await admittedReadWithUnsent(page, info, false);
+  await expect(page.getByRole("alert")).toHaveText(
+    "Couldn't save your latest changes. Copy them before leaving this page.",
+  );
+  await expect(
+    page.locator('.oa-doc-error[data-tone="warning"]'),
+  ).toBeVisible();
+  expect(await seenStatuses(page)).not.toContain("Saved");
+  expect(changes()).toBe(before);
+});

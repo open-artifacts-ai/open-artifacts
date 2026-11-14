@@ -627,6 +627,24 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
 .oa-doc-error p {
   margin: 0;
 }
+/* Design: a notice that holds unsaved work (logged out with edits unsent,
+   couldn't save) is the warning band, with its icon. */
+.oa-doc-error[data-tone="warning"] {
+  background: var(--oa-warning-soft);
+}
+/* The icon stays on the text's first line, at every width. */
+.oa-doc-error-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.oa-doc-error-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--oa-warning);
+}
 .oa-doc-error-actions {
   display: flex;
   flex-wrap: wrap;

@@ -173,17 +173,29 @@ export interface DocSnapshot {
   stalled: boolean;
 }
 
+/**
+ * This tab holds edits the room does not have, and the room is not taking
+ * them now (logged out with edits unsent, or couldn't save): leaving loses
+ * them, so the page asks the browser to warn.
+ */
+export const holdsUnsaved = (s: DocSnapshot): boolean =>
+  (s.ended === "signed_out" && s.endSaved === false) ||
+  s.ended === "save_failed";
+
 /** What to say about the room (not the doc-full alert), or null. */
-export function roomNotice(
-  s: DocSnapshot,
-): { text: string; retry?: string; login?: string } | null {
+export function roomNotice(s: DocSnapshot): {
+  text: string;
+  retry?: string;
+  login?: string;
+  /** Design: notices that hold unsaved work take the warning style. */
+  tone?: "warning";
+} | null {
   if (s.ended === "signed_out")
-    return {
-      text: s.endSaved ? LOGGED_OUT_SAVED : LOGGED_OUT_UNSENT,
-      login: LOG_IN,
-    };
+    return s.endSaved
+      ? { text: LOGGED_OUT_SAVED, login: LOG_IN }
+      : { text: LOGGED_OUT_UNSENT, login: LOG_IN, tone: "warning" };
   if (s.ended === "save_failed")
-    return { text: SAVE_FAILED, retry: SAVE_FAILED_RETRY };
+    return { text: SAVE_FAILED, retry: SAVE_FAILED_RETRY, tone: "warning" };
   if (s.stalled) return { text: CANT_CONNECT };
   if (s.ended === "access_removed") return { text: ACCESS_REMOVED };
   if (s.ended === "not_found") return { text: NOT_FOUND };
@@ -360,6 +372,8 @@ export function createDocRoom(
   // Resumed after signing in again: until its hello, a refused reconnect
   // with edits unsent is save_failed (not another logged-out).
   let resuming = false;
+  // Some hello gave this tab role edit (so it may hold edits of its own).
+  let hadEdit = false;
   // Resumed with nothing unsent and refused: see DocSnapshot.reconnecting.
   let reconnecting = false;
   let stalled = false;
@@ -619,6 +633,25 @@ export function createDocRoom(
           clearReconnecting();
           // The first frame: the role comes from the server only.
           role = frame.role === "edit" ? "edit" : "read";
+          // Admitted read after this tab could edit, with edits unsent: the
+          // room will drop them, so never say Saved. Logged out on a team or
+          // public doc (the route admits it read, #2490), or access changed.
+          if (
+            role === "read" &&
+            hadEdit &&
+            !ended &&
+            (buffer || draining || unsent)
+          ) {
+            if (buffer || draining) unsent = true;
+            void checkAuth().then((signedIn) => {
+              if (destroyed || ended) return;
+              if (!signedIn) {
+                endSaved = false;
+                endRoom("signed_out");
+              } else endRoom("save_failed");
+            });
+          }
+          if (role === "edit") hadEdit = true;
           reason =
             frame.reason === "room_full" || frame.reason === "access"
               ? frame.reason
@@ -708,14 +741,20 @@ export function createDocRoom(
   };
   const onSync = (state: boolean) => {
     synced = state;
-    if (state && connected) {
-      // The sync exchange sends everything written while away.
-      unsent = false;
-    }
+    // The sync exchange sends everything written while away, but only an
+    // edit socket's edits are kept: a read socket's are dropped by the room
+    // (#2490), so they are still unsent.
+    if (state && connected && role !== "read") unsent = false;
     publish();
   };
   // Signed in again: reopen the socket. The sync exchange sends what the
   // room lacks, so edits written before the cut (kept in this Y.Doc) arrive.
+  // Stops for good (the socket's close handler has its own stop).
+  function endRoom(why: RoomEnd) {
+    ended = why;
+    provider.disconnect?.();
+    publish();
+  }
   function resume() {
     ended = null;
     endSaved = null;

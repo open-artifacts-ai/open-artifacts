@@ -833,6 +833,8 @@ describe("4401, then the session is gone (logged out)", () => {
     expect(roomNotice(room.getSnapshot())).toEqual({
       text: "Couldn't save your latest changes. Copy them before leaving this page.",
       retry: "Try again",
+      // Design: it holds unsaved work.
+      tone: "warning",
     });
     expect(server.getText("t").toString()).toBe("");
     fake.refuse = false;
@@ -918,6 +920,104 @@ describe("signed in again, nothing unsent, and the room still refuses", () => {
     vi.advanceTimersByTime(STALLED_MS * 2);
     const s = room.getSnapshot();
     expect([s.reconnecting, s.stalled]).toEqual([false, false]);
+    room.destroy();
+  });
+});
+
+describe("admitted read after a 4401 with edits unsent (a team or public doc, #2490)", () => {
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+  // Edits "before " reach the room; "after " is typed while the socket is
+  // down; the reconnect is admitted read (the room drops what it sends).
+  const readAfterCut = async (signedIn: { v: boolean }) => {
+    const checkAuth = vi.fn(async () => signedIn.v);
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { checkAuth },
+    );
+    const statuses: string[] = [];
+    room.subscribe(() => statuses.push(room.getSnapshot().status));
+    const server = new Y.Doc();
+    fake.server = server;
+    fake.autoHello = { role: "edit" };
+    fake.connect();
+    type(room, "before ");
+    vi.advanceTimersByTime(UPDATE_BATCH_MS + 100);
+    expect(server.getText("t").toString()).toBe("before ");
+    fake.close(4401);
+    type(room, "after ");
+    vi.advanceTimersByTime(UPDATE_BATCH_MS + 10);
+    statuses.length = 0;
+    // The reconnect: hello read (reason access), then the sync exchange.
+    fake.autoHello = { role: "read", reason: "access" };
+    fake.serverRole = "read";
+    vi.advanceTimersByTime(200);
+    await flush();
+    return { room, server, statuses, checkAuth };
+  };
+
+  it("never says Saved; the room never got the edit; logged out (401) is the unsent logged-out state", async () => {
+    const { room, server, statuses, checkAuth } = await readAfterCut({
+      v: false,
+    });
+    expect(checkAuth).toHaveBeenCalled();
+    expect(statuses).not.toContain("saved");
+    expect(server.getText("t").toString()).toBe("before ");
+    expect(room.getSnapshot()).toMatchObject({
+      ended: "signed_out",
+      endSaved: false,
+    });
+    expect(roomNotice(room.getSnapshot())?.text).toBe(
+      "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
+    );
+    room.destroy();
+  });
+
+  it("still signed in (an access change): the couldn't-save notice", async () => {
+    const { room, statuses, server } = await readAfterCut({ v: true });
+    expect(statuses).not.toContain("saved");
+    expect(server.getText("t").toString()).toBe("before ");
+    expect(room.getSnapshot().ended).toBe("save_failed");
+    room.destroy();
+  });
+
+  it("after signing in again, an edit-role sync delivers the edit, and only then Saved", async () => {
+    const signedIn = { v: false };
+    const { room, server } = await readAfterCut(signedIn);
+    expect(room.getSnapshot().ended).toBe("signed_out");
+    signedIn.v = true;
+    fake.autoHello = { role: "edit" };
+    fake.serverRole = "edit";
+    room.recheckAuth();
+    await flush();
+    const s = room.getSnapshot();
+    expect([s.ended, s.status]).toEqual([null, "saved"]);
+    expect(server.getText("t").toString()).toBe("after before ");
+    room.destroy();
+  });
+
+  it("a read hello with nothing unsent is just View only: no check, no notice", async () => {
+    const checkAuth = vi.fn(async () => false);
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { checkAuth },
+    );
+    fake.autoHello = { role: "edit" };
+    fake.connect();
+    fake.close(4401);
+    fake.autoHello = { role: "read", reason: "access" };
+    fake.serverRole = "read";
+    vi.advanceTimersByTime(200);
+    await flush();
+    expect(checkAuth).not.toHaveBeenCalled();
+    expect(room.getSnapshot()).toMatchObject({ ended: null, role: "read" });
     room.destroy();
   });
 });

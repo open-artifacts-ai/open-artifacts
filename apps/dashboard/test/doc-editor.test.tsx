@@ -1143,6 +1143,93 @@ describe("DocEditor", () => {
       expect(screen.queryByRole("toolbar")).toBeNull();
     });
 
+    it("holding unsent edits: the warning band and the leave warning, both gone once delivered", async () => {
+      const p = fakeProviders();
+      let signedIn = false;
+      const add = vi.spyOn(window, "addEventListener");
+      const remove = vi.spyOn(window, "removeEventListener");
+      const leave = () => {
+        const e = new Event("beforeunload", { cancelable: true });
+        window.dispatchEvent(e);
+        return e.defaultPrevented;
+      };
+      try {
+        render(
+          <DocEditor
+            {...base}
+            canEdit
+            makeProvider={p.make}
+            checkAuth={async () => signedIn}
+          />,
+        );
+        const f = p.made.last as NonNullable<typeof p.made.last>;
+        f.server = new Y.Doc();
+        act(() => f.connect());
+        await screen.findByRole("toolbar");
+        expect(leave()).toBe(false);
+        act(() => f.close(4401));
+        // Written while the socket is down: unsent.
+        act(() => {
+          f.doc.getText("t").insert(0, "offline");
+        });
+        await new Promise((r) => setTimeout(r, 150));
+        f.refuse = true;
+        await waitFor(() => expect(f.connects).toBe(2), { timeout: 2000 });
+        act(() => f.close(1006));
+        const alert = await screen.findByRole("alert");
+        expect(alert).toHaveTextContent(
+          "You've been logged out. Keep this page open and log in; your latest changes will be saved after.",
+        );
+        const band = alert.closest(".oa-doc-error");
+        expect(band).toHaveAttribute("data-tone", "warning");
+        expect(band?.querySelector("svg.oa-doc-error-icon")).not.toBeNull();
+        const warn = add.mock.calls.find((c) => c[0] === "beforeunload")?.[1];
+        expect(warn).toBeTypeOf("function");
+        expect(leave()).toBe(true);
+        // Signed in again: resumes and delivers; the listener goes.
+        signedIn = true;
+        f.refuse = false;
+        act(() => {
+          window.dispatchEvent(new Event("focus"));
+        });
+        await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+        expect(f.server?.getText("t").toString()).toBe("offline");
+        expect(
+          remove.mock.calls.some(
+            (c) => c[0] === "beforeunload" && c[1] === warn,
+          ),
+        ).toBe(true);
+        expect(leave()).toBe(false);
+      } finally {
+        add.mockRestore();
+        remove.mockRestore();
+      }
+    });
+
+    it("logged out with nothing unsent: the plain band, no leave warning", async () => {
+      const p = fakeProviders();
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          checkAuth={async () => false}
+        />,
+      );
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      act(() => f.connect());
+      await screen.findByRole("toolbar");
+      act(() => f.close(4401));
+      f.refuse = true;
+      await waitFor(() => expect(f.connects).toBe(2), { timeout: 2000 });
+      act(() => f.close(1006));
+      const alert = await screen.findByRole("alert");
+      expect(alert.closest(".oa-doc-error")).not.toHaveAttribute("data-tone");
+      const e = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(e);
+      expect(e.defaultPrevented).toBe(false);
+    });
+
     it("a deleted doc shows no status where Saved sits", async () => {
       const p = fakeProviders();
       const seen: (string | null)[] = [];

@@ -54,6 +54,7 @@ export function startDocRoom({
   closeFirst = null,
   revoke = false,
   expireAuth = false,
+  expireAuthRead = false,
   saved = null,
   restored = null,
 }) {
@@ -109,10 +110,26 @@ export function startDocRoom({
   // --expire-auth: the first settled socket closes 4401 (TTL) and the session
   // is gone, so later upgrades are refused 401, as the route does.
   let expired = false;
-  // stdin "login": the viewer signed in again, so upgrades are accepted.
+  // --expire-auth-read: the same 4401, but the doc is team or public, so the
+  // route admits the logged-out viewer read (#2490): hello read, reason
+  // access, and the room drops what that socket sends.
+  let readOnly = false;
+  const readSockets = new WeakSet();
+  // stdin "login": the viewer signed in again, so upgrades are accepted
+  // (with role edit).
   process.stdin.on("data", (d) => {
+    // stdin "expire" (with --expire-auth-read): close every socket 4401 now,
+    // and admit the next ones read.
+    if (expireAuthRead && String(d).split("\n").includes("expire")) {
+      readOnly = true;
+      for (const ws of wss.clients) {
+        console.log(`closing 4401 ${Date.now()}`);
+        ws.close(4401, "auth_expired");
+      }
+    }
     if (String(d).split("\n").includes("login")) {
       expired = false;
+      readOnly = false;
       console.log(`logged in ${Date.now()}`);
     }
   });
@@ -130,9 +147,12 @@ export function startDocRoom({
     connections++;
     // A log line per connection, so a test can tell a NEW socket opened.
     console.log(`conn ${connections} ${Date.now()}`);
+    if (readOnly) readSockets.add(ws);
     // The wire spec's hello frame comes first, before any sync frame.
     if (hello) {
-      const [role, reason, bytes] = hello.split(":");
+      const [role, reason, bytes] = (readOnly ? "read:access" : hello).split(
+        ":",
+      );
       ws.send(
         JSON.stringify({
           type: "hello",
@@ -210,6 +230,11 @@ export function startDocRoom({
           // peek: the sync message type (2 is a client update).
           if (tooLarge && decoding.peekVarUint(decoder) === 2) {
             ws.send(JSON.stringify({ type: "error", code: "doc_too_large" }));
+            break;
+          }
+          // A read socket's step 2 and updates are dropped, as the room does.
+          if (readSockets.has(ws) && decoding.peekVarUint(decoder) !== 0) {
+            console.log(`dropped read update ${Date.now()}`);
             break;
           }
           const enc = encoding.createEncoder();
@@ -347,6 +372,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     closeFirst: arg("--close-first"),
     revoke: process.argv.includes("--revoke"),
     expireAuth: process.argv.includes("--expire-auth"),
+    expireAuthRead: process.argv.includes("--expire-auth-read"),
     saved: arg("--saved"),
     restored: arg("--restored"),
   });

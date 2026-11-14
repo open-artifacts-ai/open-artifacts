@@ -50,6 +50,11 @@ export class FakeProvider implements RoomProvider {
    * lacks (y-protocols' sync step 2 answering the room's step 1).
    */
   server: Y.Doc | null = null;
+  /**
+   * The role the room gave this socket. A read socket's updates never reach
+   * `server` (the room drops them), sync included.
+   */
+  serverRole: "edit" | "read" = "edit";
   constructor(
     public doc: Y.Doc,
     public shouldReconnect: (e: {
@@ -62,7 +67,8 @@ export class FakeProvider implements RoomProvider {
       // Like y-websocket's broadcastMessage: a closed socket drops it.
       if (origin !== this && this.wsconnected) {
         this.sentUpdates.push(update);
-        if (this.server) Y.applyUpdate(this.server, update);
+        if (this.server && this.serverRole === "edit")
+          Y.applyUpdate(this.server, update);
       }
     };
     this.doc.on("update", this._updateHandler);
@@ -110,15 +116,17 @@ export class FakeProvider implements RoomProvider {
           ...this.autoHello,
         }),
       );
-    if (sync) {
-      if (this.server)
-        Y.applyUpdate(
-          this.server,
-          Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(this.server)),
-        );
-      this.synced = true;
-      this.emit("sync", true);
-    }
+    if (sync) this.completeSync();
+  }
+  /** The sync exchange finishes (sync step 2 sent, the provider synced). */
+  completeSync() {
+    if (this.server && this.serverRole === "edit")
+      Y.applyUpdate(
+        this.server,
+        Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(this.server)),
+      );
+    this.synced = true;
+    this.emit("sync", true);
   }
   disconnect() {
     this.shouldConnect = false;
