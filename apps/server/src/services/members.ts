@@ -18,6 +18,7 @@ import {
   asc,
   eq,
   inArray,
+  isNotNull,
   isNull,
   notInArray,
   or,
@@ -269,6 +270,20 @@ export async function inviteMember(
   inviter: Member,
   input: MemberInvite,
 ): Promise<MemberInviteResult> {
+  return (await inviteMemberOutcome(env, inviter, input)).result;
+}
+
+/**
+ * inviteMember, and whether it was a re-invite (#2520): an active row that
+ * was invited and never signed in keeps its row, gets a fresh invited_at and
+ * the email again; the route answers 200 instead of 201. Every other existing
+ * row is still a 409.
+ */
+export async function inviteMemberOutcome(
+  env: Env,
+  inviter: Member,
+  input: MemberInvite,
+): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   const reach = await inviteReach(env, email, input.role);
@@ -286,31 +301,57 @@ export async function inviteMember(
       details,
     );
   }
+  // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
+  // invited_at and its own invite.create row (the existing role, as a first
+  // invite records it); the audit commits with the update, only when it hit.
+  const prior = await stmt(env.DB, "select role from users where email = ?1")
+    .bind(email)
+    .first<{ role: string }>();
+  const [updated] = await getDb(env).batch([
+    getDb(env)
+      .update(users)
+      .set({ invitedAt: Date.now() })
+      .where(
+        and(
+          eq(users.email, email),
+          eq(users.status, "active"),
+          isNull(users.lastSeenAt),
+          isNotNull(users.invitedAt),
+        ),
+      )
+      .returning(),
+    inviteCreateAuditByEmail(env, email, inviter.id, prior?.role ?? input.role),
+  ]);
+  const again = updated[0];
   // Hosted billing: the first invite on a free instance passes only if the
   // 30-day trial starts (signed POST /trial/start, idempotent). Billing
   // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
   // is created. An address that already exists is the usual conflict, and
   // starts nothing.
   const plan = planOfMember(inviter);
-  if (plan?.trialEligible) {
+  if (plan?.trialEligible && !again) {
     if (await stmt(env.DB, EXISTING).bind(email).first())
       return existingConflict(env, email);
     await requireTrialStarted(env);
   }
   // invite.create (ids and the role, never the address) commits with the
   // row, and only when the insert made one.
-  const [rows] = await getDb(env).batch([
-    insertUser(env, {
-      email,
-      name: "",
-      role: input.role,
-      createdAt: Date.now(),
-    })
-      .onConflictDoNothing({ target: users.email })
-      .returning(),
-    inviteCreateAuditByEmail(env, email, inviter.id, input.role),
-  ]);
-  const row = rows[0];
+  let row = again;
+  if (!row) {
+    const [rows] = await getDb(env).batch([
+      insertUser(env, {
+        email,
+        name: "",
+        role: input.role,
+        createdAt: Date.now(),
+        invitedAt: Date.now(),
+      })
+        .onConflictDoNothing({ target: users.email })
+        .returning(),
+      inviteCreateAuditByEmail(env, email, inviter.id, input.role),
+    ]);
+    row = rows[0];
+  }
   if (!row) return existingConflict(env, email);
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
@@ -341,12 +382,20 @@ export async function inviteMember(
     );
   }
   return {
-    ...toMember(row),
-    emailed,
-    signInMethods,
-    ...(reach.methods.length === 0
-      ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
-      : {}),
+    reinvited: Boolean(again),
+    result: {
+      ...toMember(row),
+      emailed,
+      signInMethods,
+      ...(reach.methods.length === 0
+        ? {
+            signIn: {
+              status: "uncertain",
+              reason: "outside_domains",
+            } as const,
+          }
+        : {}),
+    },
   };
 }
 

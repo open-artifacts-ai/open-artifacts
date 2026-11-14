@@ -157,6 +157,39 @@ describe("invite reachability (review item 11)", () => {
     },
   );
 
+  it("Google with AUTH_DOMAINS: an invited Gmail address is certain (no uncertain flag, #2520)", async () => {
+    const { e, sent } = install(direct, {});
+    const email = uniq("pal", "gmail.com");
+    const r = await invite(e, await owner(), email);
+    expect(r.status).toBe(201);
+    expect(
+      MemberInviteResultSchema.parse(await r.json()).signIn,
+    ).toBeUndefined();
+    expect(sent[0]?.text).toContain("You'll log in with your Google account.");
+  });
+
+  it("re-inviting an invited, never-signed-in row is a 200 (fresh clock); anything else stays 409", async () => {
+    const { e } = install(direct, {});
+    const cookie = await owner();
+    const email = uniq("again", "gmail.com");
+    expect((await invite(e, cookie, email)).status).toBe(201);
+    await env.DB.prepare("update users set invited_at = 1 where email = ?")
+      .bind(email)
+      .run();
+    const r = await invite(e, cookie, email);
+    expect(r.status).toBe(200);
+    const row = await env.DB.prepare(
+      "select invited_at a from users where email = ?",
+    )
+      .bind(email)
+      .first<{ a: number }>();
+    expect(row?.a).toBeGreaterThan(Date.now() - 60_000);
+    await env.DB.prepare("update users set last_seen_at = 5 where email = ?")
+      .bind(email)
+      .run();
+    expect((await invite(e, cookie, email)).status).toBe(409);
+  });
+
   it("Access-only (self-host default): unchanged, any address, no flag", async () => {
     const { e, sent } = install((o) => ({ ...env, ...o }) as Env);
     const email = uniq("acc", "anywhere.com");
