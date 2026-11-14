@@ -15,7 +15,7 @@ const item = {
   urgency: "waiting",
   waitingSince: "2026-11-14T00:00:00Z",
   artifact: { id: "a1", title: "Plan" },
-  actor: { kind: "agent", name: "builder" },
+  actor: { kind: "agent", name: "builder", me: false },
   text: "Which one?",
   href: "/a/a1",
   createdAt: "2026-11-14T00:00:00Z",
@@ -115,7 +115,8 @@ describe("notifications contract", () => {
       el.safeParse({
         ...item,
         kind: "machine",
-        actor: { kind: "agent", name: "b", agentId: "ag1" },
+        actor: { kind: "agent", name: "b", me: false },
+        agentKey: "ag1",
         machine: { id: "m1", name: "laptop" },
       }).success,
     ).toBe(true);
@@ -161,6 +162,10 @@ describe("notifications contract", () => {
     const actor = {
       kind: "agent",
       name: "b",
+      me: false,
+      for: "Leo",
+      linked: true,
+      product: "Claude Code",
       animal: { id: "fox", color: 2 },
     };
     expect(el.safeParse({ ...item, actor }).success).toBe(true);

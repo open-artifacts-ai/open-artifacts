@@ -119,13 +119,6 @@ export const UserRefSchema = z.object({
 });
 export type UserRef = z.infer<typeof UserRefSchema>;
 
-/** An agent's face: `color` is a presence palette index. */
-export const AgentAnimalSchema = z.object({
-  id: z.string(),
-  color: z.number().int().min(0),
-});
-export type AgentAnimal = z.infer<typeof AgentAnimalSchema>;
-
 /**
  * An agent that published. For a token (PAT) publish `name` is the token's
  * label, which only the token's owner (the version's createdBy) sees; every
@@ -146,7 +139,9 @@ export const AgentRefSchema = z.object({
   /** A linked agent only: its product (for example "Claude Code"), from the bus. */
   product: z.string().optional(),
   /** A linked agent only: its face. `color` is a presence palette index. */
-  animal: AgentAnimalSchema.optional(),
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
 });
 export type AgentRef = z.infer<typeof AgentRefSchema>;
 

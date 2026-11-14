@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentAnimalSchema } from "./schemas.js";
+import { CommentAuthorSchema } from "./comments.js";
 
 /** A same-origin path: starts with one "/", never "//" or a scheme. */
 const SameOriginPath = z
@@ -47,15 +47,9 @@ export const InboxItemSchema = z
     waitingSince: Iso.optional(),
     /** Null only for kind "machine" and "away"; every other kind has its page. */
     artifact: z.object({ id: z.string(), title: z.string() }).nullable(),
-    actor: z
-      .object({
-        kind: z.enum(["person", "agent"]),
-        name: z.string(),
-        agentId: z.string().optional(),
-        /** Set only for a bus-linked agent, as on versions. */
-        animal: AgentAnimalSchema.optional(),
-      })
-      .nullable(),
+    actor: CommentAuthorSchema.nullable(),
+    /** The agent's roster key, used by Mute agent. */
+    agentKey: z.string().optional(),
     machine: z.object({ id: z.string(), name: z.string() }).optional(),
     away: z
       .object({
