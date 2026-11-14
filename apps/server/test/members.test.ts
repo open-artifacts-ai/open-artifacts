@@ -122,6 +122,16 @@ describe("members API", () => {
       id: m.id,
       role: "member",
     });
+    // The re-invite is audited like a first invite (role of the row).
+    expect(
+      (
+        await env.DB.prepare(
+          "select count(*) n, min(detail) d from audit_events where action = 'invite.create' and target_id = ?",
+        )
+          .bind(m.id)
+          .first<{ n: number; d: string }>()
+      )?.n,
+    ).toBe(2);
     await env.DB.prepare("update users set last_seen_at = 1 where id = ?")
       .bind(m.id)
       .run();

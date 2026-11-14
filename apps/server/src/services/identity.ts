@@ -10,7 +10,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { revokeUserLive } from "../runtime/revoke.js";
-import { audit, signInAudit, userActor } from "./audit.js";
+import { audit, inviteAcceptAudit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
 import { googleLinkStmts, toMember } from "./users.js";
 
@@ -73,7 +73,9 @@ async function touch(
   // An active row only: a user who stopped being active mid-sign-in matches
   // no row, gets no auth.signin row, and is refused (null). The admission
   // and its audit row commit together.
-  const [res] = await env.DB.batch<UserRow>([
+  const [, res] = await env.DB.batch<UserRow>([
+    // Before the update below, which sets last_seen_at (invite.accept reads it).
+    inviteAcceptAudit(env, row.id),
     stmt(
       env.DB,
       `update users set last_seen_at = ?1, name = coalesce(?2, name),
@@ -197,8 +199,12 @@ export async function admit(
   if (!existing && !googleNewRowOk(cfg, isOwner))
     return { ok: false, reason: "no_access" };
 
-  const results = await env.DB.batch<UserRow & { subject: string | null }>(
-    googleLinkStmts(env, {
+  // An invited row (never seen) accepts its invite here: the audit statement
+  // goes first, while last_seen_at is still null (the link sets it).
+  const lead = existing ? [inviteAcceptAudit(env, existing.id)] : [];
+  const results = await env.DB.batch<UserRow & { subject: string | null }>([
+    ...lead,
+    ...googleLinkStmts(env, {
       email,
       name: id.name,
       role: isOwner ? "owner" : "member",
@@ -206,8 +212,8 @@ export async function admit(
       tenant: id.tenant ?? "",
       now,
     }),
-  );
-  const row = results[2]?.results[0];
+  ]);
+  const row = results[2 + lead.length]?.results[0];
   if (!row) return { ok: false, reason: "no_access" };
   if (row.status !== "active") return { ok: false, reason: "removed" };
   if (row.subject !== id.subject)

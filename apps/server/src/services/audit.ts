@@ -10,6 +10,7 @@ import {
   isId,
   newId,
   type Page,
+  stripNameControls,
 } from "@oa/shared";
 import { sql } from "drizzle-orm";
 import { type Cred, currentCred } from "../auth/cred.js";
@@ -55,6 +56,17 @@ export const withRequestCred = (actor: AuditActor): AuditActor => ({
   ...actor,
   cred: credOf(actor),
 });
+
+/** Longest free-text value (a token label, an agent's name) an audit row keeps. */
+export const AUDIT_TEXT_MAX = 80;
+
+/**
+ * Free text for a row's detail: control, bidi and zero-width characters
+ * stripped (the shared name stripper), trimmed, at most AUDIT_TEXT_MAX
+ * characters.
+ */
+export const auditText = (s: string): string =>
+  [...stripNameControls(s).trim()].slice(0, AUDIT_TEXT_MAX).join("");
 
 export type AuditExtra = {
   spaceId?: string | null;
@@ -158,6 +170,76 @@ export const signInAuditByEmail = (env: Env, email: string, provider: string) =>
         from users u where u.email = ${email}`,
     );
 
+/**
+ * What marks an invited row: its invite.create audit row (target = the user's
+ * id). Rows from the first owner, a domain auto-join or directory sync have
+ * none, so their first sign-in is not an acceptance. Invites sent before
+ * invite.create existed have no marker either and record no acceptance.
+ */
+const INVITED =
+  "exists (select 1 from audit_events where action = 'invite.create' and target_id = ?)";
+
+/**
+ * invite.accept: the first sign-in of a person an owner or admin invited.
+ * Invited rows are created without a last-seen time, so this statement goes
+ * BEFORE the batch's last-seen update and writes only while that is still
+ * null on an active row. Ids and the role only, never the address; the invite
+ * is the user row it created, so its id is the user's.
+ */
+export const inviteAcceptAudit = (
+  env: Env,
+  userId: string,
+): D1PreparedStatement =>
+  audit(
+    env,
+    "invite.accept",
+    { type: "invite", id: userId },
+    { ...userActor(userId), cred: null },
+    {
+      detail: { userId },
+      detailSql: {
+        sql: "json_object('role', (select role from users where id = ?))",
+        args: [userId],
+      },
+      when: {
+        sql: `exists (select 1 from users where id = ? and status = 'active' and last_seen_at is null)
+          and ${INVITED}`,
+        args: [userId, userId],
+      },
+    },
+  );
+
+/** inviteAcceptAudit as a drizzle insert, for the Access path's drizzle batch. */
+export const inviteAcceptAuditDrizzle = (env: Env, userId: string) =>
+  getDb(env)
+    .insert(auditEvents)
+    .select(
+      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'invite.accept', 'invite', u.id, null,
+          json_object('userId', u.id, 'role', u.role), null, null
+        from users u where u.id = ${userId} and u.status = 'active' and u.last_seen_at is null
+          and exists (select 1 from audit_events where action = 'invite.create' and target_id = u.id)`,
+    );
+
+/**
+ * invite.create, keyed by the (normalized) address, in the batch of the
+ * insert that made the row: only while that insert changed a row. Ids and the
+ * role only. A drizzle insert, in the table's column order (as signInAuditByEmail).
+ */
+export const inviteCreateAuditByEmail = (
+  env: Env,
+  email: string,
+  inviterId: string,
+  role: string,
+) => {
+  const cred = currentCred();
+  return getDb(env)
+    .insert(auditEvents)
+    .select(
+      sql`select ${newId()}, ${Date.now()}, 'user', ${inviterId}, 'invite.create', 'invite', u.id, null, ${JSON.stringify({ role })}, ${cred?.kind ?? null}, ${cred?.id ?? null}
+        from users u where u.email = ${email} and changes() > 0`,
+    );
+};
+
 // ------------------------------------------------------------------- read
 
 type Row = {
@@ -184,6 +266,11 @@ const TARGETS = new Set([
   "mapping",
   "group",
   "directory",
+  "token",
+  "agent_grant",
+  "invite",
+  "settings",
+  "audit",
 ]);
 
 /**
@@ -194,7 +281,9 @@ const TARGETS = new Set([
 const KINDS = "e.actor_kind in ('user', 'sync', 'system')";
 /** Keyset bound: rows after (`<`) or from (`<=`) the key (?2, ?3). */
 const bound = (op: "<" | "<=" | null) =>
-  op ? ` and (e.at < ?2 or (e.at = ?2 and e.id ${op} ?3))` : "";
+  (op ? ` and (e.at < ?2 or (e.at = ?2 and e.id ${op} ?3))` : "") +
+  // The plan's window (?5): rows older than it are never reachable.
+  " and e.at >= ?5";
 const PAGE_SQL = (
   op: "<" | "<=" | null,
 ) => `select e.id, e.at, e.actor_kind as actorKind,
@@ -385,14 +474,14 @@ export async function listAudit(
   cursor: string | undefined,
   limit: number,
   filters = auditFilters({}),
+  since = 0,
 ): Promise<Page<AuditEvent>> {
   const scope: CursorScope = { kind: "list", filters };
   const after = cursor ? await decodeCursor(env, cursor, scope) : null;
   const q = stmt(env.DB, PAGE_SQL(after ? "<" : null));
-  const { results } = await (after
-    ? q.bind(limit + 1, after.a, after.i)
-    : q.bind(limit + 1)
-  ).all<Row>();
+  const { results } = await q
+    .bind(limit + 1, after?.a ?? null, after?.i ?? null, null, since)
+    .all<Row>();
   const more = results.length > limit;
   const rows = more ? results.slice(0, limit) : results;
   const last = rows[rows.length - 1];
@@ -424,20 +513,35 @@ export async function exportAudit(
   env: Env,
   cursor: string | undefined,
   filters = auditFilters({}),
+  since = 0,
+  /** Who exports: recorded as audit.export before the first byte is read. */
+  by?: AuditActor,
 ): Promise<{ stream: ReadableStream<Uint8Array>; nextCursor: string | null }> {
   const scope: CursorScope = { kind: "export", filters };
   const after = cursor ? await decodeCursor(env, cursor, scope) : null;
   const n = EXPORT_CHUNK * EXPORT_PAGES;
   const keys = (limit: number, offset: number) => {
     const q = stmt(env.DB, KEYS_SQL(after ? "<" : null));
-    return after
-      ? q.bind(limit, after.a, after.i, offset)
-      : q.bind(limit, null, null, offset);
+    return q.bind(limit, after?.a ?? null, after?.i ?? null, offset, since);
   };
-  const [first, edge] = await env.DB.batch<Cursor>([
-    keys(1, 0),
-    keys(2, n - 1),
-  ]);
+  // audit.export: who, how many rows (counted in the insert itself, before
+  // this row exists), the filters (known filter names only; none carry
+  // anything but ids and dates). It leads the batch, so the export reads the
+  // log with its own record already the newest row. Reading is not recorded.
+  const recorded = by
+    ? [
+        audit(env, "audit.export", { type: "audit", id: "log" }, by, {
+          detail: { continued: after !== null, filters: JSON.parse(filters) },
+          detailSql: {
+            sql: `json_object('rows', (select count(*) from (select 1 from audit_events e where ${KINDS}${after ? " and (e.at < ? or (e.at = ? and e.id < ?))" : ""} and e.at >= ? limit ?)))`,
+            args: after ? [after.a, after.a, after.i, since, n] : [since, n],
+          },
+        }),
+      ]
+    : [];
+  const [first, edge] = (
+    await env.DB.batch<Cursor>([...recorded, keys(1, 0), keys(2, n - 1)])
+  ).slice(recorded.length);
   const top = first?.results[0];
   const end = edge?.results[0] ?? null;
   const nextCursor =
@@ -456,7 +560,7 @@ export async function exportAudit(
         return;
       }
       const { results } = await stmt(env.DB, PAGE_SQL(from.op))
-        .bind(EXPORT_CHUNK, from.k.a, from.k.i)
+        .bind(EXPORT_CHUNK, from.k.a, from.k.i, null, since)
         .all<Row>();
       let out = "";
       let reached = results.length < EXPORT_CHUNK;

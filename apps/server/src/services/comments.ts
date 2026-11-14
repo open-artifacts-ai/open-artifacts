@@ -65,6 +65,7 @@ import {
   indexAsk,
   indexDeleted,
   indexStatus,
+  indexTakenBack,
   indexWeighed,
   reconcileAsks,
 } from "./asks.js";
@@ -2042,6 +2043,7 @@ export async function takeBackAsk(
       "forbidden",
       "Only the person who asked can do this, in the web app",
     );
+  const before = await storedAsk(env, artifactId, threadId, commentId);
   const c = await call(() =>
     stub(env, artifactId).commentsTakeBack({
       threadId,
@@ -2050,6 +2052,17 @@ export async function takeBackAsk(
       rate: rateKeyOf(who),
     }),
   );
+  if (c.ask)
+    await indexTakenBack(
+      env,
+      artifactId,
+      threadId,
+      commentId,
+      c.ask.to,
+      c.author.ref,
+      deciderOf(before.ask, before.author),
+      c.ask.confirm === "passkey" || c.ask.options.some((o) => o.action),
+    );
   return commentView(env, c, viewer);
 }
 

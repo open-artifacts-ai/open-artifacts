@@ -45,7 +45,12 @@ import {
   MAX_CLOSE,
   revokeUserLive,
 } from "../runtime/revoke.js";
-import { type AuditActor, audit, userActor } from "./audit.js";
+import {
+  type AuditActor,
+  audit,
+  inviteCreateAuditByEmail,
+  userActor,
+} from "./audit.js";
 import { wipeUserBus } from "./bus.js";
 import { inviteReach } from "./reach.js";
 import {
@@ -296,18 +301,28 @@ export async function inviteMemberOutcome(
       details,
     );
   }
-  const [again] = await getDb(env)
-    .update(users)
-    .set({ invitedAt: Date.now() })
-    .where(
-      and(
-        eq(users.email, email),
-        eq(users.status, "active"),
-        isNull(users.lastSeenAt),
-        isNotNull(users.invitedAt),
-      ),
-    )
-    .returning();
+  // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
+  // invited_at and its own invite.create row (the existing role, as a first
+  // invite records it); the audit commits with the update, only when it hit.
+  const prior = await stmt(env.DB, "select role from users where email = ?1")
+    .bind(email)
+    .first<{ role: string }>();
+  const [updated] = await getDb(env).batch([
+    getDb(env)
+      .update(users)
+      .set({ invitedAt: Date.now() })
+      .where(
+        and(
+          eq(users.email, email),
+          eq(users.status, "active"),
+          isNull(users.lastSeenAt),
+          isNotNull(users.invitedAt),
+        ),
+      )
+      .returning(),
+    inviteCreateAuditByEmail(env, email, inviter.id, prior?.role ?? input.role),
+  ]);
+  const again = updated[0];
   // Hosted billing: the first invite on a free instance passes only if the
   // 30-day trial starts (signed POST /trial/start, idempotent). Billing
   // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
@@ -319,9 +334,12 @@ export async function inviteMemberOutcome(
       return existingConflict(env, email);
     await requireTrialStarted(env);
   }
-  const [row] = again
-    ? [again]
-    : await insertUser(env, {
+  // invite.create (ids and the role, never the address) commits with the
+  // row, and only when the insert made one.
+  let row = again;
+  if (!row) {
+    const [rows] = await getDb(env).batch([
+      insertUser(env, {
         email,
         name: "",
         role: input.role,
@@ -329,7 +347,11 @@ export async function inviteMemberOutcome(
         invitedAt: Date.now(),
       })
         .onConflictDoNothing({ target: users.email })
-        .returning();
+        .returning(),
+      inviteCreateAuditByEmail(env, email, inviter.id, input.role),
+    ]);
+    row = rows[0];
+  }
   if (!row) return existingConflict(env, email);
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
@@ -1036,9 +1058,38 @@ export async function patchSettings(
   patch: SettingsPatch,
   opts: { spaces?: boolean; by?: AuditActor } = {},
 ): Promise<Settings> {
-  const writes = (Object.keys(KEY) as (keyof typeof KEY)[])
-    .filter((k) => patch[k] !== undefined)
-    .map((k) => stmt(env.DB, UPSERT_SETTING).bind(KEY[k], String(patch[k])));
+  const keys = (Object.keys(KEY) as (keyof typeof KEY)[]).filter(
+    (k) => patch[k] !== undefined,
+  );
+  const writes: D1PreparedStatement[] = [];
+  // settings.change: the keys that change, with old and new values. Name and
+  // default visibility are plain instance settings, no secrets. Read before
+  // the batch; the row is written only when a value differs now.
+  if (keys.length) {
+    const before = toSettings(await getSettingsKv(env));
+    const changed = keys.filter((k) => before[k] !== patch[k]);
+    if (changed.length)
+      writes.push(
+        audit(
+          env,
+          "settings.change",
+          { type: "settings", id: "instance" },
+          opts.by ?? SYSTEM,
+          {
+            detail: {
+              changes: Object.fromEntries(
+                changed.map((k) => [k, { from: before[k], to: patch[k] }]),
+              ),
+            },
+          },
+        ),
+      );
+  }
+  writes.push(
+    ...keys.map((k) =>
+      stmt(env.DB, UPSERT_SETTING).bind(KEY[k], String(patch[k])),
+    ),
+  );
   const smm = patch.spaceManagerMappings;
   if (opts.spaces && smm !== undefined)
     writes.push(

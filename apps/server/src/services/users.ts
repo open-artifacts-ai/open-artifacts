@@ -17,7 +17,7 @@ import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { publicName, readsAsAgent } from "./agent-display.js";
-import { signInAuditByEmail } from "./audit.js";
+import { inviteAcceptAuditDrizzle, signInAuditByEmail } from "./audit.js";
 
 type UserRow = typeof users.$inferSelect;
 type NameFields = Pick<UserRow, "email" | "name" | "displayName">;
@@ -229,11 +229,23 @@ export async function upsertOnLogin(
     if (existing.status !== "active") return null;
     const set: Partial<UserRow> = { lastSeenAt: Date.now() };
     if (name !== null) set.name = name;
-    const [row] = await withAudit(
-      env,
-      db.update(users).set(set).where(eq(users.id, existing.id)).returning(),
-      auditQ,
-    );
+    const update = db
+      .update(users)
+      .set(set)
+      .where(eq(users.id, existing.id))
+      .returning();
+    // A never-seen row may be an invite: invite.accept goes first, while
+    // last_seen_at is still null (it writes only for an invited row).
+    if (existing.lastSeenAt === null) {
+      const [, res] = await db.batch([
+        inviteAcceptAuditDrizzle(env, existing.id),
+        update,
+        ...(auditQ ? [auditQ] : []),
+      ]);
+      const row = (res as UserRow[])[0];
+      return row ? toMember(row) : null;
+    }
+    const [row] = await withAudit(env, update, auditQ);
     return row ? toMember(row) : null;
   }
 
