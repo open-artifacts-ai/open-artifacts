@@ -42,11 +42,10 @@ import {
   useCommentsController,
 } from "./comments/useComments";
 import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
-import { DocEditor, STATUS_TEXT } from "./doc/DocEditor";
+import { DocEditor, type DocLabel, STATUS_TEXT } from "./doc/DocEditor";
 import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
 import { isFresh } from "./doc/fresh";
 import {
-  type DocStatus,
   showsNote as docShowsNote,
   versionNote as docVersionNote,
   type VersionEvent,
@@ -416,7 +415,7 @@ function Viewer({
   const can = useCan(artifact);
   // #1100: a collaborative doc is edited in place of the frame.
   const isDoc = isDocArtifact(artifact);
-  const [docStatus, setDocStatus] = useState<DocStatus | null>(null);
+  const [docStatus, setDocStatus] = useState<DocLabel | null>(null);
   const renameDoc = usePatchArtifact(artifact.id);
   // The room broadcasts saved and restored versions: refresh the version
   // list and say so in the title bar for a few seconds (no polling).

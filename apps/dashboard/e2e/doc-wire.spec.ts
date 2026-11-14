@@ -71,6 +71,11 @@ test("hello read/access: a viewer reads only, no toolbar, no banner", async ({
   await expect(prose(page)).toHaveAttribute("contenteditable", "false");
   await expect(page.getByRole("toolbar")).toHaveCount(0);
   await expect(page.getByText(/editing opens/)).toHaveCount(0);
+  // Product: a quiet "View only" where Saved sits, no banner.
+  await expect(
+    page.getByRole("status").filter({ hasText: /^View only$/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("hello edit: stays editable", async ({ page }, info) => {
@@ -84,14 +89,18 @@ test("hello read/room_full: reads only, says why, Try again reconnects", async (
 }, info) => {
   await open(page, info, ["--hello", "read:room_full"]);
   await expect(
-    page.getByText("You can read; editing opens when someone leaves."),
+    page.getByText(
+      "This doc is full right now. You can read it, and editing opens when someone leaves.",
+    ),
   ).toBeVisible();
   await expect(prose(page)).toHaveAttribute("contenteditable", "false");
   await expect(page.getByRole("toolbar")).toHaveCount(0);
   await page.getByRole("button", { name: "Try again" }).click();
   // Back in: the room greets again, still full.
   await expect(
-    page.getByText("You can read; editing opens when someone leaves."),
+    page.getByText(
+      "This doc is full right now. You can read it, and editing opens when someone leaves.",
+    ),
   ).toBeVisible();
 });
 

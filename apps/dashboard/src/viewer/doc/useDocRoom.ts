@@ -38,10 +38,11 @@ export function errorCopy(code: string | null): string | null {
 /** Spec: close 4403 access_removed. */
 export const ACCESS_REMOVED = "You no longer have access.";
 /** Spec: hello reason room_full. */
-export const ROOM_FULL = "You can read; editing opens when someone leaves.";
-/** PLACEHOLDER: the button beside ROOM_FULL (the spec says "offer to reconnect"). */
+export const ROOM_FULL =
+  "This doc is full right now. You can read it, and editing opens when someone leaves.";
+/** Product's copy: the button beside ROOM_FULL (reconnects). */
 export const ROOM_FULL_RETRY = "Try again";
-/** Product's copy: close 4404 not_found. */
+/** Product's copy: close 4404 not_found ("Trash" is the sidebar's label). */
 export const NOT_FOUND =
   "This doc was deleted. Its owner can restore it from Trash.";
 /** Product's copy: close 1007 bad_frame, the second time. */

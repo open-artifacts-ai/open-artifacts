@@ -24,11 +24,16 @@ import {
   type VersionEvent,
 } from "./useDocRoom";
 
-export const STATUS_TEXT: Record<DocStatus, string> = {
+/** The title bar's doc state: the room's, or "view" for a reader by access. */
+export type DocLabel = DocStatus | "view";
+
+export const STATUS_TEXT: Record<DocLabel, string> = {
   connecting: "Connecting…",
   saving: "Saving…",
   saved: "Saved",
   offline: "Offline",
+  // Product: a quiet label where Saved sits, no banner.
+  view: "View only",
 };
 
 export interface DocEditorProps {
@@ -41,7 +46,7 @@ export interface DocEditorProps {
   /** Signed-out or guest viewers never see agent details. */
   outsider: boolean;
   /** Reports the saved/saving text for the title bar; null on unmount. */
-  onStatus?: (status: DocStatus | null) => void;
+  onStatus?: (status: DocLabel | null) => void;
   /** A version was saved or restored (the room says so; no polling). */
   onVersion?: (e: VersionEvent) => void;
   /** The artifact's current version from the room's hello (#2490). */
@@ -69,16 +74,22 @@ export function DocEditor(props: DocEditorProps) {
     [room, onVersion],
   );
   const { onCurrentVersion } = props;
-  const { version, role } = snap;
+  const { version, role, reason } = snap;
   useEffect(() => {
     if (version !== null) onCurrentVersion?.(version);
   }, [onCurrentVersion, version]);
-  // The state belongs to editing: a read-only viewer (by the page, or by the
-  // room's hello) has nothing to save.
-  const saves = props.canEdit && role !== "read";
+  // The state belongs to editing: a reader by access (the page says so, or
+  // the room's hello) sees "View only"; a full room's reader has its notice.
+  const label: DocLabel | null = !props.canEdit
+    ? "view"
+    : role === "read"
+      ? reason === "room_full"
+        ? null
+        : "view"
+      : status;
   useEffect(() => {
-    onStatus?.(room && saves ? status : null);
-  }, [onStatus, room, status, saves]);
+    onStatus?.(room ? label : null);
+  }, [onStatus, room, label]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
   if (!room) return <div className="oa-doc" aria-busy="true" />;
   return <Loaded {...props} room={room} snap={snap} />;

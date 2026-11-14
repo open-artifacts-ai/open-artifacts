@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { Toaster, toast } from "../src/layout/toast";
 import { CaretActivity, FLAG_MS, renderCaret } from "../src/viewer/doc/cursors";
-import { DocEditor } from "../src/viewer/doc/DocEditor";
+import { DocEditor, STATUS_TEXT } from "../src/viewer/doc/DocEditor";
 import { isDocArtifact, setMockDoc } from "../src/viewer/doc/docMock";
 import {
   contentExtensions,
@@ -977,6 +977,42 @@ describe("DocEditor", () => {
       expect(screen.queryByText(/editing opens/)).toBeNull();
     });
 
+    it("a reader by access is labelled View only where Saved sits; a full room's reader is not", async () => {
+      const p = fakeProviders();
+      const seen: (string | null)[] = [];
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          onStatus={(s) => seen.push(s)}
+        />,
+      );
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      act(() => f.connect());
+      await screen.findByRole("toolbar");
+      expect(seen.at(-1)).toBe("saved");
+      act(() => f.frame(hello("read", { reason: "access" })));
+      expect(seen.at(-1)).toBe("view");
+      expect(STATUS_TEXT.view).toBe("View only");
+      act(() => f.frame(hello("read", { reason: "room_full" })));
+      expect(seen.at(-1)).toBeNull();
+    });
+
+    it("a page-side viewer (cannot edit) is View only too", async () => {
+      const p = fakeProviders();
+      const seen: (string | null)[] = [];
+      render(
+        <DocEditor
+          {...base}
+          canEdit={false}
+          makeProvider={p.make}
+          onStatus={(s) => seen.push(s)}
+        />,
+      );
+      await waitFor(() => expect(seen.at(-1)).toBe("view"));
+    });
+
     it("an edit hello leaves it editable", async () => {
       const { f } = await open();
       act(() => f.frame(hello("edit")));
@@ -988,7 +1024,7 @@ describe("DocEditor", () => {
       act(() => f.frame(hello("read", { reason: "room_full" })));
       expect(
         await screen.findByText(
-          "You can read; editing opens when someone leaves.",
+          "This doc is full right now. You can read it, and editing opens when someone leaves.",
         ),
       ).toBeVisible();
       readOnly();
