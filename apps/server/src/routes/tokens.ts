@@ -15,6 +15,7 @@ import { tokens } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
+import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "../services/audit.js";
 import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { sha256Hex } from "../util/crypto.js";
@@ -154,6 +155,9 @@ export function mountTokens(app: AppType): void {
     ]);
     if (!res || res.meta.changes === 0)
       throw new ApiError("not_found", "Not found");
+    // A PAT can open sockets as its user, so a revoke closes them (the
+    // revocation lint's "user" guard); the person's session reconnects.
+    await revokeUserLive(c.env, user.id, "token_revoked", c.executionCtx);
     // #1403: the pending bus role proposals this PAT made lapse with it.
     await expireBusRoleProposalsOf(c.env, user.id, {
       kind: "token",
