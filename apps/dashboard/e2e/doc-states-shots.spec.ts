@@ -47,6 +47,7 @@ const STATES: [string, string[], (page: Page) => Promise<void>][] = [
         page.getByRole("button", { name: "Try again" }),
       ).toBeVisible();
       await expect(page.getByRole("toolbar")).toHaveCount(0);
+      await expect(status(page, /^View only$/)).toBeVisible();
     },
   ],
   [
@@ -56,6 +57,7 @@ const STATES: [string, string[], (page: Page) => Promise<void>][] = [
       await expect(page.getByRole("alert")).toHaveText(
         "This doc was deleted. Its owner can restore it from Trash.",
       );
+      await expect(page.locator(".oa-docstate")).toHaveCount(0);
       await expect(page.getByRole("toolbar")).toHaveCount(0);
     },
   ],

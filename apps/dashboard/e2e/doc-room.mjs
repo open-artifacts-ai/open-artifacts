@@ -66,6 +66,11 @@ export function startDocRoom({
   const awareness = new awarenessProtocol.Awareness(ydoc);
   awareness.setLocalState(null);
   const conns = new Map(); // ws -> Set of awareness client ids it controls
+  // "doc changed" per change a client's update made (a test can tell whether
+  // a click sent anything).
+  ydoc.on("update", (_u, origin) => {
+    if (conns.has(origin)) console.log(`doc changed ${Date.now()}`);
+  });
   const send = (ws, bytes) => {
     if (ws.readyState === 1) ws.send(bytes);
   };

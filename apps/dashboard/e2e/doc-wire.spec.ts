@@ -317,3 +317,97 @@ test.describe("phone", () => {
       });
   });
 });
+
+// Design (#1100): a checklist box cannot be ticked by a reader or after the
+// doc is gone. The click must not change the box, and must not send anything
+// the room applies (its "doc changed" lines, counted after the page settled).
+for (const [name, args, ready] of [
+  [
+    "View only",
+    ["--hello", "read:access"],
+    (page: Page) =>
+      expect(
+        page.getByRole("status").filter({ hasText: /^View only$/ }),
+      ).toBeVisible(),
+  ],
+  [
+    "a full room",
+    ["--hello", "read:room_full"],
+    (page: Page) =>
+      expect(page.getByRole("button", { name: "Try again" })).toBeVisible(),
+  ],
+  [
+    "a deleted doc",
+    ["--close", "4404"],
+    (page: Page) =>
+      expect(page.getByRole("alert")).toHaveText(
+        "This doc was deleted. Its owner can restore it from Trash.",
+      ),
+  ],
+] as const)
+  test(`a checklist box cannot be ticked in ${name}`, async ({
+    page,
+  }, info) => {
+    await open(page, info, [...args]);
+    await ready(page);
+    await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+    const box = prose(page).getByRole("checkbox").nth(1);
+    await expect(box).not.toBeChecked();
+    // Settled: no change has reached the room for 500 ms.
+    const changes = () =>
+      log().filter((l) => l.startsWith("doc changed ")).length;
+    let last = -1;
+    await expect
+      .poll(
+        async () => {
+          const n = changes();
+          const same = n === last;
+          last = n;
+          return same;
+        },
+        { intervals: [500] },
+      )
+      .toBe(true);
+    const before = changes();
+    await box.click();
+    await page.waitForTimeout(500);
+    await expect(box).not.toBeChecked();
+    expect(changes()).toBe(before);
+  });
+
+test("control: an editor's tick checks the box and reaches the room", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--hello", "edit"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  const box = prose(page).getByRole("checkbox").nth(1);
+  await expect(box).not.toBeChecked();
+  const changes = () =>
+    log().filter((l) => l.startsWith("doc changed ")).length;
+  const before = changes();
+  await box.click();
+  await expect(box).toBeChecked();
+  await expect.poll(changes).toBeGreaterThan(before);
+});
+
+test("a deleted doc shows no status where Saved sits", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--close", "4404"]);
+  await expect(page.getByRole("alert")).toHaveText(
+    "This doc was deleted. Its owner can restore it from Trash.",
+  );
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+});
+
+test("a full room shows View only where Saved sits, and its banner", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--hello", "read:room_full"]);
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: /^View only$/ }),
+  ).toBeVisible();
+});

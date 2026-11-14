@@ -74,19 +74,19 @@ export function DocEditor(props: DocEditorProps) {
     [room, onVersion],
   );
   const { onCurrentVersion } = props;
-  const { version, role, reason } = snap;
+  const { version, role, ended } = snap;
   useEffect(() => {
     if (version !== null) onCurrentVersion?.(version);
   }, [onCurrentVersion, version]);
-  // The state belongs to editing: a reader by access (the page says so, or
-  // the room's hello) sees "View only"; a full room's reader has its notice.
-  const label: DocLabel | null = !props.canEdit
-    ? "view"
-    : role === "read"
-      ? reason === "room_full"
-        ? null
-        : "view"
-      : status;
+  // The state belongs to editing. Design: a deleted doc shows none (its
+  // notice says it all); any reader (the page says so, or the room's hello,
+  // by access or because the room is full) sees "View only".
+  const label: DocLabel | null =
+    ended === "not_found"
+      ? null
+      : !props.canEdit || role === "read"
+        ? "view"
+        : status;
   useEffect(() => {
     onStatus?.(room ? label : null);
   }, [onStatus, room, label]);

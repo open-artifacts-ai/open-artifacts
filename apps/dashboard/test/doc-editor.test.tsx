@@ -33,7 +33,9 @@ import {
   shortcutText,
   Toolbar,
 } from "../src/viewer/doc/Toolbar";
-import { fakeProviders } from "./doc-fake-provider";
+import { type FakeProvider, fakeProviders } from "./doc-fake-provider";
+
+type FakeLike = Pick<FakeProvider, "frame" | "close">;
 
 // Radix's tooltip measures its arrow; jsdom has no ResizeObserver.
 globalThis.ResizeObserver ??= class {
@@ -968,6 +970,100 @@ describe("DocEditor", () => {
       return { p, f };
     };
 
+    // A checklist from the server (as if another person wrote it).
+    const seedTasks = (f: { doc: Y.Doc }, origin: unknown) => {
+      const item = (text: string, checked: boolean) => {
+        const p = new Y.XmlElement("paragraph");
+        p.insert(0, [new Y.XmlText(text)]);
+        const li = new Y.XmlElement("taskItem");
+        li.setAttribute("checked", checked as unknown as string);
+        li.insert(0, [p]);
+        return li;
+      };
+      f.doc.transact(() => {
+        const list = new Y.XmlElement("taskList");
+        list.insert(0, [item("Done", true), item("Open", false)]);
+        f.doc.getXmlFragment("default").insert(0, [list]);
+      }, origin);
+    };
+    const checks = () =>
+      [
+        ...document.querySelectorAll<HTMLInputElement>(
+          '.ProseMirror input[type="checkbox"]',
+        ),
+      ].map((c) => c.checked);
+    const attrs = (f: { doc: Y.Doc }) =>
+      f.doc
+        .getXmlFragment("default")
+        .toArray()
+        .flatMap((l) => (l as Y.XmlElement).toArray())
+        .map((li) => (li as Y.XmlElement).getAttribute("checked"));
+
+    it("an editor can tick a checklist box (the control for the tests below)", async () => {
+      const { f } = await open();
+      act(() => seedTasks(f, f));
+      await waitFor(() => expect(checks()).toEqual([true, false]));
+      const sent = f.sentUpdates.length;
+      const boxes = document.querySelectorAll<HTMLInputElement>(
+        '.ProseMirror input[type="checkbox"]',
+      );
+      fireEvent.click(boxes[1] as HTMLInputElement);
+      await waitFor(() => expect(attrs(f)).toEqual([true, true]));
+      await waitFor(() => expect(f.sentUpdates.length).toBeGreaterThan(sent));
+    });
+
+    for (const [name, enter] of [
+      [
+        "View only (read, access)",
+        (f: FakeLike) => f.frame(hello("read", { reason: "access" })),
+      ],
+      [
+        "a full room (read, room_full)",
+        (f: FakeLike) => f.frame(hello("read", { reason: "room_full" })),
+      ],
+      ["a deleted doc (4404)", (f: FakeLike) => f.close(4404)],
+    ] as const)
+      it(`a checklist box cannot be ticked in ${name}: no change, nothing sent`, async () => {
+        const { f } = await open();
+        act(() => seedTasks(f, f));
+        await waitFor(() => expect(checks()).toEqual([true, false]));
+        act(() => enter(f));
+        await waitFor(() => readOnly());
+        // Let anything already queued go out (the editor may normalize the
+        // seeded content, a send within the 75 ms batch) before counting.
+        await new Promise((r) => setTimeout(r, 200));
+        const sent = f.sentUpdates.length;
+        for (const box of document.querySelectorAll<HTMLInputElement>(
+          '.ProseMirror input[type="checkbox"]',
+        ))
+          fireEvent.click(box);
+        // Past the 75 ms send batch.
+        await new Promise((r) => setTimeout(r, 200));
+        expect(checks()).toEqual([true, false]);
+        expect(attrs(f)).toEqual([true, false]);
+        expect(f.sentUpdates.length).toBe(sent);
+      });
+
+    it("a deleted doc shows no status where Saved sits", async () => {
+      const p = fakeProviders();
+      const seen: (string | null)[] = [];
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          onStatus={(s) => seen.push(s)}
+        />,
+      );
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      act(() => f.connect());
+      await screen.findByRole("toolbar");
+      expect(seen.at(-1)).toBe("saved");
+      act(() => f.close(4404));
+      await screen.findByRole("alert");
+      expect(seen.at(-1)).toBeNull();
+    });
+
     it("a viewer's hello (read, access) makes it read-only with no toolbar and no banner", async () => {
       const { f } = await open();
       act(() => f.frame(hello("read", { reason: "access" })));
@@ -977,7 +1073,7 @@ describe("DocEditor", () => {
       expect(screen.queryByText(/editing opens/)).toBeNull();
     });
 
-    it("a reader by access is labelled View only where Saved sits; a full room's reader is not", async () => {
+    it("a reader, by access or in a full room, is labelled View only where Saved sits", async () => {
       const p = fakeProviders();
       const seen: (string | null)[] = [];
       render(
@@ -996,7 +1092,7 @@ describe("DocEditor", () => {
       expect(seen.at(-1)).toBe("view");
       expect(STATUS_TEXT.view).toBe("View only");
       act(() => f.frame(hello("read", { reason: "room_full" })));
-      expect(seen.at(-1)).toBeNull();
+      expect(seen.at(-1)).toBe("view");
     });
 
     it("a page-side viewer (cannot edit) is View only too", async () => {
