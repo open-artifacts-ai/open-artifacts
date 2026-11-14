@@ -198,7 +198,7 @@ async function apiFetch(
         ),
       );
       // #2479: an agent connected (first time on the instance; a no-op unless analytics is on).
-      ctx.waitUntil(noteInstanceFirst(env, "agent_connected"));
+      await noteInstanceFirst(env, "agent_connected", ctx);
     }
     return res;
   }

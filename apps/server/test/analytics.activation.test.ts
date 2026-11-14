@@ -27,6 +27,12 @@ const on = (over: Partial<Env> = {}) =>
   }) as Env;
 
 const fetchSpy = vi.fn();
+let held: Promise<unknown>[] = [];
+const ctx = { waitUntil: (p: Promise<unknown>) => void held.push(p) };
+const flush = async () => {
+  await Promise.all(held);
+  held = [];
+};
 const clear = () =>
   env.DB.prepare(
     "delete from settings where key like 'analytics:%' or key = 'onboarding:welcome'",
@@ -35,6 +41,7 @@ const bodies = () =>
   fetchSpy.mock.calls.map((c) => JSON.parse(c[1].body as string));
 
 beforeEach(async () => {
+  held = [];
   fetchSpy.mockReset();
   fetchSpy.mockResolvedValue(new Response("{}", { status: 200 }));
   vi.stubGlobal("fetch", fetchSpy);
@@ -90,10 +97,12 @@ describe("activation events", () => {
   });
 
   it("an instance first fires once, not on repeats", async () => {
-    await noteInstanceFirst(on(), "agent_connected");
-    await noteInstanceFirst(on(), "agent_connected");
+    await noteInstanceFirst(on(), "agent_connected", ctx);
+    await flush();
+    await noteInstanceFirst(on(), "agent_connected", ctx);
     resetAnalyticsMemo();
-    await noteInstanceFirst(on(), "agent_connected");
+    await noteInstanceFirst(on(), "agent_connected", ctx);
+    await flush();
     expect(bodies().map((b) => b.event)).toEqual(["agent_connected"]);
     expect(
       await env.DB.prepare("select 1 as x from settings where key = ?1")
@@ -114,7 +123,11 @@ describe("activation events", () => {
         u,
         { title, format: "html", content: "<p>x</p>", visibility: "private" },
         null,
-      );
+        ctx,
+      ).then(async (r) => {
+        await flush();
+        return r;
+      });
     // The Welcome seed is being written (claimed, id not yet recorded).
     await env.DB.prepare(
       "insert into settings (key, value) values ('onboarding:welcome', ?1)",
@@ -148,8 +161,9 @@ describe("activation events", () => {
     await expect(sendActivation(on(), "agent_named")).resolves.toBeUndefined();
     fetchSpy.mockRejectedValueOnce(new Error("boom"));
     await expect(
-      noteInstanceFirst(on(), "first_page_published"),
+      noteInstanceFirst(on(), "first_page_published", ctx),
     ).resolves.toBeUndefined();
+    await flush();
   });
 
   it("with a ctx the send runs after the response", async () => {
@@ -160,5 +174,31 @@ describe("activation events", () => {
     expect(held).toHaveLength(1);
     await Promise.all(held);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("a send that never answers never delays the caller", async () => {
+    fetchSpy.mockReturnValue(new Promise(() => {}));
+    const owner = await login(`an-slow-${tag}@x.com`, "owner");
+    await connectedMachine(env.DB, owner.userId);
+    const u = await getUser(on(), owner.userId);
+    if (!u) throw new Error("no user");
+    const slow = new Promise((r) => setTimeout(() => r("slow"), 1500));
+    const done = async () => {
+      await activation(on(), "agent_named");
+      await noteInstanceFirst(on(), "agent_connected");
+      await publish(
+        on(),
+        u,
+        {
+          title: "Quick",
+          format: "html",
+          content: "<p>x</p>",
+          visibility: "private",
+        },
+        null,
+      );
+      return "done";
+    };
+    expect(await Promise.race([done(), slow])).toBe("done");
   });
 });

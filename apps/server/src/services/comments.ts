@@ -2392,7 +2392,7 @@ async function noteMentionActivity(
             c.mentions?.some((m) => own(m) && m.identity?.identityId === me),
         );
       if (asked && (await noteMentionReplied(env, who.id)))
-        await activation(env, "agent_replied_to_mention");
+        await activation(env, "agent_replied_to_mention", after?.ctx);
     })(),
   );
 }

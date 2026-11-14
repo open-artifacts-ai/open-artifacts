@@ -5671,7 +5671,7 @@ export class BusHub extends DurableObject<Env> {
         if (await noteAgentNamed(this.env, userId)) {
           this.#namedKnown = true;
           // #2479: the first time only; best effort, never fails the frame.
-          await activation(this.env, "agent_named");
+          await activation(this.env, "agent_named", this.ctx);
         } else if (await namedRecorded(this.env, userId))
           this.#namedKnown = true;
       })().catch(() => {}),

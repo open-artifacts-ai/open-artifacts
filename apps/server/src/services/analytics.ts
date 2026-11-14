@@ -16,7 +16,7 @@ import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import { SELF_TEST, WELCOME_KEY } from "./onboarding.js";
 
-const WELCOME_TITLE_SQL = `title = '${WELCOME_TITLE}'`;
+const WELCOME_TITLE_SQL = `title = ?4`;
 
 export type ActivationEvent =
   | "agent_connected"
@@ -92,8 +92,9 @@ export async function activation(
 ): Promise<void> {
   if (!analyticsOn(env)) return;
   const p = sendActivation(env, event);
+  // Never awaited: a slow PostHog must not delay the caller (sendActivation never rejects).
   if (ctx) ctx.waitUntil(p);
-  else await p;
+  else void p;
 }
 
 /**
@@ -116,6 +117,17 @@ export async function noteInstanceFirst(
   ctx?: Ctx,
 ): Promise<void> {
   if (!analyticsOn(env) || recorded.has(event)) return;
+  // The D1 claim and the send run after the response, never inline.
+  const p = claimFirst(env, event, ctx);
+  if (ctx) ctx.waitUntil(p);
+  else void p;
+}
+
+async function claimFirst(
+  env: Env,
+  event: "agent_connected" | "first_page_published",
+  ctx?: Ctx,
+): Promise<void> {
   try {
     // first_page_published counts the checklist's firstArtifact: not the
     // provisioner's self-test, not the seeded Welcome (by id once recorded; by
@@ -126,12 +138,12 @@ export async function noteInstanceFirst(
              and id <> coalesce((select json_extract(value, '$.artifactId') from settings where key = ?3), '')
              and not (${WELCOME_TITLE_SQL} and coalesce((select json_extract(value, '$.artifactId') from settings where key = ?3), '') = ''
                and exists (select 1 from settings where key = ?3)))`
-        : "where ?3 is not null";
+        : "where ?3 is not null and ?4 is not null";
     const r = await env.DB.prepare(
       `insert into settings (key, value) select ?1, ?2 ${gate}
        on conflict (key) do nothing`,
     )
-      .bind(firstKey(event), String(Date.now()), WELCOME_KEY)
+      .bind(firstKey(event), String(Date.now()), WELCOME_KEY, WELCOME_TITLE)
       .run();
     if (r.meta.changes === 0 && event === "first_page_published") return;
     recorded.add(event);

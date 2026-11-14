@@ -705,9 +705,7 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
     const first = await stmt(env.DB, FIRST_TOUCH).bind(m.id, now).run();
     if (first.meta.changes !== 1) return unauthorized();
     // #2479: a machine's first connect (no-op unless analytics is on).
-    c.executionCtx.waitUntil(
-      noteInstanceFirst(env, "agent_connected").catch(() => {}),
-    );
+    await noteInstanceFirst(env, "agent_connected", c.executionCtx);
   } else if (m.lastUsedAt <= now - LAST_USED_MS)
     c.executionCtx.waitUntil(
       stmt(env.DB, TOUCH_MACHINE)
