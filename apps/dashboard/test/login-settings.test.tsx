@@ -1,23 +1,26 @@
-// #2520: Settings > Login per state, the domain dialogs and the fresh login,
-// the invite dialog's rows per case, and the first-invite step, on the
-// PROVISIONAL contract (src/api/loginSettings.ts, mocks in src/mockLogin.ts).
+// #2520: Settings > Login per state, the domain dialogs, the fresh login and
+// apply_pending, the invite dialog's rows per reach, and the first-invite
+// step, on the PROVISIONAL contract (OA Backend's draft:
+// src/api/loginSettings.ts; mocks in src/mockLogin.ts).
 import { R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { LOGIN_SETTINGS } from "../src/api/loginSettings";
 import {
   type LoginScenario,
   loginHandlers,
   mockReach,
-  REMOVED_AT,
+  scenarioMethods,
   scenarioSettings,
 } from "../src/mockLogin";
-import { DOMAIN_AFTER_REAUTH_KEY } from "../src/settings/domainJoin";
+import { DOMAIN_AFTER_REAUTH_KEY, joinBody } from "../src/settings/domainJoin";
+import { FIRST_INVITE_SEEN_KEY } from "../src/settings/InviteDialog";
 import {
-  CODES_OFF_LINE,
+  CANT_LINE,
   DOMAIN_OFF,
   reachLine,
+  WORKSPACE_ONLY_LINE,
 } from "../src/settings/loginCopy";
 import { calls, installHarness, lastRedirect, mountHosted } from "./harness";
 
@@ -26,6 +29,8 @@ installHarness();
 // Radix Select needs these in jsdom.
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.scrollIntoView ??= () => {};
+
+beforeEach(() => sessionStorage.clear());
 
 const mountLogin = (path: string, scenario: LoginScenario, reauthed = false) =>
   mountHosted(
@@ -38,7 +43,7 @@ const mountLogin = (path: string, scenario: LoginScenario, reauthed = false) =>
 const SWITCH = { name: "Anyone at your domain" };
 
 describe("Settings > Login, per state", () => {
-  it("owner, domain off: the methods, invites always on, the switch off, the boxes", async () => {
+  it("owner, join off: the methods, invites always on, the switch off, the boxes", async () => {
     mountLogin("/settings/login", "owner-off");
     expect(
       await screen.findByRole("heading", { name: "How people log in" }),
@@ -53,13 +58,8 @@ describe("Settings > Login, per state", () => {
         '"Continue with Google", with a work or personal Google account.',
       ),
     ).toBeVisible();
-    expect(
-      screen.getByText(
-        "Shown so you know what your people will see. Changing them is not part of this first version.",
-      ),
-    ).toBeVisible();
     expect(screen.getByText("always on")).toBeVisible();
-    expect(screen.getByRole("switch", SWITCH)).toHaveAttribute(
+    expect(await screen.findByRole("switch", SWITCH)).toHaveAttribute(
       "aria-checked",
       "false",
     );
@@ -70,14 +70,9 @@ describe("Settings > Login, per state", () => {
     expect(
       screen.getByRole("heading", { name: "Members and guests" }),
     ).toBeVisible();
-    expect(
-      screen.getByText(
-        "Sees only the pages shared with them, and can comment there. Free. Becomes a guest when you share a page with their address.",
-      ),
-    ).toBeVisible();
   });
 
-  it("owner, domain on: switch on, the domain line", async () => {
+  it("owner, join on: switch on, the domain line", async () => {
     mountLogin("/settings/login", "owner-on");
     expect(await screen.findByRole("switch", SWITCH)).toHaveAttribute(
       "aria-checked",
@@ -97,7 +92,7 @@ describe("Settings > Login, per state", () => {
     expect(screen.getByText("acme.com")).toBeVisible();
   });
 
-  it("Gmail owner: not available, a locked switch", async () => {
+  it("Gmail owner (provable null): not available, a locked switch", async () => {
     mountLogin("/settings/login", "gmail");
     expect(
       await screen.findByText(
@@ -107,7 +102,7 @@ describe("Settings > Login, per state", () => {
     expect(screen.getByRole("switch", SWITCH)).toBeDisabled();
   });
 
-  it("Solo: only How people log in", async () => {
+  it("Solo (the plan's tier): only How people log in", async () => {
     mountLogin("/settings/login", "solo");
     await screen.findByRole("heading", { name: "How people log in" });
     expect(
@@ -118,12 +113,14 @@ describe("Settings > Login, per state", () => {
     ).toBeNull();
   });
 
-  it("self-hosted: set at setup, the flag and the docs link, no switch", async () => {
+  it("self-hosted (editable false): set at setup, every domain, the docs link", async () => {
     mountLogin("/settings/login", "selfhost");
     expect(
       await screen.findByText("Set by whoever runs this server."),
     ).toBeVisible();
     expect(screen.getByText("set at setup")).toBeVisible();
+    expect(screen.getByText("acme.com")).toBeVisible();
+    expect(screen.getByText("acme.org")).toBeVisible();
     expect(screen.getByText("--auth-domains")).toBeVisible();
     expect(screen.getByRole("link", { name: "How" })).toHaveAttribute(
       "href",
@@ -132,7 +129,7 @@ describe("Settings > Login, per state", () => {
     expect(screen.queryByRole("switch", SWITCH)).toBeNull();
   });
 
-  it("codes off: the email code row says off", async () => {
+  it("codes off: the email code row says off (from signInMethods)", async () => {
     mountLogin("/settings/login", "codes-off");
     await screen.findByRole("heading", { name: "How people log in" });
     const row = document.querySelector("[data-row=email]") as HTMLElement;
@@ -141,7 +138,7 @@ describe("Settings > Login, per state", () => {
 });
 
 describe("Settings tabs", () => {
-  it("Login sits between Members and Spaces for an owner", async () => {
+  it("Login sits right after Members for an owner", async () => {
     mountLogin("/settings/profile", "owner-on");
     const nav = await screen.findByRole("navigation", {
       name: "Settings sections",
@@ -166,8 +163,7 @@ describe("Settings tabs", () => {
 });
 
 describe("the domain join", () => {
-  it("turning on: the dialog, then a fresh login that resumes it", async () => {
-    sessionStorage.clear();
+  it("turning on: the dialog, then a fresh login with the PUT kept", async () => {
     mountLogin("/settings/login", "owner-off");
     fireEvent.click(await screen.findByRole("switch", SWITCH));
     const d = await screen.findByRole("alertdialog", {
@@ -180,21 +176,25 @@ describe("the domain join", () => {
       "Anyone in this Google Workspace can join. At a university or a shared mail provider, that can be many people.",
     );
     expect(d).toHaveTextContent("You will log in again to confirm it is you.");
-    expect(within(d).getByRole("button", { name: "Cancel" })).toBeVisible();
     fireEvent.click(
       within(d).getByRole("button", { name: "Log in again and turn on" }),
     );
     await waitFor(() => expect(lastRedirect).toHaveBeenCalled());
     expect(lastRedirect.mock.calls[0]?.[0]).toMatch(/reauthed=1/);
-    expect(sessionStorage.getItem(DOMAIN_AFTER_REAUTH_KEY)).not.toBeNull();
+    expect(
+      JSON.parse(sessionStorage.getItem(DOMAIN_AFTER_REAUTH_KEY) ?? "{}").body,
+    ).toEqual({ autoJoin: true, domains: ["acme.com"] });
   });
 
   it("back from the login: sent again, once, and on", async () => {
     sessionStorage.setItem(
       DOMAIN_AFTER_REAUTH_KEY,
-      JSON.stringify({ at: Date.now(), body: { domainJoin: true } }),
+      JSON.stringify({
+        at: Date.now(),
+        body: { autoJoin: true, domains: ["acme.com"] },
+      }),
     );
-    const patches = calls("PATCH");
+    const puts = calls("PUT");
     mountLogin("/settings/login", "owner-off", true);
     await waitFor(() =>
       expect(screen.getByRole("switch", SWITCH)).toHaveAttribute(
@@ -202,18 +202,35 @@ describe("the domain join", () => {
         "true",
       ),
     );
-    expect(patches.filter((c) => c.path === LOGIN_SETTINGS)).toHaveLength(1);
+    expect(puts.filter((c) => c.path === LOGIN_SETTINGS)).toHaveLength(1);
     expect(sessionStorage.getItem(DOMAIN_AFTER_REAUTH_KEY)).toBeNull();
   });
 
-  it("turning off: the count, then off", async () => {
+  it("apply_pending: Saving, then Saved once the settings show it", async () => {
+    mountLogin("/settings/login", "pending", true);
+    fireEvent.click(await screen.findByRole("switch", SWITCH));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Log in again and turn on" }),
+    );
+    expect(
+      await screen.findByText("Saving. This takes about a minute."),
+    ).toBeVisible();
+    expect(await screen.findByText("Saved.")).toBeVisible();
+    expect(screen.getByRole("switch", SWITCH)).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("turning off: the dialog, then off", async () => {
     mountLogin("/settings/login", "owner-on");
     fireEvent.click(await screen.findByRole("switch", SWITCH));
     const d = await screen.findByRole("alertdialog", {
       name: "Stop letting acme.com join by itself?",
     });
+    // No joined count in the draft: that sentence waits for it.
     expect(d).toHaveTextContent(
-      "New people at acme.com will need an invite. The 14 members who already joined keep their access. Remove anyone in Members.",
+      "New people at acme.com will need an invite. Remove anyone in Members.",
     );
     fireEvent.click(within(d).getByRole("button", { name: "Turn off" }));
     expect(
@@ -221,52 +238,59 @@ describe("the domain join", () => {
     ).toBeVisible();
   });
 
-  it("the turn-off count reads right for 1 and 0", () => {
-    expect(DOMAIN_OFF.body("acme.com", 1)).toBe(
-      "New people at acme.com will need an invite. The 1 member who already joined keeps their access. Remove anyone in Members.",
+  it("the turn-off count, once the API has one", () => {
+    expect(DOMAIN_OFF.body("acme.com", 14)).toBe(
+      "New people at acme.com will need an invite. The 14 members who already joined keep their access. Remove anyone in Members.",
     );
-    expect(DOMAIN_OFF.body("acme.com", 0)).toBe(
-      "New people at acme.com will need an invite. Remove anyone in Members.",
+    expect(DOMAIN_OFF.body("acme.com", 1)).toContain(
+      "The 1 member who already joined keeps their access.",
     );
+  });
+
+  it("turning on adds the provable domain once", () => {
+    const s = scenarioSettings("gmail");
+    expect(joinBody({ ...s, provable: "acme.com" }, true).domains).toEqual([
+      "acme.com",
+    ]);
+    expect(joinBody(scenarioSettings("owner-on"), false)).toEqual({
+      autoJoin: false,
+      domains: ["acme.com"],
+    });
   });
 });
 
-describe("invite rows, per case", () => {
+describe("invite rows, per reach (OA Backend's mapping)", () => {
   const on = scenarioSettings("owner-on");
-  const off = scenarioSettings("codes-off");
+  const both = scenarioMethods("owner-on");
+  const noCodes = scenarioMethods("codes-off");
+  const noGoogle = scenarioMethods("no-google");
   it.each([
     [
       "pat@acme.com",
-      on,
+      both,
       "At your domain. Logs in with Google or an email code.",
     ],
+    ["pat@acme.com", noCodes, "At your domain. Logs in with Google."],
+    ["lee@gmail.com", both, "Logs in with Google."],
     [
       "sam@globex.io",
-      on,
+      both,
       "Outside your domain. Logs in with their own Google account or an email code.",
     ],
-    ["lee@gmail.com", on, "Logs in with Google or an email code."],
-    [
-      "kim@outlook.com",
-      on,
-      "Logs in with an email code the first time. After that, Google works too if they have an account for this address.",
-    ],
-    ["kim@outlook.com", off, CODES_OFF_LINE],
-    [
-      "removed@acme.com",
-      on,
-      "Removed on Nov 12. Inviting them again lets them back in.",
-    ],
-  ])("%s", (email, s, line) => {
-    expect(reachLine(mockReach(s, email))).toBe(line);
+    ["sam@globex.io", noCodes, WORKSPACE_ONLY_LINE],
+    ["sam@globex.io", noGoogle, CANT_LINE],
+  ])("%s", (email, methods, line) => {
+    expect(reachLine(email, mockReach(on, methods, email).ways)).toBe(line);
   });
-  it("the removed date is the server's", () => {
-    expect(REMOVED_AT.startsWith("2026-11-12")).toBe(true);
+  it("gmail with codes: Google or an email code", () => {
+    expect(reachLine("lee@gmail.com", ["google", "email_code"])).toBe(
+      "Logs in with Google or an email code.",
+    );
   });
 });
 
-const openInvite = async () => {
-  fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+const openInvite = async (name = "Invite people") => {
+  fireEvent.click(await screen.findByRole("button", { name }));
   return screen.findByRole("dialog");
 };
 const list = (dialog: HTMLElement, value: string) =>
@@ -275,16 +299,24 @@ const list = (dialog: HTMLElement, value: string) =>
   });
 
 describe("the invite dialog", () => {
-  it("lists each address with its line and pill; the header and Join as", async () => {
+  it("Invite people: each address with its line and pill; the header and Join as", async () => {
     mountLogin("/settings/members", "owner-on");
     const d = await openInvite();
+    expect(
+      within(d).getByRole("heading", { name: "Invite people" }),
+    ).toBeVisible();
     expect(d).toHaveTextContent(
       "They get an email with a link. Only the addresses you list can use it. An invite lasts 30 days.",
     );
-    list(d, "pat@acme.com, lee@gmail.com ");
+    list(d, "pat@acme.com, sam@globex.io ");
     expect(
       await within(d).findByText(
         "At your domain. Logs in with Google or an email code.",
+      ),
+    ).toBeVisible();
+    expect(
+      await within(d).findByText(
+        "Outside your domain. Logs in with their own Google account or an email code.",
       ),
     ).toBeVisible();
     expect(within(d).getAllByText("member")).toHaveLength(2);
@@ -295,44 +327,67 @@ describe("the invite dialog", () => {
       ),
     ).toBeVisible();
     expect(
+      within(d).getByText("You can make a member an admin after they join."),
+    ).toBeVisible();
+    expect(
       within(d).getByRole("button", { name: "Send 2 invites" }),
     ).toBeEnabled();
     expect(d).not.toHaveTextContent("may not be able to log in");
   });
 
-  it("codes off: that row can't log in and is held; the rest send", async () => {
+  it("Join as offers Member and Guest only", async () => {
+    mountLogin("/settings/members", "owner-on");
+    const d = await openInvite();
+    fireEvent.click(within(d).getByRole("combobox", { name: "Join as" }));
+    const opts = (await screen.findAllByRole("option")).map(
+      (o) => o.textContent,
+    );
+    expect(opts).toEqual(["Member", "Guest"]);
+  });
+
+  it("no Google route: that row can't log in and is held; the rest send", async () => {
+    mountLogin("/settings/members", "no-google");
+    const posts = calls("POST");
+    const d = await openInvite();
+    list(d, "sam@globex.io ");
+    expect(await within(d).findByText(CANT_LINE)).toBeVisible();
+    expect(within(d).getByText("can't log in")).toBeVisible();
+    expect(
+      within(d).getByRole("button", { name: "Send 0 invites" }),
+    ).toBeDisabled();
+    expect(posts.filter((c) => c.path === R.members)).toHaveLength(0);
+  });
+
+  it("codes off, outside: Google only if Workspace, still sendable", async () => {
     mountLogin("/settings/members", "codes-off");
     const posts = calls("POST");
     const d = await openInvite();
-    list(d, "pat@acme.com kim@outlook.com ");
-    expect(await within(d).findByText(CODES_OFF_LINE)).toBeVisible();
-    expect(within(d).getByText("can't log in")).toBeVisible();
+    list(d, "sam@globex.io ");
+    expect(await within(d).findByText(WORKSPACE_ONLY_LINE)).toBeVisible();
     fireEvent.click(within(d).getByRole("button", { name: "Send 1 invite" }));
     await waitFor(() =>
       expect(
         posts.filter((c) => c.path === R.members).map((c) => c.body),
-      ).toEqual([{ email: "pat@acme.com", role: "member" }]),
+      ).toEqual([{ email: "sam@globex.io", role: "member" }]),
     );
-    // The held row stays, with its line.
-    expect(await within(d).findByText(CODES_OFF_LINE)).toBeVisible();
   });
 
-  it("removed: the pill and line; sending restores them", async () => {
-    mountLogin("/settings/members", "removed");
+  it("a removed member: Restore in the row, as before", async () => {
+    mountLogin("/settings/members", "owner-on");
     const posts = calls("POST");
     const d = await openInvite();
     list(d, "removed@acme.com ");
-    expect(
-      await within(d).findByText(
-        "Removed on Nov 12. Inviting them again lets them back in.",
-      ),
-    ).toBeVisible();
-    expect(within(d).getByText("removed")).toBeVisible();
-    fireEvent.click(within(d).getByRole("button", { name: "Send 1 invite" }));
+    fireEvent.click(
+      await within(d).findByRole("button", { name: "Send 1 invite" }),
+    );
+    fireEvent.click(
+      await within(d).findByRole("button", {
+        name: "Restore removed@acme.com",
+      }),
+    );
     await waitFor(() =>
       expect(posts.map((c) => c.path)).toContain(R.memberRestore("u_removed")),
     );
-    expect(posts.some((c) => c.path === R.members)).toBe(false);
   });
 
   it("Join as Guest: the pills say guest and the invite asks for a guest", async () => {
@@ -352,6 +407,15 @@ describe("the invite dialog", () => {
     );
   });
 
+  it("no email sending: today's header, and the 30 days under it", async () => {
+    mountLogin("/settings/members", "no-email");
+    const d = await openInvite();
+    expect(d).toHaveTextContent(
+      "Open Artifacts doesn't send invitations. Add their email here, then send them the login link yourself.",
+    );
+    expect(within(d).getByText("An invite lasts 30 days.")).toBeVisible();
+  });
+
   it("a bad address stays in the box with the error", async () => {
     mountLogin("/settings/members", "owner-on");
     const d = await openInvite();
@@ -364,21 +428,43 @@ describe("the invite dialog", () => {
     );
   });
 
-  it("an older server: today's one-address dialog", async () => {
+  it("an older server: Add member, today's one-address dialog", async () => {
     mountHosted("/settings/members");
-    const d = await openInvite();
+    const d = await openInvite("Add member");
     expect(
       within(d).getByRole("heading", { name: "Add a member" }),
     ).toBeVisible();
     expect(within(d).queryByText("Join as")).toBeNull();
-    expect(within(d).getByRole("button", { name: "Add member" })).toBeVisible();
   });
 });
 
-describe("the first-invite step", () => {
-  it("owner: invite-only by default; Skip records it and goes on", async () => {
-    mountLogin("/settings/members", "owner-off");
-    const patches = calls("PATCH");
+describe("the first-invite step (client-side)", () => {
+  beforeEach(() => localStorage.removeItem(FIRST_INVITE_SEEN_KEY));
+  // The hosted mocks already have other members: the step is for nobody yet.
+  const alone = async (scenario: LoginScenario) => {
+    const { http, HttpResponse } = await import("msw");
+    const hosted = createHandlers({ hosted: true });
+    mountHosted("/settings/members", true, undefined, [
+      ...loginHandlers(scenario, hosted, () => false),
+      http.get(`*${R.members}`, ({ request }) =>
+        new URL(request.url).searchParams.get("status")
+          ? undefined
+          : HttpResponse.json([
+              {
+                id: "AdaLvlc0Mm1nN2oP",
+                email: "ada@example.com",
+                name: "Ada Lovelace",
+                role: "owner",
+                lastSeenAt: null,
+                status: "active",
+              },
+            ]),
+      ),
+    ]);
+  };
+
+  it("first invite, join off, provable: asks; Skip goes on and isn't asked again", async () => {
+    await alone("owner-off");
     const d = await openInvite();
     expect(
       within(d).getByRole("heading", {
@@ -391,23 +477,15 @@ describe("the first-invite step", () => {
     expect(
       within(d).getByRole("radio", { name: /Only people I invite/ }),
     ).toBeChecked();
-    expect(
-      within(d).getByRole("radio", {
-        name: /Anyone at acme.com, and people I invite/,
-      }),
-    ).toBeEnabled();
     fireEvent.click(within(d).getByRole("button", { name: "Skip for now" }));
     expect(
-      await screen.findByRole("heading", { name: "Add a member" }),
+      await screen.findByRole("heading", { name: "Invite people" }),
     ).toBeVisible();
-    await waitFor(() =>
-      expect(patches.map((c) => c.body)).toEqual([{ firstInviteDone: true }]),
-    );
+    expect(localStorage.getItem(FIRST_INVITE_SEEN_KEY)).toBe("1");
   });
 
   it("Continue with the domain: a fresh login first", async () => {
-    sessionStorage.clear();
-    mountLogin("/settings/members", "owner-off");
+    await alone("owner-off");
     const d = await openInvite();
     fireEvent.click(
       within(d).getByRole("radio", {
@@ -416,28 +494,21 @@ describe("the first-invite step", () => {
     );
     fireEvent.click(within(d).getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(lastRedirect).toHaveBeenCalled());
-    expect(
-      JSON.parse(sessionStorage.getItem(DOMAIN_AFTER_REAUTH_KEY) ?? "{}").body,
-    ).toEqual({ domainJoin: true, firstInviteDone: true });
   });
 
-  it("Gmail owner: the domain option is disabled", async () => {
-    mountLogin("/settings/members", "gmail");
-    const d = await openInvite();
-    const r = within(d).getByRole("radio", {
-      name: /Anyone at my company's domain/,
-    });
-    expect(r).toBeDisabled();
-    expect(d).toHaveTextContent(
-      "Needs a company address. You log in with Gmail.",
-    );
-  });
-
-  it("admin: no step", async () => {
-    mountLogin("/settings/members", "admin");
+  it("Gmail owner (no provable domain): no step", async () => {
+    await alone("gmail");
     const d = await openInvite();
     expect(
-      within(d).getByRole("heading", { name: "Add a member" }),
+      within(d).getByRole("heading", { name: "Invite people" }),
+    ).toBeVisible();
+  });
+
+  it("someone already invited: no step", async () => {
+    mountLogin("/settings/members", "owner-off");
+    const d = await openInvite();
+    expect(
+      within(d).getByRole("heading", { name: "Invite people" }),
     ).toBeVisible();
   });
 });

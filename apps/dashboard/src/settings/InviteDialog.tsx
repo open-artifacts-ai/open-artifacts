@@ -2,7 +2,12 @@
 // how it will log in (from the server, PROVISIONAL api/loginSettings.ts), and
 // an owner's first invite asks who should be able to join. Without the login
 // settings (an older server), Members keeps its one-address dialog.
-import type { Me, MemberInvite, MemberInviteResult } from "@oa/shared";
+import {
+  type Me,
+  type MemberInvite,
+  type MemberInviteResult,
+  MemberRemovedDetailsSchema,
+} from "@oa/shared";
 import {
   Button,
   Input,
@@ -12,18 +17,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@oa/ui/shadcn";
+import { useQueries } from "@tanstack/react-query";
 import { XIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
-import { InviteUnreachableDetailsSchema } from "../api/contract";
+import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
 import { billingContext, errorCopy } from "../api/errorCopy";
 import {
   type LoginSettings,
-  REACH_MAX,
-  type ReachRow,
-  useReach,
+  type LoginWay,
+  reachQuery,
 } from "../api/loginSettings";
-import { useInviteMember, useRestoreMember } from "../api/queries";
+import { useInviteMember, useMembers, useRestoreMember } from "../api/queries";
 import { trialEndsOn, trialWouldStart } from "../api/trial";
 import { emailEnabled } from "../auth/emailEnabled";
 import { inviteRefusedCopy, signInWith, useSignInDomains } from "../auth/reach";
@@ -34,9 +39,9 @@ import { Notice } from "../layout/Notice";
 import { PLAN_PAGE } from "../layout/PlanBanner";
 import { toast } from "../layout/toast";
 import { AppLink } from "../library/AppLink";
-import { useDomainJoin } from "./domainJoin";
+import { joinBody, useDomainJoin } from "./domainJoin";
 import { Pill } from "./Login";
-import { FIRST_INVITE, INVITE, reachLine } from "./loginCopy";
+import { FIRST_INVITE, INVITE, reachLine, SAVE } from "./loginCopy";
 import { errorText, muted } from "./ui";
 
 /**
@@ -158,11 +163,17 @@ const split = (raw: string, parse: (v: string) => string | null) => {
 };
 
 const BAD_ADDRESS = "Enter a valid email address (ASCII only).";
+/** At most this many addresses at once. */
+const LIST_MAX = 50;
+
+/** The first-invite step was answered on this browser (Skip or Continue). */
+export const FIRST_INVITE_SEEN_KEY = "oa.login.firstInviteSeen";
 
 /**
- * The invite dialog on a server with login settings: an owner's first invite
- * starts with who should be able to join (screen D), then the addresses
- * (screen C).
+ * The invite dialog on a server with login settings. The owner's first invite
+ * starts with who should be able to join (screen D, client-side for now:
+ * nobody invited yet, the join off, a provable domain, not answered here
+ * before), then the addresses (screen C).
  */
 export function InvitePeople({
   settings,
@@ -177,18 +188,30 @@ export function InvitePeople({
 }) {
   const me = useMeOrNull();
   const owner = me?.user.role === "owner" && me.auth?.cap == null;
-  const [step, setStep] = useState<"who" | "list">(() =>
-    owner && settings.firstInvite === "ask" && settings.scope !== "self_hosted"
-      ? "who"
-      : "list",
+  const members = useMembers();
+  const invitedAny = (members.data ?? []).some(
+    (m) => m.id !== me?.user.id && m.role !== "guest" && m.role !== "owner",
   );
-  if (step === "who")
+  const ask =
+    owner &&
+    settings.editable &&
+    !settings.autoJoin &&
+    settings.provable !== null &&
+    members.isSuccess &&
+    !invitedAny &&
+    localStorage.getItem(FIRST_INVITE_SEEN_KEY) === null;
+  const [answered, setAnswered] = useState(false);
+  if (ask && !answered && settings.provable)
     return (
       <FirstInviteStep
         settings={settings}
+        domain={settings.provable}
         instance={me?.instance.name ?? ""}
         onClose={onClose}
-        onNext={() => setStep("list")}
+        onNext={() => {
+          localStorage.setItem(FIRST_INVITE_SEEN_KEY, "1");
+          setAnswered(true);
+        }}
       />
     );
   return (
@@ -201,48 +224,33 @@ export function InvitePeople({
   );
 }
 
-/** Screen D: invite-only by default; the domain needs a company address. */
+/** Screen D: invite-only by default; the other option turns the join on. */
 export function FirstInviteStep({
   settings,
+  domain,
   instance,
   onClose,
   onNext,
 }: {
   settings: LoginSettings;
+  domain: string;
   instance: string;
   onClose: () => void;
   onNext: () => void;
 }) {
   const [pick, setPick] = useState<"only" | "domain">("only");
-  const [error, setError] = useState<string | null>(null);
-  const domain = settings.domain.unavailable ? null : settings.domain.name;
-  const join = useDomainJoin({ onDone: onNext, onError: setError });
+  const join = useDomainJoin({ onDone: onNext });
   const name = useId();
-  const go = (withDomain: boolean) => {
-    setError(null);
-    // Recording that it was seen never holds the invite up.
-    join.change(
-      withDomain
-        ? { domainJoin: true, firstInviteDone: true }
-        : { firstInviteDone: true },
-    );
-    if (!withDomain) onNext();
-  };
-  const option = (
-    value: "only" | "domain",
-    title: string,
-    line: string,
-    disabled = false,
-  ) => (
+  const option = (value: "only" | "domain", title: string, line: string) => (
     <label
-      className={`flex items-start gap-[var(--oa-space-3)] rounded-md border p-[var(--oa-space-3)] ${pick === value ? "border-primary" : "border-border"} ${disabled ? "opacity-60" : "cursor-pointer"}`}
+      className={`flex cursor-pointer items-start gap-[var(--oa-space-3)] rounded-md border p-[var(--oa-space-3)] ${pick === value ? "border-primary" : "border-border"}`}
     >
       <input
         type="radio"
         name={name}
         value={value}
         checked={pick === value}
-        disabled={disabled}
+        disabled={join.busy}
         onChange={() => setPick(value)}
         className="mt-[3px] accent-[var(--oa-accent)]"
       />
@@ -254,6 +262,12 @@ export function FirstInviteStep({
       </span>
     </label>
   );
+  const note =
+    join.state === "pending"
+      ? SAVE.pending
+      : join.state === "failed"
+        ? SAVE.failed
+        : null;
   return (
     <Modal
       onClose={join.busy ? () => {} : onClose}
@@ -261,14 +275,17 @@ export function FirstInviteStep({
       description={FIRST_INVITE.sub}
       footer={
         <>
-          <Button
-            variant="ghost"
-            disabled={join.busy}
-            onClick={() => go(false)}
-          >
+          <Button variant="ghost" disabled={join.busy} onClick={onNext}>
             {FIRST_INVITE.skip}
           </Button>
-          <Button disabled={join.busy} onClick={() => go(pick === "domain")}>
+          <Button
+            disabled={join.busy}
+            onClick={() =>
+              pick === "domain"
+                ? join.change(joinBody(settings, true))
+                : onNext()
+            }
+          >
             {FIRST_INVITE.next}
           </Button>
         </>
@@ -277,22 +294,14 @@ export function FirstInviteStep({
       <fieldset className="m-0 grid gap-[var(--oa-space-2)] border-0 p-0">
         <legend className="sr-only">{FIRST_INVITE.title(instance)}</legend>
         {option("only", FIRST_INVITE.only, FIRST_INVITE.onlyLine)}
-        {domain
-          ? option(
-              "domain",
-              FIRST_INVITE.domain(domain),
-              FIRST_INVITE.domainLine,
-            )
-          : option(
-              "domain",
-              FIRST_INVITE.noDomain,
-              FIRST_INVITE.noDomainLine,
-              true,
-            )}
+        {option("domain", FIRST_INVITE.domain(domain), FIRST_INVITE.domainLine)}
       </fieldset>
-      {error && (
-        <p role="alert" className={`m-0 ${errorText}`}>
-          {error}
+      {note && (
+        <p
+          role={join.state === "failed" ? "alert" : "status"}
+          className={`m-0 ${join.state === "failed" ? errorText : muted}`}
+        >
+          {note}
         </p>
       )}
     </Modal>
@@ -312,6 +321,7 @@ function InviteList({
   onClose: () => void;
 }) {
   const sends = emailEnabled(me);
+  const spaces = hasFeature(me, "spaces");
   const domains = useSignInDomains();
   const invite = useInviteMember();
   const restore = useRestoreMember();
@@ -324,69 +334,73 @@ function InviteList({
   const [bad, setBad] = useState(false);
   const [role, setRole] = useState<JoinAs>("member");
   const [failed, setFailed] = useState<Record<string, string>>({});
+  // A removed member's address (member_removed): Restore, as before (parity 1).
+  const [removed, setRemoved] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<Sent | null>(null);
   const sending = useRef(false);
-  const reach = useReach(list, true);
-  const rows = new Map<string, ReachRow>(
-    (reach.data ?? []).map((r) => [r.email, r]),
-  );
+  const reach = useQueries({ queries: list.map(reachQuery) });
+  const ways = new Map<string, readonly LoginWay[]>();
+  list.forEach((email, i) => {
+    const d = reach[i]?.data;
+    if (d) ways.set(email, d.ways);
+  });
 
-  /** Moves the draft's addresses into the list; true if all of it parsed. */
   const commit = (raw = draft): string[] => {
     const { ok, bad: rest } = split(raw, parse);
     const next = [...list];
     for (const v of ok) if (!next.includes(v)) next.push(v);
-    const capped = next.slice(0, REACH_MAX);
+    const capped = next.slice(0, LIST_MAX);
     setList(capped);
     setDraft(rest.join(" "));
     setBad(rest.length > 0);
     return capped;
   };
-  const held = (email: string) => rows.get(email)?.blocked != null;
+  /** Can't log in here: held, the rest still go. */
+  const held = (email: string) => ways.get(email)?.length === 0;
   const pending = split(draft, parse).ok.filter((v) => !list.includes(v));
-  const count = list.filter((v) => !held(v)).length + pending.length;
+  const count =
+    list.filter((v) => !held(v) && !removed[v]).length + pending.length;
 
   const submit = async () => {
     if (sending.current) return;
     const all = commit();
-    const out = all.filter((v) => !held(v));
+    const out = all.filter((v) => !held(v) && !removed[v]);
     if (out.length === 0) return;
     sending.current = true;
     setBusy(true);
     setFailed({});
     const errors: Record<string, string> = {};
+    const gone: Record<string, string> = {};
     const done: string[] = [];
     let last: Sent | null = null;
     for (const email of out) {
-      const r = rows.get(email);
       try {
-        if (r?.removed) {
-          await restore.mutateAsync(r.removed.userId);
-          last = null;
-        } else {
-          const res: MemberInviteResult = await invite.mutateAsync({
-            email,
-            // PROVISIONAL: "guest" is new to POST members (#2520).
-            role: role as MemberInvite["role"],
-          });
-          last = {
-            email,
-            emailed: res.emailed,
-            uncertain: res.signIn?.status === "uncertain",
-            with: signInWith(res.signInMethods),
-          };
-        }
+        const res: MemberInviteResult = await invite.mutateAsync({
+          email,
+          // PROVISIONAL: "guest" is new to POST members (#2520).
+          role: role as MemberInvite["role"],
+        });
+        last = {
+          email,
+          emailed: res.emailed,
+          uncertain: res.signIn?.status === "uncertain",
+          with: signInWith(res.signInMethods),
+        };
         done.push(email);
       } catch (e) {
-        errors[email] = r?.removed
-          ? restoreCopy(e, email)
-          : inviteFailure(e, email, domains, me);
+        const was =
+          e instanceof ApiClientError && e.code === "member_removed"
+            ? MemberRemovedDetailsSchema.safeParse(e.details)
+            : null;
+        if (was?.success) gone[email] = was.data.userId;
+        else errors[email] = inviteFailure(e, email, domains, me);
       }
     }
     sending.current = false;
     setBusy(false);
     setFailed(errors);
+    setRemoved((r) => ({ ...r, ...gone }));
     const left = all.filter((v) => !done.includes(v));
     setList(left);
     if (done.length === 0) return;
@@ -395,17 +409,30 @@ function InviteList({
     if (left.length === 0) onClose();
   };
 
+  const restoreOne = (email: string) => {
+    const id = removed[email];
+    if (!id) return;
+    restore.mutate(id, {
+      onSuccess: () => {
+        toast({
+          title: `${email} is restored. They can log in again.`,
+          tone: "success",
+        });
+        setList((l) => l.filter((v) => v !== email));
+        setRemoved(({ [email]: _, ...r }) => r);
+      },
+      onError: (e) =>
+        setFailed((f) => ({ ...f, [email]: restoreCopy(e, email) })),
+    });
+  };
+
   if (sent) return inviteSent(sent, sends, onClose);
 
   return (
     <Modal
-      onClose={busy ? () => {} : onClose}
-      title="Add a member"
-      description={
-        sends
-          ? INVITE.header
-          : "Open Artifacts doesn't send invitations. Add their email here, then send them the login link yourself."
-      }
+      onClose={busy || restore.isPending ? () => {} : onClose}
+      title={INVITE.title}
+      description={sends ? INVITE.header : INVITE.noEmail}
       footer={
         <>
           <Button variant="ghost" disabled={busy} onClick={onClose}>
@@ -425,6 +452,8 @@ function InviteList({
           else void submit();
         }}
       >
+        {/* Product: without email, the 30 days still shows, under the header. */}
+        {!sends && <p className={`m-0 ${muted}`}>{INVITE.lasts}</p>}
         <Input
           type="text"
           inputMode="email"
@@ -459,9 +488,18 @@ function InviteList({
               <AddressRow
                 key={email}
                 email={email}
-                row={rows.get(email)}
+                ways={ways.get(email)}
                 role={role}
                 error={failed[email]}
+                removed={
+                  removed[email]
+                    ? {
+                        line: `${email} was removed. Restore them to bring back their account and the ${spaces ? "personal " : ""}artifacts you haven't transferred. They come back with the access they had (no admin role) and log in again.`,
+                        restore: () => restoreOne(email),
+                        busy: restore.isPending,
+                      }
+                    : null
+                }
                 disabled={busy}
                 onRemove={() => setList((l) => l.filter((v) => v !== email))}
               />
@@ -500,9 +538,10 @@ function InviteList({
               ))}
             </SelectContent>
           </Select>
-          <p id="oa-invite-join-as-line" className={`m-0 ${muted}`}>
-            {INVITE.joinAsLine}
-          </p>
+          <div id="oa-invite-join-as-line" className="grid gap-[2px]">
+            <p className={`m-0 ${muted}`}>{INVITE.joinAsLine}</p>
+            <p className={`m-0 ${muted}`}>{INVITE.adminLater}</p>
+          </div>
         </div>
         {trial && (
           <Notice tone="info" title="This starts your 30-day Team trial.">
@@ -518,26 +557,24 @@ function InviteList({
 
 function AddressRow({
   email,
-  row,
+  ways,
   role,
   error,
+  removed,
   disabled,
   onRemove,
 }: {
   email: string;
-  row: ReachRow | undefined;
+  /** Undefined while the server hasn't answered. */
+  ways: readonly LoginWay[] | undefined;
   role: JoinAs;
   error: string | undefined;
+  removed: { line: string; restore: () => void; busy: boolean } | null;
   disabled: boolean;
   onRemove: () => void;
 }) {
-  const pill = !row ? null : row.blocked ? (
-    <Pill tone="warn">{INVITE.cantPill}</Pill>
-  ) : row.removed ? (
-    <Pill tone="plain">{INVITE.removedPill}</Pill>
-  ) : (
-    <Pill tone="plain">{role}</Pill>
-  );
+  const cant = ways?.length === 0;
+  const line = ways && !removed ? reachLine(email, ways) : null;
   return (
     <li
       data-address={email}
@@ -547,12 +584,29 @@ function AddressRow({
         <span className="text-[length:var(--oa-text-sm)] [overflow-wrap:anywhere]">
           {email}
         </span>
-        {row && (
+        {line && (
           <p
-            className={`m-0 ${row.blocked ? "text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]" : muted}`}
+            className={`m-0 ${cant ? "text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]" : muted}`}
           >
-            {reachLine(row)}
+            {line}
           </p>
+        )}
+        {removed && (
+          <div role="alert" className="grid gap-[var(--oa-space-2)]">
+            <p className={`m-0 text-[length:var(--oa-text-sm)]`}>
+              {removed.line}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="justify-self-start"
+              disabled={removed.busy}
+              onClick={removed.restore}
+            >
+              Restore {email}
+            </Button>
+          </div>
         )}
         {error && (
           <p role="alert" className={`m-0 ${errorText}`}>
@@ -560,7 +614,13 @@ function AddressRow({
           </p>
         )}
       </div>
-      {pill}
+      {ways &&
+        !removed &&
+        (cant ? (
+          <Pill tone="warn">{INVITE.cantPill}</Pill>
+        ) : (
+          <Pill tone="plain">{role}</Pill>
+        ))}
       <Button
         type="button"
         variant="ghost"

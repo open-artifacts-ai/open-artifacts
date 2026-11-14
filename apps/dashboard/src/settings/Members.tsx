@@ -69,6 +69,7 @@ import {
   inviteSent,
   withPlanLink,
 } from "./InviteDialog";
+import { INVITE } from "./loginCopy";
 import { restrictionReason } from "./restriction";
 import { ThawBanner } from "./ThawBanner";
 import { TransferDialog } from "./Transfer";
@@ -658,6 +659,7 @@ export function Members() {
   const q = useMembers();
   // #2520: Get started's "Invite people" (?invite=1), or back from the login
   // the first-invite step asked for, opens the dialog.
+  const loginSettings = useLoginSettings();
   const search = useRouterState({ select: (s) => s.location.searchStr });
   const [inviting, setInviting] = useState(
     () =>
@@ -735,7 +737,8 @@ export function Members() {
               disabled={frozen}
               onClick={() => setInviting(true)}
             >
-              Add member
+              {/* #2520: a server with login settings gets Product's name. */}
+              {loginSettings.data ? INVITE.button : "Add member"}
             </Button>
           </div>
         }

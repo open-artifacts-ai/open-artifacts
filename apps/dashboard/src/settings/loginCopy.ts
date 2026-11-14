@@ -1,6 +1,6 @@
 // #2520: Design's copy for Settings > Login, the domain dialogs, the invite
 // dialog's rows and the first-invite step, in one place. No server text.
-import type { ReachRow } from "../api/loginSettings";
+import type { LoginWay } from "../api/loginSettings";
 
 export const LOGIN = {
   methodsTitle: "How people log in",
@@ -61,12 +61,13 @@ export const DOMAIN_ON = {
 
 export const DOMAIN_OFF = {
   title: (d: string) => `Stop letting ${d} join by itself?`,
-  body: (d: string, joined: number) =>
+  /** `joined`: null until the API counts them (not in #2520's draft): the sentence is left out. */
+  body: (d: string, joined: number | null) =>
     [
       `New people at ${d} will need an invite.`,
       joined === 1
         ? "The 1 member who already joined keeps their access."
-        : joined > 1
+        : joined
           ? `The ${joined} members who already joined keep their access.`
           : null,
       "Remove anyone in Members.",
@@ -76,42 +77,58 @@ export const DOMAIN_OFF = {
   confirm: "Turn off",
 } as const;
 
+/** apply_pending: a hosted instance applies the change in about a minute. */
+export const SAVE = {
+  pending: "Saving. This takes about a minute.",
+  saved: "Saved.",
+  failed: "Couldn't save. Try again.",
+} as const;
+
 export const INVITE = {
+  title: "Invite people",
+  button: "Invite people",
   header:
     "They get an email with a link. Only the addresses you list can use it. An invite lasts 30 days.",
+  noEmail:
+    "Open Artifacts doesn't send invitations. Add their email here, then send them the login link yourself.",
+  lasts: "An invite lasts 30 days.",
   joinAs: "Join as",
   joinAsLine:
     "Members see team pages and can publish. Choose Guest to share single pages only.",
+  adminLater: "You can make a member an admin after they join.",
   send: (n: number) => (n === 1 ? "Send 1 invite" : `Send ${n} invites`),
   sent: (n: number) => (n === 1 ? "1 invite sent" : `${n} invites sent`),
   cantPill: "can't log in",
-  removedPill: "removed",
   remove: (email: string) => `Remove ${email}`,
 } as const;
 
-const KIND_LINE: Record<ReachRow["kind"], string> = {
-  domain: "At your domain. Logs in with Google or an email code.",
-  outside:
-    "Outside your domain. Logs in with their own Google account or an email code.",
-  gmail: "Logs in with Google or an email code.",
-  code_first:
-    "Logs in with an email code the first time. After that, Google works too if they have an account for this address.",
+export const CANT_LINE =
+  "Can't log in here yet. Their Google account must be Gmail or Google Workspace.";
+export const WORKSPACE_ONLY_LINE =
+  "Logs in with Google, if their address is a Google Workspace account";
+
+const GMAIL = new Set(["gmail.com", "googlemail.com"]);
+
+/**
+ * The line under an address, from the server's ways (OA Backend's mapping):
+ * null for a mix the draft doesn't produce.
+ */
+export const reachLine = (email: string, ways: readonly LoginWay[]) => {
+  if (ways.length === 0) return CANT_LINE;
+  const code = ways.includes("email_code");
+  if (ways.includes("google")) {
+    const gmail = GMAIL.has(email.slice(email.lastIndexOf("@") + 1));
+    const how = code ? "Google or an email code" : "Google";
+    return gmail
+      ? `Logs in with ${how}.`
+      : `At your domain. Logs in with ${how}.`;
+  }
+  if (ways.includes("google_workspace"))
+    return ways.includes("google_after_code")
+      ? "Outside your domain. Logs in with their own Google account or an email code."
+      : WORKSPACE_ONLY_LINE;
+  return null;
 };
-
-export const CODES_OFF_LINE =
-  "Can't get in yet: this address needs an email code the first time, and email codes are off. Turn on email codes in Login, or use another address.";
-
-/** "Nov 12": the day a member was removed. */
-const removedDay = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-
-/** The line under an address in the invite dialog. */
-export const reachLine = (r: ReachRow) =>
-  r.blocked === "codes_off"
-    ? CODES_OFF_LINE
-    : r.removed
-      ? `Removed on ${removedDay(r.removed.at)}. Inviting them again lets them back in.`
-      : KIND_LINE[r.kind];
 
 export const FIRST_INVITE = {
   title: (instance: string) => `Who should be able to join ${instance}?`,
@@ -121,8 +138,6 @@ export const FIRST_INVITE = {
   domain: (d: string) => `Anyone at ${d}, and people I invite`,
   domainLine:
     "Colleagues join as members by logging in with Google. You log in again to confirm, and you are told each time someone joins.",
-  noDomain: "Anyone at my company's domain",
-  noDomainLine: "Needs a company address. You log in with Gmail.",
   skip: "Skip for now",
   next: "Continue",
 } as const;

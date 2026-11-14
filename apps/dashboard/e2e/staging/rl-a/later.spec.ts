@@ -194,7 +194,9 @@ test("#794: a member who views editors-only live data sees View only", async ({
   );
 });
 
-test("#800: inviting outside the login domain warns that they may not log in", async ({
+// #2520 replaced the "may not be able to log in" warning: the invite dialog
+// now says, per address and before sending, how it will log in.
+test("#800: inviting outside the login domain says how they would log in", async ({
   browser,
 }) => {
   await needs("#800", "0.74.0");
@@ -207,15 +209,30 @@ test("#800: inviting outside the login domain warns that they may not log in", a
 
   const page = admin.page;
   await page.goto("/settings/members");
-  await page.getByRole("button", { name: "Add member" }).click();
+  const button = page.getByRole("button", {
+    name: /^(Invite people|Add member)$/,
+  });
+  // "Invite people" once the server has #2520's login settings.
+  const rows = (await button.textContent())?.trim() === "Invite people";
+  await button.click();
+  if (rows) {
+    const d = page.getByRole("dialog", { name: "Invite people" });
+    await d.getByRole("textbox", { name: "Email" }).fill(`${maybe} `);
+    const row = d.locator(`[data-address="${maybe}"]`);
+    // Codes on: Google Workspace or a code; codes off: Workspace only.
+    await expect(row).toContainText(
+      /Outside your domain\. Logs in with their own Google account or an email code\.|Logs in with Google, if their address is a Google Workspace account/,
+    );
+    await expect(d).not.toContainText("may not be able to log in");
+    return;
+  }
+  // An older server: the one-address dialog, and no warning any more.
   const d = page.getByRole("dialog", { name: "Add a member" });
   await d.getByRole("textbox", { name: "Email" }).fill(maybe);
   await d.getByRole("button", { name: "Add member" }).click();
   const sent = page.getByRole("dialog", { name: `Invite sent to ${maybe}` });
   await expect(sent).toBeVisible();
-  await expect(sent).toContainText(
-    `${maybe} is outside ${domains.join(" or ")}, so they may not be able to log in.`,
-  );
+  await expect(sent).not.toContainText("may not be able to log in");
 });
 
 // Cut (#1251): '#807: New space has "Add me as a manager", on by default'.

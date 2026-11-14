@@ -1,75 +1,51 @@
-// PROVISIONAL (TODO: OA Backend's #2520 contract). Settings > Login, the
-// domain join, the first-invite step and the invite dialog's per-address rows
-// read these. The paths, fields and errors below are the dashboard's guess
-// until OA Backend sends the real shape; swap this file when it lands.
+// PROVISIONAL (TODO: OA Backend's #2520 contract, from its API draft; the
+// shared schemas follow slice 1). Swap these for @oa/shared's when they land.
 //
-// GET   LOGIN_SETTINGS  -> LoginSettings (owners and admins; 403 otherwise;
-//                          404 on a server without #2520: the Login tab hides)
-// PATCH LOGIN_SETTINGS  { domainJoin?, firstInviteDone? } -> LoginSettings
-//                          owner only (403 forbidden); turning the domain on
-//                          needs a fresh login: 401 reauth_required
-//                          { reauthUrl } (same-origin, returns to `next`).
-// POST  MEMBERS_REACH   { emails } -> { items: ReachRow[] }, one per address,
-//                          in order; today's reachOf, extended.
-// POST  R.members       { email, role: "member" | "guest" } (guest is new).
-import { SignInProviderIdSchema } from "@oa/shared";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+// GET /api/v1/settings/login -> LoginSettings (owners and admins; 404 on a
+//     server without #2520: the Login tab hides, Members keeps its dialog)
+// PUT /api/v1/settings/login { autoJoin, domains } -> LoginSettings, owner
+//     only. 401 reauth_required { reauthUrl } (a fresh login, as passkeys);
+//     403 domain_unproven { domain }; 409 apply_pending (a hosted redeploy,
+//     about a minute).
+// GET /api/v1/members/reach?email= -> InviteReach (owners and admins).
+// POST R.members also returns { reach: InviteReach }, and takes role "guest".
+//
+// domain_unproven and apply_pending aren't in @oa/shared's ERROR_CODES yet,
+// so the client reads them as "internal": until they are, putFailure tells
+// them apart by status.
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { ApiClientError, api } from "./client";
 
-export const LOGIN_SETTINGS = "/api/v1/login-settings";
+export const LOGIN_SETTINGS = "/api/v1/settings/login";
 export const MEMBERS_REACH = "/api/v1/members/reach";
-/** At most this many addresses per reach call (and per dialog). */
-export const REACH_MAX = 50;
+
+export const LoginWaySchema = z.enum([
+  "google",
+  "google_workspace",
+  "google_after_code",
+  "email_code",
+]);
+export type LoginWay = z.infer<typeof LoginWaySchema>;
+
+/** How an address can log in here; [] means it can't. */
+export const InviteReachSchema = z.object({ ways: z.array(LoginWaySchema) });
+export type InviteReach = z.infer<typeof InviteReachSchema>;
 
 export const LoginSettingsSchema = z.object({
-  /** team: hosted Team or Business; solo: hosted Solo (only methods show); self_hosted: set at setup. */
-  scope: z.enum(["team", "solo", "self_hosted"]),
-  /** The methods this instance offers, set when it was created. */
-  methods: z.object({ google: z.boolean(), email: z.boolean() }),
-  domain: z.object({
-    /** The owner's Google Workspace domain (hosted), or AUTH_DOMAINS' first (self-hosted); null when there is none. */
-    name: z.string().nullable(),
-    /** Anyone at `name` who logs in with Google joins as a member. */
-    enabled: z.boolean(),
-    /** Why the owner can't turn it on: they log in with Gmail, with an email code, or `name` is a shared mail host. */
-    unavailable: z.enum(["gmail", "email_code", "shared_host"]).nullable(),
-    /** Members who joined by the domain (the turn-off dialog's count). */
-    joined: z.number().int().nonnegative(),
-  }),
-  /** ask: the owner hasn't seen the first-invite step yet. */
-  firstInvite: z.enum(["ask", "done"]),
+  /** The login domains. */
+  domains: z.array(z.string()),
+  /** Anyone at the domains who logs in with Google joins as a member. */
+  autoJoin: z.boolean(),
+  /** False on self-host: set at setup (--auth-domains). */
+  editable: z.boolean(),
+  /** The owner's provable domain (their token's hd); null for a Gmail owner. */
+  provable: z.string().nullable(),
 });
 export type LoginSettings = z.infer<typeof LoginSettingsSchema>;
+export type LoginSettingsPut = { autoJoin: boolean; domains: string[] };
 
-export type LoginSettingsPatch = {
-  domainJoin?: boolean;
-  firstInviteDone?: true;
-};
-
-export const ReachRowSchema = z.object({
-  email: z.string(),
-  /** Offered methods that admit the address, in SIGN_IN_METHOD_ORDER (today's Reach.methods). */
-  methods: z.array(SignInProviderIdSchema),
-  /**
-   * domain: at the instance's domain; outside: another company's Google
-   * Workspace; gmail: a Google consumer address; code_first: a plain mail
-   * host, so an email code the first time.
-   */
-  kind: z.enum(["domain", "outside", "gmail", "code_first"]),
-  /** codes_off: it needs an email code the first time and codes are off. */
-  blocked: z.enum(["codes_off"]).nullable(),
-  /** A removed member: inviting again restores them. */
-  removed: z.object({ userId: z.string(), at: z.string() }).nullable(),
-});
-export type ReachRow = z.infer<typeof ReachRowSchema>;
-const ReachResultSchema = z.object({ items: z.array(ReachRowSchema) });
-
-export const qkLogin = ["login-settings"] as const;
-
-/** 404: this server has no #2520 yet. */
-export const absent = (e: unknown) =>
-  e instanceof ApiClientError && e.status === 404;
+export const qkLogin = ["settings-login"] as const;
 
 export const useLoginSettings = (enabled = true) =>
   useQuery({
@@ -80,24 +56,40 @@ export const useLoginSettings = (enabled = true) =>
     staleTime: 30_000,
   });
 
-export const usePatchLoginSettings = () => {
+export const putLoginSettings = (body: LoginSettingsPut) =>
+  api.send("PUT", LOGIN_SETTINGS, body, LoginSettingsSchema);
+
+export const useSetLoginSettings = () => {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: LoginSettingsPatch) =>
-      api.send("PATCH", LOGIN_SETTINGS, body, LoginSettingsSchema),
-    onSuccess: (s) => qc.setQueryData(qkLogin, s),
-  });
+  return (s: LoginSettings) => qc.setQueryData(qkLogin, s);
 };
 
-/** Per-address reach, for the addresses listed in the invite dialog. */
-export const useReach = (emails: string[], enabled: boolean) =>
-  useQuery({
-    queryKey: ["members-reach", emails],
-    queryFn: ({ signal }) =>
-      api
-        .send("POST", MEMBERS_REACH, { emails }, ReachResultSchema, signal)
-        .then((r) => r.items),
-    enabled: enabled && emails.length > 0,
-    placeholderData: (prev) => prev,
-    staleTime: 30_000,
-  });
+/** Why a PUT failed, by the draft's codes (or, until shared has them, its statuses). */
+export const putFailure = (
+  e: unknown,
+): "reauth" | "pending" | "unproven" | "other" => {
+  if (!(e instanceof ApiClientError)) return "other";
+  if (e.code === "reauth_required") return "reauth";
+  if ((e.code as string) === "apply_pending" || e.status === 409)
+    return "pending";
+  if (
+    (e.code as string) === "domain_unproven" ||
+    (e.status === 403 &&
+      typeof (e.details as { domain?: unknown } | undefined)?.domain ===
+        "string")
+  )
+    return "unproven";
+  return "other";
+};
+
+/** Reach for one listed address, while the dialog is open. */
+export const reachQuery = (email: string) => ({
+  queryKey: ["members-reach", email] as const,
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    api.get(
+      `${MEMBERS_REACH}?email=${encodeURIComponent(email)}`,
+      InviteReachSchema,
+      signal,
+    ),
+  staleTime: 30_000,
+});

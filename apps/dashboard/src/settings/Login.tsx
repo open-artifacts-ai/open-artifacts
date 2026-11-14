@@ -1,16 +1,24 @@
 // #2520, Settings > Login (owners and admins): how people log in, who can get
 // in (invites, and the domain join), and what members and guests are. Design's
 // screens A and B. The data is PROVISIONAL (api/loginSettings.ts).
+import type { Me } from "@oa/shared";
 import { Badge } from "@oa/ui/shadcn";
 import { type ReactNode, useState } from "react";
+import { useAuthProviders } from "../api/auth";
 import { type LoginSettings, useLoginSettings } from "../api/loginSettings";
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { useDomainJoin } from "./domainJoin";
-import { AUTH_DOMAINS_DOC, DOMAIN_OFF, DOMAIN_ON, LOGIN } from "./loginCopy";
+import { joinBody, useDomainJoin } from "./domainJoin";
+import {
+  AUTH_DOMAINS_DOC,
+  DOMAIN_OFF,
+  DOMAIN_ON,
+  LOGIN,
+  SAVE,
+} from "./loginCopy";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
 
@@ -88,11 +96,37 @@ const Line = ({ children, id }: { children: ReactNode; id?: string }) => (
   </p>
 );
 
+/** What the page shows, derived from the settings and what the app knows. */
+export type LoginView = {
+  scope: "team" | "solo" | "self_hosted";
+  methods: { google: boolean; email: boolean };
+  /** The domain the switch is about; null when there is none (a Gmail owner). */
+  domain: string | null;
+};
+
+export const loginView = (
+  s: LoginSettings,
+  me: Me,
+  providers: readonly string[],
+): LoginView => ({
+  scope: !s.editable
+    ? "self_hosted"
+    : me.instance.billing?.tier === "solo"
+      ? "solo"
+      : "team",
+  methods: {
+    google: providers.includes("google"),
+    email: providers.includes("email"),
+  },
+  domain: s.provable ?? s.domains[0] ?? null,
+});
+
 export function Login() {
   useDocumentTitle("Login");
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const q = useLoginSettings(!!me);
+  const providers = useAuthProviders(!!me);
   if (!me) return null;
   if (q.isError)
     return (
@@ -103,20 +137,25 @@ export function Login() {
         busy={q.isFetching}
       />
     );
-  if (!q.data) return null;
+  if (!q.data || !providers.data) return null;
   const s = q.data;
+  const v = loginView(
+    s,
+    me,
+    providers.data.providers.map((p) => p.id),
+  );
   // A capped owner acts as an admin, as on Members.
   const owner = me.user.role === "owner" && me.auth?.cap == null;
   return (
     <div className={STACK}>
-      <Methods s={s} instance={me.instance.name} />
-      {s.scope !== "solo" && <Who s={s} owner={owner} />}
-      {s.scope !== "solo" && <Roles />}
+      <Methods v={v} instance={me.instance.name} />
+      {v.scope !== "solo" && <Who s={s} v={v} owner={owner} />}
+      {v.scope !== "solo" && <Roles />}
     </div>
   );
 }
 
-function Methods({ s, instance }: { s: LoginSettings; instance: string }) {
+function Methods({ v, instance }: { v: LoginView; instance: string }) {
   const pill = (on: boolean) => (
     <Pill tone={on ? "ok" : "plain"}>{on ? LOGIN.pillOn : LOGIN.pillOff}</Pill>
   );
@@ -126,10 +165,10 @@ function Methods({ s, instance }: { s: LoginSettings; instance: string }) {
       title={LOGIN.methodsTitle}
       subtitle={LOGIN.methodsSub(instance)}
     >
-      <Row id="google" title={LOGIN.google} end={pill(s.methods.google)}>
+      <Row id="google" title={LOGIN.google} end={pill(v.methods.google)}>
         <Line>{LOGIN.googleLine}</Line>
       </Row>
-      <Row id="email" title={LOGIN.email} end={pill(s.methods.email)}>
+      <Row id="email" title={LOGIN.email} end={pill(v.methods.email)}>
         <Line>{LOGIN.emailLine}</Line>
       </Row>
       <p className={`m-0 ${muted}`}>{LOGIN.methodsNote}</p>
@@ -137,7 +176,15 @@ function Methods({ s, instance }: { s: LoginSettings; instance: string }) {
   );
 }
 
-function Who({ s, owner }: { s: LoginSettings; owner: boolean }) {
+function Who({
+  s,
+  v,
+  owner,
+}: {
+  s: LoginSettings;
+  v: LoginView;
+  owner: boolean;
+}) {
   return (
     <SettingsCard
       id="oa-login-who"
@@ -151,18 +198,30 @@ function Who({ s, owner }: { s: LoginSettings; owner: boolean }) {
       >
         <Line>{LOGIN.invitedLine}</Line>
       </Row>
-      <DomainRow s={s} owner={owner} />
+      <DomainRow s={s} v={v} owner={owner} />
     </SettingsCard>
   );
 }
 
-function DomainRow({ s, owner }: { s: LoginSettings; owner: boolean }) {
-  const d = s.domain;
-  const [asking, setAsking] = useState<"on" | "off" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const join = useDomainJoin({ onError: setError });
+const SAVE_LINE = {
+  pending: SAVE.pending,
+  saved: SAVE.saved,
+  failed: SAVE.failed,
+} as const;
 
-  if (s.scope === "self_hosted")
+function DomainRow({
+  s,
+  v,
+  owner,
+}: {
+  s: LoginSettings;
+  v: LoginView;
+  owner: boolean;
+}) {
+  const [asking, setAsking] = useState<"on" | "off" | null>(null);
+  const join = useDomainJoin();
+
+  if (v.scope === "self_hosted")
     return (
       <Row
         id="domain"
@@ -171,9 +230,11 @@ function DomainRow({ s, owner }: { s: LoginSettings; owner: boolean }) {
       >
         <Line>{LOGIN.domainLine}</Line>
         <Line>{LOGIN.selfHosted}</Line>
-        {d.name && (
-          <div>
-            <DomainChip name={d.name} />
+        {s.domains.length > 0 && (
+          <div className="flex flex-wrap gap-[var(--oa-space-1)]">
+            {s.domains.map((d) => (
+              <DomainChip key={d} name={d} />
+            ))}
           </div>
         )}
         <Line>
@@ -191,7 +252,7 @@ function DomainRow({ s, owner }: { s: LoginSettings; owner: boolean }) {
       </Row>
     );
 
-  if (d.unavailable || !d.name)
+  if (!v.domain)
     return (
       <Row
         id="domain"
@@ -211,7 +272,8 @@ function DomainRow({ s, owner }: { s: LoginSettings; owner: boolean }) {
       </Row>
     );
 
-  const name = d.name;
+  const name = v.domain;
+  const note = join.state in SAVE_LINE ? join.state : null;
   return (
     <>
       <Row
@@ -222,31 +284,31 @@ function DomainRow({ s, owner }: { s: LoginSettings; owner: boolean }) {
             <Switch
               id="oa-login-domain-switch"
               label={LOGIN.domain}
-              checked={d.enabled}
+              checked={s.autoJoin}
               disabled={join.busy}
               describedBy="oa-login-domain-state"
-              onChange={(next) => {
-                setError(null);
-                setAsking(next ? "on" : "off");
-              }}
+              onChange={(next) => setAsking(next ? "on" : "off")}
             />
           ) : (
-            <Pill tone={d.enabled ? "ok" : "plain"}>
-              {d.enabled ? LOGIN.pillOn : LOGIN.pillOff}
+            <Pill tone={s.autoJoin ? "ok" : "plain"}>
+              {s.autoJoin ? LOGIN.pillOn : LOGIN.pillOff}
             </Pill>
           )
         }
       >
         <Line>{LOGIN.domainLine}</Line>
-        <div>
-          <DomainChip name={name} muted={!d.enabled} />
+        <div className="flex flex-wrap gap-[var(--oa-space-1)]">
+          <DomainChip name={name} muted={!s.autoJoin} />
         </div>
         <Line id="oa-login-domain-state">
-          {d.enabled ? LOGIN.domainFrom : LOGIN.domainOff}
+          {s.autoJoin ? LOGIN.domainFrom : LOGIN.domainOff}
         </Line>
-        {error && (
-          <p role="alert" className={`m-0 ${errorText}`}>
-            {error}
+        {note && (
+          <p
+            role={note === "failed" ? "alert" : "status"}
+            className={`m-0 ${note === "failed" ? errorText : muted}`}
+          >
+            {SAVE_LINE[note as keyof typeof SAVE_LINE]}
           </p>
         )}
       </Row>
@@ -264,15 +326,16 @@ function DomainRow({ s, owner }: { s: LoginSettings; owner: boolean }) {
           </>
         }
         confirm={DOMAIN_ON.confirm}
-        onConfirm={() => join.change({ domainJoin: true })}
+        onConfirm={() => join.change(joinBody(s, true))}
       />
       <ConfirmDialog
         open={asking === "off"}
         onClose={() => setAsking(null)}
         title={DOMAIN_OFF.title(name)}
-        body={<p className="m-0">{DOMAIN_OFF.body(name, d.joined)}</p>}
+        // The joined count isn't in #2520's API draft yet.
+        body={<p className="m-0">{DOMAIN_OFF.body(name, null)}</p>}
         confirm={DOMAIN_OFF.confirm}
-        onConfirm={() => join.change({ domainJoin: false })}
+        onConfirm={() => join.change(joinBody(s, false))}
       />
     </>
   );

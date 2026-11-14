@@ -131,7 +131,7 @@ for (const scheme of ["light", "dark"] as const)
           name: "Stop letting acme.com join by itself?",
         });
         await expect(d).toContainText(
-          "The 14 members who already joined keep their access.",
+          "New people at acme.com will need an invite.",
         );
         await check(page, `domain-off-dialog-${tag}`);
         await d.getByRole("button", { name: "Turn off" }).click();
@@ -140,53 +140,75 @@ for (const scheme of ["light", "dark"] as const)
         ).toBeVisible();
       });
 
+      test("apply_pending: Saving, then Saved", async ({ page }) => {
+        await open(page, "/settings/login?reauthed=1", "pending");
+        await page
+          .getByRole("switch", { name: "Anyone at your domain" })
+          .click();
+        await page
+          .getByRole("button", { name: "Log in again and turn on" })
+          .click();
+        await expect(page.getByText("Saved.")).toBeVisible();
+        await check(page, `domain-saved-${tag}`);
+      });
+
       for (const [s, list, expectText] of [
         [
           "owner-on",
-          "pat@acme.com, sam@globex.io, lee@gmail.com, kim@outlook.com ",
+          "pat@acme.com, sam@globex.io, lee@gmail.com ",
           "At your domain. Logs in with Google or an email code.",
         ],
         [
           "codes-off",
-          "pat@acme.com kim@outlook.com ",
-          "Can't get in yet: this address needs an email code the first time",
+          "pat@acme.com sam@globex.io ",
+          "Logs in with Google, if their address is a Google Workspace account",
         ],
         [
-          "removed",
-          "removed@acme.com sam@globex.io ",
-          "Removed on Nov 12. Inviting them again lets them back in.",
+          "no-google",
+          "sam@globex.io ",
+          "Can't log in here yet. Their Google account must be Gmail or Google Workspace.",
         ],
+        ["no-email", "pat@acme.com ", "An invite lasts 30 days."],
       ] as const)
         test(`invite rows: ${s}`, async ({ page }) => {
           await open(page, "/settings/members", s);
-          await page.getByRole("button", { name: "Add member" }).click();
-          const d = page.getByRole("dialog", { name: "Add a member" });
+          await page.getByRole("button", { name: "Invite people" }).click();
+          const d = page.getByRole("dialog", { name: "Invite people" });
           await d.getByRole("textbox", { name: "Email" }).fill(list);
           await expect(d.getByText(expectText)).toBeVisible();
           await expect(d).not.toContainText("may not be able to log in");
           await check(page, `invite-${s}-${tag}`);
         });
 
-      for (const s of ["owner-off", "gmail"] as const)
-        test(`first invite: ${s}`, async ({ page }) => {
-          await open(page, "/settings/members", s);
-          await page.getByRole("button", { name: "Add member" }).click();
-          const d = page.getByRole("dialog", {
-            name: "Who should be able to join Acme Artifacts?",
-          });
-          await expect(
-            d.getByRole("radio", { name: /Only people I invite/ }),
-          ).toBeChecked();
-          if (s === "gmail")
-            await expect(
-              d.getByRole("radio", { name: /Anyone at my company's domain/ }),
-            ).toBeDisabled();
-          await check(page, `first-invite-${s}-${tag}`);
-          await d.getByRole("button", { name: "Skip for now" }).click();
-          await expect(
-            page.getByRole("dialog", { name: "Add a member" }),
-          ).toBeVisible();
+      test("invite: a removed member gets Restore", async ({ page }) => {
+        await open(page, "/settings/members", "owner-on");
+        await page.getByRole("button", { name: "Invite people" }).click();
+        const d = page.getByRole("dialog", { name: "Invite people" });
+        await d
+          .getByRole("textbox", { name: "Email" })
+          .fill("removed@acme.com ");
+        await d.getByRole("button", { name: "Send 1 invite" }).click();
+        await expect(
+          d.getByRole("button", { name: "Restore removed@acme.com" }),
+        ).toBeVisible();
+        await check(page, `invite-removed-${tag}`);
+      });
+
+      test("first invite", async ({ page }) => {
+        await open(page, "/settings/members", "first-invite");
+        await page.getByRole("button", { name: "Invite people" }).click();
+        const d = page.getByRole("dialog", {
+          name: "Who should be able to join Acme Artifacts?",
         });
+        await expect(
+          d.getByRole("radio", { name: /Only people I invite/ }),
+        ).toBeChecked();
+        await check(page, `first-invite-${tag}`);
+        await d.getByRole("button", { name: "Skip for now" }).click();
+        await expect(
+          page.getByRole("dialog", { name: "Invite people" }),
+        ).toBeVisible();
+      });
     });
 
 test("a member sees no Login tab", async ({ page }) => {
