@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.181.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.180.1...v0.181.0) (2026-11-14)
+
+
+### Features
+
+* **docs:** versions from the room, with saved and restored frames ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2495](https://github.com/open-artifacts-ai/open-artifacts/issues/2495)) ([a08633d](https://github.com/open-artifacts-ai/open-artifacts/commit/a08633dfa3a10ea91aeaf0dd265742606a1a019f))
+* **shared:** notifications v1 contract: inbox, prefs and push shapes ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512)) ([#2513](https://github.com/open-artifacts-ai/open-artifacts/issues/2513)) ([9bd8f13](https://github.com/open-artifacts-ai/open-artifacts/commit/9bd8f13aecbcf2bdf329b0b88aae0c71415a87cd))
+* **viewer:** comments fit a narrow window ([#2486](https://github.com/open-artifacts-ai/open-artifacts/issues/2486)) ([#2503](https://github.com/open-artifacts-ai/open-artifacts/issues/2503)) ([b11daea](https://github.com/open-artifacts-ai/open-artifacts/commit/b11daea5fbe82d356467bf9ef06071acd40f103c))
+
 ## [0.180.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.180.0...v0.180.1) (2026-11-14)
 
 
