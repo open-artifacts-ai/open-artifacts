@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.179.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.178.0...v0.179.0) (2026-11-14)
+
+
+### Features
+
+* **analytics:** activation events to PostHog, hosted only ([#2479](https://github.com/open-artifacts-ai/open-artifacts/issues/2479)) ([#2494](https://github.com/open-artifacts-ai/open-artifacts/issues/2494)) ([a25c754](https://github.com/open-artifacts-ai/open-artifacts/commit/a25c754bfef4bc1846718f2fa52c4b32ca7c7a1e))
+
 ## [0.178.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.177.1...v0.178.0) (2026-11-14)
 
 
