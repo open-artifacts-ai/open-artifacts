@@ -17,15 +17,17 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ApiClientError } from "../../api/client";
 import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
   usePasskeyAnswer,
+  useTakeBackAsk,
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
-import { PartyFace } from "./AuthorFace";
+import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
@@ -45,18 +47,25 @@ export const extrasBody = (x: Extras) => ({
 export const isSendingAnswer = (a: object | undefined) =>
   !!a && (a as { sending?: boolean }).sending === true;
 
+type AskT = NonNullable<CommentT["ask"]>;
+
+/** #2381: the viewer's own current pick on an ask, if they have weighed in. */
+const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
+
+/** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
+const needsMe = (ask: AskT): boolean => {
+  if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
+  if (ask.role === "weigh") return !myPickOf(ask) && !ask.answer;
+  return (
+    (!ask.answer || isSendingAnswer(ask.answer)) && ask.to.some((a) => a.me)
+  );
+};
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
-    .filter((t) =>
-      t.comments.some(
-        (c) =>
-          c.ask &&
-          (!c.ask.answer || isSendingAnswer(c.ask.answer)) &&
-          c.ask.to.some((a) => a.me),
-      ),
-    )
+    .filter((t) => t.comments.some((c) => c.ask && needsMe(c.ask)))
     .map((t) => t.id);
 }
 
@@ -491,6 +500,70 @@ const squash = (t: string) => t.replace(/\s+/g, " ").trim();
 export const showsAskBody = (body: string, question: string) =>
   squash(body) !== "" && squash(body) !== squash(question);
 
+/**
+ * #2381: who weighed in on an option, as names (3 people or fewer) or a bar and
+ * a count (4 or more), and the decider's tick on the chosen one. No vote total.
+ */
+function OptionViews({
+  views,
+  total,
+  bars,
+  decided,
+}: {
+  views: NonNullable<AskT["picks"]>;
+  total: number;
+  bars: boolean;
+  decided: string | null;
+}) {
+  if (views.length === 0 && !decided && !bars) return null;
+  return (
+    <div
+      data-option-views=""
+      className={`flex flex-col gap-0.5 px-2 pt-0.5 ${TXT} ${MUTED}`}
+    >
+      {decided && (
+        <span className="font-medium text-[var(--oa-success-fg)]">
+          ✓ {decided} decided
+        </span>
+      )}
+      {bars ? (
+        <span className="flex items-center gap-2" data-option-bar="">
+          <span
+            aria-hidden="true"
+            className="h-1.5 rounded bg-[var(--oa-accent)]"
+            style={{
+              width: `${total ? Math.max(4, (views.length / total) * 60) : 4}%`,
+              opacity: views.length ? 1 : 0.25,
+            }}
+          />
+          <span className="font-medium text-foreground">{views.length}</span>
+        </span>
+      ) : (
+        views.map((p, i) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: two guests can share a name and have no id
+            key={`${p.by.id ?? p.by.name}-${i}`}
+            data-view-by={p.by.id ?? p.by.name}
+            className="inline-flex items-center gap-1"
+          >
+            <FaceStack
+              faces={[
+                {
+                  key: String(p.by.id ?? p.by.name),
+                  round: p.by.kind !== "agent",
+                  el: <AuthorFace a={p.by} small />,
+                },
+              ]}
+            />
+            {p.by.me ? "You" : p.by.name}
+            {p.guest ? " (guest)" : ""} weighed in
+          </span>
+        ))
+      )}
+    </div>
+  );
+}
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
@@ -519,15 +592,25 @@ export function AskBlock({
   const ask = c.ask;
   const plain = useAnswerAsk(artifactId);
   const passkey = usePasskeyAnswer(artifactId);
+  const takeBack = useTakeBackAsk(artifactId);
   // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
-  const answer = ask?.confirm === "passkey" ? passkey : plain;
+  // #2381: an ask with no `confirm` mark can still need the decider's own passkey at pick
+  // time (their switches changed after it was posted): a plain pick that comes back
+  // passkey_required switches this ask to the passkey path and asks to pick again, so
+  // the passkey prompt starts from a click (Safari needs the gesture).
+  const [viaPasskey, setViaPasskey] = useState(false);
+  const [repick, setRepick] = useState(false);
+  const answer = ask?.confirm === "passkey" || viaPasskey ? passkey : plain;
   const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
-  const picked = ask?.answer?.optionId;
+  // #2381: what the viewer's own controls show: their weigh-in, or the decision.
+  const myPick = ask ? myPickOf(ask) : undefined;
+  const picked =
+    ask?.role === "weigh" ? myPick?.optionId : ask?.answer?.optionId;
   const opts = useRef<HTMLUListElement>(null);
   const [refocus, setRefocus] = useState<string | null>(null);
   // Once the failed pick is rolled back and its option is enabled again.
@@ -551,9 +634,9 @@ export function AskBlock({
     setChanging(false);
   }, [picked]);
   if (!ask) return null;
-  const mine = ask.to.some((a) => a.me);
+  const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
   // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
-  const pk = ask.confirm === "passkey";
+  const pk = ask.confirm === "passkey" || viaPasskey;
   const pkErr = pk && err != null ? passkeyFailure(err) : null;
   const pkLine = pkErr ? passkeyLine(pkErr) : null;
   const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
@@ -565,6 +648,44 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  // The decision itself (the decider's pick), for the closed line and the tick.
+  const decisionIdx = ask.options.findIndex(
+    (o) => o.id === ask.answer?.optionId,
+  );
+  const decisionOpt = ask.options[decisionIdx];
+  const weighing = ask.role === "weigh";
+  const decider = ask.decider;
+  // A risky ask (an action option or a passkey) shows no one else: no who-line,
+  // weigh-ins or take back. It is the asker's own user's call.
+  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const deciderLine =
+    !decider || risky
+      ? null
+      : ask.role === "decide"
+        ? "You decide"
+        : ask.chosenBy
+          ? `${ask.chosenBy.me ? "You" : ask.chosenBy.name} asked ${decider.name} to decide`
+          : `${decider.name} decides`;
+  // Who was asked to weigh in (people, not the decider), shown before anyone picks.
+  const weighers = ask.to
+    .filter((p) => p.kind !== "agent" && p.id !== decider?.id)
+    .sort((x, y) => Number(y.me) - Number(x.me));
+  const names = weighers.map((p) => (p.me ? "You" : p.name));
+  const weighersText =
+    names.length <= 1
+      ? (names[0] ?? "")
+      : names.length <= 3
+        ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+        : `${names.slice(0, 2).join(", ")} and ${names.length - 2} others`;
+  // Weighing in: everyone's latest view but the decider's own pick (that is the decision).
+  const views = (ask.picks ?? []).filter((p) => p.by.id !== decider?.id);
+  // Someone asked through their agent, or a pick kept from someone no longer
+  // asked, still counts: never "5 of 3 weighed in".
+  const people = Math.max(
+    ask.to.filter((p) => p.kind !== "agent" && p.id !== decider?.id).length,
+    views.length,
+  );
+  const bars = people >= 4;
   const slot = answer.isPending ? (
     <p role="status" data-passkey-verifying="" className={`m-0 ${MUTED}`}>
       Waiting for your passkey…
@@ -580,7 +701,9 @@ export function AskBlock({
   ) : !pickedOpt && !blocked ? (
     <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
       <KeyRound aria-hidden="true" className="size-3.5" />
-      Approving this needs your passkey.
+      {repick
+        ? "This now needs your passkey. Pick again."
+        : "Approving this needs your passkey."}
     </p>
   ) : null;
   const recIdx = ask.options.findIndex(
@@ -589,7 +712,7 @@ export function AskBlock({
   const letters = showLetters(ask.options);
   const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
-  const decided = ask.closed && pickedOpt;
+  const decided = ask.closed && decisionOpt;
   const line = decided && (
     <>
       <button
@@ -603,8 +726,8 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {letters ? `${letter(pickedIdx)}, ` : ""}
-          {pickedOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
+          {letters ? `${letter(decisionIdx)}, ` : ""}
+          {decisionOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -659,6 +782,73 @@ export function AskBlock({
           <div id={qid} className={`${TXT} font-semibold break-words`}>
             <Markdown body={ask.question} />
           </div>
+          {deciderLine && decider && (
+            <div
+              data-ask-decider=""
+              className={`flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5 ${TXT}`}
+            >
+              <span className="flex flex-wrap items-center gap-1.5">
+                <FaceStack
+                  faces={[
+                    {
+                      key: decider.id ?? decider.name,
+                      round: decider.kind !== "agent",
+                      el: <AuthorFace a={decider} small />,
+                    },
+                  ]}
+                />
+                <span className="font-medium text-foreground">
+                  {deciderLine}
+                </span>
+              </span>
+              {weighers.length > 0 && (
+                <span
+                  data-ask-weighers=""
+                  className={`flex flex-wrap items-center gap-1.5 ${MUTED}`}
+                >
+                  <FaceStack
+                    faces={weighers.map((p, i) => ({
+                      key: `${p.id ?? p.name}-${i}`,
+                      round: true,
+                      el: <AuthorFace a={p} small />,
+                    }))}
+                  />
+                  <span>{weighersText} weigh in</span>
+                </span>
+              )}
+            </div>
+          )}
+          {ask.canTakeBack && !risky && (
+            <p className={TXT}>
+              <Button
+                size="xs"
+                variant="link"
+                className="h-auto p-0 font-normal text-primary underline"
+                disabled={takeBack.isPending}
+                onClick={() => {
+                  setErr(null);
+                  takeBack.mutate(
+                    { thread: thread.id, comment: c.id },
+                    { onError: setErr },
+                  );
+                }}
+              >
+                I'll decide this
+              </Button>
+            </p>
+          )}
+          {ask.role && !risky && !ask.closed && !pickedOpt && (
+            <p data-ask-verb="" className={`${TXT} ${MUTED}`}>
+              {weighing
+                ? `Pick an option to weigh in. ${decider?.name ?? "The decider"} decides.`
+                : "Pick an option to decide."}
+            </p>
+          )}
+          {bars && !risky && (
+            <p data-ask-tally="" className={`${TXT} ${MUTED}`}>
+              {views.length} of {people} weighed in. The tally decides nothing.
+            </p>
+          )}
           {pk && slot && (
             // One slot for the idle line, the wait and the failure; absent when empty.
             <div className={`min-h-5 ${TXT}`} data-passkey-slot="">
@@ -676,15 +866,20 @@ export function AskBlock({
             {ask.options.map((o, i) => {
               const rec = ask.recommended?.optionId === o.id;
               const sel = picked === o.id;
+              // The decision keeps full strength in green; only unpicked options fade.
+              const isDecision =
+                ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
               return (
                 <li key={o.id}>
                   <Button
                     variant="outline"
                     size="sm"
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
-                      sel
-                        ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
-                        : ""
+                      isDecision
+                        ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
+                        : sel
+                          ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
+                          : ""
                     } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
                       !canAnswer ||
@@ -698,16 +893,32 @@ export function AskBlock({
                     onClick={() => {
                       setErr(null);
                       setLastPick(o.id);
-                      answer.mutate(
-                        { thread: thread.id, comment: c.id, optionId: o.id },
-                        {
-                          onError: (e) => {
-                            setErr(e);
-                            // Back to unanswered: focus returns to the option.
-                            setRefocus(o.id);
-                          },
+                      const v = {
+                        thread: thread.id,
+                        comment: c.id,
+                        optionId: o.id,
+                      };
+                      const failed = (e: unknown) => {
+                        setErr(e);
+                        // Back to unanswered: focus returns to the option.
+                        setRefocus(o.id);
+                      };
+                      setRepick(false);
+                      answer.mutate(v, {
+                        onError: (e) => {
+                          if (
+                            answer === plain &&
+                            e instanceof ApiClientError &&
+                            e.code === "passkey_required"
+                          ) {
+                            setErr(null);
+                            setViaPasskey(true);
+                            setRepick(true);
+                            return;
+                          }
+                          failed(e);
                         },
-                      );
+                      });
                     }}
                   >
                     {letters && (
@@ -719,7 +930,16 @@ export function AskBlock({
                       </span>
                     )}
                     <span className="min-w-0 flex-1 break-words">
-                      <b>{o.label}</b>
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <b>{o.label}</b>
+                        {rec && (
+                          <span
+                            className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                          >
+                            Recommended
+                          </span>
+                        )}
+                      </span>
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
                           <MarkdownInline body={o.detail} links={false} />
@@ -747,14 +967,19 @@ export function AskBlock({
                         )}
                       </span>
                     )}
-                    {rec && (
-                      <span
-                        className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                      >
-                        Recommended
-                      </span>
-                    )}
                   </Button>
+                  <OptionViews
+                    views={views.filter((p) => p.optionId === o.id)}
+                    total={views.length}
+                    bars={bars}
+                    decided={
+                      !risky &&
+                      ask.answer?.optionId === o.id &&
+                      !isSendingAnswer(ask.answer)
+                        ? actor(ask.answer.by, "You")
+                        : null
+                    }
+                  />
                 </li>
               );
             })}
@@ -765,13 +990,33 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer &&
+          {weighing && myPick && !answer.isPending && (
+            <p className={TXT} data-ask-answer="">
+              Your view is in. {decider?.name ?? "The decider"} decides.
+              {canAnswer && locked && (
+                <>
+                  {" · "}
+                  <Button
+                    size="xs"
+                    variant="link"
+                    className="h-auto p-0"
+                    onClick={() => setChanging(true)}
+                  >
+                    Change
+                  </Button>
+                </>
+              )}
+            </p>
+          )}
+          {!weighing &&
+            ask.answer &&
             pickedOpt &&
             !isSendingAnswer(ask.answer) &&
             !answer.isPending && (
               <>
                 <p className={`${TXT} font-medium`} data-ask-answer="">
-                  {actor(ask.answer.by, "You")} picked{" "}
+                  {actor(ask.answer.by, "You")}{" "}
+                  {ask.decider && !risky ? "decided" : "picked"}{" "}
                   {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
                   {versionDate(ask.answer.at)}
                   {ask.closed ? " · closed" : ""}
@@ -817,7 +1062,7 @@ export function AskBlock({
               ))}
             </p>
           )}
-          {!mine && !ask.closed && (
+          {!mine && !ask.closed && !ask.role && (
             <p className={`${TXT} ${MUTED}`}>
               Only the people asked can answer.
             </p>
