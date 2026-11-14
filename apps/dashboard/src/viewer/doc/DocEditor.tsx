@@ -44,6 +44,8 @@ export interface DocEditorProps {
   onStatus?: (status: DocStatus | null) => void;
   /** A version was saved or restored (the room says so; no polling). */
   onVersion?: (e: VersionEvent) => void;
+  /** The artifact's current version from the room's hello (#2490). */
+  onCurrentVersion?: (version: number) => void;
   /** Saves a new title as the artifact's title (the rename path). */
   onRename?: (title: string) => void;
   /** Buttons beside the "doc is full" message (New doc, Version history). */
@@ -66,10 +68,17 @@ export function DocEditor(props: DocEditorProps) {
     () => (room && onVersion ? room.onVersion(onVersion) : undefined),
     [room, onVersion],
   );
+  const { onCurrentVersion } = props;
+  const { version, role } = snap;
   useEffect(() => {
-    // The state belongs to editing: a read-only viewer has nothing to save.
-    onStatus?.(room && props.canEdit ? status : null);
-  }, [onStatus, room, status, props.canEdit]);
+    if (version !== null) onCurrentVersion?.(version);
+  }, [onCurrentVersion, version]);
+  // The state belongs to editing: a read-only viewer (by the page, or by the
+  // room's hello) has nothing to save.
+  const saves = props.canEdit && role !== "read";
+  useEffect(() => {
+    onStatus?.(room && saves ? status : null);
+  }, [onStatus, room, status, saves]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
   if (!room) return <div className="oa-doc" aria-busy="true" />;
   return <Loaded {...props} room={room} snap={snap} />;
@@ -99,10 +108,11 @@ function Loaded({
   const page = useRef<HTMLDivElement>(null);
   // At the size limit the server refuses edits: read-only until it is under.
   const tooLarge = error === DOC_TOO_LARGE_CODE;
-  // The server's hello role wins over what the page thinks (a full room joins
-  // read-only); a closed socket (access gone, doc deleted) takes no edits.
+  // Only the server's hello grants editing (#2490): never before it, and a
+  // read hello (a viewer, or a full room) wins over what the page thinks. A
+  // closed socket (access gone, doc deleted) takes no edits.
   const editable =
-    canEdit && !tooLarge && snap.role !== "read" && snap.ended === null;
+    canEdit && !tooLarge && snap.role === "edit" && snap.ended === null;
   const extensions = useMemo(
     () => [
       ...contentExtensions(),

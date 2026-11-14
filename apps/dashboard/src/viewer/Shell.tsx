@@ -438,6 +438,19 @@ function Viewer({
     },
     [qc, artifact.id],
   );
+  // The room's hello names the current version (#2490): the pill follows it
+  // at once, never down.
+  const onDocCurrentVersion = useCallback(
+    (v: number) => {
+      const key = qk.artifact(artifact.id);
+      const cur = qc.getQueryData<{ currentVersion: number }>(key);
+      if (cur && v > cur.currentVersion) {
+        qc.setQueryData(key, { ...cur, currentVersion: v });
+        void qc.invalidateQueries({ queryKey: key });
+      }
+    },
+    [qc, artifact.id],
+  );
   useEffect(() => {
     // No frame to wait for: the layer is ready at once.
     if (isDoc) cbs.current.onReady?.();
@@ -789,6 +802,7 @@ function Viewer({
                 outsider={!authed || role === "guest"}
                 onStatus={setDocStatus}
                 onVersion={onDocVersion}
+                onCurrentVersion={onDocCurrentVersion}
                 fullActions={
                   <>
                     {/* Mounted only when the doc is full and the viewer is signed

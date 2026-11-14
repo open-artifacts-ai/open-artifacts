@@ -302,7 +302,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     tooLarge,
     blank,
     full,
-    hello: arg("--hello"),
+    // The real room always says hello first (#2490); --hello none: no hello.
+    hello: ((h) => (h === "none" ? null : h))(arg("--hello") ?? "edit"),
     close: arg("--close"),
     closeFirst: arg("--close-first"),
     saved: arg("--saved"),

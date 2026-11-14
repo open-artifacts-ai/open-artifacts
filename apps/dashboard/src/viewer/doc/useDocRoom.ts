@@ -116,6 +116,8 @@ export interface DocSnapshot {
   /** Stored doc size and the cap, from hello. */
   bytes: number | null;
   cap: number | null;
+  /** The artifact's current version, from hello (#2490); null before it. */
+  version: number | null;
   /** The socket was closed for good; see RoomEnd. */
   ended: RoomEnd | null;
 }
@@ -251,12 +253,17 @@ export function createDocRoom(
     reason: null,
     bytes: null,
     cap: null,
+    version: null,
     ended: null,
   };
   let role: DocSnapshot["role"] = null;
   let reason: DocSnapshot["reason"] = null;
   let bytes: number | null = null;
   let cap: number | null = null;
+  let version: number | null = null;
+  // error is doc_too_large because hello said the doc is at its cap (not a
+  // refused edit): a later hello under the cap clears it.
+  let fullFromHello = false;
   let ended: RoomEnd | null = null;
   let badFrames = 0;
   // 1013: how many busy closes in a row, the pending reconnect, and the timer
@@ -292,6 +299,7 @@ export function createDocRoom(
       reason,
       bytes,
       cap,
+      version,
       ended,
     };
     if (
@@ -447,6 +455,22 @@ export function createDocRoom(
               : null;
           bytes = typeof frame.bytes === "number" ? frame.bytes : null;
           cap = typeof frame.cap === "number" ? frame.cap : null;
+          if (
+            typeof frame.version === "number" &&
+            Number.isSafeInteger(frame.version) &&
+            frame.version >= 0
+          )
+            version = frame.version;
+          // At the cap the room refuses every edit: the doc-full state,
+          // without a resync (no edit was refused, the Y.Doc is the server's).
+          const atCap = bytes !== null && cap !== null && bytes >= cap;
+          if (atCap && error === null) {
+            error = DOC_TOO_LARGE_CODE;
+            fullFromHello = true;
+          } else if (!atCap && fullFromHello) {
+            error = null;
+            fullFromHello = false;
+          }
           publish();
         }
         if (frame.type === "saved" && typeof frame.version === "number") {
@@ -478,6 +502,7 @@ export function createDocRoom(
           frame.code !== "bad_update"
         ) {
           error = typeof frame.code === "string" ? frame.code : "error";
+          fullFromHello = false;
           publish();
           // The rejected edit is still in this Y.Doc: ask for a fresh room
           // (once). The editor is read-only meanwhile and after.
@@ -576,6 +601,7 @@ const IDLE: DocSnapshot = {
   reason: null,
   bytes: null,
   cap: null,
+  version: null,
   ended: null,
 };
 const none = () => () => {};

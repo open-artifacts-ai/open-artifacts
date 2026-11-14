@@ -591,12 +591,53 @@ describe("DocEditor", () => {
   it("is editable with a toolbar when the viewer can edit", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     expect(
       await screen.findByRole("toolbar", { name: "Formatting" }),
     ).toBeVisible();
     expect(
       document.querySelector(".ProseMirror")?.getAttribute("contenteditable"),
     ).toBe("true");
+  });
+
+  it("is not editable before the room's hello, even when the page says it can edit", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    await screen.findByRole("textbox", { name: "Plan" });
+    expect(screen.queryByRole("toolbar")).toBeNull();
+    expect(
+      document.querySelector(".ProseMirror")?.getAttribute("contenteditable"),
+    ).toBe("false");
+  });
+
+  it("a hello at the cap is the doc-full state: read-only, the full message", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    const f = p.made.last as NonNullable<typeof p.made.last>;
+    f.autoHello = { bytes: 2097152, cap: 2097152 };
+    act(() => f.connect());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This doc is full (2 MB).",
+    );
+    expect(screen.queryByRole("toolbar")).toBeNull();
+  });
+
+  it("reports the hello's version to onCurrentVersion", async () => {
+    const p = fakeProviders();
+    const onCurrentVersion = vi.fn();
+    render(
+      <DocEditor
+        {...base}
+        canEdit
+        makeProvider={p.make}
+        onCurrentVersion={onCurrentVersion}
+      />,
+    );
+    const f = p.made.last as NonNullable<typeof p.made.last>;
+    f.autoHello = { version: 7 };
+    act(() => f.connect());
+    await waitFor(() => expect(onCurrentVersion).toHaveBeenCalledWith(7));
   });
 
   it("is not editable and has no toolbar when the viewer cannot edit", async () => {
@@ -612,6 +653,8 @@ describe("DocEditor", () => {
   it("shows the size message on a doc_too_large error frame", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     act(() => {
       p.made.last?.connect();
@@ -639,6 +682,8 @@ describe("DocEditor", () => {
         }
       />,
     );
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     // Not full: no message, no buttons.
     expect(
@@ -663,6 +708,8 @@ describe("DocEditor", () => {
   it("on doc_too_large goes read-only, then resyncs into a fresh Y.Doc without the rejected text", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const first = p.made.last as NonNullable<typeof p.made.last>;
     act(() => first.connect());
@@ -711,6 +758,8 @@ describe("DocEditor", () => {
   it("an empty doc shows the placeholder, and a typed one does not", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const empty = () => document.querySelector("p.oa-doc-empty");
     expect(empty()?.getAttribute("data-placeholder")).toBe(
@@ -731,6 +780,8 @@ describe("DocEditor", () => {
   it("an existing doc opens with the cursor in the body, once synced", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     expect(document.querySelector(".ProseMirror")).not.toHaveFocus();
     act(() => p.made.last?.connect());
@@ -743,6 +794,8 @@ describe("DocEditor", () => {
     const p = fakeProviders();
     markFresh("A1");
     render(<DocEditor {...base} canEdit fresh makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     act(() => p.made.last?.connect());
     const title = screen.getByRole<HTMLInputElement>("textbox", {
@@ -761,6 +814,8 @@ describe("DocEditor", () => {
   it("typing in the title when the room syncs keeps the cursor there (existing doc)", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const title = screen.getByRole<HTMLInputElement>("textbox", {
       name: "Title",
@@ -778,6 +833,8 @@ describe("DocEditor", () => {
     const p = fakeProviders();
     markFresh("A1");
     render(<DocEditor {...base} canEdit fresh makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const title = screen.getByRole<HTMLInputElement>("textbox", {
       name: "Title",
@@ -794,6 +851,8 @@ describe("DocEditor", () => {
   it("the title is the first line of the editing column", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const page = document.querySelector(".oa-doc-page");
     expect(page?.firstElementChild).toBe(
@@ -808,6 +867,8 @@ describe("DocEditor", () => {
   it("Enter and Down in the title move to the body", async () => {
     const p = fakeProviders();
     render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const title = screen.getByRole("textbox", { name: "Title" });
     for (const key of ["Enter", "ArrowDown"]) {
@@ -834,6 +895,8 @@ describe("DocEditor", () => {
           <DocEditor {...base} canEdit makeProvider={p.make} />
         </>,
       );
+      // The room says hello (edit) on open: only then is it editable.
+      act(() => p.made.last?.connect(false));
       await screen.findByRole("toolbar");
       act(() => void showToast());
       await screen.findByText(
@@ -897,6 +960,8 @@ describe("DocEditor", () => {
     const open = async () => {
       const p = fakeProviders();
       render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+      // The room says hello (edit) on open: only then is it editable.
+      act(() => p.made.last?.connect(false));
       await screen.findByRole("toolbar");
       const f = p.made.last as NonNullable<typeof p.made.last>;
       act(() => f.connect());
@@ -983,6 +1048,8 @@ describe("DocEditor", () => {
           onVersion={onVersion}
         />,
       );
+      // The room says hello (edit) on open: only then is it editable.
+      act(() => p.made.last?.connect(false));
       await screen.findByRole("toolbar");
       const f = p.made.last as NonNullable<typeof p.made.last>;
       act(() => f.connect());
@@ -1031,6 +1098,8 @@ describe("DocEditor", () => {
         onStatus={(s) => seen.push(s)}
       />,
     );
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     act(() => p.made.last?.connect());
     expect(seen.at(-1)).toBe("saved");
@@ -1043,6 +1112,8 @@ describe("DocEditor", () => {
   it("leaves the room on unmount", async () => {
     const p = fakeProviders();
     const view = render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const fake = p.made.last;
     view.unmount();
@@ -1112,6 +1183,8 @@ describe("cursor name flags", () => {
         makeProvider={p.make}
       />,
     );
+    // The room says hello (edit) on open: only then is it editable.
+    act(() => p.made.last?.connect(false));
     await screen.findByRole("toolbar");
     const fake = p.made.last as NonNullable<typeof p.made.last>;
     act(() => fake.connect());

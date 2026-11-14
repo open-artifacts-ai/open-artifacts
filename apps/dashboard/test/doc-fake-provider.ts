@@ -40,6 +40,8 @@ export class FakeProvider implements RoomProvider {
 
   /** y-websocket's: whether it reconnects after the server closes with a code. */
   shouldConnect = true;
+  /** A hello frame sent on every connect, as the real room does (#2490); null: none. */
+  autoHello: Record<string, unknown> | null = null;
   constructor(
     public doc: Y.Doc,
     public shouldReconnect: (e: {
@@ -80,6 +82,17 @@ export class FakeProvider implements RoomProvider {
     };
     this.wsconnected = true;
     this.emit("status", { status: "connected" });
+    if (this.autoHello)
+      this.frame(
+        JSON.stringify({
+          type: "hello",
+          role: "edit",
+          bytes: 0,
+          cap: 2097152,
+          version: 1,
+          ...this.autoHello,
+        }),
+      );
     if (sync) {
       this.synced = true;
       this.emit("sync", true);
@@ -123,6 +136,8 @@ export function fakeProviders() {
   const made: { last: FakeProvider | null } = { last: null };
   const make = (_id: string, ydoc: Y.Doc) => {
     made.last = new FakeProvider(ydoc);
+    // An editor's room says hello like the real one; a test can change it.
+    made.last.autoHello = {};
     return made.last;
   };
   return { make, made };

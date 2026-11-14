@@ -254,6 +254,35 @@ describe("the wire spec: hello and close codes", () => {
     room.destroy();
   });
 
+  it("hello's version is kept; a malformed one is not (#2490)", () => {
+    const room = ready();
+    expect(room.getSnapshot().version).toBeNull();
+    fake.frame(hello("edit", { version: 4 }));
+    expect(room.getSnapshot().version).toBe(4);
+    fake.frame(hello("edit", { version: -1 }));
+    expect(room.getSnapshot().version).toBe(4);
+    room.destroy();
+  });
+
+  it("a hello at the cap is doc_too_large without a resync; a later one under it clears it", () => {
+    const onResync = vi.fn();
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { onResync },
+    );
+    fake.connect();
+    fake.frame(hello("edit", { bytes: 2097152 }));
+    expect(room.getSnapshot().error).toBe("doc_too_large");
+    vi.advanceTimersByTime(10);
+    expect(onResync).not.toHaveBeenCalled();
+    fake.frame(hello("edit", { bytes: 1000 }));
+    expect(room.getSnapshot().error).toBeNull();
+    room.destroy();
+  });
+
   it("a viewer's hello says read with reason access", () => {
     const room = ready();
     fake.frame(hello("read", { reason: "access" }));
