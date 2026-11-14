@@ -149,14 +149,25 @@ export const indexTakenBack = (
   to: StoredParty[],
   asker: string,
   oldDecider: string,
-  /** A confirm or action ask: only the decider has a row, so the old decider's goes even if asked. */
-  risky = false,
+  /** A confirm or action ask (info.confirm 1): only the decider has a row, so the old decider's goes even if asked. */
+  info: AskInfo,
 ) =>
   guarded("take_back", artifactId, () =>
     env.DB.batch([
-      stmt(env.DB, INSERT).bind(artifactId, threadId, commentId, asker, 1, 0),
+      stmt(env.DB, INSERT).bind(
+        artifactId,
+        threadId,
+        commentId,
+        asker,
+        1,
+        0,
+        info.question,
+        info.asker,
+        info.askedAt,
+        info.confirm,
+      ),
       ...(oldDecider !== asker &&
-      (risky || !addressees(to).includes(oldDecider))
+      (info.confirm === 1 || !addressees(to).includes(oldDecider))
         ? [
             stmt(
               env.DB,
