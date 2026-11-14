@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CommentAuthorSchema } from "./comments.js";
 
 /** A same-origin path: starts with one "/", never "//" or a scheme. */
 const SameOriginPath = z
@@ -28,38 +29,54 @@ const Iso = z.string().datetime({ offset: true });
 const Base64Url = z.string().regex(/^[A-Za-z0-9_-]+$/);
 const Hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 
-export const InboxItemSchema = z.object({
-  id: z.string(),
-  level: z.enum(["needs_you", "update"]),
-  kind: z.enum([
-    "ask",
-    "mention",
-    "reply",
-    "comment",
-    "share",
-    "decision",
-    "machine",
-    "away",
-  ]),
-  urgency: z.enum(["waiting", "approval", "plain"]).optional(),
-  waitingSince: Iso.optional(),
-  artifact: z.object({ id: z.string(), title: z.string() }),
-  actor: z
-    .object({
-      kind: z.enum(["person", "agent"]),
-      name: z.string(),
-      agentId: z.string().optional(),
-    })
-    .nullable(),
-  machine: z.object({ id: z.string(), name: z.string() }).optional(),
-  away: z.object({ since: Iso, count: z.number().int().min(0) }).optional(),
-  text: z.string(),
-  href: SameOriginPath,
-  createdAt: Iso,
-  readAt: Iso.nullable(),
-  later: z.object({ until: Iso, used: z.literal(true) }).optional(),
-  backFromLater: z.literal(true).optional(),
-});
+export const InboxItemSchema = z
+  .object({
+    id: z.string(),
+    level: z.enum(["needs_you", "update"]),
+    kind: z.enum([
+      "ask",
+      "mention",
+      "reply",
+      "comment",
+      "share",
+      "decision",
+      "machine",
+      "away",
+    ]),
+    urgency: z.enum(["waiting", "approval", "plain"]).optional(),
+    waitingSince: Iso.optional(),
+    /** Null only for kind "machine" and "away"; every other kind has its page. */
+    artifact: z.object({ id: z.string(), title: z.string() }).nullable(),
+    actor: CommentAuthorSchema.nullable(),
+    /** The agent's roster key, used by Mute agent. */
+    agentKey: z.string().optional(),
+    machine: z.object({ id: z.string(), name: z.string() }).optional(),
+    away: z
+      .object({
+        since: Iso,
+        count: z.number().int().min(0),
+        pages: z.number().int().min(0),
+      })
+      .optional(),
+    text: z.string(),
+    href: SameOriginPath,
+    createdAt: Iso,
+    readAt: Iso.nullable(),
+    later: z.object({ until: Iso, used: z.literal(true) }).optional(),
+    backFromLater: z.literal(true).optional(),
+  })
+  .superRefine((item, ctx) => {
+    if (
+      item.artifact === null &&
+      item.kind !== "machine" &&
+      item.kind !== "away"
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["artifact"],
+        message: "artifact is required for this kind",
+      });
+  });
 export type InboxItem = z.infer<typeof InboxItemSchema>;
 
 export const InboxSchema = z.object({
