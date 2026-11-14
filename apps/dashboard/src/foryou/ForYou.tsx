@@ -3,7 +3,7 @@
  * a dropdown panel on desktop, a full screen on a phone (≤600px). The bell
  * reads Me.inbox; the list is R.meInbox, sorted by the server.
  */
-import type { Inbox, InboxItem, Me } from "@oa/shared";
+import type { Me } from "@oa/shared";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +18,6 @@ import {
   PopoverTrigger,
 } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
-import { KeyRound } from "lucide-react";
 import {
   type ComponentProps,
   type MouseEvent,
@@ -44,6 +43,7 @@ import {
   useReadAll,
   useUnmute,
 } from "./api";
+import type { List as Inbox, Item as InboxItem } from "./contract";
 import {
   askComment,
   backText,
@@ -570,12 +570,10 @@ function Face({ x }: { x: InboxItem }) {
         {initials(a.name)}
       </span>
     );
-  return (
-    <Glyph>{x.kind === "machine" ? "⌂" : x.kind === "away" ? "☾" : "•"}</Glyph>
-  );
+  return <Glyph>{x.kind === "away" ? "☾" : "•"}</Glyph>;
 }
 
-/** A waiting ask's calm mark: a clock and the server's duration. An approval: a key. */
+/** A waiting ask's calm mark: a clock and the server's duration. */
 function Urgency({ x }: { x: InboxItem }) {
   const ms = waitMs(x);
   if (ms !== undefined)
@@ -585,14 +583,6 @@ function Urgency({ x }: { x: InboxItem }) {
         className={`${CHIP} bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]`}
       >
         <span aria-hidden="true">◷</span> {waitText(ms)}
-      </span>
-    );
-  if (x.urgency === "approval")
-    return (
-      <span
-        className={`${CHIP} bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]`}
-      >
-        <KeyRound aria-hidden="true" className="size-3" /> Approval
       </span>
     );
   return null;
@@ -666,10 +656,9 @@ function Row({
     if (isUnread) markRead.mutate([x.id]);
     go(e, x.href);
   };
-  const urgency =
-    needs && (waitMs(x) !== undefined || x.urgency === "approval");
+  const urgency = needs && waitMs(x) !== undefined;
   const acts =
-    !put && needs && (urgency || x.backFromLater || x.kind === "machine");
+    !put && needs && (urgency || x.backFromLater || x.kind === "mention");
   return (
     <li
       data-for-you-item={x.id}
@@ -732,14 +721,14 @@ function Row({
                 Back from later
               </span>
             )}
-            {/* Review follows href to the approve page; nothing is approved from the list. */}
-            {x.kind === "machine" && href && (
+            {/* A mention's one action: open it where it was said. */}
+            {x.kind === "mention" && href && (
               <a
                 href={href}
                 onClick={follow}
                 className={`${BTN} border-[var(--oa-accent)] bg-[var(--oa-accent)] text-[var(--oa-accent-text)] no-underline`}
               >
-                Review
+                Open
               </a>
             )}
             {canLater(x) && (

@@ -17,10 +17,10 @@ import { R } from "../routes.js";
 import { FOR_YOU_ASK } from "./comments.js";
 
 /**
- * mixed: two need you (a waiting ask, a machine to approve) and two updates.
+ * mixed: two need you (a waiting ask, a mention) and two updates.
  * calm: nothing needs you; "While you were away" and two updates.
  * empty: nothing at all (first time).
- * back: the machine is back from Later.
+ * back: the mention is back from Later.
  */
 export type ForYouVariant = "mixed" | "calm" | "empty" | "back";
 
@@ -78,15 +78,15 @@ export function createForYouMock(d: Deps): {
     createdAt: ago(4 * MIN),
     readAt: null,
   };
-  const machine = (back: boolean): InboxItem => ({
-    id: "itm:machine1",
+  /** Design v10: a mention that needs you, with Open and Later. */
+  const mention = (back: boolean): InboxItem => ({
+    id: "itm:mention1",
     level: "needs_you",
-    kind: "machine",
-    machine: { id: "mach1", name: "Ada-Workstation" },
-    artifact: null,
-    actor: null,
-    text: "Approve this machine: Ada-Workstation",
-    href: "/agents",
+    kind: "mention",
+    artifact: page(d.otherId, "Pricing table"),
+    actor: person("Sam Rivera"),
+    text: "Sam Rivera mentioned you",
+    href: `/a/${d.otherId}`,
     createdAt: ago(back ? 26 * 60 * MIN : 20 * MIN),
     readAt: null,
     ...(back
@@ -122,7 +122,7 @@ export function createForYouMock(d: Deps): {
   let later: InboxItem[] = [];
   let updates: InboxItem[] = [];
   if (d.variant === "mixed") {
-    needsYou = [ask, machine(false)];
+    needsYou = [ask, mention(false)];
     updates = [
       update(
         "itm:reply1",
@@ -184,7 +184,7 @@ export function createForYouMock(d: Deps): {
       ),
     ];
   }
-  if (d.variant === "back") needsYou = [machine(true)];
+  if (d.variant === "back") needsYou = [mention(true)];
 
   const open = () =>
     needsYou.filter((x) => {

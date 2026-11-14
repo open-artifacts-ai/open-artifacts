@@ -1,17 +1,9 @@
 /**
- * For you's client (#2512) on OA Backend's inbox contract (R.meInbox*,
- * InboxSchema). The bell reads Me.inbox; the list loads when it opens, and
+ * For you's client (#2512) on OA Backend's inbox contract (R.meInbox*;
+ * items read one at a time, ./contract). The bell reads Me.inbox; the list loads when it opens, and
  * Updates page on with `cursor` ("Show more").
  */
-import {
-  type Inbox,
-  type InboxItem,
-  InboxItemSchema,
-  InboxSchema,
-  type Me,
-  MeSchema,
-  R,
-} from "@oa/shared";
+import { type Me, MeSchema, R } from "@oa/shared";
 import {
   type InfiniteData,
   type QueryClient,
@@ -22,6 +14,12 @@ import {
 } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { qk } from "../api/queries";
+import {
+  type List as Inbox,
+  type Item as InboxItem,
+  ListSchema as InboxSchema,
+  LaterItemSchema,
+} from "./contract";
 import { countsOf } from "./model";
 
 export const inboxKey = ["inbox"] as const;
@@ -178,10 +176,10 @@ export const useLater = () => {
         "POST",
         R.meInboxLater(v.id),
         { until: v.until },
-        InboxItemSchema,
+        LaterItemSchema,
       );
       editPages(qc, (p, i) =>
-        i === 0
+        i === 0 && moved
           ? { ...p, later: [...p.later.filter((x) => x.id !== v.id), moved] }
           : p,
       );

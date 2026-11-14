@@ -3,7 +3,7 @@
  * rules are unit-tested apart from the UI. The server sorts and filters the
  * inbox (R.meInbox); the client never re-sorts it.
  */
-import type { Inbox, InboxItem } from "@oa/shared";
+import type { List as Inbox, Item as InboxItem } from "./contract";
 
 export type BellState = { count: number; dot: boolean };
 
@@ -29,7 +29,7 @@ export const countsOf = (i: Pick<Inbox, "needsYou" | "updates">) => ({
 /** Only an item with one obvious action (a button on its row) may be put off, and only once. */
 export const canLater = (x: InboxItem) =>
   x.level === "needs_you" &&
-  x.kind === "machine" &&
+  x.kind === "mention" &&
   !x.later &&
   !x.backFromLater;
 
@@ -137,8 +137,6 @@ export function contextLine(x: InboxItem, now = Date.now()): string {
       const who = x.actor ? `${x.actor.name} asks · ${on}` : on;
       return waitMs(x, now) !== undefined ? who : `${who} · ${when}`;
     }
-    case "machine":
-      return `It wants to connect agents as you · ${when}`;
     case "share":
       return `"${title}" · ${when}`;
     case "away":
