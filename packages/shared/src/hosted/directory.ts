@@ -273,6 +273,7 @@ export const AuditActionSchema = z.enum([
   "invite.accept",
   "settings.change",
   "audit.export",
+  "ask.approve",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 
@@ -329,6 +330,7 @@ export const AuditEventSchema = z.object({
       "invite",
       "settings",
       "audit",
+      "ask",
     ]),
     id: z.string(),
   }),

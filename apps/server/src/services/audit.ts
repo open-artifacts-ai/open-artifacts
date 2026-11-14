@@ -228,6 +228,47 @@ export const inviteCreateAuditByEmail = (
     );
 };
 
+/**
+ * ask.approve (#2458): a risky ask was decided (its confirm needs a passkey, or
+ * the picked option names an action). Ids and enums only, never the question,
+ * an option's label, or an address. The decision lives in a Durable Object, so
+ * this row can't share its transaction: the caller writes it right after the
+ * DO confirms, and a failed write is logged, never fails the pick.
+ */
+export type AskApproval = {
+  artifactId: string;
+  threadId: string;
+  commentId: string;
+  optionId: string;
+  action?: string;
+  passkey: boolean;
+  askerAgentId?: string | null;
+  askerIsAgent: boolean;
+};
+export const askApproveAudit = (
+  env: Env,
+  userId: string,
+  a: AskApproval,
+): D1PreparedStatement =>
+  audit(
+    env,
+    "ask.approve",
+    { type: "ask", id: a.commentId },
+    userActor(userId),
+    {
+      detail: {
+        artifactId: a.artifactId,
+        threadId: a.threadId,
+        commentId: a.commentId,
+        optionId: a.optionId,
+        ...(a.action ? { action: a.action } : {}),
+        passkey: a.passkey,
+        askerIsAgent: a.askerIsAgent,
+        ...(a.askerAgentId ? { askerAgentId: a.askerAgentId } : {}),
+      },
+    },
+  );
+
 // ------------------------------------------------------------------- read
 
 type Row = {
@@ -259,6 +300,7 @@ const TARGETS = new Set([
   "invite",
   "settings",
   "audit",
+  "ask",
 ]);
 
 /**
