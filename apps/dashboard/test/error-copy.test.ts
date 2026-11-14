@@ -2,7 +2,12 @@
 import type { ErrorCode } from "@oa/shared";
 import { expect, it } from "vitest";
 import { ApiClientError } from "../src/api/client";
-import { billingContext, errorCopy, errorLink } from "../src/api/errorCopy";
+import {
+  billingContext,
+  errorCopy,
+  errorLink,
+  planLinks,
+} from "../src/api/errorCopy";
 
 it.each([
   [
@@ -167,6 +172,27 @@ it("plan_required before a trial ever ran offers the trial", () => {
   expect(errorCopy(e, "x", { trialNeverRan: true })).toBe(
     "Spaces are a team feature. This instance is on Solo. Ask an owner to invite someone or choose a plan.",
   );
+});
+
+it("plan_required for Spaces links Invite people and See plans with the trial, See plans without (#2472)", () => {
+  const e = planErr("plan_required", reason("solo"));
+  expect(planLinks(e, { owner: true, trialNeverRan: true })).toEqual([
+    { label: "Invite people", to: "/settings/members" },
+    { label: "See plans", to: "/settings/plan" },
+  ]);
+  expect(planLinks(e, { owner: true, trialNeverRan: false })).toEqual([
+    { label: "See plans", to: "/settings/plan" },
+  ]);
+  expect(planLinks(e, { owner: true })).toEqual([
+    { label: "See plans", to: "/settings/plan" },
+  ]);
+  // A member can't open either page; an invite refusal isn't about Spaces.
+  expect(planLinks(e, { trialNeverRan: true })).toEqual([]);
+  expect(planLinks(e, { owner: true, refused: "invite" })).toEqual([]);
+  expect(
+    planLinks(planErr("plan_limit", reason("solo")), { owner: true }),
+  ).toEqual([]);
+  expect(planLinks(new Error("x"), { owner: true })).toEqual([]);
 });
 
 it("plan_required names what was refused, not always Spaces (#1838)", () => {
