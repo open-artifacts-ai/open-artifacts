@@ -42,7 +42,7 @@ import {
   useCommentsController,
 } from "./comments/useComments";
 import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
-import { DocEditor, type DocLabel, STATUS_TEXT } from "./doc/DocEditor";
+import { DocEditor, type DocLabel, DocState } from "./doc/DocEditor";
 import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
 import { isFresh } from "./doc/fresh";
 import {
@@ -704,14 +704,7 @@ function Viewer({
                 <>
                   {slot}
                   {isDoc && docStatus && (
-                    <span
-                      className="oa-docstate"
-                      role="status"
-                      aria-live="polite"
-                      data-state={docStatus}
-                    >
-                      {versionNote ?? STATUS_TEXT[docStatus]}
-                    </span>
+                    <DocState label={docStatus} note={versionNote} />
                   )}
                 </>
               }

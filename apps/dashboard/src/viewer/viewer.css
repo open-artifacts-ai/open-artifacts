@@ -903,6 +903,46 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   color: var(--oa-text-muted);
   white-space: nowrap;
 }
+.oa-docstate-icon {
+  display: none;
+  width: 16px;
+  height: 16px;
+}
+/* Design: under 480px the state is its 16px icon, in a 16px slot that never
+   changes width, so the header neither wraps nor shifts. The text stays for
+   assistive tech (and is the title). "View only" has no icon: its words. */
+@media (max-width: 479.98px) {
+  .oa-docstate[data-icon] {
+    display: inline-flex;
+    flex: none;
+    width: 16px;
+    justify-content: center;
+  }
+  .oa-docstate[data-icon] .oa-docstate-icon {
+    display: block;
+  }
+  .oa-docstate[data-icon] .oa-docstate-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .oa-docstate-icon[data-spin] {
+    animation: oa-docstate-spin 1s linear infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-docstate-icon[data-spin] {
+    animation: none;
+  }
+}
+@keyframes oa-docstate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 /* Remote cursors: a 2px caret. Its name flag opens for 2 s after the cursor
    moves, or while the caret is hovered; collapsed, a dot (an agent: a rounded
    square) marks the caret. */

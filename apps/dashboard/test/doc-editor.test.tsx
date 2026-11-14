@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { Toaster, toast } from "../src/layout/toast";
 import { CaretActivity, FLAG_MS, renderCaret } from "../src/viewer/doc/cursors";
-import { DocEditor, STATUS_TEXT } from "../src/viewer/doc/DocEditor";
+import { DocEditor, DocState, STATUS_TEXT } from "../src/viewer/doc/DocEditor";
 import { isDocArtifact, setMockDoc } from "../src/viewer/doc/docMock";
 import {
   contentExtensions,
@@ -1679,5 +1679,38 @@ describe("TitleField saving", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("DocState (the title bar's doc state)", () => {
+  it("carries an icon for each state but View only; its text is the name and the title", () => {
+    const cases = [
+      ["saving", "Saving…", true],
+      ["reconnecting", "Reconnecting…", true],
+      ["connecting", "Connecting…", true],
+      ["saved", "Saved", false],
+      ["offline", "Offline", false],
+    ] as const;
+    for (const [label, text, spin] of cases) {
+      const { unmount } = render(<DocState label={label} />);
+      const s = screen.getByRole("status");
+      expect(s).toHaveTextContent(text);
+      expect(s).toHaveAttribute("title", text);
+      const icon = s.querySelector("svg.oa-docstate-icon");
+      expect(icon, label).not.toBeNull();
+      expect(icon?.hasAttribute("data-spin"), label).toBe(spin);
+      unmount();
+    }
+    const { unmount } = render(<DocState label="view" />);
+    expect(screen.getByRole("status")).toHaveTextContent("View only");
+    expect(screen.getByRole("status").querySelector("svg")).toBeNull();
+    unmount();
+  });
+
+  it("a version note takes the text, name and title", () => {
+    render(<DocState label="saved" note="Saved as v5" />);
+    const s = screen.getByRole("status");
+    expect(s).toHaveTextContent("Saved as v5");
+    expect(s).toHaveAttribute("title", "Saved as v5");
   });
 });

@@ -158,7 +158,14 @@ for (const scheme of ["light", "dark"] as const)
           await expect(page.locator(".ProseMirror")).toBeVisible();
           await check(page);
           await page.waitForFunction(() =>
-            document.getAnimations().every((x) => x.playState !== "running"),
+            document
+              .getAnimations()
+              // A spinner (an infinite animation) never settles.
+              .every(
+                (x) =>
+                  x.playState !== "running" ||
+                  x.effect?.getComputedTiming().iterations === Infinity,
+              ),
           );
           const file = `doc-state-${name}-${scheme}-${width}.png`;
           await page.screenshot({
@@ -166,3 +173,106 @@ for (const scheme of ["light", "dark"] as const)
           });
         });
     });
+
+// Design: under 480px the state is a 16px icon (View only keeps its words),
+// so the header never wraps; the slot is 16px whatever the state.
+const OFFLINE_LIKE = async (page: Page) => {
+  // 4401, then upgrades refused while still signed in: Offline, retrying.
+  await expect(status(page, /^Saved$/)).toBeVisible();
+  await expect
+    .poll(() =>
+      (room ? (roomLog.get(room) ?? []) : []).some((l) =>
+        l.startsWith("closing 4401 "),
+      ),
+    )
+    .toBe(true);
+  await expect(status(page, /^Offline$/)).toBeVisible();
+};
+const HEADER: [string, string[], (page: Page) => Promise<void>, boolean][] = [
+  [
+    "saved",
+    ["--hello", "edit"],
+    (page) => expect(status(page, /^Saved$/)).toBeVisible(),
+    true,
+  ],
+  ["offline", ["--expire-auth"], OFFLINE_LIKE, true],
+  [
+    "reconnecting",
+    ["--expire-auth"],
+    async (page) => {
+      await loggedOut(false)(page);
+      await page.evaluate(() => {
+        (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+        window.dispatchEvent(new Event("focus"));
+      });
+      await expect(status(page, /^Reconnecting…$/)).toBeVisible();
+    },
+    true,
+  ],
+  [
+    "view-only",
+    ["--hello", "read:access"],
+    (page) => expect(status(page, /^View only$/)).toBeVisible(),
+    false,
+  ],
+];
+for (const scheme of ["light", "dark"] as const)
+  test.describe(`header ${scheme} 390`, () => {
+    test.use({ colorScheme: scheme, viewport: { width: 390, height: 800 } });
+    for (const [name, args, reach, icon] of HEADER)
+      test(`${name}: the header does not wrap`, async ({ page }, info) => {
+        room = await startRoom(info, page, args);
+        await page.goto(`/a/${LANDING}?mock=doc`);
+        await expect(page.locator(".ProseMirror")).toBeVisible();
+        await reach(page);
+        const state = page.locator(".oa-docstate");
+        const share = page.getByRole("button", { name: "Share" });
+        const more = page.getByRole("button", { name: "More actions" });
+        const [s, sh, mo] = await Promise.all(
+          [state, share, more].map(async (l) => {
+            const b = await l.boundingBox();
+            if (!b) throw new Error("not laid out");
+            return b;
+          }),
+        );
+        // One row: the state, Share and More share a vertical band.
+        const mid = (b: { y: number; height: number }) => b.y + b.height / 2;
+        expect(Math.abs(mid(sh) - mid(mo))).toBeLessThan(2);
+        expect(Math.abs(mid(s) - mid(sh))).toBeLessThan(4);
+        if (icon) {
+          // A 16px icon slot: the text is its name and title, not shown.
+          expect(Math.round(s.width)).toBe(16);
+          await expect(state.locator("svg.oa-docstate-icon")).toBeVisible();
+          const text = (await state.textContent()) ?? "";
+          await expect(state).toHaveAttribute("title", text);
+        }
+        if (name === "reconnecting" || name === "offline") {
+          const file = `doc-state-header-${name}-${scheme}-390.png`;
+          await page.screenshot({
+            path: DIR ? `${DIR}/${file}` : info.outputPath(file),
+          });
+        }
+      });
+  });
+
+for (const motion of ["no-preference", "reduce"] as const)
+  test.describe(`spinner, ${motion} motion, 390`, () => {
+    test.use({ viewport: { width: 390, height: 800 }, reducedMotion: motion });
+    test(`Reconnecting's spinner ${motion === "reduce" ? "does not spin" : "spins"}`, async ({
+      page,
+    }, info) => {
+      room = await startRoom(info, page, ["--expire-auth"]);
+      await page.goto(`/a/${LANDING}?mock=doc`);
+      await expect(page.locator(".ProseMirror")).toBeVisible();
+      await loggedOut(false)(page);
+      await page.evaluate(() => {
+        (window as unknown as { __oaMe401: boolean }).__oaMe401 = false;
+        window.dispatchEvent(new Event("focus"));
+      });
+      await expect(status(page, /^Reconnecting…$/)).toBeVisible();
+      const spinning = await page
+        .locator(".oa-docstate-icon")
+        .evaluate((el) => el.getAnimations().length > 0);
+      expect(spinning).toBe(motion !== "reduce");
+    });
+  });

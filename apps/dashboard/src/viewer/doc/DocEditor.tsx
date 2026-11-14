@@ -1,6 +1,12 @@
 import { Button } from "@oa/ui/shadcn";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { TriangleAlertIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CloudOffIcon,
+  LoaderCircleIcon,
+  type LucideIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import type * as Y from "yjs";
 import { dismissToast } from "../../layout/toast";
@@ -41,6 +47,55 @@ export const STATUS_TEXT: Record<DocLabel, string> = {
   // Product: signed in again, the room still refusing (nothing unsent).
   reconnecting: "Reconnecting…",
 };
+
+/**
+ * Design: under 480px the state is a 16px icon (its text stays the
+ * accessible name and the title), so the header never wraps. A spinner for
+ * work in flight (no spin under prefers-reduced-motion), a check for Saved,
+ * cloud-off for Offline. "View only" keeps its words.
+ */
+export const STATUS_ICON: Partial<
+  Record<DocLabel, { icon: LucideIcon; spin?: boolean }>
+> = {
+  connecting: { icon: LoaderCircleIcon, spin: true },
+  saving: { icon: LoaderCircleIcon, spin: true },
+  reconnecting: { icon: LoaderCircleIcon, spin: true },
+  saved: { icon: CheckIcon },
+  offline: { icon: CloudOffIcon },
+};
+
+/** The doc's state in the title bar (where Saved sits). */
+export function DocState({
+  label,
+  note,
+}: {
+  label: DocLabel;
+  /** A version note shown in its place for a few seconds. */
+  note?: string | null;
+}) {
+  const text = note ?? STATUS_TEXT[label];
+  const glyph = STATUS_ICON[label];
+  const Icon = glyph?.icon;
+  return (
+    <span
+      className="oa-docstate"
+      role="status"
+      aria-live="polite"
+      data-state={label}
+      data-icon={Icon ? "" : undefined}
+      title={text}
+    >
+      {Icon && (
+        <Icon
+          className="oa-docstate-icon"
+          aria-hidden="true"
+          data-spin={glyph.spin ? "" : undefined}
+        />
+      )}
+      <span className="oa-docstate-text">{text}</span>
+    </span>
+  );
+}
 
 export interface DocEditorProps {
   artifactId: string;
