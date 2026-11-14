@@ -1121,6 +1121,15 @@ export const SURFACES: readonly Surface[] = [
     ),
     socket((id) => `${A(id)}/events`),
   ),
+  // #1100: the doc room socket (view to join; edit is a role inside it).
+  // The world's artifacts aren't docs: past the access check the route
+  // answers 400 not-a-doc, so 400 is the allowed answer (a denial is 404).
+  rest(
+    "ws doc",
+    "events",
+    [`GET ${ARTS}/doc`],
+    read((id) => `${A(id)}/doc`, 400, 426),
+  ),
   // MCP (all 19 tools)
   mcp(
     "get_artifact",

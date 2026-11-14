@@ -72,6 +72,7 @@ import {
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
+import { noteInstanceFirst } from "./analytics.js";
 import { audit, userActor } from "./audit.js";
 import {
   apiFormat,
@@ -646,6 +647,9 @@ export async function publish(
     ]),
   );
   mark();
+  // #2479: the first page anyone publishes (not the seeded Welcome or the
+  // provisioner's self-test, which share its title); a no-op unless analytics is on.
+  if (create) await noteInstanceFirst(env, "first_page_published", ctx);
   logPublishTiming(env, id, create, at);
   const warning = dataWritersWarning({
     visibility: visibility ?? prior.visibility,

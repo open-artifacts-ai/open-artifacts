@@ -8,8 +8,9 @@ export const REAUTH_FRESH_MS = BREAK_GLASS_MS;
 
 /**
  * Whether this cookie session is a forced sign-in recent enough: the session
- * is new and its re-auth marker (`a`, set only by Google's max_age=0, Access's
- * prompt=login or an email code sign-in) is too. A plain silent sign-in has
+ * is new and its re-auth marker (`a`, set when a forced (?reauth=1) Google or
+ * Access flow completes, or by an email code sign-in) is too. Google's
+ * auth_time is not used: it ignores max_age=0 for a signed-in user. A plain silent sign-in has
  * no marker, so a fresh iat alone never passes (as bus/role-confirm.ts).
  */
 export function freshReauth(c: Context<AppEnv>, now = Date.now()): boolean {

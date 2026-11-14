@@ -43,6 +43,7 @@ import {
 import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
+import { noteInstanceFirst } from "../services/analytics.js";
 import {
   busOn,
   busPing,
@@ -703,6 +704,8 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
   if (m.lastUsedAt === null) {
     const first = await stmt(env.DB, FIRST_TOUCH).bind(m.id, now).run();
     if (first.meta.changes !== 1) return unauthorized();
+    // #2479: a machine's first connect (no-op unless analytics is on).
+    await noteInstanceFirst(env, "agent_connected", c.executionCtx);
   } else if (m.lastUsedAt <= now - LAST_USED_MS)
     c.executionCtx.waitUntil(
       stmt(env.DB, TOUCH_MACHINE)

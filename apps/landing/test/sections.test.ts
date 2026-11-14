@@ -35,7 +35,7 @@ describe("landing sections", () => {
       "Works with the agents you already use.",
       "Simple pricing.",
       "Self-host in three steps.",
-      "Where people and agents come to do their best work, together.",
+      "Where humans and agents get their best work done, together.",
     ])
       expect(text, h).toContain(h);
     expect(index).toMatch(/<h1[^>]*>Stop reading transcripts\.<\/h1>/);
@@ -43,7 +43,7 @@ describe("landing sections", () => {
 
   it("has the title and OA Product's description", () => {
     expect(index).toContain(
-      "<title>Open Artifacts: where people and agents do their best work</title>",
+      "<title>Open Artifacts: where humans and agents get their best work done</title>",
     );
     const desc =
       index.match(/<meta name="description" content="([^"]*)"/)?.[1] ?? "";
@@ -51,10 +51,10 @@ describe("landing sections", () => {
       "Your agents put their work in an artifact. Your team reads it, comments and decides. Open source, works with any agent.",
     );
     expect(index).toContain(
-      '<meta property="og:title" content="Open Artifacts: where people and agents do their best work"',
+      '<meta property="og:title" content="Open Artifacts: where humans and agents get their best work done"',
     );
     expect(index).toContain(
-      '<meta name="twitter:title" content="Open Artifacts: where people and agents do their best work"',
+      '<meta name="twitter:title" content="Open Artifacts: where humans and agents get their best work done"',
     );
     expect(index).not.toContain("stop reading transcripts</title>");
     expect(desc.length).toBeLessThanOrEqual(160);
@@ -74,7 +74,7 @@ describe("landing sections", () => {
     expect(meta("property", "og:image:width")).toBe("1200");
     expect(meta("property", "og:image:height")).toBe("630");
     const alt =
-      "Open Artifacts. Where people and agents do their best work. A launch plan artifact with a decision, comments and an ask.";
+      "Open Artifacts. Where humans and agents get their best work done. A launch plan artifact with a decision, comments and an ask.";
     expect(meta("property", "og:image:alt")).toBe(alt);
     expect(meta("name", "twitter:image:alt")).toBe(alt);
     const png = readFileSync(
@@ -577,7 +577,7 @@ describe("landing sections", () => {
       index.match(/<h2 id="close-h" class="x-cl">[\s\S]*?<\/h2>/)?.[0] ?? "";
     expect(h2.match(/<br\s*\/?>/g)).toHaveLength(2);
     expect(text).toContain(
-      "Where people and agents come to do their best work, together.",
+      "Where humans and agents get their best work done, together.",
     );
   });
 

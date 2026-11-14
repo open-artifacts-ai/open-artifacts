@@ -23,9 +23,9 @@ export function welcomePage(origin: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Welcome</title>
 <style>
-:root{color-scheme:light dark;--bg:#fff;--fg:#1b1d21;--muted:#5d6370;--line:#dfe2e8;--soft:#f4f5f8;--accent:#3b5bdb;--accent-soft:#e8edff;--ok:#1a7f4b;--mark:#fff1b8;--mark-line:#e6c84a}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#15171b;--fg:#e8eaee;--muted:#a0a6b3;--line:#2c3038;--soft:#1e2127;--accent:#8ea2ff;--accent-soft:#252c47;--ok:#4cc38a;--mark:#4a4018;--mark-line:#b89b2c}}
-:root[data-theme=dark]{color-scheme:dark;--bg:#15171b;--fg:#e8eaee;--muted:#a0a6b3;--line:#2c3038;--soft:#1e2127;--accent:#8ea2ff;--accent-soft:#252c47;--ok:#4cc38a;--mark:#4a4018;--mark-line:#b89b2c}
+:root{color-scheme:light dark;--bg:#fff;--fg:#1b1d21;--muted:#5d6370;--line:#dfe2e8;--soft:#f4f5f8;--accent:#3b5bdb;--accent-soft:#e8edff;--ok:#1a7f4b}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#15171b;--fg:#e8eaee;--muted:#a0a6b3;--line:#2c3038;--soft:#1e2127;--accent:#8ea2ff;--accent-soft:#252c47;--ok:#4cc38a}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#15171b;--fg:#e8eaee;--muted:#a0a6b3;--line:#2c3038;--soft:#1e2127;--accent:#8ea2ff;--accent-soft:#252c47;--ok:#4cc38a}
 :root[data-theme=light]{color-scheme:light}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -58,8 +58,8 @@ ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 .step a{color:var(--accent)}
 .done-line{margin-top:12px}
 .done-line[hidden]{display:none}
-.target{margin:32px 0 0}
-.target mark{background:var(--mark);color:inherit;border-bottom:2px solid var(--mark-line);padding:2px 3px;border-radius:3px}
+.step .stalled{display:block;margin-top:6px;font-size:14px;color:var(--muted)}
+.step .stalled[hidden]{display:none}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
 @media (max-width:420px){main{padding:24px 16px 40px}h1{font-size:24px}}
 </style>
@@ -85,16 +85,16 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 <h2>Get started</h2>
 <ol class="steps">
 <li class="step" data-step="connect" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Connect your agent</b></span></li>
+<li class="step" data-step="name" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Name your agent</b><span class="hint">Your agent will suggest a name. It's what you'll type after @ in comments.</span></span></li>
 <li class="step" data-step="publish" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Publish your first artifact</b><span class="hint">Ask your agent: &quot;Publish a page about what you're working on.&quot;</span></span></li>
-<li class="step" data-step="comment" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Leave a comment</b><span class="hint">Select the highlighted sentence below and comment on it.</span></span></li>
+<li class="step" data-step="mention" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Mention your agent</b><span class="hint">Open your first page, type @ in a comment and pick your agent. It replies in the thread.</span><span class="stalled" id="stalled" role="status" hidden>No reply yet. Your agent may not be listening. Ask it: &quot;Check the bus.&quot;</span></span></li>
+<li class="step" data-step="ask" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Answer your agent's ask</b><span class="hint">Your first page has a question from your agent. Pick an option.</span></span></li>
 </ol>
-<p class="done-line" id="all-done" hidden>You're set. Everything you publish is in the <b>Library</b>.</p>
-
-<p class="target"><mark>Select this sentence and add a comment. Your agent can read it and reply in the thread.</mark></p>
+<p class="done-line" id="all-done" hidden>You're set. Your agent hears your comments and answers them.</p>
 
 <footer>You can delete this page any time. Nothing else depends on it.</footer>
 </main>
-<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","commentHint":"Select the highlighted sentence below and comment on it."}</script>
+<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","nameHint":"Your agent will suggest a name. It's what you'll type after @ in comments.","mentionHint":"Open your first page, type @ in a comment and pick {name}. It replies in the thread.","askHint":"Your first page has a question from {name}. Pick an option.","fallback":"your agent"}</script>
 <script>
 (function(){
   var D = JSON.parse(document.getElementById("oa-welcome-data").textContent);
@@ -150,52 +150,51 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
   });
   pick(0, false);
 
-  var items = {
-    connect: document.querySelector('[data-step="connect"]'),
-    publish: document.querySelector('[data-step="publish"]'),
-    comment: document.querySelector('[data-step="comment"]')
-  };
+  var items = {};
+  ["connect","name","publish","mention","ask"].forEach(function(k){
+    items[k] = document.querySelector('[data-step="' + k + '"]');
+  });
   var all = document.getElementById("all-done");
-  function label(step, html){ step.querySelector(".label").innerHTML = html; }
+  var stalled = document.getElementById("stalled");
+  stalled.parentNode.removeChild(stalled);
   function tick(step, on){ step.setAttribute("data-done", String(on)); }
-  function render(p){
-    tick(items.connect, p.agentConnected);
-    label(items.connect, p.agentConnected ? "<b>Agent connected</b>" : "<b>Connect your agent</b>");
-    tick(items.publish, !!p.firstArtifact);
-    var l = items.publish.querySelector(".label");
+  // One step: its label is the done line when done, else the title and hint.
+  function line(step, done, title, doneText, hint){
+    tick(step, done);
+    var l = step.querySelector(".label");
     l.textContent = "";
+    var b = document.createElement("b");
+    b.textContent = done ? doneText : title;
+    l.appendChild(b);
+    if (!done && hint) {
+      var h = document.createElement("span");
+      h.className = "hint";
+      h.textContent = hint;
+      l.appendChild(h);
+    }
+    return l;
+  }
+  function render(p){
+    var nm = p.agentName || D.fallback;
+    line(items.connect, p.agentConnected, "Connect your agent", "Agent connected", "");
+    line(items.name, !!p.agentNamed, "Name your agent", "Named: " + nm, D.nameHint);
+    var l = line(items.publish, !!p.firstArtifact, "Publish your first artifact", "", D.publishHint);
     if (p.firstArtifact) {
-      var b = document.createElement("b");
-      b.appendChild(document.createTextNode("Published: "));
+      var b = l.querySelector("b");
+      b.textContent = "Published: ";
       var a = document.createElement("a");
       a.href = D.host + "/a/" + encodeURIComponent(p.firstArtifact.id);
       a.target = "_blank";
       a.rel = "noopener";
       a.textContent = p.firstArtifact.title;
       b.appendChild(a);
-      l.appendChild(b);
-    } else {
-      var b2 = document.createElement("b");
-      b2.textContent = "Publish your first artifact";
-      var h = document.createElement("span");
-      h.className = "hint";
-      h.textContent = D.publishHint;
-      l.appendChild(b2);
-      l.appendChild(h);
     }
-    tick(items.comment, p.commented);
-    var c = items.comment.querySelector(".label");
-    c.textContent = "";
-    var b3 = document.createElement("b");
-    b3.textContent = p.commented ? "Commented" : "Leave a comment";
-    c.appendChild(b3);
-    if (!p.commented) {
-      var h3 = document.createElement("span");
-      h3.className = "hint";
-      h3.textContent = D.commentHint;
-      c.appendChild(h3);
-    }
-    all.hidden = !(p.agentConnected && p.firstArtifact && p.commented);
+    var ml = line(items.mention, !!p.mentionReplied, "Mention your agent", (p.agentName ? nm : "Your agent") + " replied", D.mentionHint.replace("{name}", nm));
+    line(items.ask, !!p.askAnswered, "Answer your agent's ask", "Answered", D.askHint.replace("{name}", nm));
+    stalled.hidden = !(p.mentionStalled && !p.mentionReplied);
+    if (!stalled.hidden) ml.appendChild(stalled);
+    var done = p.agentConnected && p.agentNamed && p.firstArtifact && p.mentionReplied && p.askAnswered;
+    all.hidden = !done;
     return !all.hidden;
   }
   var finished = false, busy = false, refused = false, started = Date.now();

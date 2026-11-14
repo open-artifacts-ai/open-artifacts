@@ -2939,6 +2939,11 @@ centred */
   .sc-cards .off {
     display: none !important;
   }
+  /* #2480: the stacked cards never animate, so a timeline grows to fit the
+     comment thread drawn inside it instead of spilling onto the checklist. */
+  .sc-cards .sc-art .sa-blk {
+    max-height: none;
+  }
   .sc-cards .sc-roll p.on {
     animation: none;
   }
@@ -3786,6 +3791,11 @@ centred */
   .sc-cards .sa-side,
   .pl-view .sa-side {
     display: none;
+  }
+  /* The phone's locked view animates max-height, so it keeps a cap, one with
+     room for the inline thread (#2480). */
+  .pl-view .sc-art .sa-blk {
+    max-height: 480px;
   }
   .sc-cards .tl li.sa-inline,
   .pl-view .tl li.sa-inline {

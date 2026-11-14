@@ -557,6 +557,547 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
     transition: none;
   }
 }
+
+/* Collaborative docs (#1100): the editor in place of the frame. */
+.oa-doc {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--oa-bg);
+}
+.oa-doc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--oa-border);
+  overflow-x: auto;
+  flex: none;
+  scrollbar-width: none;
+}
+.oa-doc-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.oa-doc-toolbar > * {
+  flex: none;
+}
+/* Wider than a phone the bar never overflows into a fade. */
+.oa-doc-fade {
+  display: none;
+}
+@media (max-width: 640px) {
+  .oa-doc-fade {
+    display: block;
+  }
+}
+.oa-doc-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--oa-border);
+}
+.oa-doc-linkform {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.oa-doc-linkform input {
+  flex: 1;
+  min-width: 0;
+}
+.oa-doc-linkerr {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--oa-text-sm);
+  color: var(--oa-danger, #b42318);
+}
+.oa-doc-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 8px 16px;
+  font-size: var(--oa-text-sm);
+  border-bottom: 1px solid var(--oa-border);
+  background: var(--oa-accent-soft);
+  color: var(--oa-text);
+}
+.oa-doc-error p {
+  margin: 0;
+}
+/* Design: a notice that holds unsaved work (logged out with edits unsent,
+   couldn't save) is the warning band, with its icon. */
+.oa-doc-error[data-tone="warning"] {
+  background: var(--oa-warning-soft);
+}
+/* The icon stays on the text's first line, at every width. */
+.oa-doc-error-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.oa-doc-error-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--oa-warning);
+}
+.oa-doc-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.oa-doc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/*
+ * The editing column mirrors how a Markdown artifact renders (packages/render/
+ * src/theme.css, .oa-doc): the same measure, sizes, line heights and spacing,
+ * so switching between reading and editing does not move the text. Keep the
+ * two in step; e2e/doc-editor-shots.spec.ts overlays one on the other.
+ */
+.oa-doc-page {
+  max-width: 70ch;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+  box-sizing: content-box;
+  font-family: var(--oa-font-sans);
+  font-size: 16px;
+  line-height: 1.65;
+  overflow-wrap: break-word;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+/* ProseMirror turns ligatures off; the render keeps them, and "ff"/"fi" change
+   the advance, so a line can wrap one word earlier. Same shaping as the render. */
+.oa-doc-prose.ProseMirror {
+  font-variant-ligatures: normal;
+  font-feature-settings: normal;
+  /* break-spaces counts a space at a line's end toward its width, so a word
+     wraps early; pre-wrap lets it hang, as the render's wrapping does. */
+  white-space: pre-wrap;
+}
+.oa-doc-prose {
+  outline: none;
+  color: var(--oa-text);
+  min-height: 50vh;
+}
+.oa-doc-title {
+  display: block;
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  color: var(--oa-text);
+  text-overflow: ellipsis;
+}
+.oa-doc-title::placeholder {
+  color: var(--oa-text-2);
+  opacity: 1;
+}
+.oa-doc-prose p.oa-doc-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--oa-text-2);
+}
+.oa-doc-prose > :first-child {
+  margin-top: 0;
+}
+.oa-doc-prose :is(h1, h2, h3) {
+  color: var(--oa-text);
+  font-weight: 600;
+  text-wrap: balance;
+}
+.oa-doc-prose h1 {
+  margin: 48px 0 14px;
+  font-size: 32px;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+.oa-doc-prose h2 {
+  margin: 44px 0 10px;
+  font-size: 21px;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+}
+.oa-doc-prose h3 {
+  margin: 30px 0 6px;
+  font-size: 17px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+.oa-doc-prose p {
+  margin: 0 0 16px;
+}
+.oa-doc-prose strong {
+  font-weight: 600;
+}
+.oa-doc-prose a {
+  color: var(--oa-accent-fg);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  cursor: text;
+}
+.oa-doc-prose a:hover {
+  text-decoration-color: currentColor;
+}
+.oa-doc-prose :is(ul, ol) {
+  margin: 0 0 16px;
+  padding-left: 1.5em;
+}
+.oa-doc-prose ul {
+  list-style: disc;
+}
+.oa-doc-prose ol {
+  list-style: decimal;
+}
+.oa-doc-prose ul ul {
+  list-style-type: circle;
+}
+.oa-doc-prose ul ul ul {
+  list-style-type: square;
+}
+.oa-doc-prose li {
+  margin: 4px 0;
+  padding-left: 2px;
+}
+.oa-doc-prose li > :is(ul, ol) {
+  margin: 4px 0 0;
+}
+/* A rendered tight list has no <p>; the editor always has one. */
+.oa-doc-prose li > p {
+  margin: 0;
+}
+.oa-doc-prose li > p + p {
+  margin-top: 8px;
+}
+.oa-doc-prose li::marker {
+  color: var(--oa-text-muted);
+}
+.oa-doc-prose ol > li::marker {
+  font-variant-numeric: tabular-nums;
+}
+/* Task lists: the kit checkbox (packages/ui shadcn/ui/checkbox.tsx) in the
+   rendered position. */
+.oa-doc-prose ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] li {
+  position: relative;
+  padding-left: 26px;
+}
+.oa-doc-prose ul[data-type="taskList"] li > label {
+  position: absolute;
+  left: 0;
+  top: 0.32em;
+  display: block;
+  line-height: 0;
+  user-select: none;
+}
+.oa-doc-prose ul[data-type="taskList"] li > div {
+  min-width: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] li > div > :last-child {
+  margin-bottom: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] ul[data-type="taskList"] {
+  padding-left: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] li[data-checked="true"] {
+  color: var(--oa-text-muted);
+}
+.oa-doc-prose input[type="checkbox"] {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+  cursor: pointer;
+  transition: box-shadow var(--oa-duration-fast) var(--oa-ease);
+}
+.oa-doc-prose input[type="checkbox"]:checked {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+.oa-doc-prose input[type="checkbox"]:checked::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border: solid var(--primary-foreground);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.oa-doc-prose input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.oa-doc-prose input[type="checkbox"]:disabled {
+  cursor: default;
+}
+.oa-doc-prose blockquote {
+  margin: 20px 0 24px;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--oa-border);
+  color: var(--oa-text-2);
+}
+.oa-doc-prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+.oa-doc-prose hr {
+  height: 1px;
+  margin: 40px 0;
+  border: 0;
+  background: var(--oa-divider);
+}
+.oa-doc-prose :is(code, samp) {
+  font-family: var(--oa-font-mono);
+  font-size: 0.875em;
+}
+.oa-doc-prose :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border: 1px solid var(--oa-divider);
+  border-radius: var(--oa-radius-sm);
+  background: var(--oa-surface-2);
+  overflow-wrap: anywhere;
+}
+.oa-doc-prose pre {
+  margin: 8px 0 24px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid var(--oa-divider);
+  border-radius: var(--oa-radius-md);
+  background: var(--oa-surface-2);
+  color: var(--oa-text);
+  font: 400 14px / 1.6 var(--oa-font-mono);
+  tab-size: 2;
+}
+.oa-doc-prose pre code {
+  font-size: inherit;
+}
+.oa-docstate {
+  font-size: var(--oa-text-xs);
+  color: var(--oa-text-muted);
+  white-space: nowrap;
+}
+.oa-docstate-icon {
+  display: none;
+  width: 16px;
+  height: 16px;
+}
+/* Design: under 480px the state is its 16px icon, in a 16px slot that never
+   changes width, so the header neither wraps nor shifts. The text stays for
+   assistive tech (and is the title). "View only" has no icon: its words. */
+@media (max-width: 479.98px) {
+  .oa-docstate[data-icon] {
+    display: inline-flex;
+    flex: none;
+    width: 16px;
+    justify-content: center;
+  }
+  .oa-docstate[data-icon] .oa-docstate-icon {
+    display: block;
+  }
+  .oa-docstate[data-icon] .oa-docstate-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .oa-docstate-icon[data-spin] {
+    animation: oa-docstate-spin 1s linear infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-docstate-icon[data-spin] {
+    animation: none;
+  }
+}
+@keyframes oa-docstate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Remote cursors: a 2px caret. Its name flag opens for 2 s after the cursor
+   moves, or while the caret is hovered; collapsed, a dot (an agent: a rounded
+   square) marks the caret. */
+.oa-doc-caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid var(--oa-caret);
+  word-break: normal;
+}
+/* A wider target for the hover, around the 2px line. */
+.oa-doc-caret::before {
+  content: "";
+  position: absolute;
+  top: -0.25em;
+  bottom: 0;
+  left: -7px;
+  width: 12px;
+}
+.oa-doc-dot {
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--oa-caret);
+  opacity: 1;
+  transition: opacity 150ms var(--oa-ease);
+  pointer-events: none;
+}
+.oa-doc-caret[data-kind="agent"] .oa-doc-dot {
+  border-radius: 2px;
+}
+.oa-doc-flag {
+  position: absolute;
+  top: -1.45em;
+  left: -2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  font-style: normal;
+  white-space: nowrap;
+  user-select: none;
+  color: var(--oa-flag-fg);
+  background: var(--oa-caret);
+  border-radius: 999px;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 150ms var(--oa-ease),
+    visibility 150ms;
+  pointer-events: none;
+}
+.oa-doc-caret:is([data-active], :hover) .oa-doc-flag {
+  opacity: 1;
+  visibility: visible;
+}
+.oa-doc-caret:is([data-active], :hover) .oa-doc-dot {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-doc-flag,
+  .oa-doc-dot {
+    transition: none;
+  }
+}
+.oa-doc-flag[data-kind="agent"] {
+  border-radius: 4px;
+  padding-left: 4px;
+}
+.oa-doc-flag-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--oa-flag-fg);
+  opacity: 0.85;
+}
+.oa-doc-selection {
+  background-color: color-mix(in srgb, var(--oa-caret) 22%, transparent);
+}
+.oa-doc-keys {
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.oa-doc-toolbar button[aria-pressed="true"] {
+  background: var(--oa-accent-soft);
+  color: var(--oa-accent-fg);
+}
+/*
+ * #2276: on a phone the toolbar sits at the bottom of the screen, above the
+ * on-screen keyboard. It is fixed to the layout viewport and lifted by --oa-kb
+ * (the keyboard's height, from the visual viewport; see comments/viewport.ts).
+ */
+@media (max-width: 640px) {
+  .oa-doc-toolbar {
+    position: fixed;
+    inset-inline: 0;
+    bottom: var(--oa-kb, 0px);
+    z-index: 20;
+    padding: 4px 12px calc(4px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--oa-border);
+    border-bottom: 0;
+    background: var(--oa-bg);
+  }
+  /*
+   * A fade on the cut right edge, so the buttons past it are easy to find.
+   * It sticks to the visible right edge and shows only while there is more to
+   * the right (data-more: overflowing and not scrolled to the end).
+   */
+  .oa-doc-fade {
+    position: sticky;
+    /* Sticky measures inside the bar's 12px side padding: reach the edge. */
+    right: -12px;
+    align-self: stretch;
+    width: 44px;
+    margin-left: -44px;
+    background: linear-gradient(to right, transparent, var(--oa-bg) 80%);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .oa-doc-toolbar[data-more] .oa-doc-fade {
+    opacity: 1;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .oa-doc-fade {
+      transition: none;
+    }
+  }
+  /* The keyboard covers the home indicator: no inset under the bar. */
+  .oa-doc-toolbar[data-keyboard] {
+    padding-bottom: 4px;
+  }
+  /* Room under the text for the bar, so the last line can scroll clear of it. */
+  .oa-doc[data-editable] .oa-doc-scroll {
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (max-width: 600px) {
+  .oa-doc-page {
+    padding: 28px 16px 64px;
+  }
+  .oa-doc-prose h1,
+  .oa-doc-title {
+    font-size: 26px;
+  }
+  .oa-doc-prose h2 {
+    font-size: 19px;
+  }
+}
 /* #2172: the load-error panel fills the body below the toolbar; 100vh would overflow by it. */
 .oa-vbody > .oa-edge {
   flex: 1;

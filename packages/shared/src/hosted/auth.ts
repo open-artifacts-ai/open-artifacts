@@ -184,8 +184,8 @@ export type SessionPayload = {
   t?: string;
   e: number;
   /**
-   * Google auth_time (ms) of a forced re-authentication (max_age=0), set
-   * only when it was within 10 minutes at sign-in: P3 T18's break-glass.
+   * When a forced re-authentication (?reauth=1) completed (ms), set at that
+   * sign-in: P3 T18's break-glass. Not Google's auth_time (#2470).
    */
   a?: number;
 };

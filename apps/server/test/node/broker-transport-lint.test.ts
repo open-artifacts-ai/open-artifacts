@@ -32,6 +32,8 @@ const FETCHES: Record<string, string> = {
     "Google's revoke endpoint (direct directory transport)",
   "directory/google.ts: get: url": "the Admin SDK and Reports API",
   "services/usage.ts: query: GRAPHQL": "Cloudflare GraphQL analytics",
+  "services/analytics.ts: sendActivation: captureUrl(env)":
+    "PostHog capture (activation events, #2479): hosted only, only with a POSTHOG_KEY secret; never a broker",
   "services/release.ts: checkLatestRelease: alias":
     "the default fetcher for the GitHub releases API and latest-release page",
 };

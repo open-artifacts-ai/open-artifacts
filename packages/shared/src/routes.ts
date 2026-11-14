@@ -223,6 +223,17 @@ export const R = {
    * (or X-OA-Embed: 1) connects anonymously. `gone` is followed by close 4403.
    */
   events: (id: string) => `${A}/${seg(id)}/events`,
+  /**
+   * GET Upgrade: websocket (#1100). The collaborative doc's room: y-protocols
+   * sync and awareness binary frames, plus JSON text frames (hello first). Doc
+   * artifacts only (400 otherwise); 404 for no access; 403 csrf for a foreign
+   * browser Origin; 503 docs_unavailable while docs are off. Everyone who can
+   * read connects: owners and editors get role "edit" in the hello frame
+   * (until 25 edit sockets, then "read" with reason "room_full"), others
+   * "read". Closes: 4401 auth_expired (TTL; reconnect), 4403 access_removed,
+   * 4404 not_found (deleted).
+   */
+  doc: (id: string) => `${A}/${seg(id)}/doc`,
   /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
   comments: (id: string) => `${A}/${seg(id)}/comments`,
   /** PATCH { status } -> CommentThread. */

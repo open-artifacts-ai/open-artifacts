@@ -236,6 +236,13 @@ export interface Env {
   SESSION_SECRET: string;
   CONTENT_SIGNING_KEY: string;
   ANALYTICS_TOKEN?: string;
+  /**
+   * PostHog project key (a secret binding, hosted only; #2479). Unset: no
+   * activation event is ever sent. Never a wrangler var with a value.
+   */
+  POSTHOG_KEY?: string;
+  /** PostHog capture host (default https://us.i.posthog.com); a plain var, not secret. */
+  POSTHOG_HOST?: string;
   CF_ACCOUNT_ID: string;
   /** This Worker's script name (filters CPU analytics); unset -> no CPU metrics. */
   WORKER_NAME?: string;

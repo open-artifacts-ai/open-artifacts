@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.180.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.180.0...v0.180.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **landing:** one tagline everywhere ([#2505](https://github.com/open-artifacts-ai/open-artifacts/issues/2505)) ([#2507](https://github.com/open-artifacts-ai/open-artifacts/issues/2507)) ([f6033cf](https://github.com/open-artifacts-ai/open-artifacts/commit/f6033cfd89519e0f224d4ba45a12df59f1c07107))
+
+## [0.180.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.179.0...v0.180.0) (2026-11-14)
+
+
+### Features
+
+* **viewer:** Tiptap editor for docs with live cursors ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2115](https://github.com/open-artifacts-ai/open-artifacts/issues/2115)) ([db91de5](https://github.com/open-artifacts-ai/open-artifacts/commit/db91de511a1a9230cb1df097a62be2d00a31929e))
+
+## [0.179.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.178.0...v0.179.0) (2026-11-14)
+
+
+### Features
+
+* **analytics:** activation events to PostHog, hosted only ([#2479](https://github.com/open-artifacts-ai/open-artifacts/issues/2479)) ([#2494](https://github.com/open-artifacts-ai/open-artifacts/issues/2494)) ([a25c754](https://github.com/open-artifacts-ai/open-artifacts/commit/a25c754bfef4bc1846718f2fa52c4b32ca7c7a1e))
+
+## [0.178.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.177.1...v0.178.0) (2026-11-14)
+
+
+### Features
+
+* **comments:** keep every pick and name a decider ([#2381](https://github.com/open-artifacts-ai/open-artifacts/issues/2381) S1) ([#2416](https://github.com/open-artifacts-ai/open-artifacts/issues/2416)) ([2e6f5c2](https://github.com/open-artifacts-ai/open-artifacts/commit/2e6f5c21c0ad22033894715640a4f93d86309c09))
+* **docs:** the doc route binds DOC_ROOM with access checks ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2490](https://github.com/open-artifacts-ai/open-artifacts/issues/2490)) ([1db73d6](https://github.com/open-artifacts-ai/open-artifacts/commit/1db73d6aa4d5d00c60acb62140c54569dc96a71b))
+* **onboarding:** the five-step Welcome checklist ([#2478](https://github.com/open-artifacts-ai/open-artifacts/issues/2478)) ([#2487](https://github.com/open-artifacts-ai/open-artifacts/issues/2487)) ([b61cbb1](https://github.com/open-artifacts-ai/open-artifacts/commit/b61cbb1e30efbdb6d2706729ee92d79fe4eb3d5d))
+* **runtime:** version-gate frame-to-shell fields; the shell drops unknown keys ([#2408](https://github.com/open-artifacts-ai/open-artifacts/issues/2408)) ([#2411](https://github.com/open-artifacts-ai/open-artifacts/issues/2411)) ([d15e6d7](https://github.com/open-artifacts-ai/open-artifacts/commit/d15e6d75843bfed8e1d11f6bca34aa9a7463f279))
+* **setup:** naming step and first-page hello comment and ask ([#2482](https://github.com/open-artifacts-ai/open-artifacts/issues/2482)) ([8a0790f](https://github.com/open-artifacts-ai/open-artifacts/commit/8a0790f97c25346083781b947076bd56cae8cc0a))
+* **setup:** the agent's first page says hello and asks ([#2477](https://github.com/open-artifacts-ai/open-artifacts/issues/2477)) ([#2481](https://github.com/open-artifacts-ai/open-artifacts/issues/2481)) ([10975d3](https://github.com/open-artifacts-ai/open-artifacts/commit/10975d39fbbc6c2780da3215e386f723e159c450))
+
+
+### Bug Fixes
+
+* **auth:** a forced Google sign-in counts as fresh again, so Add a passkey stops looping ([#2470](https://github.com/open-artifacts-ai/open-artifacts/issues/2470)) ([#2474](https://github.com/open-artifacts-ai/open-artifacts/issues/2474)) ([b52479b](https://github.com/open-artifacts-ai/open-artifacts/commit/b52479bacd6c8f8665ac403310f021ac00293c31))
+* **landing:** agent badges use the product's agent animals ([#2471](https://github.com/open-artifacts-ai/open-artifacts/issues/2471)) ([#2475](https://github.com/open-artifacts-ai/open-artifacts/issues/2475)) ([df92f97](https://github.com/open-artifacts-ai/open-artifacts/commit/df92f97e701c6dd445130eab2616bc2666165d06))
+* **landing:** the story's thread no longer overlaps Launch checklist ([#2480](https://github.com/open-artifacts-ai/open-artifacts/issues/2480)) ([#2488](https://github.com/open-artifacts-ai/open-artifacts/issues/2488)) ([a7616b8](https://github.com/open-artifacts-ai/open-artifacts/commit/a7616b8073250ac5ba6a570eeacbf419275095ca))
+* **spaces:** hide spaces on hosted Solo, with a way to a plan ([#2472](https://github.com/open-artifacts-ai/open-artifacts/issues/2472)) ([#2483](https://github.com/open-artifacts-ai/open-artifacts/issues/2483)) ([b619612](https://github.com/open-artifacts-ai/open-artifacts/commit/b6196121e6192fa91819f5f188fe46b22622b18b))
+
 ## [0.177.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.177.0...v0.177.1) (2026-11-13)
 
 

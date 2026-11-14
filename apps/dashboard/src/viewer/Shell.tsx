@@ -1,5 +1,6 @@
 import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { MessageSquare } from "lucide-react";
 import {
@@ -12,7 +13,12 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
-import { useArtifact, useVersionInfo } from "../api/queries";
+import {
+  qk,
+  useArtifact,
+  usePatchArtifact,
+  useVersionInfo,
+} from "../api/queries";
 import { useCan } from "../auth/permissions";
 import { useLoginRedirect } from "../auth/redirect";
 import { useMe } from "../auth/useMe";
@@ -36,6 +42,14 @@ import {
   useCommentsController,
 } from "./comments/useComments";
 import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
+import { DocEditor, type DocLabel, DocState } from "./doc/DocEditor";
+import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
+import { isFresh } from "./doc/fresh";
+import {
+  showsNote as docShowsNote,
+  versionNote as docVersionNote,
+  type VersionEvent,
+} from "./doc/useDocRoom";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FsTip, FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
@@ -58,6 +72,7 @@ import { type FrameState, type Gone, useLiveVersions } from "./useLiveVersions";
 import { useTheme } from "./useTheme";
 import "./viewer.css";
 import { toast } from "../layout/toast";
+import { FullDocNewDoc } from "../library/NewDoc";
 import { fullPath } from "./paths";
 
 type Bridge = ReturnType<typeof createBridge>;
@@ -398,6 +413,47 @@ function Viewer({
   const caps = artifact.capabilities;
   const live = caps.db || caps.viewer || caps.storage;
   const can = useCan(artifact);
+  // #1100: a collaborative doc is edited in place of the frame.
+  const isDoc = isDocArtifact(artifact);
+  const [docStatus, setDocStatus] = useState<DocLabel | null>(null);
+  const renameDoc = usePatchArtifact(artifact.id);
+  // The room broadcasts saved and restored versions: refresh the version
+  // list and say so in the title bar for a few seconds (no polling).
+  const qc = useQueryClient();
+  const [versionNote, setVersionNote] = useState<string | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  useEffect(() => () => clearTimeout(noteTimer.current), []);
+  const onDocVersion = useCallback(
+    (e: VersionEvent) => {
+      // Every version event refreshes the version pill and list ...
+      void qc.invalidateQueries({ queryKey: qk.artifact(artifact.id) });
+      // ... but an auto-save says nothing.
+      if (!docShowsNote(e)) return;
+      setVersionNote(docVersionNote(e));
+      clearTimeout(noteTimer.current);
+      noteTimer.current = setTimeout(() => setVersionNote(null), 4000);
+    },
+    [qc, artifact.id],
+  );
+  // The room's hello names the current version (#2490): the pill follows it
+  // at once, never down.
+  const onDocCurrentVersion = useCallback(
+    (v: number) => {
+      const key = qk.artifact(artifact.id);
+      const cur = qc.getQueryData<{ currentVersion: number }>(key);
+      if (cur && v > cur.currentVersion) {
+        qc.setQueryData(key, { ...cur, currentVersion: v });
+        void qc.invalidateQueries({ queryKey: key });
+      }
+    },
+    [qc, artifact.id],
+  );
+  useEffect(() => {
+    // No frame to wait for: the layer is ready at once.
+    if (isDoc) cbs.current.onReady?.();
+  }, [isDoc]);
   const renavigated = useRef(false);
   const [renav, setRenav] = useState(false);
   const onRenavigated = useCallback(() => {
@@ -570,7 +626,7 @@ function Viewer({
   }, [wantThread, shown, cmt, navigate, surface, panelOpen]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
-  if (content.notFound) return <NotFound />;
+  if (content.notFound && !isDoc) return <NotFound />;
   if (signedOut) return null;
   const loader = (
     <FrameLoader
@@ -644,7 +700,14 @@ function Viewer({
               onVersions={() =>
                 setPanel(!(panelOpen && tab === "versions"), "versions")
               }
-              live={slot}
+              live={
+                <>
+                  {slot}
+                  {isDoc && docStatus && (
+                    <DocState label={docStatus} note={versionNote} />
+                  )}
+                </>
+              }
               newer={newer}
               gone={gone !== null}
               comments={commentsButton}
@@ -721,15 +784,60 @@ function Viewer({
           />
         )}
         <div className="oa-vbody">
-          {!url && (content.current || content.error) ? (
+          {isDoc && shown && (
+            <div className="oa-vmain">
+              <DocEditor
+                artifactId={artifact.id}
+                title={artifact.title}
+                canEdit={can.edit && !readOnly && !mockDocReadOnly()}
+                viewer={viewer}
+                outsider={!authed || role === "guest"}
+                onStatus={setDocStatus}
+                onVersion={onDocVersion}
+                onCurrentVersion={onDocCurrentVersion}
+                fullActions={
+                  <>
+                    {/* Mounted only when the doc is full and the viewer is signed
+                        in: its hooks (hosted spaces, /me) never run for a
+                        non-doc or anonymous viewer. */}
+                    {authed && <FullDocNewDoc spaceOf={artifact.space?.id} />}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPanel(true, "versions")}
+                    >
+                      Version history
+                    </Button>
+                  </>
+                }
+                fresh={isFresh(artifact.id)}
+                onRename={(title) =>
+                  renameDoc.mutate(
+                    { title },
+                    {
+                      onError: (e) =>
+                        toast({
+                          title:
+                            e instanceof ApiClientError
+                              ? e.message
+                              : "Couldn't rename",
+                          tone: "danger",
+                        }),
+                    },
+                  )
+                }
+              />
+            </div>
+          )}
+          {!isDoc && !url && (content.current || content.error) ? (
             <ErrorPanel onRetry={() => void content.refresh()} />
           ) : null}
-          {!url && !content.current && !content.error && (
+          {!isDoc && !url && !content.current && !content.error && (
             <div className="oa-vmain" aria-busy="true">
               {loader}
             </div>
           )}
-          {url && (
+          {!isDoc && url && (
             <div className="oa-vmain" aria-busy={ready ? undefined : true}>
               {loader}
               {renav && (
@@ -904,7 +1012,12 @@ function ArtifactShell({
   if (q.error && !data) return <ErrorPanel onRetry={() => void q.refetch()} />;
   if (!data || me.status === "loading")
     return <div className="oa-viewer" aria-busy="true" />;
-  const version = v ?? live.shown ?? data.currentVersion;
+  // A doc has no frame to hold on an old version: it follows the latest, so
+  // the pill ticks when the room saves one (#1100).
+  const version =
+    v ??
+    (isDocArtifact(data) ? data.currentVersion : live.shown) ??
+    data.currentVersion;
   shownRef.current = version;
   const preload = live.preload?.version;
   const newer = live.latest > (v ?? preload ?? version);
