@@ -42,6 +42,7 @@ import {
   useMarkRead,
   useMute,
   useReadAll,
+  useUnmute,
 } from "./api";
 import {
   askComment,
@@ -83,15 +84,24 @@ export function ForYouBell({ className = "" }: { className?: string }) {
   // Focus and every minute while visible (#2512); Me.inbox also follows every list fetch and change here.
   useInboxCounts(!!me?.inbox);
   const phone = useMedia(PHONE);
+  const b = bellState(me?.inbox ?? { needsYou: 0, unreadUpdates: 0 });
+  const name = bellName(b);
+  // A change in the count is announced politely (not the first one).
+  const [said, setSaid] = useState("");
+  const last = useRef<string | null>(null);
+  useEffect(() => {
+    if (!me?.inbox) return;
+    if (last.current !== null && last.current !== name) setSaid(name);
+    last.current = name;
+  }, [name, me?.inbox]);
   if (!me?.inbox) return null;
-  const b = bellState(me.inbox);
   const trigger = (
-    <BellButton
-      count={b.count}
-      dot={b.dot}
-      name={bellName(b)}
-      className={className}
-    />
+    <BellButton count={b.count} dot={b.dot} name={name} className={className} />
+  );
+  const live = (
+    <span className="sr-only" aria-live="polite" data-for-you-live="">
+      {said}
+    </span>
   );
   const panel = list.inbox ? (
     <ForYouPanel
@@ -108,35 +118,45 @@ export function ForYouBell({ className = "" }: { className?: string }) {
       close={() => setOpen(false)}
     />
   ) : (
-    <Loading phone={phone} close={() => setOpen(false)} />
+    <Loading
+      phone={phone}
+      close={() => setOpen(false)}
+      retry={list.isError ? () => void list.refetch() : undefined}
+    />
   );
   if (phone)
     return (
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger asChild>{trigger}</DialogTrigger>
-        <DialogContent
-          showCloseButton={false}
-          aria-describedby={undefined}
-          data-for-you=""
-          className="top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-y-auto rounded-none border-0 bg-[var(--oa-surface)] p-0 sm:max-w-none data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100"
-        >
-          {panel}
-        </DialogContent>
-      </Dialog>
+      <>
+        {live}
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>{trigger}</DialogTrigger>
+          <DialogContent
+            showCloseButton={false}
+            aria-describedby={undefined}
+            data-for-you=""
+            className="top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-y-auto rounded-none border-0 bg-[var(--oa-surface)] p-0 sm:max-w-none data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100"
+          >
+            {panel}
+          </DialogContent>
+        </Dialog>
+      </>
     );
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent
-        align="end"
-        sideOffset={8}
-        data-for-you=""
-        aria-labelledby="oa-for-you-title"
-        className="max-h-[min(640px,calc(100dvh-80px))] w-[380px] max-w-[calc(100vw-16px)] overflow-y-auto border-[var(--oa-border)] bg-[var(--oa-surface)] p-0 text-[var(--oa-text)] shadow-[var(--oa-shadow-2)]"
-      >
-        {panel}
-      </PopoverContent>
-    </Popover>
+    <>
+      {live}
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+        <PopoverContent
+          align="end"
+          sideOffset={8}
+          data-for-you=""
+          aria-labelledby="oa-for-you-title"
+          className="max-h-[min(640px,calc(100dvh-80px))] w-[380px] max-w-[calc(100vw-16px)] overflow-y-auto border-[var(--oa-border)] bg-[var(--oa-surface)] p-0 text-[var(--oa-text)] shadow-[var(--oa-shadow-2)]"
+        >
+          {panel}
+        </PopoverContent>
+      </Popover>
+    </>
   );
 }
 
@@ -260,9 +280,20 @@ const TITLE = "m-0 flex-1 text-[length:var(--oa-text-md)] font-semibold";
 
 function Title({ phone }: { phone: boolean }) {
   return phone ? (
-    <DialogTitle className={TITLE}>For you</DialogTitle>
+    <DialogTitle
+      data-for-you-title=""
+      tabIndex={-1}
+      className={`${TITLE} outline-none`}
+    >
+      For you
+    </DialogTitle>
   ) : (
-    <h2 id="oa-for-you-title" className={TITLE}>
+    <h2
+      id="oa-for-you-title"
+      data-for-you-title=""
+      tabIndex={-1}
+      className={`${TITLE} outline-none`}
+    >
       For you
     </h2>
   );
@@ -281,17 +312,42 @@ function SettingsLink({ close }: { close: () => void }) {
   );
 }
 
-function Loading({ phone, close }: { phone: boolean; close: () => void }) {
+/** Before the list arrives; or, when it failed, the way to try again. */
+function Loading({
+  phone,
+  close,
+  retry,
+}: {
+  phone: boolean;
+  close: () => void;
+  retry?: () => void;
+}) {
   return (
-    <div data-for-you-panel="" aria-busy="true">
+    <div data-for-you-panel="" aria-busy={retry ? undefined : true}>
       <Header phone={phone} close={close}>
         <Title phone={phone} />
         <SettingsLink close={close} />
       </Header>
-      <div
-        aria-hidden="true"
-        className="mx-3.5 mb-3 h-24 animate-pulse rounded-md bg-[var(--oa-sunken)] motion-reduce:animate-none"
-      />
+      {retry ? (
+        <div
+          role="alert"
+          className="px-[18px] pt-2 pb-5 text-center text-[var(--oa-text-2)]"
+        >
+          <p className="m-0 mb-2">Couldn't load For you.</p>
+          <button
+            type="button"
+            onClick={retry}
+            className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <div
+          aria-hidden="true"
+          className="mx-3.5 mb-3 h-24 animate-pulse rounded-md bg-[var(--oa-sunken)] motion-reduce:animate-none"
+        />
+      )}
     </div>
   );
 }
@@ -311,19 +367,62 @@ function ForYouPanel({
   const [openId, setOpenId] = useState<string | null>(null);
   const [showLater, setShowLater] = useState(false);
   const readAll = useReadAll();
-  const opened = data.needsYou.find((x) => x.id === openId && askComment(x));
+  const opened = [...data.needsYou, ...data.updates, ...data.later].find(
+    (x) => x.id === openId && askComment(x),
+  );
   // The opened ask went away (answered elsewhere): back to the list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: closeCard is stable in effect
   useEffect(() => {
-    if (openId && !opened) setOpenId(null);
+    if (openId && !opened) closeCard(true);
   }, [openId, opened]);
+  // Back from a card (answered or not): focus its row, else the row now in
+  // its place, else the "Needs you" heading; never <body>.
+  const root = useRef<HTMLDivElement>(null);
+  const restore = useRef<{ id: string; index: number; gone: boolean } | null>(
+    null,
+  );
+  useEffect(() => {
+    const r = restore.current;
+    const el = root.current;
+    if (openId || !r || !el) return;
+    restore.current = null;
+    const target = (row: Element | null | undefined) =>
+      row?.querySelector<HTMLElement>("[data-row-target]");
+    // An answered ask may still be drawn this once: skip its row.
+    const rows = [...el.querySelectorAll("[data-for-you-item]")].filter(
+      (x) => !r.gone || x.getAttribute("data-for-you-item") !== r.id,
+    );
+    const next =
+      (r.gone
+        ? undefined
+        : target(
+            el.querySelector(`[data-for-you-item="${CSS.escape(r.id)}"]`),
+          )) ??
+      target(rows[r.index]) ??
+      target(rows[r.index - 1]) ??
+      el.querySelector<HTMLElement>("#oa-fy-needs-heading") ??
+      el.querySelector<HTMLElement>("[data-for-you-title]");
+    next?.focus();
+  });
+  const openRow = (id: string) => {
+    const rows = [
+      ...(root.current?.querySelectorAll("[data-for-you-item]") ?? []),
+    ];
+    restore.current = {
+      id,
+      index: rows.findIndex((x) => x.getAttribute("data-for-you-item") === id),
+      gone: false,
+    };
+    setOpenId(id);
+  };
+  /** Back from the card; `gone`: it was answered (or went away), so its row won't be there. */
+  const closeCard = (gone: boolean) => {
+    if (restore.current) restore.current.gone = gone;
+    setOpenId(null);
+  };
   if (opened)
     return (
-      <AskView
-        item={opened}
-        phone={phone}
-        close={close}
-        back={() => setOpenId(null)}
-      />
+      <AskView item={opened} phone={phone} close={close} back={closeCard} />
     );
   const { needsYou, later } = data;
   // A read "While you were away" has done its job: the updates are listed.
@@ -338,7 +437,7 @@ function ForYouPanel({
   );
   if (needsYou.length + later.length + updates.length === 0)
     return (
-      <div data-for-you-panel="">
+      <div data-for-you-panel="" ref={root}>
         {header}
         <div className="px-[18px] py-7 text-center text-[var(--oa-text-2)]">
           <b className="mb-0.5 block text-[15.5px] text-[var(--oa-text)]">
@@ -355,15 +454,19 @@ function ForYouPanel({
       x={x}
       phone={phone}
       put={put}
-      open={() => setOpenId(x.id)}
+      open={() => openRow(x.id)}
       close={close}
     />
   );
   return (
-    <div data-for-you-panel="">
+    <div data-for-you-panel="" ref={root}>
       {header}
       <section aria-labelledby="oa-fy-needs">
-        <h3 className={`${GROUP} ${phone ? "border-t-0" : ""}`}>
+        <h3
+          id="oa-fy-needs-heading"
+          tabIndex={-1}
+          className={`${GROUP} outline-none focus-visible:ring-2 focus-visible:ring-[var(--oa-focus)] ${phone ? "border-t-0" : ""}`}
+        >
           <span id="oa-fy-needs">Needs you</span>
           <span>{needsYou.length}</span>
         </h3>
@@ -513,6 +616,17 @@ function Row({
   const later = useLater();
   const markRead = useMarkRead();
   const mute = useMute();
+  const unmute = useUnmute();
+  /** A mute keeps the row; the toast says so and can take it back. */
+  const muteWith = (m: { kind: "agent" | "page"; id: string }, title: string) =>
+    mute.mutate(m, {
+      onSuccess: () =>
+        toast({
+          title,
+          tone: "neutral",
+          action: { label: "Undo", onClick: () => unmute.mutate(m) },
+        }),
+    });
   const needs = x.level === "needs_you";
   const isUnread = unread(x);
   const isAsk = askComment(x) !== null;
@@ -564,11 +678,21 @@ function Row({
       <div className={`min-w-0 ${x.level === "update" ? "pr-7" : ""}`}>
         <b className="block leading-[1.35] font-semibold">
           {isAsk && !put ? (
-            <button type="button" className={stretch} onClick={open}>
+            <button
+              type="button"
+              data-row-target=""
+              className={stretch}
+              onClick={open}
+            >
               {title}
             </button>
           ) : href && !away ? (
-            <a href={href} className={stretch} onClick={follow}>
+            <a
+              href={href}
+              data-row-target=""
+              className={stretch}
+              onClick={follow}
+            >
               {title}
             </a>
           ) : (
@@ -662,15 +786,9 @@ function Row({
             {page && (
               <DropdownMenuItem
                 onSelect={() =>
-                  mute.mutate(
+                  muteWith(
                     { kind: "page", id: page.id },
-                    {
-                      onSuccess: () =>
-                        toast({
-                          title: "Stopped following this page.",
-                          tone: "neutral",
-                        }),
-                    },
+                    "Stopped following this page.",
                   )
                 }
               >
@@ -680,15 +798,9 @@ function Row({
             {agent && (
               <DropdownMenuItem
                 onSelect={() =>
-                  mute.mutate(
+                  muteWith(
                     { kind: "agent", id: agent.id },
-                    {
-                      onSuccess: () =>
-                        toast({
-                          title: `Muted ${agent.name}.`,
-                          tone: "neutral",
-                        }),
-                    },
+                    `Muted ${agent.name}. Asks for you still come through.`,
                   )
                 }
               >
@@ -712,7 +824,8 @@ function AskView({
   item: InboxItem;
   phone: boolean;
   close: () => void;
-  back: () => void;
+  /** `gone`: answered here or no longer there. */
+  back: (gone: boolean) => void;
 }) {
   const page = item.artifact?.id ?? "";
   const cid = askComment(item);
@@ -733,7 +846,7 @@ function AskView({
     if (waits) waited.current = true;
     if ((waited.current && waits === false) || gone) {
       drop(item.id);
-      back();
+      back(true);
     }
   }, [waits, gone, drop, item.id, back]);
   useEffect(() => backRef.current?.focus(), []);
@@ -746,7 +859,7 @@ function AskView({
           ref={backRef}
           id="oa-for-you-title"
           type="button"
-          onClick={back}
+          onClick={() => back(false)}
           className="flex-1 cursor-pointer border-0 bg-transparent p-0 text-left text-[length:var(--oa-text-md)] font-semibold text-[var(--oa-text)] outline-none focus-visible:underline"
         >
           <span aria-hidden="true">← </span>For you
@@ -779,6 +892,14 @@ function AskView({
               ) : undefined
             }
           />
+        ) : threads.isError ? (
+          // 403, 404 or comments off: say so; "Open the page" stays above.
+          <p
+            role="alert"
+            className="m-0 py-4 text-center text-[var(--oa-text-2)]"
+          >
+            Couldn't open this ask.
+          </p>
         ) : (
           <div
             aria-hidden="true"

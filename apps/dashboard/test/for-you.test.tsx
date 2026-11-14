@@ -188,7 +188,7 @@ describe("For you", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Mute OA Design" }),
     );
-    await findVisibleToast("Muted OA Design.");
+    await findVisibleToast("Muted OA Design. Asks for you still come through.");
     await waitFor(() =>
       expect(posts.find((c) => c.path === R.meInboxMutes)?.body).toEqual({
         kind: "agent",
@@ -333,5 +333,260 @@ describe("Show more", () => {
     expect(
       within(panel).queryByRole("button", { name: "Show more" }),
     ).toBeNull();
+  });
+});
+
+const LANDING = "Cd5fGhJkLm6nPqRs";
+
+/** The seeded ask with this question on the Landing page: its thread and comment ids. */
+async function seeded(question: string) {
+  const res = await fetch(
+    new URL(`${R.comments(LANDING)}?status=all`, "http://localhost").href,
+    { headers: { cookie: "oa_session=test" } },
+  );
+  const { threads } = (await res.json()) as {
+    threads: {
+      id: string;
+      comments: { id: string; ask?: { question: string } }[];
+    }[];
+  };
+  for (const t of threads)
+    for (const c of t.comments)
+      if (c.ask?.question === question) return { thread: t.id, comment: c.id };
+  throw new Error(`no seeded ask: ${question}`);
+}
+
+/**
+ * The inbox holds just this ask until a pick reaches the server (the server
+ * drops an answered ask). Opens the panel and the card.
+ */
+async function openAsk(
+  question: string,
+  level: InboxItem["level"] = "needs_you",
+) {
+  server.use(
+    ...createHandlers({
+      events,
+      forYou: "mixed",
+      commentAsks: true,
+      commentDeciders: true,
+      commentPasskey: "ok",
+    }),
+  );
+  const ids = await seeded(question);
+  let answered = false;
+  const other: InboxItem = {
+    id: "itm:read1",
+    level: "update",
+    kind: "reply",
+    artifact: { id: LANDING, title: "Landing page" },
+    actor: null,
+    text: "Sam replied",
+    href: `/a/${LANDING}`,
+    createdAt: new Date().toISOString(),
+    readAt: new Date().toISOString(),
+  };
+  const item: InboxItem = {
+    id: `ask:${ids.comment}`,
+    level,
+    kind: "ask",
+    urgency: "plain",
+    artifact: { id: LANDING, title: "Landing page" },
+    actor: null,
+    text: question,
+    href: `/a/${LANDING}?thread=${ids.thread}`,
+    createdAt: new Date().toISOString(),
+    readAt: null,
+  };
+  server.use(
+    http.post("*/api/v1/artifacts/:id/comments/:t/comments/:c/answer", () => {
+      answered = true;
+      return undefined;
+    }),
+    http.get(`*${R.meInbox}`, () =>
+      HttpResponse.json({
+        needsYou: level === "needs_you" && !answered ? [item] : [],
+        later: [],
+        // One read update keeps the list from being empty after the answer.
+        updates: level === "update" ? [item] : [other],
+        cursor: null,
+        counts: {
+          needsYou: level === "needs_you" && !answered ? 1 : 0,
+          unreadUpdates: level === "update" ? 1 : 0,
+        },
+      } satisfies Inbox),
+    ),
+  );
+  mount("/");
+  const panel = await openPanel();
+  fireEvent.click(
+    within(panel).getByRole("button", {
+      name: new RegExp(question.replace(/[?]/g, "\\?")),
+    }),
+  );
+  const card = await waitFor(() => {
+    const el = panel.querySelector(
+      "[data-for-you-ask] [data-ask], [data-for-you-ask] [data-ask-decided]",
+    );
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+  return { panel, card, ids };
+}
+
+describe("an ask opened in the panel", () => {
+  it("answers through the page's own route, then returns focus to the list", async () => {
+    const posts = calls("POST");
+    const { panel, card, ids } = await openAsk("Which layout do we ship?");
+    fireEvent.click(within(card).getByRole("button", { name: /Compact hero/ }));
+    await waitFor(() =>
+      expect(panel.querySelector("[data-for-you-ask]")).toBeNull(),
+    );
+    expect(posts.map((c) => c.path)).toContain(
+      R.commentAnswer(LANDING, ids.thread, ids.comment),
+    );
+    // The row is gone: focus goes to the next row, never <body>.
+    await waitFor(() =>
+      expect(document.activeElement).toHaveAccessibleName("Sam replied"),
+    );
+  });
+
+  it("back to the list focuses the row it came from", async () => {
+    const { panel } = await openAsk("Which layout do we ship?");
+    fireEvent.click(within(panel).getByRole("button", { name: /^For you$/ }));
+    await waitFor(() =>
+      expect(document.activeElement).toHaveAccessibleName(
+        "Which layout do we ship?",
+      ),
+    );
+  });
+
+  it("a weigh-in shows who decides", async () => {
+    const { card } = await openAsk(
+      "Which pricing table goes on the landing page?",
+    );
+    expect(card).toHaveTextContent("Maya Chen decides");
+  });
+
+  it("a pick that turns out to need a passkey asks to pick again", async () => {
+    const { card } = await openAsk("Ship the changelog?");
+    fireEvent.click(within(card).getByRole("button", { name: /Ship it/ }));
+    expect(
+      await within(card).findByText("This now needs your passkey. Pick again."),
+    ).toBeInTheDocument();
+  });
+
+  it("a risky ask says it needs a passkey", async () => {
+    const { card } = await openAsk("Merge the release PR?");
+    expect(card).toHaveTextContent("Approving this needs your passkey.");
+  });
+
+  it("a closed ask shows its decision", async () => {
+    const { panel } = await openAsk("Which plan card is shown first?");
+    expect(
+      panel.querySelector("[data-for-you-ask] [data-ask-decided]"),
+    ).not.toBeNull();
+  });
+
+  it("an update-level ask opens its card too", async () => {
+    const { card } = await openAsk("Which layout do we ship?", "update");
+    expect(card).toHaveTextContent("Which layout do we ship?");
+  });
+
+  it("says so when the ask can't be loaded", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    server.use(
+      http.get(`*${R.comments(LANDING)}`, () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    );
+    mount("/");
+    const panel = await openPanel();
+    fireEvent.click(
+      within(panel).getByRole("button", {
+        name: "Ship the landing with the waitlist?",
+      }),
+    );
+    expect(
+      await within(panel).findByText("Couldn't open this ask."),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("failures and announcements", () => {
+  it("a list that fails to load offers Try again", async () => {
+    forYou("mixed");
+    let fail = true;
+    server.use(
+      http.get(`*${R.meInbox}`, () =>
+        fail
+          ? HttpResponse.json(
+              { error: { code: "bad_request", message: "No" } },
+              { status: 400 },
+            )
+          : undefined,
+      ),
+    );
+    mount("/");
+    fireEvent.click(await bell());
+    const panel = await screen.findByRole("dialog", { name: "For you" });
+    expect(
+      await within(panel).findByText("Couldn't load For you."),
+    ).toBeInTheDocument();
+    fail = false;
+    fireEvent.click(within(panel).getByRole("button", { name: "Try again" }));
+    expect(
+      await within(panel).findByRole("region", { name: "Needs you" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Undo on the mute toast unmutes", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    const row = panel.querySelector(
+      '[data-for-you-item="itm:reply1"]',
+    ) as HTMLElement;
+    const dels = calls("DELETE");
+    fireEvent.pointerDown(
+      within(row).getByRole("button", { name: "More actions" }),
+      {
+        button: 0,
+        pointerType: "mouse",
+      },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Mute OA Design" }),
+    );
+    await findVisibleToast("Muted OA Design. Asks for you still come through.");
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(dels.map((c) => c.path)).toContain(
+        R.meInboxMute("agent", "agent:design"),
+      ),
+    );
+  });
+
+  it("announces a change in the count, politely", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    const live = document.querySelector("[data-for-you-live]");
+    expect(live).toHaveAttribute("aria-live", "polite");
+    expect(live).toHaveTextContent("");
+    const row = panel.querySelector(
+      '[data-for-you-item="itm:machine1"]',
+    ) as HTMLElement;
+    fireEvent.pointerDown(within(row).getByRole("button", { name: /Later/ }), {
+      button: 0,
+      pointerType: "mouse",
+    });
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Tomorrow morning" }),
+    );
+    await waitFor(() => expect(live).toHaveTextContent("For you, 1 needs you"));
   });
 });
