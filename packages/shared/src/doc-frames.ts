@@ -1,6 +1,13 @@
 // Text frames the doc room (DocRoom) sends to every socket, besides the binary
 // Yjs sync and awareness frames. Errors are { type: "error", code, message }.
 
+/** Who made a version or restore. No user id: public viewers see frames. */
+export type DocFrameActor = {
+  kind: "person" | "agent";
+  /** An agent's display name; null for a person. */
+  name: string | null;
+};
+
 /** A version was saved (automatically, or named by someone). */
 export type DocSavedFrame = {
   type: "saved";
@@ -9,6 +16,7 @@ export type DocSavedFrame = {
   name?: string;
   /** True for an automatic save (no name). */
   auto: boolean;
+  by: DocFrameActor | null;
 };
 
 /** An earlier version was restored as a new version. */
@@ -18,6 +26,7 @@ export type DocRestoredFrame = {
   from: number;
   /** The new version the restore created. */
   version: number;
+  by: DocFrameActor | null;
 };
 
 export type DocRoomTextFrame = DocSavedFrame | DocRestoredFrame;
