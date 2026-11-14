@@ -274,15 +274,20 @@ for (const width of [1280, 760, 390])
       ]);
       expect(b && r && b.x + b.width <= r.x + r.width).toBe(true);
       if (width > 600) {
-        // One row over 600px: the bell sits on the title's line.
-        const h = await page.locator(".oa-vt h1").boundingBox();
-        expect(
-          Math.abs(
-            (b?.y ?? 0) +
-              (b?.height ?? 0) / 2 -
-              ((h?.y ?? 0) + (h?.height ?? 0) / 2),
-          ),
-        ).toBeLessThan(4);
+        // One row over 600px: the bell sits on the title's line, once the bar
+        // has its final contents (the version label and fonts load after it shows).
+        const centre = async (sel: string) => {
+          const x = await page.locator(sel).boundingBox();
+          return (x?.y ?? 0) + (x?.height ?? 0) / 2;
+        };
+        await expect
+          .poll(async () =>
+            Math.abs(
+              (await centre("[data-for-you-bell]")) -
+                (await centre(".oa-vt h1")),
+            ),
+          )
+          .toBeLessThan(4);
       }
       await noSidewaysScroll(page);
       if (OUT) {

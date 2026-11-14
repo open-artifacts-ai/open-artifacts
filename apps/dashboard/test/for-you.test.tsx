@@ -1,16 +1,22 @@
 // #2512: the bell (Me.inbox) and "For you" (R.meInbox), on the mocks.
 import { type Inbox, type InboxItem, R } from "@oa/shared";
-import { createHandlers } from "@oa/shared/mocks";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { createHandlers, fixtures } from "@oa/shared/mocks";
+import { focusManager } from "@tanstack/react-query";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   calls,
   events,
   findVisibleToast,
   installHarness,
   mount,
-  seen,
   server,
 } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
@@ -32,6 +38,7 @@ const openPanel = async () => {
 
 describe("the bell", () => {
   it("is absent when Me has no inbox, and asks for nothing", async () => {
+    const gets = calls("GET");
     mount("/");
     await screen.findByRole(
       "button",
@@ -39,17 +46,18 @@ describe("the bell", () => {
       { timeout: FIRST_LOAD_MS },
     );
     expect(screen.queryByRole("button", { name: /^For you/ })).toBeNull();
-    expect(seen.some((u) => u.pathname.startsWith(R.meInbox))).toBe(false);
+    expect(gets.some((c) => c.path.startsWith(R.meInbox))).toBe(false);
   });
 
   it("counts only what needs you, from Me.inbox, before the list loads", async () => {
+    const gets = calls("GET");
     forYou("mixed");
     mount("/");
     const b = await bell();
     expect(b).toHaveAccessibleName("For you, 2 need you");
     expect(b.querySelector("[data-bell-count]")).toHaveTextContent("2");
     expect(b.querySelector("[data-bell-dot]")).toBeNull();
-    expect(seen.some((u) => u.pathname === R.meInbox)).toBe(false);
+    expect(gets.some((c) => c.path === R.meInbox)).toBe(false);
   });
 
   it("shows a dot, not a number, when only updates are new", async () => {
@@ -185,5 +193,112 @@ describe("For you", () => {
     ) as HTMLElement;
     expect(row).toHaveTextContent("Back from later");
     expect(within(row).queryByRole("button", { name: "Later" })).toBeNull();
+  });
+});
+
+describe("staying fresh", () => {
+  it("refreshes the counts every minute while visible and on focus, never while hidden", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const gets = calls("GET");
+      forYou("mixed");
+      mount("/");
+      const b = await bell();
+      expect(b).toHaveAccessibleName("For you, 2 need you");
+      const meGets = () => gets.filter((c) => c.path === R.me).length;
+      // The server's counts change: the next refresh shows them.
+      let needsYou = 5;
+      server.use(
+        http.get("*/api/v1/me", () =>
+          HttpResponse.json({
+            ...fixtures.me,
+            inbox: { needsYou, unreadUpdates: 0 },
+          }),
+        ),
+      );
+      const n0 = meGets();
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      await waitFor(() =>
+        expect(b).toHaveAccessibleName("For you, 5 need you"),
+      );
+      expect(meGets()).toBeGreaterThan(n0);
+
+      // Hidden: no polling at all.
+      act(() => focusManager.setFocused(false));
+      needsYou = 7;
+      const n1 = meGets();
+      await act(() => vi.advanceTimersByTimeAsync(180_000));
+      expect(meGets()).toBe(n1);
+      expect(b).toHaveAccessibleName("For you, 5 need you");
+
+      // Back in focus: it asks at once.
+      act(() => focusManager.setFocused(true));
+      await waitFor(() =>
+        expect(b).toHaveAccessibleName("For you, 7 need you"),
+      );
+      expect(meGets()).toBe(n1 + 1);
+    } finally {
+      focusManager.setFocused(undefined);
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("Show more", () => {
+  const upd = (id: string): InboxItem => ({
+    id,
+    level: "update",
+    kind: "reply",
+    artifact: { id: "De6gHjKmNp7qRsTu", title: "Meeting notes" },
+    actor: { kind: "person", name: "Sam Rivera" },
+    text: `Reply ${id}`,
+    href: "/a/De6gHjKmNp7qRsTu",
+    createdAt: new Date().toISOString(),
+    readAt: new Date().toISOString(),
+  });
+  const page = (updates: InboxItem[], cursor: string | null): Inbox => ({
+    needsYou: [],
+    later: [],
+    updates,
+    cursor,
+    counts: { needsYou: 0, unreadUpdates: 0 },
+  });
+
+  it("loads the next page of Updates while there is a cursor", async () => {
+    const gets = calls("GET");
+    forYou("empty");
+    server.use(
+      http.get(`*${R.meInbox}`, ({ request }) =>
+        HttpResponse.json(
+          new URL(request.url).searchParams.get("cursor") === "p2"
+            ? page([upd("itm:u2")], null)
+            : page([upd("itm:u1")], "p2"),
+        ),
+      ),
+    );
+    mount("/");
+    const panel = await openPanel();
+    const ups = within(panel).getByRole("region", { name: "Updates" });
+    expect(
+      within(ups)
+        .getAllByRole("link")
+        .map((a) => a.textContent),
+    ).toEqual(["Reply itm:u1"]);
+    fireEvent.click(within(ups).getByRole("button", { name: "Show more" }));
+    await within(ups).findByRole("link", { name: "Reply itm:u2" });
+    expect(
+      gets.some((c) => c.path === R.meInbox && c.search.get("cursor") === "p2"),
+    ).toBe(true);
+    // The last page has no cursor: no more to show.
+    expect(within(ups).queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  it("has no Show more without a cursor", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    expect(
+      within(panel).queryByRole("button", { name: "Show more" }),
+    ).toBeNull();
   });
 });

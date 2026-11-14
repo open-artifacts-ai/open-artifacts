@@ -36,6 +36,7 @@ import { Markdown } from "../viewer/comments/Markdown";
 import {
   useDropItem,
   useInbox,
+  useInboxCounts,
   useLater,
   useMarkRead,
   useMute,
@@ -77,10 +78,12 @@ export function ForYouBell({ className = "" }: { className?: string }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const [open, setOpen] = useState(false);
-  const inbox = useInbox(open && !!me?.inbox);
+  const list = useInbox(open && !!me?.inbox);
+  // Focus and every minute while visible (#2512); Me.inbox also follows every list fetch and change here.
+  useInboxCounts(!!me?.inbox);
   const phone = useMedia(PHONE);
   if (!me?.inbox) return null;
-  const b = bellState(inbox.data?.counts ?? me.inbox);
+  const b = bellState(me.inbox);
   const trigger = (
     <BellButton
       count={b.count}
@@ -89,8 +92,20 @@ export function ForYouBell({ className = "" }: { className?: string }) {
       className={className}
     />
   );
-  const panel = inbox.data ? (
-    <ForYouPanel data={inbox.data} phone={phone} close={() => setOpen(false)} />
+  const panel = list.inbox ? (
+    <ForYouPanel
+      data={list.inbox}
+      more={
+        list.hasNextPage
+          ? {
+              busy: list.isFetchingNextPage,
+              load: () => void list.fetchNextPage(),
+            }
+          : undefined
+      }
+      phone={phone}
+      close={() => setOpen(false)}
+    />
   ) : (
     <Loading phone={phone} close={() => setOpen(false)} />
   );
@@ -282,10 +297,13 @@ function Loading({ phone, close }: { phone: boolean; close: () => void }) {
 
 function ForYouPanel({
   data,
+  more,
   phone,
   close,
 }: {
   data: Inbox;
+  /** Another page of Updates (`cursor`). */
+  more?: { busy: boolean; load: () => void };
   phone: boolean;
   close: () => void;
 }) {
@@ -374,6 +392,20 @@ function ForYouPanel({
         </h3>
         <ul className="m-0 list-none p-0">
           {updates.map((x) => row(x))}
+          {more && (
+            <li className="border-t border-[var(--oa-divider)] px-3.5 py-2 text-center">
+              <button
+                type="button"
+                data-for-you-more-updates=""
+                aria-busy={more.busy || undefined}
+                disabled={more.busy}
+                onClick={more.load}
+                className={`${LINK} min-h-8 disabled:opacity-60`}
+              >
+                Show more
+              </button>
+            </li>
+          )}
           {firstBack && (
             <li className="border-t border-[var(--oa-divider)]">
               <button

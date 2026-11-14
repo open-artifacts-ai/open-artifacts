@@ -37,6 +37,8 @@ type Deps = {
 };
 
 const MIN = 60_000;
+/** Updates per page of R.meInbox. */
+export const INBOX_MOCK_PAGE = 20;
 
 export function createForYouMock(d: Deps): {
   handlers: HttpHandler[];
@@ -188,15 +190,20 @@ export function createForYouMock(d: Deps): {
   return {
     counts,
     handlers: [
-      http.get(`*${R.meInbox}`, () =>
-        HttpResponse.json({
+      // Updates page by INBOX_MOCK_PAGE; the cursor is the next offset.
+      http.get(`*${R.meInbox}`, ({ request }) => {
+        const from = Number(
+          new URL(request.url).searchParams.get("cursor") ?? 0,
+        );
+        const next = from + INBOX_MOCK_PAGE;
+        return HttpResponse.json({
           needsYou: open(),
           later,
-          updates,
-          cursor: null,
+          updates: updates.slice(from, next),
+          cursor: next < updates.length ? String(next) : null,
           counts: counts(),
-        } satisfies Inbox),
-      ),
+        } satisfies Inbox);
+      }),
       http.post(`*${R.meInboxRead}`, async ({ request }) => {
         const p = InboxReadBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
