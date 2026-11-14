@@ -67,7 +67,7 @@ const ACCESS = (
         space?.kind === "shared"
           ? `People with access to ${space.name}, and anyone you add.`
           : space
-            ? "Only you, and anyone you add"
+            ? "Only you and anyone you add can open it."
             : "Only people you add can open it.",
       ]
     : v === "team"

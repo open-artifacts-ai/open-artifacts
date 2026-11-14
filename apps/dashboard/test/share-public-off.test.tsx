@@ -197,7 +197,7 @@ it("#2509: in a shared space Restricted keeps the space's wording; the others re
   );
 });
 
-it("#2509: a personal space's Restricted line is 'Only you, and anyone you add'", async () => {
+it("#2509: a personal space's Restricted line is 'Only you and anyone you add can open it.'", async () => {
   open([
     serve({
       access: "owner",
@@ -214,7 +214,7 @@ it("#2509: a personal space's Restricted line is 'Only you, and anyone you add'"
   const g = await group();
   expect(
     within(g).getByRole("radio", { name: "Restricted" }),
-  ).toHaveAccessibleDescription("Only you, and anyone you add");
+  ).toHaveAccessibleDescription("Only you and anyone you add can open it.");
   expect(
     within(g).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
   ).toHaveAccessibleDescription("Every member of Acme Artifacts can open it.");
