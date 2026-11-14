@@ -156,4 +156,43 @@ describe("billing audit rows (#2458)", () => {
     expect(all).not.toMatch(/@|cus_|sub_/);
     expect(all).not.toMatch(/amount|cents/i);
   });
+
+  it("two reads sharing one stale pre-read write rows once; v6 then v7 diffs against v6", async () => {
+    await put(answer({ version: 5, tier: "team" }));
+    await env.DB.prepare(
+      "delete from audit_events where action like 'plan.%'",
+    ).run();
+    const v6 = answer({ version: 6, tier: "business" });
+    const v7 = answer({ version: 7, tier: "team" });
+    await Promise.all([put(v6), put(v6)]);
+    expect((await rows()).map((x) => JSON.parse(x.detail))).toEqual([
+      { from: "team", to: "business" },
+    ]);
+    await put(v7);
+    expect((await rows()).map((x) => JSON.parse(x.detail))).toEqual([
+      { from: "business", to: "team" },
+      { from: "team", to: "business" },
+    ]);
+  });
+
+  it("a version-0 solo answer with TIER unset writes nothing", async () => {
+    await put(answer({ version: 0, tier: "solo" }));
+    expect(await rows()).toEqual([]);
+  });
+
+  it("an unapplied answer that would emit several rows writes none", async () => {
+    await put(answer({ version: 5, tier: "team" }));
+    await env.DB.prepare(
+      "delete from audit_events where action like 'plan.%'",
+    ).run();
+    const stale = answer({
+      version: 4,
+      tier: "business",
+      status: "past_due",
+      graceUntil: t0 + DAY,
+      cancelsAt: t0 + DAY,
+    });
+    expect(await put(stale)).toBe(false);
+    expect(await rows()).toEqual([]);
+  });
 });

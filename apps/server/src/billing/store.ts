@@ -68,18 +68,32 @@ const CAPPED_USERS = `select id from users where status = 'active' and role != '
   order by last_seen_at desc limit ?1`;
 
 /**
+ * The audit rows run BEFORE STORE_PLAN, in its batch, and write only while
+ * the stored plan is still exactly what the diff was computed from (?1, the
+ * value read before the batch) and STORE_PLAN's own newer-than rule holds for
+ * the answer (?2). Two overlapping reads that share one stale pre-read
+ * therefore write rows once, and a later answer diffs against the stored one.
+ */
+const AUDIT_WHEN = `(select value from settings where key = '${PLAN_KEY}') is ?
+  and not exists (select 1 from settings where key = '${PLAN_KEY}' and not (
+    coalesce(json_extract(value, '$.version'), -1) < json_extract(?, '$.version')
+    or (coalesce(json_extract(value, '$.version'), -1) = json_extract(?, '$.version')
+        and coalesce(json_extract(value, '$.asOf'), 0) < json_extract(?, '$.asOf'))))`;
+
+/**
  * The plan-change audit rows (#2458) for an answer replacing `last` (null: the
- * provisioned TIER is the baseline), each only while STORE_PLAN changed a row
- * (`changes() > 0`, so an unapplied answer writes none). Both sides are read
- * raw (now 0: no trial-expiry or staleness view), so a trial that ran out
- * and is now answered solo still records the move. Ids and enums only: no
- * Stripe id, amount or address. Never throws: a failure here must not stop
- * the plan from being stored.
+ * provisioned TIER is the baseline). Both sides are read raw (now 0: no
+ * trial-expiry or staleness view), so a trial that ran out and is now
+ * answered solo still records the move. Ids and enums only: no Stripe id,
+ * amount or address. Never throws: a failure here must not stop the plan
+ * from being stored.
  */
 function planAudits(
   env: Env,
   last: StoredPlan | null,
   answer: StoredPlan,
+  beforeRaw: string | null,
+  answerJson: string,
 ): D1PreparedStatement[] {
   try {
     const prev = effectivePlan(last, null, env.TIER, 0);
@@ -106,7 +120,13 @@ function planAudits(
         action,
         { type: "settings", id: "billing" },
         { kind: "system", id: null },
-        { detail, when: { sql: "changes() > 0", args: [] } },
+        {
+          detail,
+          when: {
+            sql: AUDIT_WHEN,
+            args: [beforeRaw, answerJson, answerJson, answerJson],
+          },
+        },
       ),
     );
   } catch {
@@ -131,18 +151,20 @@ export async function storePlan(
     check: string | null;
   }>();
   const prev = planOfRaw(env, before?.plan, before?.check, now);
+  const json = JSON.stringify(answer);
   const audits = planAudits(
     env,
     parseStored(TierAnswerSchema, before?.plan),
     answer,
+    before?.plan ?? null,
+    json,
   );
-  // The audit rows follow STORE_PLAN at once, while its changes() holds.
-  const [stored] = await env.DB.batch([
-    env.DB.prepare(STORE_PLAN).bind(JSON.stringify(answer)),
+  const results = await env.DB.batch([
     ...audits,
+    env.DB.prepare(STORE_PLAN).bind(json),
     env.DB.prepare(CHECK_OK).bind(now),
   ]);
-  const applied = (stored?.results.length ?? 0) > 0;
+  const applied = (results[audits.length]?.results.length ?? 0) > 0;
   if (!applied) return false;
   const next = effectivePlan(answer, null, env.TIER, now);
   if (next.lock && !prev?.lock) {
