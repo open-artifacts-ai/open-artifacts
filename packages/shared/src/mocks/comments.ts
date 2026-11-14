@@ -128,7 +128,12 @@ type Deps = {
   seedMarkdown?: boolean;
   /** #2019: pins on the "Landing page" image (or pdf): a person, a linked agent, an unlinked agent and a resolved one. */
   seedPins?: "image" | "pdf";
+  /** #2512: seed For you's waiting ask (FOR_YOU_ASK) on "Landing page", from OA Manager to the caller. */
+  seedForYou?: boolean;
 };
+
+/** #2512: the ids of the ask For you's mock opens in its panel. */
+export const FOR_YOU_ASK = { thread: "fyAskThread1", comment: "fyAskComment1" };
 
 const iso = () => new Date().toISOString();
 
@@ -149,10 +154,13 @@ export function createCommentMock({
   passkeyMode,
   seedMarkdown,
   seedPins,
+  seedForYou,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
   asksForYou: (id: string) => number;
+  /** Whether that thread's ask still waits for the caller's answer. */
+  askOpen: (id: string, thread: string) => boolean;
 } {
   const threads = new Map<string, CommentThread[]>();
   /** Comment ids of asks with no `confirm` whose decider's switches ask for a passkey at pick time (#2381). */
@@ -744,7 +752,49 @@ export function createCommentMock({
           comments: [c],
         });
     }
+    const forYou: CommentThread[] = [];
+    if (seedForYou) {
+      const manager: CommentAuthor = {
+        kind: "agent",
+        name: "OA Manager",
+        for: me.user.name ?? me.user.email,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "owl", color: 4 },
+        me: false,
+      };
+      const c = comment(
+        "The build matches the reference. The bus section isn't in it yet.",
+        manager,
+      );
+      c.id = FOR_YOU_ASK.comment;
+      c.createdAt = new Date(Date.now() - 4 * 60_000).toISOString();
+      c.ask = {
+        question: "Ship the landing with the waitlist?",
+        options: [
+          {
+            id: "ship",
+            label: "Yes, ship it",
+            detail: "It goes live today; the bus section follows.",
+          },
+          { id: "hold", label: "Hold until the bus section is in" },
+        ],
+        to: [mine()],
+        closed: false,
+      };
+      forYou.push({
+        id: FOR_YOU_ASK.thread,
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: c.createdAt,
+        comments: [c],
+      });
+    }
     return [
+      ...forYou,
       {
         id: newId(),
         anchor: {
@@ -1121,8 +1171,14 @@ export function createCommentMock({
     }),
   ];
   const comments = (id: string) => list(id).flatMap((t) => t.comments);
+  const waits = (t: CommentThread) =>
+    t.status === "open" &&
+    t.comments.some(
+      (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+    );
   return {
     handlers,
+    askOpen: (id, thread) => list(id).some((t) => t.id === thread && waits(t)),
     asksForYou: (id) =>
       list(id).filter(
         (t) =>

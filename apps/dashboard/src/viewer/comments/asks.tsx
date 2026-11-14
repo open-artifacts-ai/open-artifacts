@@ -496,16 +496,23 @@ export function AskFrom({
   c,
   when,
   className = "",
+  face,
 }: {
   c: CommentT;
   when?: boolean;
   className?: string;
+  /** #2512: a face before the name (For you's panel, where no card header shows one). */
+  face?: React.ReactNode;
 }) {
   const ask = c.ask;
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
   return (
-    <p className={`${TXT} ${MUTED} ${className}`} data-ask-from="">
+    <p
+      className={`${TXT} ${MUTED} ${face ? "flex flex-wrap items-center gap-1.5" : ""} ${className}`}
+      data-ask-from=""
+    >
+      {face}
       {c.author.name}
       {c.author.kind === "agent" && (
         <>
@@ -616,6 +623,7 @@ export function AskBlock({
   askQuestion,
   guest = false,
   body,
+  face,
   from = true,
   boxed = true,
 }: {
@@ -624,6 +632,8 @@ export function AskBlock({
   /** The ask's own ring; off where the thread's card is the box (#2486). */
   boxed?: boolean;
   artifactId: string;
+  /** #2512: a face before the asker's name (For you's panel); none by default. */
+  face?: React.ReactNode;
   /** The comment's own text (its steps), shown above the question; the caller renders it. */
   body?: React.ReactNode;
   /** A guest sees the masked name and no tile (#1890). */
@@ -814,7 +824,7 @@ export function AskBlock({
           data-ask=""
           data-needs-you={waiting ? "" : undefined}
         >
-          {from && <AskFrom c={c} />}
+          {from && <AskFrom c={c} face={face} />}
           {body}
           <div id={qid} className={`${TXT} font-semibold break-words`}>
             <Markdown body={ask.question} />

@@ -105,6 +105,7 @@ import {
   fixtures,
   welcomeFixture,
 } from "./fixtures.js";
+import { createForYouMock, type ForYouVariant } from "./for-you.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
 import { createPasskeyMock, type PasskeyMockState } from "./passkeys.js";
 
@@ -131,6 +132,8 @@ export type MockOptions = {
   commentPins?: "image" | "pdf";
   /** #2338: agent comments with markdown, a hostile body and a markdown ask. */
   commentMarkdown?: boolean;
+  /** #2512: For you's inbox (R.meInbox) with Design's examples, and Me.inbox counts; unset, no inbox (no bell). */
+  forYou?: ForYouVariant;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
   commentersSignedIn?: boolean;
   /**
@@ -744,16 +747,29 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
     seedPins: opts.commentPins,
+    seedForYou: opts.forYou === "mixed",
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });
   const passkeyMock = createPasskeyMock(opts.passkeys ?? "none", { err, body });
+  const forYouMock = createForYouMock({
+    variant: opts.forYou,
+    landingId: artifacts.find((a) => a.title === "Landing page")?.id ?? "",
+    otherId: artifacts.find((a) => a.title === "Meeting notes")?.id ?? "",
+    err,
+    askOpen: commentMock.askOpen,
+  });
   return [
     ...pre,
+    ...forYouMock.handlers,
     ...(h?.handlers ?? []),
     ...passkeyMock.handlers,
     ...commentMock.handlers,
-    http.get("*/api/v1/me", () => HttpResponse.json(me)),
+    // #2512: with a For you variant, Me carries the inbox counts for the bell.
+    http.get("*/api/v1/me", () => {
+      const inbox = forYouMock.counts();
+      return HttpResponse.json(inbox ? { ...me, inbox } : me);
+    }),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
       if (r.error) return r.error;

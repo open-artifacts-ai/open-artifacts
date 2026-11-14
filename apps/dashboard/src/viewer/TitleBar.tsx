@@ -34,6 +34,7 @@ import {
   useVersionInfo,
 } from "../api/queries";
 import { accessLabel, useCan } from "../auth/permissions";
+import { ForYouBell } from "../foryou/ForYou";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { useNarrow } from "./comments/surfaces";
@@ -609,6 +610,8 @@ export function TitleBar({
             </a>
           </ShButton>
         )}
+        {/* #2512: the bell on every screen, last in the bar, at the bar's height. */}
+        {authed && <ForYouBell className="size-8" />}
       </div>
       <ConfirmDialog
         open={confirm}
