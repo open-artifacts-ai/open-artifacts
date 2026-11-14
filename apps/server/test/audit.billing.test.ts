@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { StoredPlan } from "../src/billing/plan.js";
-import { storePlan } from "../src/billing/store.js";
+import { setStorePlanHookForTest, storePlan } from "../src/billing/store.js";
 import type { Env } from "../src/env.js";
 import { DAY, H } from "./billing-helpers.js";
 
@@ -194,5 +194,60 @@ describe("billing audit rows (#2458)", () => {
     });
     expect(await put(stale)).toBe(false);
     expect(await rows()).toEqual([]);
+  });
+
+  it("a stale pre-read retries: the transition is diffed from the plan that was stored in between", async () => {
+    await put(answer({ version: 5, tier: "solo" }));
+    await env.DB.prepare(
+      "delete from audit_events where action like 'plan.%'",
+    ).run();
+    const v6 = answer({ version: 6, tier: "team" });
+    const v7 = answer({ version: 7, tier: "business" });
+    let once = true;
+    setStorePlanHookForTest(async () => {
+      if (!once) return;
+      once = false;
+      // Another store lands between v7's read (of v5) and its batch.
+      await put(v6);
+    });
+    try {
+      expect(await put(v7)).toBe(true);
+    } finally {
+      setStorePlanHookForTest(null);
+    }
+    const r = (await rows()).map((x) => JSON.parse(x.detail));
+    expect(r).toEqual([
+      { from: "solo", to: "team" },
+      { from: "team", to: "business" },
+    ]);
+  });
+
+  it("after 3 lost races it stores without rows", async () => {
+    await put(answer({ version: 1, tier: "solo" }));
+    await env.DB.prepare(
+      "delete from audit_events where action like 'plan.%'",
+    ).run();
+    let v = 1;
+    let busy = false;
+    setStorePlanHookForTest(async () => {
+      if (busy) return;
+      busy = true;
+      v += 1;
+      await put(answer({ version: v, tier: v % 2 ? "team" : "solo" }));
+      busy = false;
+    });
+    try {
+      expect(await put(answer({ version: 50, tier: "business" }))).toBe(true);
+    } finally {
+      setStorePlanHookForTest(null);
+    }
+    const stored = await env.DB.prepare(
+      "select value from settings where key = 'billing.plan'",
+    ).first<{ value: string }>();
+    expect(JSON.parse(stored?.value ?? "{}").version).toBe(50);
+    const last = (await rows()).map((x) => JSON.parse(x.detail));
+    expect(last).not.toContainEqual(
+      expect.objectContaining({ to: "business" }),
+    );
   });
 });

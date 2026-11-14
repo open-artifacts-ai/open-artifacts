@@ -31,12 +31,27 @@ export const ON_DEMAND_MS = 60_000;
  * version read later (asOf). An older version never replaces a newer one,
  * whatever order two reads land in. RETURNING says whether it applied.
  */
-const STORE_PLAN = `insert into settings (key, value) values ('${PLAN_KEY}', ?1)
+const storePlanSql = (
+  cas: boolean,
+) => `insert into settings (key, value) values ('${PLAN_KEY}', ?1)
   on conflict (key) do update set value = excluded.value
-  where coalesce(json_extract(settings.value, '$.version'), -1) < json_extract(excluded.value, '$.version')
+  where (coalesce(json_extract(settings.value, '$.version'), -1) < json_extract(excluded.value, '$.version')
      or (coalesce(json_extract(settings.value, '$.version'), -1) = json_extract(excluded.value, '$.version')
-         and coalesce(json_extract(settings.value, '$.asOf'), 0) < json_extract(excluded.value, '$.asOf'))
+         and coalesce(json_extract(settings.value, '$.asOf'), 0) < json_extract(excluded.value, '$.asOf')))
+  ${cas ? "and settings.value is ?2" : ""}
   returning value`;
+/** With ?2 the value the audit diff was read from: stores only while it still holds. */
+const STORE_PLAN_CAS = storePlanSql(true);
+const STORE_PLAN = storePlanSql(false);
+
+/** Reads of the plan before a store, up to this many, each retried when another store got in between. */
+const STORE_ATTEMPTS = 3;
+
+let afterPreRead: (() => Promise<void>) | null = null;
+/** Test seam: runs between storePlan's read and its batch. Only tests call it; no src code does. */
+export function setStorePlanHookForTest(fn: (() => Promise<void>) | null) {
+  afterPreRead = fn;
+}
 
 const READ_BOTH = `select
   (select value from settings where key = '${PLAN_KEY}') as plan,
@@ -146,40 +161,64 @@ export async function storePlan(
   now: number,
   ctx?: Ctx,
 ): Promise<boolean> {
-  const before = await env.DB.prepare(READ_BOTH).first<{
-    plan: string | null;
-    check: string | null;
-  }>();
-  const prev = planOfRaw(env, before?.plan, before?.check, now);
   const json = JSON.stringify(answer);
-  const audits = planAudits(
-    env,
-    parseStored(TierAnswerSchema, before?.plan),
-    answer,
-    before?.plan ?? null,
-    json,
-  );
-  const results = await env.DB.batch([
-    ...audits,
-    env.DB.prepare(STORE_PLAN).bind(json),
-    env.DB.prepare(CHECK_OK).bind(now),
-  ]);
-  const applied = (results[audits.length]?.results.length ?? 0) > 0;
-  if (!applied) return false;
-  const next = effectivePlan(answer, null, env.TIER, now);
-  if (next.lock && !prev?.lock) {
-    logInfo("billing_plan_locked", { reason: next.lock.reason });
-    const { results } = await env.DB.prepare(CAPPED_USERS)
-      .bind(revokeFanoutCap(env) + 1)
-      .all<{ id: string }>();
-    await revokeUsersLive(
-      env,
-      results.map((r) => r.id),
-      "plan locked",
-      ctx,
-    );
+  // The diff for the audit rows is read from the stored plan, and the store
+  // applies only while that plan is still the one read (a CAS). When another
+  // store got in between, read again: the transition is then from the new
+  // plan. After STORE_ATTEMPTS the answer is stored under the version rule
+  // alone, with no rows (logged).
+  for (let attempt = 0; ; attempt++) {
+    const last = attempt >= STORE_ATTEMPTS;
+    const before = await env.DB.prepare(READ_BOTH).first<{
+      plan: string | null;
+      check: string | null;
+    }>();
+    const prev = planOfRaw(env, before?.plan, before?.check, now);
+    await afterPreRead?.();
+    const beforePlan = before?.plan ?? null;
+    const audits = last
+      ? []
+      : planAudits(
+          env,
+          parseStored(TierAnswerSchema, beforePlan),
+          answer,
+          beforePlan,
+          json,
+        );
+    if (last) logWarn("billing_plan_audit_skipped", undefined, { attempt });
+    const results = await env.DB.batch([
+      ...audits,
+      last
+        ? env.DB.prepare(STORE_PLAN).bind(json)
+        : env.DB.prepare(STORE_PLAN_CAS).bind(json, beforePlan),
+      env.DB.prepare(CHECK_OK).bind(now),
+    ]);
+    const applied = (results[audits.length]?.results.length ?? 0) > 0;
+    if (!applied) {
+      if (last) return false;
+      // Unapplied: older than the stored answer (done), or the stored plan
+      // moved under us (read again).
+      const now2 = await env.DB.prepare(READ_BOTH).first<{
+        plan: string | null;
+      }>();
+      if ((now2?.plan ?? null) === beforePlan) return false;
+      continue;
+    }
+    const next = effectivePlan(answer, null, env.TIER, now);
+    if (next.lock && !prev?.lock) {
+      logInfo("billing_plan_locked", { reason: next.lock.reason });
+      const { results } = await env.DB.prepare(CAPPED_USERS)
+        .bind(revokeFanoutCap(env) + 1)
+        .all<{ id: string }>();
+      await revokeUsersLive(
+        env,
+        results.map((r) => r.id),
+        "plan locked",
+        ctx,
+      );
+    }
+    return true;
   }
-  return true;
 }
 
 /** Records a failed read (the 7-day clock starts at the first one). */
