@@ -581,6 +581,16 @@ async function startMocks() {
           .__oaDocVersion;
         return HttpResponse.json(v ? { ...body, currentVersion: v } : body);
       }),
+      // e2e (#1100): window.__oaMe401 makes /me answer 401, as once the
+      // session has ended, so the doc room's sign-in check sees it.
+      http.get("*/api/v1/me", () =>
+        (window as unknown as { __oaMe401?: boolean }).__oaMe401
+          ? HttpResponse.json(
+              { error: { code: "unauthorized", message: "Sign in" } },
+              { status: 401 },
+            )
+          : undefined,
+      ),
     );
   }
   await setupWorker(

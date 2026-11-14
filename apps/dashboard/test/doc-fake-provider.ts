@@ -42,6 +42,8 @@ export class FakeProvider implements RoomProvider {
   shouldConnect = true;
   /** A hello frame sent on every connect, as the real room does (#2490); null: none. */
   autoHello: Record<string, unknown> | null = null;
+  /** Upgrades are refused (a browser's 1006): sockets never open. */
+  refuse = false;
   constructor(
     public doc: Y.Doc,
     public shouldReconnect: (e: {
@@ -51,7 +53,8 @@ export class FakeProvider implements RoomProvider {
   ) {
     this.awareness = new Awareness(doc);
     this._updateHandler = (update, origin) => {
-      if (origin !== this) this.sentUpdates.push(update);
+      // Like y-websocket's broadcastMessage: a closed socket drops it.
+      if (origin !== this && this.wsconnected) this.sentUpdates.push(update);
     };
     this.doc.on("update", this._updateHandler);
     this._awarenessUpdateHandler = ({ added, updated, removed }) => {
@@ -80,6 +83,11 @@ export class FakeProvider implements RoomProvider {
       bufferedAmount: 0,
       addEventListener: (_t, cb) => this.closers.push(cb),
     };
+    if (this.refuse) {
+      // y-websocket says "connecting" for every socket it makes.
+      this.emit("status", { status: "connecting" });
+      return;
+    }
     this.wsconnected = true;
     this.emit("status", { status: "connected" });
     if (this.autoHello)

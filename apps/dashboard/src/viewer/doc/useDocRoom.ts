@@ -1,4 +1,4 @@
-import { retryAfterFromClose } from "@oa/shared";
+import { AUTH, R, retryAfterFromClose } from "@oa/shared";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { WebsocketProvider } from "y-websocket";
 import * as Y from "yjs";
@@ -48,6 +48,16 @@ export const NOT_FOUND =
 /** Product's copy: close 1007 bad_frame, the second time. */
 export const BAD_FRAME =
   "This doc can't sync right now. Reload the page to try again. Copy any unsaved changes first.";
+/** Product's copy: the session ended (4401, then the cookie no longer signs in). */
+export const LOGGED_OUT =
+  "You've been logged out. Log in again to keep editing.";
+/** Added to LOGGED_OUT only when nothing written here was still unsent. */
+export const LOGGED_OUT_SAVED = "Your changes are saved.";
+/** Product's copy: the link beside LOGGED_OUT. */
+export const LOG_IN = "Log in";
+/** Where LOG_IN goes: sign in, then back to this page. */
+export const loginHref = (next: string) =>
+  `${AUTH.login}?next=${encodeURIComponent(next)}`;
 /** The share of the cap that counts as near (hello bytes). */
 export const NEAR_CAP_SHARE = 0.9;
 /** Product's copy: hello bytes near the cap, in MB to one decimal. */
@@ -106,7 +116,11 @@ export const busyDelay = (
   Math.min(BUSY_MAX_MS, BUSY_BASE_MS * 2 ** attempt) * (0.75 + 0.25 * random());
 
 /** Why the socket stopped for good (the client does not retry). */
-export type RoomEnd = "access_removed" | "not_found" | "bad_frame";
+export type RoomEnd =
+  | "access_removed"
+  | "not_found"
+  | "bad_frame"
+  | "signed_out";
 
 export interface DocSnapshot {
   status: DocStatus;
@@ -123,12 +137,24 @@ export interface DocSnapshot {
   version: number | null;
   /** The socket was closed for good; see RoomEnd. */
   ended: RoomEnd | null;
+  /**
+   * When it ended signed_out: true if nothing written in this tab was still
+   * unsent (all of it reached the room), false if some was. Edits live only in
+   * this tab's memory (no IndexedDB), so signing in again (a page load) drops
+   * any unsent ones. Null otherwise.
+   */
+  endSaved: boolean | null;
 }
 
 /** What to say about the room (not the doc-full alert), or null. */
 export function roomNotice(
   s: DocSnapshot,
-): { text: string; retry?: string } | null {
+): { text: string; retry?: string; login?: string } | null {
+  if (s.ended === "signed_out")
+    return {
+      text: s.endSaved ? `${LOGGED_OUT} ${LOGGED_OUT_SAVED}` : LOGGED_OUT,
+      login: LOG_IN,
+    };
   if (s.ended === "access_removed") return { text: ACCESS_REMOVED };
   if (s.ended === "not_found") return { text: NOT_FOUND };
   if (s.ended === "bad_frame") return { text: BAD_FRAME };
@@ -221,6 +247,16 @@ export const roomShouldReconnect = (e: {
   (e.code !== 4403 || retryAfterFromClose(e.reason) !== null) &&
   e.code !== 4404;
 
+/** Signed in unless GET /me answers 401 (a network failure is not a no). */
+export async function defaultCheckAuth(): Promise<boolean> {
+  try {
+    const r = await fetch(R.me, { credentials: "same-origin" });
+    return r.status !== 401;
+  } catch {
+    return true;
+  }
+}
+
 export function defaultProvider(artifactId: string, ydoc: Y.Doc): RoomProvider {
   // disableBc: other tabs sync through the server, so "Saved" means saved.
   return new WebsocketProvider(roomServerUrl(), roomName(artifactId), ydoc, {
@@ -245,8 +281,11 @@ export function createDocRoom(
      * Y.Doc: the owner replaces the room with a fresh one.
      */
     onResync?: () => void;
+    /** Is the viewer still signed in? (A seam; default: GET /me is not 401.) */
+    checkAuth?: () => Promise<boolean>;
   } = {},
 ): DocRoom {
+  const checkAuth = opts.checkAuth ?? defaultCheckAuth;
   const ydoc = new Y.Doc();
   const provider = makeProvider(ydoc);
   const listeners = new Set<() => void>();
@@ -259,6 +298,7 @@ export function createDocRoom(
     cap: null,
     version: null,
     ended: null,
+    endSaved: null,
   };
   let role: DocSnapshot["role"] = null;
   let reason: DocSnapshot["reason"] = null;
@@ -269,7 +309,14 @@ export function createDocRoom(
   // refused edit): a later hello under the cap clears it.
   let fullFromHello = false;
   let ended: RoomEnd | null = null;
+  let endSaved: boolean | null = null;
   let badFrames = 0;
+  // After a 4401 (auth_expired at the socket TTL) the cookie re-authorizes the
+  // reconnect, unless the session itself ended: then every reconnect is
+  // refused before its hello. Until the next hello, each such refusal asks
+  // whether we are still signed in (one check at a time).
+  let authProbe = false;
+  let authChecking = false;
   // A bare 4403 after a hello: the room closes every socket on any access
   // change (#2490), so reconnect to re-authorize. Set until the next hello; a
   // socket that closes before one meanwhile means access really went.
@@ -311,6 +358,7 @@ export function createDocRoom(
       cap,
       version,
       ended,
+      endSaved,
     };
     if (
       (Object.keys(next) as (keyof DocSnapshot)[]).every(
@@ -423,7 +471,25 @@ export function createDocRoom(
           if (!destroyed) provider.connect?.();
         }, retry);
       } else if (ev.code === 4404) stop("not_found");
-      else if (probing && !welcomed.has(ws)) {
+      else if (ev.code === 4401) {
+        // The reconnect (y-websocket's) re-authorizes with the cookie.
+        authProbe = true;
+      } else if (authProbe && !welcomed.has(ws)) {
+        if (!authChecking) {
+          authChecking = true;
+          void checkAuth()
+            .then((signedIn) => {
+              if (destroyed || signedIn || !authProbe || ended) return;
+              // Nothing pending (buffered, draining or written offline): all
+              // of it reached the room before the cut.
+              endSaved = !(buffer || draining || unsent);
+              stop("signed_out");
+            })
+            .finally(() => {
+              authChecking = false;
+            });
+        }
+      } else if (probing && !welcomed.has(ws)) {
         // The reconnect after a 4403 was refused (a browser sees 1006 for the
         // route's 404) or closed again before its hello: access is gone.
         stop("access_removed");
@@ -475,6 +541,7 @@ export function createDocRoom(
         if (frame.type === "hello") {
           welcomed.add(ws);
           probing = false;
+          authProbe = false;
           // The first frame: the role comes from the server only.
           role = frame.role === "edit" ? "edit" : "read";
           reason =
@@ -631,6 +698,7 @@ const IDLE: DocSnapshot = {
   cap: null,
   version: null,
   ended: null,
+  endSaved: null,
 };
 const none = () => () => {};
 
@@ -641,14 +709,16 @@ export function useDocRoom(
     artifactId: string,
     ydoc: Y.Doc,
   ) => RoomProvider = defaultProvider,
+  checkAuth?: () => Promise<boolean>,
 ): { room: DocRoom | null } & DocSnapshot {
   const [room, setRoom] = useState<DocRoom | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: makeProvider is a stable seam.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: makeProvider and checkAuth are stable seams.
   useEffect(() => {
     let current: DocRoom;
     const open = (error?: string | null) => {
       current = createDocRoom((ydoc) => makeProvider(artifactId, ydoc), {
         error,
+        checkAuth,
         onResync: () => {
           // doc_too_large: the rejected edit is in the local Y.Doc. Rebuild
           // the room (Y.Doc and provider; the editor rebinds to it) so local

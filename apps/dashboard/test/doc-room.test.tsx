@@ -644,3 +644,106 @@ describe("the wire spec: saved and restored", () => {
     room.destroy();
   });
 });
+
+describe("4401, then the session is gone (logged out)", () => {
+  const HELLO = JSON.stringify({ type: "hello", role: "edit" });
+  const withAuth = (signedIn: boolean) => {
+    const checkAuth = vi.fn(async () => signedIn);
+    const room = createDocRoom(
+      (ydoc) => {
+        fake = new FakeProvider(ydoc);
+        return fake;
+      },
+      { checkAuth },
+    );
+    fake.connect();
+    fake.frame(HELLO);
+    return { room, checkAuth };
+  };
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+
+  it("a 4401 and a reconnect that gets its hello: no check, nothing ends", async () => {
+    const { room, checkAuth } = withAuth(true);
+    fake.close(4401);
+    vi.advanceTimersByTime(200);
+    fake.frame(HELLO);
+    await flush();
+    expect(checkAuth).not.toHaveBeenCalled();
+    expect(room.getSnapshot().ended).toBeNull();
+    room.destroy();
+  });
+
+  it("a reconnect refused before its hello while still signed in keeps trying", async () => {
+    const { room, checkAuth } = withAuth(true);
+    fake.close(4401);
+    fake.refuse = true;
+    vi.advanceTimersByTime(200);
+    fake.close(1006);
+    await flush();
+    expect(checkAuth).toHaveBeenCalledTimes(1);
+    expect(room.getSnapshot().ended).toBeNull();
+    vi.advanceTimersByTime(200);
+    expect(fake.connects).toBe(3);
+    room.destroy();
+  });
+
+  it("signed out with nothing unsent: ends signed_out, says the changes are saved, offers Log in", async () => {
+    const { room, checkAuth } = withAuth(false);
+    // An edit made and sent while connected.
+    type(room, "sent before the cut");
+    vi.advanceTimersByTime(UPDATE_BATCH_MS + 100);
+    expect(room.getSnapshot().status).toBe("saved");
+    fake.close(4401);
+    fake.refuse = true;
+    vi.advanceTimersByTime(200);
+    fake.close(1006);
+    await flush();
+    expect(checkAuth).toHaveBeenCalled();
+    const s = room.getSnapshot();
+    expect([s.ended, s.endSaved]).toEqual(["signed_out", true]);
+    expect(roomNotice(s)).toEqual({
+      text: "You've been logged out. Log in again to keep editing. Your changes are saved.",
+      login: "Log in",
+    });
+    // No more reconnects: it stopped.
+    const n = fake.connects;
+    vi.advanceTimersByTime(10_000);
+    expect(fake.connects).toBe(n);
+    room.destroy();
+  });
+
+  it("signed out with an edit written after the cut: no 'saved' line, and the edit exists only in this tab's memory", async () => {
+    const { room } = withAuth(false);
+    fake.close(4401);
+    fake.refuse = true;
+    // Typed while the socket was down: never sent.
+    const sent = fake.sentUpdates.length;
+    type(room, "written offline");
+    vi.advanceTimersByTime(UPDATE_BATCH_MS + 10);
+    // The reconnect (y-websocket's backoff) is refused before its hello.
+    vi.advanceTimersByTime(200);
+    fake.close(1006);
+    await flush();
+    const s = room.getSnapshot();
+    expect([s.ended, s.endSaved]).toEqual(["signed_out", false]);
+    expect(roomNotice(s)?.text).toBe(
+      "You've been logged out. Log in again to keep editing.",
+    );
+    // Evidence: it never left (the fake records every send), and nothing
+    // keeps it across a page load: a new room (signing in reloads the page)
+    // starts from an empty Y.Doc and only gets what the server holds.
+    const offline = fake.sentUpdates.slice(sent).some((u) => {
+      const d = new Y.Doc();
+      Y.applyUpdate(d, u);
+      return d.getText("t").toString().includes("written offline");
+    });
+    expect(offline).toBe(false);
+    expect(room.ydoc.getText("t").toString()).toContain("written offline");
+    const after = open();
+    expect(after.ydoc.getText("t").toString()).toBe("");
+    after.destroy();
+    room.destroy();
+  });
+});

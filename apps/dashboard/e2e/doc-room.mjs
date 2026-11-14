@@ -53,6 +53,7 @@ export function startDocRoom({
   close = null,
   closeFirst = null,
   revoke = false,
+  expireAuth = false,
   saved = null,
   restored = null,
 }) {
@@ -105,9 +106,18 @@ export function startDocRoom({
   // --revoke: access is gone after the first 4403, so later upgrades are
   // refused with 404, as #2490's route does (a browser sees a 1006 close).
   let revoked = false;
+  // --expire-auth: the first settled socket closes 4401 (TTL) and the session
+  // is gone, so later upgrades are refused 401, as the route does.
+  let expired = false;
   const wss = new WebSocketServer({
     port,
-    verifyClient: (_info, cb) => (revoked ? cb(false, 404) : cb(true)),
+    verifyClient: (_info, cb) => {
+      const status = revoked ? 404 : expired ? 401 : 0;
+      if (!status) return cb(true);
+      // A log line per refused upgrade, so a test can tell the client stopped.
+      console.log(`refused ${status} ${Date.now()}`);
+      cb(false, status);
+    },
   });
   wss.on("connection", (ws) => {
     connections++;
@@ -169,10 +179,18 @@ export function startDocRoom({
       // torn down (or is tearing down) is neither.
       if (ws.readyState !== 1 || mine !== connections) return;
       const code =
-        close ?? (!closedFirst ? (revoke ? "4403" : closeFirst) : null);
+        close ??
+        (!closedFirst
+          ? revoke
+            ? "4403"
+            : expireAuth
+              ? "4401"
+              : closeFirst
+          : null);
       if (!code) return;
       if (close === null) closedFirst = true;
       if (revoke) revoked = true;
+      if (expireAuth) expired = true;
       console.log(`closing ${code} ${Date.now()}`);
       ws.close(Number(code), "wire spec");
     }, 600);
@@ -321,6 +339,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     close: arg("--close"),
     closeFirst: arg("--close-first"),
     revoke: process.argv.includes("--revoke"),
+    expireAuth: process.argv.includes("--expire-auth"),
     saved: arg("--saved"),
     restored: arg("--restored"),
   });

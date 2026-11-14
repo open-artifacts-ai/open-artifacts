@@ -411,3 +411,46 @@ test("a full room shows View only where Saved sits, and its banner", async ({
     page.getByRole("status").filter({ hasText: /^View only$/ }),
   ).toBeVisible();
 });
+
+test("4401, then the session is gone: logged out, Log in, no loop", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--expire-auth"]);
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved$/ }),
+  ).toBeVisible();
+  // The session ends: /me now answers 401 (set before the 4401 at 600 ms
+  // lands; the check runs on each refused reconnect, so the order is safe).
+  await page.evaluate(() => {
+    (window as unknown as { __oaMe401: boolean }).__oaMe401 = true;
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "You've been logged out. Log in again to keep editing. Your changes are saved.",
+  );
+  const login = page.getByRole("link", { name: "Log in" });
+  await expect(login).toHaveAttribute(
+    "href",
+    `/auth/login?next=${encodeURIComponent(`/a/${LANDING}?mock=doc`)}`,
+  );
+  await expect(prose(page)).toHaveAttribute("contenteditable", "false");
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+  // It stopped: at least one refused reconnect happened, then no more
+  // attempts (accepted or refused) reach the room.
+  const tries = () =>
+    log().filter((l) => l.startsWith("conn ") || l.startsWith("refused "))
+      .length;
+  expect(log().some((l) => l.startsWith("refused 401 "))).toBe(true);
+  const n = tries();
+  await page.waitForTimeout(2000);
+  expect(tries()).toBe(n);
+});
+
+test("access removed shows no status where Saved sits", async ({
+  page,
+}, info) => {
+  await open(page, info, ["--revoke"]);
+  await expect(page.getByRole("alert")).toHaveText(
+    "You no longer have access.",
+  );
+  await expect(page.locator(".oa-docstate")).toHaveCount(0);
+});

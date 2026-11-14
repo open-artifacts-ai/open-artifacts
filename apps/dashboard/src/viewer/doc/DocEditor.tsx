@@ -18,6 +18,7 @@ import {
   type DocStatus,
   defaultProvider,
   errorCopy,
+  loginHref,
   type RoomProvider,
   roomNotice,
   useDocRoom,
@@ -57,6 +58,8 @@ export interface DocEditorProps {
   fullActions?: React.ReactNode;
   /** Made by New doc a moment ago: open with the title selected. */
   fresh?: boolean;
+  /** A test seam: whether the viewer is still signed in. */
+  checkAuth?: () => Promise<boolean>;
   /** A test seam: the provider for a room. */
   makeProvider?: (artifactId: string, ydoc: Y.Doc) => RoomProvider;
 }
@@ -65,6 +68,7 @@ export function DocEditor(props: DocEditorProps) {
   const { room, ...snap } = useDocRoom(
     props.artifactId,
     props.makeProvider ?? defaultProvider,
+    props.checkAuth,
   );
   const { onStatus } = props;
   const { status } = snap;
@@ -78,11 +82,14 @@ export function DocEditor(props: DocEditorProps) {
   useEffect(() => {
     if (version !== null) onCurrentVersion?.(version);
   }, [onCurrentVersion, version]);
-  // The state belongs to editing. Design: a deleted doc shows none (its
-  // notice says it all); any reader (the page says so, or the room's hello,
-  // by access or because the room is full) sees "View only".
+  // The state belongs to editing. Design: a doc that ended (deleted, access
+  // removed, logged out) shows none, since "Offline" would be false and its
+  // notice says it all; any reader (the page says so, or the room's hello, by
+  // access or because the room is full) sees "View only".
   const label: DocLabel | null =
-    ended === "not_found"
+    ended === "not_found" ||
+    ended === "access_removed" ||
+    ended === "signed_out"
       ? null
       : !props.canEdit || role === "read"
         ? "view"
@@ -201,6 +208,15 @@ function Loaded({
       {notice && (
         <div className="oa-doc-error">
           <p role={snap.ended ? "alert" : "status"}>{notice.text}</p>
+          {notice.login && (
+            <div className="oa-doc-error-actions">
+              <Button asChild size="sm" variant="outline">
+                <a href={loginHref(location.pathname + location.search)}>
+                  {notice.login}
+                </a>
+              </Button>
+            </div>
+          )}
           {notice.retry && (
             <div className="oa-doc-error-actions">
               <Button

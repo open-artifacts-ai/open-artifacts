@@ -1044,6 +1044,58 @@ describe("DocEditor", () => {
         expect(f.sentUpdates.length).toBe(sent);
       });
 
+    it("access removed shows no status where Saved sits", async () => {
+      const p = fakeProviders();
+      const seen: (string | null)[] = [];
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          onStatus={(s) => seen.push(s)}
+        />,
+      );
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      f.autoHello = null;
+      act(() => f.connect());
+      act(() => f.close(4403));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "You no longer have access.",
+      );
+      expect(seen.at(-1)).toBeNull();
+    });
+
+    it("logged out: the notice, a Log in link back here, read-only, no status", async () => {
+      const p = fakeProviders();
+      const seen: (string | null)[] = [];
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          checkAuth={async () => false}
+          onStatus={(s) => seen.push(s)}
+        />,
+      );
+      const f = p.made.last as NonNullable<typeof p.made.last>;
+      act(() => f.connect());
+      await screen.findByRole("toolbar");
+      act(() => f.close(4401));
+      f.refuse = true;
+      await waitFor(() => expect(f.connects).toBe(2), { timeout: 2000 });
+      act(() => f.close(1006));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "You've been logged out. Log in again to keep editing. Your changes are saved.",
+      );
+      expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute(
+        "href",
+        `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`,
+      );
+      readOnly();
+      expect(screen.queryByRole("toolbar")).toBeNull();
+      expect(seen.at(-1)).toBeNull();
+    });
+
     it("a deleted doc shows no status where Saved sits", async () => {
       const p = fakeProviders();
       const seen: (string | null)[] = [];
