@@ -320,3 +320,21 @@ body {
     padding: 32px 16px;
   }
 }
+
+/* For you (#2512): the 3px bar on a "Needs you" row, Design's gold. */
+:root {
+  --oa-for-you-gold: #c8961e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --oa-for-you-gold: #b98a22;
+  }
+}
+:root[data-theme="dark"] {
+  --oa-for-you-gold: #b98a22;
+}
+/* The ask card sits on the panel's surface here, where an outline option's
+   dark fill leaves muted detail text under 4.5:1: use the second text color. */
+[data-for-you-ask] [data-option] .text-muted-foreground {
+  color: var(--oa-text-2);
+}

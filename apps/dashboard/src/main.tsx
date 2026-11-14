@@ -572,6 +572,14 @@ async function startMocks() {
     commentersSignedIn: params.get("mock") === "signed-out",
     // ?mock=bus (#1293): the bus is on, with machines and agents.
     bus: params.get("mock") === "bus",
+    // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
+    // examples; &foryou=calm (nothing needs you), empty (first time) or back (back from Later).
+    forYou:
+      params.get("mock") === "foryou"
+        ? ((["calm", "empty", "back"] as const).find(
+            (v) => v === params.get("foryou"),
+          ) ?? "mixed")
+        : undefined,
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room
