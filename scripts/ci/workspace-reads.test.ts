@@ -3,7 +3,15 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { root } from "./stubs.ts";
 import { type Pkg, trackedSources, workspace } from "./workspace-imports.ts";
-import { drift, KNOWN, parseKnown, reads, report } from "./workspace-reads.ts";
+import {
+  cloudPackages,
+  drift,
+  KNOWN,
+  PRIVATE_PATHS,
+  parseKnown,
+  reads,
+  report,
+} from "./workspace-reads.ts";
 
 const pkg = (dir: string, name: string, deps: string[] = []): Pkg => ({
   dir,
@@ -33,7 +41,12 @@ describe("the known list matches the repo", () => {
     const pkgs = workspace(root);
     const findings = reads(pkgs, trackedSources(root));
     const present = new Set(pkgs.map((p) => p.name));
-    expect(drift(findings, known, present).stale).toEqual([]);
+    const cloud = cloudPackages(
+      readFileSync(join(root, PRIVATE_PATHS), "utf8"),
+    );
+    const d = drift(findings, known, present, cloud);
+    expect(d.stale).toEqual([]);
+    expect(d.unknown).toEqual([]);
   });
 });
 
@@ -166,9 +179,10 @@ describe("drift", () => {
       "delete the line from workspace-reads-known.txt",
     );
   });
-  it("a line for a package the workspace lacks is skipped, not stale", () => {
+  it("a line for a cloud-only package the workspace lacks is skipped, not stale", () => {
     const known = ["apps/gone/test/a.ts @oa/cloud-only"];
-    expect(report([], known, false, new Set(["@oa/other"]))).toEqual({
+    const cloud = new Set(["@oa/cloud-only"]);
+    expect(report([], known, false, new Set(["@oa/other"]), cloud)).toEqual({
       lines: [],
       code: 0,
     });
@@ -182,6 +196,39 @@ describe("drift", () => {
     expect(r.code).toBe(1);
     // Without the set (the cloud overlay's call), every unmatched line is stale.
     expect(report([], known, false).code).toBe(1);
+  });
+  it("a line for a package neither the workspace nor cloud has fails as unknown", () => {
+    const r = report(
+      [],
+      ["apps/gone/test/a.ts @oa/provisoner"],
+      false,
+      new Set(["@oa/other"]),
+      new Set(["@oa/provisioner"]),
+    );
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([
+      `apps/gone/test/a.ts @oa/provisoner: unknown package @oa/provisoner: neither a workspace package nor a cloud one in ${PRIVATE_PATHS}; fix the name or delete the line`,
+    ]);
+  });
+  it("cloud packages are @oa/<dir> for each package directory in private-paths.txt", () => {
+    const text = [
+      "# comment",
+      "apps/admin",
+      "packages/gh-oidc  # why",
+      "scripts/hosted",
+      "tests/redline",
+      "scripts/ci/hosted-cf.sh",
+      "packages/shared/dist/provisioning",
+      ".github/workflows/x.yml",
+      "docs/ops/hosted.md",
+      "",
+    ].join("\n");
+    expect([...cloudPackages(text)].sort()).toEqual([
+      "@oa/admin",
+      "@oa/gh-oidc",
+      "@oa/hosted",
+      "@oa/redline",
+    ]);
   });
   it("an exactly matching known file passes", () => {
     const r = report([finding], ["apps/reader/test/a.ts @oa/other"], false);

@@ -7,10 +7,11 @@
 //
 // scripts/ci/workspace-reads-known.txt is this check's baseline: the findings
 // that exist today. It only shrinks. A line naming a package this workspace
-// lacks is not applicable here, never stale: the private cloud repo applies the
-// same file over its overlay, where those packages exist (#2500).
+// lacks but the cloud repo has (cloudPackages()) is not applicable here, never
+// stale: cloud applies the same file over its overlay, where those packages
+// exist (#2500). A line naming a package neither has is a typo: it fails.
 import { readFileSync } from "node:fs";
-import { dirname, join, normalize, relative } from "node:path";
+import { basename, dirname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ownerOf,
@@ -29,6 +30,22 @@ export interface Read {
 }
 
 export const KNOWN = "scripts/ci/workspace-reads-known.txt";
+export const PRIVATE_PATHS = "scripts/ci/private-paths.txt";
+
+/**
+ * The cloud-only package names, from private-paths.txt: each package directory
+ * listed there (apps/x, packages/x, scripts/x, tests/x) is "@oa/x" in the cloud
+ * repo. Files and deeper paths are skipped.
+ */
+export function cloudPackages(privatePaths: string): Set<string> {
+  return new Set(
+    privatePaths
+      .split("\n")
+      .map((l) => l.split("#")[0].trim())
+      .filter((l) => /^(?:apps|packages|scripts|tests)\/[^/.]+$/.test(l))
+      .map((l) => `@oa/${basename(l)}`),
+  );
+}
 const REPO_PATH = /^(?:apps|packages|scripts|tests)\//;
 // One string literal in either quote, or a template with no interpolation. A
 // literal is only a candidate when it is single-line and interpolation-free:
@@ -100,21 +117,23 @@ const knownPkg = (line: string) => line.slice(line.lastIndexOf(" ") + 1);
 /**
  * Findings the known file lacks, and known entries that no longer happen. With
  * `present` (the workspace's package names), a line for a package not in it is
- * skipped rather than stale; without it every unmatched line is stale.
+ * skipped when `cloudOnly` names it, and unknown (a typo) when it does not;
+ * without `present` every unmatched line is stale and none is unknown.
  */
 export function drift(
   findings: Read[],
   known: string[],
   present?: Set<string>,
-): { added: Read[]; stale: string[] } {
+  cloudOnly: Set<string> = new Set(),
+): { added: Read[]; stale: string[]; unknown: string[] } {
   const key = (r: Read) => `${r.file} ${r.package}`;
   const now = new Set(findings.map(key));
   const have = new Set(known);
+  const here = (l: string) => !present || present.has(knownPkg(l));
   return {
     added: findings.filter((r) => !have.has(key(r))),
-    stale: known.filter(
-      (l) => !now.has(l) && (!present || present.has(knownPkg(l))),
-    ),
+    stale: known.filter((l) => !now.has(l) && here(l)),
+    unknown: known.filter((l) => !here(l) && !cloudOnly.has(knownPkg(l))),
   };
 }
 
@@ -131,8 +150,11 @@ export function report(
   known: string[],
   warn: boolean,
   present?: Set<string>,
+  cloudOnly?: Set<string>,
 ): { lines: string[]; code: number } {
-  const { added, stale } = drift(findings, known, present);
+  const { added, stale, unknown } = drift(findings, known, present, cloudOnly);
+  const typo = (l: string) =>
+    `unknown package ${knownPkg(l)}: neither a workspace package nor a cloud one in ${PRIVATE_PATHS}; fix the name or delete the line`;
   if (warn)
     return {
       lines: [
@@ -144,6 +166,7 @@ export function report(
           (l) =>
             `::warning file=${KNOWN}::stale entry "${l}"; ${settle(knownPkg(l))}`,
         ),
+        ...unknown.map((l) => `::warning file=${KNOWN}::"${l}": ${typo(l)}`),
         `workspace-reads (warn only): ${findings.length} cross-package read(s); ${added.length} new, ${stale.length} stale`,
       ],
       code: 0,
@@ -158,8 +181,9 @@ export function report(
         (l) =>
           `${l}: stale entry in workspace-reads-known.txt; ${settle(knownPkg(l))}`,
       ),
+      ...unknown.map((l) => `${l}: ${typo(l)}`),
     ],
-    code: added.length + stale.length ? 1 : 0,
+    code: added.length + stale.length + unknown.length ? 1 : 0,
   };
 }
 
@@ -177,6 +201,7 @@ function main(argv: string[]): number {
     parseKnown(readFileSync(join(root, KNOWN), "utf8")),
     warn,
     new Set(pkgs.map((p) => p.name)),
+    cloudPackages(readFileSync(join(root, PRIVATE_PATHS), "utf8")),
   );
   for (const line of out.lines) {
     if (warn) console.log(line);
