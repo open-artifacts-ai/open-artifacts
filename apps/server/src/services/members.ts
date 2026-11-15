@@ -71,6 +71,16 @@ import { insertUser, toMember } from "./users.js";
 const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifacts a
   where a.space_id = users.id and a.owner_id = users.id and a.deleted_at is null))`;
 
+/**
+ * Member.transferable: a suspended or removed person (any status but active,
+ * as statusOf reads it) with any artifact in their personal space, trash
+ * included. The same rows transferSummary counts (DEPARTED_COUNTS in
+ * services/spaces.ts), on the same indexes, as an exists per row.
+ */
+const TRANSFERABLE_SQL = `(users.status <> 'active' and (
+  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null)
+  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id)))`;
+
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
 /** A stored status; anything unknown reads as suspended (fail closed). */
 export const statusOf = (v: unknown): MemberStatus =>
@@ -96,8 +106,10 @@ export async function listMembers(
   const order = [asc(users.createdAt), asc(users.id)] as const;
   // In the list's own query: a row needs no request of its own.
   const owns = sql<number>`${sql.raw(GUEST_OWNS_SQL)}`;
-  const flag = (r: { owns: number }) =>
-    r.owns ? { personalArtifacts: true } : {};
+  const flag = (r: { owns: number; transferable: number }) => ({
+    ...(r.owns ? { personalArtifacts: true } : {}),
+    ...(r.transferable ? { transferable: true } : {}),
+  });
   const managed = await directoryManagedOf(env);
   const rows = await getDb(env)
     .select({
@@ -112,6 +124,7 @@ export async function listMembers(
       groups: sql<string | null>`${sql.raw(RESTRICTED_GROUPS_SQL)}`,
       idents: sql<string | null>`${sql.raw(IDENTITIES_SQL)}`,
       owns,
+      transferable: sql<number>`${sql.raw(TRANSFERABLE_SQL)}`,
       // A target-row fact for directoryManaged (the owner is never synced
       // away), read in SQL: role checks stay in src/auth (authz-lint).
       isOwner: sql<number>`(users.role = 'owner')`,
