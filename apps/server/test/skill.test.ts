@@ -22,6 +22,7 @@ import {
   SKILL_TEMPLATE_NO_SPACES,
 } from "../src/mcp/skill.generated.js";
 import {
+  applyDocTools,
   busLine,
   renderSkill,
   SKILL_DOC_URI,
@@ -41,7 +42,8 @@ import {
 import { renderSkillTemplate } from "../src/mcp/skill-template.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import { busOn } from "../src/services/bus.js";
-import { DOC_GATED_TOOLS, docToolOff } from "../src/services/doc-switch.js";
+import { DOC_GATED_TOOLS, DOC_SWITCH } from "../src/services/doc-switch.js";
+import { docsAvailable } from "../src/services/docs-available.js";
 import { VERSION } from "../src/version.gen.js";
 import { login } from "./helpers.js";
 import { APP, callWorker, connect, E } from "./mcp-helpers.js";
@@ -156,10 +158,10 @@ describe("skill.md drift", () => {
         upgradeLine: upgradeLine(e),
         busPeers: busLine(busOn(e), skillOrigin(e.APP_HOST)),
       };
-      const fresh = renderSkillTemplate(spaces).replace(
-        /\{\{(\w+)\}\}/g,
-        (m, k: string) => v[k] ?? m,
-      );
+      const fresh = applyDocTools(
+        renderSkillTemplate(spaces),
+        docsAvailable(e as never),
+      ).replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
       expect(await skill(e)).toBe(fresh);
     },
   );
@@ -224,7 +226,7 @@ describe("skill.md drift", () => {
     );
     // Spaces off (the default test env): every tool but list_spaces.
     // Doc-gated tools join the skill once the doc switch is open.
-    const docs = DOC_GATED_TOOLS.filter(docToolOff).length;
+    const docs = docsAvailable(env as never) ? 0 : DOC_GATED_TOOLS.length;
     const n = TOOL_DEFS.length - 1 - docs;
     expect(md).toContain(`tools/list shows the ${n} tools`);
     // The tool count appears once; the version (e.g. 0.17.0) is not a count.
@@ -648,6 +650,19 @@ describe("skill.md frontmatter (agentskills.io)", () => {
     expect(fm.description.length).toBeLessThanOrEqual(1024);
   });
 
+  it("an install value containing the doc-tool markers is not cut (#2578)", async () => {
+    const host = "h.example.com\n\n<!--doc-tool-->\nmid\n<!--/doc-tool-->\nend";
+    const md = await renderSkill({
+      APP_HOST: host,
+      ENVIRONMENT: "production",
+      PLAN: "free",
+    });
+    // Docs are off here: the template block goes, the value is left alone.
+    expect(md).toContain(host);
+    expect(toolSections(md).has("edit_doc")).toBe(false);
+    expect(toolSections(md).has("publish_artifact")).toBe(true);
+  });
+
   it("renderSkill does not memoize a failure", async () => {
     const host = `${"r".repeat(70)}.example.com`; // > 64: hashes the host
     const e = {
@@ -841,4 +856,68 @@ it("teaches client checksums and unchanged-byte uploads in the served skill", ()
   expect(SKILL_TEMPLATE).toContain("sha256sum file");
   expect(SKILL_TEMPLATE).toContain("shasum -a 256 file");
   expect(SKILL_TEMPLATE).toContain("do not modify the file after hashing");
+});
+
+describe("edit_doc in the skill is per install (#2578)", () => {
+  const open = async <T>(f: () => Promise<T>): Promise<T> => {
+    DOC_SWITCH.creation = true;
+    try {
+      return await f();
+    } finally {
+      DOC_SWITCH.creation = false;
+    }
+  };
+  const count = (md: string) =>
+    /tools\/list shows the (\d+) tools/.exec(md)?.[1] ?? "";
+
+  it("a self-host Free install keeps edit_doc out of the skill, count and ETag", async () => {
+    await open(async () => {
+      const free = E({ PLAN: "free", HOSTED: "" });
+      expect(docsAvailable(free)).toBe(false);
+      const md = await skill(free);
+      expect(toolSections(md).has("edit_doc")).toBe(false);
+      expect(md).not.toContain("doc-tool");
+      expect(md).not.toContain("@@tools");
+      expect(Number(count(md))).toBe(TOOL_DEFS.length - 1 - 1);
+      expect(skillEtag(free)).not.toContain("-docs");
+    });
+  });
+
+  it("a paid or hosted install lists edit_doc, and the ETag differs", async () => {
+    await open(async () => {
+      for (const over of [
+        { PLAN: "paid", HOSTED: "" },
+        { PLAN: "free", HOSTED: "1" },
+      ]) {
+        const e = E(over);
+        expect(docsAvailable(e)).toBe(true);
+        const md = await skill(e);
+        expect(toolSections(md).has("edit_doc")).toBe(true);
+        expect(md).not.toContain("doc-tool");
+        expect(Number(count(md))).toBe(TOOL_DEFS.length - 1);
+        expect(skillEtag(e)).toContain("-docs");
+      }
+      expect(skillEtag(E({ PLAN: "paid", HOSTED: "" }))).not.toBe(
+        skillEtag(E({ PLAN: "free", HOSTED: "" })),
+      );
+    });
+  });
+
+  it("the sections equal tools/list on a Free install with the switch open", async () => {
+    await open(async () => {
+      const over = { PLAN: "free", HOSTED: "" };
+      const u = await login(
+        `skill-doc-${newId().slice(0, 6).toLowerCase()}@x.com`,
+      );
+      const c = await connect((await createPat(env, u.userId, "s")).token, {
+        env: E(over),
+      });
+      const { tools } = await c.listTools();
+      await c.close();
+      expect(tools.map((t) => t.name)).not.toContain("edit_doc");
+      expect([...toolSections(await skill(E(over))).keys()].sort()).toEqual(
+        tools.map((t) => t.name).sort(),
+      );
+    });
+  });
 });

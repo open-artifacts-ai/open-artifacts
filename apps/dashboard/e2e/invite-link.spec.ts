@@ -64,7 +64,9 @@ test("sharing confirms with the artifact link", async ({ page }) => {
   const viewer = page.url().split("?")[0] as string;
   await page.goto(`${viewer}?panel=open&tab=share`);
   await expect(
-    page.getByText("No email is sent. Copy the link and share it yourself."),
+    page.getByText(
+      "We won't email them about this share. Copy the link and send it yourself.",
+    ),
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Email" }).fill("eve@example.com");
   await page.getByRole("button", { name: "Add", exact: true }).click();

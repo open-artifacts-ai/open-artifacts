@@ -3,6 +3,7 @@ import {
   type ArtifactSummary,
   type DataWriters,
   type ShareRole,
+  type Share as ShareRow,
   ShareSchema,
   type Visibility,
   viewerPath,
@@ -19,12 +20,16 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
+import { useAuthProviders } from "../../api/auth";
 import { ApiClientError } from "../../api/client";
 import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
+  qk,
   useDeleteShare,
+  useMembers,
   usePatchArtifact,
   usePutShare,
   useShares,
@@ -32,7 +37,11 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
-import { signInWith, useSignInDomains } from "../../auth/reach";
+import {
+  signInWith,
+  useSignInDomainList,
+  useSignInDomains,
+} from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
@@ -44,12 +53,15 @@ import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
+import {
+  OUTSIDER_DEFAULT,
+  outsideAddress,
+  outsideLine,
+  roleLabel,
+  roleOptions,
+} from "./shareRoles";
 
 const VIS: Visibility[] = ["private", "team", "public"];
-const ROLES: { value: ShareRole; label: string }[] = [
-  { value: "viewer", label: "Viewer" },
-  { value: "editor", label: "Editor" },
-];
 /**
  * #2509 General access: what each choice is called and the line under it
  * (OA Product's strings). People read these; the value stays private, team
@@ -165,26 +177,33 @@ function RecipientLine({
   );
 }
 
+/**
+ * A share's role. #2590: an outsider's choices are Can comment and Can view
+ * (OA Product); a member's stay Viewer and Editor.
+ */
 function RoleSelect({
   label,
   value,
   onChange,
+  outsider = false,
 }: {
   label: string;
   value: ShareRole;
   onChange: (r: ShareRole) => void;
+  outsider?: boolean;
 }) {
+  const options = roleOptions(outsider, value);
   return (
     <Select value={value} onValueChange={(v) => onChange(v as ShareRole)}>
       <SelectTrigger
         aria-label={label}
         size="sm"
-        className={`w-[96px] flex-none ${TEXT}`}
+        className={`${outsider ? "w-[140px]" : "w-[96px]"} flex-none ${TEXT}`}
       >
         <SelectValue />
       </SelectTrigger>
       <SelectContent position="popper">
-        {ROLES.map((r) => (
+        {options.map((r) => (
           <SelectItem key={r.value} value={r.value} className={TEXT}>
             {r.label}
           </SelectItem>
@@ -205,6 +224,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const publicOff =
     space?.publicLinks === false && artifact.visibility !== "public";
   const shares = useShares(id, people);
+  const qc = useQueryClient();
   const patch = usePatchArtifact(id);
   const put = usePutShare(id);
   const del = useDeleteShare(id);
@@ -224,7 +244,9 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     stage?.from === artifact.visibility ? stage.to : artifact.visibility;
   const changed = staged !== artifact.visibility;
   const [email, setEmail] = useState("");
+  // A member's pick, and an outsider's (#2590: Can comment unless changed).
   const [role, setRole] = useState<ShareRole>("viewer");
+  const [outsiderRole, setOutsiderRole] = useState<ShareRole>(OUTSIDER_DEFAULT);
   const [invalid, setInvalid] = useState(false);
   const [shared, setShared] = useState<{
     email: string;
@@ -241,6 +263,31 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const me = state.status === "authed" ? state.me : null;
   const install = me?.instance.name ?? "";
   const sends = emailEnabled(me);
+  const domainList = useSignInDomainList();
+  const providers = useAuthProviders().data?.providers ?? [];
+  const methods = {
+    google: providers.some((p) => p.id === "google"),
+    // Codes need email: where it's off, so are they (#2590), whatever the
+    // providers list says. The same state as the "We won't email them" line.
+    codes: sends && providers.some((p) => p.id === "email"),
+  };
+  // With no login domains, an address is outside unless it's a known member
+  // (#2590). Only owners and admins can list members.
+  const listMembers = isOrgAdmin(me) && domainList.length === 0;
+  const memberList = useMembers(undefined, listMembers).data;
+  const known = memberList
+    ? new Set(
+        memberList
+          .filter(
+            (m) => m.role !== "guest" && (m.status ?? "active") === "active",
+          )
+          .map((m) => m.email.toLowerCase()),
+      )
+    : null;
+  const typedOutside =
+    outsideAddress(email, domainList, listMembers ? known : null) === true;
+  const outsideNote = typedOutside ? outsideLine(email.trim(), methods) : null;
+  const pick = typedOutside ? outsiderRole : role;
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -272,17 +319,36 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     if (!e) return;
     inviteOnce((done) =>
       put.mutate(
-        { email: e, role },
+        { email: e, role: pick },
         {
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
+            // #2590: the server may store another role than the one picked
+            // (an outsider's Editor becomes commenter): the row shows the
+            // stored one at once, before the list refetches.
+            qc.setQueryData<ShareRow[]>(qk.shares(id), (list) => {
+              if (!list) return list;
+              const was = list.find((x) => x.email === r.email);
+              const row: ShareRow = {
+                ...was,
+                email: r.email,
+                role: r.role,
+                createdAt: r.createdAt,
+                ...(r.guest !== undefined ? { guest: r.guest } : {}),
+              };
+              return was
+                ? list.map((x) => (x === was ? row : x))
+                : [...list, row];
+            });
+            // The list's own answer (viewOnly and the rest) follows.
+            void qc.invalidateQueries({ queryKey: qk.shares(id) });
             setShared({
               email: e,
               emailed: r.emailed,
               recipient: r.recipient,
               with: signInWith(r.signInMethods),
-              role,
+              role: r.role,
             });
           },
           onError: (x) => fail(x, "Couldn't share"),
@@ -432,7 +498,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 setInvalid(false);
               }}
             />
-            <RoleSelect label="Invite role" value={role} onChange={setRole} />
+            <RoleSelect
+              label="Invite role"
+              outsider={typedOutside}
+              value={pick}
+              onChange={typedOutside ? setOutsiderRole : setRole}
+            />
             <Button
               type="submit"
               variant="outline"
@@ -452,10 +523,15 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               Enter a valid email address.
             </p>
           )}
+          {outsideNote && (
+            <p className={`mt-[var(--oa-space-3)] mb-0 ${MUTED}`}>
+              {outsideNote}
+            </p>
+          )}
           <p className={`mt-[var(--oa-space-3)] ${MUTED}`}>
             {sends
               ? "We'll email them a link. You can also copy it and send it yourself."
-              : "No email is sent. Copy the link and share it yourself."}
+              : "We won't email them about this share. Copy the link and send it yourself."}
           </p>
         </section>
       )}
@@ -525,6 +601,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <>
                 <RoleSelect
                   label={`Role for ${s.email}`}
+                  outsider={s.guest === true}
                   value={s.role}
                   onChange={(r) =>
                     put.mutate(
@@ -553,14 +630,18 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 </Button>
               </>
             ) : (
-              <span className="text-muted-foreground">{s.role}</span>
+              <span className="text-muted-foreground">
+                {roleLabel(s.role, s.guest === true)}
+              </span>
             );
             // Guests first; then a member who can only view (never why),
             // flagged only where the stored role says more than they get.
+            // #2590: an outsider's picker says Can comment or Can view;
+            // only an old Editor share on a guest still needs the caption.
             const caption = s.guest
               ? s.role === "editor"
                 ? "Guest · can only view for now"
-                : "Guest · can only view"
+                : null
               : s.viewOnly && s.role === "editor"
                 ? "Can only view for now"
                 : null;

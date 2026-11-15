@@ -198,6 +198,7 @@ export const useShares = (id: string, enabled = true) =>
   useQuery({
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
+      // PROVISIONAL (#2590): the wide role, until packages/shared has it.
       api.get(R.shares(id), z.array(ShareSchema), signal),
     enabled,
   });
@@ -512,6 +513,7 @@ export const useDeleteArtifact = (id: string) =>
   );
 export const usePutShare = (id: string) =>
   useInvalidating(
+    // PROVISIONAL (#2590): the wide role, until packages/shared has it.
     (input: ShareInput) =>
       api.send("PUT", R.shares(id), input, ShareResultSchema),
     () => [qk.shares(id)],
