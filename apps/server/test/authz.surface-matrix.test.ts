@@ -124,9 +124,13 @@ const answering = (routes: readonly RouteDef[]) => [
 describe("coverage (derived from the router and the registries)", () => {
   it("SURFACES cover every artifact entry in ROUTE_POLICY and every MCP tool", () => {
     expect(uncovered(SURFACES, ROUTE_POLICY, TOOL_POLICY)).toEqual([]);
-    expect(manifest.map((t) => t.name).sort()).toEqual(
-      Object.keys(TOOL_POLICY).sort(),
-    );
+    // edit_doc stays out of the public manifest until the doc switch opens (#1100).
+    expect(
+      manifest
+        .map((t) => t.name)
+        .concat("edit_doc")
+        .sort(),
+    ).toEqual(Object.keys(TOOL_POLICY).sort());
   });
   it("every mounted app route is listed (artifact surface, instance route or public)", () => {
     const mounted = answering(createApp().routes as RouteDef[]);
