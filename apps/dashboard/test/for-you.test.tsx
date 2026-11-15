@@ -1,5 +1,5 @@
 // #2512: the bell (Me.inbox) and "For you" (R.meInbox), on the mocks.
-import { type Inbox, type InboxItem, R } from "@oa/shared";
+import { R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { focusManager } from "@tanstack/react-query";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
+import type { List as Inbox, Item as InboxItem } from "../src/foryou/contract";
 import {
   calls,
   events,
@@ -22,6 +23,8 @@ import {
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
+
+const LANDING_ID = "Cd5fGhJkLm6nPqRs";
 
 const bell = () =>
   screen.findByRole("button", { name: /^For you/ }, { timeout: FIRST_LOAD_MS });
@@ -93,12 +96,12 @@ describe("For you", () => {
     const rows = within(needs).getAllByRole("listitem");
     expect(rows.map((r) => r.getAttribute("data-for-you-item"))).toEqual([
       "ask:fyAskComment1",
-      "itm:machine1",
+      "itm:mention1",
     ]);
     expect(rows[0]).toHaveTextContent("waiting 4 min");
     expect(
-      within(rows[1] as HTMLElement).getByRole("link", { name: "Review" }),
-    ).toHaveAttribute("href", "/agents");
+      within(rows[1] as HTMLElement).getByRole("link", { name: "Open" }),
+    ).toHaveAttribute("href", "/a/De6gHjKmNp7qRsTu");
     const ups = within(panel).getByRole("region", { name: "Updates" });
     expect(
       within(ups).getByRole("button", { name: "Mark all read" }),
@@ -142,6 +145,62 @@ describe("For you", () => {
     expect(tile).toHaveAttribute("data-avatar", "agent");
     expect(tile).toHaveAttribute("data-animal", "owl");
     expect(from).toHaveTextContent(/^OA Manager\s*agent\s*asks you$/);
+  });
+
+  it("skips items it can't read, so a new kind never blanks the list", async () => {
+    const ok: InboxItem = {
+      id: "itm:ok",
+      level: "update",
+      kind: "reply",
+      artifact: { id: LANDING_ID, title: "Landing page" },
+      actor: null,
+      text: "Sam replied",
+      href: `/a/${LANDING_ID}`,
+      createdAt: new Date().toISOString(),
+      readAt: null,
+    };
+    forYou("mixed");
+    server.use(
+      http.get(`*${R.meInbox}`, () =>
+        HttpResponse.json({
+          // A kind from the future and approval rows (machine, v6's proposal): none show.
+          needsYou: [
+            { ...ok, id: "itm:future", level: "needs_you", kind: "teleport" },
+            {
+              ...ok,
+              id: "itm:machine",
+              level: "needs_you",
+              kind: "machine",
+              artifact: null,
+            },
+            // Contract v6's approval row: v1 shows none.
+            {
+              ...ok,
+              id: "itm:proposal",
+              level: "needs_you",
+              kind: "proposal",
+              urgency: "approval",
+              artifact: null,
+              proposal: { id: "p", kind: "role", agentName: "OA Design" },
+            },
+          ],
+          later: [],
+          updates: [ok, { ...ok, id: "itm:bad", href: "//evil.example" }],
+          cursor: null,
+          counts: { needsYou: 2, unreadUpdates: 1 },
+        }),
+      ),
+    );
+    mount("/");
+    const panel = await openPanel();
+    expect(
+      [...panel.querySelectorAll("[data-for-you-item]")].map((r) =>
+        r.getAttribute("data-for-you-item"),
+      ),
+    ).toEqual(["itm:ok"]);
+    expect(
+      within(panel).getByText("Nothing is waiting on you."),
+    ).toBeInTheDocument();
   });
 
   it("never re-sorts what the server sent", async () => {
@@ -222,7 +281,7 @@ describe("For you", () => {
     mount("/");
     const panel = await openPanel();
     const row = panel.querySelector(
-      '[data-for-you-item="itm:machine1"]',
+      '[data-for-you-item="itm:mention1"]',
     ) as HTMLElement;
     expect(row).toHaveTextContent("Back from later");
     expect(within(row).queryByRole("button", { name: "Later" })).toBeNull();
@@ -621,7 +680,7 @@ describe("failures and announcements", () => {
     server.use(
       http.delete("*/api/v1/me/inbox/mutes/:kind/:id", () =>
         HttpResponse.json(
-          { error: { code: "internal", message: "No" } },
+          { error: { code: "internal", message: "Something went wrong" } },
           { status: 500 },
         ),
       ),
@@ -639,7 +698,37 @@ describe("failures and announcements", () => {
       await screen.findByRole("menuitem", { name: "Mute OA Design" }),
     );
     fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
-    await findVisibleToast("Couldn't save that.");
+    // The app's error copy: the server's message here.
+    await findVisibleToast("Something went wrong");
+  });
+
+  it("a Later that fails puts the row back and says so", async () => {
+    forYou("mixed");
+    server.use(
+      http.post("*/api/v1/me/inbox/:id/later", () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    );
+    mount("/");
+    const panel = await openPanel();
+    const row = () =>
+      panel.querySelector('[data-for-you-item="itm:mention1"]') as HTMLElement;
+    fireEvent.pointerDown(
+      within(row()).getByRole("button", { name: /Later/ }),
+      {
+        button: 0,
+        pointerType: "mouse",
+      },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Tomorrow morning" }),
+    );
+    await findVisibleToast("Not found");
+    await waitFor(() => expect(row()).not.toBeNull());
+    expect(await bell()).toHaveAccessibleName("For you, 2 need you");
   });
 
   it("announces a change in the count, politely", async () => {
@@ -650,7 +739,7 @@ describe("failures and announcements", () => {
     expect(live).toHaveAttribute("aria-live", "polite");
     expect(live).toHaveTextContent("");
     const row = panel.querySelector(
-      '[data-for-you-item="itm:machine1"]',
+      '[data-for-you-item="itm:mention1"]',
     ) as HTMLElement;
     fireEvent.pointerDown(within(row).getByRole("button", { name: /Later/ }), {
       button: 0,

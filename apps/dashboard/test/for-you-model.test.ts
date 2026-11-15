@@ -1,6 +1,7 @@
 // #2512: what the bell shows and how a "For you" row reads (inbox contract, #2513).
-import type { InboxItem } from "@oa/shared";
+
 import { describe, expect, it } from "vitest";
+import type { Item as InboxItem } from "../src/foryou/contract";
 import {
   agoText,
   askComment,
@@ -73,17 +74,16 @@ describe("the bell", () => {
 });
 
 describe("Later", () => {
-  const machine = item({
+  const mention = item({
     id: "itm:m",
-    kind: "machine",
-    actor: null,
-    machine: { id: "m", name: "Box" },
+    kind: "mention",
+    actor: { kind: "user", name: "Sam Rivera", me: false },
   });
   it("is offered once, and only on a single-action item", () => {
-    expect(canLater(machine)).toBe(true);
-    expect(canLater({ ...machine, backFromLater: true })).toBe(false);
+    expect(canLater(mention)).toBe(true);
+    expect(canLater({ ...mention, backFromLater: true })).toBe(false);
     expect(
-      canLater({ ...machine, later: { until: at(-60), used: true } }),
+      canLater({ ...mention, later: { until: at(-60), used: true } }),
     ).toBe(false);
     expect(canLater(item({ id: "ask:c1" }))).toBe(false);
     expect(canLater(upd("u", false))).toBe(false);
@@ -139,10 +139,8 @@ describe("words", () => {
   });
 
   it("writes each kind's line", () => {
-    const m = item({ id: "itm:m", kind: "machine", createdAt: at(20) });
-    expect(contextLine(m, NOW)).toBe(
-      "It wants to connect agents as you · 20 min ago",
-    );
+    const m = item({ id: "itm:m", kind: "mention", createdAt: at(20) });
+    expect(contextLine(m, NOW)).toBe('on "Open Artifacts Asks" · 20 min ago');
     const r = item({
       id: "itm:r",
       level: "update",

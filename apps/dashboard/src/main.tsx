@@ -573,10 +573,10 @@ async function startMocks() {
     // ?mock=bus (#1293): the bus is on, with machines and agents.
     bus: params.get("mock") === "bus",
     // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
-    // examples; &foryou=calm (nothing needs you), empty (first time) or back (back from Later).
+    // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
     forYou:
       params.get("mock") === "foryou"
-        ? ((["calm", "empty", "back"] as const).find(
+        ? ((["calm", "empty", "back", "error"] as const).find(
             (v) => v === params.get("foryou"),
           ) ?? "mixed")
         : undefined,

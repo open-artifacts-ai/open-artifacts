@@ -91,10 +91,10 @@ for (const width of [1280, 390])
       await expect(
         p.getByText("Ship the landing with the waitlist?"),
       ).toBeVisible();
-      // Longest wait first: the waiting ask, then the machine.
+      // The server's order: the waiting ask, then the mention.
       const rows = p.locator("[data-for-you-item][data-level=needs_you]");
       await expect(rows.first()).toContainText("waiting 4 min");
-      await expect(rows.nth(1)).toContainText("Approve this machine");
+      await expect(rows.nth(1)).toContainText("Sam Rivera mentioned you");
       if (width === 390) {
         // A full screen, rows at least 56px tall.
         const box = await p.boundingBox();
@@ -113,7 +113,7 @@ for (const width of [1280, 390])
       await noSidewaysScroll(page);
       await shot("2-open-mixed");
 
-      // Later, once: the machine folds into "Later (1)" and the bell drops to 1.
+      // Later, once: the mention folds into "Later (1)" and the bell drops to 1.
       await rows.nth(1).getByRole("button", { name: "Later" }).click();
       const menu = page.getByRole("menu");
       await expect(
@@ -203,9 +203,9 @@ for (const width of [1280, 390])
       await bell(page).click();
       const row = panel(page)
         .first()
-        .locator('[data-for-you-item="itm:machine1"]');
+        .locator('[data-for-you-item="itm:mention1"]');
       await expect(row.getByText("Back from later")).toBeVisible();
-      await expect(row.getByRole("link", { name: "Review" })).toBeVisible();
+      await expect(row.getByRole("link", { name: "Open" })).toBeVisible();
       // Put off once: no Later this time.
       await expect(row.getByRole("button", { name: "Later" })).toHaveCount(0);
       await axe(page);
@@ -352,3 +352,18 @@ for (const width of [640, 700, 820, 940])
       });
     }
   });
+
+for (const width of [1280, 390])
+  for (const theme of ["light", "dark"] as const)
+    test(`a list that fails to load offers Try again at ${width} ${theme}`, async ({
+      page,
+    }) => {
+      const shot = await start(page, width, theme, "error");
+      await bell(page).click();
+      const p = panel(page).first();
+      await expect(p.getByText("Couldn't load For you.")).toBeVisible();
+      await expect(p.getByRole("button", { name: "Try again" })).toBeVisible();
+      await axe(page);
+      await noSidewaysScroll(page);
+      await shot("14-load-failed");
+    });
