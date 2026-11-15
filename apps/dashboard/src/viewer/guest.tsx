@@ -70,7 +70,7 @@ export function GuestBar({
       <a
         href={OPEN_ARTIFACTS_URL}
         target="_blank"
-        rel="noopener"
+        rel="noopener noreferrer"
         className="font-semibold whitespace-nowrap text-foreground no-underline"
       >
         Open Artifacts
@@ -91,7 +91,11 @@ export function GuestBar({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem asChild>
-            <a href={offerUrl(hosted)} target="_blank" rel="noopener">
+            <a
+              href={offerUrl(hosted)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               {GUEST.getYourOwn}
             </a>
           </DropdownMenuItem>
@@ -148,7 +152,11 @@ export function GuestOffer({
         </div>
         <div className="flex flex-none items-center gap-2">
           <Button asChild variant="default" size="xs" className={SM}>
-            <a href={offerUrl(hosted)} target="_blank" rel="noopener">
+            <a
+              href={offerUrl(hosted)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               {GUEST.getYourOwn}
             </a>
           </Button>

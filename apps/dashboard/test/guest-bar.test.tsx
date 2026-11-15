@@ -5,6 +5,7 @@ import { fixtures } from "@oa/shared/mocks";
 import {
   act,
   fireEvent,
+  render,
   renderHook,
   screen,
   within,
@@ -12,6 +13,7 @@ import {
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  GuestOffer,
   HOSTED_OFFER_URL,
   offerUrl,
   SELF_HOSTED_OFFER_URL,
@@ -51,7 +53,7 @@ describe("the guest bar", () => {
     const home = within(header).getByRole("link", { name: "Open Artifacts" });
     expect(home).toHaveAttribute("href", "https://open-artifacts.com");
     expect(home).toHaveAttribute("target", "_blank");
-    expect(home).toHaveAttribute("rel", "noopener");
+    expect(home).toHaveAttribute("rel", "noopener noreferrer");
     expect(
       within(header).getByRole("button", { name: "Guest options" }),
     ).toBeInTheDocument();
@@ -70,7 +72,7 @@ describe("the guest bar", () => {
     const item = await screen.findByRole("menuitem", { name: "Get your own" });
     expect(item).toHaveAttribute("href", "https://signup.open-artifacts.app/");
     expect(item).toHaveAttribute("target", "_blank");
-    expect(item).toHaveAttribute("rel", "noopener");
+    expect(item).toHaveAttribute("rel", "noopener noreferrer");
   });
 
   it("with no sender, says only that you're a guest", async () => {
@@ -102,6 +104,14 @@ describe("Get your own", () => {
     expect(offerUrl(false)).toBe("https://open-artifacts.com");
     expect(HOSTED_OFFER_URL).not.toMatch(/[?#]/);
     expect(SELF_HOSTED_OFFER_URL).not.toMatch(/[?#]/);
+  });
+
+  it("the offer's link sends no Referer and opens a new tab (Axe L1)", () => {
+    render(<GuestOffer hosted onDismiss={() => {}} />);
+    const link = screen.getByRole("link", { name: "Get your own" });
+    expect(link).toHaveAttribute("href", "https://signup.open-artifacts.app/");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
   });
 
   describe("after the first comment", () => {

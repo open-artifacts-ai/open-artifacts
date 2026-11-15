@@ -79,7 +79,7 @@ for (const width of [1280, 390])
       const home = bar.getByRole("link", { name: "Open Artifacts" });
       await expect(home).toHaveAttribute("href", "https://open-artifacts.com");
       await expect(home).toHaveAttribute("target", "_blank");
-      await expect(home).toHaveAttribute("rel", "noopener");
+      await expect(home).toHaveAttribute("rel", "noopener noreferrer");
       // A guest gets the bar, not the breadcrumbs, and no second offer strip.
       await expect(
         page.getByRole("navigation", { name: "Breadcrumb" }),
@@ -92,7 +92,7 @@ for (const width of [1280, 390])
       // Self-hosted (the mock): the public site, in a new tab.
       await expect(item).toHaveAttribute("href", "https://open-artifacts.com");
       await expect(item).toHaveAttribute("target", "_blank");
-      await expect(item).toHaveAttribute("rel", "noopener");
+      await expect(item).toHaveAttribute("rel", "noopener noreferrer");
       await shot("g2-bar-menu");
     });
 
