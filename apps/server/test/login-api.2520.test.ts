@@ -16,7 +16,7 @@ import type { EffectivePlan } from "../src/billing/plan.js";
 import type { Env } from "../src/env.js";
 import { admit } from "../src/services/identity.js";
 import { loginSettings, soloPlan } from "../src/services/login.js";
-import { direct, trial, uniq } from "./auth-helpers.js";
+import { direct, seedShare, trial, uniq } from "./auth-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 
 const app = createApp();
@@ -462,7 +462,7 @@ describe("guest invites keep their role (#2520)", () => {
     call(OWN, R.members, owner_cookie, "POST", { email, role });
   let owner_cookie = "";
 
-  it("M1: an invited guest stays a guest on a Google login at a listed hd; a share-made guest is promoted", async () => {
+  it("M1: an invited guest stays a guest on a Google login at a listed hd; a share-made guest stays a guest too (#2590)", async () => {
     owner_cookie = await owner();
     const e = uniq("maya", "a.com");
     const r = await invite(e, "guest");
@@ -479,12 +479,13 @@ describe("guest invites keep their role (#2520)", () => {
     const out = await admit(OWN, authConfig(OWN), login1(e));
     expect(out).toMatchObject({ ok: true, user: { id, role: "guest" } });
     expect(await roleOf(id)).toBe("guest");
-    // A guest a share created (no invited_at) is still promoted.
+    // A guest a share created (no invited_at) is not promoted either (#2590).
     const shared = await login(uniq("sh", "a.com"), "guest");
     const email = await emailOf(shared.userId);
+    await seedShare(email);
     expect(await admit(OWN, authConfig(OWN), login1(email))).toMatchObject({
       ok: true,
-      user: { id: shared.userId, role: "member" },
+      user: { id: shared.userId, role: "guest" },
     });
   });
 

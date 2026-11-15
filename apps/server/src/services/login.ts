@@ -1,34 +1,14 @@
 // Login for invited people (#2520): the ways in for one address, and the
 // login settings (domains, joining rule) with the owner's proof of a domain.
 import { normalizeEmail } from "@oa/auth-core";
-import type { InviteReach, LoginSettings, LoginWay, Role } from "@oa/shared";
+import type { InviteReach, LoginSettings, Role } from "@oa/shared";
 import { authConfig } from "../auth/config.js";
 import type { EffectivePlan } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { USER_NOTICE_PREFIX } from "./notices.js";
-import { inviteReach, type Reach } from "./reach.js";
-
-/** LoginWay order, as the schema lists them. */
-const ORDER: readonly LoginWay[] = [
-  "google",
-  "google_workspace",
-  "google_after_code",
-  "email_code",
-];
-
-/**
- * The ways in from what reachOf found. "google_after_code" waits for the code
- * step (slice 2), so it is never returned yet.
- */
-export function waysOf(r: Reach): LoginWay[] {
-  const ways = new Set<LoginWay>();
-  if (r.methods.includes("google")) ways.add("google");
-  else if (r.googleUncertain) ways.add("google_workspace");
-  if (r.methods.includes("email")) ways.add("email_code");
-  return ORDER.filter((w) => ways.has(w));
-}
+import { inviteReach, type Reach, waysOf } from "./reach.js";
 
 const REMOVED =
   "select role, status_changed_at as at from users where email = ?1 and status = 'removed' limit 1";

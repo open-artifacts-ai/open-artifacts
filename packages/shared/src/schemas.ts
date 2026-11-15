@@ -505,6 +505,32 @@ export const ShareSchema = z.object({
 export type Share = z.infer<typeof ShareSchema>;
 
 /**
+ * One way an address can log in here (#2520).
+ * - google: Google works now (Gmail, or an address in the login domains);
+ * - google_workspace: works if the address is a Google Workspace account on
+ *   its own domain;
+ * - google_after_code: a personal Google account works after a one-time
+ *   code to the address, first login only;
+ * - email_code: an email code alone.
+ */
+export const LoginWaySchema = z.enum([
+  "google",
+  "google_workspace",
+  "google_after_code",
+  "email_code",
+]);
+export type LoginWay = z.infer<typeof LoginWaySchema>;
+
+/** The ways in for one address (GET R.memberReach, MemberInviteResult.reach). */
+export const InviteReachSchema = z.object({
+  /** [] = this address can't log in here. */
+  ways: z.array(LoginWaySchema),
+  /** The address belongs to a removed person (ISO date); inviting restores them. */
+  removed: z.object({ at: z.string() }).optional(),
+});
+export type InviteReach = z.infer<typeof InviteReachSchema>;
+
+/**
  * ShareResult.recipient: present only when the recipient can't sign in on
  * this install yet (the share still applies). needs_invite: in a verified
  * domain on an invite-only install, so an admin must invite them as a
@@ -529,6 +555,8 @@ export const ShareResultSchema = ShareSchema.extend({
    * copy and the email agree. Sent by direct-sign-in and Access installs.
    */
   signInMethods: z.array(SignInProviderIdSchema).optional(),
+  /** The ways in for the recipient, [] when nothing admits them (#2590). */
+  reach: InviteReachSchema.optional(),
 });
 export type ShareResult = z.infer<typeof ShareResultSchema>;
 
@@ -596,32 +624,6 @@ export const InviteSignInSchema = z.object({
   reason: z.literal("outside_domains"),
 });
 export type InviteSignIn = z.infer<typeof InviteSignInSchema>;
-
-/**
- * One way an address can log in here (#2520).
- * - google: Google works now (Gmail, or an address in the login domains);
- * - google_workspace: works if the address is a Google Workspace account on
- *   its own domain;
- * - google_after_code: a personal Google account works after a one-time
- *   code to the address, first login only;
- * - email_code: an email code alone.
- */
-export const LoginWaySchema = z.enum([
-  "google",
-  "google_workspace",
-  "google_after_code",
-  "email_code",
-]);
-export type LoginWay = z.infer<typeof LoginWaySchema>;
-
-/** The ways in for one address (GET R.memberReach, MemberInviteResult.reach). */
-export const InviteReachSchema = z.object({
-  /** [] = this address can't log in here. */
-  ways: z.array(LoginWaySchema),
-  /** The address belongs to a removed person (ISO date); inviting restores them. */
-  removed: z.object({ at: z.string() }).optional(),
-});
-export type InviteReach = z.infer<typeof InviteReachSchema>;
 
 /** POST members (invite) response. */
 export const MemberInviteResultSchema = MemberSchema.extend({

@@ -244,6 +244,8 @@ export async function putShare(
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
     signInMethods: reach.methods,
+    // The ways in, [] when nothing admits them (#2590).
+    reach: { ways: reach.ways },
   };
 }
 
@@ -333,7 +335,7 @@ export async function deleteShare(
 // directory sync added them) keeps their account when their last share goes
 // (review item 18).
 const UNSHARED_GUEST =
-  "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1) AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.user_id = users.id)";
+  "email = ?1 AND role = 'guest' AND invited_at IS NULL AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1) AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.user_id = users.id)";
 const GUEST_ID = "select id from users where email = ? and role = 'guest'";
 const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', guest_lapsed = 1, status_changed_at = ?2,
    session_epoch = session_epoch + 1
