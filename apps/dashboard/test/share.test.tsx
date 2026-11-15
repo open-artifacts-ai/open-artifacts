@@ -283,10 +283,17 @@ describe("share panel", () => {
       cleanup();
       mount(panel(OWNED));
       await screen.findByTitle(guest);
-      expect(
-        await screen.findByText("Guest · can only view for now"),
-      ).toBeTruthy();
+      // The server stores an outsider's Editor as Commenter (#2590), so the
+      // later open no longer shows the "for now" line; the timing check stands.
+      await screen.findByText("Guest · can only view");
+      expect(screen.queryByText("Guest · can only view for now")).toBeNull();
       expect(screen.queryByText(LINE)).toBeNull();
+      const stored = await screen.findByRole("combobox", {
+        name: `Role for ${guest}`,
+      });
+      // Stored as Commenter, so the row no longer reads Editor (the panel's
+      // Commenter option is the Share panel's work, not this one's).
+      expect(stored.textContent ?? "").not.toMatch(/Editor/);
     });
 
     it("no line for a guest invited as Viewer, or a member as Editor", async () => {
