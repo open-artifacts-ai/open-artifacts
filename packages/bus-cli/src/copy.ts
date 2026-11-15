@@ -1103,13 +1103,15 @@ export function copy(
     autoUpdateOff: () => "Auto-update is off.",
     autoUpdateOn: () => "Auto-update is on.",
     autoUpdateStatusOff: () => "Auto-update: off",
-    updateNotATerminal: () => "Run this yourself in a terminal.",
+    updateNotATerminal: () =>
+      "Run this yourself in a terminal. It's not for an agent to run.",
     updateNothingStaged: (l: string) => `${l}. Nothing is waiting to install.`,
     updateOff: () =>
       `Auto-update is off. Turn it on with ${bus} auto-update on.`,
     updateFailedVersion: (v: string) =>
-      `${v} failed on this machine and will not be installed.`,
-    updatePrompt: (v: string) => `Install ${v} now? Type yes to continue: `,
+      `${v} failed on this machine before, so it won't be installed. The next version will be.`,
+    updatePrompt: (v: string) =>
+      `Install ${v} now? The bus restarts for a few seconds. Type yes to continue: `,
     updateDeclined: () => "Nothing was installed.",
     updateDone: (v: string) => `Installed ${v}.`,
 

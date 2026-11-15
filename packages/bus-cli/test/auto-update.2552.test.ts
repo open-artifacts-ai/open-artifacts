@@ -62,7 +62,9 @@ describe("oa-bus update", () => {
         vi.fn(async () => true),
       ),
     ).toBe(2);
-    expect(c.err()).toContain("Run this yourself in a terminal.");
+    expect(c.err()).toContain(
+      "Run this yourself in a terminal. It's not for an agent to run.",
+    );
     expect(c.readLine).not.toHaveBeenCalled();
   });
   it("an env override changes nothing", async () => {
@@ -99,6 +101,9 @@ describe("oa-bus update", () => {
       expect(await update(c, install)).toBe(code);
       expect(install).toHaveBeenCalledTimes(code === 0 ? 1 : 0);
       if (code === 0) expect(install).toHaveBeenCalledWith("1.6.0");
+      expect(c.readLine).toHaveBeenCalledWith(
+        "Install 1.6.0 now? The bus restarts for a few seconds. Type yes to continue: ",
+      );
     }
   });
   it("refuses a failed version, and off", async () => {
@@ -112,6 +117,9 @@ describe("oa-bus update", () => {
       }),
     );
     expect(await update(c, vi.fn())).toBe(1);
+    expect(c.err()).toContain(
+      "1.6.0 failed on this machine before, so it won't be installed. The next version will be.",
+    );
     const d = world();
     setStaged(d.home, "1.6.0", 1);
     await main(["auto-update", "off"], () => d);
