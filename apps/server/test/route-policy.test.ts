@@ -120,8 +120,9 @@ describe("enforcement", () => {
     },
   );
 
+  // edit_doc is offered only while docs are available (off here); the matrix covers it.
   const artifactTools = Object.entries(TOOL_POLICY).filter(
-    ([, p]) => "artifact" in p,
+    ([name, p]) => "artifact" in p && name !== "edit_doc",
   );
   it.each(artifactTools)("a non-member's %s → not_found", async (name) => {
     const c = await connect(strangerPat);

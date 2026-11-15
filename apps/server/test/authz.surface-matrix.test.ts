@@ -23,6 +23,7 @@ import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { type AppEnv, readOnlyCap } from "../src/http/middleware.js";
 import worker from "../src/index.js";
 import manifest from "../src/mcp/tool-manifest.json";
+import { DOC_SWITCH } from "../src/services/doc-switch.js";
 import { getUser } from "../src/services/users.js";
 import {
   ARTIFACTS,
@@ -72,6 +73,8 @@ let w: World;
 let target: OrgTarget;
 let space: SpaceTarget;
 beforeAll(async () => {
+  // #1100: edit_doc is offered only while docs are available (the world is PLAN paid).
+  DOC_SWITCH.creation = true;
   w = await buildWorld();
   target = {
     spaceId: w.spaces.S,

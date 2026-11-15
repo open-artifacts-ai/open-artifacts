@@ -1170,6 +1170,18 @@ export const SURFACES: readonly Surface[] = [
     tool("restore_version", (id) => ({ id, version: 1 })),
     "data",
   ),
+  // #1100: offered while docs are available (the matrix opens DOC_SWITCH). The
+  // world's artifacts aren't docs, so an allowed caller reaches bad_request
+  // not_a_doc after the publish check (nothing written).
+  mcp(
+    "edit_doc",
+    "publish",
+    tool(
+      "edit_doc",
+      (id) => ({ id, ops: [{ op: "delete", quote: "probe" }] }),
+      (o) => o.isError && /^bad_request\b/.test(o.text),
+    ),
+  ),
   withReal(
     mcp(
       "share_artifact",
