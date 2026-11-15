@@ -2,11 +2,14 @@
 // provenance, only for a stable release from a push to main. pack-npm runs
 // the repository's code with no credentials; publish-npm holds the OIDC token
 // (npm-publish Environment, npm trusted publishing) and runs no repository code.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { root, sandbox } from "./stubs.ts";
+import { badTarEntries } from "./tar-plain-entries.ts";
 
 const raw = readFileSync(
   join(root, ".github/workflows/release-please.yml"),
@@ -84,6 +87,38 @@ describe("pack-npm", () => {
       'npm pkg set "version',
       'npm pkg set "oaBus.commit',
     ]);
+  });
+
+  it("refuses tar entries the bus updater cannot read, before the bin runs", () => {
+    const run = stepById(pack.steps, "pack").run as string;
+    const check = run.indexOf("scripts/ci/tar-plain-entries.ts");
+    expect(check).toBeGreaterThan(run.indexOf("npm pack "));
+    expect(check).toBeLessThan(run.indexOf("tar -xzf"));
+  });
+
+  it("tar-plain-entries accepts plain tarballs and refuses pax headers and links", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tar-plain-"));
+    mkdirSync(join(dir, "package"));
+    writeFileSync(join(dir, "package", "a.txt"), "a");
+    execFileSync("ln", ["-s", "a.txt", join(dir, "package", "l")]);
+    const make = (format: string, files: string[]) => {
+      const out = join(dir, `${format}-${files.length}.tgz`);
+      execFileSync("tar", [
+        "-czf",
+        out,
+        "--format",
+        format,
+        "-C",
+        dir,
+        ...files,
+      ]);
+      return readFileSync(out);
+    };
+    expect(badTarEntries(make("ustar", ["package/a.txt"]))).toEqual([]);
+    expect(badTarEntries(make("ustar", ["package"])).length).toBe(1); // the symlink
+    const long = `package/${"x".repeat(120)}`;
+    writeFileSync(join(dir, long), "x");
+    expect(badTarEntries(make("pax", [long])).length).toBeGreaterThan(0);
   });
 
   it("leaves publish-npm publishing the same pack-npm tarball", () => {
