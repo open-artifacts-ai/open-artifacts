@@ -22,7 +22,6 @@ import {
   type Caller,
   caller,
   canCtx,
-  capOfCaller,
   dataWriteRefusal,
   planOfMember,
   planRefusal,
@@ -32,6 +31,7 @@ import {
   can,
   capsOf,
   dataWriteCreates,
+  isGuestRole,
   namedEvents,
   type PolicyAction,
 } from "../auth/policy.js";
@@ -99,6 +99,8 @@ type Gate = {
   actor: string;
   anon: AnonId | null;
   authzAt: number;
+  /** The writer is a guest (by role): what they write is marked outsider content. */
+  outsider?: boolean;
   /** A signed-in writer at editor level or above: counted as a creator (billing/creators.ts). */
   creator?: string;
 };
@@ -277,8 +279,9 @@ async function gate(
     if (kind !== "anonId" && !allowed()) throw refused();
     return {
       artifactId,
-      // A guest cap writes as "g:{id}", so a reader can tell outsider content.
-      actor: `${capOfCaller(who) === "guest" ? "g" : "u"}:${who.user.id}`,
+      actor: `u:${who.user.id}`,
+      // A guest (by role) marks what they write as outsider content.
+      outsider: isGuestRole(who.user.role),
       anon: null,
       authzAt,
       // CREATOR: a data write at editor level or above (a viewer's is free).
@@ -441,7 +444,7 @@ export function mountRuntime(app: AppType): void {
     await freeDataCap(c, g, col, id, true);
     const body = await readDocBody(c);
     const { updatedAt } = await runtimeCall(() =>
-      stub(c, g).setRaw(col, id, toBuffer(body), g.actor),
+      stub(c, g).setRaw(col, id, toBuffer(body), g.actor, g.outsider),
     );
     await countCreator(c, g);
     // The DataDoc, with the (DO-validated) body bytes spliced in unparsed.
@@ -467,7 +470,7 @@ export function mountRuntime(app: AppType): void {
     await freeDataCap(c, g, col, id, true);
     const body = await rawBody(c);
     const out = await runtimeCall(() =>
-      stub(c, g).updateRaw(col, id, body, g.actor),
+      stub(c, g).updateRaw(col, id, body, g.actor, g.outsider),
     );
     await countCreator(c, g);
     return withAnon(g, jsonText(out));

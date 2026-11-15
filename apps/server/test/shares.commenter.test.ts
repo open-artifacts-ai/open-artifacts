@@ -2,10 +2,12 @@ import { env } from "cloudflare:workers";
 import { type DataDoc, type Member, newId, R, type Share } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
+import { APP, callWorker, connect, tool } from "./mcp-helpers.js";
 
 // #2590: a "commenter" share. A guest with "viewer" cannot comment; with
 // "commenter" can comment and reply only; members keep today's rules.
@@ -176,7 +178,7 @@ describe("a guest's live-data writes (#2590)", () => {
     const doc = (await (
       await api(app, R.dataDoc(id, "c", "d"), owner.cookie)
     ).json()) as DataDoc;
-    expect(doc.updatedBy).toBe(`g:${guest.userId}`);
+    expect(doc.updatedBy).toBe(`u:${guest.userId}`);
     expect(doc.outsider).toBe(true);
     // A member's write is not marked.
     await api(app, R.dataDoc(id, "c", "m"), member.cookie, {
@@ -203,5 +205,154 @@ describe("a guest's live-data writes (#2590)", () => {
     });
     await share(id, guest.email, "viewer");
     expect((await put(id, guest)).status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe("the outsider mark on live data is sticky (#2590)", () => {
+  const ip = () =>
+    `198.18.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 254) + 1}`;
+  const get = async (id: string, doc: string) =>
+    (await (
+      await api(app, R.dataDoc(id, "c", doc), owner.cookie)
+    ).json()) as DataDoc;
+  const list = async (id: string) =>
+    (
+      (await (
+        await api(app, R.dataCollection(id, "c"), owner.cookie)
+      ).json()) as {
+        items: DataDoc[];
+      }
+    ).items;
+  const query = async (id: string) =>
+    (
+      (await (
+        await api(app, R.dataQuery(id, "c"), owner.cookie, {
+          method: "POST",
+          body: {},
+        })
+      ).json()) as { items: DataDoc[] }
+    ).items;
+  const marks = async (id: string) => ({
+    get: (await get(id, "d")).outsider === true,
+    list: list(id).then((l) => l.find((d) => d.id === "d")?.outsider === true),
+    query: query(id).then(
+      (l) => l.find((d) => d.id === "d")?.outsider === true,
+    ),
+  });
+
+  it("a guest's write marks the doc; a member's patch keeps it; a member's full put clears it; reads agree on REST and MCP", async () => {
+    const id = await page({
+      dataWriters: "viewers",
+      allowAnonymousWrites: true,
+    });
+    await share(id, guest.email, "commenter");
+    await api(app, R.dataDoc(id, "c", "d"), guest.cookie, {
+      method: "PUT",
+      body: { a: 1 },
+    });
+    const pat = (await createPat(E, owner.userId, "agent")).token;
+    const client = await connect(pat);
+    const viaMcp = async () => {
+      const g = (
+        await tool(client, "artifact_data_get", {
+          id,
+          collection: "c",
+          docId: "d",
+        })
+      ).structuredContent as { doc: DataDoc };
+      const l = (
+        await tool(client, "artifact_data_list", {
+          id,
+          collection: "c",
+        })
+      ).structuredContent as { items: DataDoc[] };
+      const q = (
+        await tool(client, "artifact_data_query", {
+          id,
+          collection: "c",
+          query: {},
+        })
+      ).structuredContent as { items: DataDoc[] };
+      return [
+        g.doc.outsider === true,
+        l.items.find((d) => d.id === "d")?.outsider === true,
+        q.items.find((d) => d.id === "d")?.outsider === true,
+      ];
+    };
+    let m = await marks(id);
+    expect([m.get, await m.list, await m.query]).toEqual([true, true, true]);
+    expect(await viaMcp()).toEqual([true, true, true]);
+    // The owner's patch keeps the mark (and the guest's writer is not the owner).
+    await api(app, R.dataDoc(id, "c", "d"), owner.cookie, {
+      method: "PATCH",
+      body: { b: 2 },
+    });
+    m = await marks(id);
+    expect([m.get, await m.list, await m.query]).toEqual([true, true, true]);
+    expect(await viaMcp()).toEqual([true, true, true]);
+    // A full put by a non-guest clears it.
+    await api(app, R.dataDoc(id, "c", "d"), owner.cookie, {
+      method: "PUT",
+      body: { c: 3 },
+    });
+    m = await marks(id);
+    expect([m.get, await m.list, await m.query]).toEqual([false, false, false]);
+    expect(await viaMcp()).toEqual([false, false, false]);
+    // A guest's patch marks it again.
+    await api(app, R.dataDoc(id, "c", "d"), guest.cookie, {
+      method: "PATCH",
+      body: { z: 1 },
+    });
+    expect((await get(id, "d")).outsider).toBe(true);
+    // A guest-capped token of a full member stays unmarked (the mark follows the role).
+    await api(app, R.dataDoc(id, "c", "e"), owner.cookie, {
+      method: "PUT",
+      body: 1,
+    });
+    expect((await get(id, "e")).outsider).toBeUndefined();
+    await client.close();
+  });
+
+  it("an anonymous writer's doc is marked too", async () => {
+    const id = await page({
+      visibility: "public",
+      dataWriters: "viewers",
+      allowAnonymousWrites: true,
+    });
+    const r = await api(app, R.dataDoc(id, "c", "d"), null, {
+      method: "PUT",
+      body: { a: 1 },
+      headers: { "cf-connecting-ip": ip() },
+    });
+    expect(r.status).toBe(200);
+    expect((await get(id, "d")).outsider).toBe(true);
+  });
+
+  it("a guest's data socket is keyed as the person: removing the share closes it", async () => {
+    const id = await page({
+      dataWriters: "viewers",
+      allowAnonymousWrites: true,
+    });
+    await share(id, guest.email, "commenter");
+    const up = await callWorker(
+      new Request(`${APP}${R.dataSubscribe(id, "c")}`, {
+        headers: {
+          "x-oa-request": "1",
+          cookie: guest.cookie,
+          upgrade: "websocket",
+        },
+      }),
+    );
+    const ws = up.webSocket;
+    if (!ws) throw new Error(`no ws ${up.status}`);
+    ws.accept();
+    const closed = new Promise<number>((res) =>
+      ws.addEventListener("close", (e) => res((e as CloseEvent).code)),
+    );
+    const del = await api(app, R.share(id, guest.email), owner.cookie, {
+      method: "DELETE",
+    });
+    expect(del.status).toBe(204);
+    expect(await closed).toBe(4403);
   });
 });
