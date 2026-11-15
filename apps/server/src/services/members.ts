@@ -254,6 +254,9 @@ async function requireTrialStarted(env: Env): Promise<void> {
   if (lock) throw planError(lock);
 }
 
+/** A re-invite's email goes out at most once per address in this window. */
+const REINVITE_COOLDOWN_MS = 600_000;
+
 /**
  * Pre-creates the user row, then emails the invitee (best effort).
  * 400 on an invalid (non-ASCII) email, 409 if it exists (guest_lapsed for
@@ -304,9 +307,12 @@ export async function inviteMemberOutcome(
   // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
   // invited_at and its own invite.create row (the existing role, as a first
   // invite records it); the audit commits with the update, only when it hit.
-  const prior = await stmt(env.DB, "select role from users where email = ?1")
+  const prior = await stmt(
+    env.DB,
+    "select role, invited_at as invitedAt from users where email = ?1",
+  )
     .bind(email)
-    .first<{ role: string }>();
+    .first<{ role: string; invitedAt: number | null }>();
   const [updated] = await getDb(env).batch([
     getDb(env)
       .update(users)
@@ -317,6 +323,9 @@ export async function inviteMemberOutcome(
           eq(users.status, "active"),
           isNull(users.lastSeenAt),
           isNotNull(users.invitedAt),
+          // Same who-may-manage rule as everywhere: only the owner (or the
+          // system) refreshes an admin's invite; anyone else gets the 409.
+          sql`(${adminsOk(inviter)} = 1 or ${users.role} not in ('owner', 'admin'))`,
         ),
       )
       .returning(),
@@ -359,7 +368,14 @@ export async function inviteMemberOutcome(
     ? reach.methods
     : ["google"];
   let emailed = false;
-  if (emailEnabled(env)) {
+  // A re-invite mails at most once per address per 10 minutes (the refresh
+  // itself always happens). sendEmail also caps invites per UTC day: the
+  // instance, 5 per recipient and the inviter's own budget.
+  const cooledDown =
+    !again ||
+    prior?.invitedAt == null ||
+    Date.now() - prior.invitedAt >= REINVITE_COOLDOWN_MS;
+  if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
       .name;
     emailed = await sendEmail(

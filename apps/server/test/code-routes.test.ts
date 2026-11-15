@@ -124,6 +124,25 @@ describe("POST AUTH.codeRequest", () => {
     expect(m.sent.map((x) => x.to)).toEqual([guest]);
   });
 
+  it("an expired invite's request response is the same as an unknown address (no reason leaks)", async () => {
+    const guest = uniq("lapsed", "x.com");
+    const uid = await seedUser(guest, "guest");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now() - 40 * 86_400_000, uid)
+      .run();
+    const m = mailer();
+    const on = withMail(direct(), m);
+    const a = await request(on, guest);
+    const b = await request(on, uniq("nobody", "x.com"));
+    expect(a.status).toBe(b.status);
+    const aText = await a.text();
+    const bBody = JSON.parse(await b.text());
+    expect(Object.keys(JSON.parse(aText))).toEqual(Object.keys(bBody));
+    for (const t of [aText, JSON.stringify([...a.headers])])
+      expect(t).not.toMatch(/invite_expired|reason|ineligible/);
+    expect(m.sent).toHaveLength(0);
+  });
+
   it("masks the address and sets the pending cookie (HttpOnly, Lax, 10 min)", async () => {
     const r = await request(direct(), "someone@x.com");
     expect(CodeRequestedSchema.parse(await r.json()).maskedEmail).toBe(
