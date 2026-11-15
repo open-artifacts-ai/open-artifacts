@@ -5,7 +5,7 @@
 // reviews the diff of the committed file, which is the real gate.
 // Usage: node scripts/refresh-trusted-root.mjs
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const base = "https://tuf-repo-cdn.sigstore.dev";
@@ -38,8 +38,12 @@ root._source = {
   targetsVersion: snap.signed.meta["targets.json"].version,
   sha256,
 };
-writeFileSync(
-  join(import.meta.dirname, "../src/update/trusted-root.json"),
-  `${JSON.stringify(root, null, 2)}\n`,
+const out = join(import.meta.dirname, "../src/update/trusted-root.json");
+writeFileSync(out, `${JSON.stringify(root, null, 2)}\n`);
+const written = createHash("sha256").update(readFileSync(out)).digest("hex");
+console.log(
+  `trusted-root.json written (source sha256 ${sha256}; written file sha256 ${written}).`,
 );
-console.log(`trusted-root.json written (sha256 ${sha256})`);
+console.log(
+  "Compare with trusted_root.json on github.com/sigstore/root-signing main (someone other than the author).",
+);

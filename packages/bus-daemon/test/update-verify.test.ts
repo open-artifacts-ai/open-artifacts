@@ -3,7 +3,13 @@ import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { MIN_COMMIT_VERSION, PINS, type Pins } from "../src/update/pins.ts";
 import { EMBEDDED_ROOT, type RootJson } from "../src/update/trusted-root.ts";
-import { checkManifest, verifyRelease } from "../src/update/verify.ts";
+import {
+  checkCertificateOids,
+  checkManifest,
+  nodeSupportsSigstore,
+  SIGSTORE_NODE_RANGE,
+  verifyRelease,
+} from "../src/update/verify.ts";
 import { GOLDEN_NOW, golden, makeTgz } from "./update-helpers.ts";
 
 const opts = { now: GOLDEN_NOW };
@@ -143,14 +149,27 @@ describe("verifyRelease (offline)", () => {
     );
   });
 
-  it("refuses when the chain is untrusted (no Fulcio root in the root file)", () => {
+  it("is stale, not a proof failure, when only a retired CA remains", () => {
     const root = clone(EMBEDDED_ROOT) as RootJson & {
       certificateAuthorities: unknown[];
     };
-    // keep the old, expired CA only: this cert was not issued by it
     root.certificateAuthorities = root.certificateAuthorities.slice(0, 1);
-    const c = code(() => verifyRelease(golden(), { ...opts, root }));
-    expect(["proof_failed", "stale_trust_root"]).toContain(c);
+    expect(code(() => verifyRelease(golden(), { ...opts, root }))).toBe(
+      "stale_trust_root",
+    );
+  });
+
+  it("refuses when the chain is untrusted (intermediate missing from the root)", () => {
+    const root = clone(EMBEDDED_ROOT) as RootJson & {
+      certificateAuthorities: { certChain: { certificates: unknown[] } }[];
+    };
+    const ca = root.certificateAuthorities[1] as {
+      certChain: { certificates: unknown[] };
+    };
+    ca.certChain.certificates = ca.certChain.certificates.slice(-1);
+    expect(code(() => verifyRelease(golden(), { ...opts, root }))).toBe(
+      "proof_failed",
+    );
   });
 
   it("fails closed with a distinct reason when the embedded roots are stale", () => {
@@ -161,7 +180,7 @@ describe("verifyRelease (offline)", () => {
     ).toBe("stale_trust_root");
   });
 
-  it("fails with the stale reason when the log is not in the embedded root", () => {
+  it("refuses (proof_failed, not stale) a log that is not in the embedded root", () => {
     const root = clone(EMBEDDED_ROOT) as RootJson & {
       tlogs: { publicKey: { validFor: { end?: string } } }[];
     };
@@ -176,7 +195,7 @@ describe("verifyRelease (offline)", () => {
     ).toString("base64");
     expect(
       code(() => verifyRelease({ ...g, attestations: a }, { ...opts, root })),
-    ).toBe("stale_trust_root");
+    ).toBe("proof_failed");
   });
 
   describe("package.json inside the verified bytes", () => {
@@ -252,5 +271,101 @@ describe("checkManifest", () => {
       "wrong_package",
     );
     expect(c({ ...ok, oaBus: { commit } }, v)).toBe("none");
+  });
+});
+
+describe("node gate", () => {
+  it("names the Sigstore library's declared range", () => {
+    expect(SIGSTORE_NODE_RANGE).toBe("^22.22.2 || ^24.15.0 || >=26");
+  });
+  it.each([
+    ["22.22.2", true],
+    ["22.30.0", true],
+    ["22.22.1", false],
+    ["22.16.0", false],
+    ["23.9.0", false],
+    ["24.15.0", true],
+    ["24.14.9", false],
+    ["25.0.0", false],
+    ["26.0.0", true],
+    ["27.1.0", true],
+    ["20.0.0", false],
+    ["junk", false],
+  ])("node %s -> %s", (v, ok) => {
+    expect(nodeSupportsSigstore(v)).toBe(ok);
+  });
+  it("returns node_too_old before any proof attempt", () => {
+    expect(
+      code(() => verifyRelease(golden(), { ...opts, nodeVersion: "22.20.0" })),
+    ).toBe("node_too_old");
+    expect(
+      code(() =>
+        verifyRelease(
+          { ...golden(), attestations: null },
+          { ...opts, nodeVersion: "22.20.0" },
+        ),
+      ),
+    ).toBe("node_too_old");
+    expect(
+      verifyRelease(golden(), { ...opts, nodeVersion: "22.22.2" }).version,
+    ).toBe("0.186.0");
+  });
+});
+
+describe("checkCertificateOids", () => {
+  const P = PINS as Pins;
+  const commit = "c".repeat(40);
+  const san = `${P.repoUrl}/${P.workflowPath}@${P.ref}`;
+  const der = (t: string): Uint8Array => {
+    const b = Buffer.from(t);
+    return Buffer.concat([Buffer.from([0x0c, b.length]), b]);
+  };
+  const good: Record<number, string> = {
+    9: san,
+    10: commit,
+    11: P.runnerEnvironment,
+    12: P.repoUrl,
+    13: commit,
+    14: P.ref,
+    15: P.repoId,
+    16: P.ownerUrl,
+    17: P.ownerId,
+    18: san,
+    19: commit,
+    20: P.trigger,
+    21: `${P.repoUrl}/actions/runs/1/attempts/1`,
+  };
+  const oids = (over: Record<number, string | null> = {}) =>
+    Object.entries({ ...good, ...over })
+      .filter(([, v]) => v !== null)
+      .map(([n, v]) => ({
+        oid: { id: [1, 3, 6, 1, 4, 1, 57264, 1, Number(n)] },
+        value: der(v as string),
+      }));
+  const run = (over: Record<number, string | null> = {}) =>
+    code(() => checkCertificateOids(oids(over), P, san));
+  it("accepts a consistent certificate and returns the commit", () => {
+    expect(checkCertificateOids(oids(), P, san)).toBe(commit);
+  });
+  it.each([
+    [
+      "build signer URI (.9)",
+      { 9: `${P.repoUrl}/${P.workflowPath}@refs/heads/dev` },
+    ],
+    ["build signer digest (.10)", { 10: "d".repeat(40) }],
+    ["build config digest (.19)", { 19: "d".repeat(40) }],
+    [
+      "run invocation (.21)",
+      { 21: "https://github.com/someone/else/actions/runs/1" },
+    ],
+    ["run invocation missing", { 21: null }],
+    ["source commit malformed (.13)", { 13: "XYZ" }],
+    ["repository id (.15)", { 15: "1" }],
+    ["owner id (.17)", { 17: "1" }],
+    ["ref (.14)", { 14: "refs/tags/v1.0.0" }],
+    ["build trigger (.20)", { 20: "workflow_dispatch" }],
+    ["runner (.11)", { 11: "self-hosted" }],
+  ] as [string, Record<number, string | null>][])("refuses %s", (_n, over) => {
+    expect(run(over)).toBe("proof_failed");
   });
 });

@@ -69,12 +69,3 @@ export function rootIsLive(json: RootJson, now: Date): boolean {
     caLive
   );
 }
-
-/** Log ids the root knows, to tell an unknown (rotated) log from a bad entry. */
-export function knownTlogIds(json: RootJson): Set<string> {
-  return new Set(
-    parseRoot(json).tlogs.map((t) =>
-      Buffer.from(t.logId?.keyId ?? new Uint8Array()).toString("base64"),
-    ),
-  );
-}

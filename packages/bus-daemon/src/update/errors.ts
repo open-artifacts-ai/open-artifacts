@@ -8,6 +8,7 @@ export type ReleaseErrorCode =
   | "bad_tar"
   | "proof_failed"
   | "stale_trust_root"
+  | "node_too_old"
   | "wrong_package";
 
 export class ReleaseError extends Error {

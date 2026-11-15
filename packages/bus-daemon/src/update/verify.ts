@@ -17,7 +17,6 @@ import {
 import { readTarball, type TarEntry } from "./tar.ts";
 import {
   EMBEDDED_ROOT,
-  knownTlogIds,
   type RootJson,
   rootIsLive,
   toMaterial,
@@ -26,6 +25,8 @@ import {
 // Fulcio certificate extensions (1.3.6.1.4.1.57264.1.<n>).
 const OID_PREFIX = [1, 3, 6, 1, 4, 1, 57264, 1];
 const OID = {
+  buildSignerUri: 9,
+  buildSignerDigest: 10,
   runnerEnvironment: 11,
   sourceRepositoryUri: 12,
   sourceRepositoryDigest: 13,
@@ -34,10 +35,30 @@ const OID = {
   sourceOwnerUri: 16,
   sourceOwnerId: 17,
   buildConfigUri: 18,
+  buildConfigDigest: 19,
   buildTrigger: 20,
+  runInvocationUri: 21,
 } as const;
 
+/** The Node range @sigstore/verify 4.1.3 declares in its package.json `engines`. */
+export const SIGSTORE_NODE_RANGE = "^22.22.2 || ^24.15.0 || >=26";
+
+/** True when `version` (e.g. process.versions.node) is inside SIGSTORE_NODE_RANGE. */
+export function nodeSupportsSigstore(version: string): boolean {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!m) return false;
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const atLeast = (a: number, b: number, c: number): boolean =>
+    min > b || (min === b && pat >= c) ? maj === a : false;
+  if (maj >= 26) return true;
+  if (maj === 24) return atLeast(24, 15, 0);
+  if (maj === 22) return atLeast(22, 22, 2);
+  return false;
+}
+
 export type VerifyOptions = {
+  /** Tests only: the Node version to gate on; defaults to the running one. */
+  nodeVersion?: string;
   now?: Date;
   /** Tests only: a different trust root. */
   root?: RootJson;
@@ -97,6 +118,7 @@ function oidText(
   return text;
 }
 
+// Both sides must be lowercase hex (as `sha512` and the statement are).
 function sameHex(a: string, b: string): boolean {
   if (!/^[0-9a-f]+$/.test(a) || a.length !== b.length) return false;
   return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
@@ -116,6 +138,40 @@ function provenanceBundle(attestations: unknown, pins: Pins): unknown {
   if (!isObj(bundle))
     throw new ReleaseError("no_attestation", "provenance without bundle");
   return bundle;
+}
+
+type OidPair = { oid?: { id: number[] }; value: Uint8Array };
+
+/** The Fulcio extensions against the pins; returns the certificate's source commit. */
+export function checkCertificateOids(
+  oids: OidPair[],
+  pins: Pins,
+  san: string,
+): string {
+  const eq = (n: number, want: string, label: string): void => {
+    if (oidText(oids, n) !== want) fail(`${label} mismatch`);
+  };
+  eq(OID.sourceRepositoryId, pins.repoId, "repository id");
+  eq(OID.sourceOwnerId, pins.ownerId, "owner id");
+  eq(OID.sourceRepositoryUri, pins.repoUrl, "repository");
+  eq(OID.sourceOwnerUri, pins.ownerUrl, "owner");
+  eq(OID.sourceRepositoryRef, pins.ref, "ref");
+  eq(OID.buildTrigger, pins.trigger, "trigger");
+  eq(OID.buildConfigUri, san, "build config");
+  eq(OID.runnerEnvironment, pins.runnerEnvironment, "runner");
+  const certCommit = oidText(oids, OID.sourceRepositoryDigest);
+  if (!/^[0-9a-f]{40}$/.test(certCommit)) fail("certificate commit malformed");
+  eq(OID.buildSignerUri, san, "build signer");
+  eq(OID.buildSignerDigest, certCommit, "build signer digest");
+  eq(OID.buildConfigDigest, certCommit, "build config digest");
+  if (
+    !oidText(oids, OID.runInvocationUri).startsWith(
+      `${pins.repoUrl}/actions/runs/`,
+    )
+  ) {
+    fail("run invocation mismatch");
+  }
+  return certCommit;
 }
 
 /** What the verified package.json must say about itself. */
@@ -157,6 +213,13 @@ export function verifyRelease(
   const root = opts.root ?? EMBEDDED_ROOT;
   const version = rel.version;
   if (!isVersion(version)) throw new ReleaseError("bad_version", "not x.y.z");
+  // No proof attempt on a Node the Sigstore library does not support.
+  if (!nodeSupportsSigstore(opts.nodeVersion ?? process.versions.node)) {
+    throw new ReleaseError(
+      "node_too_old",
+      `needs Node ${SIGSTORE_NODE_RANGE}; update by hand`,
+    );
+  }
 
   // The digest we compare is computed here, over the very buffer that is
   // unpacked below; the streamed one from fetch must agree.
@@ -183,19 +246,6 @@ export function verifyRelease(
   }
   if (bundle.verificationMaterial.tlogEntries.length < 1)
     fail("no transparency log entry");
-  const known = knownTlogIds(root);
-  for (const t of bundle.verificationMaterial.tlogEntries) {
-    if (
-      !known.has(
-        Buffer.from(t.logId?.keyId ?? new Uint8Array()).toString("base64"),
-      )
-    ) {
-      throw new ReleaseError(
-        "stale_trust_root",
-        "log not in this build's trust root; update by hand",
-      );
-    }
-  }
   if (bundle.content.$case !== "dsseEnvelope") fail("not a DSSE envelope");
   const envelope = bundle.content.dsseEnvelope;
   if (envelope.payloadType !== pins.payloadType)
@@ -218,20 +268,7 @@ export function verifyRelease(
   const id = signer.identity;
   if (!id || id.subjectAlternativeName !== san) fail("identity mismatch");
   if (id.extensions?.issuer !== pins.oidcIssuer) fail("issuer mismatch");
-  const oids = id.oids ?? [];
-  const eq = (n: number, want: string, label: string): void => {
-    if (oidText(oids, n) !== want) fail(`${label} mismatch`);
-  };
-  eq(OID.sourceRepositoryId, pins.repoId, "repository id");
-  eq(OID.sourceOwnerId, pins.ownerId, "owner id");
-  eq(OID.sourceRepositoryUri, pins.repoUrl, "repository");
-  eq(OID.sourceOwnerUri, pins.ownerUrl, "owner");
-  eq(OID.sourceRepositoryRef, pins.ref, "ref");
-  eq(OID.buildTrigger, pins.trigger, "trigger");
-  eq(OID.buildConfigUri, san, "build config");
-  eq(OID.runnerEnvironment, pins.runnerEnvironment, "runner");
-  const certCommit = oidText(oids, OID.sourceRepositoryDigest);
-  if (!/^[0-9a-f]{40}$/.test(certCommit)) fail("certificate commit malformed");
+  const certCommit = checkCertificateOids(id.oids ?? [], pins, san);
 
   // The statement, from the envelope whose signature just verified.
   let statement: Obj;
