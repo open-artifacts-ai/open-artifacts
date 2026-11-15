@@ -1285,7 +1285,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const i = byId(list, (s) => s.email, email);
         const share: Share = {
           email,
-          role: r.data.role,
+          role: r.data.role ?? "viewer",
           createdAt: list[i]?.createdAt ?? iso(),
         };
         if (i >= 0) list[i] = share;

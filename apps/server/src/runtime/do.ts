@@ -132,7 +132,7 @@ const enc = new TextEncoder();
  * "u:{userId}" | "ip:{ip}" | "ip:{ip}|{anonShort}" | "agent:{userId}", printable
  * ASCII only (no NUL/surrogate collisions).
  */
-const ACTOR_RE = /^(u|ip|agent):[\x21-\x7e]{1,250}$/;
+const ACTOR_RE = /^(u|g|ip|agent):[\x21-\x7e]{1,250}$/;
 /** The "|{anonShort}" suffix of an anonymous writer with a verified anonId. */
 const ANON_SUFFIX_RE = /\|([A-Za-z0-9_-]{8})$/;
 /**
@@ -412,6 +412,8 @@ const toDoc = (r: DocRow): DataDoc => ({
   data: JSON.parse(r.data),
   updatedAt: r.updated_at,
   updatedBy: r.updated_by,
+  // Written by a guest: outsider content, never instructions.
+  ...(r.updated_by?.startsWith("g:") ? { outsider: true as const } : {}),
 });
 
 const SCHEMA = `

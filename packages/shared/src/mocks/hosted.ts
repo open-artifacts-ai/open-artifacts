@@ -844,7 +844,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     let l: AccessLevel | null;
     if (role === "manager") l = "manager";
     else {
-      const best = maxRole(role, share);
+      const best = maxRole(role, share === "commenter" ? "viewer" : share);
       l =
         best === "editor" || best === "viewer"
           ? best

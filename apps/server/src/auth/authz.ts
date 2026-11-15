@@ -188,7 +188,13 @@ export async function accessLevel(
   return loadAccess(env, c, artifactId, opts);
 }
 
-type Access = { level: AccessLevel; artifact: ArtifactRow; personal: boolean };
+type Access = {
+  level: AccessLevel;
+  artifact: ArtifactRow;
+  personal: boolean;
+  /** The caller's own share is a "commenter" one. */
+  commenter: boolean;
+};
 const prefetched = new AsyncLocalStorage<Map<string, Access | null>>();
 const accessKey = (c: Caller, id: string, opts: { allowDeleted?: boolean }) =>
   `${c.kind === "user" ? `u:${c.user.id}:${c.cap ?? ""}` : "anon"}|${id}|${opts.allowDeleted ? 1 : 0}`;
@@ -246,7 +252,12 @@ async function loadAccess(
   };
   const level = rowLevel(c, row.a, row.shareRole, space, opts);
   return level
-    ? { level, artifact: row.a, personal: space.kind !== "shared" }
+    ? {
+        level,
+        artifact: row.a,
+        personal: space.kind !== "shared",
+        commenter: row.shareRole === "commenter",
+      }
     : null;
 }
 
@@ -289,7 +300,11 @@ export function rowLevel(
     },
     spaceRole: space.role,
     shareRole:
-      shareRole === "viewer" || shareRole === "editor" ? shareRole : null,
+      shareRole === "viewer" ||
+      shareRole === "commenter" ||
+      shareRole === "editor"
+        ? shareRole
+        : null,
     allowDeleted: opts.allowDeleted === true,
   });
 }
@@ -356,7 +371,7 @@ export function levelSql(
   const lv = (l: AccessLevel) => sql.raw(`'${capped ? "viewer" : l}'`);
   const shared = sql`${spaces.kind} = 'shared'`;
   const role = roleRankSql(c);
-  const share = sql`(case ${shares.role} when 'editor' then 2 when 'viewer' then 1 else 0 end)`;
+  const share = sql`(case ${shares.role} when 'editor' then 2 when 'viewer' then 1 when 'commenter' then 1 else 0 end)`;
   // No space role: a share, then team (uncapped members), then a public link.
   const rest = sql`case ${share} when 2 then ${lv("editor")} when 1 then ${lv("viewer")} else case
     ${member && !capsReads(capOfCaller(c)) ? sql`when ${artifacts.visibility} = 'team' then 'viewer'` : sql``}
@@ -524,6 +539,7 @@ export async function authorize(
   const ctx: CanCtx = {
     ...base,
     personal: r.personal,
+    commenterShare: r.commenter,
     ...opts.ctx,
     anonymous: base.anonymous,
     dataWriters: base.dataWriters,
