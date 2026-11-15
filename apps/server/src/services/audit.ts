@@ -89,7 +89,10 @@ export type AuditExtra = {
   detailSql?: { sql: string; args: unknown[] };
 };
 
-const insertSql = (detailSql?: string, ignore = false) => `insert ${ignore ? "or ignore " : ""}into audit_events
+const insertSql = (
+  detailSql?: string,
+  ignore = false,
+) => `insert ${ignore ? "or ignore " : ""}into audit_events
   (id, at, actor_kind, actor_id, actor_cred_kind, actor_cred_id, action, target_type, target_id, space_id, detail)
   select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${detailSql ? `json_patch(?, ${detailSql})` : "?"}`;
 
