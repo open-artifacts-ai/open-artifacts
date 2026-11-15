@@ -197,6 +197,81 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+describe("withdrawn asks (#2511)", () => {
+  const states: [string, object, RegExp][] = [
+    ["withdrawn", { withdrawn: { at: "2026-11-05T11:00:00Z" } }, /^Withdrawn$/],
+    [
+      "replaced on this page",
+      { withdrawn: { at: "2026-11-05T11:00:00Z" }, replacedBy: "c-new" },
+      /^Withdrawn\. See the new card\.$/,
+    ],
+    [
+      "replaced on another page",
+      {
+        withdrawn: {
+          at: "2026-11-05T11:00:00Z",
+          replacedBy: {
+            artifactId: "Ab3dEfGhJk4mNpQr",
+            threadId: "Th4dEfGhJk4mNpQr",
+            commentId: "Cm4dEfGhJk4mNpQr",
+            title: "Launch post",
+          },
+        },
+      },
+      /^Withdrawn\. Replaced by a card on Launch post\.$/,
+    ],
+  ];
+  it.each(states)(
+    "%s: a line, no options, no buttons, not 'for you'",
+    async (_n, over, line) => {
+      serveThreads(() => [askThread({}, over)]);
+      mount(viewerPath(OWNED));
+      const c = await col();
+      const card = await waitFor(() => {
+        const el = c.querySelector("[data-ask-withdrawn]");
+        if (!el) throw new Error("no card");
+        return el as HTMLElement;
+      });
+      expect(
+        card.querySelector("[data-ask-withdrawn-line]")?.textContent,
+      ).toMatch(line);
+      expect(within(card).queryAllByRole("button")).toHaveLength(0);
+      expect(within(card).queryByText("List only")).toBeNull();
+      expect(c.querySelector("[data-needs-you]")).toBeNull();
+    },
+  );
+  it("'the new card' opens the thread of the card that replaced it", async () => {
+    serveThreads(() => [
+      askThread(
+        { id: "t-old" },
+        { withdrawn: { at: "2026-11-05T11:00:00Z" }, replacedBy: "c-new" },
+      ),
+      {
+        ...askThread({ id: "t-new" }, {}),
+        comments: [{ ...askThread({}, {}).comments[0], id: "c-new" }],
+      },
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("link", { name: "the new card" }),
+    );
+    await waitFor(() =>
+      expect(
+        c.querySelector('[data-thread="t-new"]')?.hasAttribute("data-active"),
+      ).toBe(true),
+    );
+  });
+  it("links the page a card moved to", async () => {
+    serveThreads(() => [askThread({}, states[2]?.[1] ?? {})]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+
+    const a = await within(c).findByRole("link", { name: "Launch post" });
+    expect(a.getAttribute("href")).toBe("/a/Ab3dEfGhJk4mNpQr");
+  });
+});
+
 describe("asks on the comments column", () => {
   it("links a URL in the question", async () => {
     serveThreads(() => [

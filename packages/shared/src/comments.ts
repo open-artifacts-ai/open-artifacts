@@ -107,6 +107,14 @@ const recommendedMsg = {
   path: ["recommended", "optionId"],
 };
 
+/** #2511: an ask on another artifact, named to replace it. */
+export const ReplacesRefSchema = z.strictObject({
+  artifactId: IdSchema,
+  threadId: IdSchema,
+  commentId: key,
+});
+export type ReplacesRef = z.infer<typeof ReplacesRefSchema>;
+
 /** #2381: one person's current pick on an ask: a weigh-in, or the decision when `by` is the decider. */
 export const AskPickSchema = z.object({
   by: CommentAuthorSchema,
@@ -141,6 +149,25 @@ export const CommentAskSchema = z
     replaces: key.optional(),
     /** #2323: the id of the ask that replaces this one. */
     replacedBy: key.optional(),
+    /**
+     * #2511: the asking agent (or its person) withdrew the ask before it had a
+     * decision. No buttons, no picks (409 withdrawn), never a yes. `replacedBy`
+     * names the card that replaces it on another page; `title` only when the
+     * viewer can open that page.
+     */
+    withdrawn: z
+      .object({
+        at: z.string(),
+        replacedBy: z
+          .object({
+            artifactId: IdSchema,
+            threadId: IdSchema,
+            commentId: key,
+            title: z.string().optional(),
+          })
+          .optional(),
+      })
+      .optional(),
     /** The decision: the decider's pick (before #2381, the last pick of anyone asked). */
     answer: z
       .object({
@@ -292,8 +319,13 @@ export const AskInputSchema = z
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
     /** #2381: a person (member who can edit the page) who decides. Default: the asker's own user. Never on an ask that names an action. */
     decider: KeyRefSchema.optional(),
-    /** #2323: the id of an earlier ask by the same asker that this one replaces. */
-    replaces: key.optional(),
+    /**
+     * #2323: the id of an earlier ask by the same asker that this one replaces
+     * (on this artifact). #2511: or `{ artifactId, threadId, commentId }` for
+     * an ask on another artifact you can edit; that card is withdrawn once this
+     * one is posted.
+     */
+    replaces: z.union([key, ReplacesRefSchema]).optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
@@ -379,6 +411,30 @@ export const AddCommentInputSchema = z.strictObject({
   ask: AskInputSchema.optional(),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
+
+/** MCP withdraw_ask (#2511): withdraw an ask you posted before it has a decision. `replacedBy` names the card that replaces it (finishes a cross-page replace). */
+export const WithdrawAskInputSchema = z.strictObject({
+  id: IdSchema,
+  threadId: IdSchema,
+  commentId: key,
+  replacedBy: ReplacesRefSchema.optional(),
+});
+export type WithdrawAskInput = z.infer<typeof WithdrawAskInputSchema>;
+
+/** POST R.commentWithdraw body (#2511). */
+export const WithdrawBodySchema = z.strictObject({
+  replacedBy: ReplacesRefSchema.optional(),
+});
+export type WithdrawBody = z.infer<typeof WithdrawBodySchema>;
+
+/** MCP edit_comment (#2511): the text of your own comment (an ask's question and options are never editable). */
+export const EditCommentInputSchema = z.strictObject({
+  id: IdSchema,
+  threadId: IdSchema,
+  commentId: key,
+  body: z.string(),
+});
+export type EditCommentInput = z.infer<typeof EditCommentInputSchema>;
 
 /** MCP resolve_comment: `resolved` false reopens the thread. */
 export const ResolveCommentInputSchema = z.strictObject({

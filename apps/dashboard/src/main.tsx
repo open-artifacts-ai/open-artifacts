@@ -629,6 +629,8 @@ async function startMocks() {
     commentDeciders: params.get("mock") === "deciders",
     // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
     commentDecisions: params.get("mock") === "decisions",
+    // ?mock=withdrawn (#2511): asks in each withdrawn state.
+    commentWithdrawn: params.get("mock") === "withdrawn",
     // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
     commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
       params.get("passkey") ?? "",

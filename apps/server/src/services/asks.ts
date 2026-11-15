@@ -267,7 +267,8 @@ export const reconcileAsks = (
     const want = new Map<string, Row>();
     for (const t of threads)
       for (const c of t.comments) {
-        if (!c.ask) continue;
+        // A withdrawn or replaced ask is gone from the index and the inbox (#2511).
+        if (!c.ask || c.ask.withdrawn || c.ask.replacedBy) continue;
         const decider = c.ask.decider ?? c.author.ref;
         const info = askInfo(c);
         for (const who of rowPeople(c.ask.to, decider, info.confirm)) {
