@@ -13,6 +13,9 @@ const FILES = [
   "opencode-uncertain.json",
   "codex-mcp-entry.json",
   "revoked",
+  "update.json",
+  // A symlink since #2552; a real folder (older install) is handled below.
+  "bin",
 ];
 /** Leftovers of an interrupted atomic write or socket close. */
 const TEMP = [
@@ -21,6 +24,9 @@ const TEMP = [
   // The adapters' atomic writes: <file>.<pid>.<hex>.tmp.
   /^install\.json\.\d+\.[0-9a-f]+\.tmp$/,
   /^daemon\.sock\.keep-\d+$/,
+  // The version switch: a new link or state file an interrupted update left.
+  /^bin\.\d+\.new$/,
+  /^update\.json\.\d+\.tmp$/,
 ];
 /**
  * Folders Open Artifacts bus creates, and what in them is the bus's. A folder goes only
@@ -32,6 +38,8 @@ const FOLDERS: {
 }[] = [
   // The CLI copy the service runs: install replaces it whole.
   { path: "bin", ours: () => true },
+  // The versions bin points at; ours whole, like bin.
+  { path: "versions", ours: () => true },
   { path: "logs", ours: (n) => /^daemon(\.err)?\.log(\.\d+)?$/.test(n) },
   { path: "integrations/opencode", ours: (n) => n === "oa_bus" },
   { path: "integrations", ours: () => false },

@@ -39,6 +39,7 @@ export type Command = (
   | { cmd: "link"; sub: "add" | "rm"; dirs: [string, string] }
   | { cmd: "link"; sub: "list" }
   | { cmd: "leads"; sub: "check"; name?: string }
+  | { cmd: "auto-update"; sub: "off" | "on" | "status" }
   | { cmd: "version" }
   | { cmd: "help" }
 ) & {
@@ -63,12 +64,14 @@ const COMMANDS = new Set([
   "link",
   "unlink",
   "leads",
+  "auto-update",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
 const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;
+const AUTO_UPDATE_USAGE = `usage: ${BUS_CMD} auto-update <off|on|status>`;
 const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
@@ -154,6 +157,12 @@ export function parse(argv: string[]): Command {
     if (rest[2] !== undefined)
       throw new Error(`unexpected argument: ${rest[2]}`);
   }
+  if (cmd === "auto-update") {
+    if (!["off", "on", "status"].includes(rest[0] ?? ""))
+      throw new Error(AUTO_UPDATE_USAGE);
+    if (rest[1] !== undefined)
+      throw new Error(`unexpected argument: ${rest[1]}`);
+  }
   if (cmd === "link" || cmd === "unlink") {
     const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
     if (rest.length < n) throw new Error(LINK_USAGE);
@@ -161,7 +170,11 @@ export function parse(argv: string[]): Command {
       throw new Error(`unexpected argument: ${rest[n]}`);
   }
   const extra =
-    cmd === "namespace" || cmd === "link" || cmd === "unlink" || cmd === "leads"
+    cmd === "namespace" ||
+    cmd === "link" ||
+    cmd === "unlink" ||
+    cmd === "leads" ||
+    cmd === "auto-update"
       ? undefined
       : rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
@@ -254,6 +267,8 @@ function route(cmd: string, values: Values, positionals: string[]) {
       const name = positionals[1];
       return { cmd, sub: "check" as const, ...(name ? { name } : {}) };
     }
+    case "auto-update":
+      return { cmd, sub: positionals[0] as "off" | "on" | "status" };
     case "link":
     case "unlink": {
       if (cmd === "link" && positionals[0] === "list")

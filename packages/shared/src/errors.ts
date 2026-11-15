@@ -77,6 +77,8 @@ export const ERROR_CODES = [
   // Ask deciders (#2381).
   "not_decider",
   "already_decided",
+  "already_replaced",
+  "replaced",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -219,6 +221,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   not_decider: 403,
   /** #2381: the decider already picked, so the decision cannot be taken back. */
   already_decided: 409,
+  /** #2323: another ask already replaces that ask. */
+  already_replaced: 409,
+  /** #2323: the ask was replaced by a newer one, so it takes no more picks. */
+  replaced: 409,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */

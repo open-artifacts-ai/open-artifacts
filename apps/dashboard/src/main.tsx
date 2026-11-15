@@ -555,6 +555,8 @@ async function startMocks() {
     commentAsks: params.get("mock") === "asks",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
+    // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
+    commentDecisions: params.get("mock") === "decisions",
     // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
     commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
       params.get("passkey") ?? "",
@@ -590,6 +592,14 @@ async function startMocks() {
     commentersSignedIn: params.get("mock") === "signed-out",
     // ?mock=bus (#1293): the bus is on, with machines and agents.
     bus: params.get("mock") === "bus",
+    // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
+    // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
+    forYou:
+      params.get("mock") === "foryou"
+        ? ((["calm", "empty", "back", "error"] as const).find(
+            (v) => v === params.get("foryou"),
+          ) ?? "mixed")
+        : undefined,
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room

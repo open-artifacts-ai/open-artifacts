@@ -18,6 +18,9 @@
     "@oa/bus-adapter-opencode": "workspace:*",
     "@oa/bus-ipc": "workspace:*",
     "@oa/bus-protocol": "workspace:*",
+    "@sigstore/bundle": "5.0.1",
+    "@sigstore/protobuf-specs": "0.5.2",
+    "@sigstore/verify": "4.1.3",
     "ws": "^8.18.0",
     "zod": "^4.6.7"
   },

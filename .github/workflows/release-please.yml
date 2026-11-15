@@ -497,6 +497,13 @@ jobs:
           [ "$root" = "$version" ] || { echo "::error::package.json at $TAG is $root, not $version"; exit 1; }
           npm pkg set "version=$version"
           npm pkg delete private devDependencies
+          # The release commit goes into the attested bytes, so an updater can
+          # require it to equal the Sigstore certificate's commit (#2552). Only
+          # oaBus.commit is written, and it must be this run's own commit.
+          commit=$(git rev-parse HEAD)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::HEAD $commit is not a 40-hex commit"; exit 1; }
+          [ "$commit" = "$GITHUB_SHA" ] || { echo "::error::$TAG is checked out at $commit, not the release commit $GITHUB_SHA"; exit 1; }
+          npm pkg set "oaBus.commit=$commit"
           cp ../../LICENSE LICENSE
           mkdir "$RUNNER_TEMP/npm"
           # prepack bundles dist/ and assets/ at this version.
@@ -507,6 +514,8 @@ jobs:
           echo "$files"
           bad=$(grep -Ev '^package/(package\.json|LICENSE|dist/.+|assets/.+)$' <<< "$files" || true)
           [ -z "$bad" ] || { echo "::error::unexpected files in the tarball: $bad"; exit 1; }
+          # Only regular files and directories: no pax/extended headers or links.
+          node --experimental-strip-types ../../scripts/ci/tar-plain-entries.ts "$tgz"
           for f in package/LICENSE package/dist/index.js; do
             grep -qx "$f" <<< "$files" || { echo "::error::no $f in the tarball"; exit 1; }
           done

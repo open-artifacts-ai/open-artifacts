@@ -1,5 +1,8 @@
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { markLive } from "@oa/bus-daemon";
 import { copyFor, useBusCmd } from "./bus-cmd.ts";
+import { autoUpdate } from "./commands/auto-update.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
 import { global } from "./commands/global.ts";
@@ -25,6 +28,7 @@ const TERMINAL = new Set([
   "namespace",
   "link",
   "leads",
+  "auto-update",
   "version",
   "help",
 ]);
@@ -47,6 +51,13 @@ export async function main(
   }
   const ctx = makeCtx(cmd.noColor);
   if (cmd.home) ctx.home = resolve(cmd.home);
+  // A long-running process says which version folder it runs from (#2552).
+  if (
+    !TERMINAL.has(cmd.cmd) &&
+    cmd.cmd !== "install" &&
+    cmd.cmd !== "uninstall"
+  )
+    markLive(fileURLToPath(import.meta.url), ctx.home);
   // A moved home no harness config points at gets `login --home` hints (#2425).
   ctx.copy = copyFor(ctx);
   // Only commands whose text goes to a person's terminal print oa-bus. The
@@ -142,6 +153,8 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return namespace(cmd, ctx);
     case "leads":
       return leads(cmd, ctx);
+    case "auto-update":
+      return autoUpdate(cmd, ctx);
     case "link":
       return link(cmd, ctx);
     case "version":

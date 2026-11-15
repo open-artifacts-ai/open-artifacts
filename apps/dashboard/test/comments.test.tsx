@@ -173,6 +173,12 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+/** #2381 S2: the Comments tab's count (the open threads), where the header said "N open". */
+const commentsCount = (c: HTMLElement) =>
+  within(c)
+    .getByRole("tab", { name: "Comments" })
+    .querySelector("[data-tabs-count]")?.textContent;
+
 describe("comments: layouts", () => {
   it("is a column beside the page at 960px and up, with the open count on the button", async () => {
     mount(viewerPath(OWNED));
@@ -180,7 +186,7 @@ describe("comments: layouts", () => {
     expect(
       await within(c).findByText("Can we tighten this headline?"),
     ).toBeInTheDocument();
-    expect(within(c).getByText("1 open")).toBeInTheDocument();
+    expect(commentsCount(c)).toBe("1");
     expect(
       screen.getByRole("button", { name: "Comments, 1 open" }),
     ).toBeInTheDocument();
@@ -907,7 +913,7 @@ describe("comments: actions", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     expect(
-      within(c).getByRole("heading", { name: "Comments" }),
+      within(c).getByRole("tab", { name: "Comments" }),
     ).toBeInTheDocument();
     const btn = within(c).getByRole("button", { name: "Comment" });
     expect(btn).toBeDisabled();
@@ -1080,9 +1086,7 @@ describe("comments: actions", () => {
     fireEvent.click(within(c).getByRole("button", { name: "Resolve" }));
     await waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]?.body).toEqual({ status: "resolved" });
-    // #2118: no count at 0.
-    await waitFor(() => expect(within(c).queryByText("1 open")).toBeNull());
-    expect(within(c).queryByText("0 open")).toBeNull();
+    await waitFor(() => expect(commentsCount(c)).toBe("0"));
   });
 
   it("reopens a resolved thread from its card", async () => {
@@ -1101,7 +1105,7 @@ describe("comments: actions", () => {
     expect(line.querySelector("svg")).not.toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "Reopen" }));
     await waitFor(() => expect(patches[0]?.body).toEqual({ status: "open" }));
-    expect(await within(c).findByText("2 open")).toBeInTheDocument();
+    await waitFor(() => expect(commentsCount(c)).toBe("2"));
   });
 
   it("edits your own comment and shows it as edited", async () => {
@@ -1239,8 +1243,9 @@ describe("comments: actions", () => {
     viewport(800);
     mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
     const tabs = await screen.findAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual([
+    expect(tabs.map((t) => t.textContent?.replace(/\d+$/, ""))).toEqual([
       "Comments",
+      "Decisions",
       "Versions",
       "Share",
       "Details",
@@ -2142,7 +2147,7 @@ describe("comments: review round 1", () => {
     expect(user.querySelector("[data-avatar]")?.textContent).toBe("SA");
     expect(user.querySelector("[data-agent-tag]")).toBeNull();
     // Three threads were made on version 1; the artifact has four. The toolbar badge follows the column.
-    expect(within(c).getByText("3 open")).toBeInTheDocument();
+    expect(commentsCount(c)).toBe("3");
     expect(
       screen.getByRole("button", { name: /Comments, 3 open/ }),
     ).toBeInTheDocument();
