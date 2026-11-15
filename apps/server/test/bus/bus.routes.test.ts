@@ -1299,3 +1299,77 @@ describe("GET /api/v1/bus/ping (#1299)", () => {
     );
   });
 });
+
+// #2458: machine.approve / machine.revoke rows (ids and the label; never a
+// code or token), written with the change and only when it happened.
+describe("machine audit rows", () => {
+  type Row = {
+    actor_id: string | null;
+    actor_cred_kind: string | null;
+    target_type: string;
+    target_id: string;
+    detail: string;
+  };
+  const rowsOf = async (action: string, id?: string) =>
+    (
+      await env.DB.prepare(
+        "select * from audit_events where action = ?1 and (?2 is null or target_id = ?2)",
+      )
+        .bind(action, id ?? null)
+        .all<Row>()
+    ).results;
+
+  it("approve: one row when the poll makes the machine, none for deny or a repeat poll", async () => {
+    const who = await member();
+    const before = (await rowsOf("machine.approve")).length;
+    const denied = await startDevice("denied-box");
+    await decide(who, denied.user_code, "deny");
+    await poll(denied.device_code);
+    const d = await startDevice("audited-box");
+    await decide(who, d.user_code, "approve");
+    // Approved, not yet redeemed: no machine, no row.
+    expect((await rowsOf("machine.approve")).length).toBe(before);
+    const j = (await (await poll(d.device_code)).json()) as {
+      machine_token: string;
+    };
+    await poll(d.device_code);
+    const all = await rowsOf("machine.approve");
+    expect(all.length).toBe(before + 1);
+    const r = all.find((x) => x.actor_id === who.userId);
+    expect(r).toMatchObject({
+      target_type: "bus_machine",
+      actor_cred_kind: null,
+      detail: JSON.stringify({ label: "audited-box" }),
+    });
+    const m = await env.DB.prepare(
+      "select id from bus_machines where user_id = ?",
+    )
+      .bind(who.userId)
+      .first<{ id: string }>();
+    expect(r?.target_id).toBe(m?.id);
+    const text = JSON.stringify(r);
+    for (const s of [j.machine_token, d.device_code, d.user_code])
+      expect(text).not.toContain(s);
+  });
+
+  it("revoke: one row for the revoke, none for a repeat, another member's or an unknown id", async () => {
+    const m = await machine("audit-rev", bob.userId);
+    const other = await machine("audit-other", alice.userId);
+    const del = (id: string, cookie = bob.cookie) =>
+      api(app, R.busMachine(id), cookie, { method: "DELETE" });
+    expect((await del(other.id)).status).toBe(404);
+    expect((await del("nope")).status).toBe(404);
+    expect(await rowsOf("machine.revoke", other.id)).toEqual([]);
+    expect((await del(m.id)).status).toBe(204);
+    expect((await del(m.id)).status).toBe(204);
+    const rows = await rowsOf("machine.revoke", m.id);
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({
+      actor_id: bob.userId,
+      actor_cred_kind: "session",
+      target_type: "bus_machine",
+      detail: JSON.stringify({ label: "audit-rev" }),
+    });
+    expect(JSON.stringify(rows[0])).not.toContain(m.token);
+  });
+});
