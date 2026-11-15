@@ -452,6 +452,19 @@ describe("ci.yml", () => {
         expect(JSON.stringify(step)).not.toMatch(/secrets\./i);
       }
     });
+    // #264: e2e-shard runs in a root container, where git refuses the
+    // runner-owned workspace ("dubious ownership") unless it is trusted in the
+    // HOME the step runs with. Without it the step errors, fails closed, and a
+    // release PR runs the whole e2e.
+    it("e2e-shard trusts the workspace before the release-only step runs git", () => {
+      const run = String(ro("e2e-shard").run);
+      expect(w.jobs["e2e-shard"].container).toBeDefined();
+      const trust = run.indexOf(
+        'git config --global --add safe.directory "$GITHUB_WORKSPACE"',
+      );
+      expect(trust).toBeGreaterThan(-1);
+      expect(trust).toBeLessThan(run.indexOf("git show"));
+    });
     it("every heavy step is gated on that step's output, and the echo says main is protected, not that CI passed", () => {
       for (const j of HEAVY) {
         const all = steps(j);
