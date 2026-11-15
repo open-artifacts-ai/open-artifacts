@@ -227,8 +227,8 @@ describe("guard 2: a limit on mentions of other people's agents", () => {
     const row = await E.DB.prepare("select n from counters where key = ?")
       .bind(`notice:mention:from:${editor.userId}`)
       .first<{ n: number }>();
-    // The mention of Claude, of Pi, and the reply waking Claude as a thread agent.
-    expect(row?.n).toBe(3);
+    // One slot per comment: the root and the reply (whose thread-reply wake shares the reply's slot).
+    expect(row?.n).toBe(2);
   });
 
   it("a reply over the limit keeps the reply and says so", async () => {
@@ -485,5 +485,43 @@ describe("no-@ wakes: page agent, thread reply, follower notice", () => {
     expect(bus.sent.map((x) => [x.notice.kind, x.notice.to.name])).toEqual([
       ["commented", "Codex"],
     ]);
+  });
+});
+
+describe("the sender's slot is taken once per comment", () => {
+  it("one comment with 12 other-person follower agents tells all of them and uses one sender slot", async () => {
+    const s = await setup();
+    for (let i = 0; i < 12; i++)
+      await follow(
+        E,
+        editor.userId,
+        { namespace: "ns-e", name: `F${i}` },
+        s.id,
+      );
+    // Follower notices keep a per-address window; fresh addresses are all due.
+    await note(E, s.id, owner, { after: { version: 1 } });
+    const heard = bus.sent.filter((x) => x.notice.kind === "commented");
+    expect(heard.length).toBe(13);
+    const row = await E.DB.prepare("select n from counters where key = ?")
+      .bind(`notice:mention:from:${owner.userId}`)
+      .first<{ n: number }>();
+    expect(row?.n).toBe(1);
+    const rcv = await E.DB.prepare("select n from counters where key = ?")
+      .bind(`notice:mention:to:${editor.userId}`)
+      .first<{ n: number }>();
+    expect(rcv?.n).toBe(13);
+  });
+
+  it("a full sender cap gives the receiver's slot back", async () => {
+    const s = await setup();
+    await setCount(
+      `notice:mention:from:${editor.userId}`,
+      MENTIONS_PER_SENDER_PER_HOUR,
+    );
+    await post(E, s.id, typed(editor), editor, [s.claude]);
+    const rcv = await E.DB.prepare("select n from counters where key = ?")
+      .bind(`notice:mention:to:${owner.userId}`)
+      .first<{ n: number }>();
+    expect(rcv?.n ?? 0).toBe(0);
   });
 });

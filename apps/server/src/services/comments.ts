@@ -100,9 +100,9 @@ import {
 } from "./follows.js";
 import {
   isOutsideMember,
+  MentionGate,
   OWN_AGENTS_ONLY,
   TOO_MANY_MENTIONS,
-  takeMentionSlot,
 } from "./mention-guards.js";
 import { noteCommented } from "./onboarding.js";
 import {
@@ -1031,7 +1031,7 @@ const announce = async (
   // told takes a slot from the mention limits (over them, it is not told).
   if (!after || !typedByPerson(who) || who.kind !== "user") return;
   if (await isOutsideMember(env, who.id)) return;
-  const senderId = who.id;
+  const gate = (r && gateOf(env, who, r)) ?? new MentionGate(env, who.id);
   return inBackground(
     after.ctx,
     notifyCommented(
@@ -1041,7 +1041,7 @@ const announce = async (
       who.id,
       Date.now(),
       new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
-      (receiverId) => takeMentionSlot(env, senderId, receiverId),
+      (receiverId) => gate.take(receiverId),
     ),
   );
 };
@@ -1091,7 +1091,13 @@ type Resolved = {
   participants: StoredParticipant[];
   /** #2559: a non-fatal notice for the response (a mention over the limit). */
   notice?: string;
+  /** #2559: this comment's draw on the mention limits (one sender slot per comment). */
+  gate?: MentionGate;
 };
+
+/** The comment's mention-limit gate: made once per comment, by its author. */
+const gateOf = (env: Env, who: CommentWho, r: Resolved): MentionGate | null =>
+  who.kind === "user" ? (r.gate ??= new MentionGate(env, who.id)) : null;
 
 /** A comment a person typed in the web app: no token, no agent (#1797). */
 const typedByPerson = (who: CommentWho): boolean =>
@@ -1334,6 +1340,7 @@ async function resolveExtras(
   const others = [...agents.values()].filter(
     (e) => e.agent.userId !== viewerId,
   );
+  const gate = gateOf(env, who, none);
   if (others.length > 0) {
     // 1: an outside member names only their own agents.
     if (viewerId && (await isOutsideMember(env, viewerId)))
@@ -1342,11 +1349,7 @@ async function resolveExtras(
     // on the comment and reads "gone". 2: and only under the hourly limits.
     for (const e of others) {
       let wake = typedByPerson(who);
-      if (
-        wake &&
-        viewerId &&
-        !(await takeMentionSlot(env, viewerId, e.agent.userId))
-      ) {
+      if (wake && gate && !(await gate.take(e.agent.userId))) {
         wake = false;
         notice = TOO_MANY_MENTIONS;
       }
@@ -1373,6 +1376,7 @@ async function resolveExtras(
       readd: true as const,
     })),
     ...(notice ? { notice } : {}),
+    ...(gate ? { gate } : {}),
   };
 }
 
@@ -1533,6 +1537,7 @@ async function addThreadInner(
 ): Promise<Thread> {
   const body = checkBody(raw.body);
   const r0 = await resolveExtras(env, a.id, who, raw, opts);
+  gateOf(env, who, r0);
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -1557,7 +1562,8 @@ async function addThreadInner(
     else if (typedByPerson(who)) {
       // Another person's page agent: not for an outside member, and under the mention limits.
       if (await isOutsideMember(env, who.id)) page = null;
-      else if (await takeMentionSlot(env, who.id, page0.userId)) page = page0;
+      else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
+        page = page0;
       else r0.notice = TOO_MANY_MENTIONS;
     }
   }
@@ -1748,7 +1754,9 @@ async function threadReply(
         // Another person's agent: not for an outside member, and under the mention limits.
         outside ??= await isOutsideMember(env, c.author.ref);
         if (outside) continue;
-        if (!(await takeMentionSlot(env, c.author.ref, p.owner))) {
+        if (
+          !(await (r.gate ?? new MentionGate(env, c.author.ref)).take(p.owner))
+        ) {
           limited?.();
           continue;
         }
@@ -1871,6 +1879,7 @@ async function addReplyInner(
       await resolveExtras(env, artifactId, who, extras, opts),
     );
   }
+  gateOf(env, who, r);
   const participants = [
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),

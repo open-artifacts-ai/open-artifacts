@@ -33,20 +33,39 @@ export async function isOutsideMember(
 }
 
 /**
- * Takes one slot for a mention of `receiverId`'s agent by `senderId`, under
- * both hourly caps (all or nothing). False when over a cap. `notice:` keys are
- * swept daily with the other notice counters.
+ * One comment's draw on the mention limits. The sender's slot is taken once
+ * per comment, on its first wake of another person's agent; the receiver's
+ * slot is taken per wake, per receiving person. Over a cap: false, and the
+ * comment's later wakes see the same sender refusal. `notice:` keys are swept
+ * daily with the other notice counters.
  */
-export async function takeMentionSlot(
-  env: Env,
-  senderId: string,
-  receiverId: string,
-  now = Date.now(),
-): Promise<boolean> {
-  const hour = new Date(now).toISOString().slice(0, 13);
-  const caps: Cap[] = [
-    [`notice:mention:from:${senderId}`, MENTIONS_PER_SENDER_PER_HOUR, hour],
-    [`notice:mention:to:${receiverId}`, MENTIONS_PER_RECEIVER_PER_HOUR, hour],
-  ];
-  return (await takeAll(env, caps)) === -1;
+export class MentionGate {
+  private sent = false;
+  private blocked = false;
+  constructor(
+    private env: Env,
+    private senderId: string,
+    private now = Date.now(),
+  ) {}
+
+  async take(receiverId: string): Promise<boolean> {
+    if (this.blocked) return false;
+    const hour = new Date(this.now).toISOString().slice(0, 13);
+    const to: Cap = [
+      `notice:mention:to:${receiverId}`,
+      MENTIONS_PER_RECEIVER_PER_HOUR,
+      hour,
+    ];
+    const from: Cap = [
+      `notice:mention:from:${this.senderId}`,
+      MENTIONS_PER_SENDER_PER_HOUR,
+      hour,
+    ];
+    if (this.sent) return (await takeAll(this.env, [to])) === -1;
+    // All or nothing: a full sender cap gives the receiver's slot back.
+    const full = await takeAll(this.env, [to, from]);
+    if (full === -1) this.sent = true;
+    else if (full === 1) this.blocked = true;
+    return full === -1;
+  }
 }
