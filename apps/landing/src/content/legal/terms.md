@@ -58,22 +58,22 @@ We may remove content or suspend access that breaks these rules, or that puts th
 ## Plans and payment
 
 - **Solo:** free for 30 days with no card needed, then $1 a month or $10 a year.
-- **Team:** $10 per creator per month, or $100 per creator per year, with a 30-day free trial that starts the first time you invite someone.
-- **Business:** $25 per creator per month, or $250 per creator per year. Contact us to start.
+- **Team:** $10 per member per month, or $100 per member per year, with a 30-day free trial that starts the first time you invite someone.
+- **Business:** $25 per member per month, or $250 per member per year. Contact us to start.
 
-A creator is a person who, in a calendar month, publishes a page or a new version of one, or changes a page's live data as its owner or editor. What your AI agents do counts as you. Each person counts once a month. Viewers are free on every plan: reading, commenting, or a viewer's vote in a poll doesn't make someone a creator.
+A member is a person who can publish in your instance: its owner, its admins and its members. Each one is billed whether or not they publish, starting the first time they log in. Someone you've invited who hasn't logged in yet isn't billed. Your AI agents act as you and are never counted. Guests are free on every plan: a guest can read and comment on what's shared with them, and can't publish.
 
 **Free trials.** If you don't pay when the Solo trial ends, nothing is charged. Publishing pauses, you can still read and share what you made, and nothing is deleted. The Team trial happens once for each instance. If it ends without a Team plan, the instance goes back to Solo.
 
 **Billing.** Prices are in US dollars. You pay by card through Stripe, our payment processor. We don't store your card number. A plan renews automatically each month or each year until you cancel it. If you start paying for Solo during its trial, the first charge comes when the trial ends.
 
-On monthly Team, each renewal charges for the number of creators you had the month before, with a minimum of one. On yearly Team, you pay up front for the number of creators you choose. Creators above that number are billed after each month they occur, at the monthly price.
+On Team and Business, you pay for the number of members your instance has, with a minimum of one. Monthly plans charge for them at each renewal, and yearly plans charge for them up front. When someone becomes a member partway through a period, you're charged for the rest of that period only. When you remove a member or make them a guest, you stop paying for them from your next renewal.
 
 **Taxes.** Prices don't include taxes, and we don't add tax to invoices today. If that changes, we'll tell instance owners first. You're responsible for any taxes you owe on your purchase.
 
 **Cancelling.** The instance owner or an admin can cancel at any time in Settings, Plan and billing. The plan keeps working until the end of the period already paid for, and doesn't renew. After that, Solo pauses publishing, and on Team or Business the team features become read-only. You can still read and share everything, and nothing is deleted.
 
-**Refunds.** If you ask within 14 days of your first payment, we'll refund it in full. Write to [hello@open-artifacts.com](mailto:hello@open-artifacts.com) from the instance owner's address. After those 14 days, payments aren't refunded, and we don't give credit for part of a period, for moving to a cheaper plan, or for having fewer creators, except where the law requires it. If a charge looks wrong, write to the same address and we'll look into it.
+**Refunds.** If you ask within 14 days of your first payment, we'll refund it in full. Write to [hello@open-artifacts.com](mailto:hello@open-artifacts.com) from the instance owner's address. After those 14 days, payments aren't refunded, and we don't give credit for part of a period, for moving to a cheaper plan, or for having fewer members, except where the law requires it. If a charge looks wrong, write to the same address and we'll look into it.
 
 **Failed payments.** If a payment fails, you have 7 days to update your card. After that the instance becomes read-only until the payment goes through. Nothing is deleted.
 
