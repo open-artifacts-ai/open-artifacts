@@ -4,7 +4,7 @@
 // build, typecheck and test, run that first.
 import path from "node:path";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.ts";
-import { DOC_SWITCH } from "../src/services/doc-switch.ts";
+import { docToolOff } from "../src/services/doc-switch.ts";
 import { writeGenerated } from "./write-generated.ts";
 
 const out = path.join(
@@ -14,14 +14,14 @@ const out = path.join(
   "mcp",
   "tool-manifest.json",
 );
-// edit_doc is public only once the doc switch opens (#1100), like tools/list
-// and the skill; the docs page ships with the feature.
-const manifest = TOOL_DEFS.filter(
-  (t) => DOC_SWITCH.creation || t.name !== "edit_doc",
-).map(({ name, description }) => ({
-  name,
-  description,
-}));
+// Doc-gated tools (edit_doc, #1100) are public only once the doc switch
+// opens, like tools/list and the skill; the docs page ships with the feature.
+const manifest = TOOL_DEFS.filter((t) => !docToolOff(t.name)).map(
+  ({ name, description }) => ({
+    name,
+    description,
+  }),
+);
 writeGenerated(out, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(
   `wrote ${manifest.length} tools to ${path.relative(process.cwd(), out)}`,
