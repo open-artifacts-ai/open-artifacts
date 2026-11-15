@@ -11,9 +11,9 @@ import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
 
-/** 40 departed members, the first `n` with artifacts left. */
+/** 100 departed members, the first `n` with artifacts left. */
 const gone = (n: number): Member[] =>
-  Array.from({ length: 40 }, (_, i) => ({
+  Array.from({ length: 100 }, (_, i) => ({
     id: `Gone${String(i).padStart(4, "0")}AbCdEfGh`,
     email: `gone${i}@example.com`,
     name: `Gone ${i}`,
