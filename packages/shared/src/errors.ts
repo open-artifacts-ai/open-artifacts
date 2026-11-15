@@ -37,6 +37,10 @@ export const ERROR_CODES = [
   "binary_entry",
   "space_name_reserved",
   "invite_unreachable",
+  // Login for invited people (#2520).
+  "domain_unproven",
+  "apply_pending",
+  "no_way_in",
   // Member restore (parity 1).
   "member_removed",
   "directory_managed",
@@ -156,6 +160,12 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   space_name_reserved: 400,
   /** POST R.members (invite) for an address no sign-in method this install offers could ever admit; details InviteUnreachableDetails, message INVITE_UNREACHABLE_MESSAGE[reason]. Nothing is created. */
   invite_unreachable: 400,
+  /** PUT R.loginSettings with a domain that isn't the owner's verified Google domain (hd) from their fresh login; details DomainUnprovenDetails { domain }. Nothing is changed. */
+  domain_unproven: 403,
+  /** PUT R.loginSettings refused: an earlier login-settings change is still applying (or the instance can't apply one yet); try again in a minute. */
+  apply_pending: 409,
+  /** POST R.members (invite) for an address with no way to log in here (InviteReach.ways would be []). Nothing is created. */
+  no_way_in: 400,
   /** POST R.members (invite) for an address whose member was removed; details MemberRemovedDetails { userId }: offer R.memberRestore(userId). Nothing is created. */
   member_removed: 409,
   /** POST R.memberRestore(id) on a member the directory removed while Google sync is on (sync would remove them again), or POST R.members (invite) for that member's address: sync revives them when their Workspace account is restored. Nothing is created. */
@@ -253,6 +263,10 @@ export const InviteUnreachableDetailsSchema = z.object({
 export type InviteUnreachableDetails = z.infer<
   typeof InviteUnreachableDetailsSchema
 >;
+
+/** 403 domain_unproven details: the first domain that isn't proven. */
+export const DomainUnprovenDetailsSchema = z.object({ domain: z.string() });
+export type DomainUnprovenDetails = z.infer<typeof DomainUnprovenDetailsSchema>;
 
 /** 409 member_removed details: the removed member's id, for R.memberRestore. */
 export const MemberRemovedDetailsSchema = z.object({ userId: z.string() });

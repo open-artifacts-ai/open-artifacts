@@ -3,6 +3,7 @@ import {
   type AuditReason,
   INVITE_UNREACHABLE_MESSAGE,
   type InviteUnreachableDetails,
+  type LoginWay,
   type Member,
   type MemberInvite,
   type MemberInviteResult,
@@ -52,6 +53,7 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
+import { waysOf } from "./login.js";
 import { inviteReach } from "./reach.js";
 import {
   IDENTITIES_SQL,
@@ -287,19 +289,42 @@ export async function inviteMemberOutcome(
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   const reach = await inviteReach(env, email, input.role);
+  const ways = waysOf(reach);
   if (reach.methods.length === 0 && !reach.googleUncertain) {
-    // An existing row is still a 409 (member_removed or conflict), not a 400.
-    if (await stmt(env.DB, EXISTING).bind(email).first())
+    // An existing row is still a 409 (conflict), not a 400.
+    const there = await stmt(env.DB, EXISTING).bind(email).first<{
+      status: string;
+    }>();
+    if (there && statusOf(there.status) !== "removed")
       await existingConflict(env, email);
     const details: InviteUnreachableDetails = {
       field: "email",
       reason: reach.inDomain ? "no_sign_in_method" : "outside_domains",
     };
     throw new ApiError(
-      "invite_unreachable",
+      "no_way_in",
       INVITE_UNREACHABLE_MESSAGE[details.reason],
       details,
     );
+  }
+  // A removed person (#2520): inviting them restores them as a fresh invite.
+  const gone = await stmt(env.DB, EXISTING).bind(email).first<{
+    id: string;
+    status: string;
+  }>();
+  if (gone && statusOf(gone.status) === "removed") {
+    const restored = await restoreMember(env, gone.id, inviter);
+    const [back] = await getDb(env).batch([
+      getDb(env)
+        .update(users)
+        .set({ invitedAt: Date.now() })
+        .where(and(eq(users.id, gone.id), eq(users.status, "active")))
+        .returning(),
+      inviteCreateAuditByEmail(env, email, inviter.id, restored.role),
+    ]);
+    const row = back[0];
+    if (!row) return existingConflict(env, email);
+    return await invited(env, inviter, email, row, reach, ways, true);
   }
   // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
   // invited_at and its own invite.create row (the existing role, as a first
@@ -353,6 +378,19 @@ export async function inviteMemberOutcome(
     row = rows[0];
   }
   if (!row) return existingConflict(env, email);
+  return invited(env, inviter, email, row, reach, ways, Boolean(again));
+}
+
+/** The invite email and result for a row an invite just wrote or refreshed. */
+async function invited(
+  env: Env,
+  inviter: Member,
+  email: string,
+  row: Parameters<typeof toMember>[0],
+  reach: Awaited<ReturnType<typeof inviteReach>>,
+  ways: LoginWay[],
+  reinvited: boolean,
+): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
   const signInMethods: SignInProvider[] = reach.methods.length
@@ -382,11 +420,12 @@ export async function inviteMemberOutcome(
     );
   }
   return {
-    reinvited: Boolean(again),
+    reinvited,
     result: {
       ...toMember(row),
       emailed,
       signInMethods,
+      reach: { ways },
       ...(reach.methods.length === 0
         ? {
             signIn: {

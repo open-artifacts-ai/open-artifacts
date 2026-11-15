@@ -573,7 +573,10 @@ export const MemberSchema = z.object({
 });
 export type Member = z.infer<typeof MemberSchema>;
 
-export const MemberRoleInputSchema = RoleSchema.exclude(["owner", "guest"]);
+/** The roles an invite may name (#2520: a guest invite too). */
+export const MemberRoleInputSchema = RoleSchema.exclude(["owner"]);
+/** The roles a role change may name: an invite's, but never guest. */
+export const MemberPatchRoleSchema = RoleSchema.exclude(["owner", "guest"]);
 
 export const MemberInviteSchema = z.strictObject({
   email: z.string().email(),
@@ -594,6 +597,32 @@ export const InviteSignInSchema = z.object({
 });
 export type InviteSignIn = z.infer<typeof InviteSignInSchema>;
 
+/**
+ * One way an address can log in here (#2520).
+ * - google: Google works now (Gmail, or an address in the login domains);
+ * - google_workspace: works if the address is a Google Workspace account on
+ *   its own domain;
+ * - google_after_code: a personal Google account works after a one-time
+ *   code to the address, first login only;
+ * - email_code: an email code alone.
+ */
+export const LoginWaySchema = z.enum([
+  "google",
+  "google_workspace",
+  "google_after_code",
+  "email_code",
+]);
+export type LoginWay = z.infer<typeof LoginWaySchema>;
+
+/** The ways in for one address (GET R.memberReach, MemberInviteResult.reach). */
+export const InviteReachSchema = z.object({
+  /** [] = this address can't log in here. */
+  ways: z.array(LoginWaySchema),
+  /** The address belongs to a removed person (ISO date); inviting restores them. */
+  removed: z.object({ at: z.string() }).optional(),
+});
+export type InviteReach = z.infer<typeof InviteReachSchema>;
+
 /** POST members (invite) response. */
 export const MemberInviteResultSchema = MemberSchema.extend({
   /** True if an invite email was sent (best effort). */
@@ -605,11 +634,13 @@ export const MemberInviteResultSchema = MemberSchema.extend({
    * (["google"] when signIn is uncertain). The same list the email uses.
    */
   signInMethods: z.array(SignInProviderIdSchema).optional(),
+  /** The ways in for this address (#2520). */
+  reach: InviteReachSchema.optional(),
 });
 export type MemberInviteResult = z.infer<typeof MemberInviteResultSchema>;
 
 export const MemberPatchSchema = z.strictObject({
-  role: MemberRoleInputSchema,
+  role: MemberPatchRoleSchema,
 });
 export type MemberPatch = z.infer<typeof MemberPatchSchema>;
 
@@ -1611,3 +1642,29 @@ export const PasskeyChallengeSchema = z.object({
   expiresAt: z.string(),
 });
 export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;
+
+/** GET R.loginSettings (#2520). */
+export const LoginSettingsSchema = z.object({
+  /** The login domains (AUTH_DOMAINS). */
+  domains: z.array(z.string()),
+  /** Anyone at a login domain can join (AUTH_DOMAIN_JOIN). */
+  autoJoin: z.boolean(),
+  /** The caller may change these here. */
+  editable: z.boolean(),
+  /** The domain the owner could add now: their token hd at their last Google login; null for a Gmail owner. */
+  provable: z.string().nullable(),
+  /** Active members whose address is in the login domains. */
+  joined: z.number().int().nonnegative(),
+  /** The caller has answered the first-invite question (per person). */
+  firstInviteSeen: z.boolean(),
+  /** A change was accepted and is still being applied. */
+  applying: z.boolean().optional(),
+});
+export type LoginSettings = z.infer<typeof LoginSettingsSchema>;
+
+/** PUT R.loginSettings body. */
+export const LoginSettingsPutSchema = z.strictObject({
+  autoJoin: z.boolean(),
+  domains: z.array(z.string().min(1).max(253)).max(20),
+});
+export type LoginSettingsPut = z.infer<typeof LoginSettingsPutSchema>;

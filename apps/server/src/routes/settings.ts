@@ -1,9 +1,27 @@
-import { R, SettingsPatchSchema } from "@oa/shared";
-import { requireUser } from "../auth/authz.js";
+import {
+  type DomainUnprovenDetails,
+  LoginSettingsPutSchema,
+  R,
+  SettingsPatchSchema,
+} from "@oa/shared";
+import {
+  caller,
+  capOfCaller,
+  planOfMember,
+  requireUser,
+} from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
+import { requireFreshReauth } from "../auth/reauth.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { userActor } from "../services/audit.js";
+import {
+  firstUnproven,
+  loginEditable,
+  loginSettings,
+  markFirstInviteSeen,
+  soloPlan,
+} from "../services/login.js";
 import { patchSettings, settingsView } from "../services/members.js";
 import { spacesOn } from "../services/spaces.js";
 import type { AppType } from "./index.js";
@@ -47,5 +65,42 @@ export function mountSettings(app: AppType): void {
         by: userActor(actor.id),
       }),
     );
+  });
+
+  // #2520: login settings. Owner or admin read; the owner changes them.
+  app.get(R.loginSettings, async (c) => {
+    const user = requireManager(c);
+    return c.json(await loginSettings(c.env, user.id, planOfMember(user)));
+  });
+
+  app.post(R.loginFirstInviteSeen, async (c) => {
+    const user = requireManager(c);
+    await markFirstInviteSeen(c.env, user.id);
+    return c.body(null, 204);
+  });
+
+  // Order: the body, a fresh login, the proof of every domain, then the
+  // apply, which waits for a platform route (409 apply_pending until then).
+  app.put(R.loginSettings, async (c) => {
+    const user = requireUser(c);
+    if (!orgCan(user, "login.manage", { cap: capOfCaller(caller(c)) }))
+      throw new ApiError("not_found", "Not found");
+    const body = await jsonBody(c, LoginSettingsPutSchema);
+    requireFreshReauth(c, R.loginSettings);
+    const domain = firstUnproven(body.domains, c.var.sessionTenant);
+    if (domain !== null) {
+      const details: DomainUnprovenDetails = { domain };
+      throw new ApiError(
+        "domain_unproven",
+        "Log in with Google as someone on that domain to add it.",
+        details,
+      );
+    }
+    if (soloPlan(planOfMember(user)) || !loginEditable(c.env))
+      throw new ApiError(
+        "apply_pending",
+        "This instance can't apply a login change yet; try again later.",
+      );
+    return c.json(await loginSettings(c.env, user.id, planOfMember(user)));
   });
 }

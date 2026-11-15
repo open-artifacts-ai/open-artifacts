@@ -727,7 +727,7 @@ describe("plan enforcement", () => {
     ).toBeNull();
   });
 
-  it("free, trial never ran: restoring a removed member takes the invite's path (409 on invite, restore starts the trial; billing down is 503)", async () => {
+  it("free, trial never ran: restoring a removed member takes the invite's path (restore starts the trial; billing down is 503; an invite of a removed address takes the same path, #2520)", async () => {
     row = {
       tier: "solo",
       status: "active",
@@ -740,13 +740,6 @@ describe("plan enforcement", () => {
     await env.DB.prepare("update users set status = 'removed' where id = ?")
       .bind(gone.userId)
       .run();
-    const inv = await send(R.members, owner.cookie, {
-      method: "POST",
-      body: { email: `restore-${tag}@a.com`, role: "member" },
-    });
-    expect(inv.status).toBe(409);
-    expect(await errOf(inv)).toMatchObject({ code: "member_removed" });
-    expect(calls.some((c) => c.path === "/trial/start")).toBe(false);
     down = true;
     const bad = await send(R.memberRestore(gone.userId), owner.cookie, {
       method: "POST",

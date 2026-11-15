@@ -194,6 +194,37 @@ describe("authConfig", () => {
     );
   });
 
+  test("hosted AUTH_DOMAIN_JOIN_SOURCE=owner lifts the invite-only force (#2520)", () => {
+    const hosted = (over: Partial<Env>) =>
+      authConfig(
+        direct({
+          HOSTED: "1",
+          AUTH_BROKER_URL: "https://auth.h.test",
+          BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+          AUTH_DOMAIN_JOIN: "member",
+          ...over,
+        }),
+      );
+    // Without the variable, or with any other value: still forced.
+    for (const source of [undefined, "", "admin", "Owner", "true"]) {
+      const c = hosted({ AUTH_DOMAIN_JOIN_SOURCE: source });
+      expect(c.domainJoin, String(source)).toBe("invite");
+      expect(c.problems.length).toBeGreaterThan(0);
+    }
+    const owner = hosted({ AUTH_DOMAIN_JOIN_SOURCE: "owner" });
+    expect(owner.domainJoin).toBe("member");
+    expect(owner.problems).toEqual([]);
+    // The source alone changes nothing: join still has to be member.
+    expect(
+      hosted({ AUTH_DOMAIN_JOIN_SOURCE: "owner", AUTH_DOMAIN_JOIN: "invite" })
+        .domainJoin,
+    ).toBe("invite");
+    // And never without domains.
+    expect(
+      hosted({ AUTH_DOMAIN_JOIN_SOURCE: "owner", AUTH_DOMAINS: "" }).domainJoin,
+    ).toBe("invite");
+  });
+
   test("code email pool: 1..10000, default 200", () => {
     expect(authConfig(direct()).codeEmailsPerDay).toBe(200);
     expect(

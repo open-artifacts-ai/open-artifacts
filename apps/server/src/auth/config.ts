@@ -174,7 +174,11 @@ function googleConfig(
   };
 }
 
-/** Hosted installs never admit by domain: their AUTH_DOMAINS aren't proven owned (M1). */
+/**
+ * Hosted installs never admit by domain: their AUTH_DOMAINS aren't proven owned
+ * (M1). Except when AUTH_DOMAIN_JOIN_SOURCE is "owner": the platform sets it
+ * after the owner proved the domain with a fresh Google login (#2520).
+ */
 function domainJoin(
   env: Env,
   domains: readonly string[],
@@ -187,7 +191,11 @@ function domainJoin(
     );
     return "invite";
   }
-  if (env.HOSTED === "1" && join === "member") {
+  if (
+    env.HOSTED === "1" &&
+    env.AUTH_DOMAIN_JOIN_SOURCE !== "owner" &&
+    join === "member"
+  ) {
     problems.push(
       'AUTH_DOMAIN_JOIN is "member", but a hosted install admits people by invite only, so invites apply.',
     );

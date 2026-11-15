@@ -113,6 +113,12 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The handler requires a manager and 404s for the owner's own link.
   "DELETE /api/v1/members/:id/identities/google": { org: "members.manage" },
   "GET /api/v1/settings": { org: "settings.read" },
+  // #2520: login for invited people. Reach and login settings: owner or admin;
+  // changing them: the owner, and the handler needs a fresh login.
+  "GET /api/v1/members/reach": { org: "members.manage" },
+  "GET /api/v1/settings/login": { org: "members.manage" },
+  "POST /api/v1/settings/login/first-invite-seen": { org: "members.manage" },
+  "PUT /api/v1/settings/login": { org: "login.manage" },
   // P3 T9 spaces API: 404 without the spaces feature. Space routes admit any
   // signed-in caller; the service applies the per-space rule (member, the
   // space's manager, or an org admin; 404 otherwise, never 403 except the

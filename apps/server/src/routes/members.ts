@@ -18,6 +18,7 @@ import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { resetIdentity } from "../services/identity.js";
+import { reachForQuery } from "../services/login.js";
 import {
   eraseMember,
   inviteMemberOutcome,
@@ -63,6 +64,14 @@ function requireDeparted(c: Context<AppEnv>): Member {
 const MEMBER = "/api/v1/members/:id";
 
 export function mountMembers(app: AppType): void {
+  // #2520: the ways in for one address, for the invite box.
+  app.get(R.memberReach, async (c) => {
+    requireManager(c);
+    const email = c.req.query("email");
+    if (!email) throw new ApiError("bad_request", "Missing email");
+    return c.json(await reachForQuery(c.env, email));
+  });
+
   app.get(R.members, async (c) => {
     requireManager(c);
     const q = MembersQuerySchema.safeParse(c.req.query());
