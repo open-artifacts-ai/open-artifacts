@@ -6,8 +6,8 @@ import {
   connectOutcome,
   NOT_CONNECTED_MESSAGE,
   noSessionMessage,
-  resetConnectedBefore,
   RESTARTING_MESSAGE,
+  resetConnectedBefore,
   UNREACHABLE_MESSAGE,
 } from "../src/connect.ts";
 import {
