@@ -591,9 +591,18 @@ export const ShareResultSchema = ShareSchema.extend({
    * Why no email went out when a limit refused it (the share is saved
    * either way, #2590): member_limit (this member's outside addresses for
    * the day), instance_limit (the instance's daily outside emails, lower in
-   * a trial), limit (the existing per-recipient, per-share or sending cap).
+   * a trial), limit (the existing per-recipient, per-share or sending cap),
+   * outside_no_unsubscribe (no email to an outside address until it can opt
+   * out of mail from a stranger).
    */
-  notEmailed: z.enum(["member_limit", "instance_limit", "limit"]).optional(),
+  notEmailed: z
+    .enum([
+      "member_limit",
+      "instance_limit",
+      "limit",
+      "outside_no_unsubscribe",
+    ])
+    .optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
   recipient: ShareRecipientSchema.optional(),
   /**

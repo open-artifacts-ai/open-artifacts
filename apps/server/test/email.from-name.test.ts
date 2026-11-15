@@ -1,6 +1,13 @@
 import { env } from "cloudflare:workers";
 import { R } from "@oa/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import { createApp } from "../src/app.js";
 import { deliverCode, emailKey } from "../src/auth/codes.js";
 import { authConfig } from "../src/auth/config.js";
@@ -15,6 +22,7 @@ import {
 } from "../src/email/send.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
+import { outsideEmail } from "../src/services/outside-email.js";
 import { getUser } from "../src/services/users.js";
 import { direct, seedUser, uniq } from "./auth-helpers.js";
 import { login } from "./helpers.js";
@@ -435,6 +443,12 @@ describe("every caller sends the install name", () => {
     );
 
   it("invite and share", async () => {
+    // The outside share email is off until "Don't email me again" exists
+    // (outside-email.ts); this test shares with an outside address.
+    outsideEmail.on = true;
+    onTestFinished(() => {
+      outsideEmail.on = false;
+    });
     await setName("Acme");
     const o = await login(uniq("own", "x.test"), "owner");
     const m = mailer();

@@ -6,7 +6,16 @@ import {
   R,
   ShareResultSchema,
 } from "@oa/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import {
@@ -17,10 +26,20 @@ import {
   sweepEmailCounters,
 } from "../src/email/send.js";
 import { publish } from "../src/services/artifacts.js";
+import { outsideEmail } from "../src/services/outside-email.js";
 import { getUser } from "../src/services/users.js";
 import { login } from "./helpers.js";
 import { connect, E, textOf, tool } from "./mcp-helpers.js";
 import { pinMiddayUtc } from "./midday.js";
+
+// The outside share email is off until "Don't email me again" exists
+// (outside-email.ts); these tests exercise it, so switch it on here.
+beforeAll(() => {
+  outsideEmail.on = true;
+});
+afterAll(() => {
+  outsideEmail.on = false;
+});
 
 const app = createApp();
 const ctx = { waitUntil() {}, passThroughOnException() {} } as never;

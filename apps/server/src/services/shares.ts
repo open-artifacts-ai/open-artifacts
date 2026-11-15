@@ -32,6 +32,7 @@ import { audit, userActor } from "./audit.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
+import { outsideEmail } from "./outside-email.js";
 import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
@@ -303,6 +304,9 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return { emailed: false };
+    // No email to an outside address until it can opt out (outside-email.ts).
+    if (!outsideEmail.on && outsideAddress(env, email))
+      return { emailed: false, notEmailed: "outside_no_unsubscribe" };
     // No user row: an outside address (#2590). Its own daily limits, apart
     // from the usual ones; the share is saved whatever they say.
     const day = new Date().toISOString().slice(0, 10);

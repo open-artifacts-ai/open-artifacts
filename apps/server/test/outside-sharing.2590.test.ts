@@ -2,7 +2,7 @@
 // limits, and what the outside email says.
 import { env } from "cloudflare:workers";
 import { R, SettingsSchema, ShareResultSchema } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { withPlan } from "../src/auth/authz.js";
 import { authConfig } from "../src/auth/config.js";
@@ -15,6 +15,7 @@ import {
 } from "../src/services/identity.js";
 import { settingsView } from "../src/services/members.js";
 import { OUTSIDE_SHARING_KEY, outsideFrom } from "../src/services/outside.js";
+import { outsideEmail } from "../src/services/outside-email.js";
 import {
   OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
   OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL,
@@ -24,6 +25,15 @@ import {
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
+
+// The outside share email is off until "Don't email me again" exists
+// (outside-email.ts); these tests exercise it, so switch it on here.
+beforeAll(() => {
+  outsideEmail.on = true;
+});
+afterAll(() => {
+  outsideEmail.on = false;
+});
 
 const app = createApp();
 const APP = "http://app.localhost";
