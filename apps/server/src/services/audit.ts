@@ -331,6 +331,7 @@ const TARGETS = new Set([
   "directory",
   "token",
   "agent_grant",
+  "bus_machine",
   "invite",
   "settings",
   "audit",
