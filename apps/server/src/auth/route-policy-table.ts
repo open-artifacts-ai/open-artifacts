@@ -406,6 +406,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // #1567: `oa-bus link` records a proposal with a bus machine token (the
   // handler verifies it: a PAT, an OAuth token or a cookie is 401); the
   // member confirms on the one-time page below, the role confirm's rules.
+  "POST /api/v1/bus/setup": {
+    signed:
+      "bus machine token (oa_machine_), D1; sets the machine's setup_pending mark only (#2561)",
+  },
   "POST /api/v1/bus/links/proposals": {
     signed:
       "bus machine token (oa_machine_), D1; records a proposal only; its member under a plan cap is refused (#1299)",

@@ -310,6 +310,7 @@ export function sessionHello(
       ADAPTER_CAPS.pending,
       ADAPTER_CAPS.follow,
       ADAPTER_CAPS.reach,
+      ADAPTER_CAPS.setup,
     ],
     attest: {
       session_id: session.sessionId,

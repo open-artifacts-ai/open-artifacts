@@ -92,6 +92,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
 - `link_bind {agent_ref, hash}` (`BUS_CAPS.link`, see Session links).
 - `waiting_query {agent_refs}` (`BUS_CAPS.waitingQuery`, up to 64): pending mail for this machine's own away agents.
+- `setup_claim {}` (`BUS_CAPS.setup`, #2561): take this machine's "setup pending" mark, set by a hand-run install (`POST /api/v1/bus/setup`, machine token). Answered by `setup_claimed`.
 
 Hub to client (`SERVER_FRAMES`):
 
@@ -109,6 +110,7 @@ Hub to client (`SERVER_FRAMES`):
 - `link_bound {}`: reply to `link_bind`.
 - `waiting_counts {counts}`: reply to `waiting_query`: `agent_ref` to pending count (1 to 100). A ref that is unknown, live, on another machine or has nothing waiting is omitted.
 - `acked {msg_id}`: reply to a mail `ack` from a socket whose hello listed `ack_confirm` (never to a notice ack). Sent after the receipt is settled, or for an id that can no longer settle (a repeat, unknown, or not this machine's) with the same frame, so it says nothing about the id. Only on the link the ack came in on.
+- `setup_claimed {pending}`: reply to `setup_claim`. `pending` is true for the one claim that took the mark (the hub clears it in the same statement), false for every other.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:

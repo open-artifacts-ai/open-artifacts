@@ -87,6 +87,7 @@ export async function handleToolCall(input: {
       ADAPTER_CAPS.pending,
       ADAPTER_CAPS.follow,
       ADAPTER_CAPS.reach,
+      ADAPTER_CAPS.setup,
     ]);
     let client: DaemonClient;
     try {

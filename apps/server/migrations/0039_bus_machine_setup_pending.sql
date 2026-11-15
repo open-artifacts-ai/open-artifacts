@@ -1,0 +1,1 @@
+ALTER TABLE `bus_machines` ADD `setup_pending` integer DEFAULT 0 NOT NULL;

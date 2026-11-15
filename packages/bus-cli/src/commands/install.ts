@@ -7,6 +7,7 @@ import {
 } from "@oa/bus-adapter-opencode";
 import { codexBinFile } from "@oa/bus-daemon";
 import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
+import { BUS_ROUTES } from "@oa/bus-protocol";
 import { useBusCmd } from "../bus-cmd.ts";
 import {
   askDaemon,
@@ -536,6 +537,22 @@ function harnessesStepDef(opts: InstallOpts, bus: string): Step<Ctx> {
   };
 }
 
+/**
+ * #2561: tells the hub this machine was just installed, so the next session
+ * there that calls `self` asks the person for a name, once. Best effort: an
+ * older hub answers 404, an offline one nothing, and neither stops the install.
+ */
+async function markSetupPending(ctx: Ctx): Promise<void> {
+  const m = readMachine(ctx.home);
+  if (m.state !== "ok" || m.revoked) return;
+  try {
+    await ctx.fetch(new URL(BUS_ROUTES.setup, m.hub), {
+      method: "POST",
+      headers: { authorization: `Bearer ${m.token}` },
+    });
+  } catch {}
+}
+
 /** #1626: `oa-bus` on PATH. Never fails the install: a note at most. */
 function reportShim(ctx: Ctx): void {
   const argv = ctx.service.argv?.();
@@ -632,6 +649,7 @@ async function installRun(
   });
   if (ok && second) say(ctx, "", c.secondBus(ctx.home));
   else if (ok) {
+    await markSetupPending(ctx);
     reportShim(ctx);
     // The shim now exists: what is printed from here on can name oa-bus.
     useBusCmd(ctx);

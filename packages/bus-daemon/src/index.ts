@@ -1316,6 +1316,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubHelloed = false;
   /** The hub's last hello_ok listed BUS_CAPS.ackConfirm: it answers a mail ack with `acked` (#2198). */
   let hubAckConfirm = false;
+  /** The hub's last hello_ok listed BUS_CAPS.setup: `setup_claim` takes this machine's mark (#2561). */
+  let hubSetup = false;
+  /** A mark the hub cleared for us after its asker gave up: the next claim gets it. */
+  let setupHeld = false;
+  /** In-flight setup_claim frames by id; true when the hub gave the mark. */
+  const setupAsks = new Map<string, (pending: boolean) => void>();
   /** Which link's hello_ok started the current Codex ack replay (#2198). */
   let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
@@ -1465,6 +1471,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             codexTaken.confirm(sent);
           return;
         }
+        case "setup_claimed":
+          setupAsks.get(frame.id)?.(frame.pending);
+          return;
         case "waiting_counts":
           waitingAsks.get(frame.id)?.(frame.counts);
           return;
@@ -1486,6 +1495,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
+          hubSetup = frame.caps?.includes(BUS_CAPS.setup) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1570,6 +1580,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubLink = false;
       hubLinkArg = false;
       hubAckConfirm = false;
+      hubSetup = false;
+      setupAsks.clear();
       codexAckIds.clear();
       hubWaitingQuery = false;
       hubHelloed = false;
@@ -1635,6 +1647,35 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!hub.send({ v: 1, id, type: "waiting_query", agent_refs: refs }))
         done(undefined);
     });
+  /** #2561: this machine's "setup pending" mark, once; undefined when the hub cannot be asked. */
+  const claimSetup = (): Promise<boolean> | undefined => {
+    if (setupHeld) {
+      setupHeld = false;
+      return Promise.resolve(true);
+    }
+    if (!hub.open || !hubHelloed || !hubSetup) return undefined;
+    return new Promise<boolean>((resolve) => {
+      const id = frameId();
+      let late = false;
+      const timer = setTimeout(() => {
+        late = true;
+        resolve(false);
+      }, deps.statusRosterMs ?? 1500);
+      timer.unref();
+      setupAsks.set(id, (pending) => {
+        setupAsks.delete(id);
+        clearTimeout(timer);
+        // The hub already cleared it: keep it for the next `self`.
+        if (late) setupHeld = setupHeld || pending;
+        else resolve(pending);
+      });
+      if (!hub.send({ v: 1, id, type: "setup_claim" })) {
+        setupAsks.delete(id);
+        clearTimeout(timer);
+        resolve(false);
+      }
+    });
+  };
   // Another live daemon holds the socket, or the path cannot be bound: a restart cannot fix either.
   const socketInUse = (e: unknown): never => {
     const code = (e as { code?: unknown })?.code;
@@ -2104,6 +2145,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           if (rec) renameFromAdapter(rec, name);
         },
         // The self tool's status: the agent's own row on its roster.
+        claimSetup,
         ownRow: (ref) => {
           const me = agents.byRef(ref);
           if (!me || !hub.open || hubVersion === undefined) return undefined;

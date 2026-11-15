@@ -311,6 +311,22 @@ const WaitingCounts = z.strictObject({
 });
 
 /**
+ * Take this machine's "setup pending" mark (#2561, `BUS_CAPS.setup`). The hub
+ * clears it in the same step, so exactly one claim per install gets `true`.
+ */
+const SetupClaim = z.strictObject({
+  ...base,
+  type: z.literal("setup_claim"),
+});
+
+/** The answer to `setup_claim`: `pending` is true for the one claim that took the mark. */
+const SetupClaimed = z.strictObject({
+  ...base,
+  type: z.literal("setup_claimed"),
+  pending: z.boolean(),
+});
+
+/**
  * The hub has settled the mail ack for `msg_id`, or it can no longer settle
  * (`BUS_CAPS.ackConfirm`). One shape for both, so it says nothing about the id.
  */
@@ -525,6 +541,7 @@ export const CLIENT_FRAMES = [
   "following",
   "link_bind",
   "waiting_query",
+  "setup_claim",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -543,6 +560,7 @@ export const SERVER_FRAMES = [
   "link_bound",
   "waiting_counts",
   "acked",
+  "setup_claimed",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -562,6 +580,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   Following,
   LinkBind,
   WaitingQuery,
+  SetupClaim,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -580,6 +599,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   LinkBound,
   WaitingCounts,
   Acked,
+  SetupClaimed,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -598,6 +618,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Following,
   LinkBind,
   WaitingQuery,
+  SetupClaim,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -614,6 +635,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   LinkBound,
   WaitingCounts,
   Acked,
+  SetupClaimed,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;

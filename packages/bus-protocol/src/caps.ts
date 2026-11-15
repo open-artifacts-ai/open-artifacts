@@ -119,6 +119,13 @@ export const BUS_CAPS = {
    * hub confirmed it, and sends it again on a new link otherwise.
    */
   ackConfirm: "ack_confirm",
+  /**
+   * Setup pending (#2561): the client may send `setup_claim` and decodes
+   * `setup_claimed`. The hub answers only on a socket whose hello listed it
+   * (any other gets `bad_frame`, as an old hub would) and lists it in
+   * `hello_ok.caps`; a client sends it only when it did.
+   */
+  setup: "setup",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

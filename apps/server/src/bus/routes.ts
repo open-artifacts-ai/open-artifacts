@@ -616,6 +616,9 @@ const FIRST_TOUCH = `update bus_machines set last_used_at = ?2
     and exists (select 1 from users u where u.id = bus_machines.user_id
       and u.status = 'active' and u.role in ('owner', 'admin', 'member')
       and u.restricted_manual = 0 and u.restricted_sync = 0)`;
+/** #2561: a hand-run install marks its machine; cleared by the first `self` there (hub.ts). */
+const MARK_SETUP = `update bus_machines set setup_pending = 1
+  where id = ?1 and revoked_at is null`;
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 
 const unauthorized = () =>
@@ -838,6 +841,24 @@ export function mountBus(app: AppType): void {
     busConfigCap(user);
     const body = await jsonBody(c, BusLinkProposeSchema);
     return c.json(await proposeBusLink(c.env, user.id, m.id, body));
+  });
+  // #2561: `oa-bus install` marks "setup pending" for its machine. A machine
+  // token may only set this one flag on its own row; the hub hands the mark to
+  // one session's `self` and clears it.
+  app.post(R.busSetup, async (c) => {
+    if (!busOn(c.env)) throw notFound();
+    const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    if (!isMachineToken(token)) return unauthorized();
+    const m = await stmt(c.env.DB, MACHINE_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<{ id: string; userId: string; revokedAt: number | null }>();
+    if (!m || m.revokedAt !== null) return unauthorized();
+    const user = await getUser(c.env, m.userId);
+    if (!user || !canConnect(user)) return unauthorized();
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    await stmt(c.env.DB, MARK_SETUP).bind(m.id).run();
+    return c.body(null, 204);
   });
   app.put(R.busLinks, async (c) => {
     const user = roleWriter(c);
