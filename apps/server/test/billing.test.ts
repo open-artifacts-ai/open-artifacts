@@ -1265,6 +1265,9 @@ describe("creator count", () => {
       ).status,
     ).toBe(200);
     expect(await creatorsOf(H, month)).not.toContain(viewer.userId);
+    // The member exists first: an address with no row is a guest and is
+    // clamped to commenter (#2590).
+    const editor = await login(`editor-${tag}@a.com`, "member");
     expect(
       (
         await send(R.shares(poll), owner.cookie, {
@@ -1273,7 +1276,6 @@ describe("creator count", () => {
         })
       ).status,
     ).toBe(200);
-    const editor = await login(`editor-${tag}@a.com`, "member");
     expect(
       (
         await send(R.dataDoc(poll, "c", "e"), editor.cookie, {

@@ -1,0 +1,1 @@
+ALTER TABLE `shares` ADD `can_comment` integer DEFAULT 0 NOT NULL;

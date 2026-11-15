@@ -32,6 +32,7 @@ import {
   spaceMembers,
   spaces,
 } from "../db/schema.js";
+import { shareRoleSql } from "../db/share-role.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -188,7 +189,13 @@ export async function accessLevel(
   return loadAccess(env, c, artifactId, opts);
 }
 
-type Access = { level: AccessLevel; artifact: ArtifactRow; personal: boolean };
+type Access = {
+  level: AccessLevel;
+  artifact: ArtifactRow;
+  personal: boolean;
+  /** The caller's own share is a "commenter" one. */
+  commenter: boolean;
+};
 const prefetched = new AsyncLocalStorage<Map<string, Access | null>>();
 const accessKey = (c: Caller, id: string, opts: { allowDeleted?: boolean }) =>
   `${c.kind === "user" ? `u:${c.user.id}:${c.cap ?? ""}` : "anon"}|${id}|${opts.allowDeleted ? 1 : 0}`;
@@ -215,7 +222,7 @@ async function loadAccess(
   const rows = await db
     .select({
       a: artifacts,
-      shareRole: shares.role,
+      shareRole: shareRoleSql(),
       kind: spaces.kind,
       publicLinks: spaces.publicLinks,
       allMembersRole: spaces.allMembersRole,
@@ -246,7 +253,12 @@ async function loadAccess(
   };
   const level = rowLevel(c, row.a, row.shareRole, space, opts);
   return level
-    ? { level, artifact: row.a, personal: space.kind !== "shared" }
+    ? {
+        level,
+        artifact: row.a,
+        personal: space.kind !== "shared",
+        commenter: row.shareRole === "commenter",
+      }
     : null;
 }
 
@@ -289,7 +301,11 @@ export function rowLevel(
     },
     spaceRole: space.role,
     shareRole:
-      shareRole === "viewer" || shareRole === "editor" ? shareRole : null,
+      shareRole === "viewer" ||
+      shareRole === "commenter" ||
+      shareRole === "editor"
+        ? shareRole
+        : null,
     allowDeleted: opts.allowDeleted === true,
   });
 }
@@ -524,6 +540,7 @@ export async function authorize(
   const ctx: CanCtx = {
     ...base,
     personal: r.personal,
+    commenterShare: r.commenter,
     ...opts.ctx,
     anonymous: base.anonymous,
     dataWriters: base.dataWriters,
