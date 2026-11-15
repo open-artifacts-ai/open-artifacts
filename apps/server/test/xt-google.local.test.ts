@@ -103,7 +103,7 @@ async function signsIn(s: Side, claims: Record<string, unknown>) {
   expect(setsSession(r)).toBe(true);
 }
 
-async function refused(r: Response, error: "tenant" | "failed") {
+async function refused(r: Response, error: "tenant" | "failed" | "no_access") {
   expect(r.status).toBe(302);
   expect(setsSession(r)).toBe(false);
   const loc = new URL(r.headers.get("location") ?? "", "http://app.localhost");
