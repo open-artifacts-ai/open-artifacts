@@ -76,9 +76,10 @@ for (const width of [1280, 390])
       await expect(bar).toContainText(
         "Shared by Ada Lovelace · You're a guest",
       );
-      await expect(
-        bar.getByRole("link", { name: "Open Artifacts" }),
-      ).toHaveAttribute("href", "/");
+      const home = bar.getByRole("link", { name: "Open Artifacts" });
+      await expect(home).toHaveAttribute("href", "https://open-artifacts.com");
+      await expect(home).toHaveAttribute("target", "_blank");
+      await expect(home).toHaveAttribute("rel", "noopener");
       // A guest gets the bar, not the breadcrumbs, and no second offer strip.
       await expect(
         page.getByRole("navigation", { name: "Breadcrumb" }),
@@ -86,9 +87,12 @@ for (const width of [1280, 390])
       await axe(page);
       await noSidewaysScroll(page);
       await shot("g1-bar");
-      await bar.getByRole("button", { name: "Guest menu" }).click();
+      await bar.getByRole("button", { name: "Guest options" }).click();
       const item = page.getByRole("menuitem", { name: "Get your own" });
+      // Self-hosted (the mock): the public site, in a new tab.
       await expect(item).toHaveAttribute("href", "https://open-artifacts.com");
+      await expect(item).toHaveAttribute("target", "_blank");
+      await expect(item).toHaveAttribute("rel", "noopener");
       await shot("g2-bar-menu");
     });
 

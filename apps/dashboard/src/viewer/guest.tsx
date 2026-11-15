@@ -12,14 +12,13 @@ import {
 } from "@oa/ui/shadcn";
 import { MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { AppLink } from "../library/AppLink";
-import { SIGNUP_URL } from "./SignupNudge";
 import { ICON, SM } from "./ui";
 
-/** Hosted: sign-up (the waitlist during the beta). No sign-up route in the app yet. */
-export const HOSTED_OFFER_URL = SIGNUP_URL;
-/** Self-hosted: the public site. */
+/** Hosted: sign-up (the waitlist during the beta). OA Product, #2590. */
+export const HOSTED_OFFER_URL = "https://signup.open-artifacts.app/";
+/** Self-hosted, and the bar's "Open Artifacts" link: the public site. */
 export const SELF_HOSTED_OFFER_URL = "https://open-artifacts.com";
+export const OPEN_ARTIFACTS_URL = SELF_HOSTED_OFFER_URL;
 export const offerUrl = (hosted: boolean) =>
   hosted ? HOSTED_OFFER_URL : SELF_HOSTED_OFFER_URL;
 
@@ -33,8 +32,8 @@ export const GUEST = {
     "Open Artifacts is where people and agents share their work. Free for 30 days.",
   getYourOwn: "Get your own",
   notNow: "Not now",
-  /** Not in the issue: the bar menu's name. PROVISIONAL (ask OA Product). */
-  menu: "Guest menu",
+  /** The bar menu's name (OA Product). */
+  menu: "Guest options",
 } as const;
 
 // One non-identifying key: an email in it would leak on a shared device.
@@ -67,12 +66,15 @@ export function GuestBar({
       data-guest-bar=""
       className="flex min-h-10 items-center gap-[14px] border-0 border-b border-border bg-[var(--oa-chrome)] px-5 max-[600px]:gap-3 max-[600px]:px-4 max-[600px]:py-1.5"
     >
-      <AppLink
-        href="/"
-        className="font-semibold whitespace-nowrap text-foreground"
+      {/* The product, not this instance: a new tab, no tracking parameters. */}
+      <a
+        href={OPEN_ARTIFACTS_URL}
+        target="_blank"
+        rel="noopener"
+        className="font-semibold whitespace-nowrap text-foreground no-underline"
       >
         Open Artifacts
-      </AppLink>
+      </a>
       <p className="m-0 min-w-0 flex-1 truncate text-[length:var(--oa-text-sm)] text-muted-foreground max-[600px]:whitespace-normal">
         {sender ? GUEST.bar(sender) : GUEST.barNoSender}
       </p>
@@ -89,11 +91,7 @@ export function GuestBar({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem asChild>
-            <a
-              href={offerUrl(hosted)}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <a href={offerUrl(hosted)} target="_blank" rel="noopener">
               {GUEST.getYourOwn}
             </a>
           </DropdownMenuItem>
@@ -150,11 +148,7 @@ export function GuestOffer({
         </div>
         <div className="flex flex-none items-center gap-2">
           <Button asChild variant="default" size="xs" className={SM}>
-            <a
-              href={offerUrl(hosted)}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <a href={offerUrl(hosted)} target="_blank" rel="noopener">
               {GUEST.getYourOwn}
             </a>
           </Button>

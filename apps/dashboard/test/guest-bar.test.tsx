@@ -2,11 +2,16 @@
 // `sharedBy` on GET R.artifact is PROVISIONAL (OA Backend's draft contract).
 import { R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { act, renderHook, screen, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  renderHook,
+  screen,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  GUEST,
   HOSTED_OFFER_URL,
   offerUrl,
   SELF_HOSTED_OFFER_URL,
@@ -18,12 +23,13 @@ import { FIRST_LOAD_MS } from "./timeouts";
 installHarness();
 
 const NOTES = "De6gHjKmNp7qRsTu";
-const asGuest = (sharedBy: { name: string } | null) =>
+const asGuest = (sharedBy: { name: string } | null, hosted = false) =>
   server.use(
     http.get("*/api/v1/me", () =>
       HttpResponse.json({
         ...fixtures.me,
         user: { ...fixtures.me.user, role: "guest" },
+        instance: { ...fixtures.me.instance, hosted },
       }),
     ),
     http.get(`*${R.artifact(NOTES)}`, () =>
@@ -44,13 +50,29 @@ describe("the guest bar", () => {
       { timeout: FIRST_LOAD_MS },
     );
     const header = bar.closest("[data-guest-bar]") as HTMLElement;
+    const home = within(header).getByRole("link", { name: "Open Artifacts" });
+    expect(home).toHaveAttribute("href", "https://open-artifacts.com");
+    expect(home).toHaveAttribute("target", "_blank");
+    expect(home).toHaveAttribute("rel", "noopener");
     expect(
-      within(header).getByRole("link", { name: "Open Artifacts" }),
-    ).toHaveAttribute("href", "/");
-    expect(
-      within(header).getByRole("button", { name: GUEST.menu }),
+      within(header).getByRole("button", { name: "Guest options" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
+  });
+
+  it("Get your own in the menu: sign-up on hosted, in a new tab", async () => {
+    asGuest({ name: "Ada Lovelace" }, true);
+    mount(`/a/${NOTES}`);
+    const menu = await screen.findByRole(
+      "button",
+      { name: "Guest options" },
+      { timeout: FIRST_LOAD_MS },
+    );
+    fireEvent.pointerDown(menu, { button: 0, pointerType: "mouse" });
+    const item = await screen.findByRole("menuitem", { name: "Get your own" });
+    expect(item).toHaveAttribute("href", "https://signup.open-artifacts.app/");
+    expect(item).toHaveAttribute("target", "_blank");
+    expect(item).toHaveAttribute("rel", "noopener");
   });
 
   it("with no sender, says only that you're a guest", async () => {
@@ -78,9 +100,10 @@ describe("the guest bar", () => {
 
 describe("Get your own", () => {
   it("goes to sign-up when hosted, the public site when self-hosted", () => {
-    expect(offerUrl(true)).toBe(HOSTED_OFFER_URL);
-    expect(offerUrl(false)).toBe(SELF_HOSTED_OFFER_URL);
-    expect(SELF_HOSTED_OFFER_URL).toBe("https://open-artifacts.com");
+    expect(offerUrl(true)).toBe("https://signup.open-artifacts.app/");
+    expect(offerUrl(false)).toBe("https://open-artifacts.com");
+    expect(HOSTED_OFFER_URL).not.toMatch(/[?#]/);
+    expect(SELF_HOSTED_OFFER_URL).not.toMatch(/[?#]/);
   });
 
   describe("after the first comment", () => {
