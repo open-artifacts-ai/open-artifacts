@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.193.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.0...v0.193.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **docs:** old docs give their existing clientIDs to the server ([#2615](https://github.com/open-artifacts-ai/open-artifacts/issues/2615) L2) ([#2617](https://github.com/open-artifacts-ai/open-artifacts/issues/2617)) ([c615f8c](https://github.com/open-artifacts-ai/open-artifacts/commit/c615f8c39baaa75066f03ae9d1dc96c82064f9af))
+
 ## [0.193.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.192.0...v0.193.0) (2026-11-15)
 
 
