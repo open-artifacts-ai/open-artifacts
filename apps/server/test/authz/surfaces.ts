@@ -64,6 +64,12 @@ export type Surface = {
    * throwaway artifact. scripts/authz-probe.ts never runs either.
    */
   mutates?: "data" | "access";
+  /**
+   * An MCP tool the install offers only conditionally (edit_doc, with docs
+   * on). scripts/authz-probe.ts runs the surface only where tools/list shows
+   * it; the local matrix opens the switch, so it always runs there.
+   */
+  offeredTool?: string;
   probe(
     base: string,
     cred: Cred,
@@ -273,6 +279,47 @@ export type ToolOut = {
   text: string;
   structured?: Record<string, unknown>;
 };
+
+/**
+ * The tool names /mcp offers this token (tools/list), or null when it can't
+ * be read (no token, a refusal, an unparsable reply): the caller then runs
+ * every surface rather than hide one.
+ */
+export async function offeredTools(
+  io: ProbeIO | undefined,
+  base: string,
+  cred: Cred,
+): Promise<Set<string> | null> {
+  if (!cred.token) return null;
+  try {
+    const r = await doFetch(
+      io,
+      new Request(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${cred.token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    if (r.status !== 200) return null;
+    const text = await r.text();
+    const json = text.trimStart().startsWith("{")
+      ? text
+      : (text
+          .split("\n")
+          .find((l) => l.startsWith("data:"))
+          ?.slice(5) ?? "");
+    const msg = JSON.parse(json) as { result?: { tools?: { name: string }[] } };
+    const tools = msg.result?.tools;
+    return tools ? new Set(tools.map((t) => t.name)) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** One tools/call on /mcp (stateless JSON-RPC), as the caller's agent token. */
 export async function callTool(
@@ -493,7 +540,9 @@ const mcp = (
   action: SurfaceAction,
   probe: Surface["probe"],
   mutates?: Surface["mutates"],
+  offeredTool?: string,
 ): Surface => ({
+  ...(offeredTool ? { offeredTool } : {}),
   name: `mcp ${name}`,
   action,
   via: "mcp",
@@ -1209,6 +1258,8 @@ export const SURFACES: readonly Surface[] = [
       // check) and never a denial.
       (o) => o.isError && NOT_A_DOC.test(o.text),
     ),
+    undefined,
+    "edit_doc",
   ),
   withReal(
     mcp(

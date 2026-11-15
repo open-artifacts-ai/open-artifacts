@@ -47,6 +47,7 @@ import {
   type Cred,
   ORG_SURFACES,
   type OrgTarget,
+  offeredTools,
   type ProbeIO,
   SPACE_SURFACES,
   type SpaceTarget,
@@ -163,8 +164,16 @@ export async function main(
     if (got !== want) bad.push(`${label}: got ${got}, want ${want}`);
   };
   const only = deps.only ?? (() => true);
+  // Conditionally offered tools (edit_doc, with docs on): run them only where
+  // this install's tools/list shows them, or an install without them reads as
+  // a mismatch. Unreadable: run everything.
+  const withToken = callers.find((c) => file.callers[c]?.token);
+  const offered = withToken
+    ? await offeredTools(io, args.base, file.callers[withToken] as Cred)
+    : null;
   for (const s of SURFACES) {
     if (s.mutates || !only(s.name)) continue;
+    if (s.offeredTool && offered && !offered.has(s.offeredTool)) continue;
     if (s.action === "public.link" && !io.contentBase) continue;
     await Promise.all(
       callers.flatMap((who) =>
