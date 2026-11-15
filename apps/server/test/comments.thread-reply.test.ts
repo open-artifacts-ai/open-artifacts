@@ -147,11 +147,16 @@ const post = (id: string, u: U, body: object) =>
     method: "POST",
     body: { anchor: { kind: "note" }, body: "hello", ...body },
   });
-const reply = (id: string, tid: string, u: U, body: object = {}) =>
-  api(app, R.commentReplies(id, tid), u.cookie, {
+const reply = async (id: string, tid: string, u: U, body: object = {}) => {
+  // #2559: these tests count replies, not the hourly mention limits.
+  await E.DB.prepare(
+    "delete from counters where key like 'notice:mention:%'",
+  ).run();
+  return api(app, R.commentReplies(id, tid), u.cookie, {
     method: "POST",
     body: { body: "again", ...body },
   });
+};
 const threadReplies = () =>
   bus.sent.filter((x) => x.notice.coalesceKey.includes(":thread_reply:"));
 const names = () =>

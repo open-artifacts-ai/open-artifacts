@@ -7,6 +7,7 @@ import {
 } from "@oa/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
+import type { AgentAttr } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
 import {
   type DeliveryOutcome,
@@ -88,12 +89,12 @@ const view = (u: U) => ({ userId: u.userId, short: null, moderator: true });
 const NOTE = { kind: "note" } as const;
 
 /** Owner follows with Claude and Pi, the editor with Codex. */
-async function setup() {
+async function setup(publisher: AgentAttr | null = null) {
   const a = await publish(
     E,
     owner.member,
     { title: "doc", format: "html", content: "<p>x</p>" } as never,
-    null,
+    publisher,
     undefined,
     "create",
   );
@@ -226,7 +227,8 @@ describe("guard 2: a limit on mentions of other people's agents", () => {
     const row = await E.DB.prepare("select n from counters where key = ?")
       .bind(`notice:mention:from:${editor.userId}`)
       .first<{ n: number }>();
-    expect(row?.n).toBe(2);
+    // The mention of Claude, of Pi, and the reply waking Claude as a thread agent.
+    expect(row?.n).toBe(3);
   });
 
   it("a reply over the limit keeps the reply and says so", async () => {
@@ -372,5 +374,116 @@ describe("same person: every path behaves as before (#2559)", () => {
     );
     // Pi by the mention, Claude as a thread agent (thread reply): both U's.
     expect(names()).toEqual(["Claude", "Pi"]);
+  });
+});
+
+// Axe's M1: the paths that wake an agent without an @.
+const LINKED: AgentAttr = {
+  name: "Claude",
+  version: null,
+  identity: {
+    identityId: "id-pub-mg-1",
+    namespace: "ns-o",
+    name: "Claude",
+    kind: "claude-code",
+  },
+};
+const note = (e: Env, id: string, u: U, opts: object = {}) =>
+  addThread(
+    e,
+    art(id),
+    typed(u),
+    view(u),
+    { anchor: NOTE, body: "hi" },
+    { moderator: true, ...opts },
+  ) as Promise<Thread>;
+
+describe("no-@ wakes: page agent, thread reply, follower notice", () => {
+  it("an outsider's plain note on a page the owner's agent published wakes nothing; an insider's does", async () => {
+    const s = await setup(LINKED);
+    const t = await note(OUTSIDE, s.id, editor);
+    expect(t.comments[0]?.body).toBe("hi");
+    expect(bus.sent).toEqual([]);
+    await note(INSIDE, s.id, editor);
+    expect(names()).toEqual(["Claude"]);
+  });
+
+  it("an insider's 11th note in an hour wakes nothing and returns the notice", async () => {
+    const s = await setup(LINKED);
+    for (let i = 0; i < MENTIONS_PER_SENDER_PER_HOUR; i++) {
+      const t = await note(E, s.id, editor);
+      expect(t.comments[0]?.notice).toBeUndefined();
+    }
+    expect(bus.sent).toHaveLength(MENTIONS_PER_SENDER_PER_HOUR);
+    bus.sent = [];
+    const t = await note(E, s.id, editor);
+    expect(t.comments[0]?.notice).toBe(TOO_MANY_MENTIONS);
+    expect(t.comments[0]?.body).toBe("hi");
+    expect(bus.sent).toEqual([]);
+  });
+
+  it("a note on the sender's own agent's page is never limited", async () => {
+    const s = await setup(LINKED);
+    await setCount(
+      `notice:mention:from:${owner.userId}`,
+      MENTIONS_PER_SENDER_PER_HOUR,
+    );
+    const t = await note(E, s.id, owner);
+    expect(t.comments[0]?.notice).toBeUndefined();
+    expect(names()).toEqual(["Claude"]);
+  });
+
+  it("a thread reply wakes the thread's agents of another person: not for an outsider, limited for an insider", async () => {
+    const s = await setup();
+    const root = () => post(E, s.id, typed(owner), owner, [s.claude]);
+    const reply = (e: Env, id: string, tid: string) =>
+      addReply(
+        e,
+        id,
+        tid,
+        typed(editor),
+        view(editor),
+        "r",
+        {},
+        { moderator: true },
+      );
+    const isReply = () =>
+      bus.sent.filter((x) => x.notice.coalesceKey.includes(":thread_reply:"));
+    const t1 = await root();
+    bus.sent = [];
+    await reply(OUTSIDE, s.id, t1.id);
+    expect(isReply()).toEqual([]);
+    const t2 = await root();
+    bus.sent = [];
+    const ok = await reply(INSIDE, s.id, t2.id);
+    expect(isReply().map((x) => x.notice.to.name)).toEqual(["Claude"]);
+    expect(ok.notice).toBeUndefined();
+    const t3 = await root();
+    bus.sent = [];
+    await setCount(
+      `notice:mention:from:${editor.userId}`,
+      MENTIONS_PER_SENDER_PER_HOUR,
+    );
+    const over = await reply(E, s.id, t3.id);
+    expect(over.notice).toBe(TOO_MANY_MENTIONS);
+    expect(isReply()).toEqual([]);
+  });
+
+  it("a follower notice: not for an outsider, limited per receiving person", async () => {
+    const s = await setup();
+    const after = { after: { version: 1 } };
+    await note(OUTSIDE, s.id, owner, after);
+    expect(bus.sent).toEqual([]);
+    await setCount(
+      `notice:mention:to:${editor.userId}`,
+      MENTIONS_PER_RECEIVER_PER_HOUR,
+    );
+    await note(E, s.id, owner, after);
+    expect(bus.sent).toEqual([]);
+    await E.DB.prepare("delete from counters where key like 'notice:%'").run();
+    await note(E, s.id, owner, after);
+    expect(bus.sent.map((x) => [x.notice.kind, x.notice.to.name])).toEqual([
+      ["commented", "Codex"],
+    ]);
   });
 });

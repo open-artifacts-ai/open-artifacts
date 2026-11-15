@@ -1018,29 +1018,33 @@ export type Announce = {
 };
 
 /** Followers hear of a new comment (once, never the author's own agents); never throws. */
-const announce = (
+const announce = async (
   env: Env,
   artifactId: string,
   who: CommentWho,
   after: Announce | undefined,
   /** The comment's mentions and ask: those agents already heard of it. */
   r?: Resolved,
-) =>
-  // #2559: only a person typing tells other people's follower agents; an
-  // agent's or a token's comment tells nobody else (the author's own agents never hear it).
-  after && typedByPerson(who)
-    ? inBackground(
-        after.ctx,
-        notifyCommented(
-          env,
-          artifactId,
-          after.version,
-          who.kind === "user" ? who.id : null,
-          Date.now(),
-          new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
-        ),
-      )
-    : undefined;
+) => {
+  // #2559: only a person typing tells other people's follower agents (the
+  // author's own agents never hear it), not an outside member, and each one
+  // told takes a slot from the mention limits (over them, it is not told).
+  if (!after || !typedByPerson(who) || who.kind !== "user") return;
+  if (await isOutsideMember(env, who.id)) return;
+  const senderId = who.id;
+  return inBackground(
+    after.ctx,
+    notifyCommented(
+      env,
+      artifactId,
+      after.version,
+      who.id,
+      Date.now(),
+      new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
+      (receiverId) => takeMentionSlot(env, senderId, receiverId),
+    ),
+  );
+};
 
 /** Emails the people a new thread or reply concerns (#1467), after the response; never throws. */
 const emailPeople = (
@@ -1547,11 +1551,16 @@ async function addThreadInner(
       ? await pagePublisher(env, a, who)
       : null;
   // #2559: an agent's or a token's note never wakes another person's page agent.
-  const page =
-    page0 &&
-    (typedByPerson(who) || (who.kind === "user" && page0.userId === who.id))
-      ? page0
-      : null;
+  let page: RosterAgent | null = null;
+  if (page0 && who.kind === "user") {
+    if (page0.userId === who.id) page = page0;
+    else if (typedByPerson(who)) {
+      // Another person's page agent: not for an outside member, and under the mention limits.
+      if (await isOutsideMember(env, who.id)) page = null;
+      else if (await takeMentionSlot(env, who.id, page0.userId)) page = page0;
+      else r0.notice = TOO_MANY_MENTIONS;
+    }
+  }
   if (page) {
     r0.extras = { ...r0.extras, mentions: [storedAgent(page)] };
     r0.agents.push({ agent: page, kind: "mention" });
@@ -1710,6 +1719,8 @@ async function threadReply(
   c: StoredComment,
   r: Resolved,
   viewer: CommentViewer,
+  /** #2559: told when a reply's wake is held back by the mention limits. */
+  limited?: () => void,
 ): Promise<StoredComment> {
   // Members only (#1900, #1968): never an agent, a signed-out visitor, a guest
   // or a guest-role member.
@@ -1730,8 +1741,18 @@ async function threadReply(
     const users = new Map<string, boolean>();
     // #2559: a comment not typed by a person wakes only its author's own agents.
     const typed = isTyped(c.author);
+    let outside: boolean | undefined;
     for (const p of due) {
-      if (!typed && p.owner !== c.author.ref) continue;
+      if (p.owner !== c.author.ref) {
+        if (!typed) continue;
+        // Another person's agent: not for an outside member, and under the mention limits.
+        outside ??= await isOutsideMember(env, c.author.ref);
+        if (outside) continue;
+        if (!(await takeMentionSlot(env, c.author.ref, p.owner))) {
+          limited?.();
+          continue;
+        }
+      }
       let ok = users.get(p.owner);
       if (ok === undefined) {
         const user = await getUser(env, p.owner);
@@ -1888,7 +1909,9 @@ async function addReplyInner(
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   // #1900: a person's reply also tells the thread's other agents, once each.
-  c = await threadReply(env, a, threadId, c, r, viewer);
+  c = await threadReply(env, a, threadId, c, r, viewer, () => {
+    r = { ...r, notice: TOO_MANY_MENTIONS };
+  });
   const withNotice = (v: Comment): Comment =>
     r.notice ? { ...v, notice: r.notice } : v;
   if (r.agents.length === 0 && r.mentions.length === 0) {
