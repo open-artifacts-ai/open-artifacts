@@ -1,4 +1,6 @@
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { markLive } from "@oa/bus-daemon";
 import { copyFor, useBusCmd } from "./bus-cmd.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
@@ -45,6 +47,13 @@ export async function main(
     sayErr(ctx, ctx.copy.usage(e instanceof Error ? e.message : String(e)));
     return 2;
   }
+  // A long-running process says which version folder it runs from (#2552).
+  if (
+    !TERMINAL.has(cmd.cmd) &&
+    cmd.cmd !== "install" &&
+    cmd.cmd !== "uninstall"
+  )
+    markLive(fileURLToPath(import.meta.url));
   const ctx = makeCtx(cmd.noColor);
   if (cmd.home) ctx.home = resolve(cmd.home);
   // A moved home no harness config points at gets `login --home` hints (#2425).

@@ -8,9 +8,9 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   statSync,
   symlinkSync,
-  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +19,8 @@ import { describe, expect, it } from "vitest";
 import {
   currentVersion,
   installVersion,
-  type LiveProc,
+  inUse,
+  markLive,
   migrate,
   prune,
   readState,
@@ -127,62 +128,61 @@ describe("versioned layout (#2552)", () => {
     mkdirSync(join(h, "versions", ".stage.4243"));
     const removed = prune(h, ["2.0.0", "1.0.0"], {
       alive: (pid) => pid === 4242,
-      procs: () => [],
     });
     expect(removed.sort()).toEqual([".stage.4243", "0.9.0"]);
     expect(versions(h)).toEqual([".stage.4242", "1.0.0", "2.0.0"]);
-    expect(
-      prune(h, [undefined, "2.0.0"], { alive: () => true, procs: () => [] }),
-    ).toEqual(["1.0.0"]);
+    expect(prune(h, [undefined, "2.0.0"], { alive: () => true })).toEqual([
+      "1.0.0",
+    ]);
   });
 
-  it("prune leaves a folder a live process runs from, then removes it once it is gone (N1)", () => {
+  it("prune leaves a folder with a live .live/<pid> marker, then removes it once the pid is gone (N1)", () => {
     const h = home();
-    for (const [i, v] of ["1.0.0", "2.0.0", "3.0.0"].entries()) {
-      installVersion(h, v, put(v), { procs: () => [] });
-      // Folder times as install order, a minute apart.
-      const t = new Date(Date.UTC(2026, 0, 1, 0, i));
-      utimesSync(versionDir(h, v), t, t);
-    }
-    // 1.0.0 was pruned at install (nothing ran it). Rebuild the case.
-    mkdirSync(versionDir(h, "0.5.0"));
-    const t0 = new Date(Date.UTC(2025, 11, 31));
-    utimesSync(versionDir(h, "0.5.0"), t0, t0);
+    installVersion(h, "2.0.0", put("2.0.0"));
+    installVersion(h, "3.0.0", put("3.0.0"));
+    const old = versionDir(h, "0.5.0");
+    mkdirSync(join(old, ".live"), { recursive: true });
+    writeFileSync(join(old, ".live", "4242"), "");
+    writeFileSync(join(old, ".live", "9999"), "");
     const keep = ["3.0.0", "2.0.0"];
-    const at = (min: number) => Date.UTC(2026, 0, 1, 0, min) - 30_000;
-    // A session started via bin while 0.5.0 was current (before 2.0.0's folder... window ends at 2.0.0).
-    const sessions: LiveProc[] = [
-      {
-        pid: 9,
-        startMs: Date.UTC(2025, 11, 31, 1),
-        cmd: `node ${join(h, "bin")}/dist/index.js mcp`,
-      },
-    ];
-    expect(prune(h, keep, { procs: () => sessions })).not.toContain("0.5.0");
-    expect(existsSync(versionDir(h, "0.5.0"))).toBe(true);
-    // A command line naming the folder itself also holds it.
-    expect(
-      prune(h, keep, {
-        procs: () => [
-          { pid: 8, startMs: 0, cmd: `node ${versionDir(h, "0.5.0")}/x` },
-        ],
-      }),
-    ).toEqual([]);
-    // Processes that cannot be listed: nothing goes.
-    expect(prune(h, keep, { procs: () => undefined })).toEqual([]);
-    // A bin session that started later (ran a kept version) does not hold it.
-    expect(
-      prune(h, keep, {
-        procs: () => [
-          {
-            pid: 7,
-            startMs: at(5),
-            cmd: `node ${join(h, "bin")}/dist/index.js`,
-          },
-        ],
-      }),
-    ).toEqual(["0.5.0"]);
+    expect(prune(h, keep, { alive: (p) => p === 4242 })).toEqual([]);
+    expect(existsSync(old)).toBe(true);
+    // Only dead pids left: it goes, markers and all.
+    expect(prune(h, keep, { alive: () => false })).toEqual(["0.5.0"]);
     expect(versions(h)).toEqual(["2.0.0", "3.0.0"]);
+  });
+
+  it("prune keeps a folder whose .live cannot be read", () => {
+    if (process.getuid?.() === 0) return;
+    const h = home();
+    installVersion(h, "2.0.0", put("2.0.0"));
+    const old = versionDir(h, "0.5.0");
+    mkdirSync(join(old, ".live"), { recursive: true });
+    chmodSync(join(old, ".live"), 0o000);
+    try {
+      expect(prune(h, ["2.0.0"], { alive: () => false })).toEqual([]);
+      expect(existsSync(old)).toBe(true);
+    } finally {
+      chmodSync(join(old, ".live"), 0o700);
+    }
+  });
+
+  it("markLive writes versions/<v>/.live/<pid> (0600) for a bundle under versions/", () => {
+    const h = home();
+    installVersion(h, "1.0.0", (d) => {
+      put("1.0.0")(d);
+      mkdirSync(join(d, "dist"));
+      writeFileSync(join(d, "dist/index.js"), "");
+    });
+    // Reached through the bin link: the real path decides.
+    const m = markLive(join(h, "bin/dist/index.js"), 4321);
+    expect(realpathSync(m as string)).toBe(
+      realpathSync(join(h, "versions/1.0.0/.live/4321")),
+    );
+    expect(statSync(m as string).mode & 0o777).toBe(0o600);
+    expect(inUse(versionDir(h, "1.0.0"), (p) => p === 4321)).toBe(true);
+    // Not under versions/: nothing written, no throw.
+    expect(markLive(join(tmpdir(), "nowhere.js"), 1)).toBeUndefined();
   });
 
   it("prune refuses a versions folder others can write", () => {
