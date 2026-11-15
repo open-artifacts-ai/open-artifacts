@@ -106,6 +106,14 @@ function Shell({
   );
 }
 
+/**
+ * PLACEHOLDER (#2590, for OA Product; the issue's Strings have no line for
+ * it): Google turned this guest away (the address isn't a Google account
+ * the server can trust for it), so they log in with an emailed code.
+ */
+export const NEEDS_CODE =
+  "We couldn't log you in with Google for this address. We'll email you a code instead.";
+
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
   error: SignInError,
@@ -131,6 +139,8 @@ const errorCopy = (
           : "You don't have access here yet. Ask an admin to invite you, then try again.";
     case "expired":
       return "Login took too long. Try again.";
+    case "needs_code":
+      return NEEDS_CODE;
     default:
       return "Login didn't work. Try again.";
   }
@@ -211,10 +221,13 @@ function HostedSignIn({
   next,
   method,
   via,
+  email: prefill,
 }: {
   providers: AuthProviders;
   error: SignInError | null;
   next: string;
+  /** #2590: the address a needs_code redirect named. */
+  email?: string;
   method?: "code";
   /** Which sign-in refused a no_access. */
   via?: "access" | "google";
@@ -297,6 +310,29 @@ function HostedSignIn({
     );
 
   const guests = email?.guests ? email : undefined;
+
+  // #2590: Google turned a guest away (needs_code): the code form, with the
+  // address the server named, and a note instead of an error.
+  if (error === "needs_code" && email)
+    return (
+      <>
+        <h1>Log in to {name}</h1>
+        {step === "email" && (
+          <div className="mb-4">
+            <Notice tone="info">{NEEDS_CODE}</Notice>
+          </div>
+        )}
+        <CodeSignIn
+          next={next}
+          turnstileSiteKey={email.turnstileSiteKey}
+          googleHref={googleHref}
+          onStep={onStep}
+          variant="guest"
+          initialEmail={prefill}
+          submitLabel="Email me a code"
+        />
+      </>
+    );
 
   // The guest code page: email step, then the code step.
   if (guests && method === "code")
@@ -384,11 +420,14 @@ export function SignIn({
   next,
   method,
   via,
+  email,
 }: {
   error?: string;
   next?: string;
   method?: string;
   via?: "access" | "google";
+  /** #2590: the address to prefill after error=needs_code (already off the URL). */
+  email?: string;
 }) {
   useDocumentTitle("Log in");
   const providers = useAuthProviders();
@@ -425,6 +464,7 @@ export function SignIn({
         next={safeNext(next)}
         method={method === "code" ? "code" : undefined}
         via={via}
+        email={email}
       />
     </Shell>
   );

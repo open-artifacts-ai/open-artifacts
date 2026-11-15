@@ -129,6 +129,8 @@ export function CodeSignIn({
   googleHref,
   onStep,
   variant = "trial",
+  initialEmail,
+  submitLabel,
 }: {
   /** Already through `safeNext`. */
   next: string;
@@ -140,9 +142,13 @@ export function CodeSignIn({
   onStep?: (step: "email" | "code") => void;
   /** "trial": codes are the main way in. "guest": the `?method=code` page next to Google. */
   variant?: "trial" | "guest";
+  /** #2590: the address to start with (a guest Google refused). */
+  initialEmail?: string;
+  /** The send button's words, when the page names them. */
+  submitLabel?: string;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail ?? "");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -463,7 +469,7 @@ export function CodeSignIn({
         disabled={busy || held}
         aria-describedby={notice ? HELD_ID : undefined}
       >
-        {variant === "guest" ? "Send code" : "Email me a code"}
+        {submitLabel ?? (variant === "guest" ? "Send code" : "Email me a code")}
       </Button>
     </form>
   );
