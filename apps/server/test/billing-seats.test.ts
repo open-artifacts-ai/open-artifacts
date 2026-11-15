@@ -2,7 +2,7 @@
 // /seats after every write that can move the count, and the daily tick.
 import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
 import { ROUTE_POLICY } from "../src/auth/route-policy-table.js";
 import {
@@ -242,6 +242,55 @@ describe("billing's outcome", () => {
     await run(t0 + 2 * SEATS_DAILY_MS);
     await run(t0 + 2 * SEATS_DAILY_MS + 120_000);
     expect(seatCalls().length).toBe(4);
+  });
+});
+
+describe("billing from before #2580", () => {
+  afterEach(() => {
+    fake.legacy = false;
+  });
+
+  it("checkout retries once without members, with a fresh ts", async () => {
+    fake.legacy = true;
+    const r = await send(props, R.billingCheckout, owner.cookie, {
+      method: "POST",
+      body: { tier: "team" },
+    });
+    expect(r.status).toBe(200);
+    const co = fake.calls.filter((c) => c.path === "/checkout");
+    expect(co.map((c) => c.status)).toEqual([400, 200]);
+    expect(co[0]?.body).toHaveProperty("members");
+    expect(co[1]?.body).not.toHaveProperty("members");
+    expect(co[1]?.body).toMatchObject({
+      plan: "team",
+      creators: expect.any(Number),
+    });
+    expect(Number(co[1]?.body?.ts)).toBeGreaterThan(Number(co[0]?.body?.ts));
+  });
+
+  it("a yearly checkout (seats and members) falls back the same way", async () => {
+    fake.legacy = true;
+    const r = await send(props, R.billingCheckout, owner.cookie, {
+      method: "POST",
+      body: { tier: "team", interval: "year", seats: 3 },
+    });
+    // Yearly carries members too: it falls back the same way.
+    expect(r.status).toBe(200);
+    expect(
+      fake.calls.filter((c) => c.path === "/checkout").map((c) => c.status),
+    ).toEqual([400, 200]);
+  });
+
+  it("/seats 404 is settled: no soon retry, nothing thrown", async () => {
+    fake.legacy = true;
+    const run = (at: number) =>
+      withBrokerProps({ props }, () => reportSeats(H, at, true));
+    const t0 = Date.now();
+    await run(t0);
+    await run(t0 + 120_000);
+    expect(seatCalls().length).toBe(1);
+    await run(t0 + SEATS_DAILY_MS + 1);
+    expect(seatCalls().length).toBe(2);
   });
 });
 

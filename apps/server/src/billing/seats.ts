@@ -37,20 +37,42 @@ export const SEATS_DAILY_MS = 23 * 3_600_000;
  */
 export async function sendSeats(env: Env, now: number): Promise<number> {
   const members = await memberCount(env);
-  const raw = await billingCall(env, SEATS_PATH, { members }, now);
+  let raw: unknown;
+  try {
+    raw = await billingCall(env, SEATS_PATH, { members }, now);
+  } catch (e) {
+    // Billing from before #2580 has no /seats (404) or refuses it (400
+    // bad_body): settled, never retried soon; logged once a day at most.
+    if (
+      !(e instanceof BillingUnavailableError) ||
+      !(e.why === "http_404" || (e.why === "http_400" && e.code === "bad_body"))
+    )
+      throw e;
+    const prev = await lastSent(env);
+    if (!prev || now - prev.at >= SEATS_DAILY_MS)
+      logWarn("billing_seats_unsupported", undefined, { why: e.why });
+    await saveSent(env, members, now, true);
+    return members;
+  }
   const r = BillingSeatsSchema.safeParse(raw);
   if (!r.success) throw new BillingUnavailableError("bad_answer");
+  await saveSent(env, members, now, r.data.retry !== true);
+  logInfo("billing_seats", { members, applied: r.data.applied });
+  return members;
+}
+
+async function saveSent(
+  env: Env,
+  members: number,
+  at: number,
+  ok: boolean,
+): Promise<void> {
   await env.DB.prepare(
     `insert into settings (key, value) values (?1, ?2)
      on conflict (key) do update set value = excluded.value`,
   )
-    .bind(
-      SEATS_SENT_KEY,
-      JSON.stringify({ members, at: now, ok: r.data.retry !== true }),
-    )
+    .bind(SEATS_SENT_KEY, JSON.stringify({ members, at, ok }))
     .run();
-  logInfo("billing_seats", { members, applied: r.data.applied });
-  return members;
 }
 
 async function lastSent(

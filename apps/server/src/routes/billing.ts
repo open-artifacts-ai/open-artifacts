@@ -76,18 +76,36 @@ async function stripeUrl(
 ): Promise<BillingUrl> {
   // One `now` for both tries: the same signed body (billing's session key
   // includes ts), so a retry finds the request Stripe was still running.
-  const now = Date.now();
+  let now = Date.now();
   const call = () => billingCall(c.env, path, fields, now);
   try {
     let answer: unknown;
     try {
-      answer = await call();
+      try {
+        answer = await call();
+      } catch (e) {
+        // Billing's 503 retry (Stripe 409, the same request in progress): one
+        // more try after a short backoff, then billing_unavailable.
+        if (!(e instanceof BillingUnavailableError) || e.why !== "retry")
+          throw e;
+        await billingRetry.wait(billingRetry.backoffMs);
+        answer = await call();
+      }
     } catch (e) {
-      // Billing's 503 retry (Stripe 409, the same request in progress): one
-      // more try after a short backoff, then billing_unavailable.
-      if (!(e instanceof BillingUnavailableError) || e.why !== "retry") throw e;
-      await billingRetry.wait(billingRetry.backoffMs);
-      answer = await call();
+      // Billing from before #2580 refuses a key it does not know (400
+      // bad_body): once more without `members`, with a fresh ts.
+      if (
+        !(e instanceof BillingUnavailableError) ||
+        e.why !== "http_400" ||
+        e.code !== "bad_body" ||
+        !("members" in fields)
+      )
+        throw e;
+      logWarn("billing_checkout_members_refused", undefined, { route: path });
+      const { members: _members, ...rest } = fields;
+      const sameNow = now;
+      now = Math.max(Date.now(), sameNow + 1);
+      answer = await billingCall(c.env, path, rest, now);
     }
     const r = UrlAnswerSchema.safeParse(answer);
     if (!r.success) throw new BillingUnavailableError("bad_answer");
