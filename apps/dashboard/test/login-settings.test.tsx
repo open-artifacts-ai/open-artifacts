@@ -314,7 +314,7 @@ describe("the domain join", () => {
       name: "Stop letting acme.com join by itself?",
     });
     expect(d).toHaveTextContent(
-      "New people at acme.com will need an invite. The 14 members at acme.com keep their access. Remove anyone in Members.",
+      "New people at acme.com will need an invite. The 14 people at acme.com keep their access. Remove anyone in Members.",
     );
     fireEvent.click(within(d).getByRole("button", { name: "Turn off" }));
     expect(
@@ -352,14 +352,14 @@ describe("the domain join", () => {
       "New people at acme.com will need an invite. Remove anyone in Members.",
     );
     expect(DOMAIN_OFF.body("acme.com", 14)).toBe(
-      "New people at acme.com will need an invite. The 14 members at acme.com keep their access. Remove anyone in Members.",
+      "New people at acme.com will need an invite. The 14 people at acme.com keep their access. Remove anyone in Members.",
     );
     expect(DOMAIN_OFF.body("acme.com", 1)).toContain(
-      "The 1 member at acme.com keeps their access.",
+      "The 1 person at acme.com keeps their access.",
     );
     expect(
       DOMAIN_OFF.body("acme.com", 3, domainList(["acme.com", "acme.io"])),
-    ).toContain("The 3 members at acme.com and acme.io keep their access.");
+    ).toContain("The 3 people at acme.com and acme.io keep their access.");
   });
 
   it("turning on (L2) sends only the provable domain, never the list", () => {

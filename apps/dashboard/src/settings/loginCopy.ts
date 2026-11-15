@@ -86,9 +86,9 @@ export const DOMAIN_OFF = {
     [
       `New people at ${d} will need an invite.`,
       joined === 1
-        ? `The 1 member at ${at} keeps their access.`
+        ? `The 1 person at ${at} keeps their access.`
         : joined
-          ? `The ${joined} members at ${at} keep their access.`
+          ? `The ${joined} people at ${at} keep their access.`
           : null,
       "Remove anyone in Members.",
     ]
