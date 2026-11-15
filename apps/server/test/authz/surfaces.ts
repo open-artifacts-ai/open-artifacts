@@ -321,6 +321,30 @@ export async function offeredTools(
   }
 }
 
+/**
+ * A tool tools/list does not offer: every caller must get the unknown-tool
+ * answer ("unknown_tool"), a refused or absent token included (it never
+ * reaches the lookup). A tool hidden from the list but still callable shows
+ * up as "callable".
+ */
+export async function hiddenToolAnswer(
+  io: ProbeIO | undefined,
+  base: string,
+  cred: Cred,
+  name: string,
+): Promise<"unknown_tool" | "callable"> {
+  const unknown = /unknown tool|tool [\w-]+ not found|method not found/i;
+  let o: ToolOut;
+  try {
+    o = await callTool(io, base, cred, name, { id: SOME_ID });
+  } catch (e) {
+    // /mcp's JSON-RPC error for a tool it does not have.
+    return unknown.test((e as Error).message) ? "unknown_tool" : "callable";
+  }
+  if (DENY_MCP.has(o.http)) return "unknown_tool";
+  return o.isError && unknown.test(o.text) ? "unknown_tool" : "callable";
+}
+
 /** One tools/call on /mcp (stateless JSON-RPC), as the caller's agent token. */
 export async function callTool(
   io: ProbeIO | undefined,

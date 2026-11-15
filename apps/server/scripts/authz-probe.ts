@@ -45,6 +45,7 @@ import {
 } from "../test/authz/expect.ts";
 import {
   type Cred,
+  hiddenToolAnswer,
   ORG_SURFACES,
   type OrgTarget,
   offeredTools,
@@ -164,16 +165,33 @@ export async function main(
     if (got !== want) bad.push(`${label}: got ${got}, want ${want}`);
   };
   const only = deps.only ?? (() => true);
-  // Conditionally offered tools (edit_doc, with docs on): run them only where
-  // this install's tools/list shows them, or an install without them reads as
-  // a mismatch. Unreadable: run everything.
+  // Conditionally offered tools (edit_doc, with docs on): where tools/list
+  // does not show one, every caller must get the unknown-tool answer (a tool
+  // hidden but still callable is a mismatch). Unreadable list: the normal run.
   const withToken = callers.find((c) => file.callers[c]?.token);
   const offered = withToken
     ? await offeredTools(io, args.base, file.callers[withToken] as Cred)
     : null;
   for (const s of SURFACES) {
     if (s.mutates || !only(s.name)) continue;
-    if (s.offeredTool && offered && !offered.has(s.offeredTool)) continue;
+    if (s.offeredTool && offered && !offered.has(s.offeredTool)) {
+      const hidden = s.offeredTool;
+      await Promise.all(
+        callers.flatMap((who) =>
+          arts.map((art) =>
+            check(`${s.name} ${who} ${art}`, "unknown_tool", () =>
+              hiddenToolAnswer(
+                io,
+                args.base,
+                file.callers[who] as Cred,
+                hidden,
+              ),
+            ),
+          ),
+        ),
+      );
+      continue;
+    }
     if (s.action === "public.link" && !io.contentBase) continue;
     await Promise.all(
       callers.flatMap((who) =>
