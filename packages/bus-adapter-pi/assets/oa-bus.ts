@@ -1123,7 +1123,15 @@ function open(
         // #1525: and a config file that is pending approval.
         // #1635: and may send a rename.
         // #1856: and may send a link_proof.
-        caps: ["mailbox", "pending", "rename", "follow", "reach", "link"],
+        caps: [
+          "mailbox",
+          "pending",
+          "rename",
+          "follow",
+          "reach",
+          "link",
+          "setup",
+        ],
         bind_token: bindTokens.get(id.ref),
         attest: start ? { proc_start: start } : {},
       }),

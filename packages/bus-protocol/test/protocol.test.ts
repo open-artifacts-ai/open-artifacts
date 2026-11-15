@@ -169,6 +169,7 @@ describe("frames", () => {
       "following",
       "link_bind",
       "waiting_query",
+      "setup_claim",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -187,6 +188,7 @@ describe("frames", () => {
       "link_bound",
       "waiting_counts",
       "acked",
+      "setup_claimed",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {

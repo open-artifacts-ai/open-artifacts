@@ -7,6 +7,7 @@ import {
 } from "@oa/bus-adapter-opencode";
 import { codexBinFile } from "@oa/bus-daemon";
 import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
+import { BUS_ROUTES } from "@oa/bus-protocol";
 import { useBusCmd } from "../bus-cmd.ts";
 import {
   askDaemon,
@@ -536,6 +537,40 @@ function harnessesStepDef(opts: InstallOpts, bus: string): Step<Ctx> {
   };
 }
 
+const machineToken = (ctx: Ctx): string | undefined => {
+  const m = readMachine(ctx.home);
+  return m.state === "ok" && !m.revoked ? m.token : undefined;
+};
+
+const SETUP_MARK_TIMEOUT_MS = 10_000;
+
+/** Harnesses wired right now (a state other than a BAD one). */
+const wiredNow = async (ctx: Ctx): Promise<Set<string>> =>
+  new Set(
+    Object.entries(await harnessStates(ctx))
+      .filter(([, st]) => !BAD.has(st as string))
+      .map(([h]) => h),
+  );
+
+/**
+ * #2561: tells the hub this machine was just installed, so the next session
+ * there that calls `self` asks the person for a name, once. Best effort: an
+ * older hub answers 404, an offline one nothing (it times out), and neither
+ * stops the install. Called only for a new machine or a newly wired harness,
+ * never for a plain rerun or upgrade.
+ */
+async function markSetupPending(ctx: Ctx): Promise<void> {
+  const m = readMachine(ctx.home);
+  if (m.state !== "ok" || m.revoked) return;
+  try {
+    await ctx.fetch(new URL(BUS_ROUTES.setup, m.hub), {
+      method: "POST",
+      headers: { authorization: `Bearer ${m.token}` },
+      signal: AbortSignal.timeout(SETUP_MARK_TIMEOUT_MS),
+    });
+  } catch {}
+}
+
 /** #1626: `oa-bus` on PATH. Never fails the install: a note at most. */
 function reportShim(ctx: Ctx): void {
   const argv = ctx.service.argv?.();
@@ -626,12 +661,22 @@ async function installRun(
     }
     return results.every((r) => r.state === "done") ? 0 : 1;
   }
+  const before = second
+    ? undefined
+    : { token: machineToken(ctx), wired: await wiredNow(ctx) };
   const ok = await runSteps(steps, ctx, {
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
   if (ok && second) say(ctx, "", c.secondBus(ctx.home));
   else if (ok) {
+    // A new machine token, or a harness wired that was not before.
+    if (
+      before &&
+      (machineToken(ctx) !== before.token ||
+        [...(await wiredNow(ctx))].some((h) => !before.wired.has(h)))
+    )
+      await markSetupPending(ctx);
     reportShim(ctx);
     // The shim now exists: what is printed from here on can name oa-bus.
     useBusCmd(ctx);

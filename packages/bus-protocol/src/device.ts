@@ -44,6 +44,13 @@ export const BUS_ROUTES = {
    * `proposal_limit`, `no_bus`.
    */
   reachProposals: "/api/v1/bus/reach/proposals",
+  /**
+   * `POST`, `Authorization: Bearer oa_machine_...`, no body (#2561): a
+   * hand-run `oa-bus install` marks "setup pending" for this machine; 204.
+   * The hub hands the mark to one session's `self` (`BUS_CAPS.setup`) and
+   * clears it. An older hub answers 404, which the installer ignores.
+   */
+  setup: "/api/v1/bus/setup",
 } as const;
 
 /** Most namespaces one reach proposal names; equals BUS_REACH_PER_ROLE in @oa/shared (a server test pins the two). */

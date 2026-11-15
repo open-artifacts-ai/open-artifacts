@@ -594,10 +594,10 @@ describe("install: transcript states 2 to 6", () => {
     expect(await run(ctx)).toBe(0);
     const [block] = transcript("## 5. Already registered");
     expect(ctx.out().slice(0, 8)).toEqual((block as string[]).slice(0, 8));
-    // Nothing is fetched from the hub here; the only call is the skill file the
-    // installer writes for the harnesses it already configured.
+    // Nothing is fetched from the hub here but the skill file the installer
+    // writes for the harnesses it already configured, and the #2561 mark.
     for (const call of vi.mocked(ctx.fetch).mock.calls)
-      expect(String(call[0])).toContain("/skill.md");
+      expect(String(call[0])).toMatch(/\/skill\.md|\/api\/v1\/bus\/setup$/);
   });
 
   it("6: retries /device/code at 2, 4 and 8 s, then succeeds", async () => {
@@ -1059,5 +1059,79 @@ describe("install: the Claude Code output style (#1970, #2095)", () => {
     expect(readFileSync(settings, "utf8")).toBe(
       '{"outputStyle":"Explanatory"}\n',
     );
+  });
+});
+
+describe("install marks setup pending (#2561)", () => {
+  const setupCalls = (ctx: Fake) =>
+    vi
+      .mocked(ctx.fetch)
+      .mock.calls.filter((c) => String(c[0]).endsWith("/api/v1/bus/setup"));
+
+  it("POSTs the machine token to the hub after a successful install", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    expect(await run(ctx)).toBe(0);
+    const calls = setupCalls(ctx);
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]?.[0])).toBe(`${HUB}/api/v1/bus/setup`);
+    expect(calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(ctx.out().join("\n")).not.toContain(TOKEN);
+  });
+
+  it("an older hub (404) or an offline one does not fail the install", async () => {
+    const old = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    const inner = old.fetch;
+    old.fetch = vi.fn(async (u: string | URL | Request, i?: RequestInit) =>
+      String(u).endsWith("/api/v1/bus/setup")
+        ? new Response("nope", { status: 404 })
+        : inner(u, i),
+    ) as unknown as typeof fetch;
+    expect(await run(old)).toBe(0);
+    const off = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    const inner2 = off.fetch;
+    off.fetch = vi.fn(async (u: string | URL | Request, i?: RequestInit) => {
+      if (String(u).endsWith("/api/v1/bus/setup")) throw new Error("offline");
+      return inner2(u, i);
+    }) as unknown as typeof fetch;
+    expect(await run(off)).toBe(0);
+  });
+
+  it("a plain rerun with the same harnesses marks nothing", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    expect(await run(ctx)).toBe(0);
+    expect(setupCalls(ctx)).toHaveLength(1);
+    vi.mocked(ctx.fetch).mockClear();
+    expect(await run(ctx)).toBe(0);
+    expect(setupCalls(ctx)).toHaveLength(0);
+  });
+
+  it("wiring a harness that was not wired before marks again", async () => {
+    const some = allHarnesses();
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...some,
+      which: (c: string) => ["claude", "opencode"].includes(c),
+    });
+    expect(await run(ctx)).toBe(0);
+    vi.mocked(ctx.fetch).mockClear();
+    ctx.which = some.which;
+    expect(await run(ctx)).toBe(0);
+    expect(setupCalls(ctx)).toHaveLength(1);
+  });
+
+  it("the mark call times out instead of hanging", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    expect(await run(ctx)).toBe(0);
+    const init = setupCalls(ctx)[0]?.[1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("--check marks nothing", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    await run(ctx, { check: true });
+    expect(setupCalls(ctx)).toHaveLength(0);
   });
 });

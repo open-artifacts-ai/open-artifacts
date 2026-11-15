@@ -232,7 +232,17 @@ export type RouteCtx = {
    * not answer.
    */
   ownRow?: (ref: string) => Promise<StatusRow | undefined> | undefined;
+  /**
+   * #2561: takes this machine's "setup pending" mark from the hub, for `self`
+   * with `row` from an adapter that listed ADAPTER_CAPS.setup. Resolves true
+   * for exactly one caller per install; undefined when the hub cannot be asked.
+   */
+  claimSetup?: () => Promise<boolean> | undefined;
 };
+
+/** What `self` shows the one session that took the mark (#2561). */
+export const SETUP_PENDING_TEXT =
+  "Setup pending on this machine: ask your person once what to call you.";
 
 /** The status fields of a roster row. */
 type StatusRow = Pick<
@@ -321,15 +331,28 @@ export function routeLocal(
       } as const;
       // The status is the hub's: asked for only by the self tool.
       const own = frame.row ? ctx.ownRow?.(ref) : undefined;
-      if (!own) return self;
-      const answer = (row: StatusRow | undefined) =>
+      // The claim goes after the own-row lookup is started, only for an
+      // adapter that will pass the line on (an older one would use it up unseen).
+      const claim =
+        frame.row && hello.caps?.includes(ADAPTER_CAPS.setup)
+          ? ctx.claimSetup?.()
+          : undefined;
+      if (!own && !claim) return self;
+      Promise.all([
+        own?.catch(() => undefined),
+        claim?.catch(() => false),
+      ]).then(([row, setup]) =>
         reply({
           ...self,
-          agent: { ...self.agent, ...statusOf(row) },
+          agent: {
+            ...self.agent,
+            ...statusOf(row),
+            ...(setup ? { setup_pending: SETUP_PENDING_TEXT } : {}),
+          },
           v: 1,
           id: frame.id,
-        });
-      own.then(answer, () => answer(undefined));
+        }),
+      );
       return undefined;
     }
     case "ack":

@@ -2385,6 +2385,10 @@ export const PUBLIC_ROUTES: readonly string[] = [
   // handler) and its confirm page (the role confirm's rules); covered by
   // bus/links.proposals.test.ts.
   "POST /api/v1/bus/links/proposals",
+  // #2561: `oa-bus install` marks its machine (a machine token, checked by the
+  // handler; sets one flag on its own row); covered by
+  // bus/hub.setup-pending.test.ts.
+  "POST /api/v1/bus/setup",
   "GET /bus/links/confirm",
   "GET /bus/links/confirm/:token",
   "POST /bus/links/confirm/view",

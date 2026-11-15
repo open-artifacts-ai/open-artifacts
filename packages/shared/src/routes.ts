@@ -170,6 +170,8 @@ export const R = {
    * proposal_limit | no_bus }.
    */
   busLinkProposals: "/api/v1/bus/links/proposals",
+  /** POST (a bus machine token, no body) -> 204 (#2561): `oa-bus install` marks "setup pending" for its machine. Pinned to BUS_ROUTES.setup. */
+  busSetup: "/api/v1/bus/setup",
   /** DELETE -> 204: removes the caller's link (idempotent: unknown is 204 too). Same rules as PUT R.busLinks. */
   busLink: (id: string) => `/api/v1/bus/links/${seg(id)}`,
   /**

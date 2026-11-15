@@ -651,6 +651,8 @@ export const busMachines = sqliteTable(
     createdAt: integer("created_at").notNull(),
     lastUsedAt: integer("last_used_at"),
     revokedAt: integer("revoked_at"),
+    // #2561: set by a hand-run install, taken by the first `self` on the machine.
+    setupPending: integer("setup_pending").notNull().default(0),
   },
   (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
 );

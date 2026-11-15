@@ -99,6 +99,12 @@ export const ADAPTER_CAPS = {
    * the frame only to a daemon whose welcome listed it.
    */
   link: "link",
+  /**
+   * `setup` (#2561): the adapter passes `agent.setup_pending` from `self` on. The
+   * daemon takes the machine's mark from the hub only on a `self` from an
+   * adapter that listed this, so an older adapter never uses it up unseen.
+   */
+  setup: "setup",
 } as const;
 
 export { REACH_PROPOSAL_MAX };
@@ -375,6 +381,11 @@ export const AgentInfo = z.object({
   status_at: IsoTimeSchema.optional(),
   /** `self` with `row` only: config files refused or noted. Older adapters ignore it. */
   config_files: z.array(ConfigFile).optional(),
+  /**
+   * `self` with `row` only (#2561): shown to the one session that took this
+   * machine's "setup pending" mark, only if it listed ADAPTER_CAPS.setup.
+   */
+  setup_pending: z.string().max(200).optional(),
 });
 
 export const Welcome = z.object({

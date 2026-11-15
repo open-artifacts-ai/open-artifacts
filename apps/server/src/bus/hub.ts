@@ -48,6 +48,7 @@ import {
   type BusRoleProposal,
   NOTICE_SENDER,
 } from "@oa/shared";
+import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
@@ -352,6 +353,7 @@ const HUB_CAPS = [
   BUS_CAPS.noticeAck,
   BUS_CAPS.nameChosen,
   BUS_CAPS.ackConfirm,
+  BUS_CAPS.setup,
 ];
 
 /**
@@ -369,6 +371,16 @@ const waitingQueryGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.waitingQuery);
 };
+
+/** #2561: setup_claim goes only to a socket whose hello listed BUS_CAPS.setup. */
+const setupGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.setup);
+};
+
+/** #2561: the first `self` on a marked machine takes the mark; routes.ts sets it. */
+const CLAIM_SETUP = `update bus_machines set setup_pending = 0
+  where id = ?1 and setup_pending = 1 and revoked_at is null returning id`;
 
 /** #2198: `acked` goes only to a socket whose hello listed BUS_CAPS.ackConfirm. */
 const ackConfirmGated = (ws: WebSocket): boolean => {
@@ -5417,6 +5429,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #2561: as unknown as it is to an older hub without the cap.
+    if (f.type === "setup_claim" && !setupGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // Review Focus 1: a socket acts only for agents it registered itself.
     const ref = senderRef(f);
     const sender = ref === null ? null : registeredAgent(sql, machineId, ref);
@@ -5461,7 +5479,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.link) ||
           hasCap(f, BUS_CAPS.waiting) ||
           hasCap(f, BUS_CAPS.waitingQuery) ||
-          hasCap(f, BUS_CAPS.ackConfirm)
+          hasCap(f, BUS_CAPS.ackConfirm) ||
+          hasCap(f, BUS_CAPS.setup)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -5627,6 +5646,9 @@ export class BusHub extends DurableObject<Env> {
           counts: waitingByRef(sql, machineId, f.agent_refs),
         });
         return;
+      case "setup_claim":
+        // Machine-authenticated: the mark is this machine's, taken once.
+        return this.#setupClaim(ws, f.id, machineId);
       case "link_bind":
         // Only an agent this socket registered (the check above): a machine
         // can bind a proof only for a session it hosts.
@@ -5860,6 +5882,31 @@ export class BusHub extends DurableObject<Env> {
       clearTimeout(timer);
       this.#followsInFlight--;
     }
+  }
+
+  /**
+   * #2561: hands this machine's "setup pending" mark to one claim. The UPDATE
+   * is the claim: one statement flips 1 to 0 and returns the row, so two
+   * sessions racing get one `true`. A failed D1 write answers false and leaves
+   * the mark for the next claim. Once the UPDATE ran, the mark is gone: a
+   * link drop or a daemon restart before the daemon shows it loses it, which
+   * costs one naming ask (accepted).
+   */
+  async #setupClaim(
+    ws: WebSocket,
+    id: string,
+    machineId: string,
+  ): Promise<void> {
+    let pending = false;
+    try {
+      const row = await stmt(this.env.DB, CLAIM_SETUP)
+        .bind(machineId)
+        .first<{ id: string }>();
+      pending = row !== null;
+    } catch {
+      logEvent("setup_claim_failed", { machineId });
+    }
+    sendFrame(ws, { v: 1, id, type: "setup_claimed", pending });
   }
 
   /**
