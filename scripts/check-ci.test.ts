@@ -1281,7 +1281,8 @@ describe("prod and staging tokens never cross", () => {
       expect(job.if).toContain("release_created == 'true'");
       expect(job.if).toContain("github.event_name == 'workflow_dispatch'");
       expect(job.if).toContain("github.ref == 'refs/heads/main'");
-      expect(job.needs).toEqual(["release-please"]);
+      // publish-npm (#2543): the build pins the published bus release.
+      expect(job.needs).toEqual(["release-please", "publish-npm"]);
       expect(job.if).not.toMatch(/event_name == 'push'/);
       expect(job.concurrency).toEqual({
         group: "prod",
@@ -1856,7 +1857,7 @@ describe("demo instance workflows", () => {
     const rp = wf("release-please.yml");
     const job = rp.jobs["deploy-demo"];
     it("runs in parallel with deploy-prod, only on a release and only when DEMO_ENABLED", () => {
-      expect([job.needs].flat()).toEqual(["release-please"]);
+      expect([job.needs].flat()).toEqual(["release-please", "publish-npm"]);
       expect([rp.jobs["deploy-prod"].needs].flat()).not.toContain(
         "deploy-demo",
       );

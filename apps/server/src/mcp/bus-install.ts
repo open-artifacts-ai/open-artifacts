@@ -1,29 +1,42 @@
-// The bus install step of llms.txt (#2543), apart from llms.ts so a Node test can run it.
+// The bus install step of llms.txt (#2543), apart from llms.ts so a Node test
+// can run it. OA Product edits this wording; no em dashes.
 
 /** The release's pin of @open-artifacts/bus: its version and sha512 in npm's integrity form. */
 export type BusPin = { version: string; integrity: string };
 
 /**
- * The first install checks the bytes it runs (#2543). The pin is this
- * instance's own release (version.gen BUS_PKG, set only by the release run).
- * One copy is downloaded, checked against the pin, and installed from that
- * same file; npx is never offered, since it would fetch a second copy. OA
- * Product edits this wording; no em dashes.
+ * The first install runs only the bytes it checked: one install from the
+ * registry into a temp folder, the lockfile checked against the pin before
+ * anything runs, npm's own signature audit, then the installer run by node
+ * from that folder. npx is never offered, since it would fetch another copy.
  */
 export const BUS_CHECK_STOP =
-  'If any command fails or the check prints MISMATCH, stop. Run nothing from that folder, and tell the person: "The bus download did not match what this instance expects, so I stopped before running it."';
+  'If any command fails, or the check prints MISMATCH, stop. Run nothing from that folder, and tell the person: "The bus download did not match what this instance expects, so I stopped before running it."';
+
 export const busInstallBlock = (origin: string, pin: BusPin): string => {
-  const tgz = `open-artifacts-bus-${pin.version}.tgz`;
-  const check = `node -e 'const c=require("crypto"),f=require("fs");const h="sha512-"+c.createHash("sha512").update(f.readFileSync("${tgz}")).digest("base64");if(h!=="${pin.integrity}"){console.error("MISMATCH");process.exit(1)}'`;
+  const check = `node -e 'const l=require("./package-lock.json").packages||{};const k=Object.keys(l).filter(x=>x!=="");const p=l["node_modules/@open-artifacts/bus"];const ok=k.length===1&&p&&p.version==="${pin.version}"&&p.integrity==="${pin.integrity}";console.log(ok?"OK":"MISMATCH");process.exit(ok?0:1)'`;
   return [
     "```sh",
-    `tmp=$(mktemp -d) && cd "$tmp" && npm pack @open-artifacts/bus@${pin.version} --silent`,
+    'tmp=$(mktemp -d) && cd "$tmp"',
+    `npm install --ignore-scripts --registry https://registry.npmjs.org @open-artifacts/bus@${pin.version}`,
     check,
-    `npm install --ignore-scripts ./${tgz}`,
     "npm audit signatures",
-    `"$tmp/node_modules/.bin/oa-bus" install --instance ${origin}`,
+    `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" install --instance ${origin}`,
     "```",
   ].join("\n");
 };
-export const BUS_NO_PIN =
-  "This instance has no release pin for the bus, so the bus can't be checked here. Do not install it, and do not run `npx @open-artifacts/bus`: nothing would check what it runs. Tell the person: \"This instance doesn't say which bus release to trust, so I can't install the bus safely. Ask whoever runs the instance to update it to a release build.\" Then go on with the next step.";
+
+/** Build facts that go into the text: printable ASCII only, short. */
+export const cleanWhy = (s: string): string =>
+  s
+    .replace(/[^A-Za-z0-9 .,:;@/()+_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+
+/**
+ * This build has no verified pin: no install line at all, only why. A person
+ * who runs the instance fixes it by deploying a build that can verify.
+ */
+export const busNoPin = (why: string): string =>
+  `The bus can't be installed from this build of the instance: it has no verified release to check the download against (${cleanWhy(why) || "no reason recorded"}). Do not install it, and do not run \`npx @open-artifacts/bus\` or any other install command: nothing would check what it runs. Tell the person: "This instance can't give me a checked bus release, so I can't install the bus safely. Ask whoever runs the instance to deploy a release build." Then go on with the next step.`;

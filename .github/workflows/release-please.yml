@@ -139,8 +139,12 @@ jobs:
         if: steps.gate.outputs.present == 'true'
         run: cd apps/landing && pnpm exec wrangler deploy
   # Stable releases only; independent of deploy-landing. Never runs from a bare push to main.
+  # After publish-npm (#2543): the server build verifies the published bus
+  # release (Sigstore) and pins it in llms.txt, so the release must be on npm.
+  # The job still runs if publish-npm failed or was skipped (always()): that
+  # build then has no pin and says so.
   deploy-prod:
-    needs: [release-please, pack-npm]
+    needs: [release-please, publish-npm]
     outputs:
       installed: ${{ steps.preflight.outputs.installed }}
       # 'true' when the migration guard held the deploy (prod stays on the old version).
@@ -153,10 +157,6 @@ jobs:
       group: prod
       cancel-in-progress: false
     env:
-      # #2543: the bus package this release packed, pinned into llms.txt. Empty
-      # when pack-npm did not run (a manual redeploy): llms.txt then says no pin.
-      BUS_PKG_VERSION: ${{ needs.pack-npm.outputs.version }}
-      BUS_PKG_SHA512: ${{ needs.pack-npm.outputs.integrity }}
       PROD_NAME: open-artifacts-prod
       PROD_APP_HOST: artifacts.leourbina.com
       PROD_CONTENT_HOST: artifacts-content.leourbina.com
@@ -335,7 +335,7 @@ jobs:
   # The public demo, in parallel with deploy-prod: off until the repository variable
   # DEMO_ENABLED is 'true' (after ops-demo-install has run). Staging credentials only.
   deploy-demo:
-    needs: [release-please, pack-npm]
+    needs: [release-please, publish-npm]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && vars.DEMO_ENABLED == 'true' && needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -344,8 +344,6 @@ jobs:
       group: demo-deploy
       cancel-in-progress: false
     env:
-      BUS_PKG_VERSION: ${{ needs.pack-npm.outputs.version }}
-      BUS_PKG_SHA512: ${{ needs.pack-npm.outputs.integrity }}
       DEMO_NAME: open-artifacts-demo
       DEMO_APP_HOST: demo.open-artifacts.com
       DEMO_CONTENT_HOST: demo-content.open-artifacts.com
@@ -476,9 +474,6 @@ jobs:
     outputs:
       version: ${{ steps.pack.outputs.version }}
       sha256: ${{ steps.pack.outputs.sha256 }}
-      # npm's integrity form (sha512-<base64>) of the same tarball: the server
-      # build in this run pins it in llms.txt (#2543).
-      integrity: ${{ steps.pack.outputs.integrity }}
     env:
       TAG: ${{ needs.release-please.outputs.tag_name }}
     defaults:
@@ -534,9 +529,7 @@ jobs:
           got=$("$RUNNER_TEMP/unpacked/package/dist/index.js" --version)
           [ "$got" = "oa-bus $version" ] || { echo "::error::the bin reports '$got', not 'oa-bus $version'"; exit 1; }
           sha=$(sha256sum "$tgz" | cut -d' ' -f1)
-          integrity="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"
-          [[ "$integrity" =~ ^sha512-[A-Za-z0-9+/]{86}==$ ]] || { echo "::error::bad integrity '$integrity'"; exit 1; }
-          { echo "version=$version"; echo "sha256=$sha"; echo "integrity=$integrity"; } >> "$GITHUB_OUTPUT"
+          { echo "version=$version"; echo "sha256=$sha"; } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: npm-tarball
