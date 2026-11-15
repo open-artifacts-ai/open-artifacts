@@ -269,7 +269,7 @@ export async function sendEmail(
     instance: string | null | undefined;
     /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. */
     outcome?: { limited?: boolean; reason?: string };
-    /** Caps taken after the usual ones (outside shares, #2590), each with the reason it reports. */
+    /** Caps taken before the usual ones (outside shares, #2590), each with the reason it reports. */
     extraCaps?: { cap: Cap; reason: string }[];
   },
 ): Promise<boolean> {
@@ -308,14 +308,14 @@ export async function sendEmail(
         caps.push([`email:a:${opts.artifactId}:${toKey}`, 1, day]);
     }
     const extra = opts.caps ? [] : (opts.extraCaps ?? []);
-    const base = caps.length;
-    caps = [...caps, ...extra.map((x) => x.cap)];
+    // The extra caps go first, so a refusal names them when both would trip.
+    caps = [...extra.map((x) => x.cap), ...caps];
     const refused = await takeAll(env, caps);
     if (refused !== -1) {
       if (opts.outcome) {
         opts.outcome.limited = true;
-        if (refused >= base)
-          opts.outcome.reason = extra[refused - base]?.reason;
+        if (refused < extra.length)
+          opts.outcome.reason = extra[refused]?.reason;
       }
       logFailed(opts.kind, "rate_limited");
       return false;

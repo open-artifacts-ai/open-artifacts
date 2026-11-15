@@ -83,7 +83,7 @@ describe("share recipient reach (review item 37)", () => {
     expect(s.recipient).toBeUndefined();
     expect(s.reach).toEqual({ ways: ["google"] });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("You'll log in with your Google account.");
+    expect(m?.text).toContain(`Open it with your Google account (${email}).`);
     expect(m?.text).not.toContain("can't log in");
     expect(m?.text).not.toContain("invite you");
     for (const part of [m?.text, m?.html])
@@ -103,7 +103,7 @@ describe("share recipient reach (review item 37)", () => {
     const s = await share(email);
     expect(s.recipient).toBeUndefined();
     expect(sent.find((x) => x.to === email)?.text).toContain(
-      `You'll log in with a one-time code sent to ${email}.`,
+      "Open it with a one-time code.",
     );
   });
 
@@ -128,7 +128,7 @@ describe("share recipient reach (review item 37)", () => {
     });
     expect(s.reach).toEqual({ ways: ["google_workspace"] });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("You'll log in with your Google account.");
+    expect(m?.text).toContain(`Open it with your Google account (${email}).`);
     expect(m?.text).not.toContain("invite you");
   });
 
@@ -183,7 +183,7 @@ describe("share recipient reach (review item 37)", () => {
       reason: "workspace_only",
     });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("You'll log in with your Google account.");
+    expect(m?.text).toContain(`Open it with your Google account (${email}).`);
     expect(m?.text).not.toContain("can't log in");
   });
 
@@ -192,7 +192,7 @@ describe("share recipient reach (review item 37)", () => {
     const email = uniq("in", "a.com");
     expect((await share(email)).recipient).toBeUndefined();
     expect(sent.find((x) => x.to === email)?.text).toContain(
-      "You'll log in with your Google account.",
+      `Open it with your Google account (${email}).`,
     );
   });
 
@@ -209,7 +209,7 @@ function namesExactly(text: string | undefined, methods: readonly string[]) {
   const PHRASE: Record<string, string> = {
     google: "your Google account",
     access: "your organization's single sign-on",
-    email: "a one-time code sent to",
+    email: "a one-time code.",
   };
   for (const [m, phrase] of Object.entries(PHRASE))
     expect(text ?? "", m).toSatisfy(
@@ -226,7 +226,8 @@ describe("the share email names the level the recipient will have", () => {
     const email = uniq("g", "out.com");
     await share(email, "editor");
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("Your role: Viewer");
+    // The outside email (#2590) carries no role line; the level is the row's.
+    expect(m?.text).not.toContain("Your role");
     expect(m?.html).not.toContain("Editor");
   });
 
@@ -234,18 +235,14 @@ describe("the share email names the level the recipient will have", () => {
     const { share, sent } = await setup((o) => ({ ...env, ...o }) as Env, {});
     const email = uniq("acc", "a.com");
     await share(email, "editor");
-    expect(sent.find((x) => x.to === email)?.text).toContain(
-      "Your role: Viewer",
-    );
+    expect(sent.find((x) => x.to === email)?.text).not.toContain("Your role");
   });
 
   it("in a verified domain, an Editor share stays Editor: they'll be a member", async () => {
     const { share, sent } = await setup(direct, HOSTED);
     const email = uniq("in", "a.com");
     await share(email, "editor");
-    expect(sent.find((x) => x.to === email)?.text).toContain(
-      "Your role: Editor",
-    );
+    expect(sent.find((x) => x.to === email)?.text).not.toContain("Your role");
   });
 });
 
@@ -316,9 +313,8 @@ describe("guest on a share row, and the email, from one rule", () => {
     const row = (await list()).find((r) => r.email === email);
     expect(row?.role).toBe("editor");
     expect(row?.guest === true).toBe(guest);
-    expect(sent.find((x) => x.to === email)?.text).toContain(
-      `Your role: ${guest ? "Viewer" : "Editor"}`,
-    );
+    // The outside email carries no role line (#2590): the level is the row's.
+    expect(sent.find((x) => x.to === email)?.text).not.toContain("Your role");
   });
 
   it("once a shared address has a member row, the row's role decides", async () => {
