@@ -145,7 +145,7 @@ export function mountBilling(app: AppType): void {
       try {
         const n = await memberCount(c.env);
         if (interval !== "year") members = n;
-        else yearSeats ??= Math.max(1, n);
+        else yearSeats = Math.max(seats ?? 1, n, 1);
       } catch (e) {
         logWarn("billing_url_failed", e, {
           route: CHECKOUT_PATH,

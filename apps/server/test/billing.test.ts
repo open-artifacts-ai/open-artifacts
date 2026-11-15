@@ -2141,6 +2141,12 @@ describe("Me.instance.billing and the billing routes", () => {
       (await post({ tier: "team", interval: "year", seats: 7 })).status,
     ).toBe(200);
     expect(last()).not.toHaveProperty("members");
+    expect(last()).toMatchObject({ seats: 7 });
+    // Fewer seats than members signed in: the member count wins.
+    expect(
+      (await post({ tier: "team", interval: "year", seats: 1 })).status,
+    ).toBe(200);
+    expect(last()).toMatchObject({ seats: 2 });
     expect((await post({ tier: "solo", interval: "month" })).status).toBe(200);
     expect(last()).not.toHaveProperty("members");
     // The count never comes from the request: a body naming creators is 400,

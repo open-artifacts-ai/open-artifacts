@@ -26,6 +26,15 @@ export async function memberCount(env: Pick<Env, "DB">): Promise<number> {
   return r?.n ?? 0;
 }
 
+/** Billing's outcomes that settle a report; any other (held, stale, failed...) is resent on the next tick. */
+const SETTLED = new Set([
+  "applied",
+  "unchanged",
+  "deferred",
+  "legacy",
+  "not_started",
+]);
+
 /** settings key: the last count billing accepted and when ({ members, at }). */
 export const SEATS_SENT_KEY = "billing.seats.sent";
 /** The daily reconcile resends when the last accepted report is this old. */
@@ -44,7 +53,10 @@ export async function sendSeats(env: Env, now: number): Promise<number> {
     `insert into settings (key, value) values (?1, ?2)
      on conflict (key) do update set value = excluded.value`,
   )
-    .bind(SEATS_SENT_KEY, JSON.stringify({ members, at: now }))
+    .bind(
+      SEATS_SENT_KEY,
+      JSON.stringify({ members, at: now, ok: SETTLED.has(r.data.applied) }),
+    )
     .run();
   logInfo("billing_seats", { members, applied: r.data.applied });
   return members;
@@ -52,15 +64,19 @@ export async function sendSeats(env: Env, now: number): Promise<number> {
 
 async function lastSent(
   env: Env,
-): Promise<{ members: number; at: number } | null> {
+): Promise<{ members: number; at: number; ok: boolean } | null> {
   const row = await env.DB.prepare("select value from settings where key = ?1")
     .bind(SEATS_SENT_KEY)
     .first<{ value: string }>();
   if (!row) return null;
   try {
-    const v = JSON.parse(row.value) as { members?: unknown; at?: unknown };
+    const v = JSON.parse(row.value) as {
+      members?: unknown;
+      at?: unknown;
+      ok?: unknown;
+    };
     return typeof v.members === "number" && typeof v.at === "number"
-      ? { members: v.members, at: v.at }
+      ? { members: v.members, at: v.at, ok: v.ok !== false }
       : null;
   } catch {
     return null;
@@ -81,7 +97,7 @@ export async function reportSeats(
   if (!billingActive(env)) return;
   try {
     const sent = await lastSent(env);
-    if (sent && !(daily && now - sent.at >= SEATS_DAILY_MS)) {
+    if (sent?.ok && !(daily && now - sent.at >= SEATS_DAILY_MS)) {
       if ((await memberCount(env)) === sent.members) return;
     }
     await sendSeats(env, now);

@@ -48,6 +48,7 @@ export function fakeBilling(install = INSTALL) {
     } as BillingRow,
     calls: [] as BillingCall[],
     down: false,
+    seatsApplied: "applied",
   };
   let x: Promise<string> | null = null;
   const answer = (
@@ -120,7 +121,7 @@ export function fakeBilling(install = INSTALL) {
         return answer(
           path,
           body,
-          Response.json({ members: body.members, applied: "stored" }),
+          Response.json({ members: body.members, applied: s.seatsApplied }),
         );
       if (path === "/checkout")
         return answer(

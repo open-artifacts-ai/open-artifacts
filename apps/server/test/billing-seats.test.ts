@@ -221,6 +221,23 @@ describe("the route list", () => {
   });
 });
 
+describe("billing's outcome", () => {
+  it("an unsettled outcome is resent on the next tick, a settled one waits a day", async () => {
+    const run = (at: number) =>
+      withBrokerProps({ props }, () => reportSeats(H, at, true));
+    const t0 = Date.now();
+    fake.seatsApplied = "held";
+    await run(t0);
+    await run(t0 + 120_000);
+    expect(seatCalls().length).toBe(2);
+    fake.seatsApplied = "applied";
+    await run(t0 + 240_000);
+    expect(seatCalls().length).toBe(3);
+    await run(t0 + 360_000);
+    expect(seatCalls().length).toBe(3);
+  });
+});
+
 describe("daily reconcile", () => {
   it("the scheduled billing tick sends once a day", async () => {
     const run = (at: number) =>
