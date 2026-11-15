@@ -321,9 +321,12 @@ describe("share email", () => {
     });
     const url = `http://app.localhost/a/${id}`;
     expect(textOf(r)).toBe(
-      `Shared ${id} with ${email}. They're a guest, so they can only view for now. ${url}. No email sent.`,
+      `Shared ${id} with ${email}. They're a guest, so they can view and comment. ${url}. No email sent.`,
     );
-    expect(r.structuredContent).toMatchObject({ role: "editor", guest: true });
+    expect(r.structuredContent).toMatchObject({
+      role: "commenter",
+      guest: true,
+    });
     const viewer = fresh();
     expect(
       textOf(
