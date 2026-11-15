@@ -20,6 +20,11 @@ import { capOf, isCommenterRole } from "../auth/policy.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
+import {
+  SHARE_ROLE_CASE,
+  shareRoleSql,
+  storedShare,
+} from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import { senderName, shareEmail } from "../email/templates.js";
@@ -74,7 +79,7 @@ export async function listShares(
   const rows = await getDb(env)
     .select({
       email: shares.email,
-      role: shares.role,
+      role: shareRoleSql(),
       createdAt: shares.createdAt,
       orgRole: users.role,
       rm: users.restrictedManual,
@@ -133,8 +138,7 @@ const shareAudit = (
     },
   );
 
-const SAME_SHARE =
-  "SELECT email, role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ?";
+const SAME_SHARE = `SELECT email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ? AND can_comment = ?`;
 const IS_USER = "select 1 as x from users where email = ? limit 1";
 // Only a lapsed guest (removed by the last-share cleanup): an admin or
 // directory removal clears guest_lapsed and stays removed (P3 T6).
@@ -184,6 +188,7 @@ export async function putShare(
   // An outsider is never stored as editor: a guest comments at most.
   const asked = s.role ?? (guest ? "commenter" : "viewer");
   const role: ShareRole = guest && asked === "editor" ? "commenter" : asked;
+  const stored = storedShare(role);
   const now = Date.now();
   // One atomic statement: a new email is inserted only while under the cap;
   // updating an existing share bypasses it, and the same role is a no-op.
@@ -196,21 +201,21 @@ export async function putShare(
     createdAt: number;
   }>([
     env.DB.prepare(
-      `INSERT INTO shares (artifact_id, email, role, created_by, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5
+      `INSERT INTO shares (artifact_id, email, role, can_comment, created_by, created_at)
+       SELECT ?1, ?2, ?3, ?7, ?4, ?5
        WHERE (SELECT count(*) FROM shares WHERE artifact_id = ?1) < ?6
           OR EXISTS (SELECT 1 FROM shares WHERE artifact_id = ?1 AND email = ?2)
-       ON CONFLICT (artifact_id, email) DO UPDATE SET role = excluded.role
-         WHERE shares.role <> excluded.role
-       RETURNING email, role, created_at AS createdAt`,
-    ).bind(id, email, role, user.id, now, MAX_SHARES),
+       ON CONFLICT (artifact_id, email) DO UPDATE SET role = excluded.role, can_comment = excluded.can_comment
+         WHERE shares.role <> excluded.role OR shares.can_comment <> excluded.can_comment
+       RETURNING email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt`,
+    ).bind(id, email, stored.role, user.id, now, MAX_SHARES, stored.canComment),
     shareAudit(env, "artifact.share", user, artifact, { role }),
   ]);
   // No row back: unchanged (already at this role) or refused at the cap.
   const row =
     res?.results[0] ??
     (await stmt(env.DB, SAME_SHARE)
-      .bind(id, email, role)
+      .bind(id, email, stored.role, stored.canComment)
       .first<{ email: string; role: string; createdAt: number }>());
   if (!row)
     throw new ApiError(

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d673ad5b-9824-42bd-aba7-afadf8cf6ca5",
+  "id": "5c526c81-5a61-4c7e-a2d1-3f25eaef259b",
   "prevId": "cb789e84-4f4c-4a90-885f-6e1e76d0cddb",
   "tables": {
     "agent_grants": {
@@ -1881,6 +1881,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "can_comment": {
+          "name": "can_comment",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
         "created_by": {
           "name": "created_by",
           "type": "text",
@@ -1933,7 +1941,7 @@
       "checkConstraints": {
         "shares_role_check": {
           "name": "shares_role_check",
-          "value": "\"role\" in ('viewer', 'commenter', 'editor')"
+          "value": "\"role\" in ('viewer', 'editor')"
         }
       }
     },

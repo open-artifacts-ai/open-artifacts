@@ -32,6 +32,7 @@ import {
   spaceMembers,
   spaces,
 } from "../db/schema.js";
+import { shareRoleSql } from "../db/share-role.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -221,7 +222,7 @@ async function loadAccess(
   const rows = await db
     .select({
       a: artifacts,
-      shareRole: shares.role,
+      shareRole: shareRoleSql(),
       kind: spaces.kind,
       publicLinks: spaces.publicLinks,
       allMembersRole: spaces.allMembersRole,
@@ -371,7 +372,7 @@ export function levelSql(
   const lv = (l: AccessLevel) => sql.raw(`'${capped ? "viewer" : l}'`);
   const shared = sql`${spaces.kind} = 'shared'`;
   const role = roleRankSql(c);
-  const share = sql`(case ${shares.role} when 'editor' then 2 when 'viewer' then 1 when 'commenter' then 1 else 0 end)`;
+  const share = sql`(case ${shares.role} when 'editor' then 2 when 'viewer' then 1 else 0 end)`;
   // No space role: a share, then team (uncapped members), then a public link.
   const rest = sql`case ${share} when 2 then ${lv("editor")} when 1 then ${lv("viewer")} else case
     ${member && !capsReads(capOfCaller(c)) ? sql`when ${artifacts.visibility} = 'team' then 'viewer'` : sql``}

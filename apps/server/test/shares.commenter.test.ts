@@ -152,11 +152,12 @@ describe("an outsider is never stored as editor", () => {
     const m = (await (await share(id, member.email, "editor")).json()) as Share;
     expect(m.role).toBe("editor");
     const row = await E.DB.prepare(
-      "select role from shares where artifact_id = ? and email = ?",
+      "select role, can_comment as c from shares where artifact_id = ? and email = ?",
     )
       .bind(id, guest.email)
-      .first<{ role: string }>();
-    expect(row?.role).toBe("commenter");
+      .first<{ role: string; c: number }>();
+    // Stored as viewer with can_comment; the API says commenter (checked above).
+    expect(row).toEqual({ role: "viewer", c: 1 });
   });
 });
 

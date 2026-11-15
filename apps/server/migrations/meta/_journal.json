@@ -285,8 +285,8 @@
     {
       "idx": 40,
       "version": "6",
-      "when": 1794765236635,
-      "tag": "0040_share_commenter_role",
+      "when": 1794768254809,
+      "tag": "0040_share_can_comment",
       "breakpoints": true
     }
   ]

@@ -21,8 +21,8 @@ const MOVE = `update users set email = ?2
   returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`;
 const MOVED = `exists (select 1 from users where id = ?1 and email = ?2)
   and not exists (select 1 from users where email = ?3)`;
-const COPY_SHARES = `insert into shares (artifact_id, email, role, created_by, created_at)
-  select artifact_id, ?2, role, created_by, created_at from shares
+const COPY_SHARES = `insert into shares (artifact_id, email, role, can_comment, created_by, created_at)
+  select artifact_id, ?2, role, can_comment, created_by, created_at from shares
   where email = ?3 and ${MOVED}
   on conflict (artifact_id, email) do update set role = 'editor'
   where shares.role <> 'editor' and excluded.role = 'editor'`;
