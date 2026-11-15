@@ -26,7 +26,7 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { managesAdmins, planOfMember } from "../auth/authz.js";
+import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
 import { effectivePlan, planError, requireTeamPlan } from "../billing/plan.js";
@@ -323,7 +323,7 @@ export async function inviteMemberOutcome(
       gone.id,
       inviter,
       undefined,
-      input.role === "guest" ? "guest" : undefined,
+      isGuestInvite(input.role) ? "guest" : undefined,
     );
     const [back] = await getDb(env).batch([
       getDb(env)
