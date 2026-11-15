@@ -1252,6 +1252,7 @@ export class DocRoom extends DurableObject<Env> {
     )
       throw new Error("bad_version_name");
     const by = parseContributor(o.by);
+    if (this.overEditRate(by)) throw new Error("rate_limited");
     const r = await this.serial(async () => {
       let name = given;
       if (name === null) {
@@ -1300,6 +1301,7 @@ export class DocRoom extends DurableObject<Env> {
     if (!Number.isSafeInteger(o?.version) || o.version < 1)
       throw new Error("bad_version");
     const by = parseContributor(o.by);
+    if (this.overEditRate(by)) throw new Error("rate_limited");
     const from = o.version;
     return this.serial(async () => {
       if (this.vs.dirty)
@@ -1339,8 +1341,14 @@ export class DocRoom extends DurableObject<Env> {
           docToYXmlFragment(node, frag);
         });
         const update = Y.encodeStateAsUpdate(doc, before);
-        if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES)
-          throw new Error("doc_too_large");
+        // Rows and the buffer overcount what a compacted doc holds: squeeze
+        // once (this is a serialized call, not a socket message) and recheck,
+        // so repeated restores never fill the cap (#2591).
+        if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
+          this.compact();
+          if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES)
+            throw new Error("doc_too_large");
+        }
         this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
         this.buffer.push(update);
         this.bufferBytes += update.byteLength;
@@ -1368,6 +1376,21 @@ export class DocRoom extends DurableObject<Env> {
   private editMinute = -1;
 
   /**
+   * The write rate edit_doc, save and restore share (viewerWritesPerMin per
+   * actor per minute, #2591). Counts the call; true when it is over the limit.
+   */
+  private overEditRate(by: Contributor): boolean {
+    const minute = Math.floor(this.now() / 60_000);
+    if (minute !== this.editMinute) {
+      this.editRate.clear();
+      this.editMinute = minute;
+    }
+    const n = (this.editRate.get(by.key) ?? 0) + 1;
+    this.editRate.set(by.key, n);
+    return n > LIMITS.viewerWritesPerMin;
+  }
+
+  /**
    * edit_doc: applies agent operations to the live doc (#1100). People's
    * unsaved edits get a version first, so history holds their text before the
    * agent changes it. The operations run on a copy in one Yjs transaction
@@ -1388,15 +1411,7 @@ export class DocRoom extends DurableObject<Env> {
     | { ok: false; error: { code: "rate_limited"; message: string } }
   > {
     const by = parseContributor(o?.by);
-    // The write rate the other writes use (viewerWritesPerMin per actor).
-    const minute = Math.floor(this.now() / 60_000);
-    if (minute !== this.editMinute) {
-      this.editRate.clear();
-      this.editMinute = minute;
-    }
-    const n = (this.editRate.get(by.key) ?? 0) + 1;
-    this.editRate.set(by.key, n);
-    if (n > LIMITS.viewerWritesPerMin)
+    if (this.overEditRate(by))
       return {
         ok: false as const,
         error: {

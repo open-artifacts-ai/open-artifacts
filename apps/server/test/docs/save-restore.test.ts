@@ -382,3 +382,56 @@ describe("access", () => {
     }
   });
 });
+
+describe("rate and size (#2591)", () => {
+  const postV = (path: string, bearer = ownerPat) =>
+    api(app, path, bearer, { method: "POST", body: {} });
+
+  it("save and restore share edit_doc's per-actor limit", async () => {
+    const room = await fresh();
+    // Unknown versions are 404 but still count against the limit.
+    for (let i = 0; i < 100; i++) {
+      const r = await postV(R.docRestore(room.id, 99));
+      expect(r.status).toBe(404);
+    }
+    const over = await postV(R.docRestore(room.id, 99));
+    expect(over.status).toBe(429);
+    expect((await errOf(over)).code).toBe("rate_limited");
+    // A save is over the same limit, and so is edit_doc.
+    expect((await postV(R.docSaveVersion(room.id))).status).toBe(429);
+    const e = await api(app, R.docOps(room.id), ownerPat, {
+      method: "POST",
+      body: { ops: [{ op: "delete", quote: "none" }] },
+    });
+    expect(e.status).toBe(429);
+    // The next minute starts again.
+    room.clock.t = T0 + 61_000;
+    expect((await postV(R.docRestore(room.id, 99))).status).toBe(404);
+  });
+
+  it("repeated restores do not fill the cap; the doc stays editable", async () => {
+    const para = (i: number) =>
+      `Paragraph ${i}: ${"lorem ipsum dolor sit amet ".repeat(8)}\n\n`;
+    const content = Array.from({ length: 1100 }, (_, i) => para(i)).join("");
+    const room = await fresh(`# Big\n\n${content}`);
+    const a = await connect(room);
+    await a.until(() => mdOf(a).includes("Paragraph 1099"));
+    for (let i = 0; i < 12; i++) {
+      const r = await postV(R.docRestore(room.id, 1));
+      expect(r.status, `restore ${i}`).toBe(201);
+      room.clock.t += 1_000;
+    }
+    const size = await inRoom(room, (x) => x.size());
+    expect(size).toBeLessThan(DOC_MAX_BYTES);
+    // Still editable: a socket edit lands and an edit_doc call applies.
+    write(a, `# Big\n\n${content}Typed after restores.\n`);
+    await a.ping();
+    expect(a.frames.some((f) => f.code === "doc_too_large")).toBe(false);
+    const e = await api(app, R.docOps(room.id), ownerPat, {
+      method: "POST",
+      body: { ops: [{ op: "replace", quote: "Paragraph 0:", with: "First:" }] },
+    });
+    expect(e.status).toBe(200);
+    a.ws.close();
+  });
+});

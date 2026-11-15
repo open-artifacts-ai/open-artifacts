@@ -107,6 +107,11 @@ async function docRoom(env: Env, user: Member, id: string) {
 
 function roomError(e: unknown): never {
   const m = e instanceof Error ? e.message : String(e);
+  if (m.includes("rate_limited"))
+    throw new ApiError(
+      "rate_limited",
+      "Too many edits; try again in a minute.",
+    );
   if (m.includes("version_not_found") || m.includes("bad_version"))
     throw new ApiError("not_found", "No such version");
   if (m.includes("bad_version_name"))
