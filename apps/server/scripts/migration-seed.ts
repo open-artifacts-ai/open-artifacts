@@ -38,6 +38,7 @@ export const SHAPE = {
   identities: 100_000,
   artifacts: 300_000,
   versions: 750_000, // 1 to 4 per artifact, 2.5 on average
+  version_contributors: 300_000, // #1100: docs' versions; the owner on 1 in 3
   shares: 200_000,
   follows: 50_000,
   share_notice_agents: 5_000,
@@ -372,6 +373,26 @@ export const RULES: Record<string, Rule> = {
         agent_via: c.rand() < 0.5 ? "mcp" : null,
         index_failed: 0,
         thumb_failed: 0,
+      };
+    },
+  },
+  version_contributors: {
+    // One person per sampled version: same mapping as versions (i % 4 + 1).
+    rows: (c) =>
+      Math.min(c.count("version_contributors"), c.artifacts.length * 4),
+    row(i, c) {
+      const a = c.artifacts[Math.floor(i / 4)];
+      const v = (i % 4) + 1;
+      if (!a || v > (Math.floor(i / 4) % 4) + 1) return null;
+      return {
+        artifact_id: a.id,
+        version: v,
+        kind: "person",
+        key: a.owner,
+        user_id: a.owner,
+        agent_name: null,
+        agent_version: null,
+        agent_via: null,
       };
     },
   },

@@ -40,17 +40,23 @@ export const InboxItemSchema = z
       "comment",
       "share",
       "decision",
-      "machine",
+      "proposal",
       "away",
     ]),
     urgency: z.enum(["waiting", "approval", "plain"]).optional(),
     waitingSince: Iso.optional(),
-    /** Null only for kind "machine" and "away"; every other kind has its page. */
+    /** Null only for kind "proposal" and "away"; every other kind has its page. */
     artifact: z.object({ id: z.string(), title: z.string() }).nullable(),
     actor: CommentAuthorSchema.nullable(),
-    /** The agent's roster key, used by Mute agent. */
+    /** The agent's bus identity id, used by Mute agent. */
     agentKey: z.string().optional(),
-    machine: z.object({ id: z.string(), name: z.string() }).optional(),
+    proposal: z
+      .object({
+        id: z.string(),
+        kind: z.enum(["role", "link"]),
+        agentName: z.string(),
+      })
+      .optional(),
     away: z
       .object({
         since: Iso,
@@ -68,7 +74,7 @@ export const InboxItemSchema = z
   .superRefine((item, ctx) => {
     if (
       item.artifact === null &&
-      item.kind !== "machine" &&
+      item.kind !== "proposal" &&
       item.kind !== "away"
     )
       ctx.addIssue({
