@@ -6,6 +6,11 @@ import { useSingleFlight } from "../../api/useSingleFlight";
 import { toast } from "../../layout/toast";
 import { restoredToast } from "./versions";
 
+/** Docs just restored: their Versions list starts with no hover tint (#1100). */
+const restored = new Set<string>();
+/** True once for a doc just restored; the next call says false. */
+export const takeRestored = (id: string) => restored.delete(id);
+
 /**
  * Restore a doc version (#1100) through its room (PROVISIONAL route, #2496):
  * no confirm (the mockup's flow; nothing is lost), then the mockup's toast,
@@ -24,6 +29,8 @@ export function useRestoreDoc(id: string) {
       restore
         .mutateAsync(v)
         .then((r) => {
+          // The pointer still rests where Restore was, now over an older row.
+          restored.add(id);
           toast({ title: restoredToast(v, r.version), tone: "neutral" });
           void navigate({
             to: viewerPath(id) as string,

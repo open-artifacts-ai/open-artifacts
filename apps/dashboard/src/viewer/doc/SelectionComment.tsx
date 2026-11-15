@@ -47,9 +47,11 @@ export function SelectionComment({
       }
       const r = s.getRangeAt(0).getBoundingClientRect();
       const h = host.getBoundingClientRect();
-      // Above the selection's top, centred on it; below it near the top.
-      const top =
-        r.top - h.top - 40 < 0 ? r.bottom - h.top + 8 : r.top - h.top - 40;
+      // Above the selection, centred on it (below it near the top). On a
+      // touch screen always below: the system's Copy menu sits above.
+      const coarse = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+      const above = r.top - h.top - 40;
+      const top = coarse || above < 0 ? r.bottom - h.top + 8 : above;
       const left = Math.max(
         0,
         Math.min(r.left - h.left + r.width / 2, h.width),

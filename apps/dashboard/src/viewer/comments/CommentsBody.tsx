@@ -523,7 +523,8 @@ function Composer({
     if (caretTo === null) return;
     const el = ref.current;
     if (!el) return;
-    el.focus();
+    // The panel's own scroller brings it into view (never the page).
+    focusField(el);
     el.setSelectionRange(caretTo, caretTo);
     setCaret(caretTo);
     setCaretTo(null);

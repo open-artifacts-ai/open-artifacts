@@ -39,6 +39,8 @@ const shot = async (
   });
 };
 async function axe(page: Page) {
+  // Toasts and tints fade in: measuring mid-way reads blended colours.
+  await settle(page);
   await page.addScriptTag({ path: AXE });
   const v: string[] = await page.evaluate(async () => {
     // @ts-expect-error injected
@@ -161,8 +163,22 @@ for (const scheme of ["light", "dark"] as const)
           ),
         ).toBeVisible();
         await expect(page).toHaveURL(new RegExp(`/a/${LANDING}(\\?|$)`));
-        await expect(page.locator(".ProseMirror")).toBeVisible();
+        // The room applied v3's content for every editor (the mock room
+        // stands in an older draft for it).
+        await expect(page.locator(".ProseMirror")).toContainText(
+          "The plan has two parts: copy and design.",
+        );
+        await expect(page.locator(".ProseMirror")).not.toContainText(
+          "three parts",
+        );
         await expect(row(page, 7)).toContainText("Restored v3");
+        // Only Current is highlighted, though the pointer still rests
+        // where Restore was (over an older row).
+        const tint = (v: number) =>
+          row(page, v).evaluate((b) => getComputedStyle(b).backgroundColor);
+        expect(await tint(3)).toBe("rgba(0, 0, 0, 0)");
+        expect(await tint(6)).toBe("rgba(0, 0, 0, 0)");
+        await expect(row(page, 7)).toHaveAttribute("aria-current", "true");
         await shot(page, info, `doc-versions-restored-${scheme}-${width}.png`);
         await axe(page);
       });

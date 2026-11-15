@@ -243,3 +243,37 @@ for (const scheme of ["light", "dark"] as const)
         await expect(composer(page)).toHaveValue("> landing page\n\n");
       });
     });
+
+// On a touch screen the system's Copy menu sits above a selection: the
+// chip goes below it.
+for (const scheme of ["light", "dark"] as const)
+  test.describe(`touch ${scheme} 390`, () => {
+    test.use({
+      colorScheme: scheme,
+      viewport: { width: 390, height: 900 },
+      hasTouch: true,
+      isMobile: true,
+    });
+    test("the Comment chip sits below the selection", async ({
+      page,
+    }, info) => {
+      await open(page, info, "");
+      expect(
+        await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
+      ).toBe(true);
+      await select(page, "We ship", "We ship", [16, 28]);
+      const chip = page.locator(".oa-doc-selcomment");
+      await expect(chip).toBeVisible();
+      const sel = await page.evaluate(() => {
+        const r = getSelection()?.getRangeAt(0).getBoundingClientRect();
+        return r ? { top: r.top, bottom: r.bottom } : null;
+      });
+      const box = await chip.boundingBox();
+      expect(sel && box).toBeTruthy();
+      if (!sel || !box) return;
+      expect(box.y).toBeGreaterThanOrEqual(sel.bottom);
+      await shot(page, info, `doc-comment-selection-touch-${scheme}-390.png`);
+      await chip.getByRole("button", { name: "Comment" }).tap();
+      await expect(composer(page)).toHaveValue("> landing page\n\n");
+    });
+  });

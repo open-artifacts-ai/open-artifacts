@@ -644,6 +644,27 @@ async function startMocks() {
           .__oaDocVersion;
         return HttpResponse.json(v ? { ...body, currentVersion: v } : body);
       }),
+      // e2e (#1100): a doc restore also reaches the local doc room, which
+      // applies it for every open editor, as the real room does.
+      http.post(
+        "*/api/v1/artifacts/:id/doc/versions/:v/restore",
+        async ({ request, params }) => {
+          const res = await getResponse(mainHandlers, request);
+          if (!res?.ok) return res;
+          const { version } = (await res.clone().json()) as {
+            version: number;
+          };
+          const ws =
+            (window as unknown as { __OA_DOC_WS?: string }).__OA_DOC_WS ||
+            import.meta.env.VITE_DOC_WS ||
+            "ws://localhost:1235";
+          await fetch(
+            `${ws.replace(/^ws/, "http")}/restore/${params.v}?version=${version}`,
+            { method: "POST" },
+          ).catch(() => {});
+          return res;
+        },
+      ),
       // e2e (#1100): window.__oaMe401 makes /me answer 401, as once the
       // session has ended, so the doc room's sign-in check sees it.
       http.get("*/api/v1/me", () =>

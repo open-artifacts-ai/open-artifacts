@@ -14,7 +14,7 @@ import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
 import { AuthorFace, PartyFace } from "../comments/AuthorFace";
 import { isDocArtifact, mockDocReadOnly } from "../doc/docMock";
-import { useRestoreDoc } from "../doc/useRestoreDoc";
+import { takeRestored, useRestoreDoc } from "../doc/useRestoreDoc";
 import { docSaveKind, docVersionLabel, VERSIONS_NOTE } from "../doc/versions";
 import { RestoreDialog } from "../RestoreDialog";
 import { LINK_BTN, SM, TXT } from "../ui";
@@ -103,6 +103,9 @@ export function Versions({
   // its automatic versions.
   const isDoc = isDocArtifact(artifact);
   const docRestore = useRestoreDoc(id);
+  // Just restored (#1100): the pointer rests where Restore was, over an
+  // older row; no hover tint until it moves, so only Current stands out.
+  const [settled, setSettled] = useState(() => !takeRestored(id));
   const box = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const sentinel = useSentinel(q);
@@ -258,6 +261,7 @@ export function Versions({
           <ol
             ref={listRef}
             aria-label="Versions"
+            onPointerMove={settled ? undefined : () => setSettled(true)}
             className="m-0 flex list-none flex-col gap-px p-0"
           >
             {shown.map((x, i) => {
@@ -286,7 +290,7 @@ export function Versions({
                       data-version={x.version}
                       tabIndex={x.version === focused ? 0 : -1}
                       aria-current={viewed ? "true" : undefined}
-                      className={`grid w-full cursor-pointer gap-px rounded-md border-0 bg-transparent px-2.5 py-2 text-left text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid focus-visible:outline-ring max-[600px]:min-h-11 max-[600px]:py-2.5 ${viewed ? "" : "hover:bg-[var(--oa-sunken)]"}`}
+                      className={`grid w-full cursor-pointer gap-px rounded-md border-0 bg-transparent px-2.5 py-2 text-left text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid focus-visible:outline-ring max-[600px]:min-h-11 max-[600px]:py-2.5 ${viewed || !settled ? "" : "hover:bg-[var(--oa-sunken)]"}`}
                       onFocus={() => setActive(x.version)}
                       onKeyDown={(e) => onRowKey(e, i)}
                       onClick={() => open(x.version)}
