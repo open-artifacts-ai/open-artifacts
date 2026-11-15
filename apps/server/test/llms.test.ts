@@ -156,6 +156,9 @@ describe("GET /llms.txt", () => {
     expect(sections(txt).get("Verify")).toContain(
       `${skillOrigin(HOST)}/skill.md`,
     );
+    expect(sections(txt).get("Verify")).toContain(
+      'Tell the person: "Open Artifacts is connected."',
+    );
   });
 
   it("works the same on hosted and self-hosted", async () => {
@@ -169,7 +172,6 @@ describe("GET /llms.txt", () => {
       "Setup steps",
       "Connect",
       "Restart",
-      "Verify",
       "Troubleshoot",
     ]);
     const steps = sections(txt).get("Setup steps") ?? "";
@@ -197,6 +199,22 @@ describe("GET /llms.txt", () => {
     expect(steps).not.toMatch(/optional/i);
     expect(steps).toContain("don't stop to offer the bus as an option");
     expect(steps).not.toContain("\u2014");
+    expect(steps).toContain('with `visibility: "private"`');
+    expect(steps).toContain("a short page about the project you're in");
+    expect(steps).toContain("the next session finishes setup by itself");
+    expect(steps).toContain("saves this instance's skill for your harness");
+    expect(steps).toContain(`Read ${skillOrigin(HOST)}/skill.md now`);
+    // One ending: no Verify section, no test page, one "connected" line.
+    expect(txt).not.toContain("## Verify");
+    expect(txt).not.toContain("setup check");
+    expect(
+      txt.match(/Tell the person: "Open Artifacts is connected/g),
+    ).toBeNull();
+    expect(
+      steps.match(
+        /tell the person Open Artifacts is connected, with the address/g,
+      ),
+    ).toHaveLength(1);
     expect(steps).toContain("Open Artifacts is connected, but the bus isn't");
   });
 
@@ -212,8 +230,11 @@ describe("GET /llms.txt", () => {
   });
 
   it("SKILL_MD=off: still served, without the /skill.md step", async () => {
-    const txt = await guide(E({ SKILL_MD: "off" }));
+    const txt = await guide(E({ SKILL_MD: "off", BUS_HUB: undefined }));
     expect(txt).not.toContain("/skill.md");
+    const busOn = await guide(E({ SKILL_MD: "off", HOSTED: undefined }));
+    expect(busOn).not.toContain("/skill.md");
+    expect(busOn).not.toContain("saves this instance's skill");
     expect(sections(txt).get("Verify")).toContain("1. List the server's tools");
   });
 });

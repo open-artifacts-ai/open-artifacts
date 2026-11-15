@@ -10,7 +10,7 @@ const COPY: Partial<Record<ErrorCode, string>> = {
   space_not_empty:
     "This space still has artifacts. Move or delete them first. Deleted ones stay in Trash for 30 days.",
   public_links_off:
-    "Public links are off for this space. A space manager can turn them on.",
+    "Sharing by link is off for this space. A space manager can turn it on.",
   use_move: "This artifact already exists. Use Move to change its space.",
   invalid_successor: "Pick an active member who isn't a guest or restricted.",
   member_active:

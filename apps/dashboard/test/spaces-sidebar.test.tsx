@@ -296,8 +296,12 @@ it("visibilityHint", () => {
   const eng = { id: ENG, kind: "shared" as const, name: "Engineering" };
   const mine = { id: PERSONAL, kind: "personal" as const, name: "Ada" };
   // Design D6 section 9: the space on Private, the org on Team.
-  expect(visibilityHint("team", eng, "Acme")).toBe("Everyone at Acme");
-  expect(visibilityHint("team", mine, "Acme")).toBe("Everyone at Acme");
+  expect(visibilityHint("team", eng, "Acme")).toBe(
+    "Every member of Acme can open it.",
+  );
+  expect(visibilityHint("team", mine, "Acme")).toBe(
+    "Every member of Acme can open it.",
+  );
   expect(visibilityHint("private", eng, "Acme")).toBe(
     "People with access to Engineering, and anyone you add",
   );
@@ -310,12 +314,12 @@ it("visibilityHint", () => {
   expect(visibilityHint("team", undefined, "Acme")).toBeNull();
 });
 
-it("hovering Team on a card shows Everyone at <install name>", async () => {
+it("#2509: a team card's badge reads the install name; hovering says who can open it", async () => {
   mountHosted("/");
-  const team = within(await card("Meeting notes")).getByText("Team");
+  const team = within(await card("Meeting notes")).getByText("Acme Artifacts");
   fireEvent.pointerMove(team);
   expect(await screen.findByRole("tooltip")).toHaveTextContent(
-    "Everyone at Acme Artifacts",
+    "Every member of Acme Artifacts can open it.",
   );
 });
 

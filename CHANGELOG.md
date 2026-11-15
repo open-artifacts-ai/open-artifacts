@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.186.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.186.0...v0.186.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **bus:** a live session is never told to run the installer ([#2364](https://github.com/open-artifacts-ai/open-artifacts/issues/2364)) ([#2548](https://github.com/open-artifacts-ai/open-artifacts/issues/2548)) ([0ecb9d5](https://github.com/open-artifacts-ai/open-artifacts/commit/0ecb9d5fb9688ee09cc1b68bcd572ef35ac27cb4))
+* **viewer:** General access reads Restricted, Anyone at {instance}, Anyone with the link ([#2509](https://github.com/open-artifacts-ai/open-artifacts/issues/2509)) ([#2538](https://github.com/open-artifacts-ai/open-artifacts/issues/2538)) ([eadf0e5](https://github.com/open-artifacts-ai/open-artifacts/commit/eadf0e5701989d01418f7b77702e2024d1a4c138))
+
+## [0.186.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.185.0...v0.186.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** invited people log in with their own Google account on strong evidence ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2541](https://github.com/open-artifacts-ai/open-artifacts/issues/2541)) ([0ff181f](https://github.com/open-artifacts-ai/open-artifacts/commit/0ff181ff8bd8d54d4a53673c2a5fdade64abf77f))
+* **dashboard:** Login settings, invite rows that say how each person gets in ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2537](https://github.com/open-artifacts-ai/open-artifacts/issues/2537)) ([8cd540d](https://github.com/open-artifacts-ai/open-artifacts/commit/8cd540dd6d0a5c8fbee96cb019fd966f9b31af92))
+
+## [0.185.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.184.0...v0.185.0) (2026-11-15)
+
+
+### Features
+
+* **audit:** record risky ask approvals ([#2458](https://github.com/open-artifacts-ai/open-artifacts/issues/2458)) ([#2530](https://github.com/open-artifacts-ai/open-artifacts/issues/2530)) ([c476931](https://github.com/open-artifacts-ai/open-artifacts/commit/c476931874ae4dbe9a06b3e869e6a24917dbece3))
+
+## [0.184.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.183.0...v0.184.0) (2026-11-15)
+
+
+### Features
+
+* **inbox:** Needs you from open asks ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) S1) ([#2525](https://github.com/open-artifacts-ai/open-artifacts/issues/2525)) ([98b26e6](https://github.com/open-artifacts-ai/open-artifacts/commit/98b26e60c9b64fd9faab90badc69a8c2b8bad8c2))
+
 ## [0.183.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.182.0...v0.183.0) (2026-11-14)
 
 

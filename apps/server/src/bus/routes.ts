@@ -44,6 +44,7 @@ import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import { noteInstanceFirst } from "../services/analytics.js";
+import { audit, auditText } from "../services/audit.js";
 import {
   busOn,
   busPing,
@@ -261,7 +262,7 @@ async function deviceCode(c: Context<AppEnv>): Promise<Response> {
 const POLL = `update bus_device_codes set last_poll_at = ?2
   where device_code_hash = ?1 and expires_at > ?2
     and (last_poll_at is null or last_poll_at <= ?3)
-  returning id, approved_at as approvedAt, denied_at as deniedAt`;
+  returning id, label, user_id as userId, approved_at as approvedAt, denied_at as deniedAt`;
 const LIVE_CODE =
   "select 1 as x from bus_device_codes where device_code_hash = ?1 and expires_at > ?2";
 // The machine row only for an approved, unexpired code whose approver is
@@ -301,6 +302,8 @@ async function deviceToken(c: Context<AppEnv>): Promise<Response> {
     .bind(hash, now, now - POLL_MIN_MS)
     .first<{
       id: string;
+      label: string;
+      userId: string | null;
       approvedAt: number | null;
       deniedAt: number | null;
     }>();
@@ -326,6 +329,21 @@ async function deviceToken(c: Context<AppEnv>): Promise<Response> {
       now,
       row.id,
       MAX_ACTIVE_MACHINES,
+    ),
+    // machine.approve: the approval is recorded where the machine comes to
+    // exist (its id is the audit target), in the redeem batch and only when
+    // that insert made the machine. The approver is the code's user; this
+    // poll carries no credential of theirs, so none is recorded. Label only,
+    // never the code or token.
+    audit(
+      env,
+      "machine.approve",
+      { type: "bus_machine", id: machineId },
+      { kind: "user", id: row.userId, cred: null },
+      {
+        when: { sql: "changes() > 0", args: [] },
+        detail: { label: auditText(row.label) },
+      },
     ),
     stmt(env.DB, DROP_REDEEMED).bind(row.id, machineId),
   ]);

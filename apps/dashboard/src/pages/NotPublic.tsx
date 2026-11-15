@@ -6,10 +6,10 @@ import { EdgePanel } from "./Edge";
     a private or missing artifact, or any route but /a/<id>/full. Never a
     login form, and the copy never says whether the artifact exists. */
 export function NotPublic({ id }: { id?: string }) {
-  useDocumentTitle("Not public");
+  useDocumentTitle("Restricted");
   return (
     <EdgePanel>
-      <h1>This artifact isn't public</h1>
+      <h1>This artifact is restricted</h1>
       <p>Open it in Open Artifacts to log in and view it.</p>
       <div className="oa-actions">
         <a

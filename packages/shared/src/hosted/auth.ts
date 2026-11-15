@@ -53,6 +53,8 @@ export const SignInErrorSchema = z.enum([
   "identity_conflict",
   "removed",
   "no_access",
+  "needs_code",
+  "invite_expired",
   "expired",
   "failed",
 ]);
