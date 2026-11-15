@@ -134,6 +134,8 @@ type Deps = {
   seedForYou?: boolean;
   /** #2426: with seedPins, also an unanswered ask on a pin: the amber Ask marker in the page. */
   seedPinAsk?: boolean;
+  /** #2426: also an unanswered ask on a quote of "Landing page" (anchor "Thursday, Dec 4"). */
+  seedQuoteAsk?: boolean;
 };
 
 /** #2512: the ids of the ask For you's mock opens in its panel. */
@@ -161,6 +163,7 @@ export function createCommentMock({
   seedPins,
   seedForYou,
   seedPinAsk,
+  seedQuoteAsk,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
@@ -642,6 +645,44 @@ export function createCommentMock({
         thread(changed),
       );
     }
+    // #2426: an unanswered ask on a quote, for the amber Ask marker in the page.
+    const quoteAsk: CommentThread[] = [];
+    if (seedQuoteAsk) {
+      const cur = artifacts.find((x) => x.id === id)?.currentVersion ?? 1;
+      const c = comment(
+        "Launch Thursday or Friday?",
+        { kind: "user", name: "OA Product", me: false },
+      );
+      c.ask = {
+        question: "Launch Thursday or Friday?",
+        options: [
+          { id: "thu", label: "Thursday", detail: "Matches the announcement." },
+          { id: "fri", label: "Friday" },
+        ],
+        recommended: { optionId: "thu", why: "The announcement already says so." },
+        to: [mine()],
+        decider: mine(),
+        role: "decide",
+        picks: [],
+        closed: false,
+      };
+      quoteAsk.push({
+        id: newId(),
+        anchor: {
+          kind: "text",
+          version: cur,
+          exact: "Thursday, Dec 4",
+          prefix: "launch is planned for ",
+          suffix: " and the beta",
+        },
+        version: cur,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: c.createdAt,
+        comments: [c],
+      });
+    }
     const faces: CommentThread[] = [];
     if (seedAgents) {
       const agent = (linked: boolean): CommentAuthor => ({
@@ -1028,6 +1069,7 @@ export function createCommentMock({
       },
       ...asked,
       ...deciderAsks,
+      ...quoteAsk,
       ...decided,
       ...faces,
     ];

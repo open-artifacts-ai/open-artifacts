@@ -128,6 +128,8 @@ export type MockOptions = {
   commentDecisions?: boolean;
   /** #2426: with commentPins, an unanswered ask on a pin. */
   commentPinAsk?: boolean;
+  /** #2426: an unanswered ask on a quote. */
+  commentQuoteAsk?: boolean;
   /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
   commentPasskey?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
@@ -749,6 +751,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     seedDeciders: opts.commentDeciders,
     seedDecisions: opts.commentDecisions,
     seedPinAsk: opts.commentPinAsk,
+    seedQuoteAsk: opts.commentQuoteAsk,
     passkeyMode: opts.commentPasskey,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
