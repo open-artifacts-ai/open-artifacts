@@ -1,5 +1,6 @@
 import { inDomains } from "@oa/auth-core";
 import { authConfig } from "../auth/config.js";
+import { isInstanceOwner } from "../auth/policy.js";
 import { type Cap, takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { getUser } from "./users.js";
@@ -28,7 +29,7 @@ export async function isOutsideMember(
   const domains = authConfig(env).domains;
   if (domains.length === 0) return false;
   const user = await getUser(env, userId);
-  if (!user || user.role === "owner") return false;
+  if (!user || isInstanceOwner(user)) return false;
   return !inDomains(domains, user.email.slice(user.email.lastIndexOf("@") + 1));
 }
 

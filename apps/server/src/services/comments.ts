@@ -1096,8 +1096,11 @@ type Resolved = {
 };
 
 /** The comment's mention-limit gate: made once per comment, by its author. */
-const gateOf = (env: Env, who: CommentWho, r: Resolved): MentionGate | null =>
-  who.kind === "user" ? (r.gate ??= new MentionGate(env, who.id)) : null;
+const gateOf = (env: Env, who: CommentWho, r: Resolved): MentionGate | null => {
+  if (who.kind !== "user") return null;
+  r.gate ??= new MentionGate(env, who.id);
+  return r.gate;
+};
 
 /** A comment a person typed in the web app: no token, no agent (#1797). */
 const typedByPerson = (who: CommentWho): boolean =>
