@@ -408,3 +408,64 @@ describe("re-invite", () => {
     ).rejects.toMatchObject({ code: "conflict" });
   });
 });
+
+describe("domain removed from the list, and a lapsed invite under join=member", () => {
+  it("existing linked members stay until removed; a new account at that domain can't join", async () => {
+    const email = uniq("old", "a.com");
+    const sb = sub();
+    const uid = await seedUser(email, "member", { googleSub: sb });
+    // a.com is no longer listed (b.com is).
+    const { e, c } = cfgOf({
+      AUTH_DOMAINS: "b.com",
+      AUTH_DOMAIN_JOIN: "member",
+    });
+    // The provider now binds an a.com Workspace token to its address.
+    const same = gmail({ subject: sb, email, hd: "a.com" });
+    expect(await admit(e, c, same)).toMatchObject({
+      ok: true,
+      user: { id: uid },
+    });
+    // A different Google account on that address: conflict, not a takeover.
+    expect(await admit(e, c, gmail({ email, hd: "a.com" }))).toEqual({
+      ok: false,
+      reason: "identity_conflict",
+    });
+    // A new account at the removed domain creates nothing.
+    const fresh = gmail({ email: uniq("new", "a.com"), hd: "a.com" });
+    expect(await admit(e, c, fresh)).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+    expect(await count("users where email = ?", fresh.email)).toBe(0);
+  });
+
+  it("join=member and a listed hd: a lapsed member invite does not block the colleague; an admin's does", async () => {
+    const { e, c } = cfgOf({ AUTH_DOMAIN_JOIN: "member" });
+    const id = inDom();
+    const uid = await seedUser(id.email, "member");
+    await age(uid, 60 * DAY);
+    expect(await admit(e, c, id)).toMatchObject({
+      ok: true,
+      user: { id: uid },
+    });
+    expect(await subjectOf(uid)).toBe(id.subject);
+
+    const adm = inDom();
+    const aid = await seedUser(adm.email, "admin");
+    await age(aid, 60 * DAY);
+    expect(await admit(e, c, adm)).toEqual({
+      ok: false,
+      reason: "invite_expired",
+    });
+
+    // Join = invite: the lapse holds for members too.
+    const { e: e2, c: c2 } = cfgOf({ AUTH_DOMAIN_JOIN: "invite" });
+    const inv = inDom();
+    const iid = await seedUser(inv.email, "member");
+    await age(iid, 60 * DAY);
+    expect(await admit(e2, c2, inv)).toEqual({
+      ok: false,
+      reason: "invite_expired",
+    });
+  });
+});

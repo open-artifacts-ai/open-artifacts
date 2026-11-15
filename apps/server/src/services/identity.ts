@@ -183,7 +183,15 @@ export async function admit(
   if (existing) {
     // A pending invite (invited_at set, never signed in) lapses; a re-invite
     // refreshes it. Rows nobody invited (directory sync, share guests) never do.
-    if (inviteLapsed(existing, now))
+    // A colleague whose token hd is a listed domain, with join = member, is
+    // not blocked by a lapsed non-admin invite: the domain path would admit
+    // them anyway, so the row links as that path would (the strong-evidence
+    // check below still applies). An admin's lapsed invite always holds.
+    const domainJoins =
+      Boolean(id.tenant) &&
+      cfg.domainJoin === "member" &&
+      existing.role !== "admin";
+    if (!domainJoins && inviteLapsed(existing, now))
       return { ok: false, reason: "invite_expired" };
     // First link of this Google account to an existing row (invited, code-only
     // member or admin, guest): only strong evidence links directly (#2520

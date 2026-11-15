@@ -190,6 +190,38 @@ describe("invite reachability (review item 11)", () => {
     expect((await invite(e, cookie, email)).status).toBe(409);
   });
 
+  it("re-invite email: at most one per address per 10 minutes; the refresh still happens", async () => {
+    const { e, sent } = install(direct, {});
+    const cookie = await owner();
+    const email = uniq("cool", "gmail.com");
+    const invitedAt = async () =>
+      (
+        await env.DB.prepare("select invited_at a from users where email = ?")
+          .bind(email)
+          .first<{ a: number }>()
+      )?.a as number;
+    expect((await invite(e, cookie, email)).status).toBe(201);
+    expect(sent).toHaveLength(1);
+    // Moments later: refreshed, not mailed.
+    await env.DB.prepare("update users set invited_at = ? where email = ?")
+      .bind(Date.now() - 5 * 60_000, email)
+      .run();
+    const soon = await invite(e, cookie, email);
+    expect(soon.status).toBe(200);
+    expect((await soon.json()) as { emailed: boolean }).toMatchObject({
+      emailed: false,
+    });
+    expect(sent).toHaveLength(1);
+    expect(await invitedAt()).toBeGreaterThan(Date.now() - 60_000);
+    // After the window it mails again.
+    await env.DB.prepare("update users set invited_at = ? where email = ?")
+      .bind(Date.now() - 11 * 60_000, email)
+      .run();
+    const later = await invite(e, cookie, email);
+    expect(later.status).toBe(200);
+    expect(sent).toHaveLength(2);
+  });
+
   it("Access-only (self-host default): unchanged, any address, no flag", async () => {
     const { e, sent } = install((o) => ({ ...env, ...o }) as Env);
     const email = uniq("acc", "anywhere.com");
