@@ -42,6 +42,12 @@ export const users = sqliteTable(
     role: text("role").notNull(),
     createdAt: integer("created_at").notNull(),
     lastSeenAt: integer("last_seen_at"),
+    /**
+     * When an admin last invited this address (ms; null = never invited by
+     * inviteMember: directory-synced, share-guest and code-joined rows).
+     * Only a never-signed-in row with this set lapses (#2520).
+     */
+    invitedAt: integer("invited_at"),
     /** Bumped to end every session of the user (role change, link reset, P3 sync). */
     sessionEpoch: integer("session_epoch").notNull().default(0),
     /** MemberStatus (@oa/shared): active | suspended | removed. P3's sync sets it; sign-in refuses non-active. */

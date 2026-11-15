@@ -220,3 +220,26 @@ export function noDomainIdentityOk(email: string, hd: string | null): boolean {
     return (CONSUMER_DOMAINS as readonly string[]).includes(domain);
   return hd.toLowerCase() === domain;
 }
+
+/**
+ * Strong evidence that a verified Google login controls its address's mailbox
+ * (#2520 M2). All of: `emailVerified` (the signature-checked token's claim),
+ * and either a @gmail.com or @googlemail.com address, or a token `hd` equal to
+ * the address's domain (a Workspace that proves it owns that domain).
+ * Everything else is weak: a consumer account can sit on any other address (an
+ * ex-employee's, a lapsed domain). `hd` and `emailVerified` come only from the
+ * verified token (on hosted, the signed broker reply), never from a URL hint
+ * or the address suffix. No dot or plus folding: the match is exact.
+ */
+export function googleEvidenceStrong(
+  email: string,
+  emailVerified: boolean,
+  hd: string | null | undefined,
+): boolean {
+  if (emailVerified !== true) return false;
+  const norm = normalizeEmail(email);
+  if (!norm) return false;
+  const domain = norm.slice(norm.lastIndexOf("@") + 1);
+  if ((CONSUMER_DOMAINS as readonly string[]).includes(domain)) return true;
+  return typeof hd === "string" && hd.trim().toLowerCase() === domain;
+}
