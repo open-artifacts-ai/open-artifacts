@@ -114,11 +114,16 @@ for (const scheme of ["light", "dark"] as const)
         );
       });
 
-      test("a link that's gone starts over at sign-in", async ({ page }) => {
+      test("a link that's gone: the usual sign-in, That took too long. Start again.", async ({
+        page,
+      }) => {
         await page.goto("/sign-in?hosted=1&error=needs_code&link=1&next=%2F");
         await expect
           .poll(() => page.evaluate(() => location.search))
-          .not.toContain("needs_code");
+          .not.toContain("link=1");
+        await expect(
+          page.getByText("That took too long. Start again."),
+        ).toBeVisible();
         await expect(
           page.getByRole("link", { name: "Continue with Google" }),
         ).toBeVisible();

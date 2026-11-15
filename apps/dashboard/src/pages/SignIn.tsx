@@ -120,11 +120,10 @@ export const needsCodeNoCodes = (email: string) =>
 export const WRONG_ACCOUNT =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
 /**
- * PLACEHOLDER (for OA Product): a needs_code with no address to name (no
- * link=1, or the link couldn't be read).
+ * OA Product (#2590 G2): needs_code without link=1, or a link that's gone
+ * (404): the usual sign-in, with this line above it.
  */
-export const NEEDS_CODE =
-  "Google couldn't confirm that address. Get a code at the address this page was shared with.";
+export const NEEDS_CODE = "That took too long. Start again.";
 
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
@@ -274,9 +273,17 @@ function HostedSignIn({
       }),
     [navigate, next],
   );
+  // The link is gone (404) or can't be read: the usual page, with "That took
+  // too long. Start again." above it (needs_code without link=1).
+  const linkGone = wantLink && (linkQuery.data === null || linkQuery.isError);
   useEffect(() => {
-    if (wantLink && linkQuery.data === null) startOver();
-  }, [wantLink, linkQuery.data, startOver]);
+    if (linkGone)
+      void navigate({
+        to: SIGN_IN_PAGE as string,
+        search: { error: "needs_code", next } as never,
+        replace: true,
+      });
+  }, [linkGone, navigate, next]);
   const domain = google?.domains[0];
   const googleHref = google ? startHref(google.start, next) : undefined;
   const banner = error && (
@@ -373,8 +380,8 @@ function HostedSignIn({
             />
           </>
         ) : (
-          // Asking failed (not a 404, which starts over): the usual page.
-          <Notice tone="info">{NEEDS_CODE}</Notice>
+          // Gone or unreadable: on its way to the usual page (above).
+          <p aria-busy="true" className="oa-split-sub" />
         )}
       </>
     );

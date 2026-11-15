@@ -70,19 +70,29 @@ it("asks for the code with { link: true } and no address, same-origin", async ()
   await waitFor(() => expect(req?.body).toEqual({ link: true, next: "/a/X1" }));
 });
 
-it("a link that's gone (404) starts over at sign-in, keeping next", async () => {
+it("a link that's gone (404): the usual sign-in, with That took too long. Start again.", async () => {
   const router = mountHosted(URL_IN, true, undefined, linkRoutes(null));
   await waitFor(() =>
-    expect(router.state.location.search).toEqual({ next: "/a/X1" }),
+    expect(router.state.location.search).toEqual({
+      error: "needs_code",
+      next: "/a/X1",
+    }),
   );
-  expect(router.state.location.pathname).toBe("/sign-in");
-  expect(screen.queryByText(NEEDS_CODE)).toBeNull();
+  expect(
+    await screen.findByText("That took too long. Start again."),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("link", { name: "Continue with Google" }),
+  ).toBeVisible();
 });
 
-it("needs_code without link=1: the note as a banner on the usual page", async () => {
+it("needs_code without link=1: the usual sign-in with That took too long. Start again.", async () => {
   mountHosted("/sign-in?error=needs_code", true, undefined, linkRoutes("x"));
   expect(await screen.findByText(NEEDS_CODE)).toBeVisible();
-  expect(screen.queryByText("x")).toBeNull();
+  expect(NEEDS_CODE).toBe("That took too long. Start again.");
+  expect(
+    screen.getByRole("link", { name: "Continue with Google" }),
+  ).toBeVisible();
 });
 
 it("(a) with codes off: only what to ask for, no button", async () => {
