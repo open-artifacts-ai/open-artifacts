@@ -327,12 +327,12 @@ describe("PUT login settings", () => {
 
   it("a fresh login whose hd differs: 403 domain_unproven with the domain", async () => {
     const u = await login(uniq("o1", "x.com"), "owner");
-    const r = await put(await fresh(u.userId, "other.com"), ["a.com"]);
+    const r = await put(await fresh(u.userId, "a.com"), ["other.com"]);
     expect(r.status).toBe(403);
     const err = await errOf(r);
     expect(err.code).toBe("domain_unproven");
     expect(DomainUnprovenDetailsSchema.parse(err.details)).toEqual({
-      domain: "a.com",
+      domain: "other.com",
     });
   });
 
@@ -352,7 +352,7 @@ describe("PUT login settings", () => {
 
   it("proven domains: 409 apply_pending while nothing can apply it", async () => {
     const u = await login(uniq("o4", "x.com"), "owner");
-    const r = await put(await fresh(u.userId, "A.com"), ["a.com"]);
+    const r = await put(await fresh(u.userId, "a.com"), ["A.com"]);
     expect(r.status).toBe(409);
     expect((await errOf(r)).code).toBe("apply_pending");
   });
