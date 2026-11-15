@@ -87,12 +87,22 @@ export const CODE_POLICY = {
  * (per address or IP; CodeRateLimitedDetails, Retry-After).
  * Sets __Host-oa_code. Resend = the same call again.
  */
-export const CodeRequestSchema = z.strictObject({
-  email: z.string().trim().pipe(z.email()),
+const CodeRequestCommon = {
   next: z.string().optional(),
   /** Required when AuthProviders' email entry has turnstileSiteKey. */
   turnstileToken: z.string().min(1).optional(),
-});
+};
+export const CodeRequestSchema = z.union([
+  z.strictObject({
+    email: z.string().trim().pipe(z.email()),
+    ...CodeRequestCommon,
+  }),
+  /**
+   * The code that finishes a Google login (AUTH.codeLink): the address is the
+   * one sealed in this browser's own cookie, never a field here (#2590 G2).
+   */
+  z.strictObject({ link: z.literal(true), ...CodeRequestCommon }),
+]);
 export type CodeRequest = z.infer<typeof CodeRequestSchema>;
 
 export const CodeRequestedSchema = z.object({

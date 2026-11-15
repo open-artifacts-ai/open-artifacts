@@ -1352,6 +1352,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         });
       if (o.turnstile && r.data.turnstileToken === "fail")
         return err("turnstile_failed", "Verification failed; try again");
+      // { link: true } finishes a Google login; the mock has no such cookie.
+      if ("link" in r.data)
+        return err("bad_request", "Invalid email", { field: "email" });
       const email = r.data.email.toLowerCase();
       const n = (requests.get(email) ?? 0) + 1;
       requests.set(email, n);

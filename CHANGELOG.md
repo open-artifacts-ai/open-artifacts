@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.190.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.190.0...v0.190.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **members:** the invite button waits for login settings; T19 waits for the dialog ([#2605](https://github.com/open-artifacts-ai/open-artifacts/issues/2605)) ([039f9a6](https://github.com/open-artifacts-ai/open-artifacts/commit/039f9a6895e6f860ee4f701ff608d1c1cd75ee3b))
+
 ## [0.190.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.189.0...v0.190.0) (2026-11-15)
 
 
