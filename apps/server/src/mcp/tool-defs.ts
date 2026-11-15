@@ -23,6 +23,7 @@ import {
   ListQuerySchema,
   ListSpacesInputSchema,
   ListVersionsInputSchema,
+  PublishToolInputNeedPaidSchema,
   PublishToolInputNoDocSchema,
   PublishToolInputSchema,
   ResolveCommentInputSchema,
@@ -301,16 +302,18 @@ export const descriptionFor = (name: ToolName, spaces = true): string => {
 export const toolConfig = <N extends ToolName>(
   name: N,
   spaces = true,
-  docs = false,
+  docs: boolean | "needs_paid" = false,
 ) => {
   const d = defOf(name);
   return {
     description: descriptionFor(name, spaces),
     // A deployment with docs on (DOCS_ENABLED) takes the schema that names doc.
-    inputSchema: (docs && name === "publish_artifact"
-      ? PublishToolInputSchema
-      : docs && name === "list_artifacts"
-        ? ListQuerySchema
-        : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
+    inputSchema: (docs === "needs_paid" && name === "publish_artifact"
+      ? PublishToolInputNeedPaidSchema
+      : docs === true && name === "publish_artifact"
+        ? PublishToolInputSchema
+        : docs === true && name === "list_artifacts"
+          ? ListQuerySchema
+          : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

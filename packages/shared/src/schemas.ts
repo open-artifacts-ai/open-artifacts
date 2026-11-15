@@ -321,6 +321,9 @@ export const PublishToolInputSchema = PublishShape.superRefine(
 );
 /** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
 export const DOCS_NEED_PAID_MESSAGE =
+  "Collaborative docs need Cloudflare's Workers Paid plan. The person who runs this instance turns on Workers Paid in their Cloudflare account, then runs setup again with --upgrade --plan paid.";
+/** The library's empty state on a self-host without Workers Paid (#2100). */
+export const DOCS_NEED_PAID_EMPTY_MESSAGE =
   "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
 /**
  * PublishToolInputSchema without the doc format: tools/list and the skill list
@@ -334,6 +337,15 @@ export const PublishToolInputNoDocSchema = publishShape(
   z.enum(STORED_FORMATS, {
     error: (iss) =>
       iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
+  }) as unknown as typeof FormatSchema,
+).superRefine(refinePublish(true));
+/**
+ * ...and the same for an install where creation is on but docs need Workers
+ * Paid: format "doc" is refused with the next step (#2100).
+ */
+export const PublishToolInputNeedPaidSchema = publishShape(
+  z.enum(STORED_FORMATS, {
+    error: (iss) => (iss.input === "doc" ? DOCS_NEED_PAID_MESSAGE : undefined),
   }) as unknown as typeof FormatSchema,
 ).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
