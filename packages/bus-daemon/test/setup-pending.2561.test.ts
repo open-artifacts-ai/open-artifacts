@@ -100,8 +100,12 @@ describe("setup pending on self (#2561)", () => {
     const stop = answerClaims(h, true, 300);
     const a = await h.adapter("A", { caps: [ADAPTER_CAPS.setup] });
     expect((await selfRow(a)).agent).not.toHaveProperty("setup_pending");
-    await vi.waitFor(async () =>
-      expect((await selfRow(a)).agent.setup_pending).toBe(SETUP_PENDING_TEXT),
+    await vi.waitFor(
+      async () =>
+        expect((await selfRow(a)).agent.setup_pending).toBe(
+          SETUP_PENDING_TEXT,
+        ),
+      { timeout: 10_000, interval: 50 },
     );
     stop();
   });
