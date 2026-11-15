@@ -98,6 +98,7 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
+import { recordCommentItems, recordDecisionItems } from "./inbox-items.js";
 import { noteCommented } from "./onboarding.js";
 import {
   mentionedKey,
@@ -1046,7 +1047,11 @@ const emailPeople = (
   after && comment
     ? inBackground(
         after.ctx,
-        emailCommentRecipients(env, { artifactId, threadId, comment, reply }),
+        Promise.all([
+          // #2512 S2: the same people, in their inbox (no email setting needed).
+          recordCommentItems(env, { artifactId, threadId, comment, reply }),
+          emailCommentRecipients(env, { artifactId, threadId, comment, reply }),
+        ]),
       )
     : undefined;
 
@@ -2068,6 +2073,16 @@ export async function answerAsk(
       logError("ask_approve_audit_failed", e, { artifactId, commentId });
     }
   // Only the decision is "answered"; a weigh-in is input (#2381).
+  // #2512 S2: those who weighed in hear of the decision, before it closes their rows' siblings.
+  if (decided && stored)
+    await recordDecisionItems(env, {
+      artifactId,
+      threadId,
+      commentId,
+      question: ask.question,
+      by: stored.by,
+      decidedAt: stored.at,
+    });
   if (decided) await indexAnswered(env, artifactId, commentId);
   else if (who.kind === "user")
     await indexWeighed(env, artifactId, commentId, who.id);

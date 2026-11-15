@@ -10,6 +10,13 @@ import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
+import {
+  type ItemRow,
+  unreadMentionCount,
+  unreadMentions,
+  unreadUpdateCount,
+  updatesPage,
+} from "./inbox-items.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
 export const NEEDS_YOU_MAX = 200;
@@ -38,8 +45,13 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
     .from(artifactAsks)
     .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
     .where(forMe(caller));
-  return Math.min(r[0]?.n ?? 0, NEEDS_YOU_MAX);
+  return Math.min(
+    (r[0]?.n ?? 0) + (await unreadMentionCount(env, caller)),
+    NEEDS_YOU_MAX,
+  );
 }
+
+export { unreadUpdateCount };
 
 type Row = {
   artifactId: string;
@@ -190,14 +202,79 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
   return out;
 }
 
-/** The whole inbox response. Later, Updates and the cursor are the next slices. */
-export async function inboxOf(env: Env, caller: Me): Promise<Inbox> {
-  const list = await needsYou(env, caller);
+/** The text of a stored item, written here and never taken from a client. */
+const textOf = (r: ItemRow, name: string): string => {
+  switch (r.kind) {
+    case "mention":
+      return `${name} mentioned you: ${r.excerpt}`;
+    case "reply":
+      return `${name} replied: ${r.excerpt}`;
+    case "comment":
+      return `${name} commented: ${r.excerpt}`;
+    case "share":
+      return `${name} shared "${r.excerpt}" with you`;
+    default:
+      return `${name} decided: ${r.excerpt}`;
+  }
+};
+
+/** Stored rows as inbox items, the actor shown as the comments API shows them to the caller. */
+async function itemsOf(
+  env: Env,
+  caller: Me,
+  rows: ItemRow[],
+): Promise<InboxItem[]> {
+  if (rows.length === 0) return [];
+  const viewer: CommentViewer = {
+    userId: caller.user.id,
+    short: null,
+    guest: isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+  };
+  const faces = await askerFaces(
+    env,
+    viewer,
+    rows.map((r) => JSON.parse(r.actor) as StoredActor),
+  );
+  return rows.map((r, i): InboxItem => {
+    const face = faces[i] as CommentAuthor;
+    return {
+      id: r.id,
+      level: r.kind === "mention" ? "needs_you" : "update",
+      kind: r.kind,
+      artifact: { id: r.artifactId, title: r.title },
+      actor: face,
+      text: textOf(r, face.name),
+      href: r.threadId
+        ? `${viewerPath(r.artifactId)}?thread=${encodeURIComponent(r.threadId)}`
+        : viewerPath(r.artifactId),
+      createdAt: new Date(r.createdAt).toISOString(),
+      readAt: r.readAt === null ? null : new Date(r.readAt).toISOString(),
+    };
+  });
+}
+
+/** The whole inbox response: Needs you (asks, then mentions) and one page of Updates. */
+export async function inboxOf(
+  env: Env,
+  caller: Me,
+  cursor?: string,
+): Promise<Inbox> {
+  const [asks, mentionRows, page, unread] = await Promise.all([
+    needsYou(env, caller),
+    unreadMentions(env, caller),
+    updatesPage(env, caller, cursor),
+    unreadUpdateCount(env, caller),
+  ]);
+  const list = [...asks, ...(await itemsOf(env, caller, mentionRows))].slice(
+    0,
+    NEEDS_YOU_MAX,
+  );
   return {
     needsYou: list,
     later: [],
-    updates: [],
-    cursor: null,
-    counts: { needsYou: list.length, unreadUpdates: 0 },
+    updates: await itemsOf(env, caller, page.rows),
+    cursor: page.next,
+    counts: { needsYou: list.length, unreadUpdates: unread },
   };
 }

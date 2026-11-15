@@ -550,6 +550,42 @@ export const artifactAsks = sqliteTable(
   ],
 );
 
+// #2512 S2: the For you inbox's stored items (mentions and updates). Asks are
+// not here: they come from artifact_asks. `key` makes a write idempotent: one
+// row per (user, key), e.g. "reply:<comment id>", "share:<created at>".
+export const inboxItems = sqliteTable(
+  "inbox_items",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    level: text("level").notNull(),
+    key: text("key").notNull(),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    threadId: text("thread_id"),
+    commentId: text("comment_id"),
+    // The actor's StoredActor (or a guest/user stub), as JSON.
+    actor: text("actor").notNull(),
+    excerpt: text("excerpt").notNull(),
+    createdAt: integer("created_at").notNull(),
+    readAt: integer("read_at"),
+  },
+  (t) => [
+    uniqueIndex("inbox_items_key_idx").on(t.userId, t.key),
+    index("inbox_items_read_idx").on(t.userId, t.readAt),
+    index("inbox_items_created_idx").on(t.userId, t.createdAt),
+    check(
+      "inbox_items_kind",
+      inList("kind", ["mention", "reply", "comment", "share", "decision"]),
+    ),
+    check("inbox_items_level", inList("level", ["needs_you", "update"])),
+  ],
+);
+
 // #2263 passkeys: one row per WebAuthn credential a member registered. It can
 // confirm a pick only once `created_at` is 24 h old (services/passkeys.ts).
 // public_key is the credential's COSE key, base64url; sign_count is the last

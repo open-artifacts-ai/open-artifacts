@@ -1,4 +1,5 @@
 import {
+  InboxReadBodySchema,
   MCP_PATH,
   type Me,
   type Member,
@@ -34,7 +35,12 @@ import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { busOn } from "../services/bus.js";
 import { docsState } from "../services/docs-available.js";
-import { inboxOf, needsYouCount } from "../services/inbox.js";
+import {
+  inboxOf,
+  needsYouCount,
+  unreadUpdateCount,
+} from "../services/inbox.js";
+import { markAllRead, markRead } from "../services/inbox-items.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
@@ -95,7 +101,7 @@ async function toMe(
     try {
       me.inbox = {
         needsYou: await needsYouCount(c.env, who0),
-        unreadUpdates: 0,
+        unreadUpdates: await unreadUpdateCount(c.env, who0),
       };
     } catch (e) {
       logWarn("me_inbox_count_failed", e);
@@ -259,7 +265,19 @@ export function mountMe(app: AppType): void {
     const who = caller(c);
     if (who.kind !== "user")
       throw new ApiError("unauthorized", "Login required");
-    return c.json(await inboxOf(c.env, who));
+    return c.json(await inboxOf(c.env, who, c.req.query("cursor")));
+  });
+
+  // Mark items read by id (an update, or a mention): another person's ids and
+  // asks match nothing. Read-all clears updates only; a mention clears by id.
+  app.post(R.meInboxRead, async (c) => {
+    const user = requireUser(c);
+    const { ids } = await jsonBody(c, InboxReadBodySchema);
+    return c.json({ read: await markRead(c.env, user.id, ids) });
+  });
+  app.post(R.meInboxReadAll, async (c) => {
+    const user = requireUser(c);
+    return c.json({ read: await markAllRead(c.env, user.id) });
   });
 
   // Session (CSRF-guarded by csrf() in createApp) or PAT; guests included.
