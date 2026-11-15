@@ -219,6 +219,13 @@ describe("authConfig", () => {
       hosted({ AUTH_DOMAIN_JOIN_SOURCE: "owner", AUTH_DOMAIN_JOIN: "invite" })
         .domainJoin,
     ).toBe("invite");
+    // Hosted honours it for exactly one domain (L1).
+    const two = hosted({
+      AUTH_DOMAIN_JOIN_SOURCE: "owner",
+      AUTH_DOMAINS: "a.com,b.com",
+    });
+    expect(two.domainJoin).toBe("invite");
+    expect(two.problems.length).toBeGreaterThan(0);
     // And never without domains.
     expect(
       hosted({ AUTH_DOMAIN_JOIN_SOURCE: "owner", AUTH_DOMAINS: "" }).domainJoin,

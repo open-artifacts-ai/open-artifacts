@@ -316,7 +316,15 @@ export async function inviteMemberOutcome(
     status: string;
   }>();
   if (gone && statusOf(gone.status) === "removed") {
-    const restored = await restoreMember(env, gone.id, inviter);
+    // At most the role asked for: a guest invite restores a guest; a member
+    // invite restores a member (a guest row stays a guest); never an admin.
+    const restored = await restoreMember(
+      env,
+      gone.id,
+      inviter,
+      undefined,
+      input.role === "guest" ? "guest" : undefined,
+    );
     const [back] = await getDb(env).batch([
       getDb(env)
         .update(users)
@@ -785,7 +793,12 @@ const RESTORE_TARGET = `id = ?1 and status = 'removed' and guest_lapsed = 0
   and role <> 'owner' and (role <> 'admin' or ?3 = 1)`;
 // An admin's restore: never a directory removal while sync manages the
 // install (?4 = 1), never a row whose address was released (?5, placeholder).
-const RESTORE = `${RESTORE_SET}
+// ?6 = 1: restore as a guest whatever the row held (an invite that asked for
+// a guest, #2520): never a higher role than was asked for.
+const RESTORE = `${RESTORE_SET.replace(
+  "role = case when role = 'guest' then",
+  "role = case when role = 'guest' or ?6 = 1 then",
+)}
   where ${RESTORE_TARGET} and (removed_by_sync = 0 or ?4 = 0) and email <> ?5`;
 // Directory sync's revive: only a directory removal (removed_by_sync = 1),
 // only while the row still holds Google subject ?5 (the same person, never a
@@ -821,6 +834,8 @@ export async function restoreMember(
   id: string,
   actor: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
+  /** An invite's role: "guest" restores them as a guest (never higher than asked). */
+  asRole?: "guest",
 ): Promise<Member> {
   // Hosted billing: bringing someone back adds a person, a team feature, so
   // it takes the invite's path (a free instance whose trial never ran passes
@@ -839,7 +854,14 @@ export async function restoreMember(
   if (row.email === placeholder(id)) throw addressReleased();
   if (plan?.trialEligible) await requireTrialStarted(env);
   const out = await env.DB.batch([
-    stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced, placeholder(id)),
+    stmt(env.DB, RESTORE).bind(
+      id,
+      Date.now(),
+      admins,
+      synced,
+      placeholder(id),
+      asRole === "guest" ? 1 : 0,
+    ),
     audit(env, "user.status", { type: "user", id }, userActor(actor.id), {
       reason: "admin_restore",
       detail: { status: "active" },

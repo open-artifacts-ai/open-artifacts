@@ -84,6 +84,9 @@ export function mountMembers(app: AppType): void {
    * Invite; 201 with `emailed`; 200 when an invited, never-signed-in row is re-invited (fresh clock, email again). `emailed:false` after the 3 s send timeout
    * means delivery isn't confirmed: the email may still arrive.
    */
+  // An address that belongs to a removed person is restored as a fresh invite
+  // (at most the role asked for: a guest invite restores a guest). One with no
+  // way in is refused first: 400 invite_unreachable, and not restored.
   app.post(R.members, async (c) => {
     const inviter = requireManager(c);
     const input = await jsonBody(c, MemberInviteSchema);

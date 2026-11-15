@@ -76,6 +76,8 @@ async function touch(
   // guest becomes member, every other role is kept), never written back from
   // the read above: an admin demotion racing this sign-in sticks (P3 T6).
   // OWNER_EMAIL becomes owner only while no owner row exists (one owner).
+  // An invited guest (invited_at set) stays a guest: only a share-made guest
+  // is promoted on a listed hd (#2520).
   // An active row only: a user who stopped being active mid-sign-in matches
   // no row, gets no auth.signin row, and is refused (null). The admission
   // and its audit row commit together.
@@ -86,7 +88,7 @@ async function touch(
       env.DB,
       `update users set last_seen_at = ?1, name = coalesce(?2, name),
          role = case when ?4 = 1 and not exists (select 1 from users where role = 'owner') then 'owner'
-                     when role = 'guest' and ?5 = 1 then 'member' else role end
+                     when role = 'guest' and ?5 = 1 and invited_at is null then 'member' else role end
        where id = ?3 and status = 'active'
        returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`,
     ).bind(

@@ -1653,7 +1653,7 @@ export const LoginSettingsSchema = z.object({
   editable: z.boolean(),
   /** The domain the owner could add now: their token hd at their last Google login; null for a Gmail owner. */
   provable: z.string().nullable(),
-  /** Active members whose address is in the login domains. */
+  /** Active people whose address is in the login domains, however they came in (invited, joined or shared). */
   joined: z.number().int().nonnegative(),
   /** The caller has answered the first-invite question (per person). */
   firstInviteSeen: z.boolean(),

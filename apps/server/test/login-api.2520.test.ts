@@ -10,9 +10,11 @@ import {
 } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { authConfig } from "../src/auth/config.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import type { EffectivePlan } from "../src/billing/plan.js";
 import type { Env } from "../src/env.js";
+import { admit } from "../src/services/identity.js";
 import { loginSettings, soloPlan } from "../src/services/login.js";
 import { direct, trial, uniq } from "./auth-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
@@ -436,5 +438,77 @@ describe("PUT login settings", () => {
     );
     const m = await login(uniq("m", "x.com"), "member");
     expect((await put(m.cookie, ["a.com"])).status).toBe(404);
+  });
+});
+
+describe("guest invites keep their role (#2520)", () => {
+  const roleOf = async (id: string) =>
+    (
+      await env.DB.prepare("select role from users where id = ?")
+        .bind(id)
+        .first<{ role: string }>()
+    )?.role;
+  const emailOf = async (id: string) =>
+    (
+      await env.DB.prepare("select email from users where id = ?")
+        .bind(id)
+        .first<{ email: string }>()
+    )?.email as string;
+  const remove = (id: string) =>
+    env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(id)
+      .run();
+  const invite = (email: string, role: string) =>
+    call(OWN, R.members, owner_cookie, "POST", { email, role });
+  let owner_cookie = "";
+
+  it("M1: an invited guest stays a guest on a Google login at a listed hd; a share-made guest is promoted", async () => {
+    owner_cookie = await owner();
+    const e = uniq("maya", "a.com");
+    const r = await invite(e, "guest");
+    expect(r.status).toBe(201);
+    const id = MemberInviteResultSchema.parse(await r.json()).id;
+    const login1 = (email: string) => ({
+      provider: "google" as const,
+      subject: `sub-${crypto.randomUUID()}`,
+      email,
+      name: "M",
+      tenant: "a.com",
+      hd: "a.com",
+    });
+    const out = await admit(OWN, authConfig(OWN), login1(e));
+    expect(out).toMatchObject({ ok: true, user: { id, role: "guest" } });
+    expect(await roleOf(id)).toBe("guest");
+    // A guest a share created (no invited_at) is still promoted.
+    const shared = await login(uniq("sh", "a.com"), "guest");
+    const email = await emailOf(shared.userId);
+    expect(await admit(OWN, authConfig(OWN), login1(email))).toMatchObject({
+      ok: true,
+      user: { id: shared.userId, role: "member" },
+    });
+  });
+
+  it("M2: restore-on-invite never gives more than the role asked for", async () => {
+    owner_cookie = await owner();
+    // A removed member, invited as a guest: restored as a guest.
+    const m = await login(uniq("rm", "a.com"), "member");
+    await remove(m.userId);
+    expect((await invite(await emailOf(m.userId), "guest")).status).toBe(200);
+    expect(await roleOf(m.userId)).toBe("guest");
+    // A removed member, invited as a member: a member.
+    const m2 = await login(uniq("rm2", "a.com"), "member");
+    await remove(m2.userId);
+    expect((await invite(await emailOf(m2.userId), "member")).status).toBe(200);
+    expect(await roleOf(m2.userId)).toBe("member");
+    // A removed guest, invited as a member: stays a guest.
+    const g = await login(uniq("rg", "a.com"), "guest");
+    await remove(g.userId);
+    expect((await invite(await emailOf(g.userId), "member")).status).toBe(200);
+    expect(await roleOf(g.userId)).toBe("guest");
+    // A removed admin, invited as an admin by the owner: a member, never admin.
+    const a = await login(uniq("ra", "a.com"), "admin");
+    await remove(a.userId);
+    expect((await invite(await emailOf(a.userId), "admin")).status).toBe(200);
+    expect(await roleOf(a.userId)).toBe("member");
   });
 });
