@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 
 /**
  * The install layout under a bus home (#2552):
@@ -76,7 +76,12 @@ function mustBeSafe(path: string): void {
 /** The version `bin` points at; undefined for a missing bin or a real folder. */
 export function currentVersion(home: string): string | undefined {
   try {
-    const v = readlinkSync(binPath(home)).split("/").filter(Boolean).pop();
+    const link = readlinkSync(binPath(home));
+    // Exactly what swap writes. A Windows junction reads back absolute.
+    const v =
+      process.platform === "win32"
+        ? link.split(/[\\/]/).filter(Boolean).pop()
+        : /^versions\/([^/]+)$/.exec(link)?.[1];
     return isSafeVersion(v) ? v : undefined;
   } catch {
     return undefined;
@@ -103,7 +108,10 @@ export function readState(home: string): UpdateState {
 export function writeState(home: string, state: UpdateState): void {
   let rest: Record<string, unknown> = {};
   try {
-    rest = JSON.parse(readFileSync(stateFile(home), "utf8"));
+    const old: unknown = JSON.parse(readFileSync(stateFile(home), "utf8"));
+    // Only a plain object is worth keeping; an array or null is dropped.
+    if (old !== null && typeof old === "object" && !Array.isArray(old))
+      rest = old as Record<string, unknown>;
   } catch {
     // none yet
   }
@@ -127,7 +135,9 @@ export function ensureVersions(home: string): void {
   mkdirSync(versionsDir(home), { recursive: true, mode: 0o700 });
   if (!lstat(versionsDir(home))?.isSymbolicLink())
     chmodSync(versionsDir(home), 0o700);
-  mustBeSafe(home);
+  // A home that is a link (a folder moved to another disk) is allowed: the
+  // checks run on what it points at.
+  mustBeSafe(realpathSync(home));
   mustBeSafe(versionsDir(home));
 }
 
@@ -165,7 +175,9 @@ export function migrate(
 /**
  * Builds `versions/<version>` with `fill(dir)` in a private staging folder
  * beside it, then renames it into place (same filesystem, so atomic). A
- * folder of the same version is replaced.
+ * folder of the same version is replaced: when `bin` points at it, `bin`
+ * has no target for the moment between the two renames. Install runs with the
+ * service stopped; the updater never replaces the running version.
  */
 export function stage(
   home: string,
@@ -204,6 +216,8 @@ export function stage(
 export function swap(home: string, version: string): void {
   if (!isSafeVersion(version)) throw new Error("not a version");
   const target = versionDir(home, version);
+  // Never leave bin dangling: the target is a real folder, and a safe one.
+  if (!lstat(target)?.isDirectory()) throw new Error("no such version folder");
   mustBeSafe(target);
   const bin = binPath(home);
   const tmp = `${bin}.${process.pid}.new`;
@@ -239,39 +253,53 @@ export function inUse(
   versionPath: string,
   alive: (pid: number) => boolean = pidAlive,
 ): boolean {
+  const dir = liveDir(versionPath);
+  const st = lstat(dir);
+  if (!st) return false;
+  // Never followed: a link or a file where the folder belongs is unreadable.
+  if (!st.isDirectory()) return true;
   let names: string[];
   try {
-    names = readdirSync(liveDir(versionPath));
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code !== "ENOENT";
+    names = readdirSync(dir);
+  } catch {
+    return true;
   }
   let live = false;
   for (const n of names) {
     if (!/^\d+$/.test(n)) continue;
-    if (alive(Number(n))) live = true;
+    const f = join(dir, n);
+    const k = lstat(f);
+    if (k?.isSymbolicLink()) rmSync(f, { force: true });
+    else if (!k?.isFile()) continue;
+    else if (alive(Number(n))) live = true;
     // A dead pid's marker is stale: drop it.
-    else rmSync(join(liveDir(versionPath), n), { force: true });
+    else rmSync(f, { force: true });
   }
   return live;
 }
 
+/** The folder names `markLive` accepts: x.y.z, or a legacy unknown-<ts>. */
+const MARKABLE = /^(?:\d+\.\d+\.\d+|unknown-\d+)$/;
+
 /**
  * Called at startup by the daemon and every adapter/CLI process: when the
- * running bundle's real path is `<home>/versions/<v>/...`, writes
- * `versions/<v>/.live/<pid>` (0600) and removes it on exit. Best effort:
+ * running bundle's real path is under the real `<home>/versions/<v>/`, writes
+ * `versions/<v>/.live/<pid>` (0600) and removes it on exit. Only that home:
+ * any other `versions` folder (an nvm install) is left alone. Best effort:
  * never throws. Returns the marker path, or undefined.
  */
 export function markLive(
   entryFile: string,
+  home: string,
   pid: number = process.pid,
 ): string | undefined {
   try {
-    const real = realpathSync(entryFile);
-    const parts = real.split(sep);
-    const i = parts.lastIndexOf("versions");
-    const v = parts[i + 1];
-    if (i < 1 || !isSafeVersion(v) || parts.length <= i + 2) return undefined;
-    const vdir = parts.slice(0, i + 2).join(sep);
+    const root = realpathSync(versionsDir(home));
+    const rel = relative(root, realpathSync(entryFile)).split(sep);
+    const v = rel[0];
+    if (rel.length < 2 || v === undefined || v === ".." || !MARKABLE.test(v))
+      return undefined;
+    const vdir = join(root, v);
     mkdirSync(liveDir(vdir), { recursive: true, mode: 0o700 });
     const marker = join(liveDir(vdir), String(pid));
     writeFileSync(marker, "", { mode: 0o600 });
@@ -300,6 +328,15 @@ export function prune(
   const removed: string[] = [];
   for (const name of readdirSync(dir)) {
     if (keepSet.has(name)) continue;
+    const st = lstat(join(dir, name));
+    if (!st) continue;
+    // A stray link is unlinked, never followed; a stray file is left alone.
+    if (st.isSymbolicLink()) {
+      rmSync(join(dir, name), { force: true });
+      removed.push(name);
+      continue;
+    }
+    if (!st.isDirectory()) continue;
     const m = /^\.(stage|old)\.(\d+)$/.exec(name);
     if (m ? alive(Number(m[2])) : inUse(join(dir, name), alive)) continue;
     rmSync(join(dir, name), { recursive: true, force: true });

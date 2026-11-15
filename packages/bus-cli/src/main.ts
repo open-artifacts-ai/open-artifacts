@@ -47,15 +47,15 @@ export async function main(
     sayErr(ctx, ctx.copy.usage(e instanceof Error ? e.message : String(e)));
     return 2;
   }
+  const ctx = makeCtx(cmd.noColor);
+  if (cmd.home) ctx.home = resolve(cmd.home);
   // A long-running process says which version folder it runs from (#2552).
   if (
     !TERMINAL.has(cmd.cmd) &&
     cmd.cmd !== "install" &&
     cmd.cmd !== "uninstall"
   )
-    markLive(fileURLToPath(import.meta.url));
-  const ctx = makeCtx(cmd.noColor);
-  if (cmd.home) ctx.home = resolve(cmd.home);
+    markLive(fileURLToPath(import.meta.url), ctx.home);
   // A moved home no harness config points at gets `login --home` hints (#2425).
   ctx.copy = copyFor(ctx);
   // Only commands whose text goes to a person's terminal print oa-bus. The

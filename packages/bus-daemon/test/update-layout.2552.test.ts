@@ -9,6 +9,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -29,6 +30,7 @@ import {
   swap,
   unsafeDir,
   versionDir,
+  writeState,
 } from "../src/update/layout.ts";
 
 const home = () => {
@@ -177,14 +179,14 @@ describe("versioned layout (#2552)", () => {
       writeFileSync(join(d, "dist/index.js"), "");
     });
     // Reached through the bin link: the real path decides.
-    const m = markLive(join(h, "bin/dist/index.js"), 4321);
+    const m = markLive(join(h, "bin/dist/index.js"), h, 4321);
     expect(realpathSync(m as string)).toBe(
       realpathSync(join(h, "versions/1.0.0/.live/4321")),
     );
     expect(statSync(m as string).mode & 0o777).toBe(0o600);
     expect(inUse(versionDir(h, "1.0.0"), (p) => p === 4321)).toBe(true);
     // Not under versions/: nothing written, no throw.
-    expect(markLive(join(tmpdir(), "nowhere.js"), 1)).toBeUndefined();
+    expect(markLive(join(tmpdir(), "nowhere.js"), h, 1)).toBeUndefined();
   });
 
   it("prune refuses a versions folder others can write", () => {
@@ -293,5 +295,115 @@ describe("versioned layout (#2552)", () => {
     installVersion(h, "1.1.0", put("1.1.0"));
     expect(JSON.parse(readFileSync(f, "utf8")).off).toBe(true);
     expect(readlinkSync(join(h, "bin"))).toBe(join("versions", "1.1.0"));
+  });
+
+  it("markLive writes nothing for an nvm-shaped path outside the home (M1)", () => {
+    const h = home();
+    installVersion(h, "1.0.0", put("1.0.0"));
+    const nvm = join(
+      mkdtempSync(join(tmpdir(), "oa-nvm-")),
+      "versions/node/v22.1.0/lib/x",
+    );
+    mkdirSync(nvm, { recursive: true });
+    writeFileSync(join(nvm, "index.js"), "");
+    expect(markLive(join(nvm, "index.js"), h, 5)).toBeUndefined();
+    expect(existsSync(join(nvm, "../../../.live"))).toBe(false);
+    expect(existsSync(join(h, "versions/1.0.0/.live"))).toBe(false);
+    // Under the home but not a release name: no.
+    mkdirSync(join(h, "versions/dev"));
+    writeFileSync(join(h, "versions/dev/i.js"), "");
+    expect(markLive(join(h, "versions/dev/i.js"), h, 5)).toBeUndefined();
+    // Another home's version folder is not this home's.
+    const other = home();
+    installVersion(other, "1.0.0", (d) => writeFileSync(join(d, "i.js"), ""));
+    expect(markLive(join(other, "bin/i.js"), h, 5)).toBeUndefined();
+  });
+
+  it("swap needs a real version folder and leaves bin alone otherwise (L1)", () => {
+    const h = home();
+    installVersion(h, "1.0.0", put("1.0.0"));
+    expect(() => swap(h, "9.9.9")).toThrow(/no such version/);
+    symlinkSync(versionDir(h, "1.0.0"), versionDir(h, "3.0.0"));
+    expect(() => swap(h, "3.0.0")).toThrow(/no such version/);
+    expect(currentVersion(h)).toBe("1.0.0");
+    expect(existsSync(join(h, "bin/package.json"))).toBe(true);
+  });
+
+  it("currentVersion reads only exactly versions/<v> (L2)", () => {
+    const h = home();
+    installVersion(h, "1.0.0", put("1.0.0"));
+    for (const t of [
+      "/elsewhere/versions/1.0.0",
+      "versions/1.0.0/",
+      "versions/../versions/1.0.0",
+      "x/versions/1.0.0",
+      "1.0.0",
+    ]) {
+      rmSync(join(h, "bin"), { force: true });
+      symlinkSync(t, join(h, "bin"));
+      expect(currentVersion(h)).toBeUndefined();
+    }
+    rmSync(join(h, "bin"), { force: true });
+    symlinkSync("versions/1.0.0", join(h, "bin"));
+    expect(currentVersion(h)).toBe("1.0.0");
+  });
+
+  it("reinstalling the running version works with the service stopped (L3)", () => {
+    const h = home();
+    installVersion(h, "1.0.0", put("1.0.0"));
+    installVersion(h, "1.0.0", put("1.0.0"));
+    expect(currentVersion(h)).toBe("1.0.0");
+    expect(existsSync(join(h, "bin/package.json"))).toBe(true);
+  });
+
+  it("prune unlinks a stray symlink without following it and skips files (L4)", () => {
+    const h = home();
+    installVersion(h, "2.0.0", put("2.0.0"));
+    const outside = mkdtempSync(join(tmpdir(), "oa-out-"));
+    writeFileSync(join(outside, "keep"), "x");
+    symlinkSync(outside, join(h, "versions", "0.1.0"));
+    writeFileSync(join(h, "versions", "note.txt"), "x");
+    expect(prune(h, ["2.0.0"], { alive: () => false })).toEqual(["0.1.0"]);
+    expect(readFileSync(join(outside, "keep"), "utf8")).toBe("x");
+    expect(existsSync(join(h, "versions", "note.txt"))).toBe(true);
+    // A .live that is a link is not followed: the folder is kept.
+    mkdirSync(versionDir(h, "0.2.0"));
+    symlinkSync(outside, join(versionDir(h, "0.2.0"), ".live"));
+    expect(prune(h, ["2.0.0"], { alive: () => false })).toEqual([]);
+    // A marker that is a link is unlinked, never followed.
+    mkdirSync(versionDir(h, "0.3.0"));
+    mkdirSync(join(versionDir(h, "0.3.0"), ".live"));
+    symlinkSync(
+      join(outside, "keep"),
+      join(versionDir(h, "0.3.0"), ".live", "77"),
+    );
+    expect(prune(h, ["2.0.0"], { alive: () => true })).toEqual(["0.3.0"]);
+    expect(readFileSync(join(outside, "keep"), "utf8")).toBe("x");
+  });
+
+  it("a symlinked home is allowed; the checks run on its target (L5)", () => {
+    const real = home();
+    const link = `${real}-link`;
+    symlinkSync(real, link);
+    installVersion(link, "1.0.0", put("1.0.0"));
+    expect(currentVersion(real)).toBe("1.0.0");
+    expect(existsSync(join(real, "versions/1.0.0/package.json"))).toBe(true);
+    // The target being group-writable is still refused.
+    chmodSync(real, 0o770);
+    expect(() => installVersion(link, "1.1.0", put("1.1.0"))).toThrow(
+      /writable by others/,
+    );
+  });
+
+  it("writeState ignores an old file that is not a plain object (L6)", () => {
+    const h = home();
+    for (const junk of ["[1,2]", "null", '"s"', "7", "{oops"]) {
+      writeFileSync(join(h, "update.json"), junk);
+      writeState(h, { armed: true, current: "1.0.0" });
+      expect(JSON.parse(readFileSync(join(h, "update.json"), "utf8"))).toEqual({
+        armed: true,
+        current: "1.0.0",
+      });
+    }
   });
 });
