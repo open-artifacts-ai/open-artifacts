@@ -1,6 +1,7 @@
 import { inDomains } from "@oa/auth-core";
+import { callerOf, capOfCaller } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { isInstanceOwner } from "../auth/policy.js";
+import { capsReads, isGuestRole, isInstanceOwner } from "../auth/policy.js";
 import { type Cap, takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { getUser } from "./users.js";
@@ -18,18 +19,32 @@ export const OWN_AGENTS_ONLY = "You can mention only your own agents here.";
 export const TOO_MANY_MENTIONS =
   "That's a lot of mentions. Try again in a few minutes.";
 
+/** A guest: the guest role, or a guest cap on the person. Decided without AUTH_DOMAINS. */
+export async function isGuestMember(
+  env: Env,
+  userId: string,
+): Promise<boolean> {
+  const user = await getUser(env, userId);
+  return (
+    !!user && (isGuestRole(user.role) || capsReads(capOfCaller(callerOf(user))))
+  );
+}
+
 /**
- * An outside member: a signed-in person (not the owner) whose address is
- * outside the instance's domains. With no domains configured nobody is outside.
+ * Outside for agent wake-ups: a guest always, whatever AUTH_DOMAINS says; or
+ * a signed-in person (not the owner) whose address is outside the instance's
+ * domains. With no domains configured only guests are outside.
  */
 export async function isOutsideMember(
   env: Env,
   userId: string,
 ): Promise<boolean> {
-  const domains = authConfig(env).domains;
-  if (domains.length === 0) return false;
   const user = await getUser(env, userId);
-  if (!user || isInstanceOwner(user)) return false;
+  if (!user) return false;
+  if (isGuestRole(user.role) || capsReads(capOfCaller(callerOf(user))))
+    return true;
+  const domains = authConfig(env).domains;
+  if (domains.length === 0 || isInstanceOwner(user)) return false;
   return !inDomains(domains, user.email.slice(user.email.lastIndexOf("@") + 1));
 }
 

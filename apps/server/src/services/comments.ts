@@ -99,6 +99,7 @@ import {
   notifyCommented,
 } from "./follows.js";
 import {
+  isGuestMember,
   isOutsideMember,
   MentionGate,
   OWN_AGENTS_ONLY,
@@ -1369,6 +1370,13 @@ async function resolveExtras(
     (e) => e.agent.userId !== viewerId,
   );
   const gate = gateOf(env, who, none);
+  // A guest wakes no agent, their own included: the same refusal as a
+  // viewer who may not mention.
+  if (agents.size > 0 && viewerId && (await isGuestMember(env, viewerId)))
+    throw new ApiError(
+      "forbidden",
+      "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
+    );
   if (others.length > 0) {
     // 1: an outside member names only their own agents.
     if (viewerId && (await isOutsideMember(env, viewerId)))
@@ -2035,6 +2043,8 @@ export async function answerChallenge(
   optionId: string,
   interactive: boolean,
 ) {
+  if (await guestWho(env, who))
+    throw new ApiError("forbidden", "Only the people asked can answer");
   const { ask, status, author } = await storedAsk(
     env,
     artifactId,
@@ -2082,6 +2092,9 @@ export async function answerChallenge(
  * always for a token or MCP grant; 409 already_answered; then the challenge
  * rules of verifyPick (410 challenge_expired, 400 passkey_failed).
  */
+const guestWho = async (env: Env, who: CommentWho): Promise<boolean> =>
+  who.kind === "guest" || (await isGuestMember(env, who.id));
+
 export async function answerAsk(
   env: Env,
   artifactId: string,
@@ -2096,6 +2109,9 @@ export async function answerAsk(
   /** #2381: the caller may edit the page (the decider must), and is a guest-role member. */
   caps: { canDecide: boolean; guest: boolean },
 ): Promise<Comment> {
+  // A guest picks nothing.
+  if (outsider(viewer) || caps.guest || (await guestWho(env, who)))
+    throw new ApiError("forbidden", "Only the people asked can answer");
   const { ask, status, author } = await storedAsk(
     env,
     artifactId,
@@ -2286,6 +2302,8 @@ export async function artifactAgents(
 ): Promise<ArtifactAgent[]> {
   const masked = guest || viewerId === null;
   // #2559: an outside member's @ list holds only their own agents.
+  // A guest's holds none.
+  if (viewerId !== null && (await isGuestMember(env, viewerId))) return [];
   const outside = viewerId !== null && (await isOutsideMember(env, viewerId));
   return (await agentRoster(env, artifactId, viewerId, true, true))
     .filter((a) => !outside || a.userId === viewerId)
