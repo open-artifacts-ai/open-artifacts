@@ -137,7 +137,7 @@ for (const scheme of ["light", "dark"] as const)
           name: "Stop letting acme.com join by itself?",
         });
         await expect(d).toContainText(
-          "The 14 members who already joined keep their access.",
+          "The 14 members at acme.com keep their access.",
         );
         await check(page, `domain-off-dialog-${tag}`);
         await d.getByRole("button", { name: "Turn off" }).click();

@@ -72,16 +72,23 @@ export const DOMAIN_ON = {
   confirm: "Log in again and turn on",
 } as const;
 
+/** The domains as one phrase: "acme.com", "acme.com and acme.io". */
+export const domainList = (domains: readonly string[]) => domains.join(" and ");
+
 export const DOMAIN_OFF = {
   title: (d: string) => `Stop letting ${d} join by itself?`,
-  /** `joined`: 0 leaves the sentence out; 1 is singular. */
-  body: (d: string, joined: number) =>
+  /**
+   * `joined`: the members who joined by domain; 0 leaves the sentence out, 1 is
+   * singular. `at`: every domain that joins by itself, joined with " and "
+   * (#2520: "acme.com and acme.io"); the switch's own domain when omitted.
+   */
+  body: (d: string, joined: number, at: string = d) =>
     [
       `New people at ${d} will need an invite.`,
       joined === 1
-        ? "The 1 member who already joined keeps their access."
+        ? `The 1 member at ${at} keeps their access.`
         : joined
-          ? `The ${joined} members who already joined keep their access.`
+          ? `The ${joined} members at ${at} keep their access.`
           : null,
       "Remove anyone in Members.",
     ]
