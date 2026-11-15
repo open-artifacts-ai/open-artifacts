@@ -173,7 +173,8 @@ describe("the rescue shim", () => {
       const c = startSelfCheck({
         home,
         running: "1.1.0",
-        ready: () => false,
+        hub: () => false,
+        local: () => true,
         exit: () => {},
         log: () => {},
         every: () => () => {},
@@ -287,6 +288,27 @@ describe("the rescue shim", () => {
         readFileSync(join(home, f), "utf8"),
       ),
     ).toEqual(before);
+  });
+
+  it("an install with no shim (no launcher, or win32) never arms auto-update", () => {
+    const mk = () => {
+      const home = mkdtempSync(join(tmpdir(), "oa-rescue-"));
+      const pkg = join(home, "pkg");
+      mkdirSync(join(pkg, "dist"), { recursive: true });
+      writeFileSync(join(pkg, "package.json"), '{"version":"2.0.0"}');
+      writeFileSync(join(pkg, "dist/index.js"), "");
+      return {
+        bus: join(home, ".oa-bus"),
+        src: { kind: "bundle", file: join(pkg, "dist/index.js") } as CliSource,
+      };
+    };
+    const a = mk();
+    installCli(a.bus, a.src);
+    expect(existsSync(join(a.bus, "rescue"))).toBe(false);
+    expect(readState(a.bus).armed).toBe(false);
+    const b = mk();
+    installCli(b.bus, b.src, process.execPath);
+    expect(readState(b.bus).armed).toBe(process.platform !== "win32");
   });
 
   it("the shim is written by installCli, outside versions/", () => {

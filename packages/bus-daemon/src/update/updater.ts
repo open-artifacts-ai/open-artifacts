@@ -68,6 +68,8 @@ export type UpdaterDeps = {
   busy: () => Busy;
   /** A login or an approval is under way. */
   loginActive: () => boolean;
+  /** The hub link is open and hello_ok has come: a switch waits for it. */
+  hubReady: () => boolean;
   /** The hub's version from its last hello_ok, when known. */
   serverVersion: () => string | undefined;
   /** Ends the daemon non-zero so the service starts the new version. */
@@ -116,12 +118,19 @@ export class Updater {
   private working = false;
   private wanted: { i: Instruction; at: number } | undefined;
   private readonly d: UpdaterDeps;
+  /** Decided once: the loop's flag, and a running version that is x.y.z. */
+  private readonly active: boolean;
+  /** An instance-asked step back held back by a login in progress. */
+  private stepBackHeld: Instruction | undefined;
   constructor(d: UpdaterDeps) {
     this.d = d;
+    this.active =
+      (d.enabled ?? UPDATER_LOOP_ENABLED) &&
+      parseVersion(d.running) !== undefined;
   }
 
   private get enabled(): boolean {
-    return this.d.enabled ?? UPDATER_LOOP_ENABLED;
+    return this.active;
   }
   private now(): number {
     return (this.d.now ?? Date.now)();
@@ -152,7 +161,13 @@ export class Updater {
       return { kind: "refused", reason: dec.reason };
     }
     if (i.stepBack === true) {
-      // Back to the kept previous: no download, no waiting for a quiet moment.
+      // Back to the kept previous: no download and no quiet wait, but never
+      // under a login or approval (the bus's own step back after a failed
+      // start is the self-check's and does not wait).
+      if (this.d.loginActive() || !this.d.hubReady()) {
+        this.stepBackHeld = i;
+        return { kind: "retry_later" };
+      }
       return this.switchTo(i.version, false);
     }
     if (s.staged?.version === i.version && s.staged.manifest) {
@@ -310,6 +325,11 @@ export class Updater {
     try {
       const now = this.now();
       const login = this.d.loginActive();
+      if (this.stepBackHeld && !login) {
+        const held = this.stepBackHeld;
+        this.stepBackHeld = undefined;
+        await this.instruct(held);
+      }
       this.quiet.observe(now, isBusy(this.d.busy()), login);
       if (this.wanted && now - this.wanted.at >= RETRY_MS) {
         const { i } = this.wanted;
@@ -358,6 +378,9 @@ export class Updater {
     const now = this.now();
     if (running === undefined || !isSafeVersion(version) || version === running)
       return { kind: "disabled" };
+    // A switch happens only while the hub answers: the new daemon's check
+    // needs it, and an update must not start into an outage.
+    if (!this.d.hubReady()) return { kind: "retry_later" };
     const s = readPolicy(home);
     if (staged) {
       const m = s.staged?.manifest;

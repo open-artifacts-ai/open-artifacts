@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  accept,
   clearPending,
   currentVersion,
   installVersion,
@@ -67,6 +68,7 @@ describe("the loop is off in this PR", () => {
       running: "1.0.0",
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
+      hubReady: () => true,
       serverVersion: () => undefined,
       exit,
       log: () => {},
@@ -110,7 +112,8 @@ describe("the self-check after a switch", () => {
       home,
       running: "1.1.0",
       now: () => clock,
-      ready: () => ready,
+      hub: () => ready,
+      local: () => true,
       exit,
       log: () => {},
       every: m.every,
@@ -151,7 +154,8 @@ describe("the self-check after a switch", () => {
       home,
       running: "1.1.0",
       now: () => clock,
-      ready: () => false,
+      hub: () => false,
+      local: () => true,
       exit,
       log: () => {},
       every: m.every,
@@ -164,7 +168,9 @@ describe("the self-check after a switch", () => {
     expect(exit).toHaveBeenCalledWith(1);
     expect(currentVersion(home)).toBe("1.0.0");
     const p = readPolicy(home);
-    expect(p.failed).toEqual(["1.1.0"]);
+    // Nobody answered: stepped back, but the version is not banned.
+    expect(p.failed).toEqual([]);
+    expect(p.refused["1.1.0"]).toBeDefined();
     expect(p.lastAt).toBe(clock);
     expect(p.pending).toBeUndefined();
     expect(readState(home).current).toBe("1.0.0");
@@ -173,7 +179,7 @@ describe("the self-check after a switch", () => {
         event: "stepped_back",
         from: "1.0.0",
         to: "1.1.0",
-        reason: "unhealthy",
+        reason: "hub_unreachable",
       },
     ]);
     // Polling after the end does nothing more.
@@ -191,9 +197,10 @@ describe("the self-check after a switch", () => {
       home,
       running: "1.1.0",
       now: () => clock,
-      ready: () => {
+      hub: () => {
         throw new Error("hub object not built yet");
       },
+      local: () => true,
       exit,
       log: () => {},
       every: m.every,
@@ -211,7 +218,8 @@ describe("the self-check after a switch", () => {
     const c = startSelfCheck({
       home,
       running: "1.0.0",
-      ready: () => true,
+      hub: () => true,
+      local: () => true,
       exit,
       log: () => {},
     });
@@ -222,7 +230,8 @@ describe("the self-check after a switch", () => {
     startSelfCheck({
       home,
       running: "1.0.0",
-      ready: () => true,
+      hub: () => true,
+      local: () => true,
       exit,
       log: () => {},
     });
@@ -232,7 +241,8 @@ describe("the self-check after a switch", () => {
       startSelfCheck({
         home,
         running: "1.0.0",
-        ready: () => true,
+        hub: () => true,
+        local: () => true,
         exit,
         log: () => {},
       }).state(),
@@ -313,6 +323,7 @@ describe("the install request", () => {
       now: () => T,
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
+      hubReady: () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -391,6 +402,7 @@ describe("the updater loop (enabled by a test only)", () => {
     const w = world();
     let clock = T;
     const exit = vi.fn();
+    const hubUp = { v: true };
     const f = fake("1.1.0", over.kinds);
     const u = new Updater({
       home: w.home,
@@ -403,6 +415,7 @@ describe("the updater loop (enabled by a test only)", () => {
         codexQueue: 0,
       }),
       loginActive: over.login ?? (() => false),
+      hubReady: () => hubUp.v,
       serverVersion: () => "1.2.0",
       exit,
       log: () => {},
@@ -415,7 +428,7 @@ describe("the updater loop (enabled by a test only)", () => {
     const advance = (ms: number) => {
       clock += ms;
     };
-    return { ...w, u, exit, advance, clock: () => clock };
+    return { ...w, u, exit, advance, hubUp, clock: () => clock };
   };
   const arm = (w: { home: string }) => readPolicy(w.home);
 
@@ -657,6 +670,7 @@ describe("the updater loop (enabled by a test only)", () => {
       now: () => T,
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
+      hubReady: () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -666,5 +680,149 @@ describe("the updater loop (enabled by a test only)", () => {
     await u2.instruct({ version: "1.2.0" });
     expect(readPolicy(w.home).staged?.version).toBe("1.2.0");
     expect(existsSync(versionDir(w.home, "1.1.0"))).toBe(false);
+  });
+});
+
+describe("review fixes (#2552)", () => {
+  const ups = (
+    home: string,
+    over: Partial<ConstructorParameters<typeof Updater>[0]> = {},
+  ) =>
+    new Updater({
+      home,
+      running: "1.0.0",
+      enabled: true,
+      now: () => T,
+      busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
+      loginActive: () => false,
+      hubReady: () => true,
+      serverVersion: () => undefined,
+      exit: () => {},
+      log: () => {},
+      ...over,
+    });
+  const switchedWorld = () => {
+    const { home, fill } = world();
+    installVersion(home, "1.1.0", fill("1.1.0"));
+    writeState(home, { armed: true, current: "1.0.0", previous: "0.9.0" });
+    setPending(home, { from: "1.0.0", to: "1.1.0", startedAt: T });
+    return home;
+  };
+  const check = (home: string, hub: boolean, local: boolean) => {
+    let clock = T;
+    let f: (() => void) | undefined;
+    const exit = vi.fn();
+    startSelfCheck({
+      home,
+      running: "1.1.0",
+      now: () => clock,
+      hub: () => hub,
+      local: () => local,
+      exit,
+      log: () => {},
+      every: (fn) => {
+        f = fn;
+        return () => {};
+      },
+    });
+    clock += 60_000;
+    f?.();
+    return { exit, at: clock };
+  };
+
+  it("hub down for 60 s after a good switch: stepped back, not banned, retried later", () => {
+    const home = switchedWorld();
+    const { exit, at } = check(home, false, true);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(currentVersion(home)).toBe("1.0.0");
+    const p = readPolicy(home);
+    expect(p.failed).toEqual([]);
+    expect(p.refused["1.1.0"]).toMatchObject({ count: 1, at });
+    expect(readReports(home)).toMatchObject([
+      { event: "stepped_back", reason: "hub_unreachable" },
+    ]);
+    // Inside the backoff it waits; after it, the same version is accepted again.
+    expect(
+      accept(p, { version: "1.1.0" }, at + 1000, { running: "1.0.0" }),
+    ).toEqual({
+      ok: false,
+      reason: "refused_backoff",
+    });
+    // (6 h limit passed too)
+    expect(
+      accept(p, { version: "1.1.0" }, at + 25 * 3600_000, { running: "1.0.0" }),
+    ).toEqual({ ok: true });
+  });
+
+  it("a broken daemon is failed for good, with the hub up or down", () => {
+    for (const hub of [true, false]) {
+      const home = switchedWorld();
+      const { exit } = check(home, hub, false);
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(readPolicy(home).failed).toEqual(["1.1.0"]);
+      expect(readPolicy(home).refused).toEqual({});
+    }
+  });
+
+  it("no switch while the hub link is down", async () => {
+    const w = (() => {
+      const { home } = world();
+      return home;
+    })();
+    const exit = vi.fn();
+    let up = false;
+    const u = ups(w, { exit, hubReady: () => up });
+    expect(await u.instruct({ version: "0.9.0", stepBack: true })).toEqual({
+      kind: "retry_later",
+    });
+    expect(exit).not.toHaveBeenCalled();
+    expect(currentVersion(w)).toBe("1.0.0");
+    up = true;
+  });
+
+  it("an instance-asked step back waits for a login, then goes", async () => {
+    const { home } = world();
+    let login = true;
+    const exit = vi.fn();
+    const u = ups(home, { exit, loginActive: () => login });
+    expect(await u.instruct({ version: "0.9.0", stepBack: true })).toEqual({
+      kind: "retry_later",
+    });
+    await u.tick();
+    expect(exit).not.toHaveBeenCalled();
+    expect(currentVersion(home)).toBe("1.0.0");
+    login = false;
+    await u.tick();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(currentVersion(home)).toBe("0.9.0");
+  });
+
+  it("a running version that is not x.y.z never runs the updater, and never throws", async () => {
+    const { home } = world();
+    let scheduled = 0;
+    const exit = vi.fn();
+    const u = ups(home, {
+      running: "unknown-1700000000000",
+      exit,
+      every: () => {
+        scheduled++;
+        return () => {};
+      },
+    });
+    u.start();
+    expect(scheduled).toBe(0);
+    expect(await u.instruct({ version: "1.1.0" })).toEqual({
+      kind: "disabled",
+    });
+    await expect(u.tick()).resolves.toBeUndefined();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("installVersion with arm:false leaves update.json unarmed", () => {
+    const home = tmp();
+    installVersion(home, "1.0.0", () => {}, { arm: false });
+    expect(readState(home).armed).toBe(false);
+    installVersion(home, "1.1.0", () => {});
+    expect(readState(home).armed).toBe(true);
   });
 });

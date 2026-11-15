@@ -372,6 +372,19 @@ export function copy(
       fail(`The service runs a Node that is gone: ${clip(node, 42)}.`),
       next(`Run ${bus} install to point it at your current Node.`),
     ],
+    // doctor (#2552): the rescue launcher the service starts through. New strings, for Product.
+    rescueMissing: (path: string) => [
+      fail(
+        `The service starts the bus through a launcher that is gone: ${clip(path, 42)}.`,
+      ),
+      next(`Run ${bus} install to put it back.`),
+    ],
+    rescueOpen: (path: string) => [
+      fail(
+        `The service's launcher can be changed by other users: ${clip(path, 42)}.`,
+      ),
+      next(`Run ${bus} install to replace it.`),
+    ],
     // doctor, after the service-node line.
     badNode: (node: string, reason: string) => [
       fail(`The service runs a Node that cannot start: ${clip(node, 42)}.`),

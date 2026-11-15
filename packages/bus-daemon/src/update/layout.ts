@@ -365,7 +365,10 @@ export function installVersion(
   home: string,
   version: string,
   fill: (dir: string) => void,
-  opts: PruneOptions = {},
+  opts: PruneOptions & {
+    /** False where no rescue shim exists (win32): nothing arms auto-update. */
+    arm?: boolean;
+  } = {},
 ): void {
   ensureVersions(home);
   const was = migrate(home) ?? currentVersion(home);
@@ -374,7 +377,7 @@ export function installVersion(
   const prior = readState(home);
   const previous = was !== undefined && was !== version ? was : prior.previous;
   writeState(home, {
-    armed: true,
+    armed: opts.arm !== false,
     current: version,
     ...(previous !== undefined && previous !== version ? { previous } : {}),
   });

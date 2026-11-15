@@ -30,7 +30,13 @@ import { join } from "node:path";
  * same text as a version's own) and `rescue.mjs` (the logic, node:fs only).
  */
 
-/** Its own number: reported with the install later. Bump on any change to the files. */
+/**
+ * Its own number. PR 5 reports it with the install, so the instance can tell
+ * which machines hold an old shim. Bump on any change to the three files.
+ *
+ * Limit: the shim reads only `update.json`. When that file does not parse it
+ * cannot act: it starts bin/node and does nothing else.
+ */
 export const RESCUE_VERSION = 1;
 
 /** The new version gets this many starts before it is undone. */

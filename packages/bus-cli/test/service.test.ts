@@ -395,6 +395,25 @@ describe("systemService: systemd", () => {
   const unitOf = (userHome: string) =>
     join(userHome, ".config/systemd/user", SYSTEMD_UNIT);
 
+  it("doctor's problems: the rescue launcher must be there and owner-only (#2552)", async () => {
+    const { d, home } = deps("linux");
+    const s = systemService(d);
+    await s.ensure();
+    const rescue = (k: string) =>
+      (s.problems?.() ?? []).filter((p) => p.kind === k);
+    expect(rescue("rescue-missing")).toEqual([]);
+    expect(rescue("rescue-open")).toEqual([]);
+    chmodSync(join(home, "rescue"), 0o755);
+    expect(rescue("rescue-open")).toEqual([
+      { kind: "rescue-open", path: join(home, "rescue") },
+    ]);
+    chmodSync(join(home, "rescue"), 0o700);
+    rmSync(join(home, "rescue"));
+    expect(rescue("rescue-missing")).toEqual([
+      { kind: "rescue-missing", path: join(home, "rescue") },
+    ]);
+  });
+
   it("writes the unit, reloads, enables and restarts it", async () => {
     const { d, calls, userHome, home } = deps("linux");
     const s = systemService(d);
@@ -907,7 +926,11 @@ describe("systemService: a daemon that will not stop (round 2)", () => {
     mkdirSync(join(pkg, "dist"));
     writeFileSync(join(pkg, "dist/index.js"), "// bundle");
     writeFileSync(join(pkg, "package.json"), '{ "version": "3.4.5" }');
-    installCli(home, { kind: "bundle", file: join(pkg, "dist/index.js") });
+    installCli(
+      home,
+      { kind: "bundle", file: join(pkg, "dist/index.js") },
+      process.execPath,
+    );
     expect(readlinkSync(join(home, "bin"))).toBe(join("versions", "3.4.5"));
     expect(JSON.parse(readFileSync(join(home, "update.json"), "utf8"))).toEqual(
       { armed: true, current: "3.4.5" },

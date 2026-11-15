@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
 import {
@@ -151,6 +151,7 @@ import {
 import { PiTransport } from "./transports/pi.ts";
 import { runningVersion } from "./update/layout.ts";
 import { loginActive } from "./update/login-flag.ts";
+import { parseVersion } from "./update/policy.ts";
 import { startSelfCheck } from "./update/selfcheck.ts";
 import { Updater } from "./update/updater.ts";
 
@@ -2700,13 +2701,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   ev("daemon_start", { version: deps.version, pid: process.pid });
   // #2552: the self-check after a switch, and the loop (off until PR 6).
   const upd = deps.update;
-  const runVersion = upd ? runningVersion(upd.entryFile, home()) : undefined;
+  // Decided once: a folder that is not x.y.z (unknown-<ts>, a workspace) never updates.
+  const found = upd ? runningVersion(upd.entryFile, home()) : undefined;
+  const runVersion = parseVersion(found) ? found : undefined;
   const selfCheck = upd
     ? startSelfCheck({
         home: home(),
         running: runVersion,
-        // Link open, hello_ok in, and every live session announced and answered.
-        ready: () => hub.open && hubHelloed && upIds.size === 0,
+        hub: () => hub.open && hubHelloed,
+        // Socket bound, and every live session announced and answered.
+        local: () => existsSync(listenPath) && upIds.size === 0,
         exit: upd.exit,
         log,
         ...(upd.every ? { every: upd.every } : {}),
@@ -2723,6 +2727,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           codexQueue: codexTaken.size(),
         }),
         loginActive: () => loginActive(home()),
+        hubReady: () => hub.open && hubHelloed,
         serverVersion: () => hubVersion,
         exit: upd.exit,
         log,
