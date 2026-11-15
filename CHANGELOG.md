@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.186.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.185.0...v0.186.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** invited people log in with their own Google account on strong evidence ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2541](https://github.com/open-artifacts-ai/open-artifacts/issues/2541)) ([0ff181f](https://github.com/open-artifacts-ai/open-artifacts/commit/0ff181ff8bd8d54d4a53673c2a5fdade64abf77f))
+* **dashboard:** Login settings, invite rows that say how each person gets in ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2537](https://github.com/open-artifacts-ai/open-artifacts/issues/2537)) ([8cd540d](https://github.com/open-artifacts-ai/open-artifacts/commit/8cd540dd6d0a5c8fbee96cb019fd966f9b31af92))
+
 ## [0.185.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.184.0...v0.185.0) (2026-11-15)
 
 
