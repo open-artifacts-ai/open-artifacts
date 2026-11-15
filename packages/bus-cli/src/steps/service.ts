@@ -416,6 +416,8 @@ export type ServiceDeps = {
   /** The node the service runs the CLI with. */
   execPath: string;
   uid: number;
+  /** Who must own the rescue launcher; default the running process's uid (none on win32). */
+  ownerUid?: () => number | undefined;
   user: string;
   /** systemd-logind's linger flags; default /var/lib/systemd/linger. */
   lingerDir?: string;
@@ -838,6 +840,9 @@ export function systemService(d: ServiceDeps): Service {
       // A unit that runs the rescue shim needs it there and owner-only (#2552).
       if (d.platform !== "win32" && unitRunsRescue()) {
         const r = rescueOf(home());
+        // Owned by whoever runs this check, which is the service's account: the
+        // deps' `uid` is only the launchd domain and can be anything in a test.
+        const me = (d.ownerUid ?? (() => process.getuid?.()))();
         const st = (() => {
           try {
             return lstatSync(r);
@@ -846,7 +851,7 @@ export function systemService(d: ServiceDeps): Service {
           }
         })();
         if (!st?.isFile()) out.push({ kind: "rescue-missing", path: r });
-        else if ((st.mode & 0o077) !== 0 || (d.uid >= 0 && st.uid !== d.uid))
+        else if ((st.mode & 0o077) !== 0 || (me !== undefined && st.uid !== me))
           out.push({ kind: "rescue-open", path: r });
       }
       return out;
