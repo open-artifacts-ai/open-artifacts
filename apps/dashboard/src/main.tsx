@@ -627,6 +627,58 @@ async function startMocks() {
       ),
     );
   }
+  // PROVISIONAL (#2590, until the shared mocks take "commenter"): a
+  // commenter share is stored as a viewer and remembered here, so the
+  // Share panel can save and read it back.
+  const commenters = new Map<string, Set<string>>();
+  const sharesUrl = "*/api/v1/artifacts/:id/shares";
+  extra.push(
+    http.put(sharesUrl, async ({ request, params }) => {
+      const id = String(params.id);
+      const body = (await request
+        .clone()
+        .json()
+        .catch(() => null)) as { email?: string; role?: string } | null;
+      const email = body?.email?.toLowerCase() ?? "";
+      const set = commenters.get(id) ?? new Set<string>();
+      commenters.set(id, set);
+      if (body?.role !== "commenter") {
+        set.delete(email);
+        return undefined;
+      }
+      const res = await getResponse(
+        mainHandlers,
+        new Request(request.url, {
+          method: "PUT",
+          headers: request.headers,
+          body: JSON.stringify({ ...body, role: "viewer" }),
+        }),
+      );
+      if (!res?.ok) return res;
+      set.add(email);
+      const out = (await res.json()) as Record<string, unknown>;
+      return HttpResponse.json(
+        { ...out, role: "commenter" },
+        { status: res.status },
+      );
+    }),
+    http.get(sharesUrl, async ({ request, params }) => {
+      const set = commenters.get(String(params.id));
+      if (!set?.size) return undefined;
+      const res = await getResponse(mainHandlers, request);
+      if (!res?.ok) return res;
+      const list = (await res.json()) as { email: string; role: string }[];
+      return HttpResponse.json(
+        list.map((x) => (set.has(x.email) ? { ...x, role: "commenter" } : x)),
+      );
+    }),
+    http.delete(`${sharesUrl}/:email`, ({ params }) => {
+      commenters
+        .get(String(params.id))
+        ?.delete(decodeURIComponent(String(params.email)).toLowerCase());
+      return undefined;
+    }),
+  );
   await setupWorker(
     ...extra,
     ...mainHandlers,

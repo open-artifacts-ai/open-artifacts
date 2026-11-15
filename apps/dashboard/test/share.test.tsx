@@ -133,8 +133,9 @@ describe("share panel", () => {
   });
 
   it.each([
+    // #2590: only an old Editor share on a guest keeps the caption; a
+    // viewer or commenter guest's picker says Can view or Can comment.
     ["editor", "Editor", "Guest · can only view for now"],
-    ["viewer", "Viewer", "Guest · can only view"],
   ])(
     "a guest's row with stored %s: email, caption, then the select and Remove",
     async (role, shown, caption) => {
@@ -273,9 +274,12 @@ describe("share panel", () => {
       await screen.findByTitle(email);
     };
 
+    // Where the client can't tell an address is outside (codes only, no
+    // listed domains), the member's choices still show, as before #2590.
+    const CODES = { providers: ["email" as const] };
     it("gets the status line just after inviting, and not on a later open", async () => {
       const guest = "gia@elsewhere.test";
-      mountHosted(panel(OWNED));
+      mountHosted(panel(OWNED), CODES);
       await invite(guest, "Editor");
       const line = await screen.findByText(LINE);
       expect(line).toHaveAttribute("role", "status");
@@ -290,9 +294,14 @@ describe("share panel", () => {
     });
 
     it("no line for a guest invited as Viewer, or a member as Editor", async () => {
-      mountHosted(panel(OWNED));
+      mountHosted(panel(OWNED), CODES);
       await invite("gus@elsewhere.test", "Viewer");
-      await screen.findByText("Guest · can only view");
+      // #2590: the guest's picker says Can view; no caption.
+      expect(
+        await screen.findByRole("combobox", {
+          name: "Role for gus@elsewhere.test",
+        }),
+      ).toHaveTextContent("Can view");
       expect(screen.queryByText(LINE)).toBeNull();
       await invite("carol@example.com", "Editor");
       expect(screen.queryByText(LINE)).toBeNull();

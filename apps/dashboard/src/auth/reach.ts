@@ -17,6 +17,14 @@ export const orList = (list: readonly string[]) =>
 /** Only Google lists the sign-in domains; without it, a generic phrase. */
 const ANY_DOMAIN = "your login domains";
 
+/** The org's sign-in domains as a list (Google lists them; else none). */
+export function useSignInDomainList(): readonly string[] {
+  const google = useAuthProviders().data?.providers.find(
+    (p) => p.id === "google",
+  );
+  return google?.id === "google" ? google.domains : [];
+}
+
 /** The org's sign-in domains as one phrase, from GET AUTH.providers. */
 export function useSignInDomains(): string {
   const google = useAuthProviders().data?.providers.find(

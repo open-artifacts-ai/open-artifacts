@@ -2,7 +2,6 @@ import {
   type ArtifactPatch,
   type ArtifactSummary,
   type DataWriters,
-  type ShareRole,
   ShareSchema,
   type Visibility,
   viewerPath,
@@ -32,7 +31,11 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
-import { signInWith, useSignInDomains } from "../../auth/reach";
+import {
+  signInWith,
+  useSignInDomainList,
+  useSignInDomains,
+} from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
@@ -44,12 +47,15 @@ import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
+import {
+  OUTSIDER_DEFAULT,
+  outsideDomains,
+  roleLabel,
+  roleOptions,
+  type WideShareRole,
+} from "./shareRoles";
 
 const VIS: Visibility[] = ["private", "team", "public"];
-const ROLES: { value: ShareRole; label: string }[] = [
-  { value: "viewer", label: "Viewer" },
-  { value: "editor", label: "Editor" },
-];
 /**
  * #2509 General access: what each choice is called and the line under it
  * (OA Product's strings). People read these; the value stays private, team
@@ -165,26 +171,33 @@ function RecipientLine({
   );
 }
 
+/**
+ * A share's role. #2590: an outsider's choices are Can comment and Can view
+ * (OA Product); a member's stay Viewer and Editor.
+ */
 function RoleSelect({
   label,
   value,
   onChange,
+  outsider = false,
 }: {
   label: string;
-  value: ShareRole;
-  onChange: (r: ShareRole) => void;
+  value: WideShareRole;
+  onChange: (r: WideShareRole) => void;
+  outsider?: boolean;
 }) {
+  const options = roleOptions(outsider, value);
   return (
-    <Select value={value} onValueChange={(v) => onChange(v as ShareRole)}>
+    <Select value={value} onValueChange={(v) => onChange(v as WideShareRole)}>
       <SelectTrigger
         aria-label={label}
         size="sm"
-        className={`w-[96px] flex-none ${TEXT}`}
+        className={`${outsider ? "w-[140px]" : "w-[96px]"} flex-none ${TEXT}`}
       >
         <SelectValue />
       </SelectTrigger>
       <SelectContent position="popper">
-        {ROLES.map((r) => (
+        {options.map((r) => (
           <SelectItem key={r.value} value={r.value} className={TEXT}>
             {r.label}
           </SelectItem>
@@ -224,7 +237,15 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     stage?.from === artifact.visibility ? stage.to : artifact.visibility;
   const changed = staged !== artifact.visibility;
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<ShareRole>("viewer");
+  // A member's pick, and an outsider's (#2590: Can comment unless changed).
+  const [role, setRole] = useState<WideShareRole>("viewer");
+  const [outsiderRole, setOutsiderRole] =
+    useState<WideShareRole>(OUTSIDER_DEFAULT);
+  const domainList = useSignInDomainList();
+  // The typed address is outside when it's at none of the login domains
+  // (unknown without them: the saved row's `guest` decides).
+  const typedOutside = outsideDomains(email, domainList) === true;
+  const pick = typedOutside ? outsiderRole : role;
   const [invalid, setInvalid] = useState(false);
   const [shared, setShared] = useState<{
     email: string;
@@ -234,7 +255,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
     /** The role picked: a guest's row corrects Editor, once, just after. */
-    role: ShareRole;
+    role: WideShareRole;
   } | null>(null);
   const domains = useSignInDomains();
   const state = useMe();
@@ -272,7 +293,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     if (!e) return;
     inviteOnce((done) =>
       put.mutate(
-        { email: e, role },
+        { email: e, role: pick },
         {
           onSettled: done,
           onSuccess: (r) => {
@@ -282,7 +303,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               emailed: r.emailed,
               recipient: r.recipient,
               with: signInWith(r.signInMethods),
-              role,
+              role: pick,
             });
           },
           onError: (x) => fail(x, "Couldn't share"),
@@ -432,7 +453,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 setInvalid(false);
               }}
             />
-            <RoleSelect label="Invite role" value={role} onChange={setRole} />
+            <RoleSelect
+              label="Invite role"
+              outsider={typedOutside}
+              value={pick}
+              onChange={typedOutside ? setOutsiderRole : setRole}
+            />
             <Button
               type="submit"
               variant="outline"
@@ -525,6 +551,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <>
                 <RoleSelect
                   label={`Role for ${s.email}`}
+                  outsider={s.guest === true}
                   value={s.role}
                   onChange={(r) =>
                     put.mutate(
@@ -553,14 +580,18 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 </Button>
               </>
             ) : (
-              <span className="text-muted-foreground">{s.role}</span>
+              <span className="text-muted-foreground">
+                {roleLabel(s.role, s.guest === true)}
+              </span>
             );
             // Guests first; then a member who can only view (never why),
             // flagged only where the stored role says more than they get.
+            // #2590: an outsider's picker says Can comment or Can view;
+            // only an old Editor share on a guest still needs the caption.
             const caption = s.guest
               ? s.role === "editor"
                 ? "Guest · can only view for now"
-                : "Guest · can only view"
+                : null
               : s.viewOnly && s.role === "editor"
                 ? "Can only view for now"
                 : null;

@@ -33,10 +33,7 @@ import {
   SearchHitSchema,
   type SettingsPatch,
   SettingsSchema,
-  type ShareInput,
   ShareNoticeAgentsSchema,
-  ShareResultSchema,
-  ShareSchema,
   TokenSchema,
   UsageSchema,
   VersionInfoSchema,
@@ -51,6 +48,11 @@ import {
 } from "@tanstack/react-query";
 import { z } from "zod";
 import { toast } from "../layout/toast";
+import {
+  type WideShareInput,
+  WideShareResultSchema,
+  WideShareSchema,
+} from "../viewer/panels/shareRoles";
 import { ApiClientError, api } from "./client";
 import {
   DirectoryGroupSchema,
@@ -188,7 +190,8 @@ export const useShares = (id: string, enabled = true) =>
   useQuery({
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
-      api.get(R.shares(id), z.array(ShareSchema), signal),
+      // PROVISIONAL (#2590): the wide role, until packages/shared has it.
+      api.get(R.shares(id), z.array(WideShareSchema), signal),
     enabled,
   });
 export const useSearch = (q: SearchQuery) =>
@@ -502,8 +505,9 @@ export const useDeleteArtifact = (id: string) =>
   );
 export const usePutShare = (id: string) =>
   useInvalidating(
-    (input: ShareInput) =>
-      api.send("PUT", R.shares(id), input, ShareResultSchema),
+    // PROVISIONAL (#2590): the wide role, until packages/shared has it.
+    (input: WideShareInput) =>
+      api.send("PUT", R.shares(id), input, WideShareResultSchema),
     () => [qk.shares(id)],
   );
 export const useDeleteShare = (id: string) =>
