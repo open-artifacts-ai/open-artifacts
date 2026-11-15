@@ -2715,14 +2715,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // edited once anyone has picked, nor from the start when it names an
       // action or needs a passkey. Withdraw it and post a new card.
       const ask = askRow(this.sql, a.threadId, a.commentId);
+      if (ask && ((ask.ask.history?.length ?? 0) > 0 || ask.ask.answer))
+        fail(
+          "already_answered",
+          "This card already has an answer, so it can't be edited. Post a new card, and withdraw this one first if it has no decision yet.",
+        );
       if (
         ask &&
-        (ask.ask.confirm === "passkey" ||
-          ask.ask.options.some((o) => o.action) ||
-          (ask.ask.history?.length ?? 0) > 0 ||
-          ask.ask.answer)
+        (ask.ask.confirm === "passkey" || ask.ask.options.some((o) => o.action))
       )
-        fail("conflict", "Withdraw it and post a new card.");
+        fail(
+          "conflict",
+          "A card that approves an action can't be edited. Withdraw it and post a new card.",
+        );
       const now = this.iso();
       if (who.typed && a.typed !== true) {
         const { typed: _typed, ...rest } = who;

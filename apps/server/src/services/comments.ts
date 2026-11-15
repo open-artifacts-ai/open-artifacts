@@ -2439,6 +2439,8 @@ async function checkCrossReplace(
   ref: ReplacesRef,
   /** The request's own caller (its cap and narrowing); absent: the user's own, as loaded. */
   request?: Caller,
+  /** Only "same asker, page editable" (the card a withdraw names as its replacement): a pick on it is no reason to leave the old card up. */
+  lenient = false,
 ): Promise<void> {
   const refuse = () =>
     new ApiError(
@@ -2458,6 +2460,7 @@ async function checkCrossReplace(
     throw refuse();
   }
   if (!isAsker(c, who)) throw refuse();
+  if (lenient) return;
   if (c.ask?.answer || c.ask?.history?.some((p) => p.decision))
     throw new ApiError(
       "already_answered",
@@ -2488,8 +2491,10 @@ export async function withdrawAsk(
   const c = await askComment(env, artifactId, threadId, commentId);
   if (!isAsker(c, who)) throw new ApiError("forbidden", WITHDRAW_FORBIDDEN);
   // The card it was replaced by must be one the same asker posted, on a page
-  // the caller can edit: the same rule as `replaces` the other way round.
-  if (replacedBy) await checkCrossReplace(env, who, replacedBy, viewer.caller);
+  // the caller can edit. Not the full replace check: a pick on the new card
+  // (or another card replacing it) does not keep the old one standing.
+  if (replacedBy)
+    await checkCrossReplace(env, who, replacedBy, viewer.caller, true);
   const out = await call(() =>
     stub(env, artifactId).commentsWithdraw({
       threadId,

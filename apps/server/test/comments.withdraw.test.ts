@@ -517,8 +517,9 @@ describe("Axe's checks (#2623)", () => {
         true,
       ),
     ).rejects.toMatchObject({
-      code: "conflict",
-      message: "Withdraw it and post a new card.",
+      code: "already_answered",
+      message:
+        "This card already has an answer, so it can't be edited. Post a new card, and withdraw this one first if it has no decision yet.",
     });
     const rest = await api(
       app,
@@ -552,7 +553,11 @@ describe("Axe's checks (#2623)", () => {
         view(person(owner), owner),
         "x",
       ),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message:
+        "A card that approves an action can't be edited. Withdraw it and post a new card.",
+    });
     const restRisky = await api(
       app,
       R.comment(id, risky.id, rc),
@@ -679,5 +684,59 @@ describe("Axe's checks (#2623)", () => {
         true,
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("withdraw_ask with replacedBy still withdraws after someone picked on the new card", async () => {
+    const a = await page();
+    const b = await page();
+    const bot = asAgent(owner, "Bot");
+    const old = await ask(a, bot);
+    const fresh = await ask(b, bot);
+    // A pick on the replacement card.
+    await pick(b, fresh.t.id, fresh.c);
+    const done = await withdrawAsk(
+      E,
+      a,
+      old.t.id,
+      old.c,
+      bot,
+      view(bot, owner),
+      {
+        artifactId: b,
+        threadId: fresh.t.id,
+        commentId: fresh.c,
+      },
+    );
+    expect(done.ask?.withdrawn?.replacedBy?.commentId).toBe(fresh.c);
+    expect(await rows(a, old.c)).toBe(0);
+  });
+
+  it("a capped caller who can open the page but can't edit it can't replace across pages", async () => {
+    const a = await page("A");
+    const b = await page("B");
+    const bot = asAgent(owner, "Bot");
+    const old = await ask(a, bot);
+    // The cap lowers the owner to a viewer on the new page: it opens, it does not edit.
+    const capped = { kind: "user", user: owner.member, cap: "guest" } as const;
+    await expect(
+      addThread(
+        E,
+        art(b),
+        bot,
+        { ...view(bot, owner), caller: capped },
+        {
+          anchor: { kind: "note" },
+          body: "new",
+          ask: {
+            question: "Which?",
+            options: OPTS,
+            to: [{ key: viewer.userId }],
+            replaces: { artifactId: a, threadId: old.t.id, commentId: old.c },
+          },
+        },
+        { moderator: true },
+      ),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(await rows(a, old.c)).toBeGreaterThan(0);
   });
 });
