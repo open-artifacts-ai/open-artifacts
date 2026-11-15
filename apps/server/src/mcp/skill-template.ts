@@ -4,6 +4,7 @@
 
 import { agentClients, LIMITS, type Snippet } from "@oa/shared";
 import { z } from "zod";
+import { docToolOff } from "../services/doc-switch.ts";
 import { LINK_RULE, renderSections } from "./instructions.ts";
 import {
   SECRET_LABELS,
@@ -89,9 +90,15 @@ function params(schema: z.ZodType): string {
     .join(", ");
 }
 
-/** The tools tools/list offers: list_spaces only with the spaces feature. */
+/**
+ * The tools tools/list offers: list_spaces only with the spaces feature, and
+ * edit_doc only once the doc switch is open (#1100; per install it also needs
+ * a paid plan, which the one-per-build skill cannot know).
+ */
 const toolDefs = (spaces: boolean) =>
-  TOOL_DEFS.filter((t) => spaces || t.name !== "list_spaces");
+  TOOL_DEFS.filter(
+    (t) => (spaces || t.name !== "list_spaces") && !docToolOff(t.name),
+  );
 
 const tools = (spaces: boolean): string =>
   toolDefs(spaces)

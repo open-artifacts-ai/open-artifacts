@@ -6,3 +6,14 @@
  * generators load this file.
  */
 export const DOC_SWITCH: { creation: boolean } = { creation: false };
+
+/**
+ * Tools that exist (TOOL_DEFS, TOOL_POLICY) but are offered, written into the
+ * manifest and described in the skill only while DOC_SWITCH.creation is open.
+ * Every generator and every tool-set test reads this one list.
+ */
+export const DOC_GATED_TOOLS: readonly string[] = ["edit_doc"];
+
+/** The tool is gated off by the doc switch right now. */
+export const docToolOff = (name: string): boolean =>
+  DOC_GATED_TOOLS.includes(name) && !DOC_SWITCH.creation;
