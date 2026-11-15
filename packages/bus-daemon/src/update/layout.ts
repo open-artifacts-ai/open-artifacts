@@ -245,7 +245,14 @@ export function inUse(
   } catch (e) {
     return (e as NodeJS.ErrnoException).code !== "ENOENT";
   }
-  return names.some((n) => /^\d+$/.test(n) && alive(Number(n)));
+  let live = false;
+  for (const n of names) {
+    if (!/^\d+$/.test(n)) continue;
+    if (alive(Number(n))) live = true;
+    // A dead pid's marker is stale: drop it.
+    else rmSync(join(liveDir(versionPath), n), { force: true });
+  }
+  return live;
 }
 
 /**

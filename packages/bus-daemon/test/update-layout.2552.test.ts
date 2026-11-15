@@ -147,6 +147,8 @@ describe("versioned layout (#2552)", () => {
     const keep = ["3.0.0", "2.0.0"];
     expect(prune(h, keep, { alive: (p) => p === 4242 })).toEqual([]);
     expect(existsSync(old)).toBe(true);
+    // The dead pid's marker was dropped, the live one kept.
+    expect(readdirSync(join(old, ".live"))).toEqual(["4242"]);
     // Only dead pids left: it goes, markers and all.
     expect(prune(h, keep, { alive: () => false })).toEqual(["0.5.0"]);
     expect(versions(h)).toEqual(["2.0.0", "3.0.0"]);
