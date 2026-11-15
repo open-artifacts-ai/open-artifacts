@@ -1244,7 +1244,7 @@ export class DocRoom extends DurableObject<Env> {
   async saveVersion(o: {
     name?: string;
     by: Contributor;
-  }): Promise<{ version: number }> {
+  }): Promise<{ version: number } | { rateLimited: true }> {
     const given = typeof o?.name === "string" ? o.name.trim() : null;
     if (
       given !== null &&
@@ -1252,8 +1252,8 @@ export class DocRoom extends DurableObject<Env> {
     )
       throw new Error("bad_version_name");
     const by = parseContributor(o.by);
-    if (this.overEditRate(by)) throw new Error("rate_limited");
     const r = await this.serial(async () => {
+      if (this.overEditRate(by)) return { rateLimited: true as const };
       let name = given;
       if (name === null) {
         const row = await this.env.DB.prepare(
@@ -1265,7 +1265,7 @@ export class DocRoom extends DurableObject<Env> {
       }
       return this.doSave({ name, by, frame: "saved", auto: false });
     });
-    return r as { version: number };
+    return r as { version: number } | { rateLimited: true };
   }
 
   /**
@@ -1297,13 +1297,13 @@ export class DocRoom extends DurableObject<Env> {
   async restore(o: {
     version: number;
     by: Contributor;
-  }): Promise<{ version: number }> {
+  }): Promise<{ version: number } | { rateLimited: true }> {
     if (!Number.isSafeInteger(o?.version) || o.version < 1)
       throw new Error("bad_version");
     const by = parseContributor(o.by);
-    if (this.overEditRate(by)) throw new Error("rate_limited");
     const from = o.version;
     return this.serial(async () => {
+      if (this.overEditRate(by)) return { rateLimited: true as const };
       if (this.vs.dirty)
         await this.doSave({
           name: null,

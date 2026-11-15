@@ -105,13 +105,20 @@ async function docRoom(env: Env, user: Member, id: string) {
   return rooms.get(rooms.idFromName(id));
 }
 
-function roomError(e: unknown): never {
-  const m = e instanceof Error ? e.message : String(e);
-  if (m.includes("rate_limited"))
+/** A room answer over the shared edit limit (edit_doc, save, restore) is 429. */
+function limited(
+  r: DocVersionResult | { rateLimited: true },
+): DocVersionResult {
+  if ("rateLimited" in r)
     throw new ApiError(
       "rate_limited",
       "Too many edits; try again in a minute.",
     );
+  return { version: r.version };
+}
+
+function roomError(e: unknown): never {
+  const m = e instanceof Error ? e.message : String(e);
   if (m.includes("version_not_found") || m.includes("bad_version"))
     throw new ApiError("not_found", "No such version");
   if (m.includes("bad_version_name"))
@@ -141,10 +148,11 @@ export async function saveDocVersion(
   const room = await docRoom(env, user, id);
   const by = contributorFor(user, agent);
   try {
-    return await room.saveVersion({
+    const r = await room.saveVersion({
       ...(body.name === undefined ? {} : { name: body.name }),
       by,
     });
+    return limited(r);
   } catch (e) {
     return roomError(e);
   }
@@ -160,7 +168,9 @@ export async function restoreDocVersion(
 ): Promise<DocVersionResult> {
   const room = await docRoom(env, user, id);
   try {
-    return await room.restore({ version: v, by: contributorFor(user, agent) });
+    return limited(
+      await room.restore({ version: v, by: contributorFor(user, agent) }),
+    );
   } catch (e) {
     return roomError(e);
   }

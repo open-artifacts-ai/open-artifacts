@@ -412,11 +412,11 @@ describe("rate and size (#2591)", () => {
   it("repeated restores do not fill the cap; the doc stays editable", async () => {
     const para = (i: number) =>
       `Paragraph ${i}: ${"lorem ipsum dolor sit amet ".repeat(8)}\n\n`;
-    const content = Array.from({ length: 1100 }, (_, i) => para(i)).join("");
+    const content = Array.from({ length: 500 }, (_, i) => para(i)).join("");
     const room = await fresh(`# Big\n\n${content}`);
     const a = await connect(room);
-    await a.until(() => mdOf(a).includes("Paragraph 1099"));
-    for (let i = 0; i < 12; i++) {
+    await a.until(() => mdOf(a).includes("Paragraph 499"));
+    for (let i = 0; i < 24; i++) {
       const r = await postV(R.docRestore(room.id, 1));
       expect(r.status, `restore ${i}`).toBe(201);
       room.clock.t += 1_000;
