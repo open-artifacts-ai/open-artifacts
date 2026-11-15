@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   lstatSync,
@@ -223,23 +224,105 @@ export function swap(home: string, version: string): void {
   }
 }
 
+export type LiveProc = { pid: number; startMs: number; cmd: string };
+
+/** `ps` etime: [[dd-]hh:]mm:ss, in ms. */
+const etimeMs = (t: string): number | undefined => {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(t);
+  if (!m) return undefined;
+  const [d, h, mi, se] = [m[1], m[2], m[3], m[4]].map((x) => Number(x ?? 0));
+  return (
+    (((d as number) * 24 + (h as number)) * 3600 +
+      (mi as number) * 60 +
+      (se as number)) *
+    1000
+  );
+};
+
+/**
+ * The live processes and their command lines. Undefined when they cannot be
+ * listed: then nothing is known to be unused. No ps on Windows: undefined.
+ */
+export function liveProcs(now: number = Date.now()): LiveProc[] | undefined {
+  if (process.platform === "win32") return undefined;
+  try {
+    const out = execFileSync("ps", ["-axo", "pid=,etime=,command="], {
+      encoding: "utf8",
+      maxBuffer: 64 << 20,
+      timeout: 10_000,
+    });
+    const procs: LiveProc[] = [];
+    for (const line of out.split("\n")) {
+      const m = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+      const el = m ? etimeMs(m[2] as string) : undefined;
+      if (m && el !== undefined)
+        procs.push({
+          pid: Number(m[1]),
+          startMs: now - el,
+          cmd: m[3] as string,
+        });
+    }
+    return procs;
+  } catch {
+    return undefined;
+  }
+}
+
+export type PruneOptions = {
+  alive?: (pid: number) => boolean;
+  /** Live processes; undefined when unknown (then nothing is removed). */
+  procs?: () => LiveProc[] | undefined;
+  now?: () => number;
+};
+
 /**
  * Removes every folder under `versions/` except the ones named in `keep`, and
- * the staging leftovers of other processes. Never touches a kept name.
+ * the staging leftovers of other processes. A folder some live process runs
+ * from stays for the next prune: a process whose command line names
+ * `versions/<v>/`, or names `<home>/bin/` and started while <v> was the one
+ * `bin` pointed at (between <v>'s folder time and the next newer one's).
+ * Never touches a kept name. Returns the names removed.
  */
 export function prune(
   home: string,
   keep: (string | undefined)[],
-  alive: (pid: number) => boolean = pidAlive,
+  opts: PruneOptions = {},
 ): string[] {
+  const alive = opts.alive ?? pidAlive;
   const dir = versionsDir(home);
   if (unsafeDir(dir) !== undefined || !lstat(dir)) return [];
   const keepSet = new Set(keep.filter((k): k is string => k !== undefined));
+  const names = readdirSync(dir).filter((n) => !/^\.(stage|old)\./.test(n));
+  const mtime = new Map(
+    names.map((n) => [n, lstat(join(dir, n))?.mtimeMs ?? 0] as const),
+  );
+  const order = [...names].sort(
+    (a, b) => (mtime.get(a) as number) - (mtime.get(b) as number),
+  );
+  const candidates = names.filter((n) => !keepSet.has(n));
+  let procs: LiveProc[] | undefined;
+  if (candidates.length > 0)
+    procs = opts.procs ? opts.procs() : liveProcs(opts.now?.());
+  const binPrefix = `${join(home, "bin")}/`;
+  const inUse = (name: string): boolean => {
+    // Cannot see the processes: assume one runs from it.
+    if (procs === undefined) return true;
+    const from = mtime.get(name) as number;
+    const next = order[order.indexOf(name) + 1];
+    const to = next === undefined ? Infinity : (mtime.get(next) as number);
+    const own = `${join(dir, name)}/`;
+    return procs.some(
+      (p) =>
+        p.cmd.includes(own) ||
+        (p.cmd.includes(binPrefix) && p.startMs >= from && p.startMs < to),
+    );
+  };
   const removed: string[] = [];
   for (const name of readdirSync(dir)) {
     if (keepSet.has(name)) continue;
     const m = /^\.(stage|old)\.(\d+)$/.exec(name);
     if (m && alive(Number(m[2]))) continue;
+    if (!m && inUse(name)) continue;
     rmSync(join(dir, name), { recursive: true, force: true });
     removed.push(name);
   }
@@ -265,6 +348,7 @@ export function installVersion(
   home: string,
   version: string,
   fill: (dir: string) => void,
+  opts: PruneOptions = {},
 ): void {
   ensureVersions(home);
   const was = migrate(home) ?? currentVersion(home);
@@ -277,7 +361,7 @@ export function installVersion(
     current: version,
     ...(previous !== undefined && previous !== version ? { previous } : {}),
   });
-  prune(home, [version, previous]);
+  prune(home, [version, previous], opts);
 }
 
 /**
@@ -285,12 +369,15 @@ export function installVersion(
  * not kept (exactly one previous). Returns the version now current, or
  * undefined when there is no previous folder to return to.
  */
-export function stepBack(home: string): string | undefined {
+export function stepBack(
+  home: string,
+  opts: PruneOptions = {},
+): string | undefined {
   const state = readState(home);
   const prev = state.previous;
   if (prev === undefined || !lstat(versionDir(home, prev))) return undefined;
   swap(home, prev);
   writeState(home, { armed: state.armed, current: prev });
-  prune(home, [prev]);
+  prune(home, [prev], opts);
   return prev;
 }

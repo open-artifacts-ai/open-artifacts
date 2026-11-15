@@ -10,6 +10,7 @@ import {
   readlinkSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import { describe, expect, it } from "vitest";
 import {
   currentVersion,
   installVersion,
+  type LiveProc,
   migrate,
   prune,
   readState,
@@ -123,10 +125,64 @@ describe("versioned layout (#2552)", () => {
     mkdirSync(join(h, "versions", "0.9.0"));
     mkdirSync(join(h, "versions", ".stage.4242"));
     mkdirSync(join(h, "versions", ".stage.4243"));
-    const removed = prune(h, ["2.0.0", "1.0.0"], (pid) => pid === 4242);
+    const removed = prune(h, ["2.0.0", "1.0.0"], {
+      alive: (pid) => pid === 4242,
+      procs: () => [],
+    });
     expect(removed.sort()).toEqual([".stage.4243", "0.9.0"]);
     expect(versions(h)).toEqual([".stage.4242", "1.0.0", "2.0.0"]);
-    expect(prune(h, [undefined, "2.0.0"], () => true)).toEqual(["1.0.0"]);
+    expect(
+      prune(h, [undefined, "2.0.0"], { alive: () => true, procs: () => [] }),
+    ).toEqual(["1.0.0"]);
+  });
+
+  it("prune leaves a folder a live process runs from, then removes it once it is gone (N1)", () => {
+    const h = home();
+    for (const [i, v] of ["1.0.0", "2.0.0", "3.0.0"].entries()) {
+      installVersion(h, v, put(v), { procs: () => [] });
+      // Folder times as install order, a minute apart.
+      const t = new Date(Date.UTC(2026, 0, 1, 0, i));
+      utimesSync(versionDir(h, v), t, t);
+    }
+    // 1.0.0 was pruned at install (nothing ran it). Rebuild the case.
+    mkdirSync(versionDir(h, "0.5.0"));
+    const t0 = new Date(Date.UTC(2025, 11, 31));
+    utimesSync(versionDir(h, "0.5.0"), t0, t0);
+    const keep = ["3.0.0", "2.0.0"];
+    const at = (min: number) => Date.UTC(2026, 0, 1, 0, min) - 30_000;
+    // A session started via bin while 0.5.0 was current (before 2.0.0's folder... window ends at 2.0.0).
+    const sessions: LiveProc[] = [
+      {
+        pid: 9,
+        startMs: Date.UTC(2025, 11, 31, 1),
+        cmd: `node ${join(h, "bin")}/dist/index.js mcp`,
+      },
+    ];
+    expect(prune(h, keep, { procs: () => sessions })).not.toContain("0.5.0");
+    expect(existsSync(versionDir(h, "0.5.0"))).toBe(true);
+    // A command line naming the folder itself also holds it.
+    expect(
+      prune(h, keep, {
+        procs: () => [
+          { pid: 8, startMs: 0, cmd: `node ${versionDir(h, "0.5.0")}/x` },
+        ],
+      }),
+    ).toEqual([]);
+    // Processes that cannot be listed: nothing goes.
+    expect(prune(h, keep, { procs: () => undefined })).toEqual([]);
+    // A bin session that started later (ran a kept version) does not hold it.
+    expect(
+      prune(h, keep, {
+        procs: () => [
+          {
+            pid: 7,
+            startMs: at(5),
+            cmd: `node ${join(h, "bin")}/dist/index.js`,
+          },
+        ],
+      }),
+    ).toEqual(["0.5.0"]);
+    expect(versions(h)).toEqual(["2.0.0", "3.0.0"]);
   });
 
   it("prune refuses a versions folder others can write", () => {
