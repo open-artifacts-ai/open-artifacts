@@ -1372,4 +1372,33 @@ describe("machine audit rows", () => {
     });
     expect(JSON.stringify(rows[0])).not.toContain(m.token);
   });
+  it("cleans a control-char or overlong label in both rows", async () => {
+    const dirty = `a\u0007b\u202Ec${"x".repeat(200)}`;
+    const clean = `abc${"x".repeat(77)}`;
+    const who = await member();
+    const d = await startDevice("tmp-label");
+    await decide(who, d.user_code, "approve");
+    await env.DB.prepare(
+      "update bus_device_codes set label = ? where user_id = ?",
+    )
+      .bind(dirty, who.userId)
+      .run();
+    await poll(d.device_code);
+    const made = await env.DB.prepare(
+      "select id from bus_machines where user_id = ?",
+    )
+      .bind(who.userId)
+      .first<{ id: string }>();
+    const [a] = await rowsOf("machine.approve", made?.id);
+    expect(JSON.parse(a?.detail ?? "{}")).toEqual({ label: clean });
+    await env.DB.prepare("update bus_machines set label = ? where id = ?")
+      .bind(dirty, made?.id)
+      .run();
+    const res = await api(app, R.busMachine(made?.id ?? ""), who.cookie, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(204);
+    const [r] = await rowsOf("machine.revoke", made?.id);
+    expect(JSON.parse(r?.detail ?? "{}")).toEqual({ label: clean });
+  });
 });

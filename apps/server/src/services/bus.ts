@@ -49,7 +49,7 @@ import {
   type Via,
   viaKey,
 } from "./agent-usage.js";
-import { type AuditActor, audit, userActor } from "./audit.js";
+import { type AuditActor, audit, auditText, userActor } from "./audit.js";
 import type {
   DeliveryOutcome,
   DeliveryScope,
@@ -445,6 +445,12 @@ export async function revokeBusMachine(
   // machine.revoke: the machine's state is this D1 row (the hub only closes
   // sockets), so the audit row shares the batch and lands only when the
   // revoke changed a row: a repeat, or another member's id, writes none.
+  const was = await stmt(
+    env.DB,
+    "select label from bus_machines where id = ?1 and user_id = ?2",
+  )
+    .bind(id, userId)
+    .first<{ label: string }>();
   const [, , row] = await env.DB.batch([
     stmt(env.DB, REVOKE_ONE).bind(id, userId, Date.now()),
     audit(
@@ -454,10 +460,7 @@ export async function revokeBusMachine(
       userActor(userId),
       {
         when: { sql: "changes() > 0", args: [] },
-        detailSql: {
-          sql: "json_object('label', (select label from bus_machines where id = ?))",
-          args: [id],
-        },
+        detail: { label: auditText(was?.label ?? "") },
       },
     ),
     stmt(env.DB, ONE_OF).bind(id, userId),

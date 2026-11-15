@@ -44,7 +44,7 @@ import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import { noteInstanceFirst } from "../services/analytics.js";
-import { audit } from "../services/audit.js";
+import { audit, auditText } from "../services/audit.js";
 import {
   busOn,
   busPing,
@@ -262,7 +262,7 @@ async function deviceCode(c: Context<AppEnv>): Promise<Response> {
 const POLL = `update bus_device_codes set last_poll_at = ?2
   where device_code_hash = ?1 and expires_at > ?2
     and (last_poll_at is null or last_poll_at <= ?3)
-  returning id, user_id as userId, approved_at as approvedAt, denied_at as deniedAt`;
+  returning id, label, user_id as userId, approved_at as approvedAt, denied_at as deniedAt`;
 const LIVE_CODE =
   "select 1 as x from bus_device_codes where device_code_hash = ?1 and expires_at > ?2";
 // The machine row only for an approved, unexpired code whose approver is
@@ -302,6 +302,7 @@ async function deviceToken(c: Context<AppEnv>): Promise<Response> {
     .bind(hash, now, now - POLL_MIN_MS)
     .first<{
       id: string;
+      label: string;
       userId: string | null;
       approvedAt: number | null;
       deniedAt: number | null;
@@ -341,10 +342,7 @@ async function deviceToken(c: Context<AppEnv>): Promise<Response> {
       { kind: "user", id: row.userId, cred: null },
       {
         when: { sql: "changes() > 0", args: [] },
-        detailSql: {
-          sql: "json_object('label', (select label from bus_machines where id = ?))",
-          args: [machineId],
-        },
+        detail: { label: auditText(row.label) },
       },
     ),
     stmt(env.DB, DROP_REDEEMED).bind(row.id, machineId),
