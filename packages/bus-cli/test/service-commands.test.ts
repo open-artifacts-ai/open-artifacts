@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -258,9 +259,13 @@ describe("a Node upgrade or move does not break the bus (#1729)", () => {
     expect(await install({ hub: HUB }, ctx)).toBe(0);
     const launcher = join(ctx.home, "bin/node");
     expect(existsSync(launcher)).toBe(true);
+    // bin is a symlink into versions/<v>; each kept version has its launcher.
+    const real = realpathSync(launcher);
+    const isLauncher = (f: string) =>
+      f === real || /[\\/]versions[\\/][^\\/]+[\\/]node$/.test(f);
     const holders = [ctx.userHome, ctx.home]
       .flatMap(files)
-      .filter((f) => f !== launcher && readFileSync(f).includes(GONE));
+      .filter((f) => !isLauncher(f) && readFileSync(f).includes(GONE));
     expect(holders).toEqual([]);
     expect(calls.filter((c) => c.includes(GONE))).toEqual([]);
     expect(

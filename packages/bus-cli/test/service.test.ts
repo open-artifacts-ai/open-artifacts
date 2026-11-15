@@ -2,10 +2,12 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -882,6 +884,52 @@ describe("systemService: a daemon that will not stop (round 2)", () => {
     });
     expect(await systemService(gone.d).remove()).toEqual({ running: 778 });
     expect(gone.d.kill).not.toHaveBeenCalled();
+  });
+
+  it("isOurDaemon still matches the <home>/bin path when bin is a link (#2552)", () => {
+    const home = join(tmp(), ".oa-bus");
+    const pkg = tmp();
+    mkdirSync(join(pkg, "dist"));
+    writeFileSync(join(pkg, "dist/index.js"), "// bundle");
+    const entry = installCli(home, {
+      kind: "bundle",
+      file: join(pkg, "dist/index.js"),
+    });
+    expect(entry).toBe(join(home, "bin/dist/index.js"));
+    expect(lstatSync(join(home, "bin")).isSymbolicLink()).toBe(true);
+    expect(isOurDaemon(`/opt/node ${entry} daemon`, entry)).toBe(true);
+    expect(isOurDaemon(`/opt/node ${entry} status`, entry)).toBe(false);
+  });
+
+  it("installs into versions/<package version> and arms update.json (#2552)", () => {
+    const home = join(tmp(), ".oa-bus");
+    const pkg = tmp();
+    mkdirSync(join(pkg, "dist"));
+    writeFileSync(join(pkg, "dist/index.js"), "// bundle");
+    writeFileSync(join(pkg, "package.json"), '{ "version": "3.4.5" }');
+    installCli(home, { kind: "bundle", file: join(pkg, "dist/index.js") });
+    expect(readlinkSync(join(home, "bin"))).toBe(join("versions", "3.4.5"));
+    expect(JSON.parse(readFileSync(join(home, "update.json"), "utf8"))).toEqual(
+      { armed: true, current: "3.4.5" },
+    );
+  });
+
+  it("an install over a pre-#2552 real bin folder moves it to versions/ (#2552)", () => {
+    const home = join(tmp(), ".oa-bus");
+    mkdirSync(join(home, "bin"), { recursive: true });
+    writeFileSync(join(home, "bin/package.json"), '{ "version": "0.1.0" }');
+    const pkg = tmp();
+    mkdirSync(join(pkg, "dist"));
+    writeFileSync(join(pkg, "dist/index.js"), "// bundle");
+    writeFileSync(join(pkg, "package.json"), '{ "version": "0.2.0" }');
+    installCli(home, { kind: "bundle", file: join(pkg, "dist/index.js") });
+    expect(readdirSync(join(home, "versions")).sort()).toEqual([
+      "0.1.0",
+      "0.2.0",
+    ]);
+    expect(readFileSync(join(home, "bin/package.json"), "utf8")).toContain(
+      "0.2.0",
+    );
   });
 
   it("isOurDaemon: our copy or a terminal oa-bus daemon, nothing else", () => {

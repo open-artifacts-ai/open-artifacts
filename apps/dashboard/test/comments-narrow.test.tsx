@@ -486,9 +486,10 @@ describe("wide windows are unchanged (#2486)", () => {
     mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
     const p = await panel();
     await within(p).findByText("Which layout?");
-    expect(
-      within(p).getByRole("tab", { name: "Comments" }),
-    ).not.toHaveAttribute("aria-label");
+    // The panel's own tab (not the body's Comments / Decisions header, #2381).
+    const trigger = p.querySelector('[role="tab"][id$="-trigger-comments"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger).not.toHaveAttribute("aria-label");
     expect(p.querySelector("[data-tab-count]")).toBeNull();
     expect(topPill()).toBeTruthy();
   });
