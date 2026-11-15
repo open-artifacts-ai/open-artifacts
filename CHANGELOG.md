@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.188.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.187.0...v0.188.0) (2026-11-15)
+
+
+### Features
+
+* **bus:** update policy, quiet moments and the off switch ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2569](https://github.com/open-artifacts-ai/open-artifacts/issues/2569)) ([57ce574](https://github.com/open-artifacts-ai/open-artifacts/commit/57ce5745e95f9ba1563ab96c04928eca5eb6541a))
+
 ## [0.187.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.186.1...v0.187.0) (2026-11-15)
 
 
