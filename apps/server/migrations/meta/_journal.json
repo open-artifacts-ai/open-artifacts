@@ -281,6 +281,13 @@
       "when": 1794743627481,
       "tag": "0039_inbox_items",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1794750787450,
+      "tag": "0040_agent_requests",
+      "breakpoints": true
     }
   ]
 }
