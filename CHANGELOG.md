@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.193.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.192.0...v0.193.0) (2026-11-15)
+
+
+### Features
+
+* **docs:** Save version, restore, doc version labels, comments on a selection ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2551](https://github.com/open-artifacts-ai/open-artifacts/issues/2551)) ([a4bf39c](https://github.com/open-artifacts-ai/open-artifacts/commit/a4bf39c2304f529d46e797678ddd6bbdb650d674))
+
 ## [0.192.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.191.0...v0.192.0) (2026-11-15)
 
 
