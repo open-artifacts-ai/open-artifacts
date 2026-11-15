@@ -262,7 +262,10 @@ describe("DocRoom relay", () => {
       await a.ping();
       await runDurableObjectAlarm(stub);
     };
-    type(a, "b".repeat(1_900_000));
+    // Two inserts, each under the per-struct length limit.
+    type(a, "b".repeat(950_000));
+    await flush();
+    type(a, "b".repeat(950_000));
     await flush();
     const chunk = "c".repeat(100_000);
     a.doc.getText("t").insert(0, chunk);

@@ -699,7 +699,8 @@ export class DocRoom extends DurableObject<Env> {
     } catch {
       throw new BadFrame("undecodable update");
     }
-    const fresh = this.checkClients(ws, att, update, structs);
+    // The size check first: an update that large is refused as too large (it
+    // would trip the struct-length limit below, and say bad_update instead).
     if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
       // Rows and the buffer overcount what a compacted doc holds. Never
       // compact on a socket message (a cold load costs CPU): refuse, and
@@ -712,6 +713,7 @@ export class DocRoom extends DurableObject<Env> {
       ws.send(DOC_TOO_LARGE_FRAME);
       return;
     }
+    const fresh = this.checkClients(ws, att, update, structs);
     // Advance a client's clock only across structs that continue what we
     // hold: a gap or a Skip struct (a merged update with a hole) must not
     // claim the clocks in between, or the real author's missing edits would
