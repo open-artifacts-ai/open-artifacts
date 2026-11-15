@@ -6,12 +6,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
-import {
-  NEEDS_CODE,
-  needsCode,
-  needsCodeNoCodes,
-  WRONG_ACCOUNT,
-} from "../src/pages/SignIn";
+import { NEEDS_CODE, needsCode, WRONG_ACCOUNT } from "../src/pages/SignIn";
 import { calls, installHarness, mountHosted } from "./harness";
 
 installHarness();
@@ -95,26 +90,21 @@ it("needs_code without link=1: the usual sign-in with That took too long. Start 
   ).toBeVisible();
 });
 
-it("(a) with codes off: only what to ask for, no button", async () => {
-  mountHosted(
-    URL_IN,
-    { providers: ["google"] },
-    undefined,
-    linkRoutes("s***@partner.org"),
-  );
+it("(a) with codes off: no link and no address, so Product's line and Try another account", async () => {
+  // Codes off: the server sends needs_code with no link=1 (no cookie).
+  mountHosted("/sign-in?error=needs_code&next=%2Fa%2FX1", {
+    providers: ["google"],
+  });
   expect(
     await screen.findByText(
-      "Google couldn't confirm s***@partner.org. Ask the person who shared this page to use your Gmail or Google Workspace address.",
+      "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.",
     ),
   ).toBeVisible();
   expect(screen.queryByRole("button", { name: "Email me a code" })).toBeNull();
-  // Design: a quiet way back to Google.
+  expect(screen.queryByText("That took too long. Start again.")).toBeNull();
   expect(
     screen.getByRole("link", { name: "Try another account" }),
   ).toHaveAttribute("href", "/auth/login/google?next=%2Fa%2FX1");
-  expect(needsCodeNoCodes("a")).toContain(
-    "Ask the person who shared this page",
-  );
   expect(needsCode("a")).toContain("After that, Google works.");
 });
 

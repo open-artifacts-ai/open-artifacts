@@ -80,11 +80,12 @@ for (const scheme of ["light", "dark"] as const)
         page,
       }, info) => {
         await page.goto(
-          "/sign-in?hosted=google-only&error=needs_code&link=1&glink=1",
+          // Codes off: no link=1, no cookie, no address.
+          "/sign-in?hosted=google-only&error=needs_code&next=%2Fa%2FCd5fGhJkLm6nPqRs",
         );
         await expect(
           page.getByText(
-            "Google couldn't confirm s***@partner.org. Ask the person who shared this page to use your Gmail or Google Workspace address.",
+            "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.",
           ),
         ).toBeVisible();
         await expect(page.getByRole("button")).toHaveCount(0);

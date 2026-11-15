@@ -115,8 +115,12 @@ function Shell({
  */
 export const needsCode = (email: string) =>
   `Google couldn't confirm ${email}. We'll email a code to that address. After that, Google works.`;
-export const needsCodeNoCodes = (email: string) =>
-  `Google couldn't confirm ${email}. Ask the person who shared this page to use your Gmail or Google Workspace address.`;
+/**
+ * OA Product: needs_code with codes off. The server sends no link then (no
+ * cookie, so no address): this line, and Try another account.
+ */
+export const NEEDS_CODE_NO_CODES =
+  "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.";
 export const WRONG_ACCOUNT =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
 /** OA Product: (b) with codes off. */
@@ -270,7 +274,7 @@ function HostedSignIn({
   const email = providers.providers.find((p) => p.id === "email");
   // #2590 G2: the masked address the link names (PROVISIONAL, codeLink.ts).
   const navigate = useNavigate();
-  const wantLink = error === "needs_code" && link === true;
+  const wantLink = error === "needs_code" && link === true && !!email;
   const linkQuery = useCodeLink(wantLink);
   const linked = wantLink ? linkQuery : null;
   // No link any more (404): start over, at the sign-in page.
@@ -366,29 +370,34 @@ function HostedSignIn({
   // #2590 G2 (a): Google couldn't confirm the shared address (needs_code,
   // link=1): the masked address the server holds, and a code for it when
   // codes are on; with codes off, only what to ask for.
+  // #2590 G2 (a) with codes off: no link, no address (OA Product).
+  if (error === "needs_code" && !email)
+    return (
+      <>
+        <h1>Log in to {name}</h1>
+        <div className="mt-3">
+          <Notice tone="info">{NEEDS_CODE_NO_CODES}</Notice>
+        </div>
+        {/* Design: a quiet way to try again with Google. */}
+        {googleHref && (
+          <Button
+            asChild
+            variant="outline"
+            className="oa-split-btn"
+            style={{ marginTop: 16 }}
+          >
+            <a href={googleHref}>Try another account</a>
+          </Button>
+        )}
+      </>
+    );
+
   if (linked)
     return (
       <>
         <h1>Log in to {name}</h1>
         {linked.isPending ? (
           <p aria-busy="true" className="oa-split-sub" />
-        ) : linked.data && !email ? (
-          <>
-            <div className="mt-3">
-              <Notice tone="info">{needsCodeNoCodes(linked.data)}</Notice>
-            </div>
-            {/* Design: a quiet way to try again with Google. */}
-            {googleHref && (
-              <Button
-                asChild
-                variant="outline"
-                className="oa-split-btn"
-                style={{ marginTop: 16 }}
-              >
-                <a href={googleHref}>Try another account</a>
-              </Button>
-            )}
-          </>
         ) : linked.data && email ? (
           <>
             {step === "email" && (
