@@ -23,6 +23,7 @@ import { ASKER_NOTICES_MAX } from "../src/services/comment-rules.js";
 import {
   addReply,
   addThread,
+  answerAsk,
   type CommentWho,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
@@ -473,7 +474,8 @@ describe("reply toAsker (#1614)", () => {
       body: { body: "x", toAsker: true },
       headers: { "cf-connecting-ip": "198.51.100.40" },
     });
-    expect(g.status).toBe(404);
+    // A guest is refused before the thread is looked up (#2592).
+    expect(g.status).toBe(403);
   });
 
   it("replying and deleting in a loop never gives the bound back, for a member", async () => {
@@ -500,37 +502,17 @@ describe("reply toAsker (#1614)", () => {
     expect(toAsker()).toHaveLength(1);
   });
 
-  it("replying and deleting in a loop never gives the bound back, for a guest", async () => {
+  it("a signed-out guest's toAsker reply is refused and delivers nothing (#2592)", async () => {
     const s = await setup({ visibility: "public" });
     const t = await askBy(s.id, asAgent(owner), owner);
     bus.clear();
-    const ip = "198.51.100.41";
-    let token: string | null = null;
-    for (let i = 0; i < 3; i++) {
-      const res = await api(app, R.commentReplies(s.id, t.id), null, {
-        method: "POST",
-        body: { body: "from a guest", toAsker: true },
-        headers: {
-          "cf-connecting-ip": ip,
-          ...(token ? { [ANON_ID_HEADER]: token } : {}),
-        },
-      });
-      expect(res.status).toBe(201);
-      token ??= res.headers.get(ANON_ID_HEADER);
-      const c = (await res.json()) as Comment;
-      expect(
-        (
-          await api(app, `${R.comments(s.id)}/${t.id}/comments/${c.id}`, null, {
-            method: "DELETE",
-            headers: {
-              "cf-connecting-ip": ip,
-              [ANON_ID_HEADER]: token as string,
-            },
-          })
-        ).status,
-      ).toBe(204);
-    }
-    expect(toAsker()).toHaveLength(1);
+    const res = await api(app, R.commentReplies(s.id, t.id), null, {
+      method: "POST",
+      body: { body: "from a guest", toAsker: true },
+      headers: { "cf-connecting-ip": "198.51.100.41" },
+    });
+    expect(res.status).toBe(403);
+    expect(toAsker()).toEqual([]);
   });
 
   it("a reply whose agents all read gone does not spend the bound", async () => {
@@ -551,5 +533,128 @@ describe("reply toAsker (#1614)", () => {
       await reply(s.id, t.id, viewer, { toAsker: true })
     ).json()) as Comment;
     expect(third.mentions).toBeUndefined();
+  });
+});
+
+describe("toAsker and picks by guests (#2592)", () => {
+  const guestRole = async () => {
+    const email = `t-guest-${tag}-${newId().slice(0, 4).toLowerCase()}@x.com`;
+    const l = await login(email, "guest");
+    return l.userId;
+  };
+  const replyBy = (id: string, tid: string, who: CommentWho, v: object) =>
+    addReply(
+      E,
+      id,
+      tid,
+      who,
+      v as never,
+      "Use the wide one",
+      { toAsker: true },
+      { moderator: true },
+    );
+
+  it("a guest's and a signed-out visitor's toAsker reply delivers nothing; a member's still does", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    bus.clear();
+    const gid = await guestRole();
+    await expect(
+      replyBy(
+        s.id,
+        t.id,
+        { kind: "user", id: gid },
+        { userId: gid, short: null, guest: true },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      replyBy(
+        s.id,
+        t.id,
+        { kind: "guest", short: "anon1", rate: "ip:1.2.3.4" },
+        { userId: null, short: "anon1" },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(bus.sent).toEqual([]);
+    expect(toAsker()).toEqual([]);
+    const ok = await replyBy(s.id, t.id, asPerson(viewer), view(viewer));
+    expect(ok.mentions?.[0]?.delivery).toBe("delivered");
+    expect(toAsker()).toHaveLength(1);
+  });
+
+  it("a guest cap refuses toAsker too; a restricted member's reply still delivers", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    bus.clear();
+    const capped = async (cap: "guest" | "restricted") => {
+      const id = await guestRole();
+      // A member row capped by hand: the restricted flag, or a guest-role cap.
+      await real.DB.prepare(
+        "update users set role = 'member', restricted_manual = 1 where id = ?",
+      )
+        .bind(id)
+        .run();
+      if (cap === "guest")
+        await real.DB.prepare("update users set role = 'guest' where id = ?")
+          .bind(id)
+          .run();
+      return id;
+    };
+    const r = await capped("restricted");
+    const ok = await replyBy(
+      s.id,
+      t.id,
+      { kind: "user", id: r },
+      { userId: r, short: null, capped: true },
+    );
+    expect(ok.body).toBe("Use the wide one");
+    expect(toAsker()).toHaveLength(1);
+    const g = await capped("guest");
+    await expect(
+      replyBy(
+        s.id,
+        t.id,
+        { kind: "user", id: g },
+        { userId: g, short: null, guest: true, capped: true },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("a restricted member can still answer an ask addressed to them", async () => {
+    const s = await setup();
+    const email = `t-restr-${tag}@x.com`;
+    const l = await login(email, "member");
+    await real.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(l.userId)
+      .run();
+    await api(app, R.shares(s.id), owner.cookie, {
+      method: "PUT",
+      body: { email, role: "viewer" },
+    });
+    const t = (await addThread(
+      E,
+      { id: s.id, format: "html", currentVersion: 1 } as never,
+      asPerson(owner),
+      view(owner),
+      {
+        anchor: NOTE,
+        body: "Pick",
+        ask: { question: "Which?", options: OPTS, to: [{ key: l.userId }] },
+      },
+      { moderator: true },
+    )) as { id: string; comments: Comment[] };
+    const out = await answerAsk(
+      E,
+      s.id,
+      t.id,
+      t.comments[0]?.id as string,
+      { kind: "user", id: l.userId },
+      { userId: l.userId, short: null, capped: true },
+      "wide",
+      undefined,
+      { interactive: false },
+      { canDecide: false, guest: true },
+    );
+    expect(out.ask?.picks?.map((x) => x.optionId)).toEqual(["wide"]);
   });
 });
