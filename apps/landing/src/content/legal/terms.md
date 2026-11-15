@@ -67,13 +67,13 @@ A member is a person who can publish in your instance: its owner, its admins and
 
 **Billing.** Prices are in US dollars. You pay by card through Stripe, our payment processor. We don't store your card number. A plan renews automatically each month or each year until you cancel it. If you start paying for Solo during its trial, the first charge comes when the trial ends.
 
-On Team and Business, you pay for the number of members your instance has, with a minimum of one. Monthly plans charge for them at each renewal, and yearly plans charge for them up front. When someone becomes a member partway through a period, you're charged for the rest of that period only. When you remove a member or make them a guest, you stop paying for them from your next renewal.
+On Team and Business, you pay for the number of members your instance has, with a minimum of one. Monthly plans charge for them at each renewal, and yearly plans charge for them up front. When someone becomes a member partway through a period, you're charged for the rest of that period only: on a monthly plan with your next renewal, and on a yearly plan at the end of that month. When you remove a member or make them a guest, we add a credit to your account for the days you paid for and didn't use. Credits go toward later members or your next renewal. They aren't paid out as money, and they end when your paid plan ends.
 
 **Taxes.** Prices don't include taxes, and we don't add tax to invoices today. If that changes, we'll tell instance owners first. You're responsible for any taxes you owe on your purchase.
 
 **Cancelling.** The instance owner or an admin can cancel at any time in Settings, Plan and billing. The plan keeps working until the end of the period already paid for, and doesn't renew. After that, Solo pauses publishing, and on Team or Business the team features become read-only. You can still read and share everything, and nothing is deleted.
 
-**Refunds.** If you ask within 14 days of your first payment, we'll refund it in full. Write to [hello@open-artifacts.com](mailto:hello@open-artifacts.com) from the instance owner's address. After those 14 days, payments aren't refunded, and we don't give credit for part of a period, for moving to a cheaper plan, or for having fewer members, except where the law requires it. If a charge looks wrong, write to the same address and we'll look into it.
+**Refunds.** If you ask within 14 days of your first payment, we'll refund it in full. Write to [hello@open-artifacts.com](mailto:hello@open-artifacts.com) from the instance owner's address. After those 14 days, payments aren't refunded. Apart from the account credit for removed members described under Billing, we don't give credit for part of a period or for moving to a cheaper plan, except where the law requires it. If a charge looks wrong, write to the same address and we'll look into it.
 
 **Failed payments.** If a payment fails, you have 7 days to update your card. After that the instance becomes read-only until the payment goes through. Nothing is deleted.
 
