@@ -560,7 +560,6 @@ export function copy(
       "  link         <dir> <dir> or list; unlink <dir> <dir>",
       "  leads        check [name]",
       "  auto-update  off, on or status: whether the bus keeps itself up to date",
-      "  update       Install the update that is ready, after you type yes",
       "  mcp          <claude|opencode|codex|pi>: the MCP server a harness runs",
       "  version      Print the version",
       "  help         This text",
@@ -1112,8 +1111,6 @@ export function copy(
       `${v} failed on this machine and will not be installed.`,
     updatePrompt: (v: string) => `Install ${v} now? Type yes to continue: `,
     updateDeclined: () => "Nothing was installed.",
-    updateNotAvailable: () =>
-      "Installing is not available in this version yet.",
     updateDone: (v: string) => `Installed ${v}.`,
 
     // 13. lead templates (#1328). DRAFT: not in the transcript yet.

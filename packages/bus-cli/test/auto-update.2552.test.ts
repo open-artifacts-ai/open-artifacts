@@ -50,15 +50,18 @@ describe("oa-bus auto-update", () => {
 });
 
 describe("oa-bus update", () => {
-  it("no flag or argument takes the place of the prompt", () => {
-    expect(() => parse(["update", "--yes"])).toThrow(/does not apply/);
-    expect(() => parse(["update", "-y"])).toThrow(/does not apply/);
-    expect(() => parse(["update", "1.6.0"])).toThrow(/unexpected/);
+  it("is not registered as a command yet", () => {
+    expect(() => parse(["update"])).toThrow(/unknown command/);
   });
   it("refuses without a terminal, exit 2", async () => {
     const c = world(false);
     setStaged(c.home, "1.6.0", 1);
-    expect(await main(["update"], () => c)).toBe(2);
+    expect(
+      await update(
+        c,
+        vi.fn(async () => true),
+      ),
+    ).toBe(2);
     expect(c.err()).toContain("Run this yourself in a terminal.");
     expect(c.readLine).not.toHaveBeenCalled();
   });
@@ -66,11 +69,21 @@ describe("oa-bus update", () => {
     const c = world(false);
     c.env = { OA_BUS_YES: "1", CI: "1", YES: "1" };
     setStaged(c.home, "1.6.0", 1);
-    expect(await main(["update"], () => c)).toBe(2);
+    expect(
+      await update(
+        c,
+        vi.fn(async () => true),
+      ),
+    ).toBe(2);
   });
   it("nothing staged says the state", async () => {
     const c = world();
-    expect(await main(["update"], () => c)).toBe(0);
+    expect(
+      await update(
+        c,
+        vi.fn(async () => true),
+      ),
+    ).toBe(0);
     expect(c.out()[0]).toMatch(/^Up to date\./);
   });
   it("only yes installs; y does not", async () => {
@@ -87,12 +100,6 @@ describe("oa-bus update", () => {
       expect(install).toHaveBeenCalledTimes(code === 0 ? 1 : 0);
       if (code === 0) expect(install).toHaveBeenCalledWith("1.6.0");
     }
-  });
-  it("the stub installs nothing", async () => {
-    const c = world();
-    setStaged(c.home, "1.6.0", 1);
-    expect(await main(["update"], () => c)).toBe(1);
-    expect(c.err().join("\n")).toContain("not available");
   });
   it("refuses a failed version, and off", async () => {
     const c = world();

@@ -140,12 +140,20 @@ describe("accept", () => {
       no("rate_limited"),
     ],
     [
-      "step-back is limited too",
+      "step-back ignores the 6 h limit",
       { lastAt: T - 1000 },
       { version: "1.4.0", stepBack: true },
       T,
       undefined,
-      no("rate_limited"),
+      ok,
+    ],
+    [
+      "step-back with clock rolled back",
+      { lastAt: T + 5 * 3600_000 },
+      { version: "1.4.0", stepBack: true },
+      T,
+      undefined,
+      ok,
     ],
     ["off", { off: true }, { version: "1.6.0" }, T, undefined, no("off")],
     [

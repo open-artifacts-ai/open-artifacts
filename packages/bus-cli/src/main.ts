@@ -15,7 +15,6 @@ import { mcpProof } from "./commands/mcp-proof.ts";
 import { namespace } from "./commands/namespace.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
-import { update } from "./commands/update.ts";
 import { askDaemon, type Ctx, realCtx, say, sayErr } from "./context.ts";
 import { type Command, parse } from "./index.ts";
 
@@ -30,7 +29,6 @@ const TERMINAL = new Set([
   "link",
   "leads",
   "auto-update",
-  "update",
   "version",
   "help",
 ]);
@@ -157,8 +155,6 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return leads(cmd, ctx);
     case "auto-update":
       return autoUpdate(cmd, ctx);
-    case "update":
-      return update(ctx);
     case "link":
       return link(cmd, ctx);
     case "version":

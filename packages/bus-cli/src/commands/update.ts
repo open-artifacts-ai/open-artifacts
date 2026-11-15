@@ -11,7 +11,7 @@ export type InstallStaged = (version: string) => Promise<boolean>;
  */
 export async function update(
   ctx: Ctx,
-  installStaged?: InstallStaged,
+  installStaged: InstallStaged,
 ): Promise<number> {
   const c = ctx.copy;
   const s = readPolicy(ctx.home);
@@ -39,10 +39,6 @@ export async function update(
   const answer = (await ctx.readLine?.(c.updatePrompt(version))) ?? "";
   if (answer.trim().toLowerCase() !== "yes") {
     say(ctx, c.updateDeclined());
-    return 1;
-  }
-  if (!installStaged) {
-    sayErr(ctx, c.updateNotAvailable());
     return 1;
   }
   if (!(await installStaged(version))) return 1;

@@ -40,7 +40,6 @@ export type Command = (
   | { cmd: "link"; sub: "list" }
   | { cmd: "leads"; sub: "check"; name?: string }
   | { cmd: "auto-update"; sub: "off" | "on" | "status" }
-  | { cmd: "update" }
   | { cmd: "version" }
   | { cmd: "help" }
 ) & {
@@ -66,7 +65,6 @@ const COMMANDS = new Set([
   "unlink",
   "leads",
   "auto-update",
-  "update",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
@@ -298,7 +296,6 @@ function route(cmd: string, values: Values, positionals: string[]) {
     case "status":
     case "logs":
     case "doctor":
-    case "update":
     case "version":
       return { cmd };
     default:

@@ -107,7 +107,7 @@ export type Instruction = {
 /**
  * May the bus act on an instruction naming `version`? Forward only, except an
  * explicit step-back to the kept previous; never a failed version; never ahead
- * of the instance; one attempt per 6 h. The instruction has no field that can
+ * of the instance; one attempt per 6 h (a step-back is exempt, but counts for the next one). The instruction has no field that can
  * touch `off`.
  */
 export function accept(
@@ -132,7 +132,8 @@ export function accept(
     compareVersions(i.version, serverVersion) === 1
   )
     return no("ahead_of_server");
-  if (rateLimited(s, now)) return no("rate_limited");
+  // A step back is never limited: a broken version must not keep running.
+  if (!isStepBack && rateLimited(s, now)) return no("rate_limited");
   return yes;
 }
 
