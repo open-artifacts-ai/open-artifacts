@@ -1372,9 +1372,10 @@ describe("Decisions data (#2381 S2, #2323)", () => {
   it("a signed-out reader of a public page sees replaces and was like any other field", async () => {
     const s = await setup({ visibility: "public" });
     const old = await ask(s.id, [viewer.userId]);
-    const fresh = await ask(s.id, [viewer.userId], { replaces: cidOf(old) });
+    // Decided and changed first: a replaced ask takes no more picks.
     await answer(s.id, old.id, cidOf(old), owner, "wide");
     await answer(s.id, old.id, cidOf(old), owner, "compact");
+    const fresh = await ask(s.id, [viewer.userId], { replaces: cidOf(old) });
     const out = await listAsk(s.id, null, cidOf(old));
     expect(out?.replacedBy).toBe(cidOf(fresh));
     expect(out?.answer?.was?.optionId).toBe("wide");

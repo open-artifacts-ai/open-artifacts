@@ -1077,21 +1077,24 @@ describe("#2381 S2 the Decisions tab", () => {
     serveThreads(() => [
       decided("a", "On v2?", "2026-11-05T09:00:00Z", {
         version: 2,
-        anchor: { kind: "text", exact: "x", prefix: "", suffix: "" },
+        anchor: {
+          kind: "text",
+          version: 2,
+          exact: "x",
+          prefix: "",
+          suffix: "",
+        },
       }),
     ]);
     mount(viewerPath(OWNED, 1));
     const c = await col();
     fireEvent.click(await within(c).findByRole("tab", { name: /Decisions/ }));
     fireEvent.click(
-      (await waitFor(
-        () => {
-          const b = c.querySelector('[data-decision="c-a"] button');
-          if (!b) throw new Error("no row");
-          return b;
-        },
-        { timeout: FIRST_LOAD_MS },
-      )) as HTMLElement,
+      (await waitFor(() => {
+        const b = c.querySelector('[data-decision="c-a"] button');
+        if (!b) throw new Error("no row");
+        return b;
+      })) as HTMLElement,
     );
     expect(
       await within(c).findByRole("button", { name: "Decisions" }),
