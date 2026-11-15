@@ -222,8 +222,10 @@ describe("reach for a share recipient", () => {
     expect(await ways(GOOGLE(), uniq("r", "other.com"))).toEqual([
       "google_workspace",
     ]);
+    // Codes on: a consumer account is let in after a code (#2590 G2).
     expect(await ways(INVITE(), uniq("r", "other.com"))).toEqual([
       "google_workspace",
+      "google_after_code",
       "email_code",
     ]);
   });

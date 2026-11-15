@@ -515,6 +515,13 @@ export const AUTH = {
   codeRequest: "/auth/code/request",
   /** POST CodeVerify -> 200 CodeVerified. */
   codeVerify: "/auth/code/verify",
+  /**
+   * GET -> 200 { maskedEmail } for the Google account this browser is waiting
+   * to link with a code (after the callback's SIGN_IN_PAGE?error=needs_code),
+   * 404 with no such account. Then POST codeRequest { link: true } (no email:
+   * the address comes from the browser's own cookie) and CodeVerify as usual.
+   */
+  codeLink: "/auth/code/link",
 } as const;
 
 export const MCP_PATH = "/mcp";
