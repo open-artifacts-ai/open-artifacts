@@ -526,6 +526,14 @@ export const artifactAsks = sqliteTable(
     addressee: text("addressee").notNull(),
     open: integer("open").notNull(),
     answered: integer("answered").notNull().default(0),
+    // #2512: what the inbox shows, copied from the ask when it is indexed.
+    // Null on a row from before: the inbox repairs it from the DO (reconcileAsks).
+    question: text("question"),
+    // The asking comment's StoredActor, as JSON (read back through the comments face builder).
+    asker: text("asker"),
+    askedAt: text("asked_at"),
+    // 1 when the ask needs a passkey or names a risky action (#2263).
+    confirm: integer("confirm"),
   },
   (t) => [
     primaryKey({ columns: [t.artifactId, t.commentId, t.addressee] }),
