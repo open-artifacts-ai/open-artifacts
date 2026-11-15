@@ -250,8 +250,11 @@ describe("direct-mode login routes", () => {
     expect(r.headers.get("referrer-policy")).toBe("no-referrer");
   });
 
+  // A weak account outside the login domains is no longer refused by the
+  // provider (#2590): admit() refuses it (no_access with no share, needs_code
+  // with one). Still no session.
   it.each([
-    ["tenant", { hd: "b.com" }],
+    ["no_access", { hd: "b.com" }],
     ["failed", { aud: "other" }],
   ])(
     "refusal %s lands on the login page with next, no session",
@@ -260,7 +263,10 @@ describe("direct-mode login routes", () => {
         email: uniq("x"),
         ...claims,
       });
-      expect(loc(r)).toBe(`${SIGN_IN_PAGE}?error=${reason}&next=%2Fa%2Fx`);
+      const via = reason === "no_access" ? "&via=google" : "";
+      expect(loc(r)).toBe(
+        `${SIGN_IN_PAGE}?error=${reason}&next=%2Fa%2Fx${via}`,
+      );
       expect(cookieVal(r, SESSION)).toBeUndefined();
     },
   );

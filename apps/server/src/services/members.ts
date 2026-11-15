@@ -53,8 +53,7 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
-import { waysOf } from "./login.js";
-import { inviteReach } from "./reach.js";
+import { inviteReach, waysOf } from "./reach.js";
 import {
   IDENTITIES_SQL,
   identitiesOf,
