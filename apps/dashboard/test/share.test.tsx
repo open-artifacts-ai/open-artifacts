@@ -226,6 +226,8 @@ describe("share panel", () => {
       expect(screen.queryByText(NOW)).toBeNull();
     });
 
+    // #2590: a known member (bob) keeps Editor; on the plain mocks (no
+    // login domains) any other address is outside.
     it("right after sharing as Editor: the caption, and no status note", async () => {
       let list: object[] = [];
       server.use(
@@ -246,12 +248,12 @@ describe("share panel", () => {
       );
       fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
       fireEvent.change(screen.getByLabelText("Email"), {
-        target: { value: "dan@example.com" },
+        target: { value: "bob@example.com" },
       });
       fireEvent.click(screen.getByRole("button", { name: "Add" }));
       expect(await screen.findByText(NOW)).toBeVisible();
       expect(screen.queryByText("They can only view for now.")).toBeNull();
-      const row = (await screen.findByTitle("dan@example.com")).closest(
+      const row = (await screen.findByTitle("bob@example.com")).closest(
         "li",
       ) as HTMLElement;
       expect(within(row).queryByRole("status")).toBeNull();
@@ -274,36 +276,58 @@ describe("share panel", () => {
       await screen.findByTitle(email);
     };
 
-    // Where the client can't tell an address is outside (codes only, no
-    // listed domains), the member's choices still show, as before #2590.
+    // #2590: with no login domains (codes only), an address that isn't a
+    // known member is outside: it gets Can comment / Can view, never Editor.
+    // The line still shows when the server says a share picked as Editor is
+    // a guest's (a member's row the server sees otherwise).
     const CODES = { providers: ["email" as const] };
     it("gets the status line just after inviting, and not on a later open", async () => {
-      const guest = "gia@elsewhere.test";
-      mountHosted(panel(OWNED), CODES);
-      await invite(guest, "Editor");
+      const who = "dan@example.com";
+      let list: object[] = [];
+      const guestRows = [
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json(list),
+        ),
+        http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+          const b = (await request.json()) as { email: string; role: string };
+          const row = {
+            ...b,
+            createdAt: "2026-10-01T00:00:00.000Z",
+            guest: true,
+          };
+          list = [row];
+          return HttpResponse.json({ ...row, emailed: false });
+        }),
+      ];
+      mountHosted(panel(OWNED), CODES, undefined, guestRows);
+      await invite(who, "Editor");
       const line = await screen.findByText(LINE);
       expect(line).toHaveAttribute("role", "status");
-      expect(screen.getByTitle(guest).closest("li")).toContainElement(line);
+      expect(screen.getByTitle(who).closest("li")).toContainElement(line);
       cleanup();
-      mount(panel(OWNED));
-      await screen.findByTitle(guest);
+      mountHosted(panel(OWNED), CODES, undefined, guestRows);
+      await screen.findByTitle(who);
       expect(
         await screen.findByText("Guest · can only view for now"),
       ).toBeTruthy();
       expect(screen.queryByText(LINE)).toBeNull();
     });
 
-    it("no line for a guest invited as Viewer, or a member as Editor", async () => {
+    it("an unknown address is outside (Can comment / Can view); a known member as Editor gets no line", async () => {
       mountHosted(panel(OWNED), CODES);
-      await invite("gus@elsewhere.test", "Viewer");
-      // #2590: the guest's picker says Can view; no caption.
-      expect(
-        await screen.findByRole("combobox", {
-          name: "Role for gus@elsewhere.test",
-        }),
-      ).toHaveTextContent("Can view");
-      expect(screen.queryByText(LINE)).toBeNull();
-      await invite("carol@example.com", "Editor");
+      await screen.findByRole("combobox", { name: "Invite role" });
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "gus@elsewhere.test" },
+      });
+      await waitFor(() =>
+        expect(
+          screen.getByRole("combobox", { name: "Invite role" }),
+        ).toHaveTextContent("Can comment"),
+      );
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "" },
+      });
+      await invite("dan@example.com", "Editor");
       expect(screen.queryByText(LINE)).toBeNull();
     });
   });

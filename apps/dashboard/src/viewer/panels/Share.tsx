@@ -19,11 +19,13 @@ import {
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
 import { useId, useState } from "react";
+import { useAuthProviders } from "../../api/auth";
 import { ApiClientError } from "../../api/client";
 import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useDeleteShare,
+  useMembers,
   usePatchArtifact,
   usePutShare,
   useShares,
@@ -49,7 +51,8 @@ import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
 import {
   OUTSIDER_DEFAULT,
-  outsideDomains,
+  outsideAddress,
+  outsideLine,
   roleLabel,
   roleOptions,
   type WideShareRole,
@@ -241,11 +244,6 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const [role, setRole] = useState<WideShareRole>("viewer");
   const [outsiderRole, setOutsiderRole] =
     useState<WideShareRole>(OUTSIDER_DEFAULT);
-  const domainList = useSignInDomainList();
-  // The typed address is outside when it's at none of the login domains
-  // (unknown without them: the saved row's `guest` decides).
-  const typedOutside = outsideDomains(email, domainList) === true;
-  const pick = typedOutside ? outsiderRole : role;
   const [invalid, setInvalid] = useState(false);
   const [shared, setShared] = useState<{
     email: string;
@@ -262,6 +260,29 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const me = state.status === "authed" ? state.me : null;
   const install = me?.instance.name ?? "";
   const sends = emailEnabled(me);
+  const domainList = useSignInDomainList();
+  const providers = useAuthProviders().data?.providers ?? [];
+  const methods = {
+    google: providers.some((p) => p.id === "google"),
+    codes: providers.some((p) => p.id === "email"),
+  };
+  // With no login domains, an address is outside unless it's a known member
+  // (#2590). Only owners and admins can list members.
+  const listMembers = isOrgAdmin(me) && domainList.length === 0;
+  const memberList = useMembers(undefined, listMembers).data;
+  const known = memberList
+    ? new Set(
+        memberList
+          .filter(
+            (m) => m.role !== "guest" && (m.status ?? "active") === "active",
+          )
+          .map((m) => m.email.toLowerCase()),
+      )
+    : null;
+  const typedOutside =
+    outsideAddress(email, domainList, listMembers ? known : null) === true;
+  const outsideNote = typedOutside ? outsideLine(email.trim(), methods) : null;
+  const pick = typedOutside ? outsiderRole : role;
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -476,6 +497,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               className="mt-[var(--oa-space-2)] mb-0 text-destructive"
             >
               Enter a valid email address.
+            </p>
+          )}
+          {outsideNote && (
+            <p className={`mt-[var(--oa-space-3)] mb-0 ${MUTED}`}>
+              {outsideNote}
             </p>
           )}
           <p className={`mt-[var(--oa-space-3)] ${MUTED}`}>

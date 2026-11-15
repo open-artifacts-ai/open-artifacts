@@ -10,7 +10,8 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import {
   OUTSIDER_DEFAULT,
-  outsideDomains,
+  outsideAddress,
+  outsideLine,
   roleLabel,
   roleOptions,
 } from "../src/viewer/panels/shareRoles";
@@ -61,11 +62,35 @@ describe("roles", () => {
       "editor",
     ]);
   });
-  it("outside means at none of the login domains; unknown without them", () => {
-    expect(outsideDomains("sam@gmail.com", ["example.com"])).toBe(true);
-    expect(outsideDomains("Maya@Example.com", ["example.com"])).toBe(false);
-    expect(outsideDomains("sam@gmail.com", [])).toBeNull();
-    expect(outsideDomains("not an email", ["example.com"])).toBeNull();
+  it("with login domains: outside means at none of them", () => {
+    expect(outsideAddress("sam@gmail.com", ["example.com"], null)).toBe(true);
+    expect(outsideAddress("Maya@Example.com", ["example.com"], null)).toBe(
+      false,
+    );
+  });
+  it("with none: outside unless a known member; everyone when members can't be listed", () => {
+    const known = new Set(["dan@example.com"]);
+    expect(outsideAddress("Dan@example.com", [], known)).toBe(false);
+    expect(outsideAddress("sam@gmail.com", [], known)).toBe(true);
+    expect(outsideAddress("dan@example.com", [], null)).toBe(true);
+  });
+  it("an address still being typed is neither", () => {
+    expect(outsideAddress("sam@gm", [], null)).toBeNull();
+    expect(outsideAddress("sam", ["example.com"], null)).toBeNull();
+  });
+  it("the line under an outside address, word for word, by how they can log in", () => {
+    expect(outsideLine("sam@gmail.com", { google: true, codes: true })).toBe(
+      "Outside your team. sam@gmail.com opens this page with their Google account or a code we email them. They see only what you share. Free.",
+    );
+    expect(outsideLine("sam@gmail.com", { google: true, codes: false })).toBe(
+      "Outside your team. sam@gmail.com opens this page with their Google account. They see only what you share. Free.",
+    );
+    expect(outsideLine("sam@gmail.com", { google: false, codes: true })).toBe(
+      "Outside your team. sam@gmail.com opens this page with a code we email them. They see only what you share. Free.",
+    );
+    expect(outsideLine("sam@gmail.com", { google: false, codes: false })).toBe(
+      null,
+    );
   });
 });
 
@@ -118,6 +143,7 @@ describe("the Share panel", () => {
       screen.getByRole("combobox", { name: "Invite role" }),
     ).toHaveTextContent("Viewer");
     expect(await options("Invite role")).toEqual(["Viewer", "Editor"]);
+    expect(screen.queryByText(/^Outside your team/)).toBeNull();
     invite("sam@gmail.com");
     await waitFor(() =>
       expect(
@@ -125,6 +151,12 @@ describe("the Share panel", () => {
       ).toHaveTextContent("Can comment"),
     );
     expect(await options("Invite role")).toEqual(["Can comment", "Can view"]);
+    // The hosted mocks offer Google and codes.
+    expect(
+      screen.getByText(
+        "Outside your team. sam@gmail.com opens this page with their Google account or a code we email them. They see only what you share. Free.",
+      ),
+    ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() =>
       expect(puts).toEqual([{ email: "sam@gmail.com", role: "commenter" }]),
@@ -139,5 +171,34 @@ describe("the Share panel", () => {
     ]);
     // No caption for an outsider's commenter row.
     expect(screen.queryByText(/Guest ·/)).toBeNull();
+  });
+});
+
+describe("an instance with no login domains (codes only)", () => {
+  it("a known member keeps Viewer and Editor; anyone else is outside, with the codes line", async () => {
+    mountHosted(panel, { providers: ["email"] });
+    await screen.findByRole("combobox", { name: "Invite role" });
+    // dan@example.com is a member in the hosted mocks.
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "dan@example.com" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "Invite role" }),
+      ).toHaveTextContent("Viewer"),
+    );
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "sam@gmail.com" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "Invite role" }),
+      ).toHaveTextContent("Can comment"),
+    );
+    expect(
+      screen.getByText(
+        "Outside your team. sam@gmail.com opens this page with a code we email them. They see only what you share. Free.",
+      ),
+    ).toBeVisible();
   });
 });

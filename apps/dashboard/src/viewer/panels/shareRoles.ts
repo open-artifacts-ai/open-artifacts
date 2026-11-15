@@ -59,17 +59,40 @@ export function roleOptions(
 }
 
 /**
- * Is `email` outside the instance, as far as the sign-in domains tell? True
- * when the org lists its domains (Google) and the address is at none of
- * them; null when it can't tell (no domains listed): the server's `guest` on
- * the saved row decides then.
+ * Is a typed `email` outside the instance? Where the org lists its login
+ * domains (Google): when it's at none of them. Where it lists none (OA
+ * Product, #2590): when it isn't a known member, so the outsider's choices
+ * show before it's saved. `members` is the known members' addresses
+ * (lowercase), or null when the caller can't list them (only owners and
+ * admins can): then every address counts as outside. Null for an address
+ * still being typed.
  */
-export function outsideDomains(
+export function outsideAddress(
   email: string,
   domains: readonly string[],
+  members: ReadonlySet<string> | null,
 ): boolean | null {
-  if (!domains.length) return null;
-  const at = email.trim().toLowerCase().split("@")[1];
+  const e = email.trim().toLowerCase();
+  const at = /^[^@\s]+@([^@\s]+\.[^@\s]+)$/.exec(e)?.[1];
   if (!at) return null;
-  return !domains.some((d) => d.toLowerCase() === at);
+  if (domains.length) return !domains.some((d) => d.toLowerCase() === at);
+  return !members?.has(e);
+}
+
+/**
+ * OA Product (#2590, the issue's Strings): the line under an outside
+ * address, by how they can log in here. Null when nothing admits them (the
+ * warning after saving says why).
+ */
+export function outsideLine(
+  name: string,
+  methods: { google: boolean; codes: boolean },
+): string | null {
+  if (methods.google && methods.codes)
+    return `Outside your team. ${name} opens this page with their Google account or a code we email them. They see only what you share. Free.`;
+  if (methods.google)
+    return `Outside your team. ${name} opens this page with their Google account. They see only what you share. Free.`;
+  if (methods.codes)
+    return `Outside your team. ${name} opens this page with a code we email them. They see only what you share. Free.`;
+  return null;
 }

@@ -71,6 +71,12 @@ for (const scheme of ["light", "dark"] as const)
           .getByRole("textbox", { name: "Email" })
           .fill("sam@gmail.com");
         await expect(inviteRole(page)).toHaveText("Can comment");
+        // OA Product's line under an outside address (Google and codes here).
+        await expect(
+          page.getByText(
+            "Outside your team. sam@gmail.com opens this page with their Google account or a code we email them. They see only what you share. Free.",
+          ),
+        ).toBeVisible();
         await inviteRole(page).click();
         await expect(page.getByRole("option")).toHaveText([
           "Can comment",
@@ -78,6 +84,7 @@ for (const scheme of ["light", "dark"] as const)
         ]);
         await shot(page, info, `share-commenter-picker-${scheme}-${width}.png`);
         await page.keyboard.press("Escape");
+        await shot(page, info, `share-commenter-line-${scheme}-${width}.png`);
         const put = page.waitForRequest(
           (r: Request) => r.method() === "PUT" && r.url().endsWith("/shares"),
         );

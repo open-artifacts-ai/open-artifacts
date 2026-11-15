@@ -31,6 +31,7 @@ import { resetCpuLimit } from "../src/api/client";
 import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import type { HostedMockOptions } from "../src/hostedParam";
+import { commenterShareHandlers } from "../src/mockCommenterShares";
 import { loginAbsentHandlers } from "../src/mockLogin";
 import { createAppRouter } from "../src/router";
 
@@ -109,12 +110,15 @@ export const installHarness = () => {
     observers = [];
     lastClient = makeQueryClient();
     events = createArtifactEvents();
+    const base = createHandlers({ events });
     server.use(
       http.all("*/api/v1/*", ({ request }) => {
         seen.push(new URL(request.url));
         return undefined;
       }),
-      ...createHandlers({ events }),
+      // PROVISIONAL (#2590): commenter shares, ahead of the mocks.
+      ...commenterShareHandlers(() => base),
+      ...base,
       ...events.handlers,
       // #2520's PROVISIONAL routes: absent unless a test serves them.
       ...loginAbsentHandlers(),
@@ -174,7 +178,7 @@ export const mountHosted = (
   overrides: HttpHandler[] = [],
 ) => {
   const hosted = createHandlers({ hosted: opts });
-  server.use(...hosted);
+  server.use(...commenterShareHandlers(() => hosted), ...hosted);
   if (me)
     server.use(
       http.get("*/api/v1/me", async ({ request }) => {
