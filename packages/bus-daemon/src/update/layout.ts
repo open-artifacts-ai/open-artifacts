@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   lstatSync,
@@ -364,7 +365,10 @@ export function installVersion(
   home: string,
   version: string,
   fill: (dir: string) => void,
-  opts: PruneOptions = {},
+  opts: PruneOptions & {
+    /** False where no rescue shim exists (win32): nothing arms auto-update. */
+    arm?: boolean;
+  } = {},
 ): void {
   ensureVersions(home);
   const was = migrate(home) ?? currentVersion(home);
@@ -373,7 +377,7 @@ export function installVersion(
   const prior = readState(home);
   const previous = was !== undefined && was !== version ? was : prior.previous;
   writeState(home, {
-    armed: true,
+    armed: opts.arm !== false,
     current: version,
     ...(previous !== undefined && previous !== version ? { previous } : {}),
   });
@@ -396,4 +400,69 @@ export function stepBack(
   writeState(home, { armed: state.armed, current: prev });
   prune(home, [prev], opts);
   return prev;
+}
+
+/**
+ * The version folder `entryFile` runs from, by real path under the real
+ * `<home>/versions/`; undefined for anything else (a workspace, an npx copy).
+ */
+export function runningVersion(
+  entryFile: string,
+  home: string,
+): string | undefined {
+  try {
+    const root = realpathSync(versionsDir(home));
+    const rel = relative(root, realpathSync(entryFile)).split(sep);
+    const v = rel[0];
+    return rel.length >= 2 && v !== undefined && v !== ".." && isSafeVersion(v)
+      ? v
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The most files a version folder may hold: far above a real package. */
+const MAX_TREE_FILES = 5000;
+
+/**
+ * sha256 of every file under `dir`, keyed by `/`-separated relative path.
+ * `.live` at the top is left out (running processes write it). A link or any
+ * other non-file entry throws: a staged folder holds only files and folders.
+ */
+export function hashTree(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (abs: string, rel: string) => {
+    for (const name of readdirSync(abs).sort()) {
+      if (rel === "" && name === ".live") continue;
+      const p = join(abs, name);
+      const r = rel === "" ? name : `${rel}/${name}`;
+      const st = lstatSync(p);
+      if (st.isDirectory()) walk(p, r);
+      else if (st.isFile()) {
+        if (Object.keys(out).length >= MAX_TREE_FILES)
+          throw new Error("too many files");
+        out[r] = createHash("sha256").update(readFileSync(p)).digest("hex");
+      } else throw new Error(`${r} is not a plain file`);
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
+/** True when `dir` holds exactly the files `manifest` names, byte for byte. */
+export function treeMatches(
+  dir: string,
+  manifest: Record<string, string>,
+): boolean {
+  try {
+    const now = hashTree(dir);
+    const a = Object.keys(now);
+    return (
+      a.length === Object.keys(manifest).length &&
+      a.every((k) => manifest[k] === now[k])
+    );
+  } catch {
+    return false;
+  }
 }

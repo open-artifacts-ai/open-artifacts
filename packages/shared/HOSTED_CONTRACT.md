@@ -321,6 +321,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `revoke_not_closed` | 503 | `DELETE R.busMachine(id)` where the revoke landed in D1 but the bus hub could not close the machine's open connection: the machine is already revoked and cannot reconnect, and a repeat closes the connection (#1453). Nothing else answers it |
 | `use_edit_doc` | 400 | publish with content, files or edits to an existing doc (#1100): a doc changes through `edit_doc`, never a whole rewrite; nothing is published |
 | `docs_need_paid` | 400 | publish with format `doc` on a self-host whose PLAN is not paid (#1100): the message names the Workers Paid plan and hosted Solo; nothing is published |
+| `docs_unavailable` | 400 | creating or changing a doc (publish with format `doc`, `edit_doc`, save or restore a doc version) while docs are not available on the instance (#1100): the message names the next step; nothing is changed |
 | `invalid_successor` | 400 | transfer target isn't an active, non-guest, non-restricted member |
 | `member_active` | 409 | member transfer on an active non-guest member |
 | `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now); hosted billing answers `plan_required` instead |

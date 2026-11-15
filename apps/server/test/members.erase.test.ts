@@ -681,16 +681,19 @@ describe("races: each rule is re-checked inside the batch", () => {
     expect(await erasedAudits(u.userId)).toHaveLength(1);
   });
 
-  it("an invite of the address before erase is 409 member_removed; after erase it makes a new person with nothing of theirs", async () => {
+  it("an invite of the address before erase restores them; after erase it makes a new person with nothing of theirs", async () => {
     const u = await fullyLoaded();
     const invite = () =>
       call(OFF, R.members, admin.cookie, {
         method: "POST",
         body: { email: u.email, role: "member" },
       });
+    // #2520: before erase an invite restores them; remove them again to erase.
     const first = await invite();
-    expect(first.status).toBe(409);
-    expect((await errOf(first)).code).toBe("member_removed");
+    expect(first.status).toBe(200);
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(u.userId)
+      .run();
     expect((await erase(u.userId, admin.cookie)).status).toBe(204);
     const second = await invite();
     expect(second.status).toBe(201);

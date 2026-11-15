@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createEventLog,
   type Daemon,
@@ -65,6 +66,8 @@ export async function daemon(
       onRevoked: (replaced) => end(replaced ? 1 : REVOKED_EXIT),
       // Exit non-zero: the service restarts the daemon, which binds again.
       onSocketLost: () => end(1),
+      // #2552: the updater ends the daemon non-zero to restart it from a new `bin`.
+      update: { entryFile: fileURLToPath(import.meta.url), exit: end },
     }).then(
       (d) => {
         running = d;

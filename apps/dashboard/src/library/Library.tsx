@@ -26,6 +26,7 @@ import { useUploadSpace } from "../spaces/SpacePicker";
 import { useCurrentSpace } from "../spaces/useCurrentSpace";
 import { DropZone } from "../upload/DropZone";
 import { KINDS_LINE } from "../upload/openable";
+import { GUEST } from "../viewer/guest";
 import { AppLink } from "./AppLink";
 import { ArtifactCard } from "./ArtifactCard";
 import { ArtifactRow } from "./ArtifactRow";
@@ -313,6 +314,7 @@ export function Library({ scope }: { scope: Scope }) {
         />
       )}
       <Filters
+        outsider={guest}
         format={s.format}
         agent={agent}
         agents={agents}
@@ -441,7 +443,10 @@ export function Library({ scope }: { scope: Scope }) {
     <section className={PAGE}>
       <div className={BAR}>
         <div className="min-w-0">
-          <h1 className={H1}>{spaceName ?? "Library"}</h1>
+          {/* #2590: a guest's home is what was shared with them. */}
+          <h1 className={H1}>
+            {spaceName ?? (guest ? GUEST.home : "Library")}
+          </h1>
           {myRole && !personal && (
             <p className="mt-[2px] text-[length:var(--oa-text-sm)] text-muted-foreground">
               {ROLE_LINE[myRole]}
@@ -468,7 +473,8 @@ export function Library({ scope }: { scope: Scope }) {
       >
         {/* The strip scrolls, so the hairline is an inset shadow, the
             underline sits on the bottom edge and the focus ring is inset. */}
-        {me.status === "authed" && (
+        {/* A guest has one list and its heading says so: no tab strip. */}
+        {me.status === "authed" && !guest && (
           <TabsList
             variant="line"
             className="h-[34px] w-full justify-start gap-[var(--oa-space-4)] overflow-x-auto rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none]"

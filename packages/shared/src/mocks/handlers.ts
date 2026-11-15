@@ -1283,9 +1283,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const list = shares[a.id] ?? [];
         shares[a.id] = list;
         const i = byId(list, (s) => s.email, email);
+        // The server's rule: a guest defaults to commenter and is never stored as editor.
+        const guest = h?.shareGuest(email) === true;
+        const asked = r.data.role ?? (guest ? "commenter" : "viewer");
         const share: Share = {
           email,
-          role: r.data.role,
+          role: guest && asked === "editor" ? "commenter" : asked,
           createdAt: list[i]?.createdAt ?? iso(),
         };
         if (i >= 0) list[i] = share;

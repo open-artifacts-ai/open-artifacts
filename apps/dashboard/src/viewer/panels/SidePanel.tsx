@@ -70,7 +70,8 @@ export function SidePanel({
   );
   // #2381: Decisions joins the row after Comments under 960px (wider, the comments body has its own tabs).
   const wide = useWide();
-  const withDecisions = comments !== undefined && !wide;
+  // #2590: never for an outsider.
+  const withDecisions = comments !== undefined && !wide && !cmt.outsider;
   const shown =
     tab === "comments" && cmt.view === "decisions" && withDecisions
       ? "decisions"

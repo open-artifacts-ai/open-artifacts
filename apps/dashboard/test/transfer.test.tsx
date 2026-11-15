@@ -31,6 +31,8 @@ const carol = {
   role: "member" as const,
   lastSeenAt: null,
   status: "removed" as const,
+  // The server marks a departed member with artifacts left.
+  transferable: true,
 };
 /** Carol removed (not suspended), with 2 artifacts left. */
 const removedCarol = [
@@ -213,6 +215,7 @@ it("active people are never departed, even if the server ignores ?status", async
       role: "member" as const,
       lastSeenAt: null,
       status: "suspended" as const,
+      transferable: true,
     },
   ];
   mountHosted("/settings/members", true, undefined, [

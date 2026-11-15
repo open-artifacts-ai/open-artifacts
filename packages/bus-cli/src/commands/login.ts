@@ -10,6 +10,7 @@ import {
   writeSync,
 } from "node:fs";
 import { join } from "node:path";
+import { markLoginActive } from "@oa/bus-daemon";
 import {
   BUS_ROUTES,
   DeviceCodeRequestSchema,
@@ -180,7 +181,17 @@ async function requestCode(
   }
 }
 
+/** While it waits for an approval, an update keeps its hands off (#2552). */
 export async function login(args: LoginArgs): Promise<LoginResult> {
+  const done = markLoginActive(args.home);
+  try {
+    return await loginInner(args);
+  } finally {
+    done();
+  }
+}
+
+async function loginInner(args: LoginArgs): Promise<LoginResult> {
   const print = args.print ?? realDeps.print;
   const hub = normalizeHub(args.hub);
   const label = newMachineLabel(

@@ -31,8 +31,8 @@ const remember = () => {
 };
 
 /**
- * #1564: under the viewer toolbar, a signed-out viewer or a guest on a hosted
- * install is invited to publish their own. Never for members or on self-host.
+ * #1564: under the viewer toolbar, a signed-out viewer on a hosted install is
+ * invited to publish their own (a signed-in guest gets #2590's offer instead). Never for members or on self-host.
  * `hosted` is the signed-in install's flag; a signed-out viewer asks the
  * public sign-in providers instead (their /me is a 401).
  */
@@ -53,7 +53,8 @@ export function SignupNudge({
   const [gone, setGone] = useState(false);
   const isHosted = authed ? hosted : providers.data?.hosted === true;
   if (embed || !(authed || anonymous) || !isHosted) return null;
-  if (authed && !guest) return null;
+  // #2590: a signed-in guest gets the guest bar's "Get your own" instead.
+  if (authed) return null;
   if (gone || wasDismissed()) return null;
   return (
     <div className="oa-vnotice mx-auto my-3 w-[calc(100%-32px)] max-w-[680px]">

@@ -152,10 +152,10 @@ describe("shares", () => {
       emailed: false,
     });
     expect(await rowsFor(art)).toHaveLength(1);
-    await share(owner.cookie, art, "same@y.com", "editor");
+    await share(owner.cookie, art, "same@y.com", "commenter");
     const rows = await rowsFor(art);
     expect(rows).toHaveLength(2);
-    expect(JSON.parse(rows[1]?.detail ?? "")).toEqual({ role: "editor" });
+    expect(JSON.parse(rows[1]?.detail ?? "")).toEqual({ role: "commenter" });
   });
 
   it("a share refused at the cap writes no audit row", async () => {

@@ -186,7 +186,6 @@ describe("members API", () => {
     for (const body of [
       { email: "not-an-email", role: "member" },
       { email: "a@x.com", role: "owner" },
-      { email: "a@x.com", role: "guest" },
       { email: "a@x.com", role: "member", extra: 1 },
     ]) {
       const bad = await call(R.members, admin.cookie, {

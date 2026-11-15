@@ -1,25 +1,9 @@
-// #2590: per-share roles, with "commenter" for people outside the instance.
-//
-// PROVISIONAL (#2590, until OA Comments' contract PR lands in
-// packages/shared): ShareRoleSchema there becomes viewer | commenter | editor
-// with no new field, and shares to an outside address default to commenter.
-// Until then the dashboard widens the role here; swap these for the shared
-// schemas when it lands.
-import { ShareResultSchema, ShareSchema } from "@oa/shared";
-import { z } from "zod";
+// #2590: per-share roles, with "commenter" (Can comment) for people outside
+// the instance. The role is @oa/shared's ShareRole (#2600); this file holds
+// only the Share panel's choices, labels and outside-address rules.
+import type { ShareRole } from "@oa/shared";
 
-export const WideShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
-export type WideShareRole = z.infer<typeof WideShareRoleSchema>;
-export const WideShareSchema = ShareSchema.extend({
-  role: WideShareRoleSchema,
-});
-export type WideShare = z.infer<typeof WideShareSchema>;
-export const WideShareResultSchema = ShareResultSchema.extend({
-  role: WideShareRoleSchema,
-});
-export type WideShareInput = { email: string; role: WideShareRole };
-
-type Option = { value: WideShareRole; label: string };
+type Option = { value: ShareRole; label: string };
 /** A member's choices, as before. */
 export const MEMBER_ROLES: Option[] = [
   { value: "viewer", label: "Viewer" },
@@ -31,10 +15,10 @@ export const OUTSIDER_ROLES: Option[] = [
   { value: "viewer", label: "Can view" },
 ];
 /** #2590: an outsider's share starts as Can comment. */
-export const OUTSIDER_DEFAULT: WideShareRole = "commenter";
+export const OUTSIDER_DEFAULT: ShareRole = "commenter";
 
 /** What a share's role reads as: a commenter is "Can comment" everywhere. */
-export function roleLabel(role: WideShareRole, outsider: boolean): string {
+export function roleLabel(role: ShareRole, outsider: boolean): string {
   if (role === "commenter") return "Can comment";
   const list = outsider ? OUTSIDER_ROLES : MEMBER_ROLES;
   return (
@@ -49,10 +33,7 @@ export function roleLabel(role: WideShareRole, outsider: boolean): string {
  * outside them (an outsider's old Editor share, a member's commenter one)
  * stays listed so the picker never shows a blank.
  */
-export function roleOptions(
-  outsider: boolean,
-  current?: WideShareRole,
-): Option[] {
+export function roleOptions(outsider: boolean, current?: ShareRole): Option[] {
   const list = outsider ? OUTSIDER_ROLES : MEMBER_ROLES;
   if (!current || list.some((o) => o.value === current)) return list;
   return [...list, { value: current, label: roleLabel(current, false) }];

@@ -260,6 +260,6 @@ Then tell the user the upgrade was rolled back, with the \`message\` of the fail
 
 \`GET ${T("origin")}/healthz\` again and tell the user the version that is now running. If it is not the version you upgraded to, say so.
 
-If your user's machines run the agent bus, tell them to update it with \`npx @open-artifacts/bus@latest install\` (see https://open-artifacts.com/docs/agent-bus/).
+If your user's machines run the agent bus, they update it by running the "Install the bus" step of \`${T("origin")}/llms.txt\` again: it checks the download against this release before it runs anything (see https://open-artifacts.com/docs/agent-bus/). Never tell them to run \`npx @open-artifacts/bus\`.
 `;
 }

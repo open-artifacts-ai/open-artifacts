@@ -58,6 +58,8 @@ export type AppVariables = {
   sessionIat?: number | null;
   /** A Google session's forced re-authentication time (ms, P3 T18); null otherwise. */
   sessionAuthAt?: number | null;
+  /** A cookie session's verified Google token hd (SessionPayload.h): the proof of a domain, never access; null otherwise (#2520). */
+  sessionHd?: string | null;
   /** The user's session_epoch, read with the user row (content-url binds it, P3 T11); null when anonymous. */
   sessionEpoch: number | null;
   /**
@@ -240,6 +242,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
   c.set("sessionExp", null);
   c.set("sessionIat", null);
   c.set("sessionAuthAt", null);
+  c.set("sessionHd", null);
   c.set("sessionEpoch", null);
   // Embed mode: anonymous regardless of cookie or Bearer (a downgrade only).
   if (isEmbedRequest(c.req.raw)) return;
@@ -301,6 +304,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       c.set("sessionExp", s.exp);
       c.set("sessionIat", s.iat);
       c.set("sessionAuthAt", s.a ?? null);
+      c.set("sessionHd", s.h ?? null);
       c.set("sessionEpoch", row.sessionEpoch);
     }
   }
@@ -468,6 +472,7 @@ function setCookieUser(c: Context<AppEnv>, s: Session, row: UserWithEpoch) {
   c.set("sessionExp", s.exp);
   c.set("sessionIat", s.iat);
   c.set("sessionAuthAt", s.a ?? null);
+  c.set("sessionHd", s.h ?? null);
   c.set("sessionEpoch", row.sessionEpoch);
 }
 
@@ -490,6 +495,15 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["DELETE", /^\/api\/v1\/bus\/reach\/[^/]+$/],
   // Dismissing their own guest-share notice (notices.own; guests get 404 there).
   ["POST", /^\/api\/v1\/notices\/guest_shares\/dismiss$/],
+  // A comment or a reply: the route's policy refuses it (404) unless the
+  // caller is a guest holding a commenter share.
+  // A live-data doc write: the policy refuses it (404) unless a guest holds a
+  // commenter share and the page lets viewers write.
+  ["PUT", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/[^/]+$/],
+  ["PATCH", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/[^/]+$/],
+  ["DELETE", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/[^/]+$/],
+  ["POST", /^\/api\/v1\/artifacts\/[^/]+\/comments$/],
+  ["POST", /^\/api\/v1\/artifacts\/[^/]+\/comments\/[^/]+\/replies$/],
 ];
 
 /**

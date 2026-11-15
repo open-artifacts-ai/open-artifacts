@@ -10,6 +10,7 @@ import {
 } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
 import { safeNext } from "../auth/safeNext";
+import { requestLinkedCode } from "./codeLink";
 import { Turnstile, type TurnstileHandle } from "./Turnstile";
 
 /** The server's `codeLength` when it is an integer in 4..12, else `CODE_POLICY.length`. */
@@ -129,6 +130,9 @@ export function CodeSignIn({
   googleHref,
   onStep,
   variant = "trial",
+  link,
+  onStartOver,
+  submitLabel,
 }: {
   /** Already through `safeNext`. */
   next: string;
@@ -140,6 +144,16 @@ export function CodeSignIn({
   onStep?: (step: "email" | "code") => void;
   /** "trial": codes are the main way in. "guest": the `?method=code` page next to Google. */
   variant?: "trial" | "guest";
+  /**
+   * #2590 G2: a guest Google turned away. The address is the server's (the
+   * oa_glink cookie); the page shows it masked and asks for a code with
+   * { link: true }, never the address itself.
+   */
+  link?: { maskedEmail: string };
+  /** "Use a different email" leaves the page (the link mode has no field). */
+  onStartOver?: () => void;
+  /** The send button's words, when the page names them. */
+  submitLabel?: string;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [email, setEmail] = useState("");
@@ -208,7 +222,12 @@ export function CodeSignIn({
       ...(token ? { turnstileToken: token } : {}),
     };
     try {
-      const res = await requestCode(body);
+      const res = link
+        ? await requestLinkedCode({
+            next: body.next ?? "/",
+            ...(token ? { turnstileToken: token } : {}),
+          })
+        : await requestCode(body);
       spendToken();
       setPending({
         email: address,
@@ -317,6 +336,7 @@ export function CodeSignIn({
   };
 
   const startOver = () => {
+    if (onStartOver) return onStartOver();
     backToEmail();
     setError(null);
     setSlotError(null);
@@ -426,6 +446,36 @@ export function CodeSignIn({
     );
   }
 
+  // #2590 G2: the address is the server's; show it, send for it.
+  if (link)
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send("");
+        }}
+        noValidate
+        aria-busy={busy || undefined}
+      >
+        {error && (
+          <p role="alert" style={{ margin: "8px 0 0", fontSize: 13 }}>
+            {error}
+          </p>
+        )}
+        {notice && <HeldNotice>{notice}</HeldNotice>}
+        {slot}
+        <Button
+          type="submit"
+          className="oa-split-btn"
+          style={{ marginTop: 16 }}
+          disabled={busy || held}
+          aria-describedby={notice ? HELD_ID : undefined}
+        >
+          {submitLabel ?? "Email me a code"}
+        </Button>
+      </form>
+    );
+
   return (
     <form onSubmit={onSubmitEmail} noValidate aria-busy={busy || undefined}>
       <Label htmlFor="signin-email">
@@ -463,7 +513,7 @@ export function CodeSignIn({
         disabled={busy || held}
         aria-describedby={notice ? HELD_ID : undefined}
       >
-        {variant === "guest" ? "Send code" : "Email me a code"}
+        {submitLabel ?? (variant === "guest" ? "Send code" : "Email me a code")}
       </Button>
     </form>
   );

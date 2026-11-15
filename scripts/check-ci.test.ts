@@ -1254,6 +1254,24 @@ describe("prod and staging tokens never cross", () => {
       expect(withA[0]?.env?.ANALYTICS_TOKEN).toBe(A_TOK);
     });
   });
+  // #2543: the release deploys wait for publish-npm but never depend on its
+  // success: a failed or skipped publish must not stop prod (the build falls
+  // back to an older verified bus release).
+  describe("release-please.yml deploys wait for publish-npm, not on its success", () => {
+    const w = parse(
+      readFileSync(join(root, ".github/workflows/release-please.yml"), "utf8"),
+    );
+    it("deploy-prod keeps always(), deploy-demo keeps !cancelled(), both need publish-npm", () => {
+      expect(w.jobs["deploy-prod"].if).toMatch(/^\$\{\{ always\(\) && /);
+      expect(w.jobs["deploy-demo"].if).toMatch(/^\$\{\{ !cancelled\(\) && /);
+      for (const n of ["deploy-prod", "deploy-demo"]) {
+        expect(w.jobs[n].needs, n).toContain("publish-npm");
+        // Nothing requires publish-npm's result.
+        expect(w.jobs[n].if, n).not.toContain("needs.publish-npm.result");
+      }
+    });
+  });
+
   describe("release-please.yml deploy-prod", () => {
     const f = "release-please.yml";
     const w = wf(f);
@@ -1281,7 +1299,8 @@ describe("prod and staging tokens never cross", () => {
       expect(job.if).toContain("release_created == 'true'");
       expect(job.if).toContain("github.event_name == 'workflow_dispatch'");
       expect(job.if).toContain("github.ref == 'refs/heads/main'");
-      expect(job.needs).toEqual(["release-please"]);
+      // publish-npm (#2543): the build pins the published bus release.
+      expect(job.needs).toEqual(["release-please", "publish-npm"]);
       expect(job.if).not.toMatch(/event_name == 'push'/);
       expect(job.concurrency).toEqual({
         group: "prod",
@@ -1856,7 +1875,7 @@ describe("demo instance workflows", () => {
     const rp = wf("release-please.yml");
     const job = rp.jobs["deploy-demo"];
     it("runs in parallel with deploy-prod, only on a release and only when DEMO_ENABLED", () => {
-      expect([job.needs].flat()).toEqual(["release-please"]);
+      expect([job.needs].flat()).toEqual(["release-please", "publish-npm"]);
       expect([rp.jobs["deploy-prod"].needs].flat()).not.toContain(
         "deploy-demo",
       );

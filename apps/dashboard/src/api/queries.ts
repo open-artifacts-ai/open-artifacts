@@ -33,7 +33,10 @@ import {
   SearchHitSchema,
   type SettingsPatch,
   SettingsSchema,
+  type ShareInput,
   ShareNoticeAgentsSchema,
+  ShareResultSchema,
+  ShareSchema,
   TokenSchema,
   UsageSchema,
   VersionInfoSchema,
@@ -48,11 +51,6 @@ import {
 } from "@tanstack/react-query";
 import { z } from "zod";
 import { toast } from "../layout/toast";
-import {
-  type WideShareInput,
-  WideShareResultSchema,
-  WideShareSchema,
-} from "../viewer/panels/shareRoles";
 import { ApiClientError, api } from "./client";
 import {
   DirectoryGroupSchema,
@@ -150,11 +148,21 @@ export const useArtifacts = (q: ListQueryInput) =>
     queryFn: ({ signal }) =>
       api.get(withQuery(R.artifacts, q), ArtifactPage, signal),
   });
+/**
+ * PROVISIONAL (#2590): GET R.artifact gains `sharedBy` for a guest viewer, in
+ * OA Backend's draft contract. TODO(#2590): drop this once @oa/shared has it.
+ */
+export const ArtifactViewSchema = ArtifactSummarySchema.extend({
+  /** Who shared it with this guest viewer; null or absent otherwise. */
+  sharedBy: z.object({ name: z.string() }).nullable().optional(),
+});
+export type ArtifactView = z.infer<typeof ArtifactViewSchema>;
+
 export const useArtifact = (id: string) =>
   useQuery({
     queryKey: qk.artifact(id),
     queryFn: ({ signal }) =>
-      api.get(R.artifact(id), ArtifactSummarySchema, signal),
+      api.get(R.artifact(id), ArtifactViewSchema, signal),
   });
 export const useVersions = (id: string, opts?: { enabled?: boolean }) =>
   useQuery({
@@ -191,7 +199,7 @@ export const useShares = (id: string, enabled = true) =>
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
       // PROVISIONAL (#2590): the wide role, until packages/shared has it.
-      api.get(R.shares(id), z.array(WideShareSchema), signal),
+      api.get(R.shares(id), z.array(ShareSchema), signal),
     enabled,
   });
 export const useSearch = (q: SearchQuery) =>
@@ -506,8 +514,8 @@ export const useDeleteArtifact = (id: string) =>
 export const usePutShare = (id: string) =>
   useInvalidating(
     // PROVISIONAL (#2590): the wide role, until packages/shared has it.
-    (input: WideShareInput) =>
-      api.send("PUT", R.shares(id), input, WideShareResultSchema),
+    (input: ShareInput) =>
+      api.send("PUT", R.shares(id), input, ShareResultSchema),
     () => [qk.shares(id)],
   );
 export const useDeleteShare = (id: string) =>
