@@ -86,6 +86,8 @@ export const ERROR_CODES = [
   "use_edit_doc",
   // Collaborative docs (#1100): a self-host needs Workers Paid for docs.
   "docs_need_paid",
+  // Collaborative docs (#1100): docs are not available on this instance yet.
+  "docs_unavailable",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -224,6 +226,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   use_edit_doc: 400,
   /** Publishing format "doc" on a self-host whose PLAN is not paid (#1100). Nothing is published. */
   docs_need_paid: 400,
+  /** Docs are not available on this instance yet (#1100): creating or changing one is refused with the next step. Nothing is published. */
+  docs_unavailable: 400,
 };
 
 /**

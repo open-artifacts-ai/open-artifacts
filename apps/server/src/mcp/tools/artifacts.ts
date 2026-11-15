@@ -158,7 +158,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool(
     "list_artifacts",
-    toolConfig("list_artifacts", sp),
+    toolConfig("list_artifacts", sp, docsAvailable(env)),
     (input) =>
       guard(async () => {
         const page = await list(env, caller, input);

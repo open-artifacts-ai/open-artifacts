@@ -70,6 +70,20 @@ export const R = {
   /** POST -> PublishResult */
   restoreVersion: (id: string, v: number) =>
     `${A}/${seg(id)}/versions/${v}/restore`,
+  /**
+   * POST DocSaveVersionBody -> DocVersionResult (#1100, #2496). "Save version"
+   * on a doc: the room saves its current state as a named version ("Version
+   * {n}" without a name). Needs edit access.
+   */
+  docSaveVersion: (id: string) => `${A}/${seg(id)}/doc/versions`,
+  /**
+   * POST -> DocVersionResult (#1100, #2140). Restore a doc version through its
+   * room: unsaved edits are saved as an automatic version first, then version
+   * `v` is applied as one edit everyone sees live, then saved as "Restored
+   * v{v}". Needs edit access.
+   */
+  docRestore: (id: string, v: number) =>
+    `${A}/${seg(id)}/doc/versions/${v}/restore`,
   /** PUT text/plain (PDF extraction) -> 204 */
   versionText: (id: string, v: number) => `${A}/${seg(id)}/versions/${v}/text`,
   /** GET -> image/webp; PUT image/webp -> 204 */

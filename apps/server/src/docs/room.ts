@@ -1236,16 +1236,33 @@ export class DocRoom extends DurableObject<Env> {
     return this.serial(() => this.doSave({ ...o, auto: o.name === null }));
   }
 
-  /** "Save version": a named version of the room's current state. */
+  /**
+   * "Save version": a named version of the room's current state. Without a
+   * name it is "Version {n}", n being the version this save becomes.
+   */
   async saveVersion(o: {
-    name: string;
+    name?: string;
     by: Contributor;
   }): Promise<{ version: number }> {
-    const name = typeof o?.name === "string" ? o.name.trim() : "";
-    if (name.length === 0 || name.length > MAX_VERSION_NAME)
+    const given = typeof o?.name === "string" ? o.name.trim() : null;
+    if (
+      given !== null &&
+      (given.length === 0 || given.length > MAX_VERSION_NAME)
+    )
       throw new Error("bad_version_name");
     const by = parseContributor(o.by);
-    const r = await this.save({ name, by, frame: "saved" });
+    const r = await this.serial(async () => {
+      let name = given;
+      if (name === null) {
+        const row = await this.env.DB.prepare(
+          "select current_version from artifacts where id = ?",
+        )
+          .bind(this.artifactId())
+          .first<{ current_version: number }>();
+        name = `Version ${(row?.current_version ?? 0) + 1}`;
+      }
+      return this.doSave({ name, by, frame: "saved", auto: false });
+    });
     return r as { version: number };
   }
 
@@ -1291,18 +1308,27 @@ export class DocRoom extends DurableObject<Env> {
           frame: "saved",
           auto: true,
         });
+      await this.ensureSeeded();
       const row = await this.env.DB.prepare(
         "select manifest from versions where artifact_id = ? and version = ?",
       )
         .bind(this.artifactId(), from)
         .first<{ manifest: string }>();
       if (!row) throw new Error("version_not_found");
-      const entry = (
-        JSON.parse(row.manifest) as { path: string; key: string }[]
-      ).find((f) => f.path === "doc.json");
-      const obj = entry ? await this.env.FILES.get(entry.key) : null;
-      if (!obj) throw new Error("version_not_found");
-      const node = docFromJSON(JSON.parse(await obj.text()));
+      const files = JSON.parse(row.manifest) as { path: string; key: string }[];
+      const read = async (path: string) => {
+        const f = files.find((e) => e.path === path);
+        const obj = f ? await this.env.FILES.get(f.key) : null;
+        return obj ? await obj.text() : null;
+      };
+      // doc.json, else doc.md (a version made by publish has only doc.md; #2496).
+      const json = await read("doc.json");
+      const md = json === null ? await read("doc.md") : null;
+      if (json === null && md === null) throw new Error("version_not_found");
+      const node =
+        json !== null
+          ? docFromJSON(JSON.parse(json))
+          : markdownToDoc(md ?? "").doc;
       const doc = this.loadDoc();
       try {
         const before = Y.encodeStateVector(doc);
