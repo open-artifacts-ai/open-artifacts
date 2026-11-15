@@ -40,7 +40,7 @@ describe("the lines (OA Product, #2620)", () => {
   });
   it("member_limit", () => {
     expect(notEmailedLine("member_limit", "Acme")).toBe(
-      "You've shared with 20 new people outside Acme today. Try again tomorrow.",
+      "We didn't email them: you've reached today's limit of 20 new people outside Acme. Copy the link and send it yourself.",
     );
     expect(memberLimitLine("Acme")).toBe(
       notEmailedLine("member_limit", "Acme"),
@@ -48,15 +48,15 @@ describe("the lines (OA Product, #2620)", () => {
   });
   it("member_limit uses the server's limit, else 20", () => {
     expect(notEmailedLine("member_limit", "Acme", 5)).toBe(
-      "You've shared with 5 new people outside Acme today. Try again tomorrow.",
+      "We didn't email them: you've reached today's limit of 5 new people outside Acme. Copy the link and send it yourself.",
     );
     expect(notEmailedLine("member_limit", "Acme", undefined)).toContain(
-      "shared with 20 new people",
+      "today's limit of 20 new people",
     );
   });
   it("instance_limit (and the generic limit)", () => {
     const line =
-      "Acme has reached today's limit for sharing with new people outside. Try again tomorrow.";
+      "We didn't email them: Acme has reached today's limit for new people outside. Copy the link and send it yourself.";
     expect(notEmailedLine("instance_limit", "Acme")).toBe(line);
     expect(instanceLimitLine("Acme")).toBe(line);
     expect(notEmailedLine("limit", "Acme")).toBe(line);
@@ -105,7 +105,7 @@ describe("in the Share panel, after saving", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await screen.findByText(/Shared with sam@partner\.org/);
     expect(document.querySelector("[data-share-sent]")?.textContent).toMatch(
-      /^You've shared with 7 new people outside .+ today\. Try again tomorrow\.$/,
+      /^We didn't email them: you've reached today's limit of 7 new people outside .+\. Copy the link and send it yourself\.$/,
     );
   });
 
@@ -116,11 +116,11 @@ describe("in the Share panel, after saving", () => {
     ],
     [
       "member_limit",
-      /^You've shared with 20 new people outside .+ today\. Try again tomorrow\.$/,
+      /^We didn't email them: you've reached today's limit of 20 new people outside .+\. Copy the link and send it yourself\.$/,
     ],
     [
       "instance_limit",
-      /^.+ has reached today's limit for sharing with new people outside\. Try again tomorrow\.$/,
+      /^We didn't email them: .+ has reached today's limit for new people outside\. Copy the link and send it yourself\.$/,
     ],
   ])("%s says so, and the link to copy stays", async (reason, line) => {
     await share(reason);
@@ -131,5 +131,9 @@ describe("in the Share panel, after saving", () => {
         : line,
     );
     expect(screen.getByLabelText("Artifact link")).toBeInTheDocument();
+    // Amber: the notice is a warning for every reason.
+    expect(
+      document.querySelector("[data-share-sent]")?.closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "warning");
   });
 });

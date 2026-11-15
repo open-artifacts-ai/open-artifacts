@@ -591,7 +591,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           shared && (
             <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
               <Notice
-                tone="success"
+                // Amber when no email went for a reason the server named (#2620).
+                tone={shared.notEmailed ? "warning" : "success"}
                 title={`Shared with ${shared.email}`}
                 onDismiss={() => setShared(null)}
               >

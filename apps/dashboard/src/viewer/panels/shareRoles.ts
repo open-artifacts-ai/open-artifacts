@@ -27,13 +27,13 @@ export type ShareSaved = z.infer<typeof ShareSavedSchema>;
 /** OA Product: the share is saved, and no email went. */
 export const NO_EMAIL_LINE =
   "We won't email them about this share. Copy the link and send it yourself.";
-/** OA Product (#2620): over today's limits for new outside addresses. */
+/** OA Product (#2620): over today's limits for new outside addresses; the link to copy stays. */
 /** The member limit when the server doesn't say (#2620's figure). */
 export const MEMBER_LIMIT_FALLBACK = 20;
 export const memberLimitLine = (org: string, limit = MEMBER_LIMIT_FALLBACK) =>
-  `You've shared with ${limit} new people outside ${org} today. Try again tomorrow.`;
+  `We didn't email them: you've reached today's limit of ${limit} new people outside ${org}. Copy the link and send it yourself.`;
 export const instanceLimitLine = (org: string) =>
-  `${org} has reached today's limit for sharing with new people outside. Try again tomorrow.`;
+  `We didn't email them: ${org} has reached today's limit for new people outside. Copy the link and send it yourself.`;
 /** The line for a share that sent no email, by the server's reason. */
 export function notEmailedLine(
   reason: NotEmailed | undefined,

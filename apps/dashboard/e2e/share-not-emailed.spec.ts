@@ -34,9 +34,9 @@ async function axe(page: Page) {
 
 const LINES = {
   member_limit:
-    /You've shared with 20 new people outside .+ today\. Try again tomorrow\./,
+    /We didn't email them: you've reached today's limit of 20 new people outside .+\. Copy the link and send it yourself\./,
   instance_limit:
-    /.+ has reached today's limit for sharing with new people outside\. Try again tomorrow\./,
+    /We didn't email them: .+ has reached today's limit for new people outside\. Copy the link and send it yourself\./,
 } as const;
 
 for (const scheme of ["light", "dark"] as const)
