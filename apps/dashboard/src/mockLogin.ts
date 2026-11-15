@@ -206,8 +206,9 @@ export const loginHandlers = (
       if (!mockReach(settings, methods, email).ways.length)
         return error(
           400,
-          "no_way_in",
+          "invite_unreachable",
           "This address can't log in here with the login methods that are on.",
+          { field: "email", reason: "no_sign_in_method" },
         );
       if (role !== "guest") return undefined;
       return HttpResponse.json(

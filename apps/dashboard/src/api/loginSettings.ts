@@ -11,7 +11,7 @@
 // GET /api/v1/members/reach?email= -> InviteReach (owners and admins).
 // POST /api/v1/settings/login/first-invite-seen -> 204 (Skip or Continue).
 // POST R.members also returns { reach: InviteReach }, takes role "guest", and
-//     answers 400 no_way_in for an address with no way in.
+//     answers 400 invite_unreachable for an address with no way in.
 
 import { DomainUnprovenDetailsSchema } from "@oa/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";

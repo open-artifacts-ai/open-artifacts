@@ -360,7 +360,7 @@ function InviteList({
   const [failed, setFailed] = useState<Record<string, string>>({});
   // A removed member's address (member_removed): Restore, as before (parity 1).
   const [removed, setRemoved] = useState<Record<string, string>>({});
-  /** 400 no_way_in on send: the row turns to "can't log in". */
+  /** 400 invite_unreachable on send: the row turns to "can't log in". */
   const [noWay, setNoWay] = useState<Record<string, true>>({});
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<Sent | null>(null);
@@ -391,7 +391,7 @@ function InviteList({
       ?.id;
   const isRemoved = (email: string) =>
     !!removed[email] || !!reaches.get(email)?.removed;
-  /** Can't log in here (the reach, or the server's no_way_in): held, the rest still go. UI only: the server refuses too. */
+  /** Can't log in here (the reach, or the server's invite_unreachable): held, the rest still go. UI only: the server refuses too. */
   const cantIn = (email: string) =>
     !!noWay[email] || reaches.get(email)?.ways.length === 0;
   const held = (email: string) => cantIn(email) || isRemoved(email);
@@ -431,7 +431,7 @@ function InviteList({
             ? MemberRemovedDetailsSchema.safeParse(e.details)
             : null;
         if (was?.success) gone[email] = was.data.userId;
-        else if (e instanceof ApiClientError && e.code === "no_way_in")
+        else if (e instanceof ApiClientError && e.code === "invite_unreachable")
           shut[email] = true;
         else errors[email] = inviteFailure(e, email, domains, me);
       }
@@ -616,7 +616,7 @@ function AddressRow({
   email: string;
   /** Undefined while the server hasn't answered. */
   reach: InviteReach | undefined;
-  /** No way in (the reach, or no_way_in on send). */
+  /** No way in (the reach, or invite_unreachable on send). */
   cant: boolean;
   role: JoinAs;
   error: string | undefined;

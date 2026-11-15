@@ -522,16 +522,17 @@ describe("the invite dialog", () => {
     expect(restore?.body).toBeUndefined();
   });
 
-  it("no_way_in from the server: the row turns to can't log in", async () => {
+  it("invite_unreachable from the server: the row turns to can't log in", async () => {
     const { http, HttpResponse } = await import("msw");
     mountHosted("/settings/members", true, undefined, [
       http.post(`*${R.members}`, () =>
         HttpResponse.json(
           {
             error: {
-              code: "no_way_in",
+              code: "invite_unreachable",
               message:
                 "This address can't log in here with the login methods that are on.",
+              details: { field: "email", reason: "no_sign_in_method" },
             },
           },
           { status: 400 },
