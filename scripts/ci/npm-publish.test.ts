@@ -3,6 +3,7 @@
 // the repository's code with no credentials; publish-npm holds the OIDC token
 // (npm-publish Environment, npm trusted publishing) and runs no repository code.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -246,5 +247,61 @@ describe("publish-npm check step", () => {
     expect(r.code).not.toBe(0);
     expect(r.output).toBe("");
     expect(r.log).toEqual([]);
+  });
+});
+
+// #2543: the server build of the same run pins the tarball pack-npm packed, so
+// llms.txt names bytes the release really made. The values flow from pack-npm's
+// job outputs into the deploy jobs' environment, and nowhere else sets them.
+describe("the bus pin in the server build (#2543)", () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+  const out = (k: string) => "${{ needs.pack-npm.outputs." + k + " }}";
+
+  it("pack-npm outputs the sha512 integrity of the very file it packed", () => {
+    expect(pack.outputs.integrity).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ steps.pack.outputs.integrity }}",
+    );
+    const run = stepById(pack.steps, "pack").run as string;
+    expect(run).toContain(
+      'integrity="sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)"',
+    );
+    // The same $tgz the checks and the upload use, never a second pack.
+    expect(run.match(/^\s*npm pack\b/gm)).toHaveLength(1);
+    expect(run).toContain('echo "integrity=$integrity"');
+  });
+
+  it("the shell's integrity is the base64 sha512 the llms.txt check computes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oa-integrity-"));
+    const f = join(dir, "x.tgz");
+    writeFileSync(f, "some bytes\n");
+    const sh = execFileSync(
+      "sh",
+      ["-c", `openssl dgst -sha512 -binary "${f}" | openssl base64 -A`],
+      { encoding: "utf8" },
+    );
+    const js = createHash("sha512").update(readFileSync(f)).digest("base64");
+    expect(sh).toBe(js);
+  });
+
+  it("deploy-prod and deploy-demo wait for pack-npm and take its outputs unchanged", () => {
+    for (const name of ["deploy-prod", "deploy-demo"]) {
+      const job = jobs[name];
+      expect(job.needs, name).toContain("pack-npm");
+      expect(job.env.BUS_PKG_VERSION, name).toBe(out("version"));
+      expect(job.env.BUS_PKG_SHA512, name).toBe(out("integrity"));
+    }
+  });
+
+  it("nothing else sets the pin (no recompute, no other job, no step env)", () => {
+    for (const [name, job] of Object.entries(jobs) as [string, any][]) {
+      if (name === "deploy-prod" || name === "deploy-demo") continue;
+      expect(JSON.stringify(job), name).not.toContain("BUS_PKG_");
+    }
+    for (const name of ["deploy-prod", "deploy-demo"])
+      for (const st of jobs[name].steps as Step[]) {
+        expect(JSON.stringify(st.env ?? {}), name).not.toContain("BUS_PKG_");
+        expect(String(st.run ?? ""), name).not.toContain("BUS_PKG_");
+      }
   });
 });
