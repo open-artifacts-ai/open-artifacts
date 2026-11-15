@@ -49,6 +49,7 @@ export function fakeBilling(install = INSTALL) {
     calls: [] as BillingCall[],
     down: false,
     seatsApplied: "applied",
+    seatsRetry: undefined as boolean | undefined,
   };
   let x: Promise<string> | null = null;
   const answer = (
@@ -121,7 +122,11 @@ export function fakeBilling(install = INSTALL) {
         return answer(
           path,
           body,
-          Response.json({ members: body.members, applied: s.seatsApplied }),
+          Response.json({
+            members: body.members,
+            applied: s.seatsApplied,
+            ...(s.seatsRetry === undefined ? {} : { retry: s.seatsRetry }),
+          }),
         );
       if (path === "/checkout")
         return answer(

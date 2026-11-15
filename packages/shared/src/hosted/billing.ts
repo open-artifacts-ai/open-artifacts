@@ -231,5 +231,7 @@ export const BillingSeatsSchema = z.object({
   members: z.number().int().nonnegative(),
   /** An outcome string (billing's own vocabulary); logged, never branched on. */
   applied: z.string().max(64),
+  /** True when billing wants the count sent again soon (held, stale, failed); absent from older billing = false. */
+  retry: z.boolean().optional(),
 });
 export type BillingSeats = z.infer<typeof BillingSeatsSchema>;

@@ -222,19 +222,26 @@ describe("the route list", () => {
 });
 
 describe("billing's outcome", () => {
-  it("an unsettled outcome is resent on the next tick, a settled one waits a day", async () => {
+  it("retry: true is resent on the next tick; false, absent or any outcome name waits a day", async () => {
     const run = (at: number) =>
       withBrokerProps({ props }, () => reportSeats(H, at, true));
     const t0 = Date.now();
-    fake.seatsApplied = "held";
+    fake.seatsApplied = "no_subscription";
+    fake.seatsRetry = true;
     await run(t0);
     await run(t0 + 120_000);
     expect(seatCalls().length).toBe(2);
-    fake.seatsApplied = "applied";
+    fake.seatsRetry = false;
     await run(t0 + 240_000);
     expect(seatCalls().length).toBe(3);
     await run(t0 + 360_000);
     expect(seatCalls().length).toBe(3);
+    // An older billing sends no retry: settled, whatever the outcome.
+    fake.seatsRetry = undefined;
+    fake.seatsApplied = "held";
+    await run(t0 + 2 * SEATS_DAILY_MS);
+    await run(t0 + 2 * SEATS_DAILY_MS + 120_000);
+    expect(seatCalls().length).toBe(4);
   });
 });
 
