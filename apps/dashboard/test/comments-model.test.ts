@@ -41,6 +41,29 @@ const text = {
   suffix: "",
 } as const;
 
+describe("frameThreads: the Ask flag (#2426)", () => {
+  const text = {
+    kind: "text",
+    version: 1,
+    exact: "x",
+    prefix: "",
+    suffix: "",
+  } as const;
+  it("carries a flag and nothing about the question", () => {
+    const t = thread("t1", text);
+    const out = frameThreads([t], null, null, undefined, () => true);
+    expect(out[0]).toMatchObject({ id: "t1", ask: true });
+    expect(JSON.stringify(out)).not.toContain("private words");
+  });
+  it("leaves it out when there is no ask for the viewer", () => {
+    const t = thread("t1", text);
+    expect(
+      frameThreads([t], null, null, undefined, () => false)[0],
+    ).not.toHaveProperty("ask");
+    expect(frameThreads([t], null)[0]).not.toHaveProperty("ask");
+  });
+});
+
 describe("frameThreads", () => {
   it("carries only ids, anchors and numbers: never comment text or names", () => {
     const out = frameThreads(

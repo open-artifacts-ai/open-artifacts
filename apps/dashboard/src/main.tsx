@@ -563,11 +563,13 @@ async function startMocks() {
     commentAgents: params.get("mock") === "agents",
     // ?mock=pins and ?mock=pins-pdf (#2019): the "Landing page" is an image (or a pdf) with pins on it.
     commentPins:
-      params.get("mock") === "pins"
+      params.get("mock") === "pins" || params.get("mock") === "pins-ask"
         ? "image"
         : params.get("mock") === "pins-pdf"
           ? "pdf"
           : undefined,
+    // ?mock=pins-ask (#2426): the pins page, plus an unanswered ask on a pin.
+    commentPinAsk: params.get("mock") === "pins-ask",
     // ?mock=markdown (#2338): agent comments with markdown and a hostile one.
     commentMarkdown: params.get("mock") === "markdown",
     // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.

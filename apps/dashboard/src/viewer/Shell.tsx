@@ -880,6 +880,7 @@ function Viewer({
                 allow="clipboard-write"
               />
               {commentsOn && <PinBeside frame={el} />}
+              {commentsOn && <AskBeside frame={el} />}
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||

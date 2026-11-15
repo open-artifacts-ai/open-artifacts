@@ -10,6 +10,7 @@ import {
   METHOD_CAPABILITY,
   OnboardingSchema,
   PageSchema,
+  PROTOCOL_ASK_MARKERS,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
   PROTOCOL_PIN_BADGE,
@@ -695,6 +696,12 @@ export function createBridge(opts: BridgeOptions) {
           .map((t) => {
             if (frameProtocol >= PROTOCOL_PIN_CHANGED) return t;
             const { changed: _c, ...rest } = t;
+            return rest;
+          })
+          .map((t) => {
+            // #2426: only a runtime that draws the Ask marker gets the flag.
+            if (frameProtocol >= PROTOCOL_ASK_MARKERS) return t;
+            const { ask: _a, ...rest } = t;
             return rest;
           }),
         ...(ghost

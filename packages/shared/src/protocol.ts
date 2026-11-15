@@ -34,8 +34,12 @@ import { utf8Exceeds } from "./utf8.js";
  * the runtime adds a field to a frame message only for a shell that said it
  * knows it (a tab opened before a deploy keeps its old, strict shell), and the
  * shell drops unknown keys from a frame message instead of the whole message.
+ * #2426: 7 adds `ask` on `comments.set` threads (the amber Ask marker) and `at`
+ * on `comment.positions` entries (where the marker is, for the shell's card).
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
+/** The first protocol whose runtime draws an ask's marker (#2426) and whose shell reads `at` on a position. */
+export const PROTOCOL_ASK_MARKERS = 7;
 /** The first protocol whose shell announces itself, and whose frame messages may carry fields an older shell would refuse (`at`, `ghost`). */
 export const PROTOCOL_SHELL_ANNOUNCES = 6;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
@@ -280,6 +284,18 @@ export const ArtifactToShellSchema = z.union([
           id: CommentIdSchema,
           state: z.enum(["exact", "partial", "collapsed", "orphan", "pin"]),
           top: z.number().finite().min(0).max(10_000_000).nullable(),
+          /**
+           * #2426: where an ask's marker is, in frame-viewport pixels, so the shell
+           * can open the card beside it. Only for a thread the shell marked `ask`,
+           * and only for a shell that announced protocol 7 or more. A hint from
+           * page code: the shell clamps it into the frame.
+           */
+          at: z
+            .strictObject({
+              x: z.number().finite().min(-100_000).max(100_000),
+              y: z.number().finite().min(-100_000).max(100_000),
+            })
+            .optional(),
         }),
       )
       .max(COMMENT_THREADS_MAX),
@@ -443,6 +459,8 @@ export const ShellToArtifactSchema = z.union([
           changed: z.boolean().optional(),
           /** #2019: what the pin's bubble shows (pins on images and pdfs only). */
           badge: PinBadgeSchema.optional(),
+          /** #2426: an unanswered ask the viewer can pick on: draw the amber Ask marker. A flag only, never the question. */
+          ask: z.boolean().optional(),
         }),
       )
       .max(COMMENT_THREADS_MAX),

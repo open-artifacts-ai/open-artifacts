@@ -675,6 +675,38 @@ describe("highlights and positions", () => {
     ).toEqual(["jumps over the lazy"]);
   });
 
+  it("an ask on a quote is painted amber, gets an Ask mark, and reports its point to a protocol 7 shell (#2426)", async () => {
+    await start("select");
+    await send({ type: "shell.protocol", protocol: 7 });
+    await send({
+      type: "comments.set",
+      threads: [
+        { id: "ex", anchor: anchorOf("quick brown") },
+        { id: "ask", ask: true, anchor: anchorOf("lazy dog") },
+      ],
+    });
+    expect(
+      highlights.get("oa-comment")?.ranges.map((r) => r.toString()),
+    ).toEqual(["quick brown"]);
+    expect(highlights.get("oa-ask")?.ranges.map((r) => r.toString())).toEqual([
+      "lazy dog",
+    ]);
+    const mark = roots
+      .at(-1)
+      ?.querySelector<HTMLButtonElement>("button.askmark");
+    expect(mark?.textContent).toBe("Ask");
+    mark?.click();
+    expect(last("comment.open")).toMatchObject({ id: "ask" });
+    const p = last("comment.positions") as Extract<
+      ArtifactToShell,
+      { type: "comment.positions" }
+    >;
+    expect(p.positions.find((x) => x.id === "ask")).toMatchObject({
+      at: { x: 20, y: 120 },
+    });
+    expect(p.positions.find((x) => x.id === "ex")).not.toHaveProperty("at");
+  });
+
   it("re-reports only when positions change, and after the text changes", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await start("select");
@@ -1131,6 +1163,80 @@ describe("pins", () => {
     await flush();
     expect(last("comment.positions")).toMatchObject({
       ghost: { x: 120, y: 10 },
+    });
+  });
+
+  describe("ask markers (#2426)", () => {
+    const askPin = {
+      id: "ap",
+      n: 1,
+      ask: true,
+      anchor: {
+        kind: "pin" as const,
+        version: 1,
+        x: 0.5,
+        y: 0.5,
+        contentHash: "h",
+      },
+    };
+    const pinEl = () =>
+      roots.at(-1)?.querySelector<HTMLElement>(".pin") ?? null;
+    const positions = () =>
+      (
+        last("comment.positions") as Extract<
+          ArtifactToShell,
+          { type: "comment.positions" }
+        >
+      ).positions;
+
+    it("the runtime's copy of the protocol matches the shared one", async () => {
+      const { ASK_AT } = await import("../src/comments.js");
+      const { PROTOCOL_ASK_MARKERS } = await import("@oa/shared");
+      expect(ASK_AT).toBe(PROTOCOL_ASK_MARKERS);
+    });
+
+    it("an ask pin is drawn with the Ask mark, and its click opens it", async () => {
+      await start("select");
+      await send({ type: "comments.set", threads: [askPin] });
+      expect(pinEl()?.classList.contains("ask")).toBe(true);
+      pinEl()?.click();
+      expect(last("comment.open")).toMatchObject({ id: "ap" });
+    });
+
+    it("an answered one (no `ask` flag) is a plain pin", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [{ ...askPin, ask: undefined }],
+      });
+      expect(pinEl()?.classList.contains("ask")).toBe(false);
+    });
+
+    it("reports where the marker is only to a shell that announced protocol 7", async () => {
+      await start("select");
+      await send({ type: "comments.set", threads: [askPin] });
+      // An older, strict shell refuses a position entry with a key it does not know.
+      expect(positions()[0]).not.toHaveProperty("at");
+      await send({ type: "shell.protocol", protocol: 6 });
+      await send({ type: "comments.set", threads: [askPin] });
+      expect(positions()[0]).not.toHaveProperty("at");
+      await send({ type: "shell.protocol", protocol: 7 });
+      await send({ type: "comments.set", threads: [askPin] });
+      expect(positions()[0]).toMatchObject({
+        id: "ap",
+        at: { x: 120, y: 60 },
+      });
+    });
+
+    it("a resolved ask is not marked and reports no point", async () => {
+      await start("select");
+      await send({ type: "shell.protocol", protocol: 7 });
+      await send({
+        type: "comments.set",
+        threads: [{ ...askPin, resolved: true }],
+      });
+      expect(positions()[0]).not.toHaveProperty("at");
+      expect(pinEl()).toBeNull();
     });
   });
 
