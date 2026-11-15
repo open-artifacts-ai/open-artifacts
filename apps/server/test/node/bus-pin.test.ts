@@ -388,3 +388,31 @@ describe("resolvePinWithFallback (the release run, #2543)", () => {
     expect(asked.slice(0, 2)).toEqual(["0.188.0", "0.187.0"]);
   });
 });
+
+describe("the release build never fails for an unpublished own version (#2543)", () => {
+  it("BUS_PIN_REQUIRED, own version unpublished: the previous stable is pinned, not a failure", async () => {
+    // 0.189.0 is the server's own version; the registry has none of it yet.
+    const published = ["0.187.0", "0.188.0"];
+    const r = await resolvePinWithFallback(
+      "0.189.0",
+      {
+        versions: async () => published,
+        fetchRelease: async (v) => {
+          if (v === "0.189.0") throw new ReleaseError("fetch_failed", "404");
+          return fakeRel(v);
+        },
+        verifyRelease: (rel) => verified(rel.version),
+      },
+      {
+        tries: 3,
+        waitMs: 1,
+        sleep: async () => {},
+        log: () => {},
+        min: "0.188.0",
+      },
+    );
+    expect(r.pin?.version).toBe("0.188.0");
+    expect(r.pin && r.fallbackFor).toBe("0.189.0");
+    expect(r.log).toContain("::warning::bus pin fell back to 0.188.0");
+  });
+});

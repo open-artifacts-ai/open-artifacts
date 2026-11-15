@@ -139,10 +139,10 @@ jobs:
         if: steps.gate.outputs.present == 'true'
         run: cd apps/landing && pnpm exec wrangler deploy
   # Stable releases only; independent of deploy-landing. Never runs from a bare push to main.
-  # After publish-npm (#2543): the server build verifies the published bus
-  # release (Sigstore) and pins it in llms.txt, so the release must be on npm.
-  # BUS_PIN_REQUIRED makes a missing pin fail the build (after retries for
-  # registry lag), so a release whose publish failed does not deploy.
+  # #2543: the deploy waits for publish-npm to finish but runs whether it
+  # succeeded or not. The server build pins the bus release in llms.txt: this
+  # release, or the newest older one that verifies (at most 3 back, with a
+  # warning). It fails only if none verifies.
   deploy-prod:
     needs: [release-please, publish-npm]
     outputs:
@@ -157,8 +157,9 @@ jobs:
       group: prod
       cancel-in-progress: false
     env:
-      # #2543: this deploy cannot ship without a verified bus pin (the build
-      # retries for registry lag, then fails).
+      # #2543: the build must pin a verified bus release: its own after retries
+      # for registry lag, else the newest older one that verifies (at most 3
+      # back, warns); it fails only if none verifies.
       BUS_PIN_REQUIRED: "1"
       PROD_NAME: open-artifacts-prod
       PROD_APP_HOST: artifacts.leourbina.com

@@ -1254,6 +1254,24 @@ describe("prod and staging tokens never cross", () => {
       expect(withA[0]?.env?.ANALYTICS_TOKEN).toBe(A_TOK);
     });
   });
+  // #2543: the release deploys wait for publish-npm but never depend on its
+  // success: a failed or skipped publish must not stop prod (the build falls
+  // back to an older verified bus release).
+  describe("release-please.yml deploys wait for publish-npm, not on its success", () => {
+    const w = parse(
+      readFileSync(join(root, ".github/workflows/release-please.yml"), "utf8"),
+    );
+    it("deploy-prod keeps always(), deploy-demo keeps !cancelled(), both need publish-npm", () => {
+      expect(w.jobs["deploy-prod"].if).toMatch(/^\$\{\{ always\(\) && /);
+      expect(w.jobs["deploy-demo"].if).toMatch(/^\$\{\{ !cancelled\(\) && /);
+      for (const n of ["deploy-prod", "deploy-demo"]) {
+        expect(w.jobs[n].needs, n).toContain("publish-npm");
+        // Nothing requires publish-npm's result.
+        expect(w.jobs[n].if, n).not.toContain("needs.publish-npm.result");
+      }
+    });
+  });
+
   describe("release-please.yml deploy-prod", () => {
     const f = "release-please.yml";
     const w = wf(f);
