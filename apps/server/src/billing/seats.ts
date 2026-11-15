@@ -18,7 +18,7 @@ import {
 const COUNT = `select count(*) as n from users
   where role in ('owner', 'admin', 'member') and status = 'active'
     and last_seen_at is not null
-    and 0 = restricted_manual + restricted_sync`; // not restricted (spelled so: the revocation lint flags a restricted_* comparison)
+    and restricted_manual = 0 and restricted_sync = 0`;
 
 /** The install's member count now. */
 export async function memberCount(env: Pick<Env, "DB">): Promise<number> {
