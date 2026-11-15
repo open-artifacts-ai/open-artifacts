@@ -225,7 +225,7 @@ const exact =
   };
 
 /** edit_doc's tool error for an artifact that is not a doc (#1100, #2490). */
-const NOT_A_DOC = /^bad_request\b|not[ _]a[ _]doc/i;
+const NOT_A_DOC = /not[ _]a[ _]doc/i;
 const badRequest = (r: { status: number; code: string }) =>
   r.status === 400 && r.code === "bad_request";
 /** #681: a data write refused by dataWriters "editors". */
@@ -1204,8 +1204,9 @@ export const SURFACES: readonly Surface[] = [
       "edit_doc",
       (id) => ({ id, ops: [{ op: "delete", quote: "probe" }] }),
       // The "not a doc" tool error is the allowed answer, as the REST doc
-      // route counts 400 not-a-doc (#2490): matched by its code or its reason
-      // (an install may phrase the code differently), never by a denial.
+      // route counts 400 not-a-doc (#2490): matched by the not-a-doc reason
+      // only, never any bad_request (a schema error can precede the access
+      // check) and never a denial.
       (o) => o.isError && NOT_A_DOC.test(o.text),
     ),
   ),
