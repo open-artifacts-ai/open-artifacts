@@ -509,7 +509,8 @@ export function createCommentMock({
         });
         return c;
       };
-      const fresh = add("Which pricing table goes on the page?", 10);
+      // Sorted by time, so the live card (28 minutes ago) sits right after the draft it replaced (30).
+      const fresh = add("Which pricing table goes on the page?", 28);
       add("Which pricing table? (first draft)", 40, {
         withdrawn: { at: ago(35) },
       });
@@ -525,6 +526,17 @@ export function createCommentMock({
             threadId: "Th4dEfGhJk4mNpQr",
             commentId: "Cm4dEfGhJk4mNpQr",
             title: "Launch post",
+          },
+        },
+      });
+      // Replaced on a page this viewer can't open: no title.
+      add("Which footer goes on the docs?", 25, {
+        withdrawn: {
+          at: ago(18),
+          replacedBy: {
+            artifactId: "Zz9dEfGhJk4mNpQr",
+            threadId: "Th9dEfGhJk4mNpQr",
+            commentId: "Cm9dEfGhJk4mNpQr",
           },
         },
       });

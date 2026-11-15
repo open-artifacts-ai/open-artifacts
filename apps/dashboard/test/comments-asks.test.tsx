@@ -203,7 +203,7 @@ describe("withdrawn asks (#2511)", () => {
     [
       "replaced on this page",
       { withdrawn: { at: "2026-11-05T11:00:00Z" }, replacedBy: "c-new" },
-      /^Withdrawn\. Replaced by the card below\.$/,
+      /^Withdrawn\. See the new card\.$/,
     ],
     [
       "replaced on another page",
@@ -240,6 +240,28 @@ describe("withdrawn asks (#2511)", () => {
       expect(c.querySelector("[data-needs-you]")).toBeNull();
     },
   );
+  it("'the new card' opens the thread of the card that replaced it", async () => {
+    serveThreads(() => [
+      askThread(
+        { id: "t-old" },
+        { withdrawn: { at: "2026-11-05T11:00:00Z" }, replacedBy: "c-new" },
+      ),
+      {
+        ...askThread({ id: "t-new" }, {}),
+        comments: [{ ...askThread({}, {}).comments[0], id: "c-new" }],
+      },
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("link", { name: "the new card" }),
+    );
+    await waitFor(() =>
+      expect(
+        c.querySelector('[data-thread="t-new"]')?.hasAttribute("data-active"),
+      ).toBe(true),
+    );
+  });
   it("links the page a card moved to", async () => {
     serveThreads(() => [askThread({}, states[2]?.[1] ?? {})]);
     mount(viewerPath(OWNED));

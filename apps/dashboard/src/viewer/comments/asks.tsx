@@ -628,6 +628,7 @@ export function AskBlock({
   face,
   from = true,
   boxed = true,
+  openCard,
 }: {
   /** The "X asks you" line; off where the card's header already says it (#2486). */
   from?: boolean;
@@ -648,6 +649,8 @@ export function AskBlock({
   reply?: () => void;
   /** Open a question to the agent that asked (#1794), when the viewer may reply. */
   askQuestion?: () => void;
+  /** #2511: jump to and open the thread of the card that replaced this one (a withdrawn card's link). */
+  openCard?: (commentId: string) => void;
 }) {
   const ask = c.ask;
   const plain = useAnswerAsk(artifactId);
@@ -732,7 +735,25 @@ export function AskBlock({
                 "Withdrawn. Replaced by a card on another page."
               )
             ) : ask.replacedBy ? (
-              "Withdrawn. Replaced by the card below."
+              <>
+                Withdrawn. See{" "}
+                {openCard ? (
+                  <a
+                    href={`#${ask.replacedBy}`}
+                    data-ask-new-card=""
+                    className="underline underline-offset-2"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      if (ask.replacedBy) openCard(ask.replacedBy);
+                    }}
+                  >
+                    the new card
+                  </a>
+                ) : (
+                  "the new card"
+                )}
+                .
+              </>
             ) : (
               "Withdrawn"
             )}

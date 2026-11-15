@@ -1153,6 +1153,12 @@ function CommentRow({
               api.canComment ? () => api.select(thread.id, true) : undefined
             }
             askQuestion={askQuestion}
+            openCard={(id) => {
+              const to = api.threads.find((x) =>
+                x.comments.some((k) => k.id === id),
+              );
+              if (to) api.reveal(to.id);
+            }}
             guest={api.guest}
             from={!askHead}
             boxed={!askHead}
