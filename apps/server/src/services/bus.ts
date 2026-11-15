@@ -126,6 +126,10 @@ export type BusHubRpc = {
   namesOf(
     identityIds: string[],
   ): Promise<{ identityId: string; name: string }[]>;
+  /** #2512: which of this member's agent identities wait on their owner, and since when (ms). */
+  waitingOf(
+    identityIds: string[],
+  ): Promise<{ identityId: string; since: number }[]>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(opts?: {
     away?: boolean;
@@ -540,6 +544,40 @@ export async function agentNamesOf(
     for (const r of rows ?? []) out.set(r.identityId, r.name);
   } catch (e) {
     logError("bus_names_lookup_failed", e);
+  }
+  return out;
+}
+
+/**
+ * #2512: which of `userId`'s own agents (identity ids) wait on their owner now,
+ * with the time (ms) they started, from that member's hub only. A miss, a slow
+ * or failing hub give an empty map; never throws.
+ */
+export async function agentsWaitingOn(
+  env: Env,
+  userId: string,
+  identityIds: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  try {
+    if (!busOn(env) || identityIds.length === 0) return out;
+    const rows = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub) return null;
+        const chunks: string[][] = [];
+        for (let i = 0; i < identityIds.length; i += NAMES_OF_MAX)
+          chunks.push(identityIds.slice(i, i + NAMES_OF_MAX));
+        return (
+          await Promise.all(chunks.map((ids) => hub.waitingOf(ids)))
+        ).flat();
+      })(),
+      LINK_LOOKUP_MS,
+    );
+    for (const r of rows ?? []) out.set(r.identityId, r.since);
+  } catch (e) {
+    logError("bus_waiting_lookup_failed", e);
   }
   return out;
 }
