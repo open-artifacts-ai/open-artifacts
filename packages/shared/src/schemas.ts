@@ -339,6 +339,15 @@ export const PublishToolInputNoDocSchema = publishShape(
       iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
   }) as unknown as typeof FormatSchema,
 ).superRefine(refinePublish(true));
+/**
+ * ...and the same for an install where creation is on but docs need Workers
+ * Paid: format "doc" is refused with the next step (#2100).
+ */
+export const PublishToolInputNeedPaidSchema = publishShape(
+  z.enum(STORED_FORMATS, {
+    error: (iss) => (iss.input === "doc" ? DOCS_NEED_PAID_MESSAGE : undefined),
+  }) as unknown as typeof FormatSchema,
+).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
 
 export const PublishResultSchema = z.object({

@@ -84,14 +84,14 @@ describe("a self-host", () => {
       const e = await errOf(rest);
       expect(e.code).toBe("docs_need_paid");
       expect(e.message).toBe(NEED_PAID);
-      const c = await connect(pat, { env: E({ PLAN: "free" }) });
+      const c = await connect(pat, { env: E({ PLAN: "free", HOSTED: "" }) });
       try {
         const out = await c.callTool({
           name: "publish_artifact",
           arguments: { title: "x", format: "doc", content: "# x\n" },
         });
         expect(out.isError).toBe(true);
-        expect(textOf(out as never)).toContain("docs_need_paid");
+        // The tool's input check refuses format doc with the next step.
         expect(textOf(out as never)).toContain(NEED_PAID);
       } finally {
         await close(c);
@@ -120,7 +120,7 @@ describe("a self-host", () => {
       const file = await api(app, R.versionFile(id, 1, "doc.md"), owner.cookie);
       expect(file.status).toBe(200);
       expect(await file.text()).toBe("# Goals\n\nShip docs.\n");
-      const c = await connect(pat, { env: E({ PLAN: "free" }) });
+      const c = await connect(pat, { env: E({ PLAN: "free", HOSTED: "" }) });
       try {
         const g = await tool(c, "get_artifact", { id, includeContent: true });
         expect(g.structuredContent?.content).toContain("Ship docs.");
@@ -151,7 +151,7 @@ describe("a self-host", () => {
       ["free", false],
       ["paid", true],
     ] as const) {
-      const c = await connect(pat, { env: E({ PLAN }) });
+      const c = await connect(pat, { env: E({ PLAN, HOSTED: "" }) });
       try {
         const names = (await c.listTools()).tools.map((t) => t.name);
         expect(names.includes("edit_doc"), `tools/list on ${PLAN}`).toBe(shown);
