@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "cb789e84-4f4c-4a90-885f-6e1e76d0cddb",
+  "id": "260609a3-43bb-40c4-bd4d-18a5ce961416",
   "prevId": "58d2abe6-f948-4d34-b726-94e742e7fc89",
   "tables": {
     "agent_grants": {
@@ -118,6 +118,34 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
+        },
+        "question": {
+          "name": "question",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "asker": {
+          "name": "asker",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "asked_at": {
+          "name": "asked_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "confirm": {
+          "name": "confirm",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -2635,13 +2663,6 @@
         },
         "format": {
           "name": "format",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "doc_save": {
-          "name": "doc_save",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

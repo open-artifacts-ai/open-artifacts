@@ -955,7 +955,8 @@ describe("tool manifest", () => {
       TOOL_DEFS.map(({ name, description }) => ({ name, description })),
     );
     expect(manifest.map((t) => t.name).sort()).toEqual(
-      [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
+      // edit_doc is in the manifest but offered only while docs are available.
+      [...SPACES_TOOLS, ...BUS_TOOLS, "edit_doc"].sort(),
     );
   });
 
@@ -1090,7 +1091,8 @@ describe("MCP spaces (P3 T10)", () => {
     });
     const onTools = (await on.listTools()).tools;
     expect(onTools.map((t) => t.name).sort()).toEqual(
-      [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
+      // edit_doc is in the manifest but offered only while docs are available.
+      [...SPACES_TOOLS, ...BUS_TOOLS, "edit_doc"].sort(),
     );
     expect(
       onTools.find((t) => t.name === "publish_artifact")?.description,
