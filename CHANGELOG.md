@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.184.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.183.0...v0.184.0) (2026-11-15)
+
+
+### Features
+
+* **inbox:** Needs you from open asks ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) S1) ([#2525](https://github.com/open-artifacts-ai/open-artifacts/issues/2525)) ([98b26e6](https://github.com/open-artifacts-ai/open-artifacts/commit/98b26e60c9b64fd9faab90badc69a8c2b8bad8c2))
+
 ## [0.183.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.182.0...v0.183.0) (2026-11-14)
 
 
