@@ -116,6 +116,12 @@ export function fakeBilling(install = INSTALL) {
           body,
           Response.json({ ok: true, month: body.month, count: body.count }),
         );
+      if (path === "/seats")
+        return answer(
+          path,
+          body,
+          Response.json({ members: body.members, applied: "stored" }),
+        );
       if (path === "/checkout")
         return answer(
           path,

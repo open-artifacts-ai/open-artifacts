@@ -13,8 +13,9 @@ import {
   requireUser,
 } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
-import { creatorCount, monthOf, sendUsage } from "../billing/creators.js";
+import { monthOf, sendUsage } from "../billing/creators.js";
 import { billingActive } from "../billing/plan.js";
+import { memberCount } from "../billing/seats.js";
 import {
   BillingUnavailableError,
   billingCall,
@@ -134,33 +135,36 @@ export function mountBilling(app: AppType): void {
           "Solo can only be bought on a Solo or trial instance",
         );
     }
-    // Monthly Team and Business bill per creator (#2123): the subscription
-    // starts at this instance's own creator count for the current UTC month
-    // (billing bills at least 1). Counted here, never taken from the body
-    // (the strict schema refuses a creators field). A yearly plan prepays
-    // seats instead.
-    let creators: number | undefined;
-    if (tier !== "solo" && interval !== "year") {
+    // Team and Business bill per member (#2580): a monthly subscription
+    // starts at this instance's own member count, a yearly one prepays
+    // seats = max(1, members) unless the client names a count. Counted here,
+    // never taken from the body (billing bills at least 1).
+    let members: number | undefined;
+    let yearSeats = seats;
+    if (tier !== "solo") {
       try {
-        creators = await creatorCount(c.env, monthOf(Date.now()));
+        const n = await memberCount(c.env);
+        if (interval !== "year") members = n;
+        else yearSeats ??= Math.max(1, n);
       } catch (e) {
         logWarn("billing_url_failed", e, {
           route: CHECKOUT_PATH,
-          why: "creators",
+          why: "members",
         });
         throw unavailable();
       }
     }
     // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
-    // interval (month or year; required for solo) and seats (yearly team or
-    // business), both forwarded unchanged, and creators (monthly team or
-    // business).
+    // interval (month or year; required for solo), seats (yearly team or
+    // business) and members (monthly team or business).
     return c.json(
       await stripeUrl(c, CHECKOUT_PATH, {
         plan: tier,
         ...(interval ? { interval } : {}),
-        ...(seats !== undefined ? { seats } : {}),
-        ...(creators !== undefined ? { creators } : {}),
+        ...(yearSeats !== undefined && tier !== "solo"
+          ? { seats: yearSeats }
+          : {}),
+        ...(members !== undefined ? { members } : {}),
       }),
     );
   });

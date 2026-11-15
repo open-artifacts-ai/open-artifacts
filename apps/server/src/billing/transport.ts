@@ -22,6 +22,7 @@ export const BILLING_ORIGIN = "https://billing.oa.internal";
 export const TIER_PATH = "/tier";
 export const TRIAL_PATH = "/trial/start";
 export const USAGE_PATH = "/usage";
+export const SEATS_PATH = "/seats";
 /** Platform adds these billing routes against packages/billing-core (pending). */
 export const CHECKOUT_PATH = "/checkout";
 export const PORTAL_PATH = "/portal";

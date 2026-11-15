@@ -13,6 +13,8 @@ import {
 import { readSession, sessionCookieName } from "./auth/session.js";
 import { authProviders } from "./auth/sign-in.js";
 import { withPlanScope } from "./billing/features.js";
+import { billingActive } from "./billing/plan.js";
+import { reportSeatsAfter } from "./billing/seats.js";
 import { ApiError, errorJson, toErrorResponse } from "./http/errors.js";
 import {
   type AppEnv,
@@ -120,6 +122,32 @@ const unlessSigned =
   (c, next) =>
     isSignedUpload(c) ? next() : mw(c, next);
 
+const SEAT_WRITE = /^\/(api|auth|oauth|mcp)(\/|$)/;
+
+/**
+ * After a request that can move the member count (a write under /api, /auth,
+ * /oauth or /mcp, or any /auth sign-in step) answered below 400, report the
+ * count when it changed. waitUntil, fire and forget; hosted only.
+ */
+function seatsReport(): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    await next();
+    if (c.res.status >= 400 || !billingActive(c.env)) return;
+    const path = normalizedPath(c.req.url);
+    const m = c.req.method;
+    const write = m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
+    if (path === null || !SEAT_WRITE.test(path)) return;
+    if (!write && !path.startsWith("/auth/")) return;
+    let ctx: Pick<ExecutionContext, "waitUntil"> | undefined;
+    try {
+      ctx = c.executionCtx;
+    } catch {
+      ctx = undefined;
+    }
+    reportSeatsAfter(c.env, ctx);
+  };
+}
+
 /** `extraPolicy`: rules for routes a custom `mount` adds (tests). */
 export function createApp(
   mount: (app: AppType) => void = mountRoutes,
@@ -147,6 +175,9 @@ export function createApp(
       );
     }),
   );
+  // Hosted billing (#2580): after any write that can move the member count
+  // (and any sign-in), report it when it changed (billing/seats.ts).
+  app.use(mw(seatsReport()));
   app.use(mw(securityHeaders()));
   // Every route's access rule (auth/route-policy.ts), before any other
   // middleware or handler: an unlisted route is 404 before anything runs.
