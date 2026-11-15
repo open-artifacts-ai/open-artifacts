@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.189.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.188.0...v0.189.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** login settings and per-address reach routes ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2545](https://github.com/open-artifacts-ai/open-artifacts/issues/2545)) ([e1d0366](https://github.com/open-artifacts-ai/open-artifacts/commit/e1d036624d30445669c68837e8238dc59bc0f974))
+* **billing:** count members for per-member billing ([#2580](https://github.com/open-artifacts-ai/open-artifacts/issues/2580)) ([#2587](https://github.com/open-artifacts-ai/open-artifacts/issues/2587)) ([4a1744b](https://github.com/open-artifacts-ai/open-artifacts/commit/4a1744ba99cc40f6db9fe074c54d93d20c307263))
+* **setup:** the first install runs only the bytes it checked ([#2543](https://github.com/open-artifacts-ai/open-artifacts/issues/2543)) ([#2586](https://github.com/open-artifacts-ai/open-artifacts/issues/2586)) ([d122e37](https://github.com/open-artifacts-ai/open-artifacts/commit/d122e378901cffa0e67074ea8f47b9784131b5a0))
+
+
+### Bug Fixes
+
+* **comments:** guests count as outside for agent wake-ups ([#2592](https://github.com/open-artifacts-ai/open-artifacts/issues/2592)) ([60fb0fa](https://github.com/open-artifacts-ai/open-artifacts/commit/60fb0fa1585999e35b4d486e8a06fd82d608851e))
+* **dashboard:** no transfer request per departed member on every load ([#2593](https://github.com/open-artifacts-ai/open-artifacts/issues/2593)) ([cc6bd40](https://github.com/open-artifacts-ai/open-artifacts/commit/cc6bd40f4ddc53c8b0f5b23688551d9ae64524d8))
+* **settings:** the turn-off dialog counts members at the domain ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2589](https://github.com/open-artifacts-ai/open-artifacts/issues/2589)) ([3b70b5d](https://github.com/open-artifacts-ai/open-artifacts/commit/3b70b5d52b237c08807477eb41eb7fce3cc548dd))
+
 ## [0.188.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.187.0...v0.188.0) (2026-11-15)
 
 
