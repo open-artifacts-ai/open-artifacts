@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.190.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.189.0...v0.190.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** a person a page is shared with logs in with Google as a guest ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2595](https://github.com/open-artifacts-ai/open-artifacts/issues/2595)) ([d0d0642](https://github.com/open-artifacts-ai/open-artifacts/commit/d0d0642a8976e24d1f14eee159e669fe1556a2f6))
+* **bus:** the updater: switch, self-check and step back ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2573](https://github.com/open-artifacts-ai/open-artifacts/issues/2573)) ([158e11a](https://github.com/open-artifacts-ai/open-artifacts/commit/158e11a206b850ead9b0a62bb218b2763619e5e5))
+* **docs:** edit_doc lets agents edit a doc through the room ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2542](https://github.com/open-artifacts-ai/open-artifacts/issues/2542)) ([529d681](https://github.com/open-artifacts-ai/open-artifacts/commit/529d681262efe5a5d1865497595bf9e33094d95b))
+* **viewer:** the guest bar, Shared with you, and Get your own ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2599](https://github.com/open-artifacts-ai/open-artifacts/issues/2599)) ([838c2cc](https://github.com/open-artifacts-ai/open-artifacts/commit/838c2cc41e60b8c4434fa61f4227555923fbaacb))
+
 ## [0.189.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.188.0...v0.189.0) (2026-11-15)
 
 
