@@ -78,8 +78,8 @@ export const domainList = (domains: readonly string[]) => domains.join(" and ");
 export const DOMAIN_OFF = {
   title: (d: string) => `Stop letting ${d} join by itself?`,
   /**
-   * `joined`: the members who joined by domain; 0 leaves the sentence out, 1 is
-   * singular. `at`: every domain that joins by itself, joined with " and "
+   * `joined`: every active member at the domains, however they joined (Axe L3);
+   * 0 leaves the sentence out, 1 is singular. `at`: every domain that joins by itself, joined with " and "
    * (#2520: "acme.com and acme.io"); the switch's own domain when omitted.
    */
   body: (d: string, joined: number, at: string = d) =>
