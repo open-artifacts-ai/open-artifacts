@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.185.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.184.0...v0.185.0) (2026-11-15)
+
+
+### Features
+
+* **audit:** record risky ask approvals ([#2458](https://github.com/open-artifacts-ai/open-artifacts/issues/2458)) ([#2530](https://github.com/open-artifacts-ai/open-artifacts/issues/2530)) ([c476931](https://github.com/open-artifacts-ai/open-artifacts/commit/c476931874ae4dbe9a06b3e869e6a24917dbece3))
+
 ## [0.184.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.183.0...v0.184.0) (2026-11-15)
 
 
