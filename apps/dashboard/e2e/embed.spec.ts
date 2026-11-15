@@ -330,7 +330,7 @@ test("(d) a framed private artifact shows the placeholder, not a login redirect"
   const app = await appFrame(page);
   const frame = page.frameLocator("iframe");
   await expect(
-    frame.getByRole("heading", { name: "This artifact isn't public" }),
+    frame.getByRole("heading", { name: "This artifact is restricted" }),
   ).toBeVisible();
   const open = frame.getByRole("link", { name: "Open in Open Artifacts" });
   await expect(open).toHaveAttribute("href", `/a/${LANDING}`);
