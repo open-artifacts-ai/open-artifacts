@@ -67,10 +67,11 @@ export async function reachOf(
     // only a Workspace secondary domain could pass, so that is "uncertain".
     // No domains: only a Gmail address is certain; any other might be a
     // Workspace whose hd matches its domain.
+    // A Gmail address is certain either way: an invitee signs in with it
+    // bound to the exact address (#2520).
     const certain =
-      cfg.domains.length === 0
-        ? noDomainIdentityOk(email, null)
-        : googleTenantOk(cfg, domain);
+      noDomainIdentityOk(email, null) ||
+      (cfg.domains.length > 0 && googleTenantOk(cfg, domain));
     if (certain) methods.push("google");
     else googleUncertain = true;
   }

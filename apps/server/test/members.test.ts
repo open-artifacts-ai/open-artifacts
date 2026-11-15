@@ -103,6 +103,48 @@ describe("members API", () => {
     }
   });
 
+  it("re-invite: only the owner refreshes an admin's invite; an admin gets the 409", async () => {
+    const email = `adm-re-${tag}@x.com`;
+    const first = await call(R.members, owner.cookie, {
+      method: "POST",
+      body: { email, role: "admin" },
+    });
+    expect(first.status).toBe(201);
+    const before = await env.DB.prepare(
+      "select invited_at a from users where email = ?",
+    )
+      .bind(email)
+      .first<{ a: number }>();
+    await env.DB.prepare("update users set invited_at = 1 where email = ?")
+      .bind(email)
+      .run();
+    const byAdmin = await call(R.members, admin.cookie, {
+      method: "POST",
+      body: { email, role: "admin" },
+    });
+    expect(byAdmin.status).toBe(409);
+    expect(
+      (
+        await env.DB.prepare("select invited_at a from users where email = ?")
+          .bind(email)
+          .first<{ a: number }>()
+      )?.a,
+    ).toBe(1);
+    const byOwner = await call(R.members, owner.cookie, {
+      method: "POST",
+      body: { email, role: "admin" },
+    });
+    expect(byOwner.status).toBe(200);
+    expect(before?.a).toBeGreaterThan(1);
+    expect(
+      (
+        await env.DB.prepare("select invited_at a from users where email = ?")
+          .bind(email)
+          .first<{ a: number }>()
+      )?.a,
+    ).toBeGreaterThan(Date.now() - 60_000);
+  });
+
   it("invite: creates the row, normalizes email, 409 on duplicate, 400 invalid", async () => {
     const r = await call(R.members, admin.cookie, {
       method: "POST",
@@ -116,8 +158,31 @@ describe("members API", () => {
       method: "POST",
       body: { email: `NEW-${tag}@x.com`, role: "admin" },
     });
-    expect(dup.status).toBe(409);
-    expect(await errCode(dup)).toBe("conflict");
+    // Never signed in: a re-invite (200, same row, role unchanged).
+    expect(dup.status).toBe(200);
+    expect(MemberSchema.parse(await dup.json())).toMatchObject({
+      id: m.id,
+      role: "member",
+    });
+    // The re-invite is audited like a first invite (role of the row).
+    expect(
+      (
+        await env.DB.prepare(
+          "select count(*) n, min(detail) d from audit_events where action = 'invite.create' and target_id = ?",
+        )
+          .bind(m.id)
+          .first<{ n: number; d: string }>()
+      )?.n,
+    ).toBe(2);
+    await env.DB.prepare("update users set last_seen_at = 1 where id = ?")
+      .bind(m.id)
+      .run();
+    const dup2 = await call(R.members, admin.cookie, {
+      method: "POST",
+      body: { email: `NEW-${tag}@x.com`, role: "admin" },
+    });
+    expect(dup2.status).toBe(409);
+    expect(await errCode(dup2)).toBe("conflict");
     for (const body of [
       { email: "not-an-email", role: "member" },
       { email: "a@x.com", role: "owner" },

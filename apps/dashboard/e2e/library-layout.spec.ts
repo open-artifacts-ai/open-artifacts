@@ -201,7 +201,8 @@ for (const width of [1280, 390])
         below: !!title && !!meta && meta.top >= title.bottom - 0.5,
       };
     });
-    expect(r.first).toMatch(/^(Private|Team|Public)$/);
+    // #2509: Restricted, the instance name (Acme Artifacts) or Anyone with link.
+    expect(r.first).toMatch(/^(Restricted|Acme Artifacts|Anyone with link)$/);
     expect(r.agent).toBe("Claude Code");
     expect(r.below).toBe(width <= 600);
   });
@@ -212,3 +213,37 @@ test("search counts its results, singular and plural", async ({ page }) => {
   await page.goto("/search?q=e");
   await expect(page.getByText(/^\d+\+? results for “e”$/)).toBeVisible();
 });
+
+// #2509: a team badge reads the install's name; a very long one truncates
+// inside the card or row and never widens the page.
+for (const view of ["", "?view=list"])
+  test(`a long install name on a team badge truncates at 390px${view ? " (list)" : ""}`, async ({
+    page,
+  }) => {
+    const name = "W".repeat(80);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript((name) => {
+      const f = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const res = await f(input, init);
+        const u = new URL(new Request(input, init).url).pathname;
+        if (!u.endsWith("/api/v1/me") || !res.ok) return res;
+        const b = await res.json();
+        b.instance.name = name;
+        return new Response(JSON.stringify(b), {
+          headers: { "content-type": "application/json" },
+        });
+      };
+    }, name);
+    await page.goto(`/${view}`);
+    const badge = page.getByText(name).first();
+    await expect(badge).toBeVisible();
+    const r = await badge.evaluate((el) => ({
+      cut: el.scrollWidth > el.clientWidth,
+      title: el.parentElement?.getAttribute("title"),
+      over: (document.scrollingElement?.scrollWidth ?? 0) - window.innerWidth,
+    }));
+    expect(r.cut).toBe(true);
+    expect(r.title).toBe(name);
+    expect(r.over).toBeLessThanOrEqual(0);
+  });

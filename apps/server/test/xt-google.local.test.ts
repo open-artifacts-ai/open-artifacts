@@ -103,7 +103,7 @@ async function signsIn(s: Side, claims: Record<string, unknown>) {
   expect(setsSession(r)).toBe(true);
 }
 
-async function refused(r: Response, error: "tenant" | "failed") {
+async function refused(r: Response, error: "tenant" | "failed" | "no_access") {
   expect(r.status).toBe(302);
   expect(setsSession(r)).toBe(false);
   const loc = new URL(r.headers.get("location") ?? "", "http://app.localhost");
@@ -114,7 +114,7 @@ async function refused(r: Response, error: "tenant" | "failed") {
 /** B's own token signs in at B, A's at A; then `claims` (A-flavoured) at B's callback are refused. */
 async function cross(
   claims: Record<string, unknown>,
-  error: "tenant" | "failed",
+  error: "tenant" | "failed" | "no_access",
 ) {
   await signsIn(B, own(B));
   await signsIn(A, own(A));
@@ -130,9 +130,9 @@ async function cross(
 }
 
 describe("login ID-token cases across installs (fake Google)", () => {
-  it("an ID token with hd of A at B's callback: no session", async () => {
+  it("an ID token with hd of A at B's callback: no session (now email-bound: refused as no_access unless invited)", async () => {
     // A's own identity, for B's client: only the tenant differs.
-    await cross({ ...own(A), aud: CID_B, azp: CID_B }, "tenant");
+    await cross({ ...own(A), aud: CID_B, azp: CID_B }, "no_access");
   });
 
   it("an ID token with a B email domain but hd of A: no session", async () => {

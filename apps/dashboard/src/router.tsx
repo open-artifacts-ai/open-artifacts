@@ -27,6 +27,7 @@ import { useNoAgentsPage } from "./settings/AgentSetupCard";
 import { Connections } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
 import { Instance } from "./settings/Instance";
+import { Login } from "./settings/Login";
 import { Members } from "./settings/Members";
 import { Notifications } from "./settings/Notifications";
 import { Plan } from "./settings/Plan";
@@ -289,6 +290,7 @@ const routeTree = root.addChildren([
     gated("/settings/notifications", [...ADMINS, "member"], "/", Notifications),
     gated("/settings/security", [...ADMINS, "member"], "/", Security),
     gated("/settings/members", ADMINS, "/settings/connections", Members),
+    gated("/settings/login", ADMINS, "/settings/connections", Login),
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/spaces",

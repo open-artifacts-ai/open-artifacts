@@ -18,6 +18,7 @@ import {
   asc,
   eq,
   inArray,
+  isNotNull,
   isNull,
   notInArray,
   or,
@@ -253,6 +254,9 @@ async function requireTrialStarted(env: Env): Promise<void> {
   if (lock) throw planError(lock);
 }
 
+/** A re-invite's email goes out at most once per address in this window. */
+const REINVITE_COOLDOWN_MS = 600_000;
+
 /**
  * Pre-creates the user row, then emails the invitee (best effort).
  * 400 on an invalid (non-ASCII) email, 409 if it exists (guest_lapsed for
@@ -269,6 +273,20 @@ export async function inviteMember(
   inviter: Member,
   input: MemberInvite,
 ): Promise<MemberInviteResult> {
+  return (await inviteMemberOutcome(env, inviter, input)).result;
+}
+
+/**
+ * inviteMember, and whether it was a re-invite (#2520): an active row that
+ * was invited and never signed in keeps its row, gets a fresh invited_at and
+ * the email again; the route answers 200 instead of 201. Every other existing
+ * row is still a 409.
+ */
+export async function inviteMemberOutcome(
+  env: Env,
+  inviter: Member,
+  input: MemberInvite,
+): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   const reach = await inviteReach(env, email, input.role);
@@ -286,31 +304,64 @@ export async function inviteMember(
       details,
     );
   }
+  // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
+  // invited_at and its own invite.create row (the existing role, as a first
+  // invite records it); the audit commits with the update, only when it hit.
+  const prior = await stmt(
+    env.DB,
+    "select role, invited_at as invitedAt from users where email = ?1",
+  )
+    .bind(email)
+    .first<{ role: string; invitedAt: number | null }>();
+  const [updated] = await getDb(env).batch([
+    getDb(env)
+      .update(users)
+      .set({ invitedAt: Date.now() })
+      .where(
+        and(
+          eq(users.email, email),
+          eq(users.status, "active"),
+          isNull(users.lastSeenAt),
+          isNotNull(users.invitedAt),
+          // Same who-may-manage rule as everywhere: only the owner (or the
+          // system) refreshes an admin's invite; anyone else gets the 409. Only a
+          // re-invite (an existing row) needs the check.
+          sql`(${prior ? adminsOk(inviter) : 1} = 1 or ${users.role} not in ('owner', 'admin'))`,
+        ),
+      )
+      .returning(),
+    inviteCreateAuditByEmail(env, email, inviter.id, prior?.role ?? input.role),
+  ]);
+  const again = updated[0];
   // Hosted billing: the first invite on a free instance passes only if the
   // 30-day trial starts (signed POST /trial/start, idempotent). Billing
   // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
   // is created. An address that already exists is the usual conflict, and
   // starts nothing.
   const plan = planOfMember(inviter);
-  if (plan?.trialEligible) {
+  if (plan?.trialEligible && !again) {
     if (await stmt(env.DB, EXISTING).bind(email).first())
       return existingConflict(env, email);
     await requireTrialStarted(env);
   }
   // invite.create (ids and the role, never the address) commits with the
   // row, and only when the insert made one.
-  const [rows] = await getDb(env).batch([
-    insertUser(env, {
-      email,
-      name: "",
-      role: input.role,
-      createdAt: Date.now(),
-    })
-      .onConflictDoNothing({ target: users.email })
-      .returning(),
-    inviteCreateAuditByEmail(env, email, inviter.id, input.role),
-  ]);
-  const row = rows[0];
+  let row = again;
+  if (!row) {
+    const [rows] = await getDb(env).batch([
+      insertUser(env, {
+        email,
+        name: "",
+        role: input.role,
+        createdAt: Date.now(),
+        invitedAt: Date.now(),
+      })
+        .onConflictDoNothing({ target: users.email })
+        .returning(),
+      inviteCreateAuditByEmail(env, email, inviter.id, input.role),
+    ]);
+    row = rows[0];
+  }
   if (!row) return existingConflict(env, email);
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
@@ -318,7 +369,14 @@ export async function inviteMember(
     ? reach.methods
     : ["google"];
   let emailed = false;
-  if (emailEnabled(env)) {
+  // A re-invite mails at most once per address per 10 minutes (the refresh
+  // itself always happens). sendEmail also caps invites per UTC day: the
+  // instance, 5 per recipient and the inviter's own budget.
+  const cooledDown =
+    !again ||
+    prior?.invitedAt == null ||
+    Date.now() - prior.invitedAt >= REINVITE_COOLDOWN_MS;
+  if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
       .name;
     emailed = await sendEmail(
@@ -341,12 +399,20 @@ export async function inviteMember(
     );
   }
   return {
-    ...toMember(row),
-    emailed,
-    signInMethods,
-    ...(reach.methods.length === 0
-      ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
-      : {}),
+    reinvited: Boolean(again),
+    result: {
+      ...toMember(row),
+      emailed,
+      signInMethods,
+      ...(reach.methods.length === 0
+        ? {
+            signIn: {
+              status: "uncertain",
+              reason: "outside_domains",
+            } as const,
+          }
+        : {}),
+    },
   };
 }
 

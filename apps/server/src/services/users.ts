@@ -100,6 +100,7 @@ export function insertUser(
     role: Role;
     createdAt: number;
     lastSeenAt?: number;
+    invitedAt?: number;
   },
 ) {
   return getDb(env)

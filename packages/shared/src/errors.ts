@@ -88,6 +88,9 @@ export const ERROR_CODES = [
   "docs_need_paid",
   // Collaborative docs (#1100): docs are not available on this instance yet.
   "docs_unavailable",
+  // Login settings (#2520): PUT R.settings/login.
+  "domain_unproven",
+  "apply_pending",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -228,6 +231,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   docs_need_paid: 400,
   /** Docs are not available on this instance yet (#1100): creating or changing one is refused with the next step. Nothing is published. */
   docs_unavailable: 400,
+  /** PUT settings/login (#2520): the owner's login doesn't prove that domain is their Google Workspace's; details DomainUnprovenDetails. */
+  domain_unproven: 403,
+  /** PUT settings/login (#2520): refused, an earlier change is still being applied (a hosted redeploy, about a minute). */
+  apply_pending: 409,
 };
 
 /**
@@ -313,3 +320,7 @@ export const DATA_EDITORS_ONLY_MESSAGE =
 
 export const QUOTA_MESSAGE =
   "Daily free-plan limit reached; resets at 00:00 UTC";
+
+/** 403 domain_unproven details (#2520): the domain the owner's login didn't prove. */
+export const DomainUnprovenDetailsSchema = z.object({ domain: z.string() });
+export type DomainUnprovenDetails = z.infer<typeof DomainUnprovenDetailsSchema>;

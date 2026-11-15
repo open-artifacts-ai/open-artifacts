@@ -281,7 +281,7 @@ describe("Google through the broker", () => {
       ),
     );
 
-  it("tenant B's token is refused at A even when the broker returns it", async () => {
+  it("tenant B's token is refused at A even when the broker returns it (no invite: no_access, #2520)", async () => {
     let nonce = "";
     const e = lyingBroker(() =>
       g.mint({ nonce, hd: "b.com", email: "eve@b.com" }),
@@ -289,7 +289,7 @@ describe("Google through the broker", () => {
     const b = await begin(e);
     nonce = b.nonce;
     expect(await callbackWith(e, b)).toBe(
-      `${SIGN_IN_PAGE}?error=tenant&next=%2Fa%2Fx`,
+      `${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx&via=google`,
     );
   });
 

@@ -283,13 +283,15 @@ describe("invites", () => {
     expect(JSON.parse(c?.detail ?? "")).toEqual({ role: "member" });
     clean(c, [email]);
 
-    // A duplicate is a 409 and writes nothing.
+    // A re-invite of a never-signed-in invite is a 200 and audits again.
     const dup = await api(app, R.members, owner.cookie, {
       method: "POST",
       body: { email, role: "member" },
     });
-    expect(dup.status).toBe(409);
-    expect(await rows("invite.create", id)).toHaveLength(1);
+    expect(dup.status).toBe(200);
+    const created = await rows("invite.create", id);
+    expect(created).toHaveLength(2);
+    expect(JSON.parse(created[1]?.detail ?? "")).toEqual({ role: "member" });
 
     expect(await rows("invite.accept", id)).toHaveLength(0);
     const sub = `sub-${crypto.randomUUID()}`;
@@ -314,6 +316,14 @@ describe("invites", () => {
     // A later sign-in accepts nothing more.
     expect((await signIn()).ok).toBe(true);
     expect(await rows("invite.accept", id)).toHaveLength(1);
+
+    // Signed in: a duplicate is a 409 and writes nothing.
+    const dup2 = await api(app, R.members, owner.cookie, {
+      method: "POST",
+      body: { email, role: "member" },
+    });
+    expect(dup2.status).toBe(409);
+    expect(await rows("invite.create", id)).toHaveLength(2);
   });
 
   it("Access sign-in of an invited row accepts once; an unmarked never-seen row does not", async () => {

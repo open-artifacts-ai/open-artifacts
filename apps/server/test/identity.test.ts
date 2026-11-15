@@ -253,11 +253,13 @@ describe("admit (Google)", () => {
     expect(await count("users where email = ?", boss)).toBe(0);
   });
 
-  it("a guest row is promoted to member by hd (alias email domain)", async () => {
+  it("a guest row on an alias email domain is not linked by hd alone (needs_code, #2520 M1)", async () => {
     const email = uniq("g", "alias.com");
     const uid = await seedUser(email, "guest");
     const r = await admit(env, cfg(), g({ email }));
-    expect(r).toMatchObject({ ok: true, user: { id: uid, role: "member" } });
+    expect(r).toEqual({ ok: false, reason: "needs_code" });
+    expect((await rowOf(uid)).role).toBe("guest");
+    expect(await subjectOf(uid)).toBeNull();
   });
 
   it("tenant outside the domains: tenant", async () => {
@@ -717,7 +719,7 @@ describe("admit (Google, no domains)", () => {
   });
 
   it("an invited Workspace address (hd = its domain) is admitted; tenant stays null", async () => {
-    const id = gm({ email: uniq("w", "acme.com") });
+    const id = gm({ email: uniq("w", "acme.com"), hd: "acme.com" });
     await seedUser(id.email, "member");
     expect(await admit(env, authConfig(e()), id)).toMatchObject({
       ok: true,

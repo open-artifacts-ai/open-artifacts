@@ -1091,8 +1091,7 @@ describe("MCP spaces (P3 T10)", () => {
     });
     const onTools = (await on.listTools()).tools;
     expect(onTools.map((t) => t.name).sort()).toEqual(
-      // edit_doc is in the manifest but offered only while docs are available.
-      [...SPACES_TOOLS, ...BUS_TOOLS, "edit_doc"].sort(),
+      [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
     );
     expect(
       onTools.find((t) => t.name === "publish_artifact")?.description,
