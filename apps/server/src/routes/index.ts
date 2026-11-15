@@ -10,6 +10,7 @@ import { mountRuntime } from "../runtime/routes.js";
 import { busMachine, busView, revokeBusMachine } from "../services/bus.js";
 import { getShareNotices, setShareNotices } from "../services/follows.js";
 import { mountAdmin } from "./admin.js";
+import { mountAgentRequests } from "./agent-requests.js";
 import { mountArtifacts } from "./artifacts.js";
 import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
@@ -54,6 +55,7 @@ export function mountRoutes(app: AppType): void {
   mountRuntime(app);
   mountComments(app);
   mountPasskeys(app);
+  mountAgentRequests(app);
   mountTokens(app);
   mountUsage(app);
   mountAudit(app);

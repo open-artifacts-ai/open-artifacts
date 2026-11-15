@@ -307,6 +307,17 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/passkeys/settings/challenge": {
     user: "the caller's passkey settings",
   },
+  // #2577: the receiver's side of asking someone else's agent; the handlers refuse anything but a browser session.
+  "GET /api/v1/me/agent-asks/held": { user: "the caller's held requests" },
+  "POST /api/v1/me/agent-asks/held/:id/allow": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/allow/challenge": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/not-now": {
+    user: "the caller's held requests",
+  },
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
   "PATCH /api/v1/tokens/:id": { user: "the caller's tokens" },

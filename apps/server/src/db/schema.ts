@@ -641,10 +641,7 @@ export const heldRequestItems = sqliteTable(
     uniqueIndex("held_items_comment_idx").on(t.commentId, t.agentKey),
     index("held_items_request_idx").on(t.requestId, t.state),
     index("held_items_expiry_idx").on(t.state, t.expiresAt),
-    check(
-      "held_items_way",
-      inList("way", ["mention", "reply", "ask", "page"]),
-    ),
+    check("held_items_way", inList("way", ["mention", "reply", "ask", "page"])),
     check(
       "held_items_state",
       inList("state", ["held", "allowed", "lapsed", "withdrawn"]),
