@@ -98,6 +98,12 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
+import {
+  isOutsideMember,
+  OWN_AGENTS_ONLY,
+  TOO_MANY_MENTIONS,
+  takeMentionSlot,
+} from "./mention-guards.js";
 import { noteCommented } from "./onboarding.js";
 import {
   mentionedKey,
@@ -1020,7 +1026,9 @@ const announce = (
   /** The comment's mentions and ask: those agents already heard of it. */
   r?: Resolved,
 ) =>
-  after
+  // #2559: only a person typing tells other people's follower agents; an
+  // agent's or a token's comment tells nobody else (the author's own agents never hear it).
+  after && typedByPerson(who)
     ? inBackground(
         after.ctx,
         notifyCommented(
@@ -1077,7 +1085,13 @@ type Resolved = {
   /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
   mentionKind: "mention" | "asker";
   participants: StoredParticipant[];
+  /** #2559: a non-fatal notice for the response (a mention over the limit). */
+  notice?: string;
 };
+
+/** A comment a person typed in the web app: no token, no agent (#1797). */
+const typedByPerson = (who: CommentWho): boolean =>
+  who.kind === "user" && who.typed === true && !who.agent;
 
 const participantOf = (a: RosterAgent): StoredParticipant => ({
   ...storedAgent(a),
@@ -1311,6 +1325,30 @@ async function resolveExtras(
   const agents = new Map<string, Resolved["agents"][number]>();
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
   for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
+  // #2559: guards on waking another person's agent (mention or ask).
+  let notice: string | undefined;
+  const others = [...agents.values()].filter(
+    (e) => e.agent.userId !== viewerId,
+  );
+  if (others.length > 0) {
+    // 1: an outside member names only their own agents.
+    if (viewerId && (await isOutsideMember(env, viewerId)))
+      throw new ApiError("forbidden", OWN_AGENTS_ONLY);
+    // 3: only a person typing wakes another person's agent; the mention stays
+    // on the comment and reads "gone". 2: and only under the hourly limits.
+    for (const e of others) {
+      let wake = typedByPerson(who);
+      if (
+        wake &&
+        viewerId &&
+        !(await takeMentionSlot(env, viewerId, e.agent.userId))
+      ) {
+        wake = false;
+        notice = TOO_MANY_MENTIONS;
+      }
+      if (!wake) agents.delete(e.agent.key);
+    }
+  }
   // A mention makes an agent follow (#1535); an ask alone does
   // not. Only one the follows did not hold: another member's unfollow is never undone.
   const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
@@ -1330,6 +1368,7 @@ async function resolveExtras(
       ...participantOf(x.agent),
       readd: true as const,
     })),
+    ...(notice ? { notice } : {}),
   };
 }
 
@@ -1369,7 +1408,7 @@ async function deliver(
   c: StoredComment,
   r: Resolved,
 ): Promise<StoredComment> {
-  if (r.agents.length === 0) return c;
+  if (r.agents.length === 0 && r.mentions.length === 0) return c;
   const version = Math.max(1, a.currentVersion);
   const outcome = new Map<string, DeliveryState>();
   // Concurrent, and the POST waits NOTICE_BUDGET_MS at most in total: a
@@ -1498,13 +1537,20 @@ async function addThreadInner(
   };
   const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
   if (!taken) await take();
-  const page =
+  const page0 =
     // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
     anchor.kind === "note" &&
+    r0.mentions.length === 0 &&
     r0.agents.length === 0 &&
     who.kind === "user" &&
     !outsider(viewer)
       ? await pagePublisher(env, a, who)
+      : null;
+  // #2559: an agent's or a token's note never wakes another person's page agent.
+  const page =
+    page0 &&
+    (typedByPerson(who) || (who.kind === "user" && page0.userId === who.id))
+      ? page0
       : null;
   if (page) {
     r0.extras = { ...r0.extras, mentions: [storedAgent(page)] };
@@ -1554,13 +1600,16 @@ async function addThreadInner(
       root.ask.decider ?? root.author.ref,
       askInfo(root),
     );
-  if (root && r.agents.length > 0) {
+  if (root && (r.agents.length > 0 || r.mentions.length > 0)) {
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
   }
   await announce(env, a.id, who, opts.after, r);
   await emailPeople(env, a.id, t.id, root, false, opts.after);
-  return (await threadViews(env, a.id, [t], viewer))[0] as Thread;
+  const view = (await threadViews(env, a.id, [t], viewer))[0] as Thread;
+  const first = view.comments[0];
+  if (r.notice && first) view.comments[0] = { ...first, notice: r.notice };
+  return view;
 }
 
 /**
@@ -1679,7 +1728,10 @@ async function threadReply(
     if (due.length === 0) return c;
     const reached: RosterAgent[] = [];
     const users = new Map<string, boolean>();
+    // #2559: a comment not typed by a person wakes only its author's own agents.
+    const typed = isTyped(c.author);
     for (const p of due) {
+      if (!typed && p.owner !== c.author.ref) continue;
       let ok = users.get(p.owner);
       if (ok === undefined) {
         const user = await getUser(env, p.owner);
@@ -1837,10 +1889,12 @@ async function addReplyInner(
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   // #1900: a person's reply also tells the thread's other agents, once each.
   c = await threadReply(env, a, threadId, c, r, viewer);
-  if (r.agents.length === 0) {
+  const withNotice = (v: Comment): Comment =>
+    r.notice ? { ...v, notice: r.notice } : v;
+  if (r.agents.length === 0 && r.mentions.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
     await emailPeople(env, artifactId, threadId, c, true, opts.after);
-    return commentView(env, c, viewer);
+    return withNotice(await commentView(env, c, viewer));
   }
   const sent = await deliver(env, a, threadId, c, r);
   // The bound is spent when a notice goes out or is held; a reply whose agents
@@ -1855,7 +1909,7 @@ async function addReplyInner(
     ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
   await emailPeople(env, artifactId, threadId, sent, true, opts.after);
-  return commentView(env, sent, viewer);
+  return withNotice(await commentView(env, sent, viewer));
 }
 
 /** How the pick reached the server (#2263): only a browser session may carry a passkey. */
@@ -2161,8 +2215,11 @@ export async function artifactAgents(
   guest = false,
 ): Promise<ArtifactAgent[]> {
   const masked = guest || viewerId === null;
-  return (await agentRoster(env, artifactId, viewerId, true, true)).map(
-    ({ key, name, online, state, lastActiveAt, machine, owner }) => ({
+  // #2559: an outside member's @ list holds only their own agents.
+  const outside = viewerId !== null && (await isOutsideMember(env, viewerId));
+  return (await agentRoster(env, artifactId, viewerId, true, true))
+    .filter((a) => !outside || a.userId === viewerId)
+    .map(({ key, name, online, state, lastActiveAt, machine, owner }) => ({
       key,
       name,
       online,
@@ -2170,8 +2227,7 @@ export async function artifactAgents(
       lastActiveAt: masked ? null : lastActiveAt,
       machine: masked ? null : machine,
       owner,
-    }),
-  );
+    }));
 }
 
 /** Resolve or reopen. */

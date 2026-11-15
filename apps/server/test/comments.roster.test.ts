@@ -55,7 +55,10 @@ beforeAll(() => {
   prev = installDelivery(bus);
 });
 afterAll(() => installDelivery(prev));
-beforeEach(() => {
+beforeEach(async () => {
+  await E.DB.prepare(
+    "delete from counters where key like 'notice:mention:%'",
+  ).run();
   bus.sent = [];
   bus.outcome = "delivered";
 });
@@ -129,7 +132,11 @@ async function setup() {
   return { id: a.id, owner, editor };
 }
 
-const who = (u: U): CommentWho => ({ kind: "user", id: u.userId });
+const who = (u: U): CommentWho => ({
+  kind: "user",
+  id: u.userId,
+  typed: true,
+});
 const view = (u: U) => ({ userId: u.userId, short: null, moderator: true });
 const art = (id: string) =>
   ({ id, format: "html", currentVersion: 1 }) as never;
