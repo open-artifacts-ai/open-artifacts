@@ -94,6 +94,9 @@ export function mountMembers(app: AppType): void {
     return c.json(out.result, out.reinvited ? 200 : 201);
   });
 
+  // Role change. An admin raises a guest to member here (a guest never
+  // becomes a member by logging in, a login domain or not, #2590); it is
+  // the one way, and it ends their sessions like any role change.
   app.patch(MEMBER, async (c) => {
     const actor = requireManager(c);
     const patch = await jsonBody(c, MemberPatchSchema);

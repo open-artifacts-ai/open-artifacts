@@ -11,7 +11,7 @@ import {
 import { loginCodeEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { codeEligibility } from "../services/identity.js";
+import { codeEligibility, linkEligibility } from "../services/identity.js";
 import { getSettings } from "../services/members.js";
 import { noteTestOtp } from "../test-hooks/index.js";
 import { b64urlDecode, hmacSign } from "../util/crypto.js";
@@ -366,6 +366,8 @@ export async function deliverCode(
   requestId: string,
   ip: string,
   now = Date.now(),
+  /** A code to link a Google account admit() refused with needs_code (#2590 G2). */
+  link = false,
 ): Promise<{ requestId: string } | null> {
   /** Logs (and, in test builds, records) why nothing was sent. */
   const none = async (outcome: CodeSendOutcome): Promise<null> => {
@@ -376,7 +378,12 @@ export async function deliverCode(
   if (!emailEnabled(env)) return none("email_off");
   const to = normalizeEmail(email);
   if (!to) return none("ineligible");
-  if ((await codeEligibility(env, cfg, to)).kind === "none")
+  if (
+    (link
+      ? await linkEligibility(env, to)
+      : await codeEligibility(env, cfg, to)
+    ).kind === "none"
+  )
     return none("ineligible");
   const day = counterBucket("day", now);
   const nk = await netKey(env, ip);
