@@ -454,6 +454,39 @@ export const versions = sqliteTable(
   ],
 );
 
+/**
+ * #1100: everyone who edited a doc since its previous version, people and
+ * agents, written with the version row by the doc room. `key` is the user id
+ * (a person), "anon" (an anonymous editor; no address is kept) or the agent's
+ * key. Agent fields mirror versions.agent_*: the display layer applies the
+ * same private-label rule (isPrivateAgent) on `agent_via`.
+ */
+export const versionContributors = sqliteTable(
+  "version_contributors",
+  {
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    kind: text("kind").notNull(),
+    key: text("key").notNull(),
+    userId: text("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    agentName: text("agent_name"),
+    agentVersion: text("agent_version"),
+    agentVia: text("agent_via"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.artifactId, t.version, t.kind, t.key] }),
+    index("version_contributors_user_idx").on(t.userId),
+    check(
+      "version_contributors_kind_check",
+      inList("kind", ["person", "agent"]),
+    ),
+  ],
+);
+
 export const shares = sqliteTable(
   "shares",
   {

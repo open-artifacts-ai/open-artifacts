@@ -49,7 +49,7 @@ import {
   uaFamily,
 } from "../services/agent-usage.js";
 import { noteInstanceFirst } from "../services/analytics.js";
-import { audit, userActor } from "../services/audit.js";
+import { audit, auditText, userActor } from "../services/audit.js";
 import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
@@ -607,7 +607,7 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
         {
           detail: {
             clientId: approved.request.clientId,
-            clientName: props.clientName,
+            clientName: auditText(props.clientName),
           },
         },
       ),
@@ -631,6 +631,15 @@ function grantIdOfRedirect(redirectTo: string): string | null {
     return null;
   }
 }
+
+/**
+ * The agent.grant row's target: the grant id from the redirect's code. If the
+ * code is missing or malformed (the provider's format changed), the row
+ * falls back to the client's id, so it still has a stable target; its detail
+ * names that client either way.
+ */
+export const grantTargetId = (redirectTo: string, clientId: string): string =>
+  grantIdOfRedirect(redirectTo) ?? clientId;
 
 const notFound = () => new ApiError("not_found", "Not found");
 
@@ -724,7 +733,7 @@ export function mountOAuth(app: AppType): void {
         "agent.revoke",
         { type: "agent_grant", id: grant.grantId },
         userActor(user.id),
-        { detail: { clientName: grant.clientName } },
+        { detail: { clientName: auditText(grant.clientName) } },
       ),
     ]);
     // #1403: the pending bus role proposals this grant made lapse with it.

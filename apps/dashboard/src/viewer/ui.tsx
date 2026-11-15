@@ -40,13 +40,21 @@ const VIS: Record<Visibility, { label: string; tone: string; icon: string[] }> =
     },
   };
 
-export function VisibilityBadge({ visibility }: { visibility: Visibility }) {
+export function VisibilityBadge({
+  visibility,
+  iconOnly = false,
+}: {
+  visibility: Visibility;
+  /** #2503: the lock (or globe) alone; the label stays its accessible name. */
+  iconOnly?: boolean;
+}) {
   const v = VIS[visibility];
   return (
     <Badge
       variant="secondary"
       className={cn(
         "h-[18px] gap-1 rounded-sm px-[6px] py-0 text-[length:var(--oa-text-xs)]",
+        iconOnly && "gap-0",
         v.tone,
       )}
     >
@@ -65,7 +73,7 @@ export function VisibilityBadge({ visibility }: { visibility: Visibility }) {
           <path key={d} d={d} />
         ))}
       </svg>
-      {v.label}
+      {iconOnly ? <span className="sr-only">{v.label}</span> : v.label}
     </Badge>
   );
 }

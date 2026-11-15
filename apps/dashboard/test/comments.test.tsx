@@ -202,7 +202,8 @@ describe("comments: layouts", () => {
       screen.queryByRole("complementary", { name: "Comments" }),
     ).toBeNull();
     fireEvent.click(btn);
-    const tab = await screen.findByRole("tab", { name: "Comments" });
+    // #2486: the tab carries the open count.
+    const tab = await screen.findByRole("tab", { name: "Comments, 1 open" });
     expect(tab).toHaveAttribute("data-state", "active");
     expect(
       await screen.findByText("Can we tighten this headline?"),

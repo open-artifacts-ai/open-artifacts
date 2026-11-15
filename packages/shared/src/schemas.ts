@@ -783,6 +783,13 @@ export const MeSchema = z.object({
    * and canConnect. Optional: older servers omit it (bus off).
    */
   busOn: z.boolean().optional(),
+  /** #2512: inbox counts for the header badge. Optional: older servers omit it. */
+  inbox: z
+    .object({
+      needsYou: z.number().int().min(0),
+      unreadUpdates: z.number().int().min(0),
+    })
+    .optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 

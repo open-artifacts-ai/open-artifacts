@@ -1,13 +1,15 @@
-import { parseTier } from "@oa/shared";
+import { type AuditAction, parseTier } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
+import { audit } from "../services/audit.js";
 import { LIVE_KEY, monthOf } from "./creators.js";
 import {
   billingActive,
   CHECK_KEY,
   effectivePlan,
   PLAN_KEY,
+  parseStored,
   planOfRaw,
   type StoredPlan,
   TierAnswerSchema,
@@ -29,12 +31,27 @@ export const ON_DEMAND_MS = 60_000;
  * version read later (asOf). An older version never replaces a newer one,
  * whatever order two reads land in. RETURNING says whether it applied.
  */
-const STORE_PLAN = `insert into settings (key, value) values ('${PLAN_KEY}', ?1)
+const storePlanSql = (
+  cas: boolean,
+) => `insert into settings (key, value) values ('${PLAN_KEY}', ?1)
   on conflict (key) do update set value = excluded.value
-  where coalesce(json_extract(settings.value, '$.version'), -1) < json_extract(excluded.value, '$.version')
+  where (coalesce(json_extract(settings.value, '$.version'), -1) < json_extract(excluded.value, '$.version')
      or (coalesce(json_extract(settings.value, '$.version'), -1) = json_extract(excluded.value, '$.version')
-         and coalesce(json_extract(settings.value, '$.asOf'), 0) < json_extract(excluded.value, '$.asOf'))
+         and coalesce(json_extract(settings.value, '$.asOf'), 0) < json_extract(excluded.value, '$.asOf')))
+  ${cas ? "and settings.value is ?2" : ""}
   returning value`;
+/** With ?2 the value the audit diff was read from: stores only while it still holds. */
+const STORE_PLAN_CAS = storePlanSql(true);
+const STORE_PLAN = storePlanSql(false);
+
+/** Reads of the plan before a store, up to this many, each retried when another store got in between. */
+const STORE_ATTEMPTS = 3;
+
+let afterPreRead: (() => Promise<void>) | null = null;
+/** Test seam: runs between storePlan's read and its batch. Only tests call it; no src code does. */
+export function setStorePlanHookForTest(fn: (() => Promise<void>) | null) {
+  afterPreRead = fn;
+}
 
 const READ_BOTH = `select
   (select value from settings where key = '${PLAN_KEY}') as plan,
@@ -66,6 +83,73 @@ const CAPPED_USERS = `select id from users where status = 'active' and role != '
   order by last_seen_at desc limit ?1`;
 
 /**
+ * The audit rows run BEFORE STORE_PLAN, in its batch, and write only while
+ * the stored plan is still exactly what the diff was computed from (?1, the
+ * value read before the batch) and STORE_PLAN's own newer-than rule holds for
+ * the answer (?2). Two overlapping reads that share one stale pre-read
+ * therefore write rows once, and a later answer diffs against the stored one.
+ */
+const AUDIT_WHEN = `(select value from settings where key = '${PLAN_KEY}') is ?
+  and not exists (select 1 from settings where key = '${PLAN_KEY}' and not (
+    coalesce(json_extract(value, '$.version'), -1) < json_extract(?, '$.version')
+    or (coalesce(json_extract(value, '$.version'), -1) = json_extract(?, '$.version')
+        and coalesce(json_extract(value, '$.asOf'), 0) < json_extract(?, '$.asOf'))))`;
+
+/**
+ * The plan-change audit rows (#2458) for an answer replacing `last` (null: the
+ * provisioned TIER is the baseline). Both sides are read raw (now 0: no
+ * trial-expiry or staleness view), so a trial that ran out and is now
+ * answered solo still records the move. Ids and enums only: no Stripe id,
+ * amount or address. Never throws: a failure here must not stop the plan
+ * from being stored.
+ */
+function planAudits(
+  env: Env,
+  last: StoredPlan | null,
+  answer: StoredPlan,
+  beforeRaw: string | null,
+  answerJson: string,
+): D1PreparedStatement[] {
+  try {
+    const prev = effectivePlan(last, null, env.TIER, 0);
+    const next = effectivePlan(answer, null, env.TIER, 0);
+    const out: [AuditAction, Record<string, unknown>][] = [];
+    if (prev.tier !== next.tier)
+      out.push([
+        "plan.change",
+        {
+          from: prev.tier,
+          to: next.tier,
+          ...(next.interval ? { interval: next.interval } : {}),
+        },
+      ]);
+    if (next.status === "past_due" && prev.status !== "past_due")
+      out.push(["plan.payment_failed", { tier: next.tier }]);
+    if (next.status === "lapsed" && prev.status !== "lapsed")
+      out.push(["plan.lapse", { tier: next.tier }]);
+    if (next.cancelsAt != null && prev.cancelsAt == null)
+      out.push(["plan.cancel", { tier: next.tier }]);
+    return out.map(([action, detail]) =>
+      audit(
+        env,
+        action,
+        { type: "settings", id: "billing" },
+        { kind: "system", id: null },
+        {
+          detail,
+          when: {
+            sql: AUDIT_WHEN,
+            args: [beforeRaw, answerJson, answerJson, answerJson],
+          },
+        },
+      ),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Stores a GET /tier (or /trial/start) answer under the version rule. When
  * it moves the instance into a lock (solo or read-only), everyone but the
  * owner just got the plan cap: their live sockets close (revokeUsersLive),
@@ -77,31 +161,64 @@ export async function storePlan(
   now: number,
   ctx?: Ctx,
 ): Promise<boolean> {
-  const before = await env.DB.prepare(READ_BOTH).first<{
-    plan: string | null;
-    check: string | null;
-  }>();
-  const prev = planOfRaw(env, before?.plan, before?.check, now);
-  const [stored] = await env.DB.batch([
-    env.DB.prepare(STORE_PLAN).bind(JSON.stringify(answer)),
-    env.DB.prepare(CHECK_OK).bind(now),
-  ]);
-  const applied = (stored?.results.length ?? 0) > 0;
-  if (!applied) return false;
-  const next = effectivePlan(answer, null, env.TIER, now);
-  if (next.lock && !prev?.lock) {
-    logInfo("billing_plan_locked", { reason: next.lock.reason });
-    const { results } = await env.DB.prepare(CAPPED_USERS)
-      .bind(revokeFanoutCap(env) + 1)
-      .all<{ id: string }>();
-    await revokeUsersLive(
-      env,
-      results.map((r) => r.id),
-      "plan locked",
-      ctx,
-    );
+  const json = JSON.stringify(answer);
+  // The diff for the audit rows is read from the stored plan, and the store
+  // applies only while that plan is still the one read (a CAS). When another
+  // store got in between, read again: the transition is then from the new
+  // plan. After STORE_ATTEMPTS the answer is stored under the version rule
+  // alone, with no rows (logged).
+  for (let attempt = 0; ; attempt++) {
+    const last = attempt >= STORE_ATTEMPTS;
+    const before = await env.DB.prepare(READ_BOTH).first<{
+      plan: string | null;
+      check: string | null;
+    }>();
+    const prev = planOfRaw(env, before?.plan, before?.check, now);
+    await afterPreRead?.();
+    const beforePlan = before?.plan ?? null;
+    const audits = last
+      ? []
+      : planAudits(
+          env,
+          parseStored(TierAnswerSchema, beforePlan),
+          answer,
+          beforePlan,
+          json,
+        );
+    if (last) logWarn("billing_plan_audit_skipped", undefined, { attempt });
+    const results = await env.DB.batch([
+      ...audits,
+      last
+        ? env.DB.prepare(STORE_PLAN).bind(json)
+        : env.DB.prepare(STORE_PLAN_CAS).bind(json, beforePlan),
+      env.DB.prepare(CHECK_OK).bind(now),
+    ]);
+    const applied = (results[audits.length]?.results.length ?? 0) > 0;
+    if (!applied) {
+      if (last) return false;
+      // Unapplied: older than the stored answer (done), or the stored plan
+      // moved under us (read again).
+      const now2 = await env.DB.prepare(READ_BOTH).first<{
+        plan: string | null;
+      }>();
+      if ((now2?.plan ?? null) === beforePlan) return false;
+      continue;
+    }
+    const next = effectivePlan(answer, null, env.TIER, now);
+    if (next.lock && !prev?.lock) {
+      logInfo("billing_plan_locked", { reason: next.lock.reason });
+      const { results } = await env.DB.prepare(CAPPED_USERS)
+        .bind(revokeFanoutCap(env) + 1)
+        .all<{ id: string }>();
+      await revokeUsersLive(
+        env,
+        results.map((r) => r.id),
+        "plan locked",
+        ctx,
+      );
+    }
+    return true;
   }
-  return true;
 }
 
 /** Records a failed read (the 7-day clock starts at the first one). */

@@ -1,7 +1,15 @@
-import { AUDIT_NEXT_CURSOR_HEADER, type Member, R } from "@oa/shared";
+import {
+  AUDIT_NEXT_CURSOR_HEADER,
+  AUDIT_TEAM_WINDOW_DAYS,
+  AUDIT_WINDOW_HEADER,
+  type Member,
+  R,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
+import { scopedPlan } from "../billing/features.js";
+import { auditPlanError, billingActive } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import {
@@ -44,15 +52,39 @@ function requireAuditor(c: Context<AppEnv>): Member {
   return user;
 }
 
+/**
+ * Hosted billing: Business reads the whole log; Team and the Team trial the
+ * last AUDIT_TEAM_WINDOW_DAYS days; Solo and free are refused. Returns the
+ * window in days (null: all of it). A lapsed plan keeps its tier. Self-hosted
+ * is never limited. Runs after requireAuditor, so a non-admin gets 404 first.
+ */
+function auditWindow(c: Context<AppEnv>): {
+  days: number | null;
+  since: number;
+} {
+  if (!billingActive(c.env)) return { days: null, since: 0 };
+  const plan = scopedPlan();
+  if (plan?.tier === "business") return { days: null, since: 0 };
+  if (plan?.tier === "team" || plan?.tier === "trial")
+    return {
+      days: AUDIT_TEAM_WINDOW_DAYS,
+      since: Date.now() - AUDIT_TEAM_WINDOW_DAYS * 86_400_000,
+    };
+  throw auditPlanError(plan?.tier);
+}
+
 export function mountAudit(app: AppType): void {
   app.get(R.audit, async (c) => {
     requireAuditor(c);
+    const w = auditWindow(c);
+    if (w.days) c.header(AUDIT_WINDOW_HEADER, String(w.days));
     return c.json(
       await listAudit(
         c.env,
         c.req.query("cursor"),
         limitOf(c.req.query("limit")),
         auditFilters(c.req.queries()),
+        w.since,
       ),
     );
   });
@@ -60,10 +92,12 @@ export function mountAudit(app: AppType): void {
   // Bounded per request (exportAudit); the header continues it.
   app.get(R.auditExport, async (c) => {
     const auditor = requireAuditor(c);
+    const w = auditWindow(c);
     const { stream, nextCursor } = await exportAudit(
       c.env,
       c.req.query("cursor"),
       auditFilters(c.req.queries()),
+      w.since,
       userActor(auditor.id),
     );
     const headers: Record<string, string> = {
@@ -71,6 +105,7 @@ export function mountAudit(app: AppType): void {
       "content-disposition": 'attachment; filename="audit.ndjson"',
       "cache-control": "no-store",
     };
+    if (w.days) headers[AUDIT_WINDOW_HEADER] = String(w.days);
     if (nextCursor) headers[AUDIT_NEXT_CURSOR_HEADER] = nextCursor;
     return new Response(stream, { headers });
   });

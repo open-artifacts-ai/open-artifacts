@@ -26,7 +26,7 @@ import {
   useTakeBackAsk,
 } from "../../api/comments";
 import { TXT } from "../ui";
-import { versionDate } from "../versionDate";
+import { exactDate, versionDate } from "../versionDate";
 import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
@@ -488,6 +488,48 @@ const askedWho = (to: { name: string }[], mine: boolean) => {
     : ` ${a.name} and ${to.length - 1} others`;
 };
 
+/**
+ * The ask's author line: "Sam Rivera asks you". With `when` (#2486, the
+ * compact card, where it stands in for the comment's header) the date follows.
+ */
+export function AskFrom({
+  c,
+  when,
+  className = "",
+}: {
+  c: CommentT;
+  when?: boolean;
+  className?: string;
+}) {
+  const ask = c.ask;
+  if (!ask) return null;
+  const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
+  return (
+    <p className={`${TXT} ${MUTED} ${className}`} data-ask-from="">
+      {c.author.name}
+      {c.author.kind === "agent" && (
+        <>
+          {" "}
+          <span
+            data-agent-tag=""
+            className="rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
+          >
+            agent
+          </span>
+        </>
+      )}{" "}
+      asks{askedWho(ask.to, mine)}
+      {when && (
+        <span title={exactDate(c.createdAt)}>
+          {" · "}
+          {versionDate(c.createdAt)}
+          {c.editedAt !== null && " · edited"}
+        </span>
+      )}
+    </p>
+  );
+}
+
 const letter = (i: number) => String.fromCharCode(65 + i);
 /** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
 const showLetters = (opts: { id: string; label: string }[]) =>
@@ -574,7 +616,13 @@ export function AskBlock({
   askQuestion,
   guest = false,
   body,
+  from = true,
+  boxed = true,
 }: {
+  /** The "X asks you" line; off where the card's header already says it (#2486). */
+  from?: boolean;
+  /** The ask's own ring; off where the thread's card is the box (#2486). */
+  boxed?: boolean;
   artifactId: string;
   /** The comment's own text (its steps), shown above the question; the caller renders it. */
   body?: React.ReactNode;
@@ -712,6 +760,9 @@ export function AskBlock({
   const letters = showLetters(ask.options);
   const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
+  // Amber while it waits for this reader, as asksForMe counts it: a weigh-in
+  // waits no longer once the decider has answered (#2503 review).
+  const waiting = canAnswer && (needsMe(ask) || sendingPick);
   const decided = ask.closed && decisionOpt;
   const line = decided && (
     <>
@@ -753,31 +804,17 @@ export function AskBlock({
       {(!decided || open) && (
         <div
           // Amber only while it needs this reader: an ask for you with no pick yet.
-          className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
-            canAnswer && (!pickedOpt || sendingPick)
-              ? "ring-[var(--oa-warning)]"
-              : "ring-border"
+          className={`flex flex-col gap-2 rounded-md ${
+            !boxed
+              ? ""
+              : waiting
+                ? "p-2 ring-1 ring-[var(--oa-warning)]"
+                : "p-2 ring-1 ring-border"
           }`}
           data-ask=""
-          data-needs-you={
-            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
-          }
+          data-needs-you={waiting ? "" : undefined}
         >
-          <p className={`${TXT} ${MUTED}`} data-ask-from="">
-            {c.author.name}
-            {c.author.kind === "agent" && (
-              <>
-                {" "}
-                <span
-                  data-agent-tag=""
-                  className="rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
-                >
-                  agent
-                </span>
-              </>
-            )}{" "}
-            asks{askedWho(ask.to, mine)}
-          </p>
+          {from && <AskFrom c={c} />}
           {body}
           <div id={qid} className={`${TXT} font-semibold break-words`}>
             <Markdown body={ask.question} />

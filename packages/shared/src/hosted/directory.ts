@@ -274,6 +274,10 @@ export const AuditActionSchema = z.enum([
   "settings.change",
   "audit.export",
   "ask.approve",
+  "plan.change",
+  "plan.payment_failed",
+  "plan.cancel",
+  "plan.lapse",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 
