@@ -68,11 +68,13 @@ describe("roles", () => {
       false,
     );
   });
-  it("with none: outside unless a known member; everyone when members can't be listed", () => {
+  it("with none: outside unless a known member; can't tell when members can't be listed", () => {
     const known = new Set(["dan@example.com"]);
     expect(outsideAddress("Dan@example.com", [], known)).toBe(false);
     expect(outsideAddress("sam@gmail.com", [], known)).toBe(true);
-    expect(outsideAddress("dan@example.com", [], null)).toBe(true);
+    // Members can't be listed (not an owner or admin): can't tell.
+    expect(outsideAddress("dan@example.com", [], null)).toBeNull();
+    expect(outsideAddress("sam@gmail.com", [], null)).toBeNull();
   });
   it("an address still being typed is neither", () => {
     expect(outsideAddress("sam@gm", [], null)).toBeNull();
@@ -200,5 +202,29 @@ describe("an instance with no login domains (codes only)", () => {
         "Outside your team. sam@gmail.com opens this page with a code we email them. They see only what you share. Free.",
       ),
     ).toBeVisible();
+  });
+});
+
+describe("a member who can't list members, codes only", () => {
+  it("a teammate's address keeps Viewer and Editor (the saved row shows the server's answer)", async () => {
+    // Not an owner or admin: GET members is not theirs to read.
+    mountHosted(panel, { providers: ["email"] }, (m) => ({
+      ...m,
+      user: { ...m.user, role: "member" },
+    }));
+    await screen.findByRole("combobox", { name: "Invite role" });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "dan@example.com" },
+    });
+    expect(
+      screen.getByRole("combobox", { name: "Invite role" }),
+    ).toHaveTextContent("Viewer");
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Invite role" }), {
+      key: "Enter",
+    });
+    expect(
+      (await screen.findAllByRole("option")).map((o) => o.textContent),
+    ).toEqual(["Viewer", "Editor"]);
+    expect(screen.queryByText(/^Outside your team/)).toBeNull();
   });
 });

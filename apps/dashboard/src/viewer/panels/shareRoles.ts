@@ -64,8 +64,9 @@ export function roleOptions(
  * Product, #2590): when it isn't a known member, so the outsider's choices
  * show before it's saved. `members` is the known members' addresses
  * (lowercase), or null when the caller can't list them (only owners and
- * admins can): then every address counts as outside. Null for an address
- * still being typed.
+ * admins can): then it can't tell (null), the member's choices stay, and the
+ * saved row shows the server's answer (a guest's: Can comment / Can view).
+ * Null for an address still being typed.
  */
 export function outsideAddress(
   email: string,
@@ -76,7 +77,8 @@ export function outsideAddress(
   const at = /^[^@\s]+@([^@\s]+\.[^@\s]+)$/.exec(e)?.[1];
   if (!at) return null;
   if (domains.length) return !domains.some((d) => d.toLowerCase() === at);
-  return !members?.has(e);
+  if (!members) return null;
+  return !members.has(e);
 }
 
 /**
