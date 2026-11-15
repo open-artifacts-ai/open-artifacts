@@ -20,9 +20,9 @@ describe("BillingCheckoutInputSchema", () => {
     }
   });
 
-  it("team and business yearly may name seats 1..10000 (the server defaults it, #2580)", () => {
+  it("team and business yearly need seats 1..10000", () => {
     for (const tier of ["team", "business"]) {
-      expect(ok({ tier, interval: "year" })).toBe(true);
+      expect(ok({ tier, interval: "year" })).toBe(false);
       expect(ok({ tier, interval: "year", seats: 1 })).toBe(true);
       expect(ok({ tier, interval: "year", seats: 10_000 })).toBe(true);
       expect(ok({ tier, interval: "year", seats: 0 })).toBe(false);

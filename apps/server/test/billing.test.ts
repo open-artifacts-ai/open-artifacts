@@ -2062,13 +2062,14 @@ describe("Me.instance.billing and the billing routes", () => {
     ).not.toHaveProperty("interval");
   });
 
-  it("checkout team (business is refused, #2404): yearly seats forwarded, defaulted to the member count; bad bodies 400 before billing", async () => {
+  it("checkout team (business is refused, #2404): yearly needs seats; interval and seats forwarded; bad bodies 400 before billing", async () => {
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
     const post = (body: unknown) =>
       send(R.billingCheckout, owner.cookie, { method: "POST", body });
     const n = () => calls.filter((c) => c.path === "/checkout").length;
     const before = n();
     for (const body of [
+      { tier: "team", interval: "year" },
       { tier: "business", interval: "year", seats: 0 },
       { tier: "business", interval: "year", seats: 10_001 },
       { tier: "team", interval: "year", seats: 1.5 },
@@ -2090,16 +2091,6 @@ describe("Me.instance.billing and the billing routes", () => {
       plan: "team",
       interval: "year",
       seats: 7,
-    });
-    // No seats from the client: the server sends max(1, members) (#2580).
-    expect((await post({ tier: "team", interval: "year" })).status).toBe(200);
-    expect(
-      calls.filter((c) => c.path === "/checkout").at(-1)?.body,
-    ).toMatchObject({
-      plan: "team",
-      interval: "year",
-      seats: Math.max(1, await memberCount(H)),
-      members: await memberCount(H),
     });
     // #2404: Business has no self-serve checkout; billing is never called.
     const beforeBiz = n();

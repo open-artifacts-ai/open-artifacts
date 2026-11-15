@@ -176,8 +176,8 @@ export const TRIAL_DAYS = 30;
  * POST R.billingCheckout body: the plan to buy. Solo requires an interval
  * (month or year) and refuses seats. Team and Business may omit the interval
  * (older callers; absent means monthly) or send month, and refuse seats then.
- * Team and Business with interval "year" may send seats, the prepaid seat
- * count (1..10000; the server defaults it to its member count, #2580); seats beyond that bill as overage at the monthly price.
+ * Team and Business with interval "year" require seats, the prepaid seat
+ * count (1..10000); seats beyond that bill as overage at the monthly price.
  * The answer is BillingUrl, the Stripe Checkout page to open; nothing else.
  */
 export const BillingIntervalSchema = z.enum(["month", "year"]);
@@ -205,6 +205,12 @@ export const BillingCheckoutInputSchema = z
       return;
     }
     const yearly = v.interval === "year";
+    if (yearly && v.seats === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats"],
+        message: "seats is required for a yearly team or business plan",
+      });
     if (!yearly && v.seats !== undefined)
       ctx.addIssue({
         code: "custom",

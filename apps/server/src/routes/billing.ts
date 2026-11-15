@@ -142,16 +142,12 @@ export function mountBilling(app: AppType): void {
     // is on. Counted here, never from the body (billing bills at least 1).
     let members: number | undefined;
     let creators: number | undefined;
-    let yearSeats = seats;
     if (tier !== "solo") {
       try {
         const n = await memberCount(c.env);
         members = n;
         if (interval !== "year") {
           creators = await creatorCount(c.env, monthOf(Date.now()));
-        } else {
-          // The client's own seats, unchanged; none given: the member count.
-          yearSeats ??= Math.max(1, n);
         }
       } catch (e) {
         logWarn("billing_url_failed", e, {
@@ -163,14 +159,12 @@ export function mountBilling(app: AppType): void {
     }
     // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
     // interval (month or year; required for solo), seats (yearly team or
-    // business), and members and creators (monthly team or business).
+    // business), members (team or business) and creators (monthly team or business).
     return c.json(
       await stripeUrl(c, CHECKOUT_PATH, {
         plan: tier,
         ...(interval ? { interval } : {}),
-        ...(yearSeats !== undefined && tier !== "solo"
-          ? { seats: yearSeats }
-          : {}),
+        ...(seats !== undefined ? { seats } : {}),
         ...(members !== undefined ? { members } : {}),
         ...(creators !== undefined ? { creators } : {}),
       }),
