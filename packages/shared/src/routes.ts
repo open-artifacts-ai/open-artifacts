@@ -135,7 +135,10 @@ export const R = {
    * PUT { version: "x.y.z" | null } -> 204 (#2552): the version the instance
    * tells its machines to run; null names none (the default). Owner only, in
    * an interactive cookie session (a PAT, OAuth grant or machine token gets
-   * 404); audited bus.run_version.set. Only a strict x.y.z is accepted.
+   * 404); audited bus.run_version.set (with `stepBack`). Only a strict x.y.z
+   * is accepted. 409 conflict with details `{ reason }`: `older_version` (lower
+   * than the one named, without `stepBack: true`) or `ahead_of_server` (newer
+   * than this server).
    */
   busRunVersion: "/api/v1/bus/run-version",
   /**

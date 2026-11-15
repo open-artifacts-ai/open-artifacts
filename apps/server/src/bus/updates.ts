@@ -102,6 +102,11 @@ export async function markStopped(
   return next?.t == null ? null : next.t + STOPPED_AFTER_MS;
 }
 
+/**
+ * `detail` and the machine label come from a machine (the label from its
+ * owner, `detail` from the daemon): the Machines view that shows them must
+ * render both as plain text, never as markup or a link.
+ */
 /** The stored latest report of one machine (tests and the Machines list later). */
 export type StoredUpdate = {
   event: string;

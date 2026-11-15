@@ -601,6 +601,7 @@ describe("the updater loop (enabled by a test only)", () => {
       reason: "bad_version",
     });
     expect(readReports(w.home).map((r) => r.reason)).toEqual([
+      "not_forward",
       "ahead_of_server",
       "bad_instruction",
     ]);
@@ -959,5 +960,42 @@ describe("the instance's install_now and announced switches (#2552)", () => {
       kind: "switching",
     });
     expect(currentVersion(w.home)).toBe("0.9.0");
+  });
+
+  it("a not_forward instruction is reported once per version, like the others", async () => {
+    const w = build();
+    for (let i = 0; i < 3; i++) await w.u.instructFromInstance("0.5.0");
+    await w.u.instructFromInstance("0.6.0");
+    await w.u.instructFromInstance("0.6.0");
+    expect(readReports(w.home).map((r) => [r.event, r.to, r.reason])).toEqual([
+      ["refused", "0.5.0", "not_forward"],
+      ["refused", "0.6.0", "not_forward"],
+    ]);
+    // Ahead of the server and malformed ones are once too.
+    const u2 = new Updater({
+      home: w.home,
+      running: "1.0.0",
+      enabled: true,
+      now: () => T,
+      busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
+      loginActive: () => false,
+      hubReady: () => true,
+      announceSwitch: async () => true,
+      serverVersion: () => "1.0.0",
+      exit: () => {},
+      log: () => {},
+    });
+    for (let i = 0; i < 3; i++) {
+      await u2.instructFromInstance("2.0.0");
+      await u2.instructFromInstance("1.2");
+    }
+    expect(
+      readReports(w.home)
+        .slice(2)
+        .map((r) => [r.to, r.reason]),
+    ).toEqual([
+      ["2.0.0", "ahead_of_server"],
+      ["", "bad_instruction"],
+    ]);
   });
 });

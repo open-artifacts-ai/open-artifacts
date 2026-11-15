@@ -777,7 +777,12 @@ export function mountBus(app: AppType): void {
     const rl = await limited(c.env, RL_KEYS.write + user.id);
     if (rl) return rl;
     const body = await jsonBody(c, BusRunVersionPutSchema);
-    await setBusRunVersion(c.env, user.id, body.version);
+    await setBusRunVersion(
+      c.env,
+      user.id,
+      body.version,
+      body.stepBack === true,
+    );
     return c.body(null, 204);
   });
   // #2552 "Install now": the machine's own member, in a browser session.

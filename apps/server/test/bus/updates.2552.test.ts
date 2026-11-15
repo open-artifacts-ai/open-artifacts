@@ -355,20 +355,62 @@ describe("PUT R.busRunVersion: the owner names it (#2552)", () => {
     await setNamed(null);
     const owner = await member("owner");
     const since = Date.now();
-    const r = await put(owner.cookie, { version: "2.0.1" });
+    const r = await put(owner.cookie, { version: "0.150.1" });
     expect(r.status).toBe(204);
-    expect(await stored()).toBe("2.0.1");
+    expect(await stored()).toBe("0.150.1");
     expect((await put(owner.cookie, { version: null })).status).toBe(204);
     expect(await stored()).toBeNull();
     const rows = await auditRows(since);
     expect(rows.map((x) => JSON.parse(x.detail).version)).toEqual([
-      "2.0.1",
+      "0.150.1",
       null,
     ]);
     expect(rows[0]).toMatchObject({
       actor_id: owner.userId,
       target_id: RUN_VERSION_KEY,
     });
+  });
+
+  it("older than the one named: refused unless stepBack, which the audit records", async () => {
+    await setNamed(null);
+    const owner = await member("owner");
+    const since = Date.now();
+    expect((await put(owner.cookie, { version: "0.150.0" })).status).toBe(204);
+    // Equal and newer are fine; older is a conflict.
+    expect((await put(owner.cookie, { version: "0.150.0" })).status).toBe(204);
+    expect((await put(owner.cookie, { version: "0.151.0" })).status).toBe(204);
+    const r = await put(owner.cookie, { version: "0.150.0" });
+    expect(r.status).toBe(409);
+    expect(await r.text()).toContain("older_version");
+    expect(await stored()).toBe("0.151.0");
+    expect(
+      (await put(owner.cookie, { version: "0.150.0", stepBack: false })).status,
+    ).toBe(409);
+    expect(
+      (await put(owner.cookie, { version: "0.150.0", stepBack: "yes" })).status,
+    ).toBe(400);
+    expect(
+      (await put(owner.cookie, { version: "0.150.0", stepBack: true })).status,
+    ).toBe(204);
+    expect(await stored()).toBe("0.150.0");
+    // Clearing never needs it.
+    expect((await put(owner.cookie, { version: null })).status).toBe(204);
+    const rows = (await auditRows(since)).map((x) => JSON.parse(x.detail));
+    expect(rows.at(-2)).toEqual({ version: "0.150.0", stepBack: true });
+    expect(rows.every((d) => typeof d.stepBack === "boolean")).toBe(true);
+  });
+
+  it("newer than this server: refused, nothing stored", async () => {
+    await setNamed(null);
+    const owner = await member("owner");
+    for (const v of ["99.0.0", "0.186.1", "0.187.0", "1.0.0"]) {
+      const r = await put(owner.cookie, { version: v });
+      expect(r.status, v).toBe(409);
+      expect(await r.text()).toContain("ahead_of_server");
+    }
+    expect(await stored()).toBeNull();
+    expect((await put(owner.cookie, { version: "0.186.0" })).status).toBe(204);
+    await setNamed(null);
   });
 
   it("only strict x.y.z; nothing stored or audited on a bad one", async () => {

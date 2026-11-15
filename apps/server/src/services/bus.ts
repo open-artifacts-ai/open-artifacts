@@ -2,6 +2,7 @@ import {
   LINK_PROOF_ARG,
   LINK_PROOF_HEADER,
   LinkProofSchema,
+  semverGte,
 } from "@oa/bus-protocol";
 import {
   BUS_ROLE_PROPOSAL_TTL_MS,
@@ -37,13 +38,14 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
-import { RUN_VERSION_KEY } from "../bus/updates.js";
+import { RUN_VERSION_KEY, readRunVersion } from "../bus/updates.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
 import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
+import { VERSION } from "../version.gen.js";
 import {
   type AgentIdentity,
   NAMES_OF_MAX,
@@ -1711,7 +1713,23 @@ export async function setBusRunVersion(
   env: Env,
   ownerId: string,
   version: string | null,
+  stepBack = false,
 ): Promise<void> {
+  if (version !== null) {
+    // Never ahead of this server: it could not vouch for a release it has not met.
+    if (!semverGte(VERSION, version))
+      throw new ApiError("conflict", "That version is newer than this server", {
+        reason: "ahead_of_server",
+      });
+    // Lower than the one named: only as a deliberate step back.
+    const named = await readRunVersion(env);
+    if (named !== null && !stepBack && !semverGte(version, named))
+      throw new ApiError(
+        "conflict",
+        "That version is older than the one named",
+        { reason: "older_version" },
+      );
+  }
   await env.DB.batch([
     version === null
       ? stmt(env.DB, "delete from settings where key = ?").bind(RUN_VERSION_KEY)
@@ -1724,7 +1742,7 @@ export async function setBusRunVersion(
       "bus.run_version.set",
       { type: "settings", id: RUN_VERSION_KEY },
       userActor(ownerId),
-      { detail: { version } },
+      { detail: { version, stepBack: stepBack === true } },
     ),
   ]);
   const hub = busHub(env, ownerId);

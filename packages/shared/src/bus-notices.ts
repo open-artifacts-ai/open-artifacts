@@ -156,6 +156,8 @@ export const BusRunVersionPutSchema = z.strictObject({
     .max(32)
     .regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
     .nullable(),
+  /** Needed to name a version lower than the one already named (a return to an older one). */
+  stepBack: z.boolean().optional(),
 });
 export type BusRunVersionPut = z.infer<typeof BusRunVersionPutSchema>;
 

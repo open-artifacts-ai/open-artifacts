@@ -34,6 +34,7 @@ import { queueReport } from "./reports.ts";
 import {
   clearPending,
   clearStaged,
+  editPolicy,
   markNotified,
   markRefused,
   readPolicy,
@@ -127,6 +128,8 @@ export class Updater {
   /** Decided once: the loop's flag, and a running version that is x.y.z. */
   private readonly active: boolean;
   /** An instance-asked step back held back by a login in progress. */
+  /** Malformed instructions already reported (by their text), at most 20. */
+  private readonly reportedBad = new Set<string>();
   private stepBackHeld: Instruction | undefined;
   constructor(d: UpdaterDeps) {
     this.d = d;
@@ -223,15 +226,40 @@ export class Updater {
     to: string,
     d: Extract<Decision, { ok: false }>,
   ): void {
-    // Only a forbidden instruction is worth a report; waiting is not.
-    if (d.reason === "bad_version" || d.reason === "ahead_of_server")
-      queueReport(this.d.home, {
-        event: "refused",
-        from,
-        to: parseVersion(to) ? to : "",
-        reason: d.reason === "bad_version" ? "bad_instruction" : d.reason,
-        at: this.now(),
-      });
+    // Only a forbidden instruction is worth a report; waiting is not. Each is
+    // reported once: the hub repeats its instruction on every hello.
+    if (
+      d.reason !== "bad_version" &&
+      d.reason !== "ahead_of_server" &&
+      d.reason !== "not_forward"
+    )
+      return;
+    const named = parseVersion(to) ? to : "";
+    const reason = d.reason === "bad_version" ? "bad_instruction" : d.reason;
+    if (named === "") {
+      if (this.reportedBad.has(to)) return;
+      if (this.reportedBad.size < 20) this.reportedBad.add(to);
+    } else {
+      try {
+        const key = `refused:${reason}`;
+        const list = readPolicy(this.d.home).notified[named] ?? [];
+        if (list.includes(key)) return;
+        editPolicy(this.d.home, (s) => {
+          s.notified[named] = [...(s.notified[named] ?? []), key];
+        });
+      } catch {
+        // unreadable: report this once, in memory
+        if (this.reportedBad.has(`${named}:${reason}`)) return;
+        this.reportedBad.add(`${named}:${reason}`);
+      }
+    }
+    queueReport(this.d.home, {
+      event: "refused",
+      from,
+      to: named,
+      reason,
+      at: this.now(),
+    });
   }
 
   private async stage(i: Instruction, now: number): Promise<UpdateOutcome> {
