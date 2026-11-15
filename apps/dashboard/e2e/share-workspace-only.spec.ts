@@ -27,18 +27,18 @@ for (const scheme of ["light", "dark"] as const)
         );
         await page
           .getByRole("textbox", { name: "Email" })
-          .fill("sam@gmail.com");
+          .fill("sam@partner.org");
         await page.getByRole("button", { name: "Add" }).click();
         await expect(
           page.getByText(
-            "sam@gmail.com can open this only if that address is a Google account. If it isn't, share with their Gmail or Google Workspace address.",
+            "sam@partner.org can open this only if that address is a Google account. If it isn't, share with their Gmail or Google Workspace address.",
           ),
         ).toBeVisible();
         await expect(
           page.getByRole("link", { name: "Settings, Login" }),
         ).toBeVisible();
         await expect(
-          page.getByRole("combobox", { name: "Role for sam@gmail.com" }),
+          page.getByRole("combobox", { name: "Role for sam@partner.org" }),
         ).toHaveText("Can comment");
         await settle(page);
         const name = `share-workspace-only-${scheme}-${width}.png`;
