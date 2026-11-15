@@ -14,19 +14,31 @@ export const RESTARTING_MESSAGE =
 export const RESTART_WAIT_MS = 2000;
 const RESTART_STEP_MS = 200;
 
+export const UNREACHABLE_MESSAGE =
+  "oa-bus: couldn't reach the bus just now. Wait a few seconds and try again. Don't run the installer.";
+
+export const NOT_CONNECTED_MESSAGE = `oa-bus: this session isn't connected to the bus. Tell your user. Installing restarts the bus for every session on this machine, so ask them before running \`npx @open-artifacts/bus install\`.`;
+
+/** True once this process has found a session or connected: a later miss is transient, not a missing install. */
+let connectedBefore = false;
+/** For tests. */
+export function resetConnectedBefore(): void {
+  connectedBefore = false;
+}
+
 export const BUSY_MESSAGE =
   "oa-bus: the bus daemon did not answer in time (busy?). Try again.";
 
 export type ConnectOutcome<C> =
   | { kind: "ok"; client: C }
   /** No session above this process, or an unsafe socket folder; `reason` says which. */
-  | { kind: "no-session"; reason: NoSessionReason }
+  | { kind: "no-session"; reason: NoSessionReason; priorSuccess?: boolean }
   /**
    * A session, but no daemon answered within the wait. `seen` is true when a
    * socket file existed at some point (a daemon that is restarting): then no
    * install would help. False means no daemon at all: the install hint applies.
    */
-  | { kind: "no-socket"; seen: boolean }
+  | { kind: "no-socket"; seen: boolean; priorSuccess?: boolean }
   /** A session and a socket, but the connect or hello timed out or was reset. */
   | { kind: "busy" }
   /** The daemon answered hello with a refusal: its reason is the message. */
@@ -53,15 +65,23 @@ export async function connectOutcome<C>(
   let seen = false;
   for (let waited = 0; ; waited += RESTART_STEP_MS) {
     const out = await attempt(deps);
+    if (out.kind === "ok") connectedBefore = true;
     if (out.kind === "no-session") {
-      if (!RECOVERABLE_REASONS.includes(out.reason) || waited >= waitMs)
-        return out;
+      // After a success, a missing session file is a transient miss: look again.
+      const recoverable =
+        RECOVERABLE_REASONS.includes(out.reason) ||
+        (out.reason === "none" && connectedBefore);
+      if (!recoverable || waited >= waitMs)
+        return connectedBefore ? { ...out, priorSuccess: true } : out;
       await sleep(RESTART_STEP_MS);
       continue;
     }
     if (out.kind !== "no-socket") return out;
     seen ||= out.seen;
-    if (waited >= waitMs) return { kind: "no-socket", seen };
+    if (waited >= waitMs)
+      return connectedBefore
+        ? { kind: "no-socket", seen, priorSuccess: true }
+        : { kind: "no-socket", seen };
     await sleep(RESTART_STEP_MS);
   }
 }
@@ -109,7 +129,8 @@ export function noSessionMessage(
     return underClaude
       ? `oa-bus: this Claude session isn't visible to the bus right now (${out.reason}); retry, or run /mcp and reconnect oa_bus.`
       : NOT_UNDER_CLAUDE;
-  return underClaude
-    ? `oa-bus: no Claude session or daemon found. Run \`${BUS_CMD} install\`.`
-    : NOT_UNDER_CLAUDE;
+  if (!underClaude) return NOT_UNDER_CLAUDE;
+  return "priorSuccess" in out && out.priorSuccess
+    ? UNREACHABLE_MESSAGE
+    : NOT_CONNECTED_MESSAGE;
 }
