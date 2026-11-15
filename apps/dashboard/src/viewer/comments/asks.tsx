@@ -52,8 +52,14 @@ type AskT = NonNullable<CommentT["ask"]>;
 /** #2381: the viewer's own current pick on an ask, if they have weighed in. */
 const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
 
+/** A risky ask: it names an action or needs a passkey. Only its decider may pick (#2571). */
+export const isRisky = (ask: AskT): boolean =>
+  ask.confirm === "passkey" || ask.options.some((o) => o.action);
+
 /** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
-const needsMe = (ask: AskT): boolean => {
+export const needsMe = (ask: AskT): boolean => {
+  // A risky ask waits only for its decider: the server gives anyone else no role (#2571).
+  if (isRisky(ask) && ask.role !== "decide") return false;
   if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
   if (ask.role === "weigh") return !myPickOf(ask) && !ask.answer;
   return (
@@ -506,7 +512,10 @@ export function AskFrom({
 }) {
   const ask = c.ask;
   if (!ask) return null;
-  const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
+  // On a risky ask only the decider is "asked": a named non-decider sees no buttons (#2571).
+  const mine = isRisky(ask)
+    ? ask.role === "decide"
+    : ask.to.some((a) => a.me) || ask.role !== undefined;
   return (
     <p
       className={`${TXT} ${MUTED} ${face ? "flex flex-wrap items-center gap-1.5" : ""} ${className}`}
@@ -715,7 +724,7 @@ export function AskBlock({
   const decider = ask.decider;
   // A risky ask (an action option or a passkey) shows no one else: no who-line,
   // weigh-ins or take back. It is the asker's own user's call.
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const risky = isRisky(ask);
   const deciderLine =
     !decider || risky
       ? null

@@ -132,6 +132,8 @@ type Deps = {
   seedPins?: "image" | "pdf";
   /** #2512: seed For you's waiting ask (FOR_YOU_ASK) on "Landing page", from OA Manager to the caller. */
   seedForYou?: boolean;
+  /** #2426: with seedPins, also an unanswered ask on a pin: the amber Ask marker in the page. */
+  seedPinAsk?: boolean;
 };
 
 /** #2512: the ids of the ask For you's mock opens in its panel. */
@@ -158,6 +160,7 @@ export function createCommentMock({
   seedMarkdown,
   seedPins,
   seedForYou,
+  seedPinAsk,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
@@ -870,6 +873,27 @@ export function createCommentMock({
         ),
         pin(0.4, 0.8, mine(), "Axis label looks wrong.", "resolved"),
       );
+      if (seedPinAsk) {
+        const asked = pin(0.38, 0.45, fox, "Which scale should the axis use?");
+        const c = asked.comments[0] as Comment;
+        c.ask = {
+          question: "Which scale should the axis use?",
+          options: [
+            { id: "linear", label: "Linear" },
+            { id: "log", label: "Logarithmic", detail: "Shows the long tail." },
+          ],
+          recommended: {
+            optionId: "linear",
+            why: "Easier to read at a glance.",
+          },
+          to: [mine()],
+          decider: mine(),
+          role: "decide",
+          picks: [],
+          closed: false,
+        };
+        faces.push(asked);
+      }
     }
     if (seedMarkdown) {
       const bot: CommentAuthor = {

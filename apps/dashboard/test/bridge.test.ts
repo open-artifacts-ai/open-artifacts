@@ -558,6 +558,36 @@ describe("comments (#682)", () => {
     );
   });
 
+  it("leaves the Ask flag out for a runtime that does not draw the marker (#2426)", () => {
+    const b = mk();
+    const asks = [
+      {
+        id: "t1",
+        n: 1,
+        ask: true,
+        anchor: {
+          kind: "pin" as const,
+          version: 1,
+          x: 0,
+          y: 0,
+          contentHash: "h",
+        },
+      },
+    ];
+    const lastThreads = () =>
+      (post.mock.calls.at(-1)?.[0] as { threads: object[] }).threads;
+    // Unknown protocol, then 6: one unknown key and a strict runtime drops every pin.
+    b.setComments(asks);
+    expect(lastThreads()[0]).not.toHaveProperty("ask");
+    send({ oa: 1, type: "hello", protocol: 6, kind: "html" });
+    b.setComments(asks);
+    expect(lastThreads()[0]).not.toHaveProperty("ask");
+    // Protocol 7: the flag goes through.
+    send({ oa: 1, type: "hello", protocol: 7, kind: "html" });
+    b.setComments(asks);
+    expect(lastThreads()[0]).toMatchObject({ ask: true });
+  });
+
   it("holds `changed` back until the frame's own runtime says hello (#1698)", () => {
     // A frame loaded from here says nothing until its runtime is up: until
     // then the shell cannot know its protocol, so it sends core fields only.

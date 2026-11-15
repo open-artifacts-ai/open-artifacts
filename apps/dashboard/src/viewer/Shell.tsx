@@ -29,6 +29,7 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { AskBeside } from "./comments/AskBeside";
 import { asksForMe, nextAskFor } from "./comments/asks";
 import {
   CommentsBody,
@@ -884,6 +885,7 @@ function Viewer({
                 allow="clipboard-write"
               />
               {commentsOn && <PinBeside frame={el} />}
+              {commentsOn && <AskBeside frame={el} />}
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||

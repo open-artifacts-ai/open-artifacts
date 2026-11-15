@@ -36,6 +36,20 @@ describe("parseArtifactMessage", () => {
       }),
     ).not.toBeNull();
   });
+  it("#2426: a position may carry `at`, a point in frame pixels, and nothing else", () => {
+    const pos = (extra: object) => ({
+      oa: 1,
+      type: "comment.positions",
+      positions: [{ id: "t1", state: "pin", top: 10, ...extra }],
+    });
+    expect(parseArtifactMessage(pos({}))).not.toBeNull();
+    expect(
+      parseArtifactMessage(pos({ at: { x: 12.5, y: -4 } })),
+    ).not.toBeNull();
+    expect(parseArtifactMessage(pos({ at: { x: "1", y: 2 } }))).toBeNull();
+    expect(parseArtifactMessage(pos({ at: { x: 1, y: 2, z: 3 } }))).toBeNull();
+    expect(parseArtifactMessage(pos({ at: { x: 1e12, y: 2 } }))).toBeNull();
+  });
   it("rejects bad", () => {
     expect(
       parseArtifactMessage({ oa: 2, type: "resize", height: 1 }),
@@ -118,6 +132,25 @@ describe("parseShellMessage", () => {
         type: "comments.set",
         threads: [],
         draft: { ...quote, kind: "note" },
+      }),
+    ).toBeNull();
+    // #2426: the Ask marker flag on a thread, and `at` on a position, are protocol 7.
+    const pinThread = {
+      id: "t1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.5, contentHash: "h" },
+    };
+    expect(
+      parseShellMessage({
+        oa: 1,
+        type: "comments.set",
+        threads: [{ ...pinThread, ask: true }],
+      }),
+    ).not.toBeNull();
+    expect(
+      parseShellMessage({
+        oa: 1,
+        type: "comments.set",
+        threads: [{ ...pinThread, ask: "yes" }],
       }),
     ).toBeNull();
     expect(parseShellMessage({ oa: 1, type: "thumb.request" })).not.toBeNull();

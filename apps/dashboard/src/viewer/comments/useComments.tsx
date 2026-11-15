@@ -16,12 +16,14 @@ import { ApiClientError } from "../../api/client";
 import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
+import { needsMe } from "./asks";
 import { type Decision, decisionsOf } from "./decisionsModel";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
 import { lostKey, putLost } from "./lostPosts";
 import {
   arrange,
   createGate,
+  type FramePoint,
   type FramePosition,
   frameThreads,
   type Positions,
@@ -109,6 +111,11 @@ export type CommentsApi = {
   setView: (v: "comments" | "decisions") => void;
   /** Every decided ask of the artifact, newest decision first. */
   decisions: readonly Decision[];
+  /** #2426: the thread whose ask card is open beside its marker in the page, if any. */
+  askCard: string | null;
+  setAskCard: (threadId: string | null) => void;
+  /** #2426: where that thread's marker is, in frame-viewport pixels (a hint from page code; the card clamps it). */
+  askAt: FramePoint | null;
   /** The decision whose thread is open in place (its "← Decisions" back row), if any. */
   openDecision: string | null;
   setOpenDecision: (threadId: string | null) => void;
@@ -117,7 +124,13 @@ export type CommentsApi = {
   /** Bridge callbacks. Every argument is a hint from page code. */
   onSelect: (a: SelectionAnchor) => void;
   onPositions: (
-    p: { id: string; state: FramePosition["state"]; top: number | null }[],
+    p: {
+      id: string;
+      state: FramePosition["state"];
+      top: number | null;
+      /** #2426: where an ask's marker is, in frame-viewport pixels. */
+      at?: FramePoint;
+    }[],
     ghost?: { x: number; y: number },
   ) => void;
   onOpen: (id: string) => void;
@@ -245,6 +258,11 @@ export function useCommentsController({
   const [showResolved, setShowResolved] = useState(false);
   const [view, setView] = useState<"comments" | "decisions">("comments");
   const [openDecision, setOpenDecision] = useState<string | null>(null);
+  const [askCard, setAskCard] = useState<string | null>(null);
+  const [askAt, setAskAt] = useState<FramePoint | null>(null);
+  const atsRef = useRef(new Map<string, FramePoint>());
+  const askCardRef = useRef<string | null>(null);
+  askCardRef.current = askCard;
   const decisions = useMemo(() => decisionsOf(all ?? []), [all]);
   const [guestName, setGuestName] = useState("");
   const [hello, setHello] = useState(0);
@@ -289,6 +307,18 @@ export function useCommentsController({
     document.addEventListener("keydown", k, true);
     return () => document.removeEventListener("keydown", k, true);
   }, [mode, pinChosen]);
+  // #2426: an anchored thread with an unanswered ask this viewer can pick on gets an
+  // amber Ask marker in the page. The same rule as the "asks for you" count (needsMe,
+  // which on a risky ask counts only the decider); whole-page asks stay in the pane.
+  const markerAsk = useCallback(
+    (t: CommentThread) =>
+      t.status === "open" &&
+      t.anchor.kind !== "note" &&
+      t.comments.some((c) => c.ask && !c.ask.closed && needsMe(c.ask)),
+    [],
+  );
+  const markerIds = useRef(new Set<string>());
+  markerIds.current = new Set(threads.filter(markerAsk).map((t) => t.id));
   // The frame's own copy of what to draw: ids and anchors only.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `hello` re-sends after the frame reloads
   useEffect(() => {
@@ -317,6 +347,7 @@ export function useCommentsController({
           active,
           contentHash,
           pinFormat ? threadBadge(!authed || readOnly) : undefined,
+          markerAsk,
         ),
         pin,
         quote,
@@ -326,6 +357,7 @@ export function useCommentsController({
     mayComment,
     mode,
     threads,
+    markerAsk,
     active,
     draft,
     heldQuote,
@@ -463,7 +495,10 @@ export function useCommentsController({
     [getBridge],
   );
   const onAway = useCallback(() => {
-    if (gates.current.away()) dropDraft(false);
+    if (gates.current.away()) {
+      dropDraft(false);
+      setAskCard(null);
+    }
   }, [dropDraft]);
   // A pointer down in the shell, outside the comments surface and the offers
   // to comment, ends the selection (the frame sees its own).
@@ -507,6 +542,17 @@ export function useCommentsController({
       setPinAt((prev) =>
         prev && (prev.x !== ghost.x || prev.y !== ghost.y) ? ghost : prev,
       );
+    // #2426: the open card follows its marker. Only that thread's `at` is kept, rounded, so a scroll re-renders little.
+    for (const p of list)
+      if (p.at && ids.current.has(p.id))
+        atsRef.current.set(p.id, {
+          x: Math.round(p.at.x),
+          y: Math.round(p.at.y),
+        });
+    const open = askCardRef.current;
+    const at = open ? atsRef.current.get(open) : undefined;
+    if (at)
+      setAskAt((prev) => (prev?.x === at.x && prev?.y === at.y ? prev : at));
     if (!gates.current.positions()) return;
     const next = new Map<string, FramePosition>();
     // Only ids in the shell's own list count.
@@ -524,6 +570,12 @@ export function useCommentsController({
   }, []);
   const onOpen = useCallback((tid: string) => {
     if (!gates.current.open() || !ids.current.has(tid)) return;
+    // #2426: an ask marker opens its card beside the marker, not the comments pane.
+    if (markerIds.current.has(tid)) {
+      setAskAt(atsRef.current.get(tid) ?? null);
+      setAskCard(tid);
+      return;
+    }
     setActive(tid);
     surface.current();
   }, []);
@@ -601,6 +653,9 @@ export function useCommentsController({
       },
       showResolved,
       setShowResolved,
+      askCard,
+      setAskCard,
+      askAt,
       view,
       setView,
       decisions,
@@ -651,6 +706,8 @@ export function useCommentsController({
       besideOk,
       draftSeed,
       showResolved,
+      askCard,
+      askAt,
       view,
       decisions,
       openDecision,

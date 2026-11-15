@@ -56,6 +56,8 @@ type Pos = {
   id: string;
   state: "exact" | "partial" | "collapsed" | "orphan" | "pin";
   top: number | null;
+  /** #2426: where an ask's marker is, in viewport pixels (reported only to a shell that knows it). */
+  at?: { x: number; y: number };
 };
 
 const BLOCK =
@@ -74,6 +76,10 @@ const OVERLAY_CSS = `
 .btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
+/* #2426: an unanswered ask for the viewer: an amber "Ask" tag on its quote, a tag on its pin. */
+.askmark{position:absolute;padding:2px 7px;margin-top:-20px;border:0;border-radius:999px;background:#e0a000;color:#1b1204;font:700 11px/1.4 system-ui,sans-serif;cursor:pointer;pointer-events:auto;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.askmark:focus-visible{outline:2px solid #1f5fbf;outline-offset:2px}
+.pin.ask::after{content:"Ask";position:absolute;top:-9px;right:-12px;padding:2px 5px;border-radius:8px;background:#e0a000;color:#1b1204;font:700 10px/1 system-ui,sans-serif}
 /* A pin is a 30px speech bubble whose bottom-left corner is the anchor: left/top
    are the stored point and the margin lifts the bubble above it, so the tail
    is exactly on x,y. It holds the pin's number (the frame never carries names).
@@ -106,7 +112,7 @@ button.pin{border:0;padding:0}
 .pin.changed.on{outline-offset:6.5px}
 `;
 const PAGE_CSS =
-  "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
+  "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}::highlight(oa-ask){background:rgba(224,160,0,.45);text-decoration:underline 2px #e0a000}";
 
 /** The runtime's current theme and a way to hear it change. */
 export interface ThemeSource {
@@ -226,6 +232,8 @@ function fillBadge(el: HTMLElement, badge: PinBadge): void {
 
 /** #2408: the first shell protocol that announces itself (shared PROTOCOL_SHELL_ANNOUNCES; not imported to keep this chunk small). */
 export const SHELL_ANNOUNCES = 6;
+/** #2426: the first shell protocol that reads `at` on a position (shared PROTOCOL_ASK_MARKERS). */
+export const ASK_AT = 7;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send"> & Partial<Pick<Bridge, "shellProtocol">>,
@@ -420,6 +428,7 @@ export function createComments(
     const reg = highlights();
     reg?.delete("oa-comment");
     reg?.delete("oa-comment-active");
+    reg?.delete("oa-ask");
     layer?.replaceChildren(...(btn?.isConnected ? [btn] : []));
   };
 
@@ -427,6 +436,7 @@ export function createComments(
   function paint() {
     const normal: Range[] = [];
     const active: Range[] = [];
+    const asks: Range[] = [];
     painted = [];
     for (const s of ensureSlots()) {
       if (
@@ -436,7 +446,7 @@ export function createComments(
       )
         continue;
       const isActive = !!s.thread.active || s.thread.id === flashId;
-      (isActive ? active : normal).push(s.range);
+      (isActive ? active : s.thread.ask ? asks : normal).push(s.range);
       painted.push({ id: s.thread.id, range: s.range });
     }
     const reg = highlights();
@@ -445,6 +455,7 @@ export function createComments(
       // so choosing Comment highlights it and posting changes nothing.
       const draft = draftRange();
       reg.set("oa-comment", new Highlight(...normal));
+      reg.set("oa-ask", new Highlight(...asks));
       reg.set(
         "oa-comment-active",
         new Highlight(...active, ...(draft ? [draft] : [])),
@@ -473,7 +484,9 @@ export function createComments(
       // #2388: a badge only belongs on image and pdf pins, here as well as in the shell.
       const badge = hasPins ? badgeIn : undefined;
       // A real pin with a badge is a button: keyboard reachable, named.
-      const live = badge !== undefined && !cls.includes("ghost");
+      const live =
+        (badge !== undefined && !cls.includes("ghost")) ||
+        cls.includes("askmark");
       const d = document.createElement(live ? "button" : "div");
       if (d instanceof HTMLButtonElement) {
         d.type = "button";
@@ -499,12 +512,20 @@ export function createComments(
         }
         const x = box.left + scrollX + th.anchor.x * box.width;
         const y = box.top + scrollY + th.anchor.y * box.height;
-        out.push({ id: th.id, state: "pin", top: clampTop(y) });
+        out.push({
+          id: th.id,
+          state: "pin",
+          top: clampTop(y),
+          ...(th.ask && !th.resolved
+            ? { at: { x: x - scrollX, y: clampTop(y) - scrollY } }
+            : {}),
+        });
         // A resolved thread is drawn (faded) only while it is the open one.
         if (!th.resolved || isActive) {
           const cls = [
             "pin",
             isActive ? "on" : "",
+            th.ask && !th.resolved ? "ask" : "",
             th.resolved ? "resolved" : "",
             th.changed ? "changed" : "",
             flips(x, clampTop(y)),
@@ -529,11 +550,25 @@ export function createComments(
         continue;
       }
       const rect = rectOf(s.range);
+      const asking = !!th.ask && !th.resolved && !!rect;
       out.push({
         id: th.id,
         state: s.state,
         top: rect ? docTop(rect) : null,
+        ...(asking && rect ? { at: { x: rect.left, y: rect.bottom } } : {}),
       });
+      if (asking && rect) {
+        const d = mark(
+          "askmark",
+          rect.left + scrollX,
+          docTop(rect),
+          "Ask",
+          undefined,
+          th.id,
+        );
+        d.setAttribute("aria-label", "Ask: open the question");
+        d.addEventListener("click", () => open(th.id));
+      }
       if (s.state === "collapsed" && rect && !th.resolved) {
         const d = mark(
           isActive ? "mark on" : "mark",
@@ -584,9 +619,14 @@ export function createComments(
 
   function report(force: boolean) {
     if (mode === "off" || !document.body) return;
-    const positions = compute();
+    const all = compute();
     lastPositions.clear();
-    for (const p of positions) lastPositions.set(p.id, p);
+    for (const p of all) lastPositions.set(p.id, p);
+    // #2426: `at` only for a shell that reads it; an older, strict one refuses the whole message.
+    const knowsAt = (bridge.shellProtocol?.() ?? 0) >= ASK_AT;
+    const positions = knowsAt
+      ? all
+      : all.map(({ at: _at, ...rest }) => rest as Pos);
     // #2386: the new-pin flag's place, so the shell's box follows a scroll.
     // #2408: only for a shell that said it knows the field; an older one
     // refuses the whole message.
@@ -1065,6 +1105,7 @@ export function createComments(
     const reg = highlights();
     reg?.delete("oa-comment");
     reg?.delete("oa-comment-active");
+    reg?.delete("oa-ask");
     if (sheet)
       document.adoptedStyleSheets = document.adoptedStyleSheets.filter(
         (s) => s !== sheet,

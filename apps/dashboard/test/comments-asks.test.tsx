@@ -24,6 +24,7 @@ import {
 } from "vitest";
 import {
   actor,
+  asksForMe,
   MentionMenu,
   matchAgents,
   mentionedKeys,
@@ -50,6 +51,7 @@ type Opts = {
   onCommentSelect: (a: unknown) => void;
   onCommentPositions: (p: unknown[]) => void;
   onCommentOpen: (id: string) => void;
+  onCommentAway?: () => void;
 };
 const opts: Opts[] = [];
 // #2229: count how often a thread's problems are worked out (passes through).
@@ -1361,6 +1363,227 @@ describe("#2381 S2 the Decisions tab", () => {
         "When an ask on this page is answered, the decision stays here.",
       ),
     ).toBeInTheDocument();
+  });
+});
+
+describe("#2571 a risky ask waits only for its decider", () => {
+  const me = { kind: "user" as const, id: "me", name: "Me", me: true };
+  const sam = { kind: "user" as const, id: "sam", name: "Sam", me: false };
+  const risky = (ask: object) =>
+    askThread({}, { confirm: "passkey", to: [me, sam], ...ask });
+
+  it("a named non-decider gets no pick buttons and no 'asks for you' count", async () => {
+    // The server gives a non-decider no role on a risky ask.
+    serveThreads(() => [risky({ decider: sam, picks: [] })]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(within(c).queryByText(/ask.* for you/)).toBeNull();
+    for (const b of within(c).getAllByRole("button", {
+      name: /List only|Side by side/,
+    }))
+      expect(b).toBeDisabled();
+  });
+
+  it("the decider still gets both", async () => {
+    serveThreads(() => [risky({ decider: me, role: "decide", picks: [] })]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText(/1 ask for you/)).toBeInTheDocument();
+  });
+
+  it("asksForMe counts a risky ask only for its decider", () => {
+    const t = (ask: object) => ({ ...risky(ask) }) as never;
+    expect(asksForMe([t({ picks: [] })])).toEqual([]);
+    expect(asksForMe([t({ role: "decide", picks: [] })])).toEqual(["t-ask"]);
+    // An action option makes it risky too, with or without a passkey mark.
+    const action = askThread(
+      {},
+      {
+        to: [me],
+        options: [
+          { id: "go", label: "Go", action: "deploy" },
+          { id: "no", label: "No" },
+        ],
+      },
+    ) as never;
+    expect(asksForMe([action])).toEqual([]);
+  });
+});
+
+describe("#2426 asks in the page", () => {
+  const me = { kind: "user" as const, id: "me", name: "Me", me: true };
+  const quote = {
+    kind: "text",
+    version: 1,
+    exact: "the clause",
+    prefix: "",
+    suffix: "",
+  };
+  const anchored = (ask: object = {}) =>
+    askThread(
+      { id: "t-m", anchor: quote },
+      { to: [me], decider: me, role: "decide", picks: [], ...ask },
+    );
+  const flagged = () =>
+    setComments.mock.calls.at(-1)?.[0] as { id: string; ask?: boolean }[];
+
+  async function ready(threads: () => unknown[]) {
+    serveThreads(threads);
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    await waitFor(() => expect(flagged()?.length).toBeGreaterThan(0));
+  }
+  const openCard = async () => {
+    act(() => {
+      opts
+        .at(-1)
+        ?.onCommentPositions?.([
+          { id: "t-m", state: "exact", top: 10, at: { x: 120, y: 80 } },
+        ] as never);
+      opts.at(-1)?.onCommentOpen("t-m");
+    });
+    return screen.findByRole("region", { name: "Ask" });
+  };
+
+  it("flags an anchored ask the viewer can pick on, and nothing else", async () => {
+    await ready(() => [
+      anchored(),
+      // Whole-page ask stays in the pane.
+      askThread(
+        { id: "t-n" },
+        { to: [me], decider: me, role: "decide", picks: [] },
+      ),
+      // No role: no marker.
+      askThread({ id: "t-x", anchor: quote }, { to: [], picks: [] }),
+      // Answered: back to the normal highlight.
+      anchored({
+        answer: {
+          optionId: "a",
+          by: me,
+          at: "2026-11-05T10:00:00Z",
+          typed: true,
+          yes: true,
+        },
+      }),
+    ]);
+    expect(flagged().find((t) => t.id === "t-m")?.ask).toBe(true);
+    expect(flagged().find((t) => t.id === "t-x")?.ask).toBeUndefined();
+  });
+
+  it("opens the card beside the marker, inert for 600 ms, and drawn by the shell", async () => {
+    await ready(() => [anchored()]);
+    const card = await openCard();
+    expect(card).toHaveAttribute("data-ask-beside");
+    // Outside the sandboxed frame: the card is in the shell's own DOM.
+    expect(card.closest("iframe")).toBeNull();
+    expect(card.style.pointerEvents).toBe("none");
+    expect(card).not.toHaveAttribute("data-armed");
+    await waitFor(() => expect(card).toHaveAttribute("data-armed"), {
+      timeout: 2000,
+    });
+    expect(card.style.pointerEvents).toBe("");
+    // Same card: the options and the recommendation.
+    expect(
+      within(card).getByRole("button", { name: /List only/ }),
+    ).toBeEnabled();
+  });
+
+  it("goes inert again when the page moves the marker more than a few pixels", async () => {
+    await ready(() => [anchored()]);
+    const card = await openCard();
+    await waitFor(() => expect(card).toHaveAttribute("data-armed"), {
+      timeout: 2000,
+    });
+    // Within 4px: still armed.
+    act(() =>
+      opts
+        .at(-1)
+        ?.onCommentPositions?.([
+          { id: "t-m", state: "exact", top: 10, at: { x: 122, y: 81 } },
+        ] as never),
+    );
+    expect(card).toHaveAttribute("data-armed");
+    // A jump: inert until it settles.
+    act(() =>
+      opts
+        .at(-1)
+        ?.onCommentPositions?.([
+          { id: "t-m", state: "exact", top: 10, at: { x: 300, y: 200 } },
+        ] as never),
+    );
+    await waitFor(() => expect(card).not.toHaveAttribute("data-armed"));
+    expect(card.style.pointerEvents).toBe("none");
+    await waitFor(() => expect(card).toHaveAttribute("data-armed"), {
+      timeout: 2000,
+    });
+  });
+
+  it("ignores a click whose press did not begin on the armed card; a press and click count", async () => {
+    const posts: unknown[] = [];
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-m", "c-ask")}`,
+        async ({ request }) => {
+          posts.push(await request.json());
+          return HttpResponse.json(anchored().comments[0]);
+        },
+      ),
+    );
+    await ready(() => [anchored()]);
+    const card = await openCard();
+    await waitFor(() => expect(card).toHaveAttribute("data-armed"), {
+      timeout: 2000,
+    });
+    const opt = within(card).getByRole("button", { name: /List only/ });
+    // A click with no press on the card (it began in the page, before the card was there).
+    fireEvent.click(opt, { detail: 1 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(posts).toEqual([]);
+    // A press on the armed card, then the click.
+    fireEvent.pointerDown(opt);
+    fireEvent.click(opt, { detail: 1 });
+    await waitFor(() => expect(posts).toEqual([{ optionId: "a" }]));
+  });
+
+  it("never places the card outside the frame, whatever point the page reports", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
+    await ready(() => [anchored()]);
+    for (const at of [
+      { x: 99_999, y: 99_999 },
+      { x: -99_999, y: -99_999 },
+    ]) {
+      act(() => {
+        opts
+          .at(-1)
+          ?.onCommentPositions?.([
+            { id: "t-m", state: "exact", top: 10, at },
+          ] as never);
+        opts.at(-1)?.onCommentOpen("t-m");
+      });
+      const card = await screen.findByRole("region", { name: "Ask" });
+      const left = Number.parseFloat(card.style.left);
+      const top = Number.parseFloat(card.style.top);
+      expect(left).toBeGreaterThanOrEqual(0);
+      expect(top).toBeGreaterThanOrEqual(0);
+      expect(left + 320).toBeLessThanOrEqual(800);
+    }
+  });
+
+  it("closes on Escape and when the page is clicked", async () => {
+    await ready(() => [anchored()]);
+    await openCard();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Ask" })).toBeNull(),
+    );
+    await openCard();
+    act(() => opts.at(-1)?.onCommentAway?.());
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Ask" })).toBeNull(),
+    );
   });
 });
 

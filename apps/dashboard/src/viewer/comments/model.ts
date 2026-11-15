@@ -11,6 +11,9 @@ export type FramePosition = {
   state: "exact" | "partial" | "collapsed" | "orphan" | "pin";
   top: number | null;
 };
+
+/** #2426: where an ask's marker is, in frame-viewport pixels (a hint: the shell clamps it into the frame). */
+export type FramePoint = { x: number; y: number };
 export type Positions = ReadonlyMap<string, FramePosition>;
 
 /** Thread numbers by creation order, 1 to 9999. */
@@ -43,6 +46,8 @@ export function frameThreads(
   versionHash?: string | null,
   /** #2019: what a pin's bubble shows; image and pdf pins only. */
   badgeOf?: (t: CommentThread) => PinBadge | undefined,
+  /** #2426: the viewer has an unanswered ask here they can pick on: the frame draws its amber Ask marker (a flag, never the question). */
+  askOf?: (t: CommentThread) => boolean,
 ): Extract<ShellToArtifact, { type: "comments.set" }>["threads"] {
   const n = numbering(threads);
   const pins = pinNumbering(threads);
@@ -62,6 +67,7 @@ export function frameThreads(
       pinChanged(t.anchor.contentHash, versionHash)
         ? { changed: true }
         : {}),
+      ...(askOf?.(t) ? { ask: true } : {}),
       ...(t.anchor.kind === "pin" && badgeOf
         ? (() => {
             const badge = badgeOf(t);
