@@ -260,10 +260,27 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
   it("the invite.accept audit row is written on the link path", async () => {
     const { e, m } = install();
     const email = uniq("aud", "custom.example");
-    const uid = await seedUser(email, "member");
-    await env.DB.prepare("update users set invited_at = ? where id = ?")
-      .bind(Date.now(), uid)
-      .run();
+    // A real invite, so invite.create exists for this person.
+    const owner = await login(uniq("own", "x.com"), "owner");
+    const inv = await fetchAndWait(
+      app,
+      new Request(`${APP}${R.members}`, {
+        method: "POST",
+        headers: {
+          cookie: owner.cookie,
+          "x-oa-request": "1",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ email, role: "member" }),
+      }),
+      e,
+    );
+    expect(inv.status).toBe(201);
+    const uid = (
+      await env.DB.prepare("select id from users where email = ?")
+        .bind(email)
+        .first<{ id: string }>()
+    )?.id;
     const { link, pending, code } = await linkFlow(e, m, email);
     const ok = await post(e, AUTH.codeVerify, { code }, `${link}; ${pending}`);
     expect(ok.status).toBe(200);
