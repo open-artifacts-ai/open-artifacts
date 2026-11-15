@@ -155,9 +155,10 @@ export const inviteReach = (
  * A share recipient (review item 37), after the share is written: which
  * methods admit them, and ShareResult.recipient when none could (the share
  * still applies). Only for no row or an active one: a removed or suspended
- * person is out of scope here. Google that only might admit them (outside
- * AUTH_DOMAINS) isn't flagged, and the email names Google for them, so the
- * flag and the email agree.
+ * person is out of scope here. A way is certain only when it surely admits
+ * them today: Google for Gmail or an address in the login domains, codes where
+ * on. Google that only might admit them (outside AUTH_DOMAINS: a Workspace
+ * account) is flagged "workspace_only", and the email names Google for them.
  */
 export async function shareReach(
   env: Env,
@@ -175,7 +176,16 @@ export async function shareReach(
   const r = await reachOf(env, email, row, async () => true);
   const ways = waysOf(r);
   if (r.methods.length > 0) return { methods: r.methods, role, ways };
-  if (r.googleUncertain) return { methods: ["google"], role, ways };
+  // Only Google as a Workspace account might admit them (#2590): the email
+  // names Google, and the sharer is warned it works only if the address is a
+  // Google Workspace account (a consumer account waits for the code step).
+  if (r.googleUncertain)
+    return {
+      methods: ["google"],
+      recipient: { canSignIn: false, reason: "workspace_only" },
+      role,
+      ways,
+    };
   if (row && row.status !== "active") return { methods: [], role, ways };
   // In a verified domain: an invite as a member would let them in, unless
   // no offered method admits a member there either.

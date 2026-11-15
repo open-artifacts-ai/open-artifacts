@@ -535,11 +535,17 @@ export type InviteReach = z.infer<typeof InviteReachSchema>;
  * this install yet (the share still applies). needs_invite: in a verified
  * domain on an invite-only install, so an admin must invite them as a
  * member; outside_domains: outside the verified domains and no guest
- * sign-in is offered (see InviteUnreachableReasonSchema).
+ * sign-in is offered (see InviteUnreachableReasonSchema); workspace_only:
+ * only a Google Workspace account at that address can sign in (#2590).
  */
 export const ShareRecipientSchema = z.object({
   canSignIn: z.literal(false),
-  reason: z.enum(["needs_invite", "outside_domains", "no_sign_in_method"]),
+  reason: z.enum([
+    "needs_invite",
+    "outside_domains",
+    "no_sign_in_method",
+    "workspace_only",
+  ]),
 });
 export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
 

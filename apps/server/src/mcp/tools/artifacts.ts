@@ -239,7 +239,9 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
             s.recipient
               ? s.recipient.reason === "needs_invite"
                 ? ` ${s.email} can't log in until an admin invites them as a member.`
-                : ` ${s.email} can't log in to this instance with the login methods it offers.`
+                : s.recipient.reason === "workspace_only"
+                  ? ` ${s.email} can log in only if the address is a Google Workspace account.`
+                  : ` ${s.email} can't log in to this instance with the login methods it offers.`
               : ""
           }`,
           s,
