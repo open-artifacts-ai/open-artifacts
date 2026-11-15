@@ -78,6 +78,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // same-origin) and the pending code cookie carry the protection.
   "POST /auth/code/request": { public: "code request; login guard, Turnstile" },
   "POST /auth/code/verify": { public: "code verify; login guard" },
+  // #2590 G2: the masked address of the Google account waiting for a code,
+  // read from this browser's own link cookie; nothing without it.
+  "GET /auth/code/link": {
+    public: "masked address from this browser's link cookie",
+  },
   // #1467 comment-email unsubscribe: a signed token (one person, one flag)
   // is the only credential; GET changes nothing.
   "GET /auth/unsubscribe/comments": {

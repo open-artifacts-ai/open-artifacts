@@ -77,7 +77,13 @@ describe("GET members/reach", () => {
     ["a gmail address", "gmail.com", ["google"]],
     ["a googlemail address", "googlemail.com", ["google"]],
     ["an address in the login domains", "a.com", ["google"]],
-    ["any other domain", "other.com", ["google_workspace"]],
+    // Codes are on in the default test install: a consumer account on a
+    // custom address is let in after a code (#2590 G2).
+    [
+      "any other domain, codes on",
+      "other.com",
+      ["google_workspace", "google_after_code"],
+    ],
   ])("%s", async (_, domain, ways) => {
     const r = await reachOf(OWN, await owner(), uniq("r", domain));
     expect(r.status).toBe(200);
@@ -98,6 +104,14 @@ describe("GET members/reach", () => {
         await (await reachOf(codes, await owner(), uniq("r", "a.com"))).json(),
       ).ways,
     ).toEqual(["email_code"]);
+  });
+
+  it("any other domain, codes off: google_workspace only", async () => {
+    const e = direct({ AUTH_PROVIDERS: "google" });
+    const r = await reachOf(e, await owner(), uniq("r", "other.com"));
+    expect(InviteReachSchema.parse(await r.json())).toEqual({
+      ways: ["google_workspace"],
+    });
   });
 
   it("no way in: ways is empty", async () => {

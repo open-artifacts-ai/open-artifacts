@@ -250,7 +250,8 @@ export async function admit(
  */
 const UNSHARED = `select 1 as x from users u where u.id = ?1 and u.role = 'guest'
   and u.invited_at is null
-  and not exists (select 1 from shares s where s.email = u.email)
+  and not exists (select 1 from shares s join artifacts a on a.id = s.artifact_id
+    where s.email = u.email and a.deleted_at is null)
   and not exists (select 1 from space_members sm where sm.user_id = u.id)`;
 const unsharedGuest = async (env: Env, row: { id: string; role: string }) =>
   isGuestRole(row.role as Role) &&
@@ -292,7 +293,9 @@ export const ELIGIBILITY = `select u.id, u.role, u.status,
     u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
     exists (select 1 from identities i where i.user_id = u.id) as linked
   from users u where u.email = ?1 limit 1`;
-const SHARED = "select 1 as x from shares where email = ?1 limit 1";
+// A share on a deleted page admits nothing (#2598 N3).
+const SHARED = `select 1 as x from shares s join artifacts a on a.id = s.artifact_id
+  where s.email = ?1 and a.deleted_at is null limit 1`;
 
 /**
  * Who may get an emailed code (no writes; checked at request and at verify):
@@ -319,6 +322,38 @@ export async function codeEligibility(
   return codeRule(cfg, email, row, async () =>
     Boolean(await stmt(env.DB, SHARED).bind(email).first()),
   );
+}
+
+/**
+ * Who may get a code to LINK a Google account that admit() refused with
+ * needs_code (#2590 G2): the person proved the Google account, the code
+ * proves the mailbox. An active, unlinked, unlapsed row (invited member or
+ * admin, or a guest); or no row and a live share (a guest row is made at
+ * verify). Never a removed or suspended row, a guest left with no share, or a
+ * row that already has a Google link. No write; checked at request and verify.
+ */
+export async function linkEligibility(
+  env: Env,
+  rawEmail: string,
+): Promise<CodeEligibility> {
+  const email = normalizeEmail(rawEmail);
+  if (!email) return { kind: "none" };
+  const row = await stmt(env.DB, ELIGIBILITY)
+    .bind(email)
+    .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
+  if (!row) {
+    return (await stmt(env.DB, SHARED).bind(email).first())
+      ? { kind: "guest", userId: null }
+      : { kind: "none" };
+  }
+  if (row.status !== "active" || row.linked || !row.id) return { kind: "none" };
+  if (inviteLapsed(row, Date.now()))
+    return { kind: "none", reason: "invite_expired" };
+  if (await unsharedGuest(env, { id: row.id, role: row.role }))
+    return { kind: "none" };
+  return isGuestRole(row.role)
+    ? { kind: "guest", userId: row.id }
+    : { kind: "member", userId: row.id, role: row.role };
 }
 
 /** The user row codeRule reads: role, status, and whether any identity is linked. */
