@@ -1,7 +1,7 @@
 import { inDomains } from "@oa/auth-core";
 import { callerOf, capOfCaller } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { capsReads, isGuestRole, isInstanceOwner } from "../auth/policy.js";
+import { isGuestRole, isInstanceOwner } from "../auth/policy.js";
 import { type Cap, takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { getUser } from "./users.js";
@@ -19,15 +19,20 @@ export const OWN_AGENTS_ONLY = "You can mention only your own agents here.";
 export const TOO_MANY_MENTIONS =
   "That's a lot of mentions. Try again in a few minutes.";
 
-/** A guest: the guest role, or a guest cap on the person. Decided without AUTH_DOMAINS. */
+/** The guest role, or a guest cap (not a restricted or plan cap). */
+const guestLike = (user: Awaited<ReturnType<typeof getUser>>): boolean =>
+  !!user && (isGuestRole(user.role) || capOfCaller(callerOf(user)) === "guest");
+
+/**
+ * A guest: the guest role, or a guest cap on the person. Decided without
+ * AUTH_DOMAINS. A full member's guest-capped token is not covered here, which
+ * is fine: a token's comment wakes nobody else (#2564 guard 3).
+ */
 export async function isGuestMember(
   env: Env,
   userId: string,
 ): Promise<boolean> {
-  const user = await getUser(env, userId);
-  return (
-    !!user && (isGuestRole(user.role) || capsReads(capOfCaller(callerOf(user))))
-  );
+  return guestLike(await getUser(env, userId));
 }
 
 /**
@@ -41,8 +46,7 @@ export async function isOutsideMember(
 ): Promise<boolean> {
   const user = await getUser(env, userId);
   if (!user) return false;
-  if (isGuestRole(user.role) || capsReads(capOfCaller(callerOf(user))))
-    return true;
+  if (guestLike(user)) return true;
   const domains = authConfig(env).domains;
   if (domains.length === 0 || isInstanceOwner(user)) return false;
   return !inDomains(domains, user.email.slice(user.email.lastIndexOf("@") + 1));

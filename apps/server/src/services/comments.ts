@@ -1901,6 +1901,12 @@ async function addReplyInner(
   const text = checkBody(body);
   let r: Resolved;
   if (extras.toAsker) {
+    // A guest, signed out or not, cannot wake the asking agent.
+    if (await guestWho(env, who))
+      throw new ApiError(
+        "forbidden",
+        "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
+      );
     if ((extras.mentions?.length ?? 0) > 0 || extras.ask !== undefined)
       throw new ApiError(
         "bad_request",
@@ -2109,8 +2115,8 @@ export async function answerAsk(
   /** #2381: the caller may edit the page (the decider must), and is a guest-role member. */
   caps: { canDecide: boolean; guest: boolean },
 ): Promise<Comment> {
-  // A guest picks nothing.
-  if (outsider(viewer) || caps.guest || (await guestWho(env, who)))
+  // A guest (role or guest cap) picks nothing; a restricted or capped member still can.
+  if (viewer.guest === true || (await guestWho(env, who)))
     throw new ApiError("forbidden", "Only the people asked can answer");
   const { ask, status, author } = await storedAsk(
     env,
