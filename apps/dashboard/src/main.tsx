@@ -31,6 +31,62 @@ async function startMocks() {
   if (docMock === "doc" || docMock === "doc-readonly") {
     const { setMockDoc } = await import("./viewer/doc/docMock");
     setMockDoc(fixtures.artifacts[0]?.id ?? null, docMock === "doc-readonly");
+    // &versions=doc (#1100): the doc's history as the room saves it, one of
+    // each kind: named, automatic (a person's, an agent's), the save before
+    // an agent's edit, and a restore.
+    const docId = fixtures.artifacts[0]?.id;
+    const base = docId ? fixtures.versions[docId]?.[0] : undefined;
+    if (params.get("versions") === "doc" && docId && base) {
+      const ada = {
+        id: base.createdBy.id,
+        name: base.createdBy.name,
+        email: base.createdBy.email,
+      };
+      const maya = {
+        ...ada,
+        id: "MayaChenUser0001",
+        name: "Maya Chen",
+        email: "maya@example.com",
+      };
+      const duck = {
+        name: "OA Product",
+        version: "1.0",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "duck", color: 6 },
+      };
+      const at = (h: number) =>
+        new Date(Date.UTC(2026, 10, 10, 9 + h, 2)).toISOString();
+      const v = (
+        version: number,
+        message: string | null,
+        kind: "auto" | "before_agent" | "named" | "restore",
+        by: typeof ada,
+        agent: typeof duck | null,
+      ) => ({
+        ...structuredClone(base),
+        version,
+        message,
+        docSave: {
+          kind,
+          // Who: the agent about to edit (before_agent), else the author.
+          by: kind === "before_agent" ? duck : (agent ?? by),
+        },
+        createdBy: by,
+        agent,
+        createdAt: at(version),
+      });
+      fixtures.versions[docId] = [
+        v(6, "Restored v2", "restore", maya, null),
+        v(5, null, "auto", ada, duck),
+        v(4, null, "before_agent", maya, null),
+        v(3, "After review", "named", maya, null),
+        v(2, null, "auto", ada, null),
+        v(1, "First draft", "named", ada, duck),
+      ];
+      const a = fixtures.artifacts[0];
+      if (a) a.currentVersion = 6;
+    }
   }
   // ?cap=plan: a capped (read-only) member, as a plan lock reports it.
   if (params.get("cap") === "plan")
@@ -567,7 +623,8 @@ async function startMocks() {
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
-    commentAsks: params.get("mock") === "asks",
+    // &asks=1: the same asks with another mock (e.g. ?mock=doc, #1100).
+    commentAsks: params.get("mock") === "asks" || params.get("asks") === "1",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
     // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
@@ -630,6 +687,27 @@ async function startMocks() {
           .__oaDocVersion;
         return HttpResponse.json(v ? { ...body, currentVersion: v } : body);
       }),
+      // e2e (#1100): a doc restore also reaches the local doc room, which
+      // applies it for every open editor, as the real room does.
+      http.post(
+        "*/api/v1/artifacts/:id/doc/versions/:v/restore",
+        async ({ request, params }) => {
+          const res = await getResponse(mainHandlers, request);
+          if (!res?.ok) return res;
+          const { version } = (await res.clone().json()) as {
+            version: number;
+          };
+          const ws =
+            (window as unknown as { __OA_DOC_WS?: string }).__OA_DOC_WS ||
+            import.meta.env.VITE_DOC_WS ||
+            "ws://localhost:1235";
+          await fetch(
+            `${ws.replace(/^ws/, "http")}/restore/${params.v}?version=${version}`,
+            { method: "POST" },
+          ).catch(() => {});
+          return res;
+        },
+      ),
       // e2e (#1100): window.__oaMe401 makes /me answer 401, as once the
       // session has ended, so the doc room's sign-in check sees it.
       http.get("*/api/v1/me", () =>

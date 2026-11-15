@@ -17,6 +17,8 @@
 // each connection and "closing <code>" for each close it makes, each with a
 // millisecond timestamp. --saved n[:name[:auto]] and
 // --restored from:version send the version broadcasts. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+
+import { createServer } from "node:http";
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -133,8 +135,41 @@ export function startDocRoom({
       console.log(`logged in ${Date.now()}`);
     }
   });
+  // A restore, as the real room applies one (#1100): the content replaced in
+  // one transaction everyone receives, then the "restored" frame. The page's
+  // mock API calls POST /restore/<from>?version=<new> after its own restore
+  // (the mock knows no older content: an older draft stands in for it).
+  const OLDER =
+    "# Launch plan\n\nWe ship the new landing page on **Thursday**. The plan has two parts: copy and design.\n";
+  const restoreTo = (from, version) => {
+    ydoc.transact(() => {
+      const frag = ydoc.getXmlFragment("default");
+      frag.delete(0, frag.length);
+      docToYXmlFragment(markdownToDoc(OLDER).doc, frag);
+    }, "restore");
+    const frame = JSON.stringify({ type: "restored", from, version, by: null });
+    for (const ws of conns.keys()) if (ws.readyState === 1) ws.send(frame);
+    console.log(`restored v${from} as v${version} ${Date.now()}`);
+  };
+  const http = createServer((req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    if (req.method === "OPTIONS") {
+      res.writeHead(204).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://room");
+    const m = /^\/restore\/(\d+)$/.exec(url.pathname);
+    if (req.method === "POST" && m) {
+      restoreTo(Number(m[1]), Number(url.searchParams.get("version")) || 0);
+      res.writeHead(204).end();
+      return;
+    }
+    res.writeHead(426).end();
+  });
+  http.listen(port);
   const wss = new WebSocketServer({
-    port,
+    server: http,
     verifyClient: (_info, cb) => {
       const status = revoked ? 404 : expired ? 401 : 0;
       if (!status) return cb(true);
@@ -312,7 +347,14 @@ export function startDocRoom({
         },
       },
       {
-        user: { name: "Docs agent", color: "#9333ea", kind: "agent" },
+        // A linked agent's face (PROVISIONAL awareness fields, #1100).
+        user: {
+          name: "Docs agent",
+          color: "#9333ea",
+          kind: "agent",
+          linked: true,
+          animal: { id: "duck", color: 6 },
+        },
         // A caret at the end of the first heading.
         cursor: { anchor: at(0, 11), head: at(0, 11) },
       },
@@ -343,7 +385,7 @@ export function startDocRoom({
       new Promise((resolve) => {
         clearInterval(timer);
         for (const ws of conns.keys()) ws.terminate();
-        wss.close(() => resolve());
+        wss.close(() => http.close(() => resolve()));
       }),
   };
 }
