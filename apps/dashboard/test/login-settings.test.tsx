@@ -19,6 +19,7 @@ import {
   CANT_LINE,
   DOMAIN_OFF,
   domainList,
+  EMAIL_CODE_LINE,
   reachLine,
   SAVE,
   saveLine,
@@ -405,6 +406,34 @@ describe("invite rows, per reach (OA Backend's mapping)", () => {
     expect(reachLine("lee@gmail.com", ["google", "email_code"])).toBe(
       "Logs in with Google or an email code.",
     );
+  });
+  // Every list OA Backend can return, for a domain address and an outside one.
+  it.each([
+    [[], "pat@acme.com", CANT_LINE],
+    [["google"], "pat@acme.com", "At your domain. Logs in with Google."],
+    [
+      ["google", "email_code"],
+      "pat@acme.com",
+      "At your domain. Logs in with Google or an email code.",
+    ],
+    [["email_code"], "sam@globex.io", EMAIL_CODE_LINE],
+    [["google_workspace"], "sam@globex.io", WORKSPACE_ONLY_LINE],
+    [
+      ["google_workspace", "google_after_code"],
+      "sam@globex.io",
+      "Outside your domain. Logs in with their own Google account or an email code.",
+    ],
+    [
+      ["google_workspace", "google_after_code", "email_code"],
+      "sam@globex.io",
+      "Outside your domain. Logs in with their own Google account or an email code.",
+    ],
+  ] as const)("ways %j", (ways, email, line) => {
+    expect(reachLine(email, ways)).toBe(line);
+  });
+  it("a codes-only instance says how they log in (a period, like the others)", () => {
+    expect(EMAIL_CODE_LINE).toBe("Logs in with an email code.");
+    expect(reachLine("sam@globex.io", ["email_code"])).not.toBeNull();
   });
 });
 
