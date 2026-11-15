@@ -49,7 +49,7 @@ type SkillEnv = Pick<
  * The doc-gated tool section (edit_doc) and the tool count, per install: kept
  * only when docsAvailable(env), as tools/list offers the tool (#2578).
  */
-const applyDocTools = (md: string, docs: boolean): string => {
+export const applyDocTools = (md: string, docs: boolean): string => {
   const withMarks = md.replace(TOOL_COUNT_RE, (_, all: string, none: string) =>
     docs ? all : none,
   );

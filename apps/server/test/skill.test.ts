@@ -22,6 +22,7 @@ import {
   SKILL_TEMPLATE_NO_SPACES,
 } from "../src/mcp/skill.generated.js";
 import {
+  applyDocTools,
   busLine,
   renderSkill,
   SKILL_DOC_URI,
@@ -157,9 +158,12 @@ describe("skill.md drift", () => {
         upgradeLine: upgradeLine(e),
         busPeers: busLine(busOn(e), skillOrigin(e.APP_HOST)),
       };
-      const fresh = renderSkillTemplate(spaces).replace(
-        /\{\{(\w+)\}\}/g,
-        (m, k: string) => v[k] ?? m,
+      const fresh = applyDocTools(
+        renderSkillTemplate(spaces).replace(
+          /\{\{(\w+)\}\}/g,
+          (m, k: string) => v[k] ?? m,
+        ),
+        docsAvailable(e as never),
       );
       expect(await skill(e)).toBe(fresh);
     },
