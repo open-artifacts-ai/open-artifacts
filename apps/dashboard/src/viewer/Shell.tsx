@@ -166,6 +166,7 @@ function Viewer({
   role,
   hosted,
   plan,
+  org = "",
   chromeless,
   colState,
   slot,
@@ -207,6 +208,8 @@ function Viewer({
   /** The signed-in install is hosted (Me.instance.hosted). */
   hosted: boolean;
   plan: Me["instance"]["plan"] | undefined;
+  /** #2509: the instance's name, which a team badge shows. */
+  org?: string;
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
@@ -698,6 +701,7 @@ function Viewer({
           <>
             <Crumbs title={artifact.title} />
             <TitleBar
+              org={org}
               artifact={artifact}
               version={version}
               explicitVersion={explicitVersion}
@@ -1086,6 +1090,7 @@ function ArtifactShell({
               role={authed ? me.me.user.role : undefined}
               hosted={authed && me.me.instance.hosted === true}
               plan={authed ? me.me.instance.plan : undefined}
+              org={authed ? me.me.instance.name : ""}
               viewer={
                 authed
                   ? { email: me.me.user.email, name: me.me.user.name }

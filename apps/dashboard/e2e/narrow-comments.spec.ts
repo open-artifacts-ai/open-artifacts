@@ -308,7 +308,7 @@ async function barState(page: Page) {
     const sr = (el: Element | null | undefined) =>
       !!el && getComputedStyle(el).position === "absolute";
     const badge = [...(bar?.querySelectorAll("[data-slot=badge]") ?? [])].find(
-      (b) => b.textContent?.includes("Private"),
+      (b) => b.textContent?.includes("Restricted"),
     );
     const comments = [...(bar?.querySelectorAll("button span") ?? [])].find(
       (s) => s.textContent === "Comments",
@@ -358,8 +358,8 @@ for (const theme of ["light", "dark"] as const)
         stages[i - 1] ?? 0,
       );
     expect(new Set(stages)).toEqual(new Set([0, 1, 2, 3]));
-    // The chip's name stays "Private".
-    await expect(page.locator(".oa-vt").getByText("Private")).toBeAttached();
+    // The chip's name stays "Restricted".
+    await expect(page.locator(".oa-vt").getByText("Restricted")).toBeAttached();
     // Opening the panel takes the pill out of the bar: Comments has room again.
     await page.setViewportSize({ width: 700, height: 800 });
     await commentsButton(page).click();

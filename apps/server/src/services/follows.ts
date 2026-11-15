@@ -571,10 +571,22 @@ export async function notifyCommented(
   now = Date.now(),
   /** Addresses (`namespace` + NUL + `name`) already told of this comment (a mention or an ask). */
   skip: ReadonlySet<string> = new Set(),
+  /** #2559: asked before each notice to a person's agent; false: that agent is not told. */
+  allow?: (receiverId: string) => Promise<boolean>,
 ): Promise<void> {
   // A guest's comment is not announced.
   if (authorId === null) return;
-  await fanOut(env, "commented", artifactId, version, authorId, now, skip);
+  await fanOut(
+    env,
+    "commented",
+    artifactId,
+    version,
+    authorId,
+    now,
+    skip,
+    null,
+    allow,
+  );
 }
 
 async function fanOut(
@@ -587,6 +599,7 @@ async function fanOut(
   skip: ReadonlySet<string> = new Set(),
   /** `changed`: the agent that published the version, left out (#2036). */
   self: { userId: string; address: BusAddress } | null = null,
+  allow?: (receiverId: string) => Promise<boolean>,
 ): Promise<void> {
   const { results } = await stmt(
     env.DB,
@@ -673,6 +686,7 @@ async function fanOut(
           .bind(commentKey(userId, artifactId, to), now, CHANGED_WINDOW_MS)
           .first<{ n: number }>();
         if (!claim) continue;
+        if (allow && !(await allow(userId))) continue;
       }
       const n = notice(env, kind, artifactId, version, to, at);
       if ((await deliverNotice(env, userId, n, scope)) === "dropped") {

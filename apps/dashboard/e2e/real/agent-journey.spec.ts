@@ -211,11 +211,10 @@ test("5. public with anonymous writes; the anon write limit is enforced", async 
   await owner.goto(`/a/${pollId}`);
   await owner.getByRole("button", { name: "Share" }).click();
   await owner
-    .getByLabel("Visibility")
-    .getByRole("radio", { name: "Public" })
+    .getByRole("radiogroup", { name: "General access" })
+    .getByRole("radio", { name: "Anyone with the link" })
     .check();
   await owner.getByRole("button", { name: "Save visibility" }).click();
-  await owner.getByRole("button", { name: "Make public" }).click();
   // Anyone who can view may write by default (#681), so making it public
   // already lets anonymous visitors write.
   const writers = owner.getByRole("radiogroup", {
