@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.183.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.182.0...v0.183.0) (2026-11-14)
+
+
+### Features
+
+* **audit:** audit log by plan on hosted: Business 400 days, Team 30 ([#2458](https://github.com/open-artifacts-ai/open-artifacts/issues/2458)) ([#2528](https://github.com/open-artifacts-ai/open-artifacts/issues/2528)) ([f4893d1](https://github.com/open-artifacts-ai/open-artifacts/commit/f4893d1ea1cade8d4cdf16417885c6914e59f738))
+* **audit:** record plan changes, failed payments and cancels ([#2458](https://github.com/open-artifacts-ai/open-artifacts/issues/2458)) ([#2531](https://github.com/open-artifacts-ai/open-artifacts/issues/2531)) ([bb84c35](https://github.com/open-artifacts-ai/open-artifacts/commit/bb84c3589b6f24ce7e3ad6405489bf6a4dbc6d9b))
+
 ## [0.182.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.181.0...v0.182.0) (2026-11-14)
 
 
