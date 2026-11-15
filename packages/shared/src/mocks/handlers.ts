@@ -124,6 +124,8 @@ export type MockOptions = {
   commentAsks?: boolean;
   /** #2381: seed asks in each decider state on "Landing page". */
   commentDeciders?: boolean;
+  /** #2511: seed asks in each withdrawn state on "Landing page". */
+  commentWithdrawn?: boolean;
   /** #2381 S2: seed decided asks on "Landing page": resolved, replaced, passkey-verified, changed. */
   commentDecisions?: boolean;
   /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
@@ -746,6 +748,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     seedAsk: opts.commentAsks,
     seedDeciders: opts.commentDeciders,
     seedDecisions: opts.commentDecisions,
+    seedWithdrawn: opts.commentWithdrawn,
     passkeyMode: opts.commentPasskey,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,

@@ -244,6 +244,46 @@ describe("withdraw", () => {
   });
 });
 
+describe("audit", () => {
+  it("a withdraw and a cross-page replace each write one event, ids only", async () => {
+    const a = await page();
+    const b = await page();
+    const bot = asAgent(owner, "Bot");
+    const one = await ask(a, bot);
+    await withdrawAsk(E, a, one.t.id, one.c, bot, view(bot, owner));
+    const two = await ask(a, bot);
+    const fresh = await ask(b, bot, {
+      replaces: { artifactId: a, threadId: two.t.id, commentId: two.c },
+    });
+    const ev = async (action: string, id: string) =>
+      (
+        await E.DB.prepare(
+          "select actor_id as actor, detail from audit_events where action = ? and target_id = ?",
+        )
+          .bind(action, id)
+          .all<{ actor: string; detail: string }>()
+      ).results;
+    const w = await ev("ask.withdraw", one.c);
+    expect(w).toHaveLength(1);
+    expect(w[0]?.actor).toBe(owner.userId);
+    expect(JSON.parse(w[0]?.detail ?? "{}")).toEqual({
+      artifactId: a,
+      threadId: one.t.id,
+      commentId: one.c,
+    });
+    const r = await ev("ask.replace", two.c);
+    expect(r).toHaveLength(1);
+    expect(JSON.parse(r[0]?.detail ?? "{}").replacedBy).toEqual({
+      artifactId: b,
+      threadId: fresh.t.id,
+      commentId: fresh.c,
+    });
+    // A repeat writes nothing more.
+    await withdrawAsk(E, a, one.t.id, one.c, bot, view(bot, owner));
+    expect(await ev("ask.withdraw", one.c)).toHaveLength(1);
+  });
+});
+
 describe("replace", () => {
   it("on this page the old card leaves the index and refuses picks", async () => {
     const id = await page();

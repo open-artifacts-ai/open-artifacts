@@ -54,6 +54,8 @@ const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
 
 /** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
 const needsMe = (ask: AskT): boolean => {
+  // A withdrawn or replaced card waits for no one (#2511).
+  if (ask.withdrawn || ask.replacedBy) return false;
   if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
   if (ask.role === "weigh") return !myPickOf(ask) && !ask.answer;
   return (
@@ -692,6 +694,53 @@ export function AskBlock({
     setChanging(false);
   }, [picked]);
   if (!ask) return null;
+  // #2511: a withdrawn card (or one a newer card replaced) has no buttons and takes no picks.
+  if (ask.withdrawn || ask.replacedBy) {
+    const to = ask.withdrawn?.replacedBy;
+    return (
+      <div className="flex flex-col gap-1">
+        <div
+          className={`flex flex-col gap-1.5 rounded-md ${boxed ? "p-2 ring-1 ring-border" : ""}`}
+          data-ask=""
+          data-ask-withdrawn=""
+        >
+          {from && <AskFrom c={c} face={face} />}
+          {body}
+          <div
+            className={`${TXT} font-semibold break-words ${MUTED} line-through`}
+          >
+            <Markdown body={ask.question} />
+          </div>
+          <p
+            role="status"
+            data-ask-withdrawn-line=""
+            className={`m-0 ${TXT} ${MUTED}`}
+          >
+            {to ? (
+              to.title ? (
+                <>
+                  Withdrawn. Replaced by a card on{" "}
+                  <a
+                    href={`/a/${to.artifactId}`}
+                    className="underline underline-offset-2"
+                  >
+                    {to.title}
+                  </a>
+                  .
+                </>
+              ) : (
+                "Withdrawn. Replaced by a card on another page."
+              )
+            ) : ask.replacedBy ? (
+              "Withdrawn. Replaced by the card below."
+            ) : (
+              "Withdrawn"
+            )}
+          </p>
+        </div>
+      </div>
+    );
+  }
   const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
   // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
   const pk = ask.confirm === "passkey" || viaPasskey;
