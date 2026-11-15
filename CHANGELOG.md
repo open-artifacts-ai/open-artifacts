@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.191.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.190.1...v0.191.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** a weak Google login proves the address with an emailed code ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2604](https://github.com/open-artifacts-ai/open-artifacts/issues/2604)) ([56084e5](https://github.com/open-artifacts-ai/open-artifacts/commit/56084e58014fc997cdccc0ea1f146915e87954e3))
+* **docs:** save a named version and restore through the room ([#2496](https://github.com/open-artifacts-ai/open-artifacts/issues/2496), [#2140](https://github.com/open-artifacts-ai/open-artifacts/issues/2140)) ([#2555](https://github.com/open-artifacts-ai/open-artifacts/issues/2555)) ([a1baf32](https://github.com/open-artifacts-ai/open-artifacts/commit/a1baf32346f583684bc0c6908aeaee948bbb75ad))
+* **sharing:** a commenter role for shares ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2600](https://github.com/open-artifacts-ai/open-artifacts/issues/2600)) ([417e1dd](https://github.com/open-artifacts-ai/open-artifacts/commit/417e1ddbcc26b07e41926015c38f7e6857aa2b2b))
+* **sign-in:** a guest Google turned away gets an emailed code ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2607](https://github.com/open-artifacts-ai/open-artifacts/issues/2607)) ([3d90cb1](https://github.com/open-artifacts-ai/open-artifacts/commit/3d90cb13cbc634aab3f6d943f910df01aeb256f0))
+
 ## [0.190.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.190.0...v0.190.1) (2026-11-15)
 
 
