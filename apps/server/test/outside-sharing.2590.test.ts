@@ -221,6 +221,46 @@ describe("the owner's switch", () => {
   });
 });
 
+describe("turning the switch off ends outside guests' sessions", () => {
+  const me = async (e: Env, cookie: string) =>
+    (await call(e, R.me, cookie)).status;
+
+  it("revokes share-made guests outside the login domains, no one else", async () => {
+    await setSwitch(null);
+    const e = direct({ AUTH_DOMAIN_JOIN: "invite" }) as Env;
+    const owner = await login(uniq("own", "a.com"), "owner");
+    const shareGuest = await login(uniq("sg", "outside.example"), "guest");
+    const inDomainGuest = await login(uniq("dg", "a.com"), "guest");
+    const invitedGuest = await login(uniq("ig", "outside.example"), "guest");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now(), invitedGuest.userId)
+      .run();
+    const member = await login(uniq("mem", "outside.example"), "member");
+    for (const u of [shareGuest, inDomainGuest, invitedGuest, member])
+      expect(await me(e, u.cookie)).toBe(200);
+    const epoch = async (id: string) =>
+      (
+        await env.DB.prepare("select session_epoch n from users where id = ?")
+          .bind(id)
+          .first<{ n: number }>()
+      )?.n;
+    const before = await epoch(shareGuest.userId);
+    const r = await call(e, R.settings, owner.cookie, "PATCH", {
+      outsideSharing: false,
+    });
+    expect(r.status).toBe(200);
+    expect(await me(e, shareGuest.cookie)).toBe(401);
+    expect(await epoch(shareGuest.userId)).toBe((before ?? 0) + 1);
+    for (const u of [inDomainGuest, invitedGuest, member])
+      expect(await me(e, u.cookie)).toBe(200);
+    // Off again is no change: nothing more is revoked.
+    const again = await login(uniq("sg2", "outside.example"), "guest");
+    await call(e, R.settings, owner.cookie, "PATCH", { outsideSharing: false });
+    expect(await me(e, again.cookie)).toBe(200);
+    await setSwitch(null);
+  });
+});
+
 describe("outside share email limits", () => {
   const outsiders = async (
     n: number,

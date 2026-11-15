@@ -49,7 +49,9 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import {
   closeRuntimeSockets,
   MAX_CLOSE,
+  revokeFanoutCap,
   revokeUserLive,
+  revokeUsersLive,
 } from "../runtime/revoke.js";
 import {
   type AuditActor,
@@ -1159,6 +1161,14 @@ export async function settingsView(
     : s;
 }
 
+// Share-made guests (a guest row nobody invited) at an address outside the
+// login domains (?1: their JSON list, or [] for every address).
+const OUTSIDE_GUESTS_WHERE = `role = 'guest' and invited_at is null and status = 'active'
+  and lower(substr(email, instr(email, '@') + 1)) not in (select value from json_each(?1))`;
+const OUTSIDE_GUESTS = `select id from users where ${OUTSIDE_GUESTS_WHERE} limit ?2`;
+const END_OUTSIDE_GUESTS = `update users set session_epoch = session_epoch + 1
+  where ${OUTSIDE_GUESTS_WHERE}`;
+
 const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
   on conflict (key) do update set value = excluded.value`;
 
@@ -1170,7 +1180,12 @@ const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
 export async function patchSettings(
   env: Env,
   patch: SettingsPatch,
-  opts: { spaces?: boolean; by?: AuditActor; plan?: EffectivePlan | null } = {},
+  opts: {
+    spaces?: boolean;
+    by?: AuditActor;
+    plan?: EffectivePlan | null;
+    ctx?: Pick<ExecutionContext, "waitUntil">;
+  } = {},
 ): Promise<Settings> {
   const keys = (Object.keys(KEY) as (keyof typeof KEY)[]).filter(
     (k) => patch[k] !== undefined,
@@ -1232,6 +1247,27 @@ export async function patchSettings(
         String(smm),
       ),
     );
+  // #2590: turning outside sharing off ends share-made guests' sessions now
+  // (their logins are refused from here on), not only their next login: the
+  // epoch bump ends every session, and their live sockets close
+  // (revokeUsersLive, under its fan-out cap, as the plan lock does).
+  let revoked: string[] = [];
+  if (keys.includes("outsideSharing") && patch.outsideSharing === false) {
+    const was = outsideFrom(
+      (await getSettingsKv(env)).get(OUTSIDE_SHARING_KEY),
+      opts.plan ?? null,
+    );
+    if (was) {
+      const domains = JSON.stringify(authConfig(env).domains);
+      const { results } = await stmt(env.DB, OUTSIDE_GUESTS)
+        .bind(domains, revokeFanoutCap(env) + 1)
+        .all<{ id: string }>();
+      revoked = results.map((r) => r.id);
+      writes.push(stmt(env.DB, END_OUTSIDE_GUESTS).bind(domains));
+    }
+  }
   if (writes.length) await env.DB.batch(writes);
+  if (revoked.length)
+    await revokeUsersLive(env, revoked, "outside sharing off", opts.ctx);
   return settingsView(env, opts.spaces === true, opts.plan ?? null);
 }

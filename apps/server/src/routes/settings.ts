@@ -14,6 +14,7 @@ import { orgCan } from "../auth/policy.js";
 import { requireFreshReauth } from "../auth/reauth.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
+import { execCtx } from "../http/middleware.js";
 import { userActor } from "../services/audit.js";
 import {
   firstUnproven,
@@ -72,6 +73,7 @@ export function mountSettings(app: AppType): void {
         spaces: spacesOn(c.env),
         by: userActor(actor.id),
         plan: planOfMember(actor),
+        ctx: execCtx(c),
       }),
     );
   });
