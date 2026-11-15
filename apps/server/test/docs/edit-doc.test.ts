@@ -266,10 +266,8 @@ describe("applying operations", () => {
     const a = await connect(room);
     const b = await connect(room);
     // The person types at the end while the agent replaces a word.
-    a.doc.transact(() => {
-      const f = docFragment(a.doc);
-      docToYXmlFragment(markdownToDoc("Typed by a person.\n").doc, f);
-    });
+    write(a, "# Plan\n\nShip it on Friday.\n\nTyped by a person.\n");
+    await a.ping();
     const r = await post(room.id, { ops: REPLACE });
     expect(r.status).toBe(200);
     await b.until(() => mdOf(b).includes("Monday"));
