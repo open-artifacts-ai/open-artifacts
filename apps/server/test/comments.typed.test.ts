@@ -578,7 +578,7 @@ describe("notice tier", () => {
       expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
     });
 
-    it("a guest's reply gets the everyone-else line", async () => {
+    it("a signed-out guest's reply is refused and tells nobody (#2592)", async () => {
       const s = await setup();
       await api(app, `/api/v1/artifacts/${s.id}`, owner.cookie, {
         method: "PATCH",
@@ -589,8 +589,8 @@ describe("notice tier", () => {
       const r = await replyToAsker(s.id, t.id, null, {
         "cf-connecting-ip": "198.18.9.7",
       });
-      expect(r.status).toBe(201);
-      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
+      expect(r.status).toBe(403);
+      expect(bus.sent).toEqual([]);
     });
   });
 });

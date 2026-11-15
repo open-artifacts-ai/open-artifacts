@@ -73,20 +73,21 @@ async function setup(make: (o: Partial<Env>) => Env, over: Partial<Env>) {
 }
 
 describe("share recipient reach (review item 37)", () => {
-  it("hosted, in-domain non-member: share applies, recipient needs_invite, honest email", async () => {
+  // #2590: a share admits an in-domain non-member as a guest on Google, so
+  // there is no needs_invite and no flag; the email names Google, not a code.
+  it("hosted, in-domain non-member: the share admits them as a guest, no flag, the email names Google", async () => {
     const { share, sent } = await setup(direct, HOSTED);
     const email = uniq("in", "a.com");
     const s = await share(email);
     expect(s).toMatchObject({ email, role: "viewer", emailed: true });
-    expect(s.recipient).toEqual({ canSignIn: false, reason: "needs_invite" });
+    expect(s.recipient).toBeUndefined();
+    expect(s.reach).toEqual({ ways: ["google"] });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toMatch(
-      /You can't log in to .+ yet\. Ask an admin there to invite you, then open this link again\./,
-    );
-    for (const part of [m?.text, m?.html]) {
+    expect(m?.text).toContain("You'll log in with your Google account.");
+    expect(m?.text).not.toContain("can't log in");
+    expect(m?.text).not.toContain("invite you");
+    for (const part of [m?.text, m?.html])
       expect(part).not.toContain("one-time code");
-      expect(part).not.toContain("log in with");
-    }
   });
 
   it("hosted, in-domain member: no flag", async () => {
@@ -110,22 +111,38 @@ describe("share recipient reach (review item 37)", () => {
   const NO_ADDRESS =
     /This address can't log in to .+\. Ask .+ to share it with an address that can\./;
 
-  it("Google only, outside the domain: outside_domains, and the email says so", async () => {
+  // #2590: Google alone outside the domains works only for a Workspace
+  // account (a consumer account waits for the code step), so it is not a
+  // certain way: the sharer is warned (workspace_only), and the email still
+  // names Google.
+  it("Google only, outside the domain: workspace_only warning, the email names Google", async () => {
     const { share, sent } = await setup(direct, {
       ...HOSTED,
       AUTH_PROVIDERS: "google",
     });
     const email = uniq("g", "out.com");
-    expect((await share(email)).recipient).toEqual({
+    const s = await share(email);
+    expect(s.recipient).toEqual({
       canSignIn: false,
-      reason: "outside_domains",
+      reason: "workspace_only",
     });
+    expect(s.reach).toEqual({ ways: ["google_workspace"] });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toMatch(NO_ADDRESS);
+    expect(m?.text).toContain("You'll log in with your Google account.");
     expect(m?.text).not.toContain("invite you");
   });
 
-  it("Google only, no domains: a non-Gmail address needs an invite, not outside_domains", async () => {
+  it("Google only, outside the domain, a Gmail address: a certain way, no flag", async () => {
+    const { share } = await setup(direct, {
+      ...HOSTED,
+      AUTH_PROVIDERS: "google",
+    });
+    const s = await share(uniq("g", "gmail.com"));
+    expect(s.recipient).toBeUndefined();
+    expect(s.reach).toEqual({ ways: ["google"] });
+  });
+
+  it("Google only, no domains: a non-Gmail address is workspace_only, not outside_domains", async () => {
     const { share } = await setup(direct, {
       ...HOSTED,
       AUTH_PROVIDERS: "google",
@@ -133,7 +150,7 @@ describe("share recipient reach (review item 37)", () => {
     });
     const email = uniq("g", "out.com");
     const r = (await share(email)).recipient;
-    expect(r).toEqual({ canSignIn: false, reason: "needs_invite" });
+    expect(r).toEqual({ canSignIn: false, reason: "workspace_only" });
   });
 
   it("email only, domain codes off, in-domain: no_sign_in_method (an invite wouldn't help), and the email says so", async () => {
@@ -151,16 +168,20 @@ describe("share recipient reach (review item 37)", () => {
     expect(m?.text).not.toContain("one-time code");
   });
 
-  // #799 nit: a no-row recipient whom only Google might admit (outside
-  // AUTH_DOMAINS, domain join on): no flag, and the email names Google
-  // rather than saying they can't sign in.
-  it("only Google might admit a no-row recipient: no flag, and the email names Google", async () => {
+  // A no-row recipient whom only Google might admit (outside AUTH_DOMAINS,
+  // domain join on): the email names Google rather than saying they can't
+  // sign in. #2590: it is not a certain way, so the sharer gets the
+  // workspace_only warning (it used to be unflagged, #799).
+  it("only Google might admit a no-row recipient: workspace_only, and the email names Google", async () => {
     const { share, sent } = await setup(direct, {
       AUTH_PROVIDERS: "google",
       AUTH_DOMAIN_JOIN: "member",
     });
     const email = uniq("sec", "secondary.com");
-    expect((await share(email)).recipient).toBeUndefined();
+    expect((await share(email)).recipient).toEqual({
+      canSignIn: false,
+      reason: "workspace_only",
+    });
     const m = sent.find((x) => x.to === email);
     expect(m?.text).toContain("You'll log in with your Google account.");
     expect(m?.text).not.toContain("can't log in");
@@ -362,14 +383,14 @@ describe("guest on a share row, and the email, from one rule", () => {
 
 describe("ShareResult.signInMethods (#799)", () => {
   it.each([
-    ["hosted, in-domain non-member", direct, HOSTED, "a.com", []],
+    ["hosted, in-domain non-member", direct, HOSTED, "a.com", ["google"]],
     ["hosted, outside guest", direct, HOSTED, "out.com", ["email"]],
     [
       "Google only, outside",
       direct,
       { ...HOSTED, AUTH_PROVIDERS: "google" },
       "out.com",
-      [],
+      ["google"],
     ],
     [
       "email only, domain codes off, in-domain",

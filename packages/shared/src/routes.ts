@@ -113,6 +113,8 @@ export const R = {
   search: "/api/v1/search",
   /** GET -> Member[]; POST MemberInvite -> Member. Uncapped org owner or admin only (anyone else 404); space managers use spaceCandidates. */
   members: "/api/v1/members",
+  /** GET ?email= -> InviteReach (#2520): the ways in for one address, for the invite box. Owner or admin. */
+  memberReach: "/api/v1/members/reach",
   /** PATCH MemberPatch -> Member; DELETE -> 204 */
   member: (id: string) => `/api/v1/members/${seg(id)}`,
   /** GET -> Passkey[] (#2263): the caller's passkeys, session only. */
@@ -207,6 +209,10 @@ export const R = {
   busReachProposals: "/api/v1/bus/reach/proposals",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
+  /** GET -> LoginSettings (owner or admin); PUT LoginSettingsPut -> LoginSettings (owner only, needs a fresh login; 403 domain_unproven, 409 apply_pending). #2520 */
+  loginSettings: "/api/v1/settings/login",
+  /** POST -> 204: marks the first-invite question answered for the caller. #2520 */
+  loginFirstInviteSeen: "/api/v1/settings/login/first-invite-seen",
   /**
    * GET -> Usage: today's (UTC) free-plan counts. Also `cpu_limit_hits`
    * (invocations ending exceededCpu or exceededResources; limit 0) and

@@ -11,6 +11,7 @@ import {
 } from "../src/auth/route-policy.js";
 import { contentApp } from "../src/content/app.js";
 import manifest from "../src/mcp/tool-manifest.json";
+import { docToolOff } from "../src/services/doc-switch.js";
 import { api, login } from "./helpers.js";
 import { connect, textOf, tool } from "./mcp-helpers.js";
 
@@ -43,9 +44,12 @@ describe("policy coverage", () => {
     ).toEqual([]);
   });
   it("TOOL_POLICY matches tool-manifest.json exactly", () => {
-    expect(Object.keys(TOOL_POLICY).sort()).toEqual(
-      manifest.map((t) => t.name).sort(),
-    );
+    // Doc-gated tools are in the manifest only once the doc switch is open.
+    expect(
+      Object.keys(TOOL_POLICY)
+        .filter((n) => !docToolOff(n))
+        .sort(),
+    ).toEqual(manifest.map((t) => t.name).sort());
   });
   it("an unlisted route answers 404 even when mounted", async () => {
     const a = createApp((x) => {
@@ -120,9 +124,9 @@ describe("enforcement", () => {
     },
   );
 
-  // edit_doc is offered only while docs are available (off here); the matrix covers it.
+  // Doc-gated tools are not offered while the switch is off (here); the matrix covers them.
   const artifactTools = Object.entries(TOOL_POLICY).filter(
-    ([name, p]) => "artifact" in p && name !== "edit_doc",
+    ([name, p]) => "artifact" in p && !docToolOff(name),
   );
   it.each(artifactTools)("a non-member's %s → not_found", async (name) => {
     const c = await connect(strangerPat);

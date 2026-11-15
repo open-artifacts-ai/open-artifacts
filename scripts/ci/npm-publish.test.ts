@@ -2,11 +2,14 @@
 // provenance, only for a stable release from a push to main. pack-npm runs
 // the repository's code with no credentials; publish-npm holds the OIDC token
 // (npm-publish Environment, npm trusted publishing) and runs no repository code.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { root, sandbox } from "./stubs.ts";
+import { badTarEntries } from "./tar-plain-entries.ts";
 
 const raw = readFileSync(
   join(root, ".github/workflows/release-please.yml"),
@@ -69,6 +72,62 @@ describe("pack-npm", () => {
     expect(run).toContain("package/LICENSE package/dist/index.js");
     expect(run).toContain('"oa-bus $version"');
     expect(run).toContain("sha256sum");
+  });
+
+  it("writes only oaBus.commit, the release commit, before npm pack", () => {
+    const run = stepById(pack.steps, "pack").run as string;
+    const set = run.indexOf('npm pkg set "oaBus.commit=$commit"');
+    expect(set).toBeGreaterThan(-1);
+    expect(set).toBeLessThan(run.indexOf("npm pack "));
+    expect(run).toContain("commit=$(git rev-parse HEAD)");
+    expect(run).toContain("^[0-9a-f]{40}$");
+    expect(run).toContain('[ "$commit" = "$GITHUB_SHA" ]');
+    // The only package.json fields the step may set: version, and oaBus.commit.
+    expect(run.match(/npm pkg set "[^"=]+/g)).toEqual([
+      'npm pkg set "version',
+      'npm pkg set "oaBus.commit',
+    ]);
+  });
+
+  it("refuses tar entries the bus updater cannot read, before the bin runs", () => {
+    const run = stepById(pack.steps, "pack").run as string;
+    const check = run.indexOf("scripts/ci/tar-plain-entries.ts");
+    expect(check).toBeGreaterThan(run.indexOf("npm pack "));
+    expect(check).toBeLessThan(run.indexOf("tar -xzf"));
+  });
+
+  it("tar-plain-entries accepts plain tarballs and refuses pax headers and links", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tar-plain-"));
+    mkdirSync(join(dir, "package"));
+    writeFileSync(join(dir, "package", "a.txt"), "a");
+    execFileSync("ln", ["-s", "a.txt", join(dir, "package", "l")]);
+    const make = (format: string, files: string[]) => {
+      const out = join(dir, `${format}-${files.length}.tgz`);
+      execFileSync("tar", [
+        "-czf",
+        out,
+        "--format",
+        format,
+        "-C",
+        dir,
+        ...files,
+      ]);
+      return readFileSync(out);
+    };
+    expect(badTarEntries(make("ustar", ["package/a.txt"]))).toEqual([]);
+    expect(badTarEntries(make("ustar", ["package"])).length).toBe(1); // the symlink
+    const long = `package/${"x".repeat(120)}`;
+    writeFileSync(join(dir, long), "x");
+    expect(badTarEntries(make("pax", [long])).length).toBeGreaterThan(0);
+  });
+
+  it("leaves publish-npm publishing the same pack-npm tarball", () => {
+    expect(pub.needs).toEqual(["release-please", "pack-npm"]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(pub.env.SHA256).toBe("${{ needs.pack-npm.outputs.sha256 }}");
+    expect(publishStep.run).toBe(
+      'npm publish "$TARBALL" --provenance --access public --ignore-scripts',
+    );
   });
 });
 
@@ -187,5 +246,45 @@ describe("publish-npm check step", () => {
     expect(r.code).not.toBe(0);
     expect(r.output).toBe("");
     expect(r.log).toEqual([]);
+  });
+});
+
+// #2543: the server build verifies the published bus release itself (the
+// updater's Sigstore check) and pins it in llms.txt. The release's deploy jobs
+// wait for publish-npm so the release is on npm; nothing is wired from
+// pack-npm's outputs, and only the build scripts (never gen, CI or tests) ask.
+describe("the bus pin in the server build (#2543)", () => {
+  const serverPkg = JSON.parse(
+    readFileSync(join(root, "apps/server/package.json"), "utf8"),
+  ) as { scripts: Record<string, string> };
+
+  it("deploy-prod and deploy-demo wait for publish-npm", () => {
+    for (const name of ["deploy-prod", "deploy-demo"])
+      expect(jobs[name].needs, name).toContain("publish-npm");
+  });
+
+  it("only the release deploys require the pin; no other job or script sets it", () => {
+    for (const name of ["deploy-prod", "deploy-demo"])
+      expect(jobs[name].env.BUS_PIN_REQUIRED, name).toBe("1");
+    for (const [name, job] of Object.entries(jobs) as [string, any][])
+      if (name !== "deploy-prod" && name !== "deploy-demo")
+        expect(JSON.stringify(job), name).not.toContain("BUS_PIN_REQUIRED");
+    for (const [k, v] of Object.entries(serverPkg.scripts))
+      expect(v, k).not.toContain("BUS_PIN_REQUIRED");
+  });
+
+  it("nothing from pack-npm is wired into the server build", () => {
+    expect(pack.outputs.integrity).toBeUndefined();
+    expect(raw).not.toContain("BUS_PKG_");
+    expect(raw).not.toContain("steps.pack.outputs.integrity");
+  });
+
+  it("the build scripts pin after gen; gen, typecheck and the tests never ask the registry", () => {
+    const { scripts } = serverPkg;
+    expect(scripts["version:pin"]).toContain("emit-version.ts --pin");
+    expect(scripts.build).toMatch(/pnpm run gen && pnpm run version:pin /);
+    for (const k of ["gen", "version:emit", "typecheck", "test", "test:authz"])
+      expect(scripts[k], k).not.toContain("--pin");
+    expect(scripts.gen).not.toContain("version:pin");
   });
 });

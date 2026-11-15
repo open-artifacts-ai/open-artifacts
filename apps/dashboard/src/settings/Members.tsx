@@ -734,15 +734,19 @@ export function Members() {
                 Removed ({removed.length})
               </Button>
             )}
-            <Button
-              size="sm"
-              className="text-[length:var(--oa-text-sm)]"
-              disabled={frozen}
-              onClick={() => setInviting(true)}
-            >
-              {/* #2520: a server with login settings gets Product's name. */}
-              {loginSettings.data ? INVITE.button : "Add member"}
-            </Button>
+            {/* Only once the login settings have answered: the label (and the
+                dialog it opens) never changes under a reader or a click. */}
+            {!loginSettings.isPending && (
+              <Button
+                size="sm"
+                className="text-[length:var(--oa-text-sm)]"
+                disabled={frozen}
+                onClick={() => setInviting(true)}
+              >
+                {/* #2520: a server with login settings gets Product's name. */}
+                {loginSettings.data ? INVITE.button : "Add member"}
+              </Button>
+            )}
           </div>
         }
       >

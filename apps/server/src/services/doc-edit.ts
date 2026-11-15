@@ -72,6 +72,7 @@ export async function editDoc(
   });
   if (!r.ok) {
     const { code, message, ...rest } = r.error;
+    if (code === "rate_limited") throw new ApiError("rate_limited", message);
     throw new ApiError(
       code === "doc_too_large" ? "too_large" : "bad_request",
       message,

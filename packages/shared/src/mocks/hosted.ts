@@ -1629,6 +1629,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
               ...(m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
                 ? { personalArtifacts: true }
                 : {}),
+              // As the server: a departed member with artifacts, trash included.
+              ...((m.status ?? "active") !== "active" &&
+              (departed.get(m.id)?.live ?? 0) +
+                (departed.get(m.id)?.deleted ?? 0) >
+                0
+                ? { transferable: true }
+                : {}),
               ...(managed(m) ? { directoryManaged: true } : {}),
             })),
         );
