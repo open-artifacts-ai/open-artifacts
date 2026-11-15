@@ -119,7 +119,7 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     expect(loc(g)).not.toContain(encodeURIComponent(email));
     const who = await get(e, AUTH.codeLink, link);
     expect(who.status).toBe(200);
-    expect(await who.json()).toEqual({
+    expect(await who.json()).toMatchObject({
       maskedEmail: `${email.slice(0, 1)}***${email.slice(email.lastIndexOf("@"))}`,
     });
     expect((await get(e, AUTH.codeLink)).status).toBe(404);
@@ -308,6 +308,97 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     expect(ok.status).toBe(401);
     expect(cookieOf(ok, SESSION)).toBeUndefined();
     expect(await subjectOf(email)).toBeNull();
+  });
+});
+
+describe("who shared it (#2606)", () => {
+  const sharedBy = async (e: Env, email: string) => {
+    const g = await google(e, weak(email));
+    const link = cookieOf(g, /oa_glink=/);
+    const r = await get(e, AUTH.codeLink, link);
+    expect(r.status).toBe(200);
+    return ((await r.json()) as { sharedBy: { name: string } | null }).sharedBy;
+  };
+  const shareFrom = async (email: string, name: string, at: number) => {
+    const owner = await seedUser(uniq("sharer", "a.com"), "member");
+    await env.DB.prepare("update users set display_name = ? where id = ?")
+      .bind(name, owner)
+      .run();
+    const art = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    await env.DB.prepare(
+      "insert into artifacts (id, owner_id, title, format, created_at, updated_at) values (?, ?, 't', 'markdown', ?, ?)",
+    )
+      .bind(art, owner, at, at)
+      .run();
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+    )
+      .bind(art, email, owner, at)
+      .run();
+    return art;
+  };
+
+  it("names the sharer of the newest live share", async () => {
+    const { e } = install();
+    const email = uniq("who", "custom.example");
+    await shareFrom(email, "Older Person", Date.now() - 5000);
+    await shareFrom(email, "Newest Person", Date.now());
+    expect(await sharedBy(e, email)).toEqual({ name: "Newest Person" });
+  });
+
+  it("skips a share on a deleted page", async () => {
+    const { e } = install();
+    const email = uniq("who2", "custom.example");
+    await shareFrom(email, "Kept", Date.now() - 5000);
+    const gone = await shareFrom(email, "Deleted Page Sharer", Date.now());
+    await env.DB.prepare("update artifacts set deleted_at = ? where id = ?")
+      .bind(Date.now(), gone)
+      .run();
+    expect(await sharedBy(e, email)).toEqual({ name: "Kept" });
+  });
+
+  it("never leaks an email: a sharer with no name, or a name that is an address, gives null", async () => {
+    const { e } = install();
+    for (const [local, name, display] of [
+      ["noname", "", null],
+      ["named-addr", "boss@acme.com", null],
+      ["disp-addr", "", "boss@acme.com"],
+    ] as const) {
+      const email = uniq(local, "custom.example");
+      const owner = await seedUser(uniq(`s-${local}`, "a.com"), "member");
+      await env.DB.prepare(
+        "update users set name = ?, display_name = ? where id = ?",
+      )
+        .bind(name, display, owner)
+        .run();
+      const art = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+      await env.DB.prepare(
+        "insert into artifacts (id, owner_id, title, format, created_at, updated_at) values (?, ?, 't', 'markdown', ?, ?)",
+      )
+        .bind(art, owner, Date.now(), Date.now())
+        .run();
+      await env.DB.prepare(
+        "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+      )
+        .bind(art, email, owner, Date.now())
+        .run();
+      const g = await google(e, weak(email));
+      const r = await get(e, AUTH.codeLink, cookieOf(g, /oa_glink=/));
+      const body = await r.text();
+      expect(JSON.parse(body).sharedBy, local).toBeNull();
+      expect(body, local).not.toContain("@acme.com");
+      expect(body, local).not.toContain("@a.com");
+    }
+  });
+
+  it("is null for an invite", async () => {
+    const { e } = install();
+    const email = uniq("who3", "custom.example");
+    const uid = await seedUser(email, "member");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
+    expect(await sharedBy(e, email)).toBeNull();
   });
 });
 

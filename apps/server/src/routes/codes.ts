@@ -29,7 +29,11 @@ import { stmt } from "../db/stmt.js";
 import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
 import { inviteAcceptAudit, signInAudit } from "../services/audit.js";
-import { codeEligibility, linkEligibility } from "../services/identity.js";
+import {
+  codeEligibility,
+  linkEligibility,
+  sharerOf,
+} from "../services/identity.js";
 import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
 import {
   getUserWithEpoch,
@@ -429,7 +433,12 @@ export function mountCodes(app: AppType): void {
     requireCodes(c);
     const link = await readLink(c);
     if (!link) throw new ApiError("not_found", "Not found");
-    const res = c.json({ maskedEmail: mask(link.e) });
+    // That cookie proves Google control of the address, so naming the sharer
+    // of its newest live share is safe; null for an invite (#2606).
+    const res = c.json({
+      maskedEmail: mask(link.e),
+      sharedBy: await sharerOf(c.env, link.e),
+    });
     res.headers.set("cache-control", "no-store");
     return res;
   });

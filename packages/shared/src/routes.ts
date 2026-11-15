@@ -502,10 +502,12 @@ export const AUTH = {
   /** POST CodeVerify -> 200 CodeVerified. */
   codeVerify: "/auth/code/verify",
   /**
-   * GET -> 200 { maskedEmail } for the Google account this browser is waiting
-   * to link with a code (after the callback's SIGN_IN_PAGE?error=needs_code),
-   * 404 with no such account. Then POST codeRequest { link: true } (no email:
-   * the address comes from the browser's own cookie) and CodeVerify as usual.
+   * GET -> 200 { maskedEmail, sharedBy } for the Google account this browser is
+   * waiting to link with a code (after the callback's
+   * SIGN_IN_PAGE?error=needs_code), 404 with no such account. sharedBy is
+   * { name } of whoever made the newest live share to that address, null for
+   * an invite. Then POST codeRequest { link: true } (no email: the address
+   * comes from the browser's own cookie) and CodeVerify as usual.
    */
   codeLink: "/auth/code/link",
 } as const;
