@@ -259,6 +259,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     recipient?: ShareRecipient;
     /** PROVISIONAL (#2620): why no email went, when the server says. */
     notEmailed?: NotEmailed;
+    /** The day's limit, with a limit reason (PROVISIONAL, #2620). */
+    limit?: number;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
     /** The role picked: a guest's row corrects Editor, once, just after. */
@@ -354,6 +356,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               emailed: r.emailed,
               recipient: r.recipient,
               ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
+              ...(r.limit !== undefined ? { limit: r.limit } : {}),
               with: signInWith(r.signInMethods),
               role: r.role,
             });
@@ -594,7 +597,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               >
                 <p data-share-sent="">
                   {shared.notEmailed
-                    ? notEmailedLine(shared.notEmailed, install)
+                    ? notEmailedLine(shared.notEmailed, install, shared.limit)
                     : shared.emailed
                       ? shared.with
                         ? `We emailed them a link. They'll log in with ${shared.with}.`

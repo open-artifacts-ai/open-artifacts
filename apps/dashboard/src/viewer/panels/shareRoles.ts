@@ -19,6 +19,8 @@ export const NOT_EMAILED = [
 export type NotEmailed = (typeof NOT_EMAILED)[number];
 export const ShareSavedSchema = ShareResultSchema.extend({
   notEmailed: z.enum(NOT_EMAILED).optional(),
+  /** With member_limit or instance_limit: the day's limit (PROVISIONAL, #2620). */
+  limit: z.number().int().positive().optional(),
 });
 export type ShareSaved = z.infer<typeof ShareSavedSchema>;
 
@@ -26,16 +28,19 @@ export type ShareSaved = z.infer<typeof ShareSavedSchema>;
 export const NO_EMAIL_LINE =
   "We won't email them about this share. Copy the link and send it yourself.";
 /** OA Product (#2620): over today's limits for new outside addresses. */
-export const memberLimitLine = (org: string) =>
-  `You've shared with 20 new people outside ${org} today. Try again tomorrow.`;
+/** The member limit when the server doesn't say (#2620's figure). */
+export const MEMBER_LIMIT_FALLBACK = 20;
+export const memberLimitLine = (org: string, limit = MEMBER_LIMIT_FALLBACK) =>
+  `You've shared with ${limit} new people outside ${org} today. Try again tomorrow.`;
 export const instanceLimitLine = (org: string) =>
   `${org} has reached today's limit for sharing with new people outside. Try again tomorrow.`;
 /** The line for a share that sent no email, by the server's reason. */
 export function notEmailedLine(
   reason: NotEmailed | undefined,
   org: string,
+  limit?: number,
 ): string {
-  if (reason === "member_limit") return memberLimitLine(org);
+  if (reason === "member_limit") return memberLimitLine(org, limit);
   if (reason === "instance_limit" || reason === "limit")
     return instanceLimitLine(org);
   return NO_EMAIL_LINE;

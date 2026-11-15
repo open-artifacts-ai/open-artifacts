@@ -46,6 +46,14 @@ describe("the lines (OA Product, #2620)", () => {
       notEmailedLine("member_limit", "Acme"),
     );
   });
+  it("member_limit uses the server's limit, else 20", () => {
+    expect(notEmailedLine("member_limit", "Acme", 5)).toBe(
+      "You've shared with 5 new people outside Acme today. Try again tomorrow.",
+    );
+    expect(notEmailedLine("member_limit", "Acme", undefined)).toContain(
+      "shared with 20 new people",
+    );
+  });
   it("instance_limit (and the generic limit)", () => {
     const line =
       "Acme has reached today's limit for sharing with new people outside. Try again tomorrow.";
@@ -75,6 +83,31 @@ describe("in the Share panel, after saving", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     return screen.findByText(/Shared with sam@partner\.org/);
   };
+
+  it("the panel names the server's member limit", async () => {
+    const base = createHandlers({ hosted: true });
+    mountHosted(panel, true, undefined, [
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const res = await getResponse(base, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          ...body,
+          emailed: false,
+          notEmailed: "member_limit",
+          limit: 7,
+        });
+      }),
+    ]);
+    fireEvent.change(await screen.findByLabelText("Email"), {
+      target: { value: "sam@partner.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByText(/Shared with sam@partner\.org/);
+    expect(document.querySelector("[data-share-sent]")?.textContent).toMatch(
+      /^You've shared with 7 new people outside .+ today\. Try again tomorrow\.$/,
+    );
+  });
 
   it.each([
     [
