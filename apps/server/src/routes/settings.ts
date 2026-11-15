@@ -52,17 +52,26 @@ export function mountSettings(app: AppType): void {
     const user = requireUser(c);
     if (!orgCan(user, "settings.read"))
       throw new ApiError("not_found", "Not found");
-    return c.json(await settingsView(c.env, spacesOn(c.env)));
+    return c.json(
+      await settingsView(c.env, spacesOn(c.env), planOfMember(user)),
+    );
   });
 
   app.patch(R.settings, async (c) => {
     const actor = requireManager(c);
     const patch = await jsonBody(c, SettingsPatchSchema);
     if (patch.name !== undefined) patch.name = cleanName(patch.name);
+    // #2590: only the owner turns outside sharing on or off.
+    if (
+      patch.outsideSharing !== undefined &&
+      !orgCan(actor, "outside.manage", { cap: capOfCaller(caller(c)) })
+    )
+      throw new ApiError("owner_only", "Only the owner can change this");
     return c.json(
       await patchSettings(c.env, patch, {
         spaces: spacesOn(c.env),
         by: userActor(actor.id),
+        plan: planOfMember(actor),
       }),
     );
   });

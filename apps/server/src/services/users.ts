@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { withCap, withPlan } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { capOf, planCapsRole } from "../auth/policy.js";
+import { capOf, isGuestRole, planCapsRole } from "../auth/policy.js";
 import { seedPlan } from "../billing/features.js";
 import {
   billingActive,
@@ -18,6 +18,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { publicName, readsAsAgent } from "./agent-display.js";
 import { inviteAcceptAuditDrizzle, signInAuditByEmail } from "./audit.js";
+import { outsiderLoginOff } from "./outside.js";
 
 type UserRow = typeof users.$inferSelect;
 type NameFields = Pick<UserRow, "email" | "name" | "displayName">;
@@ -227,6 +228,12 @@ export async function upsertOnLogin(
     // Deactivated (a guest whose last share went, or P3's sync): no sign-in.
     // A new share reactivates a guest (putShare).
     if (existing.status !== "active") return null;
+    // The owner's switch (#2590): off ends share-made guests' logins.
+    if (
+      isGuestRole(existing.role as Role) &&
+      (await outsiderLoginOff(env, existing.id))
+    )
+      return null;
     const set: Partial<UserRow> = { lastSeenAt: Date.now() };
     if (name !== null) set.name = name;
     const update = db
@@ -254,7 +261,7 @@ export async function upsertOnLogin(
     .from(shares)
     .where(eq(shares.email, e))
     .limit(1);
-  if (shared.length === 0) return null;
+  if (shared.length === 0 || (await outsiderLoginOff(env, null))) return null;
   // Concurrent first logins race on the unique email: the loser just refreshes.
   return toMember(await upsert(env, e, name, "guest", false, auditQ));
 }

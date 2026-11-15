@@ -22,16 +22,16 @@ import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
-import { senderName, shareEmail } from "../email/templates.js";
+import { outsideShareEmail, senderName } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
-import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
+import { outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
@@ -175,6 +175,16 @@ export async function putShare(
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))
     throw new ApiError("bad_request", "Cannot share with yourself");
+  // #2590: with the owner's switch off, no new share to an address outside
+  // the instance (no user row here). A person already in stays shareable.
+  if (
+    !(await stmt(env.DB, IS_USER).bind(email).first()) &&
+    !(await outsideSharingOn(env))
+  )
+    throw new ApiError(
+      "outside_sharing_off",
+      "Sharing with people outside is off. An owner can turn it on in Settings, Sharing.",
+    );
   const now = Date.now();
   // One atomic statement: a new email is inserted only while under the cap;
   // updating an existing share bypasses it, and the same role is a no-op.
@@ -239,8 +249,9 @@ export async function putShare(
   return {
     ...toShare(row),
     ...(guest ? { guest: true } : {}),
-    emailed:
-      created && (await emailShare(env, user, artifact, email, s.role, reach)),
+    ...(await emailed(created, () =>
+      emailShare(env, user, artifact, email, reach),
+    )),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
     signInMethods: reach.methods,
@@ -249,38 +260,66 @@ export async function putShare(
   };
 }
 
+/** ShareResult's emailed and, when a limit refused it, notEmailed. */
+async function emailed(
+  created: boolean,
+  send: () => Promise<{
+    emailed: boolean;
+    notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+  }>,
+): Promise<Pick<ShareResult, "emailed" | "notEmailed">> {
+  if (!created) return { emailed: false };
+  const r = await send();
+  return r.notEmailed
+    ? { emailed: r.emailed, notEmailed: r.notEmailed }
+    : { emailed: r.emailed };
+}
+
+/** Outside shares emailed per member per UTC day (#2590). */
+export const OUTSIDE_EMAILS_PER_MEMBER_PER_DAY = 20;
+/**
+ * Outside share emails per instance per UTC day, and during a trial (the
+ * issue gives no numbers: 100 and 20).
+ */
+export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY = 100;
+export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL = 20;
+
 async function emailShare(
   env: Env,
   user: Member,
   artifact: { id: string; title: string; format: string; doc: number },
   email: string,
-  role: ShareRole,
   /** The methods that admit the recipient and, with none, why (shareReach). */
   reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
-): Promise<boolean> {
-  if (!emailEnabled(env)) return false;
+): Promise<{
+  emailed: boolean;
+  notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+}> {
+  if (!emailEnabled(env)) return { emailed: false };
   try {
     const [member, settings] = await Promise.all([
       stmt(env.DB, IS_USER).bind(email).first(),
       getSettings(env),
     ]);
-    if (member) return false;
-    // No user row here: the level they'll have, as the share rows show it.
-    const viewOnly = await guestRecipients(env)(email, null);
-    return await sendEmail(
+    if (member) return { emailed: false };
+    // No user row: an outside address (#2590). Its own daily limits, apart
+    // from the usual ones; the share is saved whatever they say.
+    const day = new Date().toISOString().slice(0, 10);
+    const trial = planOfMember(user)?.tier === "trial";
+    const outcome: { limited?: boolean; reason?: string } = {};
+    const sent = await sendEmail(
       env,
       user.id,
       email,
       () =>
-        shareEmail({
+        outsideShareEmail({
           inviter: senderName(user),
+          senderEmail: normalizeEmail(user.email) ?? user.email,
           instance: settings.name,
           recipient: email,
           appHost: env.APP_HOST,
           title: artifact.title,
           path: viewerPath(artifact.id),
-          format: apiFormat(artifact.format, artifact.doc),
-          role: viewOnly ? "viewer" : role,
           signIn: reach.methods,
           cantSignIn: reach.recipient?.reason,
         }),
@@ -289,10 +328,40 @@ async function emailShare(
         artifactId: artifact.id,
         instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
+        outcome,
+        extraCaps: [
+          {
+            cap: [
+              `email:out:u:${user.id}`,
+              OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
+              day,
+            ],
+            reason: "member_limit",
+          },
+          {
+            cap: [
+              "email:out:*",
+              trial
+                ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
+                : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
+              day,
+            ],
+            reason: "instance_limit",
+          },
+        ],
       },
     );
+    if (sent) return { emailed: true };
+    if (!outcome.limited) return { emailed: false };
+    return {
+      emailed: false,
+      notEmailed:
+        outcome.reason === "member_limit" || outcome.reason === "instance_limit"
+          ? outcome.reason
+          : "limit",
+    };
   } catch {
-    return false;
+    return { emailed: false };
   }
 }
 

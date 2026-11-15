@@ -233,6 +233,79 @@ export function shareEmail(
   );
 }
 
+const OUTSIDE_TITLE_MAX = 80;
+
+const OUTSIDE_TXT = `{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
+
+{{pageTitle}}
+
+{{openLine}}
+
+Open the page:
+{{pageUrl}}
+
+--
+
+You got this because {{senderName}} shared a page with {{recipientEmail}}. If you weren't expecting it, you can ignore this email.
+
+{{appHost}}
+`;
+
+const OUTSIDE_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{senderName}} shared a page with you</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
+<p style="font-weight:600">{{pageTitle}}</p>
+<p>{{openLine}}</p>
+<p><a href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
+<p style="color:#5d636e">You got this because {{senderName}} shared a page with {{recipientEmail}}. If you weren't expecting it, you can ignore this email.</p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/**
+ * A page shared with someone who has no account here (#2590). The only text
+ * the sender controls is their name and address and the page title (cut to
+ * OUTSIDE_TITLE_MAX characters, plain text, never a link). OA Product owns the
+ * wording. "Don't email me again" is not here: it needs cloud-wide state.
+ */
+export function outsideShareEmail(
+  p: Common &
+    SignIn & {
+      title: string;
+      /** Viewer path on the app host, e.g. `/a/<id>`. */
+      path: string;
+      senderEmail: string;
+    },
+): EmailContent {
+  const { origin, values } = common(p);
+  const methods = orderSignInMethods(p.signIn);
+  const phrase = (m: SignInProvider) =>
+    m === "google"
+      ? `your Google account (${values.recipientEmail})`
+      : m === "email"
+        ? "a one-time code"
+        : "your organization's single sign-on";
+  const openLine =
+    methods.length > 0
+      ? `Open it with ${methods.map(phrase).join(" or ")}.`
+      : signInSentence(p.signIn, values.recipientEmail, p);
+  const title = oneLine(p.title, OUTSIDE_TITLE_MAX);
+  return render(
+    OUTSIDE_HTML,
+    OUTSIDE_TXT,
+    `{{senderName}} shared "{{pageTitle}}" with you`,
+    {
+      ...values,
+      senderName: values.inviterName,
+      senderEmail: oneLine(p.senderEmail, 320),
+      pageTitle: title,
+      pageUrl: linkOn(origin, p.path),
+      openLine,
+    },
+  );
+}
+
 const CODE_TXT = `Your {{instanceName}} login code is {{code}}
 
 {{enterLine}} It expires in {{minutes}} minutes and works once.

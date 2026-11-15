@@ -29,7 +29,12 @@ import {
 import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
-import { effectivePlan, planError, requireTeamPlan } from "../billing/plan.js";
+import {
+  type EffectivePlan,
+  effectivePlan,
+  planError,
+  requireTeamPlan,
+} from "../billing/plan.js";
 import { startTrialAnswer } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
@@ -53,6 +58,7 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
+import { OUTSIDE_SHARING_KEY, outsideFrom } from "./outside.js";
 import { inviteReach, waysOf } from "./reach.js";
 import {
   IDENTITIES_SQL,
@@ -1089,7 +1095,11 @@ const DEFAULT_SETTINGS: Settings = {
   name: "Open Artifacts",
   defaultVisibility: "private",
 };
-const KEY = { name: "name", defaultVisibility: "default_visibility" } as const;
+const KEY = {
+  name: "name",
+  defaultVisibility: "default_visibility",
+  outsideSharing: OUTSIDE_SHARING_KEY,
+} as const;
 
 // Per-user notice dismissals (services/notices.ts USER_NOTICE_PREFIX, one
 // row per member who dismissed) stay out: notices.ts reads the caller's own.
@@ -1134,9 +1144,13 @@ export const SPACE_MANAGER_MAPPINGS_KEY = "space_manager_mappings";
 export async function settingsView(
   env: Env,
   spaces: boolean,
+  plan: EffectivePlan | null = null,
 ): Promise<Settings> {
   const kv = await getSettingsKv(env);
-  const s = toSettings(kv);
+  const s: Settings = {
+    ...toSettings(kv),
+    outsideSharing: outsideFrom(kv.get(OUTSIDE_SHARING_KEY), plan),
+  };
   return spaces
     ? {
         ...s,
@@ -1156,7 +1170,7 @@ const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
 export async function patchSettings(
   env: Env,
   patch: SettingsPatch,
-  opts: { spaces?: boolean; by?: AuditActor } = {},
+  opts: { spaces?: boolean; by?: AuditActor; plan?: EffectivePlan | null } = {},
 ): Promise<Settings> {
   const keys = (Object.keys(KEY) as (keyof typeof KEY)[]).filter(
     (k) => patch[k] !== undefined,
@@ -1166,7 +1180,14 @@ export async function patchSettings(
   // default visibility are plain instance settings, no secrets. Read before
   // the batch; the row is written only when a value differs now.
   if (keys.length) {
-    const before = toSettings(await getSettingsKv(env));
+    const kv = await getSettingsKv(env);
+    const before: Settings = {
+      ...toSettings(kv),
+      outsideSharing: outsideFrom(
+        kv.get(OUTSIDE_SHARING_KEY),
+        opts.plan ?? null,
+      ),
+    };
     const changed = keys.filter((k) => before[k] !== patch[k]);
     if (changed.length)
       writes.push(
@@ -1212,5 +1233,5 @@ export async function patchSettings(
       ),
     );
   if (writes.length) await env.DB.batch(writes);
-  return settingsView(env, opts.spaces === true);
+  return settingsView(env, opts.spaces === true, opts.plan ?? null);
 }
