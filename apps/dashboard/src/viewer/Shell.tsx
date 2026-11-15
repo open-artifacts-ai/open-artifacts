@@ -36,6 +36,7 @@ import {
   PinBar,
   PinBeside,
 } from "./comments/CommentsBody";
+import { quoteToNote } from "./comments/noteQuote";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -806,6 +807,16 @@ function Viewer({
                 onStatus={setDocStatus}
                 onVersion={onDocVersion}
                 onCurrentVersion={onDocCurrentVersion}
+                onCommentSelection={
+                  cmt.canComment && commentsOn
+                    ? (quote) => {
+                        // #1100: the selection, quoted, in the whole-page
+                        // composer; the list opens wherever it lives.
+                        quoteToNote(artifact.id, quote);
+                        openSurface.current();
+                      }
+                    : undefined
+                }
                 fullActions={
                   <>
                     {/* Mounted only when the doc is full and the viewer is signed

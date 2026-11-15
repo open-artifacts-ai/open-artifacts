@@ -650,6 +650,14 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   flex-wrap: wrap;
   gap: 8px;
 }
+/* "Comment" over a selection (#1100), centred on it. */
+.oa-doc-selcomment {
+  position: absolute;
+  z-index: 5;
+  transform: translateX(-50%);
+  box-shadow: var(--oa-shadow-md, 0 2px 8px rgb(0 0 0 / 0.15));
+  border-radius: var(--radius, 6px);
+}
 .oa-doc-scroll {
   flex: 1;
   min-height: 0;
@@ -662,6 +670,7 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
  * two in step; e2e/doc-editor-shots.spec.ts overlays one on the other.
  */
 .oa-doc-page {
+  position: relative;
   max-width: 70ch;
   margin: 0 auto;
   padding: 48px 24px 96px;
