@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
 import {
@@ -149,6 +149,11 @@ import {
   spawnExec,
 } from "./transports/opencode.ts";
 import { PiTransport } from "./transports/pi.ts";
+import { runningVersion } from "./update/layout.ts";
+import { loginActive } from "./update/login-flag.ts";
+import { parseVersion } from "./update/policy.ts";
+import { startSelfCheck } from "./update/selfcheck.ts";
+import { Updater } from "./update/updater.ts";
 
 export * from "./agents.ts";
 export * from "./attest.ts";
@@ -179,8 +184,12 @@ export * from "./transports/codex.ts";
 export * from "./transports/opencode.ts";
 export * from "./transports/pi.ts";
 export * from "./update/layout.ts";
+export * from "./update/login-flag.ts";
 export * from "./update/policy.ts";
+export * from "./update/reports.ts";
+export * from "./update/selfcheck.ts";
 export * from "./update/state.ts";
+export * from "./update/updater.ts";
 
 const NOTICE_RETRY_MS = 30_000;
 /** #1956: a ref binding whose link has been closed this long lapses, even if its pid lives. */
@@ -234,6 +243,19 @@ export type DaemonDeps = {
   onRevoked?: (replaced?: boolean) => void;
   /** The bound socket was removed or replaced; `oa-bus daemon` exits 1 so the service rebinds. */
   onSocketLost?: () => void;
+  /**
+   * The updater (#2552): only `oa-bus daemon` passes it. `entryFile` is the
+   * bundle that runs, which names the version folder; `exit` ends the daemon
+   * non-zero so the service restarts it from whatever `bin` then points at.
+   */
+  update?: {
+    entryFile: string;
+    exit: (code: number) => void;
+    /** Tests only. */
+    enabled?: boolean;
+    every?: (fn: () => void, ms: number) => () => void;
+    deadlineMs?: number;
+  };
   /** How often the bound socket is checked; default 60 s. */
   socketCheckMs?: number;
   /** Written on revoke for `oa-bus status` and doctor; default ~/.oa-bus/revoked. */
@@ -343,6 +365,8 @@ export type DaemonDeps = {
 
 export type Daemon = {
   stop: () => Promise<void>;
+  /** The updater, when `deps.update` was given (#2552); PR 5 feeds it the instance's instruction. */
+  updater?: Updater | undefined;
   hub: HubConnection;
   agents: AgentTable;
   /** Test seam (#1956): the ref bindings held, and one sweep run now. */
@@ -2675,12 +2699,52 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     );
   hub.start();
   ev("daemon_start", { version: deps.version, pid: process.pid });
+  // #2552: the self-check after a switch, and the loop (off until PR 6).
+  const upd = deps.update;
+  // Decided once: a folder that is not x.y.z (unknown-<ts>, a workspace) never updates.
+  const found = upd ? runningVersion(upd.entryFile, home()) : undefined;
+  const runVersion = parseVersion(found) ? found : undefined;
+  const selfCheck = upd
+    ? startSelfCheck({
+        home: home(),
+        running: runVersion,
+        hub: () => hub.open && hubHelloed,
+        // Socket bound, and every live session announced and answered.
+        local: () => existsSync(listenPath) && upIds.size === 0,
+        exit: upd.exit,
+        log,
+        ...(upd.every ? { every: upd.every } : {}),
+        ...(upd.deadlineMs !== undefined ? { deadlineMs: upd.deadlineMs } : {}),
+      })
+    : undefined;
+  const updater = upd
+    ? new Updater({
+        home: home(),
+        running: runVersion,
+        busy: () => ({
+          pending: pending.size,
+          outbox: outbox.size,
+          codexQueue: codexTaken.size(),
+        }),
+        loginActive: () => loginActive(home()),
+        hubReady: () => hub.open && hubHelloed,
+        serverVersion: () => hubVersion,
+        exit: upd.exit,
+        log,
+        ...(upd.enabled !== undefined ? { enabled: upd.enabled } : {}),
+        ...(upd.every ? { every: upd.every } : {}),
+      })
+    : undefined;
+  updater?.start();
   return {
     hub,
     agents,
+    updater,
     bindings: { count: () => bindings.size, sweep: sweepBindings },
     stop: async () => {
       ev("daemon_stop", { pid: process.pid });
+      selfCheck?.stop();
+      updater?.stop();
       clearInterval(socketWatch);
       clearInterval(watcher);
       clearInterval(retry);

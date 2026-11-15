@@ -254,7 +254,7 @@ describe("systemService: launchd", () => {
     await s.ensure();
     const plist = readFileSync(plistOf(userHome), "utf8");
     expect(plist).toContain(
-      `<string>${home}/bin/node</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
+      `<string>${home}/rescue</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
     );
     expect(plist).toContain(
       "<key>PATH</key><string>/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin</string>",
@@ -395,13 +395,52 @@ describe("systemService: systemd", () => {
   const unitOf = (userHome: string) =>
     join(userHome, ".config/systemd/user", SYSTEMD_UNIT);
 
+  it("doctor's problems: the rescue launcher must be there and owner-only (#2552)", async () => {
+    const { d, home } = deps("linux");
+    const s = systemService(d);
+    await s.ensure();
+    const rescue = (k: string) =>
+      (s.problems?.() ?? []).filter((p) => p.kind === k);
+    expect(rescue("rescue-missing")).toEqual([]);
+    expect(rescue("rescue-open")).toEqual([]);
+    chmodSync(join(home, "rescue"), 0o755);
+    expect(rescue("rescue-open")).toEqual([
+      { kind: "rescue-open", path: join(home, "rescue") },
+    ]);
+    chmodSync(join(home, "rescue"), 0o700);
+    rmSync(join(home, "rescue"));
+    expect(rescue("rescue-missing")).toEqual([
+      { kind: "rescue-missing", path: join(home, "rescue") },
+    ]);
+  });
+
+  it("doctor's problems: a launcher owned by another user is flagged, whatever the deps' uid (#2552)", async () => {
+    const { d, home } = deps("linux");
+    const mine = process.getuid?.() ?? 0;
+    const s = systemService({ ...d, uid: 7, ownerUid: () => mine });
+    await s.ensure();
+    const open = () =>
+      (s.problems?.() ?? []).filter((p) => p.kind === "rescue-open");
+    // The fake launchd uid (7) is not who owns the file: still fine.
+    expect(open()).toEqual([]);
+    const other = systemService({ ...d, ownerUid: () => mine + 1 });
+    expect(
+      (other.problems?.() ?? []).filter((p) => p.kind === "rescue-open"),
+    ).toEqual([{ kind: "rescue-open", path: join(home, "rescue") }]);
+    // No uid to compare (win32): only the mode counts.
+    const none = systemService({ ...d, ownerUid: () => undefined });
+    expect(
+      (none.problems?.() ?? []).filter((p) => p.kind === "rescue-open"),
+    ).toEqual([]);
+  });
+
   it("writes the unit, reloads, enables and restarts it", async () => {
     const { d, calls, userHome, home } = deps("linux");
     const s = systemService(d);
     await s.ensure();
     const u = readFileSync(unitOf(userHome), "utf8");
     expect(u).toContain(
-      `ExecStart="${home}/bin/node" "${home}/bin/dist/index.js" daemon`,
+      `ExecStart="${home}/rescue" "${home}/bin/dist/index.js" daemon`,
     );
     expect(u).toContain(
       'Environment="PATH=/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/bin"',
@@ -907,7 +946,11 @@ describe("systemService: a daemon that will not stop (round 2)", () => {
     mkdirSync(join(pkg, "dist"));
     writeFileSync(join(pkg, "dist/index.js"), "// bundle");
     writeFileSync(join(pkg, "package.json"), '{ "version": "3.4.5" }');
-    installCli(home, { kind: "bundle", file: join(pkg, "dist/index.js") });
+    installCli(
+      home,
+      { kind: "bundle", file: join(pkg, "dist/index.js") },
+      process.execPath,
+    );
     expect(readlinkSync(join(home, "bin"))).toBe(join("versions", "3.4.5"));
     expect(JSON.parse(readFileSync(join(home, "update.json"), "utf8"))).toEqual(
       { armed: true, current: "3.4.5" },
