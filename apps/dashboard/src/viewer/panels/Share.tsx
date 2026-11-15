@@ -18,12 +18,14 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { useAuthProviders } from "../../api/auth";
 import { ApiClientError } from "../../api/client";
 import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
+  qk,
   useDeleteShare,
   useMembers,
   usePatchArtifact,
@@ -55,6 +57,7 @@ import {
   outsideLine,
   roleLabel,
   roleOptions,
+  type WideShare,
   type WideShareRole,
 } from "./shareRoles";
 
@@ -221,6 +224,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const publicOff =
     space?.publicLinks === false && artifact.visibility !== "public";
   const shares = useShares(id, people);
+  const qc = useQueryClient();
   const patch = usePatchArtifact(id);
   const put = usePutShare(id);
   const del = useDeleteShare(id);
@@ -319,12 +323,31 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
+            // #2590: the server may store another role than the one picked
+            // (an outsider's Editor becomes commenter): the row shows the
+            // stored one at once, before the list refetches.
+            qc.setQueryData<WideShare[]>(qk.shares(id), (list) => {
+              if (!list) return list;
+              const was = list.find((x) => x.email === r.email);
+              const row: WideShare = {
+                ...was,
+                email: r.email,
+                role: r.role,
+                createdAt: r.createdAt,
+                ...(r.guest !== undefined ? { guest: r.guest } : {}),
+              };
+              return was
+                ? list.map((x) => (x === was ? row : x))
+                : [...list, row];
+            });
+            // The list's own answer (viewOnly and the rest) follows.
+            void qc.invalidateQueries({ queryKey: qk.shares(id) });
             setShared({
               email: e,
               emailed: r.emailed,
               recipient: r.recipient,
               with: signInWith(r.signInMethods),
-              role: pick,
+              role: r.role,
             });
           },
           onError: (x) => fail(x, "Couldn't share"),

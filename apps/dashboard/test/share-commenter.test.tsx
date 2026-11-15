@@ -228,3 +228,55 @@ describe("a member who can't list members, codes only", () => {
     expect(screen.queryByText(/^Outside your team/)).toBeNull();
   });
 });
+
+describe("the stored role, not the one picked", () => {
+  it("an outsider picked as Editor and stored as commenter: the row says Can comment, with no Editor note", async () => {
+    let list: object[] = [];
+    const puts: unknown[] = [];
+    const server = [
+      http.get("*/api/v1/artifacts/:id/shares", () => HttpResponse.json(list)),
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const b = (await request.json()) as { email: string; role: string };
+        puts.push(b);
+        // OA Comments: the server clamps an outsider's editor to commenter
+        // and answers with what it stored.
+        const row = {
+          email: b.email,
+          role: "commenter",
+          createdAt: "2026-11-15T00:00:00.000Z",
+          guest: true,
+        };
+        list = [row];
+        return HttpResponse.json({ ...row, emailed: false });
+      }),
+    ];
+    // A member who can't list members, codes only: the client can't tell.
+    mountHosted(
+      panel,
+      { providers: ["email"] },
+      (m) => ({ ...m, user: { ...m.user, role: "member" } }),
+      server,
+    );
+    const select = await screen.findByRole("combobox", { name: "Invite role" });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "gia@elsewhere.test" },
+    });
+    fireEvent.keyDown(select, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(puts).toEqual([{ email: "gia@elsewhere.test", role: "editor" }]),
+    );
+    expect(
+      await screen.findByRole("combobox", {
+        name: "Role for gia@elsewhere.test",
+      }),
+    ).toHaveTextContent("Can comment");
+    // The Editor note goes with an Editor share; this one was stored as commenter.
+    expect(
+      screen.queryByText(
+        "Guests can only view. If they become a member, they'll be able to edit.",
+      ),
+    ).toBeNull();
+  });
+});
