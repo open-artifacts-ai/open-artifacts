@@ -62,7 +62,11 @@ beforeAll(() => {
   prev = installDelivery(bus);
 });
 afterAll(() => installDelivery(prev));
-beforeEach(() => {
+beforeEach(async () => {
+  // #2559: these tests are not about the hourly mention limits.
+  await E.DB.prepare(
+    "delete from counters where key like 'notice:mention:%'",
+  ).run();
   bus.sent = [];
   bus.outcome = "delivered";
 });

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.186.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.186.0...v0.186.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **bus:** a live session is never told to run the installer ([#2364](https://github.com/open-artifacts-ai/open-artifacts/issues/2364)) ([#2548](https://github.com/open-artifacts-ai/open-artifacts/issues/2548)) ([0ecb9d5](https://github.com/open-artifacts-ai/open-artifacts/commit/0ecb9d5fb9688ee09cc1b68bcd572ef35ac27cb4))
+* **viewer:** General access reads Restricted, Anyone at {instance}, Anyone with the link ([#2509](https://github.com/open-artifacts-ai/open-artifacts/issues/2509)) ([#2538](https://github.com/open-artifacts-ai/open-artifacts/issues/2538)) ([eadf0e5](https://github.com/open-artifacts-ai/open-artifacts/commit/eadf0e5701989d01418f7b77702e2024d1a4c138))
+
 ## [0.186.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.185.0...v0.186.0) (2026-11-15)
 
 
