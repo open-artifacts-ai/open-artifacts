@@ -108,12 +108,23 @@ function Shell({
 }
 
 /**
- * PLACEHOLDER (#2590, for OA Product; the issue's Strings have no line for
- * it): Google turned this guest away (the address isn't a Google account
- * the server can trust for it), so they log in with an emailed code.
+ * OA Product (#2590 G2), word for word. (a) needs_code: Google couldn't
+ * vouch for the shared address ({email} is the masked address the link
+ * names); codes on, then off. (b) no_access from Google: they used another
+ * account (no link, so no address).
+ */
+export const needsCode = (email: string) =>
+  `Google couldn't confirm ${email}. We'll email a code to that address. After that, Google works.`;
+export const needsCodeNoCodes = (email: string) =>
+  `Google couldn't confirm ${email}. Ask the person who shared this page to use your Gmail or Google Workspace address.`;
+export const WRONG_ACCOUNT =
+  "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
+/**
+ * PLACEHOLDER (for OA Product): a needs_code with no address to name (no
+ * link=1, or the link couldn't be read).
  */
 export const NEEDS_CODE =
-  "We couldn't log you in with Google for this address. We'll email you a code instead.";
+  "Google couldn't confirm that address. Get a code at the address this page was shared with.";
 
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
@@ -235,6 +246,8 @@ function HostedSignIn({
 }) {
   const name = useInstanceName();
   const [step, setStep] = useState<"email" | "code">("email");
+  // #2590 G2 (b): "Email me a code" opens the code form.
+  const [codeForm, setCodeForm] = useState(false);
   const onStep = useCallback((next: "email" | "code") => setStep(next), []);
   // A provider's start must be a same-origin path: a hostile one is dropped.
   const google = providers.providers.find(
@@ -248,7 +261,7 @@ function HostedSignIn({
   const email = providers.providers.find((p) => p.id === "email");
   // #2590 G2: the masked address the link names (PROVISIONAL, codeLink.ts).
   const navigate = useNavigate();
-  const wantLink = error === "needs_code" && link === true && !!email;
+  const wantLink = error === "needs_code" && link === true;
   const linkQuery = useCodeLink(wantLink);
   const linked = wantLink ? linkQuery : null;
   // No link any more (404): start over, at the sign-in page.
@@ -330,40 +343,78 @@ function HostedSignIn({
 
   const guests = email?.guests ? email : undefined;
 
-  // #2590 G2: Google turned a guest away (needs_code, link=1): the code
-  // for the address the server holds, shown masked; a note, not an error.
-  if (error === "needs_code" && linked && email)
+  // #2590 G2 (a): Google couldn't confirm the shared address (needs_code,
+  // link=1): the masked address the server holds, and a code for it when
+  // codes are on; with codes off, only what to ask for.
+  if (linked)
+    return (
+      <>
+        <h1>Log in to {name}</h1>
+        {linked.isPending ? (
+          <p aria-busy="true" className="oa-split-sub" />
+        ) : linked.data && !email ? (
+          <Notice tone="info">{needsCodeNoCodes(linked.data)}</Notice>
+        ) : linked.data && email ? (
+          <>
+            {step === "email" && (
+              <div className="mb-4">
+                <Notice tone="info">{needsCode(linked.data)}</Notice>
+              </div>
+            )}
+            <CodeSignIn
+              next={next}
+              turnstileSiteKey={email.turnstileSiteKey}
+              googleHref={googleHref}
+              onStep={onStep}
+              variant="guest"
+              link={{ maskedEmail: linked.data }}
+              onStartOver={startOver}
+              submitLabel="Email me a code"
+            />
+          </>
+        ) : (
+          // Asking failed (not a 404, which starts over): the usual page.
+          <Notice tone="info">{NEEDS_CODE}</Notice>
+        )}
+      </>
+    );
+
+  // #2590 G2 (b): Google said no_access, they used another account. Try
+  // another, or get a code at the shared address (no link: an empty field).
+  if (error === "no_access" && via === "google" && google)
     return (
       <>
         <h1>Log in to {name}</h1>
         {step === "email" && (
           <div className="mb-4">
-            <Notice tone="info">{NEEDS_CODE}</Notice>
+            <Notice tone="info">{WRONG_ACCOUNT}</Notice>
           </div>
         )}
-        {linked.isPending ? (
-          <p aria-busy="true" className="oa-split-sub" />
-        ) : linked.data ? (
+        {codeForm && email ? (
           <CodeSignIn
             next={next}
             turnstileSiteKey={email.turnstileSiteKey}
             googleHref={googleHref}
             onStep={onStep}
             variant="guest"
-            link={{ maskedEmail: linked.data }}
-            onStartOver={startOver}
             submitLabel="Email me a code"
           />
         ) : (
-          // Asking failed (not a 404): the usual way in, by hand.
-          <CodeSignIn
-            next={next}
-            turnstileSiteKey={email.turnstileSiteKey}
-            googleHref={googleHref}
-            onStep={onStep}
-            variant="guest"
-            submitLabel="Email me a code"
-          />
+          <>
+            <Button asChild className="oa-split-btn">
+              <a href={googleHref}>Try another account</a>
+            </Button>
+            {email && (
+              <Button
+                variant="outline"
+                className="oa-split-btn"
+                style={{ marginTop: 12 }}
+                onClick={() => setCodeForm(true)}
+              >
+                Email me a code
+              </Button>
+            )}
+          </>
         )}
       </>
     );

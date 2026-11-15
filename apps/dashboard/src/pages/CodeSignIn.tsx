@@ -457,10 +457,6 @@ export function CodeSignIn({
         noValidate
         aria-busy={busy || undefined}
       >
-        <p style={{ margin: 0, fontSize: 13 }}>Email</p>
-        <p data-masked-email="" style={{ margin: "4px 0 0", fontWeight: 600 }}>
-          {link.maskedEmail}
-        </p>
         {error && (
           <p role="alert" style={{ margin: "8px 0 0", fontSize: 13 }}>
             {error}

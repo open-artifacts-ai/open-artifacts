@@ -6,7 +6,12 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
-import { NEEDS_CODE } from "../src/pages/SignIn";
+import {
+  NEEDS_CODE,
+  needsCode,
+  needsCodeNoCodes,
+  WRONG_ACCOUNT,
+} from "../src/pages/SignIn";
 import { calls, installHarness, mountHosted } from "./harness";
 
 installHarness();
@@ -42,8 +47,12 @@ it("shows the masked address the link names, with no field to type in", async ()
     undefined,
     linkRoutes("s***@partner.org"),
   );
-  expect(await screen.findByText("s***@partner.org")).toBeVisible();
-  expect(screen.getByText(NEEDS_CODE)).toBeVisible();
+  // Product: the masked address in the note.
+  expect(
+    await screen.findByText(
+      "Google couldn't confirm s***@partner.org. We'll email a code to that address. After that, Google works.",
+    ),
+  ).toBeVisible();
   expect(screen.queryByRole("textbox", { name: "Email" })).toBeNull();
   expect(screen.getByRole("button", { name: "Email me a code" })).toBeVisible();
   // Nothing about the address in the URL.
@@ -74,4 +83,42 @@ it("needs_code without link=1: the note as a banner on the usual page", async ()
   mountHosted("/sign-in?error=needs_code", true, undefined, linkRoutes("x"));
   expect(await screen.findByText(NEEDS_CODE)).toBeVisible();
   expect(screen.queryByText("x")).toBeNull();
+});
+
+it("(a) with codes off: only what to ask for, no button", async () => {
+  mountHosted(
+    URL_IN,
+    { providers: ["google"] },
+    undefined,
+    linkRoutes("s***@partner.org"),
+  );
+  expect(
+    await screen.findByText(
+      "Google couldn't confirm s***@partner.org. Ask the person who shared this page to use your Gmail or Google Workspace address.",
+    ),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Email me a code" })).toBeNull();
+  expect(needsCodeNoCodes("a")).toContain(
+    "Ask the person who shared this page",
+  );
+  expect(needsCode("a")).toContain("After that, Google works.");
+});
+
+it("(b) no_access from Google: try another account, or a code at an empty field", async () => {
+  mountHosted("/sign-in?error=no_access&via=google&next=%2Fa%2FX1");
+  expect(await screen.findByText(WRONG_ACCOUNT)).toBeVisible();
+  expect(
+    screen.getByRole("link", { name: "Try another account" }),
+  ).toHaveAttribute("href", "/auth/login/google?next=%2Fa%2FX1");
+  fireEvent.click(screen.getByRole("button", { name: "Email me a code" }));
+  expect(await screen.findByRole("textbox", { name: "Email" })).toHaveValue("");
+});
+
+it("(b) with codes off: Try another account only", async () => {
+  mountHosted("/sign-in?error=no_access&via=google", { providers: ["google"] });
+  expect(await screen.findByText(WRONG_ACCOUNT)).toBeVisible();
+  expect(
+    screen.getByRole("link", { name: "Try another account" }),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Email me a code" })).toBeNull();
 });
