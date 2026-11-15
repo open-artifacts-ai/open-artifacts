@@ -22,6 +22,7 @@ import {
   type Caller,
   caller,
   canCtx,
+  capOfCaller,
   dataWriteRefusal,
   planOfMember,
   planRefusal,
@@ -247,7 +248,11 @@ async function gate(
     who.kind !== "user" && kind === "write" ? await planNow(c.env) : null;
   // Each gate kind is one policy action; checked after the anonymous 401s
   // below so their messages keep their order.
-  const ctx = { ...canCtx(who, a, plan), personal: r.personal };
+  const ctx = {
+    ...canCtx(who, a, plan),
+    personal: r.personal,
+    commenterShare: r.commenter,
+  };
   const allowed = () => can(r.level, GATE_ACTION[kind], ctx);
   /**
    * A refused write: plan_required / plan_read_only when only the plan lock
@@ -272,7 +277,8 @@ async function gate(
     if (kind !== "anonId" && !allowed()) throw refused();
     return {
       artifactId,
-      actor: `u:${who.user.id}`,
+      // A guest cap writes as "g:{id}", so a reader can tell outsider content.
+      actor: `${capOfCaller(who) === "guest" ? "g" : "u"}:${who.user.id}`,
       anon: null,
       authzAt,
       // CREATOR: a data write at editor level or above (a viewer's is free).

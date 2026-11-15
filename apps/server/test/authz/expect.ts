@@ -353,6 +353,12 @@ export const CAPPED_WRITES: readonly string[] = [
   "DELETE /api/v1/bus/machines/:id",
   "DELETE /api/v1/bus/reach/:id",
   "POST /api/v1/notices/guest_shares/dismiss",
+  // #2590: the route's own policy decides (a guest holding a commenter share).
+  "PUT /api/v1/artifacts/:id/data/:col/:doc",
+  "PATCH /api/v1/artifacts/:id/data/:col/:doc",
+  "DELETE /api/v1/artifacts/:id/data/:col/:doc",
+  "POST /api/v1/artifacts/:id/comments",
+  "POST /api/v1/artifacts/:id/comments/:threadId/replies",
 ];
 
 /**

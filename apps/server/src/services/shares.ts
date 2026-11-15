@@ -16,7 +16,7 @@ import {
   suspendedMember,
 } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { capOf } from "../auth/policy.js";
+import { capOf, isCommenterRole } from "../auth/policy.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
@@ -40,10 +40,13 @@ export const MAX_SHARES = 200;
  * What a guest's share comes to, in words. Copy only: access is decided in
  * src/auth. A stored editor gets edit back if they become a member.
  */
+const GUEST_LINE: Record<ShareRole, string> = {
+  viewer: "They're a guest, so they can only view.",
+  commenter: "They're a guest, so they can view and comment.",
+  editor: "They're a guest, so they can only view for now.",
+};
 export const guestShareLine = (s: { role: ShareRole }): string =>
-  s.role === "viewer"
-    ? "They're a guest, so they can only view."
-    : "They're a guest, so they can only view for now.";
+  GUEST_LINE[s.role];
 
 const toShare = (r: {
   email: string;
@@ -101,7 +104,7 @@ export async function listShares(
     rows.map(async (r) => ({
       ...toShare(r),
       ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
-      ...(viewOnly(r) ? { viewOnly: true } : {}),
+      ...(viewOnly(r) && !isCommenterRole(r.role) ? { viewOnly: true } : {}),
     })),
   );
 }
@@ -163,7 +166,7 @@ export async function putShare(
   env: Env,
   user: Member,
   id: string,
-  s: { email: string; role: ShareRole },
+  s: { email: string; role?: ShareRole },
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<ShareResult> {
   const artifact = await ownerOnly(env, user, id);
@@ -175,6 +178,12 @@ export async function putShare(
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))
     throw new ApiError("bad_request", "Cannot share with yourself");
+  // No role given: a guest comments, anyone else views.
+  const reach = await shareReach(env, email);
+  const guest = await guestRecipients(env)(email, reach.role);
+  // An outsider is never stored as editor: a guest comments at most.
+  const asked = s.role ?? (guest ? "commenter" : "viewer");
+  const role: ShareRole = guest && asked === "editor" ? "commenter" : asked;
   const now = Date.now();
   // One atomic statement: a new email is inserted only while under the cap;
   // updating an existing share bypasses it, and the same role is a no-op.
@@ -194,14 +203,14 @@ export async function putShare(
        ON CONFLICT (artifact_id, email) DO UPDATE SET role = excluded.role
          WHERE shares.role <> excluded.role
        RETURNING email, role, created_at AS createdAt`,
-    ).bind(id, email, s.role, user.id, now, MAX_SHARES),
-    shareAudit(env, "artifact.share", user, artifact, { role: s.role }),
+    ).bind(id, email, role, user.id, now, MAX_SHARES),
+    shareAudit(env, "artifact.share", user, artifact, { role }),
   ]);
   // No row back: unchanged (already at this role) or refused at the cap.
   const row =
     res?.results[0] ??
     (await stmt(env.DB, SAME_SHARE)
-      .bind(id, email, s.role)
+      .bind(id, email, role)
       .first<{ email: string; role: string; createdAt: number }>());
   if (!row)
     throw new ApiError(
@@ -213,7 +222,7 @@ export async function putShare(
   // A changed share at viewer is a downgrade from editor: the sockets opened
   // as editor close, and the artifact's DO refuses accepts authorized before
   // it (P3 T7). Not the person's presence: their other artifacts are unaffected.
-  if (res?.results[0] && !created && s.role === "viewer")
+  if (res?.results[0] && !created && role !== "editor")
     await closeRuntimeSockets(env, [id], "share narrowed", ctx);
   // A guest deactivated when their last share went comes back on a new one
   // (same row: their history and name are intact). After the insert, so a
@@ -234,13 +243,11 @@ export async function putShare(
   if (created) await inBackground(ctx, notifyShared(env, user.id, email, id));
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
-  const reach = await shareReach(env, email);
-  const guest = await guestRecipients(env)(email, reach.role);
   return {
     ...toShare(row),
     ...(guest ? { guest: true } : {}),
     emailed:
-      created && (await emailShare(env, user, artifact, email, s.role, reach)),
+      created && (await emailShare(env, user, artifact, email, role, reach)),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
     signInMethods: reach.methods,
