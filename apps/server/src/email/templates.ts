@@ -111,6 +111,7 @@ const FORMAT_LABEL: Record<Format, string> = {
 };
 const ROLE_LABEL: Record<ShareRole, string> = {
   viewer: "Viewer",
+  commenter: "Commenter",
   editor: "Editor",
 };
 
@@ -235,7 +236,7 @@ export function shareEmail(
 
 const CODE_TXT = `Your {{instanceName}} login code is {{code}}
 
-Enter it on the login page. It expires in {{minutes}} minutes and works once.
+{{enterLine}} It expires in {{minutes}} minutes and works once.
 
 If you didn't ask for this, ignore this email: nobody can log in without the code.
 
@@ -247,11 +248,16 @@ const CODE_HTML = `<!doctype html>
 <body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <p>Your {{instanceName}} login code is</p>
 <p style="font:600 28px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px">{{code}}</p>
-<p>Enter it on the login page. It expires in {{minutes}} minutes and works once.</p>
+<p>{{enterLine}} It expires in {{minutes}} minutes and works once.</p>
 <p style="color:#5d636e">If you didn't ask for this, ignore this email: nobody can log in without the code.</p>
 <p style="color:#5d636e">{{appHost}}</p>
 </body></html>
 `;
+
+/** The line that tells a login code from a Google link what it does (#2590 G2; OA Product owns the wording). */
+export const GOOGLE_LINK_CODE_LINE = (email: string): string =>
+  `Enter this code to finish logging in with Google as ${email}.`;
+const PLAIN_CODE_LINE = "Enter it on the login page.";
 
 /**
  * A login code, shown as "1234 5678" (Design). No link carries the code,
@@ -262,6 +268,8 @@ export function loginCodeEmail(p: {
   instance: string;
   appHost: string;
   minutes: number;
+  /** The address of the Google account this code finishes logging in (a link code). */
+  linkEmail?: string;
 }): EmailContent {
   if (!/^\d{8}$/.test(p.code)) throw new Error("invalid code");
   const url = new URL(`https://${p.appHost}/`);
@@ -271,6 +279,9 @@ export function loginCodeEmail(p: {
     code: `${p.code.slice(0, 4)} ${p.code.slice(4)}`,
     minutes: String(p.minutes),
     appHost: url.host,
+    enterLine: p.linkEmail
+      ? GOOGLE_LINK_CODE_LINE(oneLine(p.linkEmail, 320))
+      : PLAIN_CODE_LINE,
   };
   return render(
     CODE_HTML,

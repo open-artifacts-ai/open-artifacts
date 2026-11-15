@@ -177,9 +177,11 @@ describe("GET /llms.txt", () => {
     const steps = sections(txt).get("Setup steps") ?? "";
     expect(steps).toMatch(/1\. \*\*Connect\.\*\*/);
     expect(steps).toMatch(/2\. \*\*Install the bus\.\*\*/);
+    // No release pin in this build: no install line, and never a plain npx one.
     expect(steps).toContain(
-      `npx @open-artifacts/bus install --instance ${skillOrigin(HOST)}`,
+      "The bus can't be installed from this build of the instance",
     );
+    expect(steps).not.toContain("npx @open-artifacts/bus install");
     expect(steps).toContain("They approve this machine once, in their browser");
     expect(steps).toContain("QUESTION FOR YOUR USER");
     expect(steps).toContain(
@@ -497,5 +499,81 @@ describe("content host: an artifact's .md and .txt files", () => {
       expect(r.status, p).toBe(200);
       expect(await r.text(), p).toBe(body);
     }
+  });
+});
+
+// #2543: the first install runs only the bytes it checked.
+describe("the bus install step (#2543)", () => {
+  const PIN = {
+    version: "1.2.3",
+    integrity: `sha512-${"A".repeat(86)}==`,
+  };
+  const stepOf = (txt: string) =>
+    txt.slice(
+      txt.indexOf("2. **Install the bus.**"),
+      txt.indexOf("3. **Habit"),
+    );
+
+  it("with a pin: registry install, lockfile check, audit, then node runs the installer", () => {
+    const origin = skillOrigin(HOST);
+    const step = stepOf(renderLlms(HOST, { bus: true, pin: PIN }));
+    const at = (needle: string) => {
+      const i = step.indexOf(needle);
+      expect(i, needle).toBeGreaterThan(-1);
+      return i;
+    };
+    const order = [
+      "npm install --ignore-scripts --registry https://registry.npmjs.org @open-artifacts/bus@1.2.3",
+      PIN.integrity,
+      "npm audit signatures",
+      `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" install --instance ${origin}`,
+    ].map(at);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(step).toContain("If the check prints MISMATCH, stop.");
+    expect(step).toContain(
+      "If another command fails, stop too, and tell the person which command failed and what it printed. Don't try another way to install.",
+    );
+    expect(step).toContain("They approve this machine once, in their browser");
+    expect(step).not.toMatch(/npx @open-artifacts\/bus[ @]install/);
+    expect(step).not.toContain("npm pack");
+    expect(step).not.toContain(".bin/oa-bus");
+  });
+
+  it("without a pin: no install line at all, and why", () => {
+    const txt = renderLlms(HOST, {
+      bus: true,
+      pin: null,
+      pinWhy: "proof_failed: issuer mismatch",
+    });
+    const step = stepOf(txt);
+    expect(step).toContain(
+      "The bus can't be installed from this build of the instance",
+    );
+    expect(step).toContain("proof_failed: issuer mismatch");
+    expect(step).not.toMatch(
+      /npm install|npm pack|install --instance|dist\/index\.js/,
+    );
+    expect(txt).not.toContain("npx @open-artifacts/bus install");
+    expect(step).toContain("Then go on with the next step.");
+  });
+
+  it("a build that was never pinned (tests, CI, a dev checkout) says so", () => {
+    const step = stepOf(renderLlms(HOST, { bus: true }));
+    expect(step).toContain("this build was not asked to verify a bus release");
+    expect(step).not.toContain("install --instance");
+  });
+
+  it("bus off: nothing about the bus install", () => {
+    const txt = renderLlms(HOST, { bus: false, pin: PIN });
+    expect(txt).not.toContain("npm install");
+    expect(txt).not.toContain("npx @open-artifacts/bus");
+  });
+
+  it("/upgrade.md no longer sends anyone to npx", async () => {
+    const r = await get(`${APP}/upgrade.md`);
+    const txt = await r.text();
+    expect(txt).not.toContain("npx @open-artifacts/bus@latest");
+    expect(txt).not.toContain("npx @open-artifacts/bus install");
+    expect(txt).toContain('"Install the bus" step');
   });
 });

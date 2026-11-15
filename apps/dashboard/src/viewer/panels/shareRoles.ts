@@ -1,40 +1,45 @@
-// #2590: per-share roles, with "commenter" for people outside the instance.
-//
-// PROVISIONAL (#2590, until OA Comments' contract PR lands in
-// packages/shared): ShareRoleSchema there becomes viewer | commenter | editor
-// with no new field, and shares to an outside address default to commenter.
-// Until then the dashboard widens the role here; swap these for the shared
-// schemas when it lands.
-import {
-  ShareRecipientSchema,
-  ShareResultSchema,
-  ShareSchema,
-} from "@oa/shared";
+// #2590: per-share roles, with "commenter" (Can comment) for people outside
+// the instance. The role is @oa/shared's ShareRole (#2600); this file holds
+// the Share panel's choices, labels, outside-address rules and notes.
+import { ShareResultSchema, type ShareRole } from "@oa/shared";
 import { z } from "zod";
 
-export const WideShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
-export type WideShareRole = z.infer<typeof WideShareRoleSchema>;
-export const WideShareSchema = ShareSchema.extend({
-  role: WideShareRoleSchema,
-});
-export type WideShare = z.infer<typeof WideShareSchema>;
 /**
- * PROVISIONAL (#2590, until OA Backend's reason lands in packages/shared):
- * "workspace_only": the address can open the page only if it's a Google
- * account (Google is the only way in, and codes are off). A note, not an
- * error: the share is saved.
+ * PROVISIONAL (#2590, until OA Backend's #2620 lands in packages/shared): a
+ * saved share that sent no email says why. "outside_no_unsubscribe": no
+ * email goes outside until "Don't email me again" exists; "member_limit" /
+ * "instance_limit" / "limit": over today's limit for new outside addresses.
  */
-export const WideShareRecipientSchema = ShareRecipientSchema.extend({
-  reason: z.enum([
-    ...ShareRecipientSchema.shape.reason.options,
-    "workspace_only",
-  ]),
+export const NOT_EMAILED = [
+  "outside_no_unsubscribe",
+  "member_limit",
+  "instance_limit",
+  "limit",
+] as const;
+export type NotEmailed = (typeof NOT_EMAILED)[number];
+export const ShareSavedSchema = ShareResultSchema.extend({
+  notEmailed: z.enum(NOT_EMAILED).optional(),
 });
-export type WideShareRecipient = z.infer<typeof WideShareRecipientSchema>;
-export const WideShareResultSchema = ShareResultSchema.extend({
-  role: WideShareRoleSchema,
-  recipient: WideShareRecipientSchema.optional(),
-});
+export type ShareSaved = z.infer<typeof ShareSavedSchema>;
+
+/** OA Product: the share is saved, and no email went. */
+export const NO_EMAIL_LINE =
+  "We won't email them about this share. Copy the link and send it yourself.";
+/** OA Product (#2620): over today's limits for new outside addresses. */
+export const memberLimitLine = (org: string) =>
+  `You've shared with 20 new people outside ${org} today. Try again tomorrow.`;
+export const instanceLimitLine = (org: string) =>
+  `${org} has reached today's limit for sharing with new people outside. Try again tomorrow.`;
+/** The line for a share that sent no email, by the server's reason. */
+export function notEmailedLine(
+  reason: NotEmailed | undefined,
+  org: string,
+): string {
+  if (reason === "member_limit") return memberLimitLine(org);
+  if (reason === "instance_limit" || reason === "limit")
+    return instanceLimitLine(org);
+  return NO_EMAIL_LINE;
+}
 
 /** OA Product (#2590): the note for a workspace_only share. */
 export const workspaceOnlyNote = (email: string) =>
@@ -45,9 +50,8 @@ export const WORKSPACE_ONLY_ADMIN = {
   link: "Settings, Login",
   after: ".",
 };
-export type WideShareInput = { email: string; role: WideShareRole };
 
-type Option = { value: WideShareRole; label: string };
+type Option = { value: ShareRole; label: string };
 /** A member's choices, as before. */
 export const MEMBER_ROLES: Option[] = [
   { value: "viewer", label: "Viewer" },
@@ -59,10 +63,10 @@ export const OUTSIDER_ROLES: Option[] = [
   { value: "viewer", label: "Can view" },
 ];
 /** #2590: an outsider's share starts as Can comment. */
-export const OUTSIDER_DEFAULT: WideShareRole = "commenter";
+export const OUTSIDER_DEFAULT: ShareRole = "commenter";
 
 /** What a share's role reads as: a commenter is "Can comment" everywhere. */
-export function roleLabel(role: WideShareRole, outsider: boolean): string {
+export function roleLabel(role: ShareRole, outsider: boolean): string {
   if (role === "commenter") return "Can comment";
   const list = outsider ? OUTSIDER_ROLES : MEMBER_ROLES;
   return (
@@ -77,10 +81,7 @@ export function roleLabel(role: WideShareRole, outsider: boolean): string {
  * outside them (an outsider's old Editor share, a member's commenter one)
  * stays listed so the picker never shows a blank.
  */
-export function roleOptions(
-  outsider: boolean,
-  current?: WideShareRole,
-): Option[] {
+export function roleOptions(outsider: boolean, current?: ShareRole): Option[] {
   const list = outsider ? OUTSIDER_ROLES : MEMBER_ROLES;
   if (!current || list.some((o) => o.value === current)) return list;
   return [...list, { value: current, label: roleLabel(current, false) }];

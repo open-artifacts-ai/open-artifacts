@@ -25,7 +25,7 @@ const bad = (path: string, reason: string, message: string) =>
 export const apiFormat = (format: string, doc: number): Format =>
   doc === 1 ? "doc" : (format as Format);
 
-/** A doc's sharing fields that don't apply (patch and publish): 400 with the next step. */
+/** A doc's sharing fields that don't apply (patch and publish): 400 bad_request with the next step. */
 export function refuseDocSettings(
   p: Pick<
     ArtifactPatch,
@@ -91,9 +91,12 @@ export const notConvertible = () =>
     "Other artifacts never become docs. Leave id out to create a new doc from this Markdown, or publish this artifact in its own format.",
   );
 
-/** Docs can't be created yet (DOC_SWITCH.creation is off): 400 with the next step. */
+/** Docs can't be created yet (DOC_SWITCH.creation is off): 400 docs_unavailable with the next step. */
 export const docsUnavailable = () =>
-  bad("format", "docs_unavailable", DOCS_UNAVAILABLE_MESSAGE);
+  new ApiError("docs_unavailable", DOCS_UNAVAILABLE_MESSAGE, {
+    path: "format",
+    reason: "docs_unavailable",
+  });
 
 /** Docs on a self-host without Workers Paid: 400 docs_need_paid. */
 export const docsNeedPaid = () =>

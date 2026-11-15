@@ -11,7 +11,7 @@ import {
   removeMember,
   SYSTEM_ACTOR,
 } from "../src/services/members.js";
-import { direct, seedUser, uniq } from "./auth-helpers.js";
+import { direct, seedShare, seedUser, uniq } from "./auth-helpers.js";
 
 // #2520 slice 1: invited people log in with their own Google account on strong
 // evidence, bound to the exact address, an existing active row only.
@@ -123,9 +123,10 @@ describe("bound identity (domains set)", () => {
     expect((await rowOf(uid)).role).toBe("member");
   });
 
-  it("a guest stays a guest (no promotion without a tenant)", async () => {
+  it("a guest stays a guest (no login path promotes one, #2590)", async () => {
     const id = gmail();
     const uid = await seedUser(id.email, "guest");
+    await seedShare(id.email);
     const { e, c } = cfgOf();
     expect(await admit(e, c, id)).toMatchObject({
       ok: true,
@@ -339,6 +340,7 @@ describe("invite expiry", () => {
   it("a share guest (no invited_at) older than 30 days is not expired", async () => {
     const id = gmail();
     const uid = await seedUser(id.email, "guest");
+    await seedShare(id.email);
     await age(uid, 90 * DAY, false);
     const { e, c } = cfgOf();
     expect(await admit(e, c, id)).toMatchObject({

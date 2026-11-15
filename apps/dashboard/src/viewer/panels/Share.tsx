@@ -2,6 +2,8 @@ import {
   type ArtifactPatch,
   type ArtifactSummary,
   type DataWriters,
+  type ShareRole,
+  type Share as ShareRow,
   ShareSchema,
   type Visibility,
   viewerPath,
@@ -52,14 +54,13 @@ import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
 import {
+  type NotEmailed,
+  notEmailedLine,
   OUTSIDER_DEFAULT,
   outsideAddress,
   outsideLine,
   roleLabel,
   roleOptions,
-  type WideShare,
-  type WideShareRecipient,
-  type WideShareRole,
   WORKSPACE_ONLY_ADMIN,
   workspaceOnlyNote,
 } from "./shareRoles";
@@ -191,13 +192,13 @@ function RoleSelect({
   outsider = false,
 }: {
   label: string;
-  value: WideShareRole;
-  onChange: (r: WideShareRole) => void;
+  value: ShareRole;
+  onChange: (r: ShareRole) => void;
   outsider?: boolean;
 }) {
   const options = roleOptions(outsider, value);
   return (
-    <Select value={value} onValueChange={(v) => onChange(v as WideShareRole)}>
+    <Select value={value} onValueChange={(v) => onChange(v as ShareRole)}>
       <SelectTrigger
         aria-label={label}
         size="sm"
@@ -248,19 +249,20 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const changed = staged !== artifact.visibility;
   const [email, setEmail] = useState("");
   // A member's pick, and an outsider's (#2590: Can comment unless changed).
-  const [role, setRole] = useState<WideShareRole>("viewer");
-  const [outsiderRole, setOutsiderRole] =
-    useState<WideShareRole>(OUTSIDER_DEFAULT);
+  const [role, setRole] = useState<ShareRole>("viewer");
+  const [outsiderRole, setOutsiderRole] = useState<ShareRole>(OUTSIDER_DEFAULT);
   const [invalid, setInvalid] = useState(false);
   const [shared, setShared] = useState<{
     email: string;
     emailed: boolean;
     /** Set when they can't sign in yet: the box warns instead. */
-    recipient?: WideShareRecipient;
+    recipient?: ShareRecipient;
+    /** PROVISIONAL (#2620): why no email went, when the server says. */
+    notEmailed?: NotEmailed;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
     /** The role picked: a guest's row corrects Editor, once, just after. */
-    role: WideShareRole;
+    role: ShareRole;
   } | null>(null);
   const domains = useSignInDomains();
   const state = useMe();
@@ -331,10 +333,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             // #2590: the server may store another role than the one picked
             // (an outsider's Editor becomes commenter): the row shows the
             // stored one at once, before the list refetches.
-            qc.setQueryData<WideShare[]>(qk.shares(id), (list) => {
+            qc.setQueryData<ShareRow[]>(qk.shares(id), (list) => {
               if (!list) return list;
               const was = list.find((x) => x.email === r.email);
-              const row: WideShare = {
+              const row: ShareRow = {
                 ...was,
                 email: r.email,
                 role: r.role,
@@ -351,6 +353,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               email: e,
               emailed: r.emailed,
               recipient: r.recipient,
+              ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
               with: signInWith(r.signInMethods),
               role: r.role,
             });
@@ -589,16 +592,18 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 title={`Shared with ${shared.email}`}
                 onDismiss={() => setShared(null)}
               >
-                <p>
-                  {shared.emailed
-                    ? shared.with
-                      ? `We emailed them a link. They'll log in with ${shared.with}.`
-                      : "We emailed them a link. They'll log in with a one-time code."
-                    : artifact.visibility === "public"
-                      ? "Send them this link. They can open it without logging in."
-                      : shared.with
-                        ? `Send them this link. They'll log in with ${shared.with}.`
-                        : "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact."}
+                <p data-share-sent="">
+                  {shared.notEmailed
+                    ? notEmailedLine(shared.notEmailed, install)
+                    : shared.emailed
+                      ? shared.with
+                        ? `We emailed them a link. They'll log in with ${shared.with}.`
+                        : "We emailed them a link. They'll log in with a one-time code."
+                      : artifact.visibility === "public"
+                        ? "Send them this link. They can open it without logging in."
+                        : shared.with
+                          ? `Send them this link. They'll log in with ${shared.with}.`
+                          : "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact."}
                 </p>
                 {/* emailed:false with email on is not a failure here: members and
                   re-shares are never emailed, so there's no "didn't send" line. */}

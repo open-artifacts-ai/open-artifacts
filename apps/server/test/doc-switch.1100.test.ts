@@ -56,7 +56,7 @@ describe("doc creation switch (off)", () => {
     });
     expect(r.status).toBe(400);
     const e = await errOf(r);
-    expect(e.code).toBe("bad_request");
+    expect(e.code).toBe("docs_unavailable");
     expect(e.message).toMatch(/Docs aren't available yet/);
   });
 
@@ -70,6 +70,13 @@ describe("doc creation switch (off)", () => {
     });
     expect(textOf(r)).toMatch(/Docs aren't available yet/);
     expect(r.isError).toBe(true);
+  });
+
+  it("MCP: list_artifacts does not advertise the doc format filter", async () => {
+    const tools = await client.listTools();
+    const list = tools.tools.find((t) => t.name === "list_artifacts");
+    expect(JSON.stringify(list?.inputSchema)).not.toMatch(/"doc"/);
+    expect(JSON.stringify(list?.inputSchema)).toMatch(/"markdown"/);
   });
 
   it("the skill's publish_artifact lists no doc format", () => {

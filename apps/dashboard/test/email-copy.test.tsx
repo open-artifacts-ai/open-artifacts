@@ -5,7 +5,6 @@ import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { commenterShareHandlers } from "../src/mockCommenterShares";
 import { installHarness, mount, server } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -33,8 +32,7 @@ const serve = (mode: Mode) => {
   if (mode === "disabled") return; // the harness's default handlers
   // Email on; the shared mocks answer every invite and share with emailed:false.
   const on = createHandlers({ emailEnabled: true });
-  // PROVISIONAL (#2590): an outsider's commenter share, ahead of the mocks.
-  server.use(...commenterShareHandlers(() => on), ...on);
+  server.use(...on);
   if (mode === "failed") return;
   server.use(
     http.post(`*${R.members}`, async ({ request }) => {

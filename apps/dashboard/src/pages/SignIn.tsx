@@ -1,8 +1,8 @@
 import { AUTH } from "@oa/shared";
 import { brand } from "@oa/ui/brand";
 import { Button } from "@oa/ui/shadcn";
-import { Link } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useAuthProviders } from "../api/auth";
 import {
   type AuthProviders,
@@ -14,6 +14,7 @@ import { safeNext } from "../auth/safeNext";
 import { Notice } from "../layout/Notice";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { CodeSignIn } from "./CodeSignIn";
+import { useCodeLink } from "./codeLink";
 
 /** Light and dark variants of one brand image; CSS shows the matching one. */
 function Themed({
@@ -106,6 +107,38 @@ function Shell({
   );
 }
 
+/**
+ * OA Product (#2590 G2), word for word. (a) needs_code: Google couldn't
+ * vouch for the shared address ({email} is the masked address the link
+ * names); codes on, then off. (b) no_access from Google: they used another
+ * account (no link, so no address).
+ */
+export const needsCode = (email: string) =>
+  `Google couldn't confirm ${email}. We'll email a code to that address. After that, Google works.`;
+/**
+ * OA Product: needs_code with codes off. The server sends no link then (no
+ * cookie, so no address): this line, and Try another account.
+ */
+export const NEEDS_CODE_NO_CODES =
+  "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.";
+export const WRONG_ACCOUNT =
+  "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
+/** OA Product: (b) with codes off. */
+export const WRONG_ACCOUNT_NO_CODES =
+  "That Google account doesn't have access. Log in with the account for the address this page was shared with.";
+
+/**
+ * #2590 G2 (b) is for share recipients: the server can't tell them apart,
+ * so a page link in `next` (/a/<id>) stands for it. Anything else keeps the
+ * member line.
+ */
+const isPageLink = (next: string) => /^\/a\/[^/?#]+/.test(next);
+/**
+ * OA Product (#2590 G2): needs_code without link=1, or a link that's gone
+ * (404): the usual sign-in, with this line above it.
+ */
+export const NEEDS_CODE = "That took too long. Start again.";
+
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
   error: SignInError,
@@ -131,6 +164,8 @@ const errorCopy = (
           : "You don't have access here yet. Ask an admin to invite you, then try again.";
     case "expired":
       return "Login took too long. Try again.";
+    case "needs_code":
+      return NEEDS_CODE;
     default:
       return "Login didn't work. Try again.";
   }
@@ -211,16 +246,21 @@ function HostedSignIn({
   next,
   method,
   via,
+  link,
 }: {
   providers: AuthProviders;
   error: SignInError | null;
   next: string;
+  /** #2590 G2: needs_code came with link=1 (the server holds the address). */
+  link?: boolean;
   method?: "code";
   /** Which sign-in refused a no_access. */
   via?: "access" | "google";
 }) {
   const name = useInstanceName();
   const [step, setStep] = useState<"email" | "code">("email");
+  // #2590 G2 (b): "Email me a code" opens the code form.
+  const [codeForm, setCodeForm] = useState(false);
   const onStep = useCallback((next: "email" | "code") => setStep(next), []);
   // A provider's start must be a same-origin path: a hostile one is dropped.
   const google = providers.providers.find(
@@ -232,10 +272,39 @@ function HostedSignIn({
       p.id === "access" && safeNext(p.start) === p.start,
   );
   const email = providers.providers.find((p) => p.id === "email");
+  // #2590 G2: the masked address the link names (PROVISIONAL, codeLink.ts).
+  const navigate = useNavigate();
+  const wantLink = error === "needs_code" && link === true && !!email;
+  const linkQuery = useCodeLink(wantLink);
+  const linked = wantLink ? linkQuery : null;
+  // No link any more (404): start over, at the sign-in page.
+  const startOver = useCallback(
+    () =>
+      void navigate({
+        to: SIGN_IN_PAGE as string,
+        search: { next } as never,
+        replace: true,
+      }),
+    [navigate, next],
+  );
+  // The link is gone (404) or can't be read: the usual page, with "That took
+  // too long. Start again." above it (needs_code without link=1).
+  const linkGone = wantLink && (linkQuery.data === null || linkQuery.isError);
+  useEffect(() => {
+    if (linkGone)
+      void navigate({
+        to: SIGN_IN_PAGE as string,
+        search: { error: "needs_code", next } as never,
+        replace: true,
+      });
+  }, [linkGone, navigate, next]);
   const domain = google?.domains[0];
   const googleHref = google ? startHref(google.start, next) : undefined;
+  // Design (#2590): 12px between the heading and a notice under it.
   const banner = error && (
-    <Notice tone="danger">{errorCopy(error, name, domain, via)}</Notice>
+    <div className="mt-3">
+      <Notice tone="danger">{errorCopy(error, name, domain, via)}</Notice>
+    </div>
   );
   const secondary = Boolean(google || email);
   const accessButton = access && (
@@ -297,6 +366,104 @@ function HostedSignIn({
     );
 
   const guests = email?.guests ? email : undefined;
+
+  // #2590 G2 (a): Google couldn't confirm the shared address (needs_code,
+  // link=1): the masked address the server holds, and a code for it when
+  // codes are on; with codes off, only what to ask for.
+  // #2590 G2 (a) with codes off: no link, no address (OA Product).
+  if (error === "needs_code" && !email)
+    return (
+      <>
+        <h1>Log in to {name}</h1>
+        <div className="mt-3">
+          <Notice tone="info">{NEEDS_CODE_NO_CODES}</Notice>
+        </div>
+        {/* Design: a quiet way to try again with Google. */}
+        {googleHref && (
+          <Button
+            asChild
+            variant="outline"
+            className="oa-split-btn"
+            style={{ marginTop: 16 }}
+          >
+            <a href={googleHref}>Try another account</a>
+          </Button>
+        )}
+      </>
+    );
+
+  if (linked)
+    return (
+      <>
+        <h1>Log in to {name}</h1>
+        {linked.isPending ? (
+          <p aria-busy="true" className="oa-split-sub" />
+        ) : linked.data && email ? (
+          <>
+            {step === "email" && (
+              <div className="mt-3 mb-4">
+                <Notice tone="info">{needsCode(linked.data)}</Notice>
+              </div>
+            )}
+            <CodeSignIn
+              next={next}
+              turnstileSiteKey={email.turnstileSiteKey}
+              googleHref={googleHref}
+              onStep={onStep}
+              variant="guest"
+              link={{ maskedEmail: linked.data }}
+              onStartOver={startOver}
+              submitLabel="Email me a code"
+            />
+          </>
+        ) : (
+          // Gone or unreadable: on its way to the usual page (above).
+          <p aria-busy="true" className="oa-split-sub" />
+        )}
+      </>
+    );
+
+  // #2590 G2 (b): Google said no_access, they used another account. Try
+  // another, or get a code at the shared address (no link: an empty field).
+  if (error === "no_access" && via === "google" && google && isPageLink(next))
+    return (
+      <>
+        <h1>Log in to {name}</h1>
+        {step === "email" && (
+          <div className="mt-3 mb-4">
+            <Notice tone="info">
+              {email ? WRONG_ACCOUNT : WRONG_ACCOUNT_NO_CODES}
+            </Notice>
+          </div>
+        )}
+        {codeForm && email ? (
+          <CodeSignIn
+            next={next}
+            turnstileSiteKey={email.turnstileSiteKey}
+            googleHref={googleHref}
+            onStep={onStep}
+            variant="guest"
+            submitLabel="Email me a code"
+          />
+        ) : (
+          <>
+            <Button asChild className="oa-split-btn">
+              <a href={googleHref}>Try another account</a>
+            </Button>
+            {email && (
+              <Button
+                variant="outline"
+                className="oa-split-btn"
+                style={{ marginTop: 12 }}
+                onClick={() => setCodeForm(true)}
+              >
+                Email me a code
+              </Button>
+            )}
+          </>
+        )}
+      </>
+    );
 
   // The guest code page: email step, then the code step.
   if (guests && method === "code")
@@ -384,11 +551,14 @@ export function SignIn({
   next,
   method,
   via,
+  link,
 }: {
   error?: string;
   next?: string;
   method?: string;
   via?: "access" | "google";
+  /** #2590 G2: ?link=1, the server holds a refused guest's address. */
+  link?: boolean;
 }) {
   useDocumentTitle("Log in");
   const providers = useAuthProviders();
@@ -425,6 +595,7 @@ export function SignIn({
         next={safeNext(next)}
         method={method === "code" ? "code" : undefined}
         via={via}
+        link={link}
       />
     </Shell>
   );
