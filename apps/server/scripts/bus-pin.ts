@@ -26,7 +26,13 @@ import {
 export type BusPkg = { version: string; integrity: string };
 export type PinResult =
   | { pin: BusPkg; log: string; why: string }
-  | { pin: null; log: string; why: string };
+  | {
+      pin: null;
+      log: string;
+      why: string;
+      /** The failure may only be the registry lagging behind a release: worth a retry. */
+      retryable: boolean;
+    };
 
 const SERVER_VERSION =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
@@ -100,11 +106,12 @@ export async function resolvePin(
       stable ? [] : await (deps.versions ?? publishedVersions)(),
     );
   } catch (e) {
-    return none(`could not list the published releases (${why(e)})`);
+    return none(`could not list the published releases (${why(e)})`, true);
   }
   if (target === null)
     return none(
       `no published stable release at or below server version ${serverVersion}`,
+      false,
     );
   try {
     const rel = await (deps.fetchRelease ?? fetchRelease)(target);
@@ -116,12 +123,51 @@ export async function resolvePin(
       log: `bus pin: ${PINS.packageName}@${pin.version} ${pin.integrity} (verified: Sigstore provenance, repo id ${PINS.repoId}, ${PINS.workflowPath}@${PINS.ref}; server ${serverVersion})`,
     };
   } catch (e) {
-    return none(`${PINS.packageName}@${target} was not verified (${why(e)})`);
+    // Not on npm yet (or the registry unreachable) may be lag; a refusal is not.
+    const lag =
+      !(e instanceof ReleaseError) ||
+      e.code === "fetch_failed" ||
+      e.code === "no_attestation";
+    return none(
+      `${PINS.packageName}@${target} was not verified (${why(e)})`,
+      lag,
+    );
   }
 }
 
-const none = (reason: string): PinResult => ({
+const none = (reason: string, retryable: boolean): PinResult => ({
   pin: null,
   why: reason,
+  retryable,
   log: `bus pin: none (${reason}). This build tells agents the bus cannot be installed from it.`,
 });
+
+/**
+ * The release run's version (BUS_PIN_REQUIRED=1): a missing pin fails the
+ * build, after `tries` attempts `waitMs` apart while the failure may only be
+ * the registry lagging behind the release (not yet published or listed). A
+ * refusal fails at once.
+ */
+export async function resolvePinRequired(
+  serverVersion: string,
+  deps: PinDeps = {},
+  o: {
+    tries?: number;
+    waitMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    log?: (line: string) => void;
+  } = {},
+): Promise<PinResult> {
+  const tries = o.tries ?? 10;
+  const waitMs = o.waitMs ?? 30_000;
+  const sleep = o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  let r = await resolvePin(serverVersion, deps);
+  for (let n = 1; n < tries && r.pin === null && r.retryable; n++) {
+    o.log?.(
+      `${r.log} Attempt ${n} of ${tries}; trying again in ${waitMs / 1000} s.`,
+    );
+    await sleep(waitMs);
+    r = await resolvePin(serverVersion, deps);
+  }
+  return r;
+}

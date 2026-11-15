@@ -7,7 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { resolvePin } from "./bus-pin.ts";
+import { resolvePin, resolvePinRequired } from "./bus-pin.ts";
 import { instanceVersion } from "./version-rule.ts";
 
 const root = path.join(import.meta.dirname, "..", "..", "..");
@@ -38,8 +38,17 @@ const v = instanceVersion({ version, tags, sha });
 let busPkg: { version: string; integrity: string } | null = null;
 let busPkgWhy = "this build was not asked to verify a bus release";
 if (process.argv.includes("--pin")) {
-  const r = await resolvePin(v);
+  // The release run (BUS_PIN_REQUIRED=1) cannot ship without a pin; a dev or
+  // self-built server keeps the no-pin text.
+  const required = process.env.BUS_PIN_REQUIRED === "1";
+  const r = required
+    ? await resolvePinRequired(v, {}, { log: console.log })
+    : await resolvePin(v);
   console.log(r.log);
+  if (required && r.pin === null) {
+    console.error(`bus pin required but missing: ${r.why}`);
+    process.exit(1);
+  }
   busPkg = r.pin;
   busPkgWhy = r.why;
 }

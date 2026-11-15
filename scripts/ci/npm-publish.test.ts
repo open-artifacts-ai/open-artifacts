@@ -263,6 +263,16 @@ describe("the bus pin in the server build (#2543)", () => {
       expect(jobs[name].needs, name).toContain("publish-npm");
   });
 
+  it("only the release deploys require the pin; no other job or script sets it", () => {
+    for (const name of ["deploy-prod", "deploy-demo"])
+      expect(jobs[name].env.BUS_PIN_REQUIRED, name).toBe("1");
+    for (const [name, job] of Object.entries(jobs) as [string, any][])
+      if (name !== "deploy-prod" && name !== "deploy-demo")
+        expect(JSON.stringify(job), name).not.toContain("BUS_PIN_REQUIRED");
+    for (const [k, v] of Object.entries(serverPkg.scripts))
+      expect(v, k).not.toContain("BUS_PIN_REQUIRED");
+  });
+
   it("nothing from pack-npm is wired into the server build", () => {
     expect(pack.outputs.integrity).toBeUndefined();
     expect(raw).not.toContain("BUS_PKG_");

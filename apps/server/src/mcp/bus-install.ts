@@ -15,12 +15,14 @@ export const BUS_CHECK_STOP =
 
 export const busInstallBlock = (origin: string, pin: BusPin): string => {
   const check = `node -e 'const l=require("./package-lock.json").packages||{};const k=Object.keys(l).filter(x=>x!=="");const p=l["node_modules/@open-artifacts/bus"];const ok=k.length===1&&p&&p.version==="${pin.version}"&&p.integrity==="${pin.integrity}";console.log(ok?"OK":"MISMATCH");process.exit(ok?0:1)'`;
+  // One command: every step is chained with &&, so a failed install, check or
+  // audit can never reach the installer line.
   return [
     "```sh",
-    'tmp=$(mktemp -d) && cd "$tmp"',
-    `npm install --ignore-scripts --registry https://registry.npmjs.org @open-artifacts/bus@${pin.version}`,
-    check,
-    "npm audit signatures",
+    'tmp=$(mktemp -d) && cd "$tmp" &&',
+    `npm install --ignore-scripts --registry https://registry.npmjs.org @open-artifacts/bus@${pin.version} &&`,
+    `${check} &&`,
+    "npm audit signatures &&",
     `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" install --instance ${origin}`,
     "```",
   ].join("\n");

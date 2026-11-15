@@ -5,6 +5,7 @@ import {
   integrityOf,
   pinVersionFor,
   resolvePin,
+  resolvePinRequired,
 } from "../../scripts/bus-pin.ts";
 import { busNoPin, cleanWhy } from "../../src/mcp/bus-install.ts";
 
@@ -177,5 +178,76 @@ describe("the no-pin text", () => {
   it("cleanWhy caps and strips", () => {
     expect(cleanWhy("a".repeat(500)).length).toBe(160);
     expect(cleanWhy("x<script>y")).toBe("x script y");
+  });
+});
+
+describe("resolvePinRequired (the release run)", () => {
+  const opts = (log: string[] = []) => ({
+    tries: 10,
+    waitMs: 30_000,
+    sleep: async () => {},
+    log: (l: string) => log.push(l),
+  });
+  it("registry lag: retries up to 10 times, then succeeds when the release appears", async () => {
+    let calls = 0;
+    const log: string[] = [];
+    const r = await resolvePinRequired(
+      "0.186.0",
+      {
+        fetchRelease: async (v) => {
+          if (++calls < 4) throw new ReleaseError("no_attestation", "none yet");
+          return fakeRel(v);
+        },
+        verifyRelease: (rel) => verified(rel.version),
+      },
+      opts(log),
+    );
+    expect(calls).toBe(4);
+    expect(r.pin?.version).toBe("0.186.0");
+    expect(log).toHaveLength(3);
+  });
+  it("never published: 10 tries, 30 s apart, then no pin", async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const r = await resolvePinRequired(
+      "0.186.0",
+      {
+        fetchRelease: async () => {
+          calls++;
+          throw new ReleaseError("fetch_failed", "404");
+        },
+      },
+      {
+        ...opts(),
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      },
+    );
+    expect(r.pin).toBeNull();
+    expect(calls).toBe(10);
+    expect(waits).toEqual(Array(9).fill(30_000));
+  });
+  it("a refusal is not lag: no retry", async () => {
+    for (const code of [
+      "proof_failed",
+      "wrong_package",
+      "node_too_old",
+    ] as const) {
+      let calls = 0;
+      const r = await resolvePinRequired(
+        "0.186.0",
+        {
+          fetchRelease: async (v) => fakeRel(v),
+          verifyRelease: () => {
+            calls++;
+            throw new ReleaseError(code, "no");
+          },
+        },
+        opts(),
+      );
+      expect(r.pin, code).toBeNull();
+      expect(calls, code).toBe(1);
+    }
   });
 });

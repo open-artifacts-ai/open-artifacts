@@ -141,8 +141,8 @@ jobs:
   # Stable releases only; independent of deploy-landing. Never runs from a bare push to main.
   # After publish-npm (#2543): the server build verifies the published bus
   # release (Sigstore) and pins it in llms.txt, so the release must be on npm.
-  # The job still runs if publish-npm failed or was skipped (always()): that
-  # build then has no pin and says so.
+  # BUS_PIN_REQUIRED makes a missing pin fail the build (after retries for
+  # registry lag), so a release whose publish failed does not deploy.
   deploy-prod:
     needs: [release-please, publish-npm]
     outputs:
@@ -157,6 +157,9 @@ jobs:
       group: prod
       cancel-in-progress: false
     env:
+      # #2543: this deploy cannot ship without a verified bus pin (the build
+      # retries for registry lag, then fails).
+      BUS_PIN_REQUIRED: "1"
       PROD_NAME: open-artifacts-prod
       PROD_APP_HOST: artifacts.leourbina.com
       PROD_CONTENT_HOST: artifacts-content.leourbina.com
@@ -344,6 +347,7 @@ jobs:
       group: demo-deploy
       cancel-in-progress: false
     env:
+      BUS_PIN_REQUIRED: "1"
       DEMO_NAME: open-artifacts-demo
       DEMO_APP_HOST: demo.open-artifacts.com
       DEMO_CONTENT_HOST: demo-content.open-artifacts.com
