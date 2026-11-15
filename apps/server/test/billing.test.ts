@@ -2123,7 +2123,7 @@ describe("Me.instance.billing and the billing routes", () => {
     await env.DB.prepare("update users set last_seen_at = null").run();
     // Nobody has signed in: 0 (billing bills at least 1).
     expect((await post({ tier: "team" })).status).toBe(200);
-    expect(last()).toMatchObject({ plan: "team", members: 0 });
+    expect(last()).toMatchObject({ plan: "team", members: 0, creators: 0 });
     // Owner and one member signed in, a guest did too: 2.
     const t = newId().slice(0, 6).toLowerCase();
     const m = await login(`ck-m-${t}@x.com`, "member");
@@ -2134,13 +2134,13 @@ describe("Me.instance.billing and the billing routes", () => {
       .bind(owner.userId, m.userId, g.userId)
       .run();
     expect((await post({ tier: "team" })).status).toBe(200);
-    expect(last()).toMatchObject({ plan: "team", members: 2 });
-    expect(last()).not.toHaveProperty("creators");
+    expect(last()).toMatchObject({ plan: "team", members: 2, creators: 0 });
     // Yearly prepays seats and Solo has no count: neither sends members.
     expect(
       (await post({ tier: "team", interval: "year", seats: 7 })).status,
     ).toBe(200);
     expect(last()).not.toHaveProperty("members");
+    expect(last()).not.toHaveProperty("creators");
     expect(last()).toMatchObject({ seats: 7 });
     // Fewer seats than members signed in: the member count wins.
     expect(

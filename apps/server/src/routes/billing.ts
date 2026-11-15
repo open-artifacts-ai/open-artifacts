@@ -13,7 +13,7 @@ import {
   requireUser,
 } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
-import { monthOf, sendUsage } from "../billing/creators.js";
+import { creatorCount, monthOf, sendUsage } from "../billing/creators.js";
 import { billingActive } from "../billing/plan.js";
 import { memberCount } from "../billing/seats.js";
 import {
@@ -139,13 +139,17 @@ export function mountBilling(app: AppType): void {
     // starts at this instance's own member count, a yearly one prepays
     // seats = max(1, members) unless the client names a count. Counted here,
     // never taken from the body (billing bills at least 1).
+    // Both counts go for a monthly plan: billing picks one by its own flag.
     let members: number | undefined;
+    let creators: number | undefined;
     let yearSeats = seats;
     if (tier !== "solo") {
       try {
         const n = await memberCount(c.env);
-        if (interval !== "year") members = n;
-        else yearSeats = Math.max(seats ?? 1, n, 1);
+        if (interval !== "year") {
+          members = n;
+          creators = await creatorCount(c.env, monthOf(Date.now()));
+        } else yearSeats = Math.max(seats ?? 1, n, 1);
       } catch (e) {
         logWarn("billing_url_failed", e, {
           route: CHECKOUT_PATH,
@@ -156,7 +160,7 @@ export function mountBilling(app: AppType): void {
     }
     // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
     // interval (month or year; required for solo), seats (yearly team or
-    // business) and members (monthly team or business).
+    // business), and members and creators (monthly team or business).
     return c.json(
       await stripeUrl(c, CHECKOUT_PATH, {
         plan: tier,
@@ -165,6 +169,7 @@ export function mountBilling(app: AppType): void {
           ? { seats: yearSeats }
           : {}),
         ...(members !== undefined ? { members } : {}),
+        ...(creators !== undefined ? { creators } : {}),
       }),
     );
   });
