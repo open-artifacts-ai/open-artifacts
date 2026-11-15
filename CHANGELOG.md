@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.194.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.1...v0.194.0) (2026-11-15)
+
+
+### Features
+
+* **comments:** withdraw, replace and edit ask cards ([#2511](https://github.com/open-artifacts-ai/open-artifacts/issues/2511)) ([#2623](https://github.com/open-artifacts-ai/open-artifacts/issues/2623)) ([0e72325](https://github.com/open-artifacts-ai/open-artifacts/commit/0e72325c9e67a7057be4bdf09b02c0929aa09abb))
+
 ## [0.193.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.0...v0.193.1) (2026-11-15)
 
 
