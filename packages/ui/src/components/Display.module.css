@@ -8,11 +8,17 @@
   font: 500 var(--oa-text-xs) / 1 var(--oa-font-sans);
   white-space: nowrap;
 }
-/* #2509: the instance's name on a team badge stops at 12rem. */
+/* #2509: the instance's name on a team badge stops at 12rem, and the badge
+   never outgrows its row (a long name truncates in a narrow card). */
 .badgeText {
+  min-width: 0;
   max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.badge:has(.badgeText) {
+  max-width: 100%;
+  min-width: 0;
 }
 .neutral,
 .vis-private {

@@ -49,7 +49,8 @@ export function VisibilityWithHint({
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="inline-flex">
+          {/* #2509: a long org name shrinks with the row instead of overflowing it. */}
+          <span className="inline-flex min-w-0 max-w-full">
             <VisibilityBadge visibility={visibility} org={org} />
           </span>
         </TooltipTrigger>
