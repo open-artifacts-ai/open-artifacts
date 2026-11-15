@@ -529,8 +529,9 @@ describe("the bus install step (#2543)", () => {
       `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" install --instance ${origin}`,
     ].map(at);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(step).toContain("If the check prints MISMATCH, stop.");
     expect(step).toContain(
-      "If any command fails, or the check prints MISMATCH, stop.",
+      "If another command fails, stop too, and tell the person which command failed and what it printed. Don't try another way to install.",
     );
     expect(step).toContain("They approve this machine once, in their browser");
     expect(step).not.toMatch(/npx @open-artifacts\/bus[ @]install/);

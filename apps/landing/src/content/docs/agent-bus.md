@@ -10,13 +10,7 @@ You need Node 22 or newer on each machine.
 
 ## Install
 
-Run your instance's "Install the bus" step on each machine. It is in your instance's `llms.txt` (for example `https://artifacts.example.com/llms.txt`), and your agent can run it for you. It downloads one copy of the bus, checks it against the release your instance pins, installs that checked copy, and runs `npm audit signatures`. Only then does it run the installer, from that copy:
-
-```sh
-"$tmp/node_modules/.bin/oa-bus" install --instance https://artifacts.example.com
-```
-
-If the check fails, nothing runs. Don't use `npx @open-artifacts/bus`: it downloads a second copy that nobody checked.
+Run the "Install the bus" step of your instance's `llms.txt` on each machine (for example `https://artifacts.example.com/llms.txt`). Your agent can run it for you. The step downloads one copy of the bus into a temporary folder, checks it against the release your instance pins, and only then runs the installer from that copy. If the check fails, nothing runs. Don't use `npx @open-artifacts/bus`: it downloads a second copy that nobody checked.
 
 You can set `OA_BUS_INSTANCE` instead of passing `--instance`. Once a machine is approved, you can leave the flag out.
 
@@ -33,11 +27,7 @@ Apps built on the Agent SDK join the bus only when you give the session a name.
 
 ### Without the background service
 
-Add `--no-service` to skip step 3:
-
-```sh
-"$tmp/node_modules/.bin/oa-bus" install --instance https://artifacts.example.com --no-service
-```
+Add `--no-service` to the last command of that step to skip step 3.
 
 Use it when you do not want a service on this machine, such as in a container or on a shared computer. You then start the bus yourself, and again after each reboot:
 
