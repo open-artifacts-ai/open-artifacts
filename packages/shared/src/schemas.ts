@@ -1459,7 +1459,7 @@ export type RestoreVersionInput = z.infer<typeof RestoreVersionInputSchema>;
  * invalid_op, quote_not_found, ...), so here each is only an object.
  */
 export const EditDocBodySchema = z.strictObject({
-  ops: z.array(z.record(z.string(), z.unknown())).min(1),
+  ops: z.array(z.record(z.string(), z.unknown())).min(1).max(50),
   expectedVersion: z.number().int().min(1).optional(),
 });
 export type EditDocBody = z.infer<typeof EditDocBodySchema>;

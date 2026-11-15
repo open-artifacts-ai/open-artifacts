@@ -22,6 +22,7 @@ import {
   type ToolName,
 } from "../src/mcp/tool-defs.js";
 import manifest from "../src/mcp/tool-manifest.json";
+import { DOC_SWITCH } from "../src/services/doc-switch.js";
 import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
 import { login, runIndex } from "./helpers.js";
 import {
@@ -951,12 +952,20 @@ describe("MCP quota errors", () => {
 describe("tool manifest", () => {
   // Gitignored; `pnpm gen` writes it before every test run.
   it("src/mcp/tool-manifest.json is TOOL_DEFS and covers every tool", () => {
+    // edit_doc is public once the doc switch opens (#1100), like tools/list.
+    const docs = (n: string) => DOC_SWITCH.creation || n !== "edit_doc";
     expect(manifest).toEqual(
-      TOOL_DEFS.map(({ name, description }) => ({ name, description })),
+      TOOL_DEFS.filter((t) => docs(t.name)).map(({ name, description }) => ({
+        name,
+        description,
+      })),
     );
     expect(manifest.map((t) => t.name).sort()).toEqual(
-      // edit_doc is in the manifest but offered only while docs are available.
-      [...SPACES_TOOLS, ...BUS_TOOLS, "edit_doc"].sort(),
+      [
+        ...SPACES_TOOLS,
+        ...BUS_TOOLS,
+        ...(DOC_SWITCH.creation ? ["edit_doc"] : []),
+      ].sort(),
     );
   });
 

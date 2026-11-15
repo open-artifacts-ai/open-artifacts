@@ -28,6 +28,7 @@ import {
   accessChangedCloseReason,
   type DocFrameActor,
   type DocRoomTextFrame,
+  LIMITS,
 } from "@oa/shared";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -1363,6 +1364,9 @@ export class DocRoom extends DurableObject<Env> {
     });
   }
 
+  private editRate = new Map<string, number>();
+  private editMinute = -1;
+
   /**
    * edit_doc: applies agent operations to the live doc (#1100). People's
    * unsaved edits get a version first, so history holds their text before the
@@ -1381,8 +1385,25 @@ export class DocRoom extends DurableObject<Env> {
         changes: OpImportChange[];
       }
     | { ok: false; error: DocOpError }
+    | { ok: false; error: { code: "rate_limited"; message: string } }
   > {
     const by = parseContributor(o?.by);
+    // The write rate the other writes use (viewerWritesPerMin per actor).
+    const minute = Math.floor(this.now() / 60_000);
+    if (minute !== this.editMinute) {
+      this.editRate.clear();
+      this.editMinute = minute;
+    }
+    const n = (this.editRate.get(by.key) ?? 0) + 1;
+    this.editRate.set(by.key, n);
+    if (n > LIMITS.viewerWritesPerMin)
+      return {
+        ok: false as const,
+        error: {
+          code: "rate_limited" as const,
+          message: "Too many edits; try again in a minute.",
+        },
+      };
     return this.serial(async () => {
       let savedVersion: number | undefined;
       if ([...this.vs.who.values()].some((w) => w.c.kind === "person")) {
@@ -1437,6 +1458,8 @@ export class DocRoom extends DurableObject<Env> {
         this.broadcast(encoding.toUint8Array(out), null);
       }
       this.noteEdit(by);
+      // Stored before ok: an eviction after the reply must not lose the edit.
+      this.flush();
       const row = await this.env.DB.prepare(
         "select current_version as v from artifacts where id = ?",
       )
@@ -1472,11 +1495,17 @@ export class DocRoom extends DurableObject<Env> {
       const o = f ? await this.env.FILES.get(f.key) : null;
       return o ? await o.text() : null;
     };
-    const json = await read("doc.json");
-    return {
-      md: (await read("doc.md")) ?? "",
-      json: json === null ? null : JSON.parse(json),
-    };
+    const raw = await read("doc.json");
+    let json: unknown | null = null;
+    if (raw !== null) {
+      try {
+        json = JSON.parse(raw);
+      } catch (e) {
+        // Seed from doc.md instead of failing every open.
+        logError("doc_room_seed_bad_json", e);
+      }
+    }
+    return { md: (await read("doc.md")) ?? "", json };
   }
 
   private seeding: Promise<void> | null = null;
@@ -1516,10 +1545,17 @@ export class DocRoom extends DurableObject<Env> {
       // Another caller may have written state while we read.
       if (this.seeded()) return;
       if (this.storedBytes() === 0) {
-        const node =
-          saved.json === null
-            ? markdownToDoc(saved.md).doc
-            : docFromJSON(saved.json as never);
+        let node: ReturnType<typeof docFromJSON>;
+        try {
+          node =
+            saved.json === null
+              ? markdownToDoc(saved.md).doc
+              : docFromJSON(saved.json as never);
+        } catch (e) {
+          // doc.json fails the schema: fall back to doc.md, log, never throw.
+          logError("doc_room_seed_bad_json", e);
+          node = markdownToDoc(saved.md).doc;
+        }
         const doc = new Y.Doc({ gc: true });
         try {
           docToYXmlFragment(node, docFragment(doc));
@@ -1535,6 +1571,9 @@ export class DocRoom extends DurableObject<Env> {
         } finally {
           doc.destroy();
         }
+        // The seed reaches storage before the flag: an eviction between the
+        // two leaves stored state and no flag, which only gets the flag later.
+        this.writeBuffer();
         void this.armAlarm(this.now() + FLUSH_MS);
       }
     }

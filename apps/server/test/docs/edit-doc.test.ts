@@ -544,3 +544,114 @@ describe("the room seeds itself once", () => {
     b.ws.close();
   });
 });
+
+describe("the seed and edits reach storage", () => {
+  const dropMemory = (x: DocRoom) => {
+    const r = x as unknown as { buffer: Uint8Array[]; bufferBytes: number };
+    r.buffer = [];
+    r.bufferBytes = 0;
+  };
+
+  it("a seed survives losing the in-memory buffer", async () => {
+    const room = await fresh("# Hello\n\nSeeded text.\n");
+    const md = await inRoom(room, async (x) => {
+      await (x as unknown as { ensureSeeded(): Promise<void> }).ensureSeeded();
+      dropMemory(x); // eviction before any flush alarm
+      return x.markdown();
+    });
+    expect(md).toContain("Seeded text.");
+    // Reopened: the flag is set, so nothing seeds again and the text is there.
+    const a = await connect(room);
+    await a.until(() => mdOf(a).includes("Seeded text."));
+    expect(mdOf(a).split("Seeded text.").length).toBe(2);
+    a.ws.close();
+  });
+
+  it("applyOps is stored before it answers ok", async () => {
+    const room = await fresh();
+    expect((await post(room.id, { ops: REPLACE })).status).toBe(200);
+    const md = await inRoom(room, async (x) => {
+      dropMemory(x);
+      return x.markdown();
+    });
+    expect(md).toContain("Ship it on Monday.");
+  });
+
+  async function corruptDocJson(id: string, text: string) {
+    const row = await env.DB.prepare(
+      `select v.manifest, v.version from versions v join artifacts a
+         on a.id = v.artifact_id and a.current_version = v.version where a.id = ?`,
+    )
+      .bind(id)
+      .first<{ manifest: string; version: number }>();
+    if (!row) throw new Error("no version");
+    const files = JSON.parse(row.manifest) as {
+      path: string;
+      key: string;
+    }[];
+    const key = `test-bad-json/${id}`;
+    await env.FILES.put(key, text);
+    const next = [
+      ...files.filter((f) => f.path !== "doc.json"),
+      {
+        path: "doc.json",
+        key,
+        size: text.length,
+        contentType: "application/json",
+      },
+    ];
+    await env.DB.prepare(
+      "update versions set manifest = ? where artifact_id = ? and version = ?",
+    )
+      .bind(JSON.stringify(next), id, row.version)
+      .run();
+  }
+
+  it.each([
+    ["does not parse", "not json {"],
+    ["fails the schema", '{"type":"nope","content":[{"type":"zzz"}]}'],
+  ])("a doc.json that %s seeds from doc.md", async (_, text) => {
+    const room = await fresh();
+    await corruptDocJson(room.id, text);
+    const md = await inRoom(room, (x) => x.markdown());
+    expect(md).toContain("Ship it on Friday.");
+    const a = await connect(room);
+    await a.until(() => mdOf(a).includes("Ship it on Friday."));
+    a.ws.close();
+  });
+});
+
+describe("edit rate", () => {
+  it("edit_doc and POST /doc/ops share one write limit per actor", async () => {
+    const room = await fresh();
+    const miss = [{ op: "delete", quote: "no such text anywhere" }];
+    for (let i = 0; i < 100; i++) {
+      const r = await post(room.id, { ops: miss });
+      expect(r.status).toBe(400);
+    }
+    const over = await post(room.id, { ops: miss });
+    expect(over.status).toBe(429);
+    expect(
+      ((await over.json()) as { error?: { code?: string } }).error?.code,
+    ).toBe("rate_limited");
+    const c = await mcpConnect(ownerPat);
+    try {
+      const out = await c.callTool({
+        name: "edit_doc",
+        arguments: { id: room.id, ops: miss },
+      });
+      expect(JSON.stringify(out)).toContain("rate_limited");
+    } finally {
+      await c.close();
+    }
+    // The next minute starts again.
+    room.clock.t = T0 + 61_000;
+    expect((await post(room.id, { ops: miss })).status).toBe(400);
+  });
+
+  it("more than 50 operations are refused at the schema", async () => {
+    const room = await fresh();
+    const ops = Array.from({ length: 51 }, () => REPLACE[0]);
+    expect((await post(room.id, { ops })).status).toBe(400);
+  });
+});
