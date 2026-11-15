@@ -178,6 +178,7 @@ export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
 export * from "./transports/opencode.ts";
 export * from "./transports/pi.ts";
+export * from "./update/layout.ts";
 
 const NOTICE_RETRY_MS = 30_000;
 /** #1956: a ref binding whose link has been closed this long lapses, even if its pid lives. */
