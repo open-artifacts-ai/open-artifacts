@@ -326,12 +326,15 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return { emailed: false };
-    // The outside rules (the email switch, outsideShareEmail, the limits) are
-    // hosted's: a self-hosted install keeps the normal share email for every
-    // recipient, outside the login domains or not.
-    const outside = env.HOSTED === "1" && outsideAddress(env, email);
+    // An outside address gets the outside email (plain template, a capped
+    // title, no URL-like sender text) on every install. The email switch and
+    // the daily limits are hosted's: a self-hosted install sends it, without
+    // limits. Anyone else (a login domain's address) gets the normal share
+    // email, with its role line, as on main.
+    const outside = outsideAddress(env, email);
+    const hosted = env.HOSTED === "1";
     // No email to an outside address until it can opt out (outside-email.ts).
-    if (!outsideEmail.on && outside)
+    if (!outsideEmail.on && hosted && outside)
       return { emailed: false, notEmailed: "outside_no_unsubscribe" };
     // No user row. An outside address (#2590) gets the outside email, under
     // its own daily limits (apart from the usual ones; the share is saved
@@ -375,7 +378,7 @@ async function emailShare(
         instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
         outcome,
-        extraCaps: !outside
+        extraCaps: !(outside && hosted)
           ? []
           : [
               {

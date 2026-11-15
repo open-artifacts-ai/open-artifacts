@@ -242,13 +242,11 @@ describe("the share email names the level the recipient will have", () => {
     expect(m?.html).not.toContain("Editor");
   });
 
-  it("Access-only (self-host): an Editor share reads Commenter, in the normal share email", async () => {
+  it("Access-only (self-host, no login domains): every address is outside, so no role line", async () => {
     const { share, sent } = await setup((o) => ({ ...env, ...o }) as Env, {});
     const email = uniq("acc", "a.com");
     await share(email, "editor");
-    expect(sent.find((x) => x.to === email)?.text).toContain(
-      "Your role: Commenter",
-    );
+    expect(sent.find((x) => x.to === email)?.text).not.toContain("Your role");
   });
 
   it("in a verified domain, an Editor share stays Editor: they'll be a member", async () => {
@@ -338,9 +336,10 @@ describe("guest on a share row, and the email, from one rule", () => {
     const outsideMail = text.includes(
       "shared a page with you on Open Artifacts",
     );
-    // The outside rules are hosted's: a self-host install keeps the normal
-    // share email for every recipient.
-    expect(outsideMail).toBe(over.HOSTED === "1" && domain === OUT);
+    // An outside address gets the outside email on every install; an address
+    // at a login domain gets the normal one. (An install with no login
+    // domains, Access-only, has every address outside.)
+    expect(outsideMail).toBe(domain === OUT || name === "Access-only");
     if (outsideMail) expect(text).not.toContain("Your role");
     else expect(text).toContain(`Your role: ${guest ? "Commenter" : "Editor"}`);
   });

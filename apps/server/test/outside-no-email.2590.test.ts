@@ -81,13 +81,23 @@ describe("no email to an outside address", () => {
     expect(m.sent.some((x) => x.to === team)).toBe(true);
   });
 
-  it("self-host: the outside address gets the normal share email, as on main", async () => {
+  it("self-host: an outside address still gets the outside email, sent and unlimited; an address at a login domain gets the normal one", async () => {
     const { m, share } = await world({});
     const outside = uniq("out", "gmail.com");
     const s = await share(outside);
     expect(s).toMatchObject({ emailed: true });
     expect(s.notEmailed).toBeUndefined();
     const mail = m.sent.find((x) => x.to === outside);
-    expect(mail?.text).toContain("Your role:");
+    // The plain outside template: no role line, a bare title, its own subject.
+    expect(mail?.text).toContain("shared a page with you on Open Artifacts");
+    expect(mail?.text).not.toContain("Your role");
+    expect(mail?.subject).toMatch(/ shared "Plan" with you$/);
+    const team = uniq("team", "a.com");
+    expect(await share(team)).toMatchObject({ emailed: true });
+    const normal = m.sent.find((x) => x.to === team);
+    expect(normal?.text).toContain("Your role:");
+    expect(normal?.text).not.toContain(
+      "shared a page with you on Open Artifacts",
+    );
   });
 });
