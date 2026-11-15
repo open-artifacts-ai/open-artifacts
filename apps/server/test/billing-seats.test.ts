@@ -4,9 +4,12 @@ import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { ROUTE_POLICY } from "../src/auth/route-policy-table.js";
 import {
   memberCount,
   reportSeats,
+  SEAT_ROUTES,
+  SEAT_ROUTES_EXEMPT,
   SEATS_DAILY_MS,
   SEATS_SENT_KEY,
 } from "../src/billing/seats.js";
@@ -27,9 +30,18 @@ const seen = (id: string, at: number | null = 5) =>
   env.DB.prepare("update users set last_seen_at = ?2 where id = ?1")
     .bind(id, at)
     .run();
+// A listed write that moves nothing: promotes an admin to admin.
+const poke = async () => {
+  const r = await send(props, R.member(admin.userId), owner.cookie, {
+    method: "PATCH",
+    body: { role: "admin" },
+  });
+  expect(r.status).toBe(200);
+};
 const seatCalls = () => fake.calls.filter((c) => c.path === "/seats");
 const lastSeats = () => seatCalls().at(-1)?.body;
 let seq = 0;
+let admin: { cookie: string; userId: string };
 let owner: { cookie: string; userId: string };
 
 async function person(name: string, role: "admin" | "member" | "guest") {
@@ -41,6 +53,7 @@ async function person(name: string, role: "admin" | "member" | "guest") {
 beforeAll(async () => {
   pinMiddayUtc();
   owner = await login(`own-${tag}@x.com`, "owner");
+  admin = await login(`adm-${tag}@x.com`, "admin");
 });
 
 beforeEach(async () => {
@@ -154,36 +167,55 @@ describe("POST /seats after every write that moves the count", () => {
     expect(seatCalls().length).toBe(0);
   });
 
-  it("a sign-in step reports a first login (auth paths)", async () => {
+  it("a first login is reported by the next listed write", async () => {
     const fresh = await login(`first${++seq}-${tag}@x.com`, "member");
-    await send(props, "/auth/providers", null);
+    await poke();
     expect(lastSeats()).toMatchObject({ members: 1 });
     await seen(fresh.userId);
-    await send(props, "/auth/providers", null);
+    await poke();
     expect(lastSeats()).toMatchObject({ members: 2 });
   });
 
   it("an unchanged count sends nothing; a failed send is retried by the next hook", async () => {
-    await send(props, "/auth/providers", null);
+    await poke();
     const n = seatCalls().length;
-    await send(props, "/auth/providers", null);
+    await poke();
     expect(seatCalls().length).toBe(n);
     await person("m", "member");
     fake.down = true;
-    await send(props, "/auth/providers", null);
+    await poke();
     fake.down = false;
     expect(
       await env.DB.prepare("select value from settings where key = ?")
         .bind(SEATS_SENT_KEY)
         .first<{ value: string }>(),
     ).toMatchObject({ value: expect.stringContaining('"members":1') });
-    await send(props, "/auth/providers", null);
+    await poke();
     expect(lastSeats()).toMatchObject({ members: 2 });
   });
 
   it("self-hosted: never sent", async () => {
     await send(props, "/auth/providers", null, {
       e: { ...H, HOSTED: undefined } as never,
+    });
+    expect(seatCalls().length).toBe(0);
+  });
+});
+
+describe("the route list", () => {
+  it("every members and directory write is listed or exempt, and every listed route exists", () => {
+    const writes = Object.keys(ROUTE_POLICY).filter((k) =>
+      /^(POST|PUT|PATCH|DELETE) \/api\/v1\/(members|directory)/.test(k),
+    );
+    for (const k of writes)
+      expect(SEAT_ROUTES.has(k) || SEAT_ROUTES_EXEMPT.has(k), k).toBe(true);
+    for (const k of SEAT_ROUTES) expect(k in ROUTE_POLICY, k).toBe(true);
+  });
+
+  it("a data write does not trigger a report", async () => {
+    await send(props, R.artifacts, owner.cookie, {
+      method: "POST",
+      body: { title: "x", format: "html", content: "<p>x</p>" },
     });
     expect(seatCalls().length).toBe(0);
   });

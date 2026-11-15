@@ -100,3 +100,45 @@ export function reportSeatsAfter(
   const p = reportSeats(env, Date.now());
   if (ctx) ctx.waitUntil(p);
 }
+
+/**
+ * The routes (ROUTE_POLICY keys) after which the member count is re-checked:
+ * everything that changes a user's role, status, restriction, existence or
+ * first login. test/billing-seats.test.ts fails when a user-mutating members
+ * or directory route is neither here nor in SEAT_ROUTES_EXEMPT.
+ */
+export const SEAT_ROUTES: ReadonlySet<string> = new Set([
+  // Sign-in (first login) and the OAuth consent step.
+  "GET /auth/callback",
+  "GET /auth/callback/google",
+  "POST /auth/code/verify",
+  "GET /api/v1/directory/callback",
+  "POST /oauth/authorize",
+  // Members: invite, role, remove, restore, erase, identity reset, restrict.
+  "POST /api/v1/members",
+  "PATCH /api/v1/members/:id",
+  "DELETE /api/v1/members/:id",
+  "POST /api/v1/members/:id/restore",
+  "POST /api/v1/members/:id/erase",
+  "POST /api/v1/members/:id/transfer",
+  "DELETE /api/v1/members/:id/identities/google",
+  "PUT /api/v1/members/:id/restricted",
+  "DELETE /api/v1/members/:id/restricted",
+  // Directory: groups mapped to roles, restricted groups, sync, connect.
+  "PUT /api/v1/directory/org-mappings/:groupId",
+  "DELETE /api/v1/directory/org-mappings/:groupId",
+  "PUT /api/v1/directory/restricted-groups/:groupId",
+  "DELETE /api/v1/directory/restricted-groups/:groupId",
+  "POST /api/v1/directory/confirm",
+  "POST /api/v1/directory/sync",
+  "POST /api/v1/directory/held/:groupId/confirm",
+  "POST /api/v1/directory/held/:groupId/snooze",
+  "DELETE /api/v1/directory/held/:groupId/snooze",
+  "POST /api/v1/directory/disconnect",
+  "DELETE /api/v1/directory",
+]);
+
+/** Member and directory writes that cannot move the count (the guard test). */
+export const SEAT_ROUTES_EXEMPT: ReadonlySet<string> = new Set([
+  "POST /api/v1/directory/cancel",
+]);
