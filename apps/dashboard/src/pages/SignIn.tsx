@@ -14,6 +14,7 @@ import { safeNext } from "../auth/safeNext";
 import { Notice } from "../layout/Notice";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { CodeSignIn } from "./CodeSignIn";
+import { MarkFormation } from "./MarkFormation";
 
 /** Light and dark variants of one brand image; CSS shows the matching one. */
 function Themed({
@@ -58,7 +59,7 @@ function Mark({ className }: { className: string }) {
       />
       <path
         fill="var(--oa-accent)"
-        d="M22 2h5a3 3 0 0 1 3 3v5zM2 22v5a3 3 0 0 0 3 3h5zM11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z"
+        d="M22 2h5a3 3 0 0 1 3 3v5zM2 22v5a3 3 0 0 0 3 3h5zM12 10h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z"
       />
     </svg>
   );
@@ -82,19 +83,23 @@ function Shell({
         <div className="oa-split-logo">
           <Themed light={brand.logo} dark={brand.logoDark} />
         </div>
-        <div className="oa-split-pitch">
-          <h2>Where any AI agent publishes for your team.</h2>
-          <p>
-            Pages, docs, code and PDFs, private by default and shared when you
-            choose.
-          </p>
+        <div className="oa-split-identity">
+          <MarkFormation />
+          <div className="oa-split-pitch">
+            <h2>Where any AI agent publishes for your team.</h2>
+            <p>
+              Pages, docs, code and PDFs, private by default and shared when you
+              choose.
+            </p>
+          </div>
         </div>
-        {hosted !== null && (
-          <small className="oa-split-foot">
-            {hosted ? "Hosted by Open Artifacts" : "Self-hosted on Cloudflare"}
-          </small>
-        )}
-        <Mark className="oa-split-mark" />
+        <small className="oa-split-foot" aria-hidden={hosted === null}>
+          {hosted === null
+            ? "\u00a0"
+            : hosted
+              ? "Hosted by Open Artifacts"
+              : "Self-hosted on Cloudflare"}
+        </small>
       </section>
       <section className="oa-split-form">
         <div className="oa-split-formbox">
