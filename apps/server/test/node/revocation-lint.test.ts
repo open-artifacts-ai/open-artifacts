@@ -41,6 +41,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   "services/members.ts:setUserStatus": "user",
   // A role change ends their sessions; sockets were authorized under the old role.
   "services/members.ts:patchMember": "user",
+  // #2590: turning outside sharing off bumps share-made guests' session_epoch
+  // (ending their sessions) and closes their live sockets (revokeUsersLive).
+  "services/members.ts:patchSettings": "user",
   // A guest's last share went: the guest is deactivated.
   "services/shares.ts:removeGuestIfUnshared": "user",
   // owner_only identity reset: sessions, PATs and grants revoked.

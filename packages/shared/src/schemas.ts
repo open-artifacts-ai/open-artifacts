@@ -604,6 +604,15 @@ export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
 export const ShareResultSchema = ShareSchema.extend({
   /** True if a notification email went to a non-member (best effort). */
   emailed: z.boolean(),
+  /**
+   * Why no email went out when a limit refused it (the share is saved
+   * either way, #2590): member_limit (this member's outside addresses for
+   * the day), instance_limit (the instance's daily outside emails, lower in
+   * a trial), limit (the existing per-recipient, per-share or sending cap).
+   */
+  notEmailed: z.enum(["member_limit", "instance_limit", "limit"]).optional(),
+  /** With notEmailed member_limit or instance_limit: the daily number that was hit (20, 100, or the trial figure). */
+  limit: z.number().int().positive().optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
   recipient: ShareRecipientSchema.optional(),
   /**
@@ -1114,6 +1123,14 @@ export const SettingsSchema = z.object({
    * owner, admin); audited settings.space_manager_mappings.
    */
   spaceManagerMappings: z.boolean().optional(),
+  /**
+   * #2590: members may share pages with people outside the instance. Default
+   * on, except on the hosted Business tier (off). Only the owner changes it
+   * (PATCH, audited settings.change); off refuses new outside shares
+   * (403 outside_sharing_off) and ends share-made guests' logins. Always in
+   * GET, the effective value.
+   */
+  outsideSharing: z.boolean().optional(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 

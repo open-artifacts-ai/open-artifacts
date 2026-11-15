@@ -96,6 +96,8 @@ export type OrgAction =
   | "onboarding.manage"
   /** Change the login domains and joining rule (R.loginSettings PUT, #2520): the uncapped org owner. */
   | "login.manage"
+  /** Turn outside sharing on or off (Settings.outsideSharing, #2590): the uncapped org owner. */
+  | "outside.manage"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -555,6 +557,8 @@ export function orgCan(
     case "onboarding.manage":
     // The login domains and joining rule (#2520).
     case "login.manage":
+    // The outside-sharing switch (#2590).
+    case "outside.manage":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":
