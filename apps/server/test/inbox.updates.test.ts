@@ -266,7 +266,7 @@ describe("inbox updates: rules", () => {
     const t = await addThread(
       E,
       art(id),
-      { kind: "user", id: me.userId, agent: { name: "Scout", via: null } },
+      { kind: "user", id: me.userId, agent: { name: "Scout", version: null } },
       view(me),
       { anchor: { kind: "note" }, body: "from my agent" },
       { after },

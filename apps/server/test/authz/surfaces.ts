@@ -1556,6 +1556,18 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // #2512 S2: the caller's own inbox items; ids that are not theirs change nothing.
+  "POST /api/v1/me/inbox/read": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { ids: [] } }),
+      allow: ok(200),
+    },
+  },
+  "POST /api/v1/me/inbox/read-all": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(200) },
+    real: { req: () => ({ path: "" }), allow: ok(200) },
+  },
   // #1292: the caller's own picks; a real write sets none (the default).
   "PUT /api/v1/bus/share-notices": {
     refuse: invalid(),
