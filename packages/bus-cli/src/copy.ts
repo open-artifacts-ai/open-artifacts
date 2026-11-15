@@ -372,6 +372,19 @@ export function copy(
       fail(`The service runs a Node that is gone: ${clip(node, 42)}.`),
       next(`Run ${bus} install to point it at your current Node.`),
     ],
+    // doctor (#2552): the rescue launcher the service starts through. New strings, for Product.
+    rescueMissing: (path: string) => [
+      fail(
+        `The service starts the bus through a launcher that is gone: ${clip(path, 42)}.`,
+      ),
+      next(`Run ${bus} install to put it back.`),
+    ],
+    rescueOpen: (path: string) => [
+      fail(
+        `The service's launcher can be changed by other users: ${clip(path, 42)}.`,
+      ),
+      next(`Run ${bus} install to replace it.`),
+    ],
     // doctor, after the service-node line.
     badNode: (node: string, reason: string) => [
       fail(`The service runs a Node that cannot start: ${clip(node, 42)}.`),
@@ -560,6 +573,7 @@ export function copy(
       "  link         <dir> <dir> or list; unlink <dir> <dir>",
       "  leads        check [name]",
       "  auto-update  off, on or status: whether the bus keeps itself up to date",
+      "  update       Install the update that is waiting",
       "  mcp          <claude|opencode|codex|pi>: the MCP server a harness runs",
       "  version      Print the version",
       "  help         This text",
@@ -1114,6 +1128,11 @@ export function copy(
       `Install ${v} now? The bus restarts for a few seconds. Type yes to continue: `,
     updateDeclined: () => "Nothing was installed.",
     updateDone: (v: string) => `Installed ${v}.`,
+    // New in PR 4, not in the issue's copy: for Product.
+    updateBusy: () =>
+      "A login or an approval is in progress. Try again when it is done.",
+    updateNotInstalled: (v: string) =>
+      `${v} was not installed. Run ${bus} status to see why.`,
 
     // 13. lead templates (#1328). DRAFT: not in the transcript yet.
     leadsNoHub: () => [

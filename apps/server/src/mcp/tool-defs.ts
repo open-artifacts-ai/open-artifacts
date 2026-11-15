@@ -14,6 +14,7 @@ import {
   BusRoleProposeInputSchema,
   CreateUploadInputSchema,
   DATA_WRITERS_NOTE,
+  EditDocInputSchema,
   GetArtifactInputSchema,
   IdInputSchema,
   LIMITS,
@@ -87,6 +88,23 @@ export const TOOL_DEFS = [
     example: { id: ID, version: 2 },
     description:
       "Open Artifacts: Restore an earlier version by publishing a copy of it as the new latest version.",
+  },
+  {
+    name: "edit_doc",
+    inputSchema: EditDocInputSchema,
+    example: {
+      id: ID,
+      ops: [
+        { op: "replace", quote: "Revenue is up.", with: "Revenue is up 12%." },
+        {
+          op: "insert",
+          after: "Revenue is up 12%.",
+          markdown: "\n\nCosts held flat.",
+        },
+      ],
+    },
+    description:
+      "Open Artifacts: Edit a doc (an artifact with format doc) with small anchored operations; people may be typing in it, and their edits merge with yours. Read it first with get_artifact, then send only what changes, up to 50 operations per call, applied together or not at all. Operations: { op: 'replace', quote, with }; { op: 'insert', after | before: quote, markdown } or { op: 'insert', at: 'start' | 'end', markdown }; { op: 'delete', quote }; { op: 'format', quote, mark } (inline: bold, italic, strike, code, link with href; block: paragraph, heading1-3, blockquote, codeBlock, bulletList, orderedList, taskList; remove: true takes an inline mark off). A quote is the text people see, copied from the doc, and must match exactly one place; add `prefix` and `suffix` (the text right before and after) to pick one when it matches several (quote_ambiguous; quote_not_found names the closest text). Do not rewrite the whole doc: a whole-content publish to a doc is refused with use_edit_doc. If people had unsaved edits, a version is saved first. Optional `expectedVersion` (the version you read) refuses with version_conflict when another version is current. Returns the version, size in bytes and what each operation changed. Needs edit access.",
   },
   {
     name: "share_artifact",
