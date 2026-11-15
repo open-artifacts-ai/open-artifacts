@@ -2099,6 +2099,7 @@ describe("Me.instance.billing and the billing routes", () => {
       plan: "team",
       interval: "year",
       seats: Math.max(1, await memberCount(H)),
+      members: await memberCount(H),
     });
     // #2404: Business has no self-serve checkout; billing is never called.
     const beforeBiz = n();
@@ -2139,14 +2140,13 @@ describe("Me.instance.billing and the billing routes", () => {
     expect(
       (await post({ tier: "team", interval: "year", seats: 7 })).status,
     ).toBe(200);
-    expect(last()).not.toHaveProperty("members");
     expect(last()).not.toHaveProperty("creators");
-    expect(last()).toMatchObject({ seats: 7 });
-    // Fewer seats than members signed in: the member count wins.
+    // The client's seats go unchanged, with the member count beside them.
+    expect(last()).toMatchObject({ seats: 7, members: 2 });
     expect(
       (await post({ tier: "team", interval: "year", seats: 1 })).status,
     ).toBe(200);
-    expect(last()).toMatchObject({ seats: 2 });
+    expect(last()).toMatchObject({ seats: 1, members: 2 });
     expect((await post({ tier: "solo", interval: "month" })).status).toBe(200);
     expect(last()).not.toHaveProperty("members");
     // The count never comes from the request: a body naming creators is 400,

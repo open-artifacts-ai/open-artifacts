@@ -136,20 +136,23 @@ export function mountBilling(app: AppType): void {
         );
     }
     // Team and Business bill per member (#2580): a monthly subscription
-    // starts at this instance's own member count, a yearly one prepays
-    // seats = max(1, members) unless the client names a count. Counted here,
-    // never taken from the body (billing bills at least 1).
-    // Both counts go for a monthly plan: billing picks one by its own flag.
+    // starts at this instance's own counts (members and creators: billing
+    // picks one by its own flag). A yearly one sends the client's seats
+    // unchanged, plus members; billing applies members only when per-member
+    // is on. Counted here, never from the body (billing bills at least 1).
     let members: number | undefined;
     let creators: number | undefined;
     let yearSeats = seats;
     if (tier !== "solo") {
       try {
         const n = await memberCount(c.env);
+        members = n;
         if (interval !== "year") {
-          members = n;
           creators = await creatorCount(c.env, monthOf(Date.now()));
-        } else yearSeats = Math.max(seats ?? 1, n, 1);
+        } else {
+          // The client's own seats, unchanged; none given: the member count.
+          yearSeats ??= Math.max(1, n);
+        }
       } catch (e) {
         logWarn("billing_url_failed", e, {
           route: CHECKOUT_PATH,
