@@ -11,7 +11,7 @@ import { api, errOf, login } from "../helpers.js";
 import { close, connect, E, textOf, tool } from "../mcp-helpers.js";
 
 const NEED_PAID =
-  "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Move to Workers Paid, then run setup with --upgrade --plan paid.";
+  "Collaborative docs need Cloudflare's Workers Paid plan. The person who runs this instance turns on Workers Paid in their Cloudflare account, then runs setup again with --upgrade --plan paid.";
 
 const app = createApp();
 type Vars = { PLAN?: string; HOSTED?: string; TIER?: string };

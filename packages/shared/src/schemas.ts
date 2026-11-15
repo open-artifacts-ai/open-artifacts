@@ -321,7 +321,7 @@ export const PublishToolInputSchema = PublishShape.superRefine(
 );
 /** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
 export const DOCS_NEED_PAID_MESSAGE =
-  "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Move to Workers Paid, then run setup with --upgrade --plan paid.";
+  "Collaborative docs need Cloudflare's Workers Paid plan. The person who runs this instance turns on Workers Paid in their Cloudflare account, then runs setup again with --upgrade --plan paid.";
 /** The library's empty state on a self-host without Workers Paid (#2100). */
 export const DOCS_NEED_PAID_EMPTY_MESSAGE =
   "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
