@@ -127,3 +127,45 @@ for (const scheme of ["light", "dark"] as const)
         await axe(page);
       });
     });
+
+// Codes only (no login domains): an address that isn't a known member is
+// outside before it's saved (#2590, Product and Design).
+for (const scheme of ["light", "dark"] as const)
+  for (const width of [1280, 390])
+    test.describe(`codes only ${scheme} ${width}`, () => {
+      test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
+      test("an unknown address: Can comment, Can view, and the codes line", async ({
+        page,
+      }, info) => {
+        await page.goto(`/a/${LANDING}?hosted=email-only&panel=open&tab=share`);
+        const email = page.getByRole("textbox", { name: "Email" });
+        await expect(email).toBeVisible();
+        // A known member keeps Viewer and Editor.
+        await email.fill("dan@example.com");
+        await expect(inviteRole(page)).toHaveText("Viewer");
+        await email.fill("sam@gmail.com");
+        await expect(inviteRole(page)).toHaveText("Can comment");
+        await expect(
+          page.getByText(
+            "Outside your team. sam@gmail.com opens this page with a code we email them. They see only what you share. Free.",
+          ),
+        ).toBeVisible();
+        await shot(
+          page,
+          info,
+          `share-commenter-codes-line-${scheme}-${width}.png`,
+        );
+        await inviteRole(page).click();
+        await expect(page.getByRole("option")).toHaveText([
+          "Can comment",
+          "Can view",
+        ]);
+        await shot(
+          page,
+          info,
+          `share-commenter-codes-picker-${scheme}-${width}.png`,
+        );
+        await page.keyboard.press("Escape");
+        await axe(page);
+      });
+    });
