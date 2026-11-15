@@ -171,6 +171,8 @@ const WIDENS: Readonly<Record<string, string>> = {
     "a reach proposal's status, not access",
   "bus/reach-proposals.ts:decideReachProposal":
     "a reach proposal's status, not access",
+  // #2580: a read; its restricted_* = 0 is a filter, nothing is written.
+  "billing/seats.ts:memberCount": "only reads, shrinks no access",
   "bus/reach-proposals.ts:expireReachProposalsOfMachine":
     "a reach proposal's status, not access",
 };

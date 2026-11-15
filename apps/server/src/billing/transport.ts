@@ -22,13 +22,21 @@ export const BILLING_ORIGIN = "https://billing.oa.internal";
 export const TIER_PATH = "/tier";
 export const TRIAL_PATH = "/trial/start";
 export const USAGE_PATH = "/usage";
+export const SEATS_PATH = "/seats";
 /** Platform adds these billing routes against packages/billing-core (pending). */
 export const CHECKOUT_PATH = "/checkout";
 export const PORTAL_PATH = "/portal";
 
-/** The one billing refusal code a caller may act on from a 400: the month itself is bad. */
+/**
+ * The billing refusal codes a caller may act on from a 400: the month itself
+ * is bad, or (billing from before #2580) a body key it does not know.
+ */
 export const BILLING_REFUSAL_CODES = ["bad_month"] as const;
-export type BillingRefusalCode = (typeof BILLING_REFUSAL_CODES)[number];
+/** Only /checkout and /seats read a 400 bad_body (a key billing from before #2580 doesn't know). */
+const BAD_BODY_PATHS: readonly string[] = [CHECKOUT_PATH, SEATS_PATH];
+export type BillingRefusalCode =
+  | (typeof BILLING_REFUSAL_CODES)[number]
+  | "bad_body";
 /** Billing's 409 from POST /portal when the install has no Stripe customer. */
 export const NO_CUSTOMER_CODE = "no_customer" as const;
 type RefusalCode = BillingRefusalCode | typeof NO_CUSTOMER_CODE;
@@ -163,7 +171,9 @@ export async function billingCall(
       refused || res.status === 400
         ? refused
           ? []
-          : BILLING_REFUSAL_CODES
+          : BAD_BODY_PATHS.includes(path)
+            ? ([...BILLING_REFUSAL_CODES, "bad_body"] as const)
+            : BILLING_REFUSAL_CODES
         : res.status === 409 && path === PORTAL_PATH
           ? [NO_CUSTOMER_CODE]
           : [];
