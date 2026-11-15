@@ -337,3 +337,40 @@ describe("regression: one person's agents and typed comments still wake as befor
     expect(names()).toEqual(["Pi"]);
   });
 });
+
+describe("same person: every path behaves as before (#2559)", () => {
+  it("a token comment by agent A of U never sent U's follower B a follower notice (the author's own agents are skipped), and still does not", async () => {
+    const s = await setup();
+    await addThread(
+      E,
+      art(s.id),
+      agent(owner),
+      view(owner),
+      { anchor: NOTE, body: "hi" },
+      { moderator: true, after: { version: 1 } },
+    );
+    // Claude and Pi follow as the owner's: no follower notice, same as on main.
+    expect(bus.sent).toEqual([]);
+  });
+
+  it("agent A's token comment mentioning U's follower B wakes B; a token reply (no agent label) reaches U's thread agents", async () => {
+    const s = await setup();
+    const t = await post(E, s.id, agent(owner), owner, [s.claude]);
+    expect(names()).toEqual(["Claude"]);
+    bus.sent = [];
+    await addReply(
+      E,
+      s.id,
+      t.id,
+      token(owner),
+      view(owner),
+      "again",
+      {
+        mentions: [{ key: s.pi }],
+      },
+      { moderator: true },
+    );
+    // Pi by the mention, Claude as a thread agent (thread reply): both U's.
+    expect(names()).toEqual(["Claude", "Pi"]);
+  });
+});
