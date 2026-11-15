@@ -2,10 +2,13 @@
 import { describe, expect, it } from "vitest";
 import { ReleaseError } from "../../../../packages/bus-daemon/src/update/errors.ts";
 import {
+  BUS_PIN_MAX_BACK,
+  BUS_PIN_MIN,
   integrityOf,
   pinVersionFor,
   resolvePin,
   resolvePinRequired,
+  resolvePinWithFallback,
 } from "../../scripts/bus-pin.ts";
 import { busNoPin, cleanWhy } from "../../src/mcp/bus-install.ts";
 
@@ -249,5 +252,139 @@ describe("resolvePinRequired (the release run)", () => {
       expect(r.pin, code).toBeNull();
       expect(calls, code).toBe(1);
     }
+  });
+});
+
+describe("resolvePinWithFallback (the release run, #2543)", () => {
+  const PUB = [
+    "0.183.0",
+    "0.184.0",
+    "0.185.0",
+    "0.186.0",
+    "0.187.0",
+    "0.188.0",
+  ];
+  const o = (min = "0.0.0") => ({
+    tries: 2,
+    waitMs: 1,
+    sleep: async () => {},
+    log: () => {},
+    min,
+  });
+  /** Only the versions in `good` verify; the rest are refused. */
+  const only = (good: string[], asked: string[] = []) => ({
+    versions: async () => PUB,
+    fetchRelease: async (v: string) => (asked.push(v), fakeRel(v)),
+    verifyRelease: (rel: { version: string }) => {
+      if (!good.includes(rel.version))
+        throw new ReleaseError("proof_failed", `${rel.version} refused`);
+      return verified(rel.version);
+    },
+  });
+
+  it("its own release verifies: no fallback", async () => {
+    const r = await resolvePinWithFallback("0.188.0", only(["0.188.0"]), o());
+    expect(r.pin?.version).toBe("0.188.0");
+    expect(
+      r.pin && "fallbackFor" in r ? r.fallbackFor : undefined,
+    ).toBeUndefined();
+  });
+
+  it("its own is unverifiable: the newest stable below that verifies, with a warning and the reason", async () => {
+    const r = await resolvePinWithFallback(
+      "0.188.0",
+      only(["0.187.0", "0.186.0"]),
+      o(),
+    );
+    expect(r.pin?.version).toBe("0.187.0");
+    expect(r.pin && r.fallbackFor).toBe("0.188.0");
+    expect(r.log).toContain(
+      "::warning::bus pin fell back to 0.187.0 (own 0.188.0 not verified:",
+    );
+    expect(r.why).toContain("pinned 0.187.0 as a fallback");
+    expect(r.why).toContain("own 0.188.0 not verified");
+  });
+
+  it("goes down, newest first, past one that does not verify", async () => {
+    const asked: string[] = [];
+    const r = await resolvePinWithFallback(
+      "0.188.0",
+      only(["0.186.0"], asked),
+      o(),
+    );
+    expect(r.pin?.version).toBe("0.186.0");
+    expect(asked.slice(-2)).toEqual(["0.187.0", "0.186.0"]);
+  });
+
+  it("nothing verifies: no pin, and the reason", async () => {
+    const r = await resolvePinWithFallback("0.188.0", only([]), o());
+    expect(r.pin).toBeNull();
+    expect(r.why).toContain("0.188.0");
+    expect(r.why).toContain("verified either");
+  });
+
+  it("bound 1: at most 3 stable releases below its own", async () => {
+    expect(BUS_PIN_MAX_BACK).toBe(3);
+    const asked: string[] = [];
+    // Only the fourth below verifies: out of reach.
+    const r = await resolvePinWithFallback(
+      "0.188.0",
+      only(["0.184.0"], asked),
+      o(),
+    );
+    expect(r.pin).toBeNull();
+    expect(asked).not.toContain("0.184.0");
+    expect(asked.filter((v) => v !== "0.188.0")).toEqual([
+      "0.187.0",
+      "0.186.0",
+      "0.185.0",
+    ]);
+    // The third below is reachable.
+    expect(
+      (await resolvePinWithFallback("0.188.0", only(["0.185.0"]), o())).pin
+        ?.version,
+    ).toBe("0.185.0");
+  });
+
+  it("bound 2: never below the minimum kept in the repo", async () => {
+    const asked: string[] = [];
+    const r = await resolvePinWithFallback(
+      "0.188.0",
+      only(["0.186.0", "0.185.0"], asked),
+      o("0.187.0"),
+    );
+    expect(r.pin).toBeNull();
+    expect(asked).not.toContain("0.186.0");
+    expect(
+      (await resolvePinWithFallback("0.188.0", only(["0.187.0"]), o("0.187.0")))
+        .pin?.version,
+    ).toBe("0.187.0");
+    expect(BUS_PIN_MIN).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("an unlistable registry: nothing to fall back to", async () => {
+    const r = await resolvePinWithFallback(
+      "0.188.0",
+      {
+        ...only([]),
+        versions: async () => {
+          throw new Error("registry answered 503");
+        },
+      },
+      o(),
+    );
+    expect(r.pin).toBeNull();
+    expect(r.why).toContain("could not list releases to fall back to");
+  });
+
+  it("a pre-release falls back below the stable it first pinned", async () => {
+    const asked: string[] = [];
+    const r = await resolvePinWithFallback(
+      "0.189.0-dev+abc",
+      only(["0.187.0"], asked),
+      o(),
+    );
+    expect(r.pin?.version).toBe("0.187.0");
+    expect(asked.slice(0, 2)).toEqual(["0.188.0", "0.187.0"]);
   });
 });

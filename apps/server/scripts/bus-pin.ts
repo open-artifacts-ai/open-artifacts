@@ -23,9 +23,24 @@ import {
   verifyRelease,
 } from "../../../packages/bus-daemon/src/update/verify.ts";
 
+/**
+ * The oldest release a release build may fall back to (#2543). Each release
+ * raises it to the latest published stable, so a fallback never reaches an
+ * old release that a later one replaced.
+ */
+export const BUS_PIN_MIN = "0.188.0";
+/** A release build falls back at most this many stable releases below its own. */
+export const BUS_PIN_MAX_BACK = 3;
+
 export type BusPkg = { version: string; integrity: string };
 export type PinResult =
-  | { pin: BusPkg; log: string; why: string }
+  | {
+      pin: BusPkg;
+      log: string;
+      why: string;
+      /** Set when the pin is an older release than this server's own. */
+      fallbackFor?: string;
+    }
   | {
       pin: null;
       log: string;
@@ -113,6 +128,15 @@ export async function resolvePin(
       `no published stable release at or below server version ${serverVersion}`,
       false,
     );
+  return resolvePinFor(target, deps, serverVersion);
+}
+
+/** Verifies release `target` itself. */
+async function resolvePinFor(
+  target: string,
+  deps: PinDeps,
+  serverVersion = target,
+): Promise<PinResult> {
   try {
     const rel = await (deps.fetchRelease ?? fetchRelease)(target);
     const ok = (deps.verifyRelease ?? verifyRelease)(rel);
@@ -170,4 +194,62 @@ export async function resolvePinRequired(
     r = await resolvePin(serverVersion, deps);
   }
   return r;
+}
+
+/**
+ * The release run: the pin of this server's own release (with retries for
+ * registry lag). If that cannot be verified, the newest of at most
+ * BUS_PIN_MAX_BACK stable releases below it, never below `min`, that
+ * verifies; the result says it is a fallback and for which version. None
+ * verifies: no pin (the build fails).
+ */
+export async function resolvePinWithFallback(
+  serverVersion: string,
+  deps: PinDeps = {},
+  o: Parameters<typeof resolvePinRequired>[2] & {
+    min?: string;
+    maxBack?: number;
+  } = {},
+): Promise<PinResult> {
+  const own = await resolvePinRequired(serverVersion, deps, o);
+  if (own.pin !== null) return own;
+  const m = SERVER_VERSION.exec(serverVersion);
+  if (!m) return own;
+  const base = `${m[1]}.${m[2]}.${m[3]}`;
+  const min = o.min ?? BUS_PIN_MIN;
+  let published: string[];
+  try {
+    published = await (deps.versions ?? publishedVersions)();
+  } catch (e) {
+    return {
+      ...own,
+      why: `${own.why}; could not list releases to fall back to (${why(e)})`,
+    };
+  }
+  const tried =
+    SERVER_VERSION.exec(serverVersion)?.[4] === undefined
+      ? base
+      : pinVersionFor(serverVersion, published);
+  const below = published
+    .filter(isVersion)
+    .filter((v) => compareVersions(v, base) < 0 && v !== tried)
+    .sort(compareVersions)
+    .reverse()
+    .slice(0, o.maxBack ?? BUS_PIN_MAX_BACK)
+    .filter((v) => compareVersions(v, min) >= 0);
+  for (const v of below) {
+    const r = await resolvePinFor(v, deps);
+    if (r.pin === null) continue;
+    const reason = `own ${serverVersion} not verified: ${own.why}`;
+    return {
+      pin: r.pin,
+      fallbackFor: serverVersion,
+      why: `pinned ${v} as a fallback (${reason})`,
+      log: `::warning::bus pin fell back to ${v} (${reason})\n${r.log}`,
+    };
+  }
+  return {
+    ...own,
+    why: `${own.why}; no release at or above ${min} within ${o.maxBack ?? BUS_PIN_MAX_BACK} below ${base} verified either`,
+  };
 }
