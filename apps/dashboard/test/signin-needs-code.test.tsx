@@ -108,6 +108,10 @@ it("(a) with codes off: only what to ask for, no button", async () => {
     ),
   ).toBeVisible();
   expect(screen.queryByRole("button", { name: "Email me a code" })).toBeNull();
+  // Design: a quiet way back to Google.
+  expect(
+    screen.getByRole("link", { name: "Try another account" }),
+  ).toHaveAttribute("href", "/auth/login/google?next=%2Fa%2FX1");
   expect(needsCodeNoCodes("a")).toContain(
     "Ask the person who shared this page",
   );
@@ -124,11 +128,30 @@ it("(b) no_access from Google: try another account, or a code at an empty field"
   expect(await screen.findByRole("textbox", { name: "Email" })).toHaveValue("");
 });
 
-it("(b) with codes off: Try another account only", async () => {
-  mountHosted("/sign-in?error=no_access&via=google", { providers: ["google"] });
-  expect(await screen.findByText(WRONG_ACCOUNT)).toBeVisible();
+it("(b) with codes off: Product's codes-off line, Try another account only", async () => {
+  mountHosted("/sign-in?error=no_access&via=google&next=%2Fa%2FX1", {
+    providers: ["google"],
+  });
+  expect(
+    await screen.findByText(
+      "That Google account doesn't have access. Log in with the account for the address this page was shared with.",
+    ),
+  ).toBeVisible();
   expect(
     screen.getByRole("link", { name: "Try another account" }),
   ).toBeVisible();
   expect(screen.queryByRole("button", { name: "Email me a code" })).toBeNull();
+});
+
+it("no_access from Google without a page link in next: the member line, not (b)", async () => {
+  mountHosted("/sign-in?error=no_access&via=google&next=%2Fsettings");
+  expect(
+    await screen.findByText(
+      "This Google account doesn't have access here yet. Ask an admin to invite you, or log in with another Google account.",
+    ),
+  ).toBeVisible();
+  expect(screen.queryByText(WRONG_ACCOUNT)).toBeNull();
+  expect(
+    screen.queryByRole("link", { name: "Try another account" }),
+  ).toBeNull();
 });

@@ -119,6 +119,16 @@ export const needsCodeNoCodes = (email: string) =>
   `Google couldn't confirm ${email}. Ask the person who shared this page to use your Gmail or Google Workspace address.`;
 export const WRONG_ACCOUNT =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
+/** OA Product: (b) with codes off. */
+export const WRONG_ACCOUNT_NO_CODES =
+  "That Google account doesn't have access. Log in with the account for the address this page was shared with.";
+
+/**
+ * #2590 G2 (b) is for share recipients: the server can't tell them apart,
+ * so a page link in `next` (/a/<id>) stands for it. Anything else keeps the
+ * member line.
+ */
+const isPageLink = (next: string) => /^\/a\/[^/?#]+/.test(next);
 /**
  * OA Product (#2590 G2): needs_code without link=1, or a link that's gone
  * (404): the usual sign-in, with this line above it.
@@ -286,8 +296,11 @@ function HostedSignIn({
   }, [linkGone, navigate, next]);
   const domain = google?.domains[0];
   const googleHref = google ? startHref(google.start, next) : undefined;
+  // Design (#2590): 12px between the heading and a notice under it.
   const banner = error && (
-    <Notice tone="danger">{errorCopy(error, name, domain, via)}</Notice>
+    <div className="mt-3">
+      <Notice tone="danger">{errorCopy(error, name, domain, via)}</Notice>
+    </div>
   );
   const secondary = Boolean(google || email);
   const accessButton = access && (
@@ -360,11 +373,26 @@ function HostedSignIn({
         {linked.isPending ? (
           <p aria-busy="true" className="oa-split-sub" />
         ) : linked.data && !email ? (
-          <Notice tone="info">{needsCodeNoCodes(linked.data)}</Notice>
+          <>
+            <div className="mt-3">
+              <Notice tone="info">{needsCodeNoCodes(linked.data)}</Notice>
+            </div>
+            {/* Design: a quiet way to try again with Google. */}
+            {googleHref && (
+              <Button
+                asChild
+                variant="outline"
+                className="oa-split-btn"
+                style={{ marginTop: 16 }}
+              >
+                <a href={googleHref}>Try another account</a>
+              </Button>
+            )}
+          </>
         ) : linked.data && email ? (
           <>
             {step === "email" && (
-              <div className="mb-4">
+              <div className="mt-3 mb-4">
                 <Notice tone="info">{needsCode(linked.data)}</Notice>
               </div>
             )}
@@ -388,13 +416,15 @@ function HostedSignIn({
 
   // #2590 G2 (b): Google said no_access, they used another account. Try
   // another, or get a code at the shared address (no link: an empty field).
-  if (error === "no_access" && via === "google" && google)
+  if (error === "no_access" && via === "google" && google && isPageLink(next))
     return (
       <>
         <h1>Log in to {name}</h1>
         {step === "email" && (
-          <div className="mb-4">
-            <Notice tone="info">{WRONG_ACCOUNT}</Notice>
+          <div className="mt-3 mb-4">
+            <Notice tone="info">
+              {email ? WRONG_ACCOUNT : WRONG_ACCOUNT_NO_CODES}
+            </Notice>
           </div>
         )}
         {codeForm && email ? (

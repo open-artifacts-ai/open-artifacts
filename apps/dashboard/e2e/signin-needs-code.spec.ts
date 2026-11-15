@@ -88,6 +88,9 @@ for (const scheme of ["light", "dark"] as const)
           ),
         ).toBeVisible();
         await expect(page.getByRole("button")).toHaveCount(0);
+        await expect(
+          page.getByRole("link", { name: "Try another account" }),
+        ).toBeVisible();
         await shoot(page, info, `signin-needs-code-off-${scheme}-${width}.png`);
         await axe(page);
       });
@@ -95,8 +98,9 @@ for (const scheme of ["light", "dark"] as const)
       test("(b) no_access from Google: try another account, or a code", async ({
         page,
       }, info) => {
+        // A page link in next: a share recipient (#2590).
         await page.goto(
-          "/sign-in?hosted=1&error=no_access&via=google&next=%2F",
+          "/sign-in?hosted=1&error=no_access&via=google&next=%2Fa%2FCd5fGhJkLm6nPqRs",
         );
         await expect(
           page.getByText(
@@ -112,6 +116,26 @@ for (const scheme of ["light", "dark"] as const)
         await expect(page.getByRole("textbox", { name: "Email" })).toHaveValue(
           "",
         );
+      });
+
+      test("(b) with codes off: the codes-off line, Try another account only", async ({
+        page,
+      }, info) => {
+        await page.goto(
+          "/sign-in?hosted=google-only&error=no_access&via=google&next=%2Fa%2FCd5fGhJkLm6nPqRs",
+        );
+        await expect(
+          page.getByText(
+            "That Google account doesn't have access. Log in with the account for the address this page was shared with.",
+          ),
+        ).toBeVisible();
+        await expect(page.getByRole("button")).toHaveCount(0);
+        await shoot(
+          page,
+          info,
+          `signin-wrong-account-off-${scheme}-${width}.png`,
+        );
+        await axe(page);
       });
 
       test("a link that's gone: the usual sign-in, That took too long. Start again.", async ({
