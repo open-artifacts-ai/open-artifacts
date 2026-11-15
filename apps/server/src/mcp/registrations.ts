@@ -70,12 +70,15 @@ export async function markClientGranted(
   env: Env,
   clientId: string,
   now = Date.now(),
+  /** Statements to commit in the same batch (an audit row). */
+  extra: D1PreparedStatement[] = [],
 ): Promise<void> {
-  await env.DB.prepare(
-    "insert into counters (key, n, day) values (?, 1, ?) on conflict (key) do update set n = 1",
-  )
-    .bind(CLIENT_KEY + clientId, utcDay(now))
-    .run();
+  await env.DB.batch([
+    env.DB.prepare(
+      "insert into counters (key, n, day) values (?, 1, ?) on conflict (key) do update set n = 1",
+    ).bind(CLIENT_KEY + clientId, utcDay(now)),
+    ...extra,
+  ]);
 }
 
 /**
