@@ -19,6 +19,7 @@ import {
   IdInputSchema,
   LIMITS,
   ListCommentsInputSchema,
+  ListQueryNoDocSchema,
   ListQuerySchema,
   ListSpacesInputSchema,
   ListVersionsInputSchema,
@@ -63,7 +64,7 @@ export const TOOL_DEFS = [
   },
   {
     name: "list_artifacts",
-    inputSchema: ListQuerySchema,
+    inputSchema: ListQueryNoDocSchema,
     example: { scope: "mine", format: "html", limit: 10 },
     description:
       "Open Artifacts: List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent, agentVia (one of your own connections, g:<grantId> or t:<tokenId>) or updatedSince; page with cursor.",
@@ -308,6 +309,8 @@ export const toolConfig = <N extends ToolName>(
     // A deployment with docs on (DOCS_ENABLED) takes the schema that names doc.
     inputSchema: (docs && name === "publish_artifact"
       ? PublishToolInputSchema
-      : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
+      : docs && name === "list_artifacts"
+        ? ListQuerySchema
+        : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

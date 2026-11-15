@@ -404,6 +404,19 @@ export const DocSaveSchema = z.object({
 });
 export type DocSave = z.infer<typeof DocSaveSchema>;
 
+/** The body of POST R.docSaveVersion (#2496). No name: the server names it "Version {n}". */
+export const DocSaveVersionBodySchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+});
+export type DocSaveVersionBody = z.infer<typeof DocSaveVersionBodySchema>;
+
+/** What R.docSaveVersion and R.docRestore answer. */
+export const DocVersionResultSchema = z.object({
+  /** The version the call saved (the restore's "Restored v{n}" version). */
+  version: z.number().int(),
+});
+export type DocVersionResult = z.infer<typeof DocVersionResultSchema>;
+
 export const VersionInfoSchema = z.object({
   version: z.number().int(),
   message: z.string().nullable(),
@@ -440,35 +453,42 @@ export const AgentViaSchema = z.string().regex(/^[gt]:[A-Za-z0-9_-]{1,64}$/);
  * caller has a role in. spaceId narrows any scope; another user's personal
  * space is 400 space_personal.
  */
-export const ListQuerySchema = z
-  .object({
-    scope: z
-      .enum(["mine", "shared", "team", "all", "space", "spaces"])
-      .default("all"),
-    /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
-    spaceId: z.string().optional(),
-    format: FormatSchema.optional(),
-    visibility: VisibilitySchema.optional(),
-    /** An owner's email, or the literal "me" for the caller. */
-    owner: z.string().optional(),
-    agent: z.string().optional(),
-    q: z.string().optional(),
-    updatedSince: z.string().optional(),
-    cursor: z.string().optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(25),
-    includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
-    /** #1535: needs_answer = open asks addressed to the caller. */
-    filter: z.enum(["needs_answer"]).optional(),
-    /**
-     * Artifacts with any version from this connection (AgentViaSchema). Only
-     * the caller's own grant or token matches; any other is an empty page.
-     */
-    agentVia: AgentViaSchema.optional(),
-  })
-  .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
-    message: 'scope "space" requires spaceId',
-    path: ["spaceId"],
-  });
+const listQuery = (format: typeof FormatSchema) =>
+  z
+    .object({
+      scope: z
+        .enum(["mine", "shared", "team", "all", "space", "spaces"])
+        .default("all"),
+      /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
+      spaceId: z.string().optional(),
+      format: format.optional(),
+      visibility: VisibilitySchema.optional(),
+      /** An owner's email, or the literal "me" for the caller. */
+      owner: z.string().optional(),
+      agent: z.string().optional(),
+      q: z.string().optional(),
+      updatedSince: z.string().optional(),
+      cursor: z.string().optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+      /** #1535: needs_answer = open asks addressed to the caller. */
+      filter: z.enum(["needs_answer"]).optional(),
+      /**
+       * Artifacts with any version from this connection (AgentViaSchema). Only
+       * the caller's own grant or token matches; any other is an empty page.
+       */
+      agentVia: AgentViaSchema.optional(),
+    })
+    .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
+      message: 'scope "space" requires spaceId',
+      path: ["spaceId"],
+    });
+export const ListQuerySchema = listQuery(FormatSchema);
+/** ListQuerySchema without the doc format filter, while docs are unavailable (#2140). */
+export const ListQueryNoDocSchema = listQuery(
+  z.enum(STORED_FORMATS) as unknown as typeof FormatSchema,
+);
+
 export type ListQuery = z.infer<typeof ListQuerySchema>;
 export type ListQueryInput = z.input<typeof ListQuerySchema>;
 

@@ -1,6 +1,12 @@
 // edit_doc (#1100): agent edits to a doc, through its room. The MCP tool and
 // POST /api/v1/artifacts/:id/doc/ops both come here.
-import type { EditDocBody, EditDocResult, Member } from "@oa/shared";
+import type {
+  DocSaveVersionBody,
+  DocVersionResult,
+  EditDocBody,
+  EditDocResult,
+  Member,
+} from "@oa/shared";
 import { authorize, callerOf } from "../auth/authz.js";
 import type { Contributor } from "../docs/versions.js";
 import type { Env } from "../env.js";
@@ -81,4 +87,76 @@ export async function editDoc(
     ...(r.savedVersion === undefined ? {} : { savedVersion: r.savedVersion }),
     changes: r.changes,
   };
+}
+
+/** The doc `id` the caller may edit, with its room; refuses the rest like editDoc. */
+async function docRoom(env: Env, user: Member, id: string) {
+  const { artifact } = await authorize(env, callerOf(user), id, "publish");
+  if (artifact.doc !== 1)
+    throw new ApiError("bad_request", "This artifact is not a doc.", {
+      path: "id",
+      reason: "not_a_doc",
+    });
+  if (!docsAvailable(env))
+    throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+  const rooms = env.DOC_ROOM;
+  if (!rooms)
+    throw new ApiError("storage_unavailable", "Doc rooms are unavailable");
+  return rooms.get(rooms.idFromName(id));
+}
+
+function roomError(e: unknown): never {
+  const m = e instanceof Error ? e.message : String(e);
+  if (m.includes("version_not_found") || m.includes("bad_version"))
+    throw new ApiError("not_found", "No such version");
+  if (m.includes("bad_version_name"))
+    throw new ApiError(
+      "bad_request",
+      "The version name must be 1 to 100 characters.",
+      {
+        path: "name",
+        reason: "bad_version_name",
+      },
+    );
+  if (m.includes("doc_too_large"))
+    throw new ApiError("too_large", "That version is too large to restore.", {
+      reason: "doc_too_large",
+    });
+  throw e;
+}
+
+/** Save the room's current state as a named version ("Version {n}" without a name). */
+export async function saveDocVersion(
+  env: Env,
+  user: Member,
+  agent: AgentAttr | null,
+  id: string,
+  body: DocSaveVersionBody,
+): Promise<DocVersionResult> {
+  const room = await docRoom(env, user, id);
+  const by = contributorFor(user, agent);
+  try {
+    return await room.saveVersion({
+      ...(body.name === undefined ? {} : { name: body.name }),
+      by,
+    });
+  } catch (e) {
+    return roomError(e);
+  }
+}
+
+/** Restore version `v` through the room: unsaved edits saved, one live edit, "Restored v{v}". */
+export async function restoreDocVersion(
+  env: Env,
+  user: Member,
+  agent: AgentAttr | null,
+  id: string,
+  v: number,
+): Promise<DocVersionResult> {
+  const room = await docRoom(env, user, id);
+  try {
+    return await room.restore({ version: v, by: contributorFor(user, agent) });
+  } catch (e) {
+    return roomError(e);
+  }
 }

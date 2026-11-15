@@ -259,6 +259,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/doc`]: art("events"),
   // #1100: edit_doc over REST; the service checks "publish" (plan lock, caps).
   [`POST ${ARTS}/doc/ops`]: art("publish", signedIn),
+  // #1100: save a named doc version and restore one, through the room.
+  [`POST ${ARTS}/doc/versions`]: art("publish", signedIn),
+  [`POST ${ARTS}/doc/versions/:v/restore`]: art("publish", signedIn),
   [`GET ${ARTS}/storage`]: art("storage", { anon401: SAVE }),
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),

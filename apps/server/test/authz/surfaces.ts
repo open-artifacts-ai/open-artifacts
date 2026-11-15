@@ -602,6 +602,28 @@ export const SURFACES: readonly Surface[] = [
     ),
   ),
   rest(
+    "rest doc save version",
+    "publish",
+    [`POST ${ARTS}/doc/versions`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions`,
+      () => ({ body: { name: "probe" } }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "rest doc restore",
+    "publish",
+    [`POST ${ARTS}/doc/versions/:v/restore`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions/1/restore`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
+  rest(
     "rest restore_version",
     "restore",
     [`POST ${ARTS}/versions/:v/restore`],

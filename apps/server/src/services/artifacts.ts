@@ -75,6 +75,7 @@ import {
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { noteInstanceFirst } from "./analytics.js";
 import { audit, userActor } from "./audit.js";
+import { restoreDocVersion } from "./doc-edit.js";
 import {
   apiFormat,
   docPlanInput,
@@ -1710,7 +1711,13 @@ export async function restoreVersion(
   agent: AgentAttr | null,
   ctx?: Ctx,
 ): Promise<PublishResult> {
-  await authorize(env, asUser(user), id, "restore");
+  const { artifact } = await authorize(env, asUser(user), id, "restore");
+  // #2140: a doc restores through its room (unsaved edits saved, one live
+  // edit, "Restored v{v}"), never as a whole-content rewrite.
+  if (artifact.doc === 1) {
+    const r = await restoreDocVersion(env, user, agent, id, v);
+    return { id, version: r.version, url: appOrigin(env) + viewerPath(id) };
+  }
   const src = await env.DB.prepare(
     `select v.entry, v.manifest, v.language, coalesce(v.format, a.format) as format
      from versions v join artifacts a on a.id = v.artifact_id
