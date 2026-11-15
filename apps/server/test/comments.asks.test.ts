@@ -196,7 +196,11 @@ const answer = (
     body: { optionId },
     headers: u ? {} : { "cf-connecting-ip": "198.51.100.8" },
   });
-const who = (u: U): CommentWho => ({ kind: "user", id: u.userId });
+const who = (u: U): CommentWho => ({
+  kind: "user",
+  id: u.userId,
+  typed: true,
+});
 /** An agent of `u` with a verified bus identity (#1822, #2224). */
 const agentOf = (
   u: U,

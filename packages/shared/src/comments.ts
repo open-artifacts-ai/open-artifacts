@@ -217,6 +217,8 @@ export const CommentSchema = z.object({
   mentions: z.array(CommentMentionSchema).optional(),
   /** #2035: the thread's agents a person's reply also told, with delivery. Members only. */
   notified: z.array(CommentNotifiedSchema).optional(),
+  /** #2559: a non-fatal notice on the POST response only (a mention over the limit); never stored. */
+  notice: z.string().optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
