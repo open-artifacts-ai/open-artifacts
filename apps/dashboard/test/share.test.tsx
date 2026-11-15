@@ -106,7 +106,7 @@ describe("share panel", () => {
     mount(panel(OWNED));
     expect(
       await screen.findByText(
-        "No email is sent. Copy the link and share it yourself.",
+        "We won't email them about this share. Copy the link and send it yourself.",
       ),
     ).toBeInTheDocument();
     fireEvent.change(await screen.findByRole("textbox", { name: "Email" }), {

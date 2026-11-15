@@ -71,12 +71,19 @@ for (const scheme of ["light", "dark"] as const)
           .getByRole("textbox", { name: "Email" })
           .fill("sam@gmail.com");
         await expect(inviteRole(page)).toHaveText("Can comment");
-        // OA Product's line under an outside address (Google and codes here).
+        // OA Product's line under an outside address. Email is off here, so
+        // codes are too: the Google-only line, beside "We won't email them".
         await expect(
           page.getByText(
-            "Outside your team. sam@gmail.com opens this page with their Google account or a code we email them. They see only what you share. Free.",
+            "Outside your team. sam@gmail.com opens this page with their Google account. They see only what you share. Free.",
           ),
         ).toBeVisible();
+        await expect(
+          page.getByText(
+            "We won't email them about this share. Copy the link and send it yourself.",
+          ),
+        ).toBeVisible();
+        await expect(page.getByText(/a code we email them/)).toHaveCount(0);
         await inviteRole(page).click();
         await expect(page.getByRole("option")).toHaveText([
           "Can comment",
@@ -128,8 +135,8 @@ for (const scheme of ["light", "dark"] as const)
       });
     });
 
-// Codes only (no login domains): an address that isn't a known member is
-// outside before it's saved (#2590, Product and Design).
+// Codes only (no login domains), email on: an address that isn't a known
+// member is outside before it's saved (#2590, Product and Design).
 for (const scheme of ["light", "dark"] as const)
   for (const width of [1280, 390])
     test.describe(`codes only ${scheme} ${width}`, () => {
@@ -137,7 +144,10 @@ for (const scheme of ["light", "dark"] as const)
       test("an unknown address: Can comment, Can view, and the codes line", async ({
         page,
       }, info) => {
-        await page.goto(`/a/${LANDING}?hosted=email-only&panel=open&tab=share`);
+        // Email on (mock=email): codes work, so the line names them.
+        await page.goto(
+          `/a/${LANDING}?hosted=email-only&mock=email&panel=open&tab=share`,
+        );
         const email = page.getByRole("textbox", { name: "Email" });
         await expect(email).toBeVisible();
         // A known member keeps Viewer and Editor.
@@ -150,6 +160,7 @@ for (const scheme of ["light", "dark"] as const)
             "Outside your team. sam@gmail.com opens this page with a code we email them. They see only what you share. Free.",
           ),
         ).toBeVisible();
+        await expect(page.getByText(/We won't email them/)).toHaveCount(0);
         await shot(
           page,
           info,

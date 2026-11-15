@@ -5,6 +5,7 @@ import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
+import { commenterShareHandlers } from "../src/mockCommenterShares";
 import { installHarness, mount, server } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -31,7 +32,9 @@ const FAILED = "The email didn't send. Copy the link and share it yourself.";
 const serve = (mode: Mode) => {
   if (mode === "disabled") return; // the harness's default handlers
   // Email on; the shared mocks answer every invite and share with emailed:false.
-  server.use(...createHandlers({ emailEnabled: true }));
+  const on = createHandlers({ emailEnabled: true });
+  // PROVISIONAL (#2590): an outsider's commenter share, ahead of the mocks.
+  server.use(...commenterShareHandlers(() => on), ...on);
   if (mode === "failed") return;
   server.use(
     http.post(`*${R.members}`, async ({ request }) => {
@@ -127,7 +130,8 @@ describe("Share panel", () => {
       id: string;
     }
   ).id;
-  const NO_EMAIL = "No email is sent. Copy the link and share it yourself.";
+  const NO_EMAIL =
+    "We won't email them about this share. Copy the link and send it yourself.";
   const WILL_EMAIL =
     "We'll email them a link. You can also copy it and send it yourself.";
   const EMAILED =

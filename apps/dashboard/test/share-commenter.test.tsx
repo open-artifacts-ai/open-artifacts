@@ -138,7 +138,13 @@ describe("the Share panel", () => {
     const { puts, handlers } = routes();
     // The hosted mocks list example.com as the login domain; these routes
     // sit ahead of them.
-    mountHosted(panel, true, undefined, handlers);
+    // Email on: codes work, so the line names them.
+    mountHosted(
+      panel,
+      true,
+      (m) => ({ ...m, instance: { ...m.instance, emailEnabled: true } }),
+      handlers,
+    );
     await screen.findByRole("combobox", { name: "Invite role" });
     invite("maya@example.com");
     expect(
@@ -178,7 +184,10 @@ describe("the Share panel", () => {
 
 describe("an instance with no login domains (codes only)", () => {
   it("a known member keeps Viewer and Editor; anyone else is outside, with the codes line", async () => {
-    mountHosted(panel, { providers: ["email"] });
+    mountHosted(panel, { providers: ["email"] }, (m) => ({
+      ...m,
+      instance: { ...m.instance, emailEnabled: true },
+    }));
     await screen.findByRole("combobox", { name: "Invite role" });
     // dan@example.com is a member in the hosted mocks.
     fireEvent.change(screen.getByLabelText("Email"), {
@@ -278,5 +287,57 @@ describe("the stored role, not the one picked", () => {
         "Guests can only view. If they become a member, they'll be able to edit.",
       ),
     ).toBeNull();
+  });
+});
+
+describe("email off means codes off (#2590)", () => {
+  const WONT =
+    "We won't email them about this share. Copy the link and send it yourself.";
+  const type = async (email: string) => {
+    await screen.findByRole("combobox", { name: "Invite role" });
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: email },
+    });
+  };
+  it("Google and codes listed, email off: the Google-only line, never the code one, beside the no-email line", async () => {
+    mountHosted(panel, true, (m) => ({
+      ...m,
+      instance: { ...m.instance, emailEnabled: false },
+    }));
+    await type("sam@gmail.com");
+    expect(
+      await screen.findByText(
+        "Outside your team. sam@gmail.com opens this page with their Google account. They see only what you share. Free.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByText(WONT)).toBeVisible();
+    expect(screen.queryByText(/a code we email them/)).toBeNull();
+  });
+  it("codes only, email off: no login line at all beside the no-email line", async () => {
+    mountHosted(panel, { providers: ["email"] }, (m) => ({
+      ...m,
+      instance: { ...m.instance, emailEnabled: false },
+    }));
+    await type("sam@gmail.com");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "Invite role" }),
+      ).toHaveTextContent("Can comment"),
+    );
+    expect(screen.getByText(WONT)).toBeVisible();
+    expect(screen.queryByText(/^Outside your team/)).toBeNull();
+  });
+  it("email on: the code line, and no no-email line", async () => {
+    mountHosted(panel, { providers: ["email"] }, (m) => ({
+      ...m,
+      instance: { ...m.instance, emailEnabled: true },
+    }));
+    await type("sam@gmail.com");
+    expect(
+      await screen.findByText(
+        "Outside your team. sam@gmail.com opens this page with a code we email them. They see only what you share. Free.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(WONT)).toBeNull();
   });
 });

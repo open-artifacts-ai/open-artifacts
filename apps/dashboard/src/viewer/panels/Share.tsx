@@ -268,7 +268,9 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const providers = useAuthProviders().data?.providers ?? [];
   const methods = {
     google: providers.some((p) => p.id === "google"),
-    codes: providers.some((p) => p.id === "email"),
+    // Codes need email: where it's off, so are they (#2590), whatever the
+    // providers list says. The same state as the "We won't email them" line.
+    codes: sends && providers.some((p) => p.id === "email"),
   };
   // With no login domains, an address is outside unless it's a known member
   // (#2590). Only owners and admins can list members.
@@ -530,7 +532,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           <p className={`mt-[var(--oa-space-3)] ${MUTED}`}>
             {sends
               ? "We'll email them a link. You can also copy it and send it yourself."
-              : "No email is sent. Copy the link and share it yourself."}
+              : "We won't email them about this share. Copy the link and send it yourself."}
           </p>
         </section>
       )}
