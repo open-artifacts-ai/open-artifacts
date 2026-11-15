@@ -27,13 +27,18 @@ import {
 } from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
-import { outsideShareEmail, senderName } from "../email/templates.js";
+import {
+  outsideShareEmail,
+  senderName,
+  shareEmail,
+} from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
+import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
@@ -264,7 +269,7 @@ export async function putShare(
     ...toShare(row),
     ...(guest ? { guest: true } : {}),
     ...(await emailed(created, () =>
-      emailShare(env, user, artifact, email, reach),
+      emailShare(env, user, artifact, email, role, reach),
     )),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
@@ -306,6 +311,7 @@ async function emailShare(
   user: Member,
   artifact: { id: string; title: string; format: string; doc: number },
   email: string,
+  role: ShareRole,
   /** The methods that admit the recipient and, with none, why (shareReach). */
   reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
 ): Promise<{
@@ -320,11 +326,14 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return { emailed: false };
+    const outside = outsideAddress(env, email);
     // No email to an outside address until it can opt out (outside-email.ts).
-    if (!outsideEmail.on && outsideAddress(env, email))
+    if (!outsideEmail.on && outside)
       return { emailed: false, notEmailed: "outside_no_unsubscribe" };
-    // No user row: an outside address (#2590). Its own daily limits, apart
-    // from the usual ones; the share is saved whatever they say.
+    // No user row. An outside address (#2590) gets the outside email, under
+    // its own daily limits (apart from the usual ones; the share is saved
+    // whatever they say). Anyone else (an address at a login domain, an
+    // Access install) gets the normal share email, with its role line.
     const day = new Date().toISOString().slice(0, 10);
     const trial = planOfMember(user)?.tier === "trial";
     const outcome: { limited?: boolean; reason?: string } = {};
@@ -333,24 +342,37 @@ async function emailShare(
       user.id,
       email,
       () =>
-        outsideShareEmail({
-          inviter: senderName(user),
-          senderEmail: normalizeEmail(user.email) ?? user.email,
-          instance: settings.name,
-          recipient: email,
-          appHost: env.APP_HOST,
-          title: artifact.title,
-          path: viewerPath(artifact.id),
-          signIn: reach.methods,
-          cantSignIn: reach.recipient?.reason,
-        }),
+        outside
+          ? outsideShareEmail({
+              inviter: senderName(user),
+              senderEmail: normalizeEmail(user.email) ?? user.email,
+              instance: settings.name,
+              recipient: email,
+              appHost: env.APP_HOST,
+              title: artifact.title,
+              path: viewerPath(artifact.id),
+              signIn: reach.methods,
+              cantSignIn: reach.recipient?.reason,
+            })
+          : shareEmail({
+              inviter: senderName(user),
+              instance: settings.name,
+              recipient: email,
+              appHost: env.APP_HOST,
+              title: artifact.title,
+              path: viewerPath(artifact.id),
+              format: apiFormat(artifact.format, artifact.doc),
+              role,
+              signIn: reach.methods,
+              cantSignIn: reach.recipient?.reason,
+            }),
       {
         kind: "share",
         artifactId: artifact.id,
         instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
         outcome,
-        extraCaps: !outsideAddress(env, email)
+        extraCaps: !outside
           ? []
           : [
               {
