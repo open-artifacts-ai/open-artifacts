@@ -340,6 +340,7 @@ describe("invite expiry", () => {
   it("a share guest (no invited_at) older than 30 days is not expired", async () => {
     const id = gmail();
     const uid = await seedUser(id.email, "guest");
+    await seedShare(id.email);
     await age(uid, 90 * DAY, false);
     const { e, c } = cfgOf();
     expect(await admit(e, c, id)).toMatchObject({

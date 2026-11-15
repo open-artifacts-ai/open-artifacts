@@ -592,6 +592,12 @@ export const MemberSchema = z.object({
   /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
   personalArtifacts: z.boolean().optional(),
   /**
+   * GET R.members: a suspended or removed member with any artifact in their
+   * personal space, trash included (what R.memberTransfer counts), so a client
+   * asks for a transfer summary only for them. Absent otherwise.
+   */
+  transferable: z.boolean().optional(),
+  /**
    * GET R.members (#1146): true when removing this person can be undone by
    * directory sync, which would bring their address back as a new, empty
    * account (Google sync on and a Workspace connected, no Google link, an

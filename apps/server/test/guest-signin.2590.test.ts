@@ -204,15 +204,27 @@ describe("reach for a share recipient", () => {
   const ways = async (e: Env, email: string) =>
     (await shareReach(e, email)).ways;
 
-  it("Gmail: google", async () => {
-    expect(await ways(INVITE(), uniq("r", "gmail.com"))).toEqual(["google"]);
+  // The default test install offers Google and codes: a share recipient
+  // outside the domains may use a code as a guest too.
+  const GOOGLE = () =>
+    direct({ AUTH_DOMAIN_JOIN: "invite", AUTH_PROVIDERS: "google" });
+  it("Gmail: google (and email_code where codes are on)", async () => {
+    expect(await ways(GOOGLE(), uniq("r", "gmail.com"))).toEqual(["google"]);
+    expect(await ways(INVITE(), uniq("r", "gmail.com"))).toEqual([
+      "google",
+      "email_code",
+    ]);
   });
   it("an address on a login domain: google", async () => {
     expect(await ways(INVITE(), uniq("r", "a.com"))).toEqual(["google"]);
   });
-  it("another domain: google_workspace", async () => {
+  it("another domain: google_workspace (and email_code where codes are on)", async () => {
+    expect(await ways(GOOGLE(), uniq("r", "other.com"))).toEqual([
+      "google_workspace",
+    ]);
     expect(await ways(INVITE(), uniq("r", "other.com"))).toEqual([
       "google_workspace",
+      "email_code",
     ]);
   });
   it("codes only: email_code", async () => {

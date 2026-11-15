@@ -47,6 +47,7 @@ import {
   readPlan,
   type StoredPlan,
 } from "../src/billing/plan.js";
+import { memberCount } from "../src/billing/seats.js";
 import {
   billingTick,
   ON_DEMAND_MS,
@@ -158,6 +159,8 @@ const gate = {
         });
       return Response.json({ ok: true, month: body.month, count: body.count });
     }
+    if (path === "/seats")
+      return Response.json({ members: body.members, applied: "stored" });
     if (path === "/checkout")
       return Response.json({
         url: "https://checkout.stripe.com/c/pay/cs_test_1",
@@ -2096,31 +2099,40 @@ describe("Me.instance.billing and the billing routes", () => {
     expect(n()).toBe(beforeBiz);
   });
 
-  it("checkout monthly team sends this month's creator count, counted server side (#2123)", async () => {
+  it("checkout monthly team sends the member count, counted server side (#2580)", async () => {
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
     const post = (body: unknown) =>
       send(R.billingCheckout, owner.cookie, { method: "POST", body });
     const last = () => calls.filter((c) => c.path === "/checkout").at(-1)?.body;
     const n = () => calls.filter((c) => c.path === "/checkout").length;
-    // No creators yet this month: 0 (billing bills at least 1).
+    await env.DB.prepare("update users set last_seen_at = null").run();
+    // Nobody has signed in: 0 (billing bills at least 1).
     expect((await post({ tier: "team" })).status).toBe(200);
-    expect(last()).toMatchObject({ plan: "team", creators: 0 });
-    // Three this month, one last month (not counted).
-    const month = monthOf(Date.now());
+    expect(last()).toMatchObject({ plan: "team", members: 0, creators: 0 });
+    // Owner and one member signed in, a guest did too: 2.
+    const t = newId().slice(0, 6).toLowerCase();
+    const m = await login(`ck-m-${t}@x.com`, "member");
+    const g = await login(`ck-g-${t}@x.com`, "guest");
     await env.DB.prepare(
-      "insert into creator_months (month, user_id, source, first_at) values (?1, 'uA', 'version', 1), (?1, 'uB', 'data', 2), (?1, 'uC', 'version', 3), (?2, 'uD', 'version', 4)",
+      "update users set last_seen_at = 5 where id in (?1, ?2, ?3)",
     )
-      .bind(month, previousMonth(month))
+      .bind(owner.userId, m.userId, g.userId)
       .run();
     expect((await post({ tier: "team" })).status).toBe(200);
-    expect(last()).toMatchObject({ plan: "team", creators: 3 });
-    // Yearly prepays seats; Solo is not per creator: neither sends creators.
+    expect(last()).toMatchObject({ plan: "team", members: 2, creators: 0 });
+    // Yearly prepays seats and Solo has no count: neither sends members.
     expect(
       (await post({ tier: "team", interval: "year", seats: 7 })).status,
     ).toBe(200);
     expect(last()).not.toHaveProperty("creators");
+    // The client's seats go unchanged, with the member count beside them.
+    expect(last()).toMatchObject({ seats: 7, members: 2 });
+    expect(
+      (await post({ tier: "team", interval: "year", seats: 1 })).status,
+    ).toBe(200);
+    expect(last()).toMatchObject({ seats: 1, members: 2 });
     expect((await post({ tier: "solo", interval: "month" })).status).toBe(200);
-    expect(last()).not.toHaveProperty("creators");
+    expect(last()).not.toHaveProperty("members");
     // The count never comes from the request: a body naming creators is 400,
     // before billing.
     const before = n();
@@ -2247,6 +2259,8 @@ describe("Me.instance.billing and the billing routes", () => {
     let answers: Array<() => Response> = [];
     const bodies: string[] = [];
     gate.fetch = async (req: Request) => {
+      // The member-count report (#2580) rides along after a write: not under test.
+      if (new URL(req.url).pathname === "/seats") return orig.call(gate, req);
       bodies.push(await req.text());
       const next = answers.shift();
       if (!next) throw new Error("unexpected call");

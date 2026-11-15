@@ -16,6 +16,7 @@ import {
   AUTH_DOMAINS_DOC,
   DOMAIN_OFF,
   DOMAIN_ON,
+  domainList,
   LOGIN,
   saveLine,
 } from "./loginCopy";
@@ -335,7 +336,15 @@ function DomainRow({
         open={asking === "off"}
         onClose={() => setAsking(null)}
         title={DOMAIN_OFF.title(name)}
-        body={<p className="m-0">{DOMAIN_OFF.body(name, s.joined)}</p>}
+        body={
+          <p className="m-0">
+            {DOMAIN_OFF.body(
+              name,
+              s.joined,
+              s.domains.length ? domainList(s.domains) : name,
+            )}
+          </p>
+        }
         confirm={DOMAIN_OFF.confirm}
         onConfirm={() => join.change(joinBody(s, false))}
       />

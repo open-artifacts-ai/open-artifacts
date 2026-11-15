@@ -323,6 +323,9 @@ importers:
       '@oa/broker-core':
         specifier: workspace:*
         version: link:../../packages/broker-core
+      '@oa/bus-daemon':
+        specifier: workspace:*
+        version: link:../../packages/bus-daemon
       '@oa/dashboard':
         specifier: workspace:*
         version: link:../dashboard
