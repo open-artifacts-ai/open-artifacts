@@ -56,7 +56,7 @@ describe("invite reachability (review item 11)", () => {
     ["admin", "outside_domains", "out.com"],
     ["member", "no_sign_in_method", "a.com"],
   ] as const)(
-    "email codes only, domain codes off: a %s at %s is 400 no_way_in (%s), nothing created",
+    "email codes only, domain codes off: a %s at %s is 400 invite_unreachable (%s), nothing created",
     async (role, reason, domain) => {
       const { e, sent } = install(direct, { AUTH_PROVIDERS: "email" });
       const cookie = await owner();
@@ -64,7 +64,7 @@ describe("invite reachability (review item 11)", () => {
       const r = await invite(e, cookie, email, role);
       expect(r.status).toBe(400);
       const err = await errOf(r);
-      expect(err.code).toBe("no_way_in");
+      expect(err.code).toBe("invite_unreachable");
       expect(InviteUnreachableDetailsSchema.parse(err.details)).toEqual({
         field: "email",
         reason,
@@ -98,7 +98,7 @@ describe("invite reachability (review item 11)", () => {
     });
     const r = await invite(e, await owner(), uniq("x", "a.com"));
     expect(r.status).toBe(400);
-    expect((await errOf(r)).code).toBe("no_way_in");
+    expect((await errOf(r)).code).toBe("invite_unreachable");
   });
 
   it("domain codes on (trial): in-domain is fine and the email promises a code", async () => {

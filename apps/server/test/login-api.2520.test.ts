@@ -136,12 +136,12 @@ describe("POST members (invite)", () => {
     });
   });
 
-  it("refuses with 400 no_way_in when no way in exists; nothing created", async () => {
+  it("refuses with 400 invite_unreachable when no way in exists; nothing created", async () => {
     const e = direct({ AUTH_PROVIDERS: "email" });
     const email = uniq("nw", "other.com");
     const r = await invite(e, await owner(), email, "member");
     expect(r.status).toBe(400);
-    expect((await errOf(r)).code).toBe("no_way_in");
+    expect((await errOf(r)).code).toBe("invite_unreachable");
     expect(
       await env.DB.prepare("select 1 from users where email = ?")
         .bind(email)

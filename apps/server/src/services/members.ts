@@ -305,7 +305,7 @@ export async function inviteMemberOutcome(
       reason: reach.inDomain ? "no_sign_in_method" : "outside_domains",
     };
     throw new ApiError(
-      "no_way_in",
+      "invite_unreachable",
       INVITE_UNREACHABLE_MESSAGE[details.reason],
       details,
     );
@@ -327,7 +327,7 @@ export async function inviteMemberOutcome(
     ]);
     const row = back[0];
     if (!row) return existingConflict(env, email);
-    return await invited(env, inviter, email, row, reach, ways, true);
+    return await invited(env, inviter, email, row, reach, ways, true, true);
   }
   // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
   // invited_at and its own invite.create row (the existing role, as a first
@@ -387,7 +387,23 @@ export async function inviteMemberOutcome(
     row = rows[0];
   }
   if (!row) return existingConflict(env, email);
-  return invited(env, inviter, email, row, reach, ways, Boolean(again));
+  // A re-invite mails at most once per address per 10 minutes (the refresh
+  // itself always happens). sendEmail also caps invites per UTC day: the
+  // instance, 5 per recipient and the inviter's own budget.
+  const cooledDown =
+    !again ||
+    prior?.invitedAt == null ||
+    Date.now() - prior.invitedAt >= REINVITE_COOLDOWN_MS;
+  return invited(
+    env,
+    inviter,
+    email,
+    row,
+    reach,
+    ways,
+    Boolean(again),
+    cooledDown,
+  );
 }
 
 /** The invite email and result for a row an invite just wrote or refreshed. */
@@ -399,6 +415,7 @@ async function invited(
   reach: Awaited<ReturnType<typeof inviteReach>>,
   ways: LoginWay[],
   reinvited: boolean,
+  cooledDown: boolean,
 ): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
@@ -406,13 +423,6 @@ async function invited(
     ? reach.methods
     : ["google"];
   let emailed = false;
-  // A re-invite mails at most once per address per 10 minutes (the refresh
-  // itself always happens). sendEmail also caps invites per UTC day: the
-  // instance, 5 per recipient and the inviter's own budget.
-  const cooledDown =
-    !again ||
-    prior?.invitedAt == null ||
-    Date.now() - prior.invitedAt >= REINVITE_COOLDOWN_MS;
   if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
       .name;
