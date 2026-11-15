@@ -1668,6 +1668,19 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  "POST /api/v1/settings/login/first-invite-seen": {
+    real: { req: () => ({ path: "" }), allow: ok(204) },
+  },
+  // Refuse: a body that isn't a login change. A real change needs a fresh
+  // login (401 reauth_required) and then proof of a domain; the matrix's
+  // session has neither, so reaching reauth_required is past the owner rule.
+  "PUT /api/v1/settings/login": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { autoJoin: false, domains: [] } }),
+      allow: code("reauth_required"),
+    },
+  },
   "PATCH /api/v1/settings": {
     refuse: invalid(),
     // An empty patch: settings.manage, then nothing to change.
@@ -2190,6 +2203,11 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["PUT /api/v1/members/:id/restricted", org("restricted.member")],
   ["DELETE /api/v1/members/:id/restricted", org("restricted.member")],
   ["GET /api/v1/settings", org("settings.read"), [200]],
+  // #2520: no ?email= is a 400 past the guard.
+  ["GET /api/v1/members/reach", org("members.manage"), [400]],
+  ["GET /api/v1/settings/login", org("members.manage"), [200]],
+  ["POST /api/v1/settings/login/first-invite-seen", org("members.manage")],
+  ["PUT /api/v1/settings/login", org("login.manage")],
   ["PATCH /api/v1/settings", org("settings.manage")],
   ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
   ["PUT /api/v1/onboarding", org("onboarding.manage")],
