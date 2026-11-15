@@ -30,6 +30,7 @@ import { ApiError } from "../http/errors.js";
 import { logError, logInfo, logWarn } from "../log.js";
 import {
   bodyOk,
+  type HeldAgent,
   type NewExtras,
   type ParticipantRow,
   type StoredActor,
@@ -55,6 +56,7 @@ import {
   plainAgentName,
   shownName,
 } from "./agent-display.js";
+import { decide, recordHolds } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { activation } from "./analytics.js";
 import {
@@ -794,7 +796,51 @@ const deciderFields = (
   };
 };
 
+/**
+ * #2577: what an agent of the receiver reads of a request held for its person:
+ * a placeholder for the words, an ask's question and options and its
+ * recommendation, never the words themselves. Anyone else reads the comment.
+ */
+const HELD_OPTION = "(held)";
+const maskedFor = (c: StoredComment, viewer: CommentViewer): boolean =>
+  viewer.agent !== undefined &&
+  viewer.userId !== null &&
+  !!c.held?.some((h) => h.state === "held" && h.owner === viewer.userId);
+
+const maskHeld = (v: Comment): Comment => {
+  const who = v.author.name || "someone";
+  const text = `A request from ${who} is waiting for your person`;
+  return {
+    ...v,
+    body: text,
+    ...(v.ask
+      ? {
+          ask: {
+            ...v.ask,
+            question: text,
+            options: v.ask.options.map((o) => ({
+              id: o.id,
+              label: HELD_OPTION,
+            })),
+            recommended: undefined,
+            picks: [],
+            answer: undefined,
+          },
+        }
+      : {}),
+  };
+};
+
 const commentOf = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  users: Ctx,
+): Comment => {
+  const v = commentOfRaw(c, viewer, users);
+  return maskedFor(c, viewer) ? maskHeld(v) : v;
+};
+
+const commentOfRaw = (
   c: StoredComment,
   viewer: CommentViewer,
   users: Ctx,
@@ -1066,7 +1112,10 @@ const announce = async (
       who.id,
       Date.now(),
       new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
-      (receiverId) => gate.take(receiverId),
+      // #2577: a sender not on the receiver's list tells their agents nothing (no hold: it carries no request).
+      async (receiverId) =>
+        (await decide(env, who.id, receiverId, artifactId)) === "deliver" &&
+        (await gate.take(receiverId)),
     ),
   );
 };
@@ -1118,11 +1167,29 @@ type Resolved = {
   /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
   mentionKind: "mention" | "asker";
   participants: StoredParticipant[];
+  /** #2577: agents of other people this comment's delivery is held for (their person has not allowed the sender). */
+  held?: { agent: HeldAgent; way: string }[];
   /** #2559: a non-fatal notice for the response (a mention over the limit). */
   notice?: string;
   /** #2559: this comment's draw on the mention limits (one sender slot per comment). */
   gate?: MentionGate;
 };
+
+/** The people whose agent an ask is held for: their rows in the asks index open only when they allow it. */
+const heldAskOwners = (
+  held: { agent: HeldAgent; way: string }[] | undefined,
+): Set<string> =>
+  new Set(
+    (held ?? []).filter((h) => h.way === "ask").map((h) => h.agent.owner),
+  );
+
+/** An agent of another person, as a held delivery stores it. */
+const heldAgentOf = (a: RosterAgent): HeldAgent => ({
+  key: a.key,
+  name: a.address.name,
+  owner: a.userId,
+  namespace: a.address.namespace,
+});
 
 /** The comment's mention-limit gate: made once per comment, by its author. */
 const gateOf = (env: Env, who: CommentWho, r: Resolved): MentionGate | null => {
@@ -1373,6 +1440,7 @@ async function resolveExtras(
   const others = [...agents.values()].filter(
     (e) => e.agent.userId !== viewerId,
   );
+  const held: { agent: HeldAgent; way: string }[] = [];
   const gate = gateOf(env, who, none);
   if (others.length > 0) {
     // 1: an outside member names only their own agents.
@@ -1382,6 +1450,19 @@ async function resolveExtras(
     // on the comment and reads "gone". 2: and only under the hourly limits.
     for (const e of others) {
       let wake = typedByPerson(who);
+      // #2577: another person's agent takes a request only from someone on their list; else the delivery is held for their person.
+      if (wake && viewerId) {
+        if (
+          (await decide(env, viewerId, e.agent.userId, artifactId)) === "hold"
+        ) {
+          held.push({
+            agent: heldAgentOf(e.agent),
+            way: e.kind === "ask" ? "ask" : "mention",
+          });
+          agents.delete(e.agent.key);
+          continue;
+        }
+      }
       if (wake && gate && !(await gate.take(e.agent.userId))) {
         wake = false;
         notice = TOO_MANY_MENTIONS;
@@ -1399,7 +1480,9 @@ async function resolveExtras(
       ...(mentioned.length
         ? { mentions: mentioned.map((m) => storedAgent(m)) }
         : {}),
+      ...(held.length ? { held } : {}),
     },
+    held,
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
     mentionKind: "mention",
@@ -1492,11 +1575,15 @@ async function deliver(
   } finally {
     clearTimeout(timer);
   }
-  const states = r.mentions.map((key) => ({
-    kind: r.mentionKind,
-    key,
-    state: stateOf(outcome.get(key) ?? "dropped"),
-  }));
+  // A held mention was never sent: its row stays queued ("waiting").
+  const heldKeys = new Set((r.held ?? []).map((h) => h.agent.key));
+  const states = r.mentions
+    .filter((key) => !heldKeys.has(key))
+    .map((key) => ({
+      kind: r.mentionKind,
+      key,
+      state: stateOf(outcome.get(key) ?? "dropped"),
+    }));
   if (states.length === 0) return c;
   try {
     return await call(() =>
@@ -1595,7 +1682,12 @@ async function addThreadInner(
     else if (typedByPerson(who)) {
       // Another person's page agent: not for an outside member, and under the mention limits.
       if (await isOutsideMember(env, who.id)) page = null;
-      else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
+      else if ((await decide(env, who.id, page0.userId, a.id)) === "hold") {
+        // #2577: held for the page agent's person; the note posts, nothing is sent.
+        const h = { agent: heldAgentOf(page0), way: "page" };
+        r0.held = [...(r0.held ?? []), h];
+        r0.extras = { ...r0.extras, held: [...(r0.extras?.held ?? []), h] };
+      } else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
         page = page0;
       else r0.notice = TOO_MANY_MENTIONS;
     }
@@ -1638,6 +1730,8 @@ async function addThreadInner(
   );
   const root = t.comments[0];
   if (root) opts.written?.(root);
+  if (root && who.kind === "user" && r.held?.length)
+    await recordHolds(env, who.id, a.id, t.id, root.id, r.held);
   if (root?.ask)
     await indexAsk(
       env,
@@ -1647,6 +1741,7 @@ async function addThreadInner(
       root.ask.to,
       root.ask.decider ?? root.author.ref,
       askInfo(root),
+      heldAskOwners(r.held),
     );
   if (root && (r.agents.length > 0 || r.mentions.length > 0)) {
     const sent = await deliver(env, a, t.id, root, r);
@@ -1777,6 +1872,7 @@ async function threadReply(
     );
     if (due.length === 0) return c;
     const reached: RosterAgent[] = [];
+    const heldNow: { agent: HeldAgent; way: string }[] = [];
     const users = new Map<string, boolean>();
     // #2559: a comment not typed by a person wakes only its author's own agents.
     const typed = isTyped(c.author);
@@ -1787,6 +1883,19 @@ async function threadReply(
         // Another person's agent: not for an outside member, and under the mention limits.
         outside ??= await isOutsideMember(env, c.author.ref);
         if (outside) continue;
+        // #2577: not on the person's list: held for them, no notice.
+        if ((await decide(env, c.author.ref, p.owner, a.id)) === "hold") {
+          heldNow.push({
+            agent: {
+              key: p.key,
+              name: p.name,
+              owner: p.owner,
+              namespace: p.namespace,
+            },
+            way: "reply",
+          });
+          continue;
+        }
         if (
           !(await (r.gate ?? new MentionGate(env, c.author.ref)).take(p.owner))
         ) {
@@ -1811,6 +1920,16 @@ async function threadReply(
           userId: p.owner,
           address: { namespace: p.namespace, name: p.name },
         });
+    }
+    if (heldNow.length > 0) {
+      await call(() =>
+        stub(env, a.id).commentsHold({
+          threadId,
+          commentId: c.id,
+          held: heldNow,
+        }),
+      ).catch(() => undefined);
+      await recordHolds(env, c.author.ref, a.id, threadId, c.id, heldNow);
     }
     // The rows exist (queued) before any notice goes out, as a mention's do, so
     // a daemon's ack that beats the write below still finds its row to settle.
@@ -1933,6 +2052,8 @@ async function addReplyInner(
   if (extras.toAsker && !c.mentions?.length)
     r = { ...r, agents: [], mentions: [] };
   opts.written?.(c);
+  if (who.kind === "user" && r.held?.length)
+    await recordHolds(env, who.id, artifactId, threadId, c.id, r.held);
   if (c.ask)
     await indexAsk(
       env,
@@ -1942,6 +2063,7 @@ async function addReplyInner(
       c.ask.to,
       c.ask.decider ?? c.author.ref,
       askInfo(c),
+      heldAskOwners(r.held),
     );
   const row = await stmt(
     env.DB,

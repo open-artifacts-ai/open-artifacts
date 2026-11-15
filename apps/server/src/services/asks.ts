@@ -85,22 +85,29 @@ export const indexAsk = (
   /** #2381: the decider (default: the asker's own user) waits on the ask too, asked or not. */
   decider: string | undefined,
   info: AskInfo,
+  /** #2577: people whose agent the ask is held for: their row stays closed and empty until they allow it. */
+  held: ReadonlySet<string> = new Set(),
 ) =>
   guarded("create", artifactId, () =>
     env.DB.batch(
       rowPeople(to, decider, info.confirm).map((who) =>
-        stmt(env.DB, INSERT).bind(
-          artifactId,
-          threadId,
-          commentId,
-          who,
-          1,
-          0,
-          info.question,
-          info.asker,
-          info.askedAt,
-          info.confirm,
-        ),
+        held.has(who)
+          ? stmt(
+              env.DB,
+              "insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, held) values (?, ?, ?, ?, 0, 0, 1)",
+            ).bind(artifactId, threadId, commentId, who)
+          : stmt(env.DB, INSERT).bind(
+              artifactId,
+              threadId,
+              commentId,
+              who,
+              1,
+              0,
+              info.question,
+              info.asker,
+              info.askedAt,
+              info.confirm,
+            ),
       ),
     ),
   );
@@ -265,12 +272,21 @@ export const reconcileAsks = (
 ) =>
   guarded("reconcile", artifactId, async () => {
     const want = new Map<string, Row>();
+    // #2577: rows of asks held for their addressee's person stay as they are (closed, no question).
+    const keepHeld = new Map<string, { t: string; c: string; who: string }>();
     for (const t of threads)
       for (const c of t.comments) {
         if (!c.ask) continue;
         const decider = c.ask.decider ?? c.author.ref;
         const info = askInfo(c);
+        const heldOwners = new Set(
+          (c.held ?? []).filter((h) => h.state === "held").map((h) => h.owner),
+        );
         for (const who of rowPeople(c.ask.to, decider, info.confirm)) {
+          if (heldOwners.has(who)) {
+            keepHeld.set(`${c.id}|${who}`, { t: t.id, c: c.id, who });
+            continue;
+          }
           // The decision closes it for all; a weigh-in only for the one who made it (#2381).
           const answered =
             c.ask.answer || c.ask.history?.some((p) => p.by.ref === who)
@@ -320,9 +336,17 @@ export const reconcileAsks = (
           ),
         );
     }
+    for (const [k, h] of keepHeld)
+      if (!have.has(k))
+        ops.push(
+          stmt(
+            env.DB,
+            "insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, held) values (?, ?, ?, ?, 0, 0, 1)",
+          ).bind(artifactId, h.t, h.c, h.who),
+        );
     if (!truncated)
       for (const [k, h] of have)
-        if (!want.has(k))
+        if (!want.has(k) && !keepHeld.has(k))
           ops.push(
             stmt(
               env.DB,
