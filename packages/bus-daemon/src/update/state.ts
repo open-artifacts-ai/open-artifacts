@@ -1,10 +1,12 @@
 import {
   chmodSync,
+  lstatSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { join } from "node:path";
 import { stateFile } from "./layout.ts";
 import {
   compareVersions,
@@ -319,36 +321,108 @@ export const noteRun = (home: string, version: string) =>
   });
 
 /**
- * `oa-bus update` leaves a request for the daemon to install the staged
- * version. CLI-only key, like `off`: the daemon only clears it.
+ * `oa-bus update` leaves a one-shot request for the daemon in its own file,
+ * `<home>/update-request.json` (0600, made with O_EXCL). The daemon takes it
+ * with one rename, so it is acted on once; one that is not ours or not owner-
+ * only is deleted unread. Not a security boundary: it only brings forward the
+ * swap of a version the daemon already staged and proved.
  */
+export const requestFile = (home: string) => join(home, "update-request.json");
+export const REQUEST_STALE_MS = 5 * 60_000;
+
+/** False when a request is already waiting (the first one stands). */
 export function requestInstall(
   home: string,
   version: string,
   at: number,
-): void {
-  const r = load(home);
-  const base = r.kind === "ok" ? { ...r.j } : {};
-  base.installRequest = { version, at };
-  put(home, base);
+): boolean {
+  if (!parseVersion(version)) return false;
+  const body = `${JSON.stringify({ version, at })}\n`;
+  for (let i = 0; i < 2; i++) {
+    try {
+      writeFileSync(requestFile(home), body, { mode: 0o600, flag: "wx" });
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      // A stale one (an old, dead request) makes way; a fresh one stands.
+      const waiting = readInstallRequest(home);
+      if (waiting && Math.abs(at - waiting.at) < REQUEST_STALE_MS) return false;
+      rmSync(requestFile(home), { force: true });
+    }
+  }
+  return false;
 }
 
+function parseRequest(
+  text: string,
+): { version: string; at: number } | undefined {
+  try {
+    const q = JSON.parse(text) as { version?: unknown; at?: unknown };
+    const at = num(q?.at);
+    return q && ver(q.version) && at !== undefined
+      ? { version: q.version as string, at }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A request file we may trust: a plain file, ours, owner-only. */
+function requestOk(path: string): boolean {
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile()) return false;
+    const uid = process.getuid?.();
+    if (uid !== undefined && st.uid !== uid) return false;
+    return process.platform === "win32" || (st.mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Looks at the request without taking it. */
 export function readInstallRequest(
   home: string,
 ): { version: string; at: number } | undefined {
-  const r = load(home);
-  if (r.kind !== "ok") return undefined;
-  const q = r.j.installRequest as { version?: unknown; at?: unknown } | null;
-  const at = num(q?.at);
-  return q && ver(q.version) && at !== undefined
-    ? { version: q.version as string, at }
-    : undefined;
+  if (!requestOk(requestFile(home))) return undefined;
+  try {
+    return parseRequest(readFileSync(requestFile(home), "utf8"));
+  } catch {
+    return undefined;
+  }
 }
 
-export function clearInstallRequest(home: string): void {
-  const r = load(home);
-  if (r.kind !== "ok" || !("installRequest" in r.j)) return;
-  const next = { ...r.j };
-  delete next.installRequest;
-  put(home, next);
+/**
+ * The daemon's take: one rename to a private name, then read and delete. Two
+ * callers never both get it. A request that is not ours or not 0600 is
+ * deleted and ignored.
+ */
+export function takeInstallRequest(
+  home: string,
+): { version: string; at: number } | undefined {
+  const taken = `${requestFile(home)}.taken.${process.pid}`;
+  try {
+    renameSync(requestFile(home), taken);
+  } catch {
+    return undefined;
+  }
+  try {
+    if (!requestOk(taken)) return undefined;
+    return parseRequest(readFileSync(taken, "utf8"));
+  } catch {
+    return undefined;
+  } finally {
+    rmSync(taken, { force: true });
+  }
 }
+
+/** The person's own withdrawal of a request nobody took. */
+export function clearInstallRequest(home: string): void {
+  rmSync(requestFile(home), { force: true });
+}
+
+/** A daemon that stopped cleanly mid-check did not fail: give its start back. */
+export const releaseAttempt = (home: string) =>
+  editPolicy(home, (s) => {
+    if (s.pending && s.pending.attempts > 0) s.pending.attempts -= 1;
+  });

@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,6 +26,7 @@ import {
   setPending,
   setStaged,
   startSelfCheck,
+  takeInstallRequest,
   UPDATER_LOOP_ENABLED,
   Updater,
   versionDir,
@@ -260,6 +262,63 @@ describe("login flag", () => {
     ).toBe(false);
     done();
     expect(loginActive(home, () => T)).toBe(false);
+  });
+});
+
+describe("the install request", () => {
+  it("is one-shot, owner-only and taken once", () => {
+    const home = tmp();
+    expect(requestInstall(home, "1.1.0", T)).toBe(true);
+    // A second request while one waits does not replace it.
+    expect(requestInstall(home, "1.2.0", T + 1000)).toBe(false);
+    expect(statSync(join(home, "update-request.json")).mode & 0o777).toBe(
+      0o600,
+    );
+    expect(takeInstallRequest(home)).toEqual({ version: "1.1.0", at: T });
+    expect(takeInstallRequest(home)).toBeUndefined();
+    expect(existsSync(join(home, "update-request.json"))).toBe(false);
+    // Only one of two takers gets it.
+    requestInstall(home, "1.1.0", T);
+    const got = [takeInstallRequest(home), takeInstallRequest(home)];
+    expect(got.filter(Boolean)).toHaveLength(1);
+  });
+  it("an old request makes way for a new one", () => {
+    const home = tmp();
+    requestInstall(home, "1.1.0", T);
+    expect(requestInstall(home, "1.2.0", T + 6 * 60_000)).toBe(true);
+    expect(readInstallRequest(home)?.version).toBe("1.2.0");
+  });
+  it("a group- or world-readable or malformed request is dropped unread", () => {
+    const home = tmp();
+    const f = join(home, "update-request.json");
+    writeFileSync(f, JSON.stringify({ version: "1.1.0", at: T }), {
+      mode: 0o644,
+    });
+    chmodSync(f, 0o644);
+    expect(readInstallRequest(home)).toBeUndefined();
+    expect(takeInstallRequest(home)).toBeUndefined();
+    expect(existsSync(f)).toBe(false);
+    writeFileSync(f, "{nope", { mode: 0o600 });
+    expect(takeInstallRequest(home)).toBeUndefined();
+    expect(existsSync(f)).toBe(false);
+    expect(requestInstall(home, "1.1", T)).toBe(false);
+  });
+  it("is consumed even when nothing is staged", async () => {
+    const { home } = world();
+    requestInstall(home, "1.1.0", T);
+    const u = new Updater({
+      home,
+      running: "1.0.0",
+      enabled: true,
+      now: () => T,
+      busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
+      loginActive: () => false,
+      serverVersion: () => undefined,
+      exit: () => {},
+      log: () => {},
+    });
+    await u.tick();
+    expect(existsSync(join(home, "update-request.json"))).toBe(false);
   });
 });
 

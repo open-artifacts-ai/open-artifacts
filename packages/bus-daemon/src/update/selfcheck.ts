@@ -16,8 +16,13 @@ import {
   noteRun,
   readPolicy,
   recordAttempt,
+  releaseAttempt,
 } from "./state.ts";
 
+/**
+ * Limit: a daemon whose event loop is blocked never runs this check; the shim
+ * steps back on the next service restart (see rescue.ts).
+ */
 /** A new daemon has this long to be reachable, or the old version returns. */
 export const SELF_CHECK_MS = 60_000;
 const POLL_MS = 1000;
@@ -194,5 +199,19 @@ export function startSelfCheck(d: SelfCheckDeps): SelfCheck {
     if (now() - t0 >= deadline) fail("unhealthy");
   };
   stopTimer = every(poll, POLL_MS);
-  return { state: () => state, stop: () => stopTimer() };
+  return {
+    state: () => state,
+    stop: () => {
+      stopTimer();
+      // A clean stop mid-check (a shutdown, a reboot) is not a failed start.
+      if (state === "checking") {
+        state = "none";
+        try {
+          releaseAttempt(d.home);
+        } catch {
+          // unreadable: the rescue shim counts it as a start
+        }
+      }
+    },
+  };
 }

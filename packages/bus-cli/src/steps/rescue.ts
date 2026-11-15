@@ -14,8 +14,16 @@ import { join } from "node:path";
  *
  * Before each start it reads `<home>/update.json` (written by the version that
  * did the switch) and nothing else: no network, no file of the new package.
- * A switch still pending after 60 s, or started a third time, is undone:
- * `bin` goes back to the old version, the new one is marked failed.
+ * A switch whose new version has been started a third time with no healthy
+ * check in between is undone: `bin` goes back to the old version, the new one
+ * is marked failed. It never looks at the clock: a machine that was off for
+ * ten minutes mid-switch boots into the new version like any other start. The
+ * 60 s uptime check is the new daemon's own (selfcheck.ts).
+ *
+ * Limit: a daemon whose event loop is blocked cannot run its own check, and
+ * the unit has no watchdog that restarts a daemon that stops answering, so
+ * the shim only steps back on the next service restart (a reboot, a login, a
+ * crash). No watchdog is added here.
  * It then execs `bin/node bin/dist/index.js daemon`, as the unit used to.
  *
  * Three files: `rescue` (sh), `rescue-node` (a launcher that finds a node, the
@@ -25,8 +33,7 @@ import { join } from "node:path";
 /** Its own number: reported with the install later. Bump on any change to the files. */
 export const RESCUE_VERSION = 1;
 
-/** A switch gets this long, and this many starts, before it is undone. */
-export const RESCUE_LIMIT_MS = 60_000;
+/** The new version gets this many starts before it is undone. */
 export const RESCUE_MAX_STARTS = 2;
 
 export const rescueOf = (home: string) => join(home, "rescue");
@@ -50,7 +57,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-const LIMIT_MS = ${RESCUE_LIMIT_MS};
 const MAX_STARTS = ${RESCUE_MAX_STARTS};
 const home = process.argv[2];
 const XYZ = /^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$/;
@@ -92,10 +98,9 @@ function run() {
   if (!p || !version(p.from) || !version(p.to)) return;
   if (typeof p.startedAt !== "number" || !Number.isInteger(p.attempts) || p.attempts < 0) return;
   const now = Date.now();
-  const age = now - p.startedAt;
   const starts = p.attempts + 1;
-  // A start time in the future (a clock set back) counts as old.
-  const stale = age > LIMIT_MS || age < -LIMIT_MS || starts > MAX_STARTS;
+  // Starts, never the clock: time off or a clock set back proves nothing.
+  const stale = starts > MAX_STARTS;
   const cur = target();
   if (cur !== p.to && cur !== p.from) return;
   if (cur === p.to && !stale) {
@@ -103,8 +108,8 @@ function run() {
     put(file, JSON.stringify(j, null, 2) + "\\n");
     return;
   }
-  if (cur === p.from && !stale) {
-    // The switch never happened: nothing to undo.
+  if (cur === p.from) {
+    // The switch never happened, or a step back finished: nothing to undo.
     delete j.pending;
     put(file, JSON.stringify(j, null, 2) + "\\n");
     return;

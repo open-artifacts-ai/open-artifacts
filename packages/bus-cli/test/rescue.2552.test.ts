@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   renameSync,
@@ -21,9 +22,11 @@ import {
   readReports,
   readState,
   setPending,
+  startSelfCheck,
   writeState,
 } from "@oa/bus-daemon";
 import { describe, expect, it, vi } from "vitest";
+import { purge } from "../src/steps/purge.ts";
 
 // Each test starts a few real shells and nodes: slow on a loaded runner.
 vi.setConfig({ testTimeout: 30_000 });
@@ -145,20 +148,40 @@ describe("the rescue shim", () => {
     ]);
   });
 
-  it("a pending older than 60 s with no ok mark is undone before anything runs", () => {
+  it("a machine that was off for ten minutes mid-switch boots healthy: no step back", () => {
     const home = world({ "1.0.0": { exit: 0 }, "1.1.0": { exit: 0 } });
-    // The new daemon hung for a minute and was killed; or a reboot came.
-    switched(home, "1.1.0", "1.0.0", Date.now() - 61_000);
-    expect(service(home)).toEqual([0]);
-    expect(starts(home)).toEqual(["versions/1.0.0"]);
-    expect(readPolicy(home).failed).toEqual(["1.1.0"]);
+    // startedAt is ten minutes ago, and a year ago, and in the future: none matters.
+    for (const at of [
+      Date.now() - 600_000,
+      Date.now() - 3.15e10,
+      Date.now() + 3.6e6,
+    ]) {
+      switched(home, "1.1.0", "1.0.0", at);
+      expect(service(home)).toEqual([0]);
+      expect(currentVersion(home)).toBe("1.1.0");
+      expect(readPolicy(home).failed).toEqual([]);
+      expect(readPolicy(home).pending?.attempts).toBe(1);
+    }
   });
 
-  it("a start time set in the future (a clock set back) counts as stale", () => {
+  it("a clean stop during the check gives the start back", () => {
     const home = world({ "1.0.0": { exit: 0 }, "1.1.0": { exit: 0 } });
-    switched(home, "1.1.0", "1.0.0", Date.now() + 3_600_000);
-    expect(service(home)).toEqual([0]);
-    expect(currentVersion(home)).toBe("1.0.0");
+    switched(home, "1.1.0", "1.0.0", Date.now());
+    // Three shutdowns in a row (each released by the daemon) never trip the limit.
+    for (let i = 0; i < 4; i++) {
+      expect(service(home)).toEqual([0]);
+      const c = startSelfCheck({
+        home,
+        running: "1.1.0",
+        ready: () => false,
+        exit: () => {},
+        log: () => {},
+        every: () => () => {},
+      });
+      c.stop();
+    }
+    expect(currentVersion(home)).toBe("1.1.0");
+    expect(readPolicy(home).failed).toEqual([]);
   });
 
   it("a new version with a broken launcher cannot trap the machine", () => {
@@ -214,7 +237,11 @@ describe("the rescue shim", () => {
 
   it("reads nothing of the new package and touches no network", () => {
     const home = world({ "1.0.0": { exit: 0 }, "1.1.0": { exit: 0 } });
-    switched(home, "1.1.0", "1.0.0", Date.now() - 120_000);
+    switched(home, "1.1.0", "1.0.0", Date.now());
+    // Two starts already failed: the next one undoes the switch.
+    const j = JSON.parse(readFileSync(join(home, "update.json"), "utf8"));
+    j.pending.attempts = 2;
+    writeFileSync(join(home, "update.json"), JSON.stringify(j));
     // Everything of the new version but its launcher is unreadable.
     chmodSync(join(home, "versions/1.1.0/package.json"), 0o000);
     chmodSync(join(home, "versions/1.1.0/dist"), 0o000);
@@ -273,5 +300,23 @@ describe("the rescue shim", () => {
     expect(existsSync(join(home, ".oa-bus/rescue"))).toBe(true);
     expect(readlinkSync(join(home, ".oa-bus/bin"))).toBe("versions/2.0.0");
     expect(existsSync(join(home, ".oa-bus/versions/2.0.0/rescue"))).toBe(false);
+  });
+});
+
+describe("uninstall --purge", () => {
+  it("removes the rescue files and the update leftovers", () => {
+    const home = world({ "1.0.0": { exit: 0 } });
+    for (const f of [
+      "update-reports.json",
+      "update-request.json",
+      "login.active",
+      "update-request.json.taken.123",
+      "bin.123.rescue",
+      "update.json.123.rescue.tmp",
+    ])
+      writeFileSync(join(home, f), "");
+    const r = purge(home, { isDefault: true });
+    expect("removed" in r).toBe(true);
+    expect(existsSync(home) ? readdirSync(home) : []).toEqual([]);
   });
 });

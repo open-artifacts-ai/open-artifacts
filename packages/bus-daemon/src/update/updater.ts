@@ -32,17 +32,16 @@ import {
 } from "./policy.ts";
 import { queueReport } from "./reports.ts";
 import {
-  clearInstallRequest,
   clearPending,
   clearStaged,
   markNotified,
   markRefused,
-  readInstallRequest,
   readPolicy,
   recordAttempt,
   setNeedsYou,
   setPending,
   setStaged,
+  takeInstallRequest,
 } from "./state.ts";
 import { unpackTo } from "./tar.ts";
 import { type VerifiedRelease, verifyRelease } from "./verify.ts";
@@ -319,6 +318,8 @@ export class Updater {
       }
       const s = readPolicy(this.d.home);
       if (s.unreadable || !s.armed || s.off) return;
+      // One-shot: taken even when nothing is staged, so it never lingers.
+      const req = takeInstallRequest(this.d.home);
       const st = s.staged;
       if (!st) return;
       if (readyDue(s, now) && markNotified(this.d.home, st.version, "ready"))
@@ -329,9 +330,7 @@ export class Updater {
           reason: "not_quiet_24h",
           at: now,
         });
-      const req = readInstallRequest(this.d.home);
       if (req) {
-        clearInstallRequest(this.d.home);
         // The person's own command: it passes the 6 h limit and the quiet wait.
         if (
           req.version === st.version &&
