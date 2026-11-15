@@ -596,12 +596,7 @@ export const ShareResultSchema = ShareSchema.extend({
    * out of mail from a stranger).
    */
   notEmailed: z
-    .enum([
-      "member_limit",
-      "instance_limit",
-      "limit",
-      "outside_no_unsubscribe",
-    ])
+    .enum(["member_limit", "instance_limit", "limit", "outside_no_unsubscribe"])
     .optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
   recipient: ShareRecipientSchema.optional(),
