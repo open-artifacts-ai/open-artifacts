@@ -2711,6 +2711,18 @@ export class ArtifactRuntime extends DurableObject<Env> {
       const who = JSON.parse(row.author) as StoredActor;
       if (who.kind !== a.by.kind || who.ref !== a.by.ref)
         fail("forbidden", "Only the author can edit a comment");
+      // #2511: people may have read, or picked on, an ask: its comment is not
+      // edited once anyone has picked, nor from the start when it names an
+      // action or needs a passkey. Withdraw it and post a new card.
+      const ask = askRow(this.sql, a.threadId, a.commentId);
+      if (
+        ask &&
+        (ask.ask.confirm === "passkey" ||
+          ask.ask.options.some((o) => o.action) ||
+          (ask.ask.history?.length ?? 0) > 0 ||
+          ask.ask.answer)
+      )
+        fail("conflict", "Withdraw it and post a new card.");
       const now = this.iso();
       if (who.typed && a.typed !== true) {
         const { typed: _typed, ...rest } = who;

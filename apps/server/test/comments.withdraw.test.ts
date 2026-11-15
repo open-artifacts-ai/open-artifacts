@@ -85,7 +85,7 @@ const OPTS = [
 const art = (id: string) =>
   ({ id, format: "html", currentVersion: 1 }) as never;
 
-async function page(title = "doc") {
+async function page(title = "doc", shareOther = true) {
   const a = await publish(
     E,
     owner.member,
@@ -99,7 +99,7 @@ async function page(title = "doc") {
     undefined,
     "create",
   );
-  for (const u of [viewer, other])
+  for (const u of shareOther ? [viewer, other] : [viewer])
     await putShare(E, owner.member, a.id, { email: u.email, role: "viewer" });
   return a.id;
 }
@@ -390,11 +390,12 @@ describe("replace", () => {
     expect(done.ask?.withdrawn?.replacedBy?.artifactId).toBe(b);
     expect(await rows(a, old.c)).toBe(0);
     // And a repeat is a no-op; another replacement is refused.
+    const second = await ask(b, bot);
     await expect(
       withdrawAsk(E, a, old.t.id, old.c, bot, view(bot, owner), {
         artifactId: b,
-        threadId: fresh.t.id,
-        commentId: newId(),
+        threadId: second.t.id,
+        commentId: second.c,
       }),
     ).rejects.toMatchObject({ code: "already_replaced" });
   });
@@ -472,5 +473,211 @@ describe("edit_comment", () => {
     );
     expect(edited.ask?.question).toBe("Which one?");
     expect(edited.ask?.options.map((o) => o.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("Axe's checks (#2623)", () => {
+  const post = async (id: string, who: CommentWho, extra: object = {}) =>
+    (await addThread(
+      E,
+      art(id),
+      who,
+      view(who, owner),
+      { anchor: { kind: "note" }, body: "first", ...extra },
+      { moderator: true },
+    )) as Thread;
+
+  it("an ask's comment can't be edited once anyone picked, or from the start when it names an action or needs a passkey (REST and MCP)", async () => {
+    const id = await page();
+    const bot = asAgent(owner, "Bot");
+    const plain = await ask(id, bot);
+    // Before any pick: editable, by the agent over MCP's path and by REST.
+    const ok = await editComment(
+      E,
+      id,
+      plain.t.id,
+      plain.c,
+      bot,
+      view(bot, owner),
+      "reworded",
+      true,
+    );
+    expect(ok.body).toBe("reworded");
+    // A weigh-in by the person asked.
+    await pick(id, plain.t.id, plain.c);
+    await expect(
+      editComment(
+        E,
+        id,
+        plain.t.id,
+        plain.c,
+        bot,
+        view(bot, owner),
+        "again",
+        true,
+      ),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Withdraw it and post a new card.",
+    });
+    const rest = await api(
+      app,
+      R.comment(id, plain.t.id, plain.c),
+      owner.cookie,
+      {
+        method: "PATCH",
+        body: { body: "again" },
+      },
+    );
+    expect(rest.status).toBe(409);
+    // An action option: refused from the start.
+    const risky = (await post(id, person(owner), {
+      ask: {
+        question: "Merge it?",
+        options: [
+          { id: "y", label: "Merge", action: "merge" },
+          { id: "n", label: "No" },
+        ],
+        to: [{ key: owner.userId }],
+      },
+    })) as Thread;
+    const rc = risky.comments[0]?.id as string;
+    await expect(
+      editComment(
+        E,
+        id,
+        risky.id,
+        rc,
+        person(owner),
+        view(person(owner), owner),
+        "x",
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const restRisky = await api(
+      app,
+      R.comment(id, risky.id, rc),
+      owner.cookie,
+      {
+        method: "PATCH",
+        body: { body: "x" },
+      },
+    );
+    expect(restRisky.status).toBe(409);
+  });
+
+  it("withdraw_ask's replacedBy must be a card by the same asker, on a page the caller can edit", async () => {
+    const a = await page();
+    const b = await page();
+    const bot = asAgent(owner, "Bot");
+    const old = await ask(a, bot);
+    const fresh = await ask(b, asAgent(owner, "Rival"));
+    // Another agent's card, a card that does not exist: refused, and nothing is withdrawn.
+    await expect(
+      withdrawAsk(E, a, old.t.id, old.c, bot, view(bot, owner), {
+        artifactId: b,
+        threadId: fresh.t.id,
+        commentId: fresh.c,
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await expect(
+      withdrawAsk(E, a, old.t.id, old.c, bot, view(bot, owner), {
+        artifactId: b,
+        threadId: fresh.t.id,
+        commentId: newId(),
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(await rows(a, old.c)).toBeGreaterThan(0);
+  });
+
+  it("checks use the request's own caller: a capped token can't edit the other page, and no title leaks", async () => {
+    const a = await page("A page");
+    const b = await page("B page", false);
+    const bot = asAgent(owner, "Bot");
+    const old = await ask(a, bot);
+    const capped = {
+      kind: "user",
+      user: owner.member,
+      cap: "restricted",
+    } as const;
+    await expect(
+      addThread(
+        E,
+        art(b),
+        bot,
+        { ...view(bot, owner), caller: capped },
+        {
+          anchor: { kind: "note" },
+          body: "new",
+          ask: {
+            question: "Which?",
+            options: OPTS,
+            to: [{ key: viewer.userId }],
+            replaces: { artifactId: a, threadId: old.t.id, commentId: old.c },
+          },
+        },
+        { moderator: true },
+      ),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(await rows(a, old.c)).toBeGreaterThan(0);
+    // The uncapped request caller may.
+    const done = await ask(b, bot, {
+      replaces: { artifactId: a, threadId: old.t.id, commentId: old.c },
+    });
+    expect(done.t.comments[0]?.notice).toBeUndefined();
+    // A reader who can't open the new page (`other` is shared on A only) sees no title.
+    const list = await api(app, R.comments(a), other.cookie);
+    const th = ((await list.json()) as { threads: Thread[] }).threads.find(
+      (x) => x.id === old.t.id,
+    );
+    expect(th?.comments[0]?.ask?.withdrawn?.replacedBy?.title).toBeUndefined();
+    expect(th?.comments[0]?.ask?.withdrawn?.replacedBy?.artifactId).toBe(b);
+  });
+
+  it("a token with no agent identity falls back to the DO's author rule for edit_comment", async () => {
+    const id = await page();
+    const bot = asAgent(owner, "Bot");
+    const t = await post(id, bot);
+    const cid = t.comments[0]?.id as string;
+    const tokenNoAgent: CommentWho = {
+      kind: "user",
+      id: owner.userId,
+      agent: null,
+    };
+    const v: CommentViewer = {
+      userId: owner.userId,
+      short: null,
+      moderator: true,
+      agent: null,
+    };
+    // The same person's unlabeled token edits (the DO's rule: the author's person).
+    const out = await editComment(
+      E,
+      id,
+      t.id,
+      cid,
+      tokenNoAgent,
+      v,
+      "by token",
+      true,
+    );
+    expect(out.body).toBe("by token");
+    // Another person's never.
+    const otherTok: CommentWho = {
+      kind: "user",
+      id: other.userId,
+      agent: null,
+    };
+    await expect(
+      editComment(
+        E,
+        id,
+        t.id,
+        cid,
+        otherTok,
+        { userId: other.userId, short: null, agent: null },
+        "x",
+        true,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
 });

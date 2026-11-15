@@ -22,6 +22,7 @@ import { canConnect } from "../auth/agents.js";
 import {
   type ArtifactRow,
   accessLevel,
+  type Caller,
   callerOf,
   meetsLevel,
 } from "../auth/authz.js";
@@ -169,6 +170,11 @@ export type CommentViewer = {
    * for a person. An agent sees `answer.yes` only on an ask it posted itself.
    */
   agent?: AgentAttr | null;
+  /**
+   * #2511: the request's own caller (its cap included), for the checks that
+   * reach another artifact. Absent (a test, a job): the user's own, as loaded.
+   */
+  caller?: Caller;
 };
 
 /** #2224: the viewer may take an answer on this ask as its yes: not an agent, or the agent that posted it. */
@@ -1122,6 +1128,8 @@ export type ExtrasOpts = {
   after?: Announce;
   /** #2478: called with the comment as stored (its mention rows included), before the view is built. */
   written?: (c: StoredComment) => void;
+  /** #2511: the request's own caller, for a replacement on another artifact. */
+  caller?: Caller;
 };
 
 type Resolved = {
@@ -1392,7 +1400,7 @@ async function resolveExtras(
       typeof askIn.replaces !== "string" &&
       askIn.replaces.artifactId !== artifactId
     ) {
-      await checkCrossReplace(env, who, askIn.replaces);
+      await checkCrossReplace(env, who, askIn.replaces, opts.caller);
       crossReplace = askIn.replaces;
     }
   }
@@ -1608,7 +1616,10 @@ async function addThreadInner(
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
   const body = checkBody(raw.body);
-  const r0 = await resolveExtras(env, a.id, who, raw, opts);
+  const r0 = await resolveExtras(env, a.id, who, raw, {
+    ...opts,
+    caller: viewer.caller,
+  });
   gateOf(env, who, r0);
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
@@ -1965,7 +1976,10 @@ async function addReplyInner(
     // come first here (parallel, bounded: about one LINK_LOOKUP_MS).
     r = await withIdentities(
       env,
-      await resolveExtras(env, artifactId, who, extras, opts),
+      await resolveExtras(env, artifactId, who, extras, {
+        ...opts,
+        caller: viewer.caller,
+      }),
     );
   }
   gateOf(env, who, r);
@@ -2423,6 +2437,8 @@ async function checkCrossReplace(
   env: Env,
   who: CommentWho,
   ref: ReplacesRef,
+  /** The request's own caller (its cap and narrowing); absent: the user's own, as loaded. */
+  request?: Caller,
 ): Promise<void> {
   const refuse = () =>
     new ApiError(
@@ -2432,7 +2448,7 @@ async function checkCrossReplace(
   if (who.kind !== "user" || (await isGuestMember(env, who.id))) throw refuse();
   const user = await getUser(env, who.id);
   const access = user
-    ? await accessLevel(env, callerOf(user), ref.artifactId)
+    ? await accessLevel(env, request ?? callerOf(user), ref.artifactId)
     : null;
   if (!access || !meetsLevel(access.level, "editor")) throw refuse();
   let c: StoredComment;
@@ -2471,6 +2487,9 @@ export async function withdrawAsk(
     throw new ApiError("forbidden", WITHDRAW_FORBIDDEN);
   const c = await askComment(env, artifactId, threadId, commentId);
   if (!isAsker(c, who)) throw new ApiError("forbidden", WITHDRAW_FORBIDDEN);
+  // The card it was replaced by must be one the same asker posted, on a page
+  // the caller can edit: the same rule as `replaces` the other way round.
+  if (replacedBy) await checkCrossReplace(env, who, replacedBy, viewer.caller);
   const out = await call(() =>
     stub(env, artifactId).commentsWithdraw({
       threadId,
@@ -2553,7 +2572,8 @@ async function fillReplacedTitles(
   if (refs.length === 0 || viewer.userId === null) return;
   const user = await getUser(env, viewer.userId);
   if (!user) return;
-  const caller = callerOf(user);
+  // The request's own caller (its cap included), never a fresh uncapped one.
+  const caller = viewer.caller ?? callerOf(user);
   const titles = new Map<string, string | null>();
   for (const r of refs) {
     if (!titles.has(r.artifactId)) {
@@ -2733,6 +2753,9 @@ export async function editComment(
 ): Promise<Comment> {
   const text = checkBody(body);
   const a = actorOf(who);
+  // A token without an agent identity (viewer.agent is null) skips this check
+  // and falls back to the DO's own rule: only the comment's author (the same
+  // person) edits it.
   if (ownOnly && viewer.agent) {
     const t = await call(() => stub(env, artifactId).commentsGet(threadId));
     const own = t.comments.find((x) => x.id === commentId);

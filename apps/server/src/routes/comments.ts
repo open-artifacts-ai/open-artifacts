@@ -156,6 +156,8 @@ async function identity(
         // #2224: a token is an agent, not the person: its `answer.yes` is for
         // asks that same agent posted. Only a browser session reads as the person.
         agent: interactiveSession(c) ? undefined : agentOf(c),
+        // #2511: the request's own caller, for checks on another artifact.
+        caller: callerOf(user),
       },
       issued: null,
     };

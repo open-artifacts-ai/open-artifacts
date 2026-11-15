@@ -216,7 +216,7 @@ describe("the server marks asks confirm: passkey", () => {
     ).toBe("passkey");
   });
 
-  it("an edit leaves the mark", async () => {
+  it("an edit is refused (#2511: withdraw and post a new card) and leaves the mark", async () => {
     const k = await ask(alice);
     const r = await api(
       app,
@@ -227,7 +227,7 @@ describe("the server marks asks confirm: passkey", () => {
         body: { body: "Merge, please?" },
       },
     );
-    expect(r.status).toBe(200);
+    expect(r.status).toBe(409);
     expect((await read(k)).ask?.confirm).toBe("passkey");
   });
 });

@@ -7,6 +7,7 @@ import type {
   KeyRef,
   MentionDelivery,
 } from "@oa/shared";
+import { viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import {
   CheckCheck,
@@ -25,6 +26,7 @@ import {
   usePasskeyAnswer,
   useTakeBackAsk,
 } from "../../api/comments";
+import { AppLink } from "../../library/AppLink";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import { AuthorFace, PartyFace } from "./AuthorFace";
@@ -714,21 +716,17 @@ export function AskBlock({
           >
             <Markdown body={ask.question} />
           </div>
-          <p
-            role="status"
-            data-ask-withdrawn-line=""
-            className={`m-0 ${TXT} ${MUTED}`}
-          >
+          <p data-ask-withdrawn-line="" className={`m-0 ${TXT} ${MUTED}`}>
             {to ? (
               to.title ? (
                 <>
                   Withdrawn. Replaced by a card on{" "}
-                  <a
-                    href={`/a/${to.artifactId}`}
+                  <AppLink
+                    href={viewerPath(to.artifactId)}
                     className="underline underline-offset-2"
                   >
                     {to.title}
-                  </a>
+                  </AppLink>
                   .
                 </>
               ) : (

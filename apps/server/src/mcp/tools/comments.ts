@@ -55,6 +55,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
       guest: isGuestRole(t.user.role),
       capped: capsReads(capOfCaller(caller)),
       moderator: can(level, "comments.moderate", canCtx(caller, artifact)),
+      caller,
     };
     const who: CommentWho = {
       kind: "user",

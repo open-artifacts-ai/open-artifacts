@@ -160,9 +160,9 @@ export const CommentAskSchema = z
         at: z.string(),
         replacedBy: z
           .object({
-            artifactId: z.string(),
-            threadId: z.string(),
-            commentId: z.string(),
+            artifactId: IdSchema,
+            threadId: IdSchema,
+            commentId: key,
             title: z.string().optional(),
           })
           .optional(),

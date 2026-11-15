@@ -212,8 +212,8 @@ describe("withdrawn asks (#2511)", () => {
           at: "2026-11-05T11:00:00Z",
           replacedBy: {
             artifactId: "Ab3dEfGhJk4mNpQr",
-            threadId: "t2",
-            commentId: "c2",
+            threadId: "Th4dEfGhJk4mNpQr",
+            commentId: "Cm4dEfGhJk4mNpQr",
             title: "Launch post",
           },
         },
@@ -266,6 +266,7 @@ describe("withdrawn asks (#2511)", () => {
     serveThreads(() => [askThread({}, states[2]?.[1] ?? {})]);
     mount(viewerPath(OWNED));
     const c = await col();
+
     const a = await within(c).findByRole("link", { name: "Launch post" });
     expect(a.getAttribute("href")).toBe("/a/Ab3dEfGhJk4mNpQr");
   });
