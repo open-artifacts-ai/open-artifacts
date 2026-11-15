@@ -27,6 +27,9 @@ export const memberLimitLine = (org: string, limit = MEMBER_LIMIT_FALLBACK) =>
   `We didn't email them: you've reached today's limit of ${limit} new people outside ${org}. Copy the link and send it yourself.`;
 export const instanceLimitLine = (org: string) =>
   `We didn't email them: ${org} has reached today's limit for new people outside. Copy the link and send it yourself.`;
+/** OA Product: the generic `limit` (a recipient, share or sending cap we can't tell apart). */
+export const LIMIT_LINE =
+  "We didn't email them this time. Copy the link and send it yourself.";
 /** The line for a share that sent no email, by the server's reason. */
 export function notEmailedLine(
   reason: NotEmailed,
@@ -34,8 +37,8 @@ export function notEmailedLine(
   limit?: number,
 ): string {
   if (reason === "member_limit") return memberLimitLine(org, limit);
-  // instance_limit, and the generic limit (OA Product: the same line).
-  return instanceLimitLine(org);
+  if (reason === "instance_limit") return instanceLimitLine(org);
+  return LIMIT_LINE;
 }
 
 /** OA Product (#2590): the note for a workspace_only share. */

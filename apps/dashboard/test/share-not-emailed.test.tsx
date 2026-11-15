@@ -8,6 +8,7 @@ import { getResponse, HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import {
   instanceLimitLine,
+  LIMIT_LINE,
   memberLimitLine,
   NOT_EMAILED,
   notEmailedLine,
@@ -70,12 +71,17 @@ describe("the lines (OA Product, #2620)", () => {
       "today's limit of 20 new people",
     );
   });
-  it("instance_limit (and the generic limit)", () => {
+  it("the generic limit: Product's neutral line", () => {
+    expect(notEmailedLine("limit", "Acme")).toBe(
+      "We didn't email them this time. Copy the link and send it yourself.",
+    );
+    expect(LIMIT_LINE).toBe(notEmailedLine("limit", "Acme"));
+  });
+  it("instance_limit", () => {
     const line =
       "We didn't email them: Acme has reached today's limit for new people outside. Copy the link and send it yourself.";
     expect(notEmailedLine("instance_limit", "Acme")).toBe(line);
     expect(instanceLimitLine("Acme")).toBe(line);
-    expect(notEmailedLine("limit", "Acme")).toBe(line);
   });
 });
 
@@ -136,7 +142,7 @@ describe("in the Share panel, after saving", () => {
     ],
     [
       "limit",
-      /^We didn't email them: .+ has reached today's limit for new people outside\. Copy the link and send it yourself\.$/,
+      /^We didn't email them this time\. Copy the link and send it yourself\.$/,
     ],
   ])("%s says so, and the link to copy stays", async (reason, line) => {
     await share(reason);
