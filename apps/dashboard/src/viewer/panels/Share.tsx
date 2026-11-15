@@ -58,7 +58,10 @@ import {
   roleLabel,
   roleOptions,
   type WideShare,
+  type WideShareRecipient,
   type WideShareRole,
+  WORKSPACE_ONLY_ADMIN,
+  workspaceOnlyNote,
 } from "./shareRoles";
 
 const VIS: Visibility[] = ["private", "team", "public"];
@@ -253,7 +256,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     email: string;
     emailed: boolean;
     /** Set when they can't sign in yet: the box warns instead. */
-    recipient?: ShareRecipient;
+    recipient?: WideShareRecipient;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
     /** The role picked: a guest's row corrects Editor, once, just after. */
@@ -538,7 +541,29 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       )}
 
       <section>
-        {shared?.recipient ? (
+        {shared?.recipient?.reason === "workspace_only" ? (
+          // #2590: a note, not a warning: the share is saved and works if
+          // the address is a Google account; the link is worth sending.
+          <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+            <Notice
+              tone="info"
+              title={`Shared with ${shared.email}`}
+              onDismiss={() => setShared(null)}
+            >
+              <p>{workspaceOnlyNote(shared.email)}</p>
+              {isOrgAdmin(me) && (
+                <p>
+                  {WORKSPACE_ONLY_ADMIN.before}
+                  <AppLink href="/settings/login" className="underline">
+                    {WORKSPACE_ONLY_ADMIN.link}
+                  </AppLink>
+                  {WORKSPACE_ONLY_ADMIN.after}
+                </p>
+              )}
+              <CopyLink link={link} label="Artifact link" />
+            </Notice>
+          </div>
+        ) : shared?.recipient ? (
           // They can't sign in yet: one warning box, and no link that won't work for them.
           <div className="mb-[var(--oa-space-4)]">
             <Notice
@@ -549,7 +574,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <p>
                 <RecipientLine
                   email={shared.email}
-                  reason={shared.recipient.reason}
+                  reason={shared.recipient.reason as ShareRecipient["reason"]}
                   admin={isOrgAdmin(me)}
                   domains={domains}
                 />

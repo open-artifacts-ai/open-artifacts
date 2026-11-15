@@ -629,7 +629,25 @@ async function startMocks() {
   }
   // PROVISIONAL (#2590): commenter shares, until the shared mocks take them.
   const { commenterShareHandlers } = await import("./mockCommenterShares");
-  extra.push(...commenterShareHandlers(() => mainHandlers));
+  const commenterShares = commenterShareHandlers(() => mainHandlers);
+  // &share=workspace-only (#2590, PROVISIONAL): every share answers that the
+  // address can open it only if it's a Google account.
+  if (params.get("share") === "workspace-only")
+    extra.push(
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const res = await getResponse(
+          [...commenterShares, ...mainHandlers],
+          request,
+        );
+        if (!res?.ok) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          ...body,
+          recipient: { canSignIn: false, reason: "workspace_only" },
+        });
+      }),
+    );
+  extra.push(...commenterShares);
   await setupWorker(
     ...extra,
     ...mainHandlers,

@@ -5,7 +5,11 @@
 // with no new field, and shares to an outside address default to commenter.
 // Until then the dashboard widens the role here; swap these for the shared
 // schemas when it lands.
-import { ShareResultSchema, ShareSchema } from "@oa/shared";
+import {
+  ShareRecipientSchema,
+  ShareResultSchema,
+  ShareSchema,
+} from "@oa/shared";
 import { z } from "zod";
 
 export const WideShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
@@ -14,9 +18,33 @@ export const WideShareSchema = ShareSchema.extend({
   role: WideShareRoleSchema,
 });
 export type WideShare = z.infer<typeof WideShareSchema>;
+/**
+ * PROVISIONAL (#2590, until OA Backend's reason lands in packages/shared):
+ * "workspace_only": the address can open the page only if it's a Google
+ * account (Google is the only way in, and codes are off). A note, not an
+ * error: the share is saved.
+ */
+export const WideShareRecipientSchema = ShareRecipientSchema.extend({
+  reason: z.enum([
+    ...ShareRecipientSchema.shape.reason.options,
+    "workspace_only",
+  ]),
+});
+export type WideShareRecipient = z.infer<typeof WideShareRecipientSchema>;
 export const WideShareResultSchema = ShareResultSchema.extend({
   role: WideShareRoleSchema,
+  recipient: WideShareRecipientSchema.optional(),
 });
+
+/** OA Product (#2590): the note for a workspace_only share. */
+export const workspaceOnlyNote = (email: string) =>
+  `${email} can open this only if that address is a Google account. If it isn't, share with their Gmail or Google Workspace address.`;
+/** OA Product (#2590): what owners and admins also see; "Settings, Login" links there. */
+export const WORKSPACE_ONLY_ADMIN = {
+  before: "Or turn on login codes in ",
+  link: "Settings, Login",
+  after: ".",
+};
 export type WideShareInput = { email: string; role: WideShareRole };
 
 type Option = { value: WideShareRole; label: string };
