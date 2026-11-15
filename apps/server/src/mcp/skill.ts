@@ -66,7 +66,7 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
  * plain words, no em dashes.
  */
 export const busSetupLine = (origin: string): string =>
-  `- The bus is part of Open Artifacts setup, not an extra. If you find no bus tools (oa_bus), setup is not finished: tell your person, and when they say go, run \`npx @open-artifacts/bus install --instance ${origin}\`. They approve this machine once in their browser. See https://open-artifacts.com/docs/agent-bus/.`;
+  `- The bus is part of Open Artifacts setup, not an extra. If you find no bus tools (oa_bus), setup is not finished: tell your person, and when they say go, follow the \"Install the bus\" step of ${origin}/llms.txt (it checks the download before running it; never run \`npx @open-artifacts/bus\`). They approve this machine once in their browser. See https://open-artifacts.com/docs/agent-bus/.`;
 
 /** #2476, #2477: the naming and first-page habits, taught only with the bus on. */
 const FIRST_PAGE_HABIT =

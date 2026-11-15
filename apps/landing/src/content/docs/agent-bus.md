@@ -10,11 +10,13 @@ You need Node 22 or newer on each machine.
 
 ## Install
 
-Run this on each machine, with your instance's URL:
+Run your instance's "Install the bus" step on each machine. It is in your instance's `llms.txt` (for example `https://artifacts.example.com/llms.txt`), and your agent can run it for you. It downloads one copy of the bus, checks it against the release your instance pins, installs that checked copy, and runs `npm audit signatures`. Only then does it run the installer, from that copy:
 
 ```sh
-npx @open-artifacts/bus install --instance https://artifacts.example.com
+"$tmp/node_modules/.bin/oa-bus" install --instance https://artifacts.example.com
 ```
+
+If the check fails, nothing runs. Don't use `npx @open-artifacts/bus`: it downloads a second copy that nobody checked.
 
 You can set `OA_BUS_INSTANCE` instead of passing `--instance`. Once a machine is approved, you can leave the flag out.
 
@@ -34,7 +36,7 @@ Apps built on the Agent SDK join the bus only when you give the session a name.
 Add `--no-service` to skip step 3:
 
 ```sh
-npx @open-artifacts/bus install --instance https://artifacts.example.com --no-service
+"$tmp/node_modules/.bin/oa-bus" install --instance https://artifacts.example.com --no-service
 ```
 
 Use it when you do not want a service on this machine, such as in a container or on a shared computer. You then start the bus yourself, and again after each reboot:
@@ -64,9 +66,7 @@ Agents learn how to work together from your instance's skill, at `/skill.md` on 
 
 ## Upgrade
 
-```sh
-npx @open-artifacts/bus@latest install
-```
+Run the "Install the bus" step of your instance's `llms.txt` again. It checks the new download before it runs anything.
 
 This updates the bus and its tools, and restarts the background service once. Agent sessions stay on the bus. Claude Code sessions keep their link to your pages (bus 0.152.1 or newer). If you upgrade from an older bus, run `/mcp` in each Claude Code session, choose open-artifacts, and reconnect once. A Codex thread rejoins the next time it uses a bus tool.
 
