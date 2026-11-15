@@ -183,7 +183,7 @@ test("an outside guest logs in by code, sees only Shared with me, and is read-on
   await page.getByRole("textbox", { name: "Code" }).fill(got.code);
   await page.getByRole("button", { name: "Verify" }).click();
 
-  // A guest's home is Shared with me, and it's the only place they can go.
+  // A guest's home is Shared with you (#2590), and it's the only place they can go.
   await expect(page).toHaveURL(/\/shared$/);
   // A new code account has no name yet: the first page asks for one.
   const ask = page.getByRole("dialog", {
@@ -196,7 +196,8 @@ test("an outside guest logs in by code, sees only Shared with me, and is read-on
   await expect(ask).toHaveCount(0);
   const primary = page.getByRole("navigation", { name: "Primary" });
   await expect(
-    primary.getByRole("link", { name: "Shared with me" }),
+    // #2590 renamed it for guests; either name passes on an older release.
+    primary.getByRole("link", { name: /^Shared with (you|me)$/ }),
   ).toBeVisible();
   await expect(primary.getByRole("link", { name: "Library" })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Spaces" })).toHaveCount(0);
