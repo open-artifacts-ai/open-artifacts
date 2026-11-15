@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { markLive } from "@oa/bus-daemon";
 import { copyFor, useBusCmd } from "./bus-cmd.ts";
+import { autoUpdate } from "./commands/auto-update.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
 import { global } from "./commands/global.ts";
@@ -14,6 +15,7 @@ import { mcpProof } from "./commands/mcp-proof.ts";
 import { namespace } from "./commands/namespace.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
+import { update } from "./commands/update.ts";
 import { askDaemon, type Ctx, realCtx, say, sayErr } from "./context.ts";
 import { type Command, parse } from "./index.ts";
 
@@ -27,6 +29,8 @@ const TERMINAL = new Set([
   "namespace",
   "link",
   "leads",
+  "auto-update",
+  "update",
   "version",
   "help",
 ]);
@@ -151,6 +155,10 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return namespace(cmd, ctx);
     case "leads":
       return leads(cmd, ctx);
+    case "auto-update":
+      return autoUpdate(cmd, ctx);
+    case "update":
+      return update(ctx);
     case "link":
       return link(cmd, ctx);
     case "version":

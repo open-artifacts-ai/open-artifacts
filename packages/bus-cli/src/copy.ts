@@ -559,6 +559,8 @@ export function copy(
       "  namespace    approve [dir], revoke <dir> or list",
       "  link         <dir> <dir> or list; unlink <dir> <dir>",
       "  leads        check [name]",
+      "  auto-update  off, on or status: whether the bus keeps itself up to date",
+      "  update       Install the update that is ready, after you type yes",
       "  mcp          <claude|opencode|codex|pi>: the MCP server a harness runs",
       "  version      Print the version",
       "  help         This text",
@@ -1094,6 +1096,25 @@ export function copy(
       `${dirs.length} global ${dirs.length === 1 ? "directory" : "directories"}`,
       ...dirs.map((d) => `  ${clip(d, 2)}`),
     ],
+
+    // 14. auto-update (#2552). Only the first four lines are the issue's copy.
+    autoUpdateIntro: () =>
+      `The bus now keeps itself up to date. To turn this off: ${bus} auto-update off`,
+    autoUpdateLabel: (l: string) => l,
+    autoUpdateOff: () => "Auto-update is off.",
+    autoUpdateOn: () => "Auto-update is on.",
+    autoUpdateStatusOff: () => "Auto-update: off",
+    updateNotATerminal: () => "Run this yourself in a terminal.",
+    updateNothingStaged: (l: string) => `${l}. Nothing is waiting to install.`,
+    updateOff: () =>
+      `Auto-update is off. Turn it on with ${bus} auto-update on.`,
+    updateFailedVersion: (v: string) =>
+      `${v} failed on this machine and will not be installed.`,
+    updatePrompt: (v: string) => `Install ${v} now? Type yes to continue: `,
+    updateDeclined: () => "Nothing was installed.",
+    updateNotAvailable: () =>
+      "Installing is not available in this version yet.",
+    updateDone: (v: string) => `Installed ${v}.`,
 
     // 13. lead templates (#1328). DRAFT: not in the transcript yet.
     leadsNoHub: () => [
