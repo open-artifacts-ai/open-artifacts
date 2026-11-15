@@ -70,7 +70,9 @@ export function mountSettings(app: AppType): void {
   // #2520: login settings. Owner or admin read; the owner changes them.
   app.get(R.loginSettings, async (c) => {
     const user = requireManager(c);
-    return c.json(await loginSettings(c.env, user.id, planOfMember(user)));
+    return c.json(
+      await loginSettings(c.env, user.id, c.var.sessionHd, planOfMember(user)),
+    );
   });
 
   app.post(R.loginFirstInviteSeen, async (c) => {
@@ -87,7 +89,7 @@ export function mountSettings(app: AppType): void {
       throw new ApiError("not_found", "Not found");
     const body = await jsonBody(c, LoginSettingsPutSchema);
     requireFreshReauth(c, R.loginSettings);
-    const domain = firstUnproven(body.domains, c.var.sessionTenant);
+    const domain = firstUnproven(body.domains, c.var.sessionHd);
     if (domain !== null) {
       const details: DomainUnprovenDetails = { domain };
       throw new ApiError(
@@ -101,6 +103,8 @@ export function mountSettings(app: AppType): void {
         "apply_pending",
         "This instance can't apply a login change yet; try again later.",
       );
-    return c.json(await loginSettings(c.env, user.id, planOfMember(user)));
+    return c.json(
+      await loginSettings(c.env, user.id, c.var.sessionHd, planOfMember(user)),
+    );
   });
 }

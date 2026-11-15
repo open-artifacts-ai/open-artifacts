@@ -99,22 +99,17 @@ export const soloPlan = (plan: EffectivePlan | null | undefined): boolean =>
 export async function loginSettings(
   env: Env,
   userId: string,
+  hd: string | null = null,
   plan: EffectivePlan | null = null,
 ): Promise<LoginSettings> {
   const cfg = authConfig(env);
   // Solo: no login domains, no joining; the owner can't change that.
   const solo = soloPlan(plan);
   const domains = solo ? [] : [...cfg.domains];
-  const [seen, ident, joined] = await Promise.all([
+  const [seen, joined] = await Promise.all([
     stmt(env.DB, "select 1 as x from settings where key = ?1")
       .bind(seenKey(userId))
       .first(),
-    stmt(
-      env.DB,
-      "select tenant from identities where user_id = ?1 and provider = 'google' limit 1",
-    )
-      .bind(userId)
-      .first<{ tenant: string }>(),
     domains.length === 0
       ? Promise.resolve({ n: 0 })
       : stmt(
@@ -129,7 +124,7 @@ export async function loginSettings(
     domains,
     autoJoin: !solo && cfg.domainJoin === "member",
     editable: !solo && loginEditable(env),
-    provable: ident?.tenant ? ident.tenant.toLowerCase() : null,
+    provable: hd ? hd.toLowerCase() : null,
     joined: joined?.n ?? 0,
     firstInviteSeen: seen !== null,
   };

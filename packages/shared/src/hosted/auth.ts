@@ -184,6 +184,14 @@ export type SessionPayload = {
   iat: number;
   p: "access" | "google" | "code" | "dev" | "test";
   t?: string;
+  /**
+   * The signature-checked Google token's `hd` (lowercase), set at the Google
+   * callback whenever the token carries one, even when `t` is absent (no
+   * domains, or an email-bound login). The proof of a domain for login
+   * settings (#2520). It never grants access: only `t` is checked against
+   * AUTH_DOMAINS.
+   */
+  h?: string;
   e: number;
   /**
    * When a forced re-authentication (?reauth=1) completed (ms), set at that

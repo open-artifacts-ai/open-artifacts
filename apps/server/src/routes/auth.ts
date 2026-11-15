@@ -345,6 +345,7 @@ export function mountAuth(app: AppType): void {
         await signSession(c.env, r.user.id, now, {
           provider: "google",
           tenant: id.tenant ?? undefined,
+          hd: id.hd ?? id.tenant ?? undefined,
           epoch: row.sessionEpoch,
           ...(authAt !== undefined ? { authAt } : {}),
         }),

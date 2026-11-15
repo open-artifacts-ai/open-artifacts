@@ -45,8 +45,16 @@ const owner = async () => (await login(uniq("own", "x.com"), "owner")).cookie;
 const reachOf = (e: Env, cookie: string, email: string) =>
   call(e, `${R.memberReach}?email=${encodeURIComponent(email)}`, cookie);
 
-/** A forced Google login by `userId`, with token hd `tenant`. */
-async function fresh(userId: string, tenant: string | null, authAt?: number) {
+/**
+ * A forced Google login by `userId`: token hd `hd` (the proof, session h) and
+ * `tenant` (session t, checked against AUTH_DOMAINS; default none).
+ */
+async function fresh(
+  userId: string,
+  hd: string | null,
+  tenant: string | null = null,
+  authAt?: number,
+) {
   const row = await env.DB.prepare(
     "select session_epoch e from users where id = ?",
   )
@@ -57,6 +65,7 @@ async function fresh(userId: string, tenant: string | null, authAt?: number) {
     provider: "google",
     epoch: row?.e ?? 0,
     ...(tenant ? { tenant } : {}),
+    ...(hd ? { hd } : {}),
     ...(authAt === undefined ? { authAt: now } : {}),
   })}`;
 }
@@ -261,15 +270,13 @@ describe("login settings", () => {
     expect(await joined()).toBe(before + 1);
   });
 
-  it("provable is the caller's Google tenant", async () => {
+  it("provable is the Google login's token hd, even outside the login domains", async () => {
     const u = await login(uniq("pv", "x.com"), "owner");
-    await env.DB.prepare(
-      "insert into identities (provider, subject, tenant, user_id, created_at) values ('google', ?, 'Acme.com', ?, 1)",
-    )
-      .bind(`sub-${u.userId}`, u.userId)
-      .run();
-    const r = await get(u.cookie);
+    const r = await get(await fresh(u.userId, "Acme.com"));
     expect(LoginSettingsSchema.parse(await r.json()).provable).toBe("acme.com");
+    // No hd on the login (a Gmail owner, or Access): nothing to prove.
+    const g = await get(await fresh(u.userId, null));
+    expect(LoginSettingsSchema.parse(await g.json()).provable).toBeNull();
   });
 
   it("first-invite-seen is 204, per person, and sets the flag", async () => {
@@ -296,7 +303,9 @@ describe("login settings on the hosted Solo tier", () => {
     const u = await login(uniq("solo", "x.com"), "owner");
     for (const tier of ["solo", "free"]) {
       expect(soloPlan(plan(tier))).toBe(true);
-      expect(await loginSettings(OWN, u.userId, plan(tier))).toMatchObject({
+      expect(
+        await loginSettings(OWN, u.userId, null, plan(tier)),
+      ).toMatchObject({
         domains: [],
         autoJoin: false,
         editable: false,
@@ -308,10 +317,61 @@ describe("login settings on the hosted Solo tier", () => {
     const u = await login(uniq("team", "x.com"), "owner");
     expect(soloPlan(plan("team"))).toBe(false);
     expect(soloPlan(null)).toBe(false);
-    expect(await loginSettings(OWN, u.userId, plan("team"))).toMatchObject({
+    expect(
+      await loginSettings(OWN, u.userId, null, plan("team")),
+    ).toMatchObject({
       domains: ["a.com"],
       autoJoin: true,
     });
+  });
+});
+
+describe("a hosted owner with no domains (#2520)", () => {
+  // No login domains yet: the owner's login is email-bound, with no tenant t.
+  // The token hd rides in h and proves the domain they add.
+  const BARE = direct({ AUTH_DOMAINS: "", AUTH_DOMAIN_JOIN: "invite" });
+  const put = (e: Env, cookie: string, domains: string[]) =>
+    call(e, R.loginSettings, cookie, "PUT", { autoJoin: true, domains });
+
+  it("provable equals the Workspace hd; PUT with it passes the proof (409 apply_pending)", async () => {
+    const u = await login(uniq("ws", "acme.io"), "owner");
+    const c = await fresh(u.userId, "acme.io");
+    const g = await call(BARE, R.loginSettings, c);
+    expect(LoginSettingsSchema.parse(await g.json())).toMatchObject({
+      domains: [],
+      provable: "acme.io",
+    });
+    const r = await put(BARE, c, ["acme.io"]);
+    expect(r.status).toBe(409);
+    expect((await errOf(r)).code).toBe("apply_pending");
+  });
+
+  it("another domain, or a login with no h, fails the proof", async () => {
+    const u = await login(uniq("ws2", "acme.io"), "owner");
+    const other = await put(BARE, await fresh(u.userId, "acme.io"), [
+      "evil.io",
+    ]);
+    expect((await errOf(other)).code).toBe("domain_unproven");
+    const none = await put(BARE, await fresh(u.userId, null), ["acme.io"]);
+    expect((await errOf(none)).code).toBe("domain_unproven");
+  });
+
+  it("a forged h is refused: the cookie signature no longer matches", async () => {
+    const u = await login(uniq("ws3", "acme.io"), "owner");
+    const c = await fresh(u.userId, null);
+    const [name, val] = c.split("=") as [string, string];
+    const [payload, sig] = val.split(".") as [string, string];
+    const body = JSON.parse(
+      atob(payload.replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    body.h = "evil.io";
+    const forged = `${name}=${btoa(JSON.stringify(body))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "")}.${sig}`;
+    const r = await put(BARE, forged, ["evil.io"]);
+    expect(r.status).toBe(401);
+    expect((await errOf(r)).code).not.toBe("apply_pending");
   });
 });
 

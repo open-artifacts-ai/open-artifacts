@@ -58,8 +58,8 @@ export type AppVariables = {
   sessionIat?: number | null;
   /** A Google session's forced re-authentication time (ms, P3 T18); null otherwise. */
   sessionAuthAt?: number | null;
-  /** A cookie session's verified tenant (Google hd, or a code session's email domain); null otherwise (#2520). */
-  sessionTenant?: string | null;
+  /** A cookie session's verified Google token hd (SessionPayload.h): the proof of a domain, never access; null otherwise (#2520). */
+  sessionHd?: string | null;
   /** The user's session_epoch, read with the user row (content-url binds it, P3 T11); null when anonymous. */
   sessionEpoch: number | null;
   /**
@@ -242,7 +242,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
   c.set("sessionExp", null);
   c.set("sessionIat", null);
   c.set("sessionAuthAt", null);
-  c.set("sessionTenant", null);
+  c.set("sessionHd", null);
   c.set("sessionEpoch", null);
   // Embed mode: anonymous regardless of cookie or Bearer (a downgrade only).
   if (isEmbedRequest(c.req.raw)) return;
@@ -304,7 +304,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       c.set("sessionExp", s.exp);
       c.set("sessionIat", s.iat);
       c.set("sessionAuthAt", s.a ?? null);
-      c.set("sessionTenant", s.t ?? null);
+      c.set("sessionHd", s.h ?? null);
       c.set("sessionEpoch", row.sessionEpoch);
     }
   }
@@ -472,7 +472,7 @@ function setCookieUser(c: Context<AppEnv>, s: Session, row: UserWithEpoch) {
   c.set("sessionExp", s.exp);
   c.set("sessionIat", s.iat);
   c.set("sessionAuthAt", s.a ?? null);
-  c.set("sessionTenant", s.t ?? null);
+  c.set("sessionHd", s.h ?? null);
   c.set("sessionEpoch", row.sessionEpoch);
 }
 
