@@ -208,7 +208,7 @@ export async function linkSetCookie(
       k: "gl",
     };
     const val = b64urlEncode(utf8Encoder.encode(JSON.stringify(p)));
-    const sig = await hmacSign(await codesKey(c.env, "oa:code-cookie"), val);
+    const sig = await hmacSign(await codesKey(c.env, "oa:glink-cookie"), val);
     if (val.length + 1 + sig.length > MAX_COOKIE_LEN) return null;
     const maxAge = CODE_POLICY.ttlSec;
     return `${linkCookieName(c)}=${val}.${sig}; ${cookieAttrs(c)}; Max-Age=${maxAge}`;
@@ -225,7 +225,7 @@ async function readLink(c: Context<AppEnv>): Promise<LinkValue | null> {
   const [v, sig, extra] = raw.split(".");
   if (!v || !sig || extra !== undefined) return null;
   try {
-    if (!(await hmacVerify(await codesKey(c.env, "oa:code-cookie"), v, sig)))
+    if (!(await hmacVerify(await codesKey(c.env, "oa:glink-cookie"), v, sig)))
       return null;
     const bytes = b64urlDecode(v);
     if (!bytes) return null;
@@ -366,12 +366,15 @@ async function verifyLink(
     if (elig.kind === "none" || elig.userId === null) return null;
   }
   const now = Date.now();
+  // invite.accept goes first: it reads last_seen_at while still null, and the
+  // link statements set it (as admit does).
   const results = await c.env.DB.batch<{
     id: string;
     status: string;
     subject: string | null;
-  }>(
-    googleLinkStmts(c.env, {
+  }>([
+    inviteAcceptAudit(c.env, elig.userId),
+    ...googleLinkStmts(c.env, {
       email,
       name: link.n,
       role: elig.kind === "guest" ? "guest" : "member",
@@ -379,8 +382,8 @@ async function verifyLink(
       tenant: "",
       now,
     }),
-  );
-  const linked = results[2]?.results[0];
+  ]);
+  const linked = results[3]?.results[0];
   if (!linked || linked.status !== "active" || linked.subject !== link.s)
     return null;
   const row = await getUserWithEpoch(c.env, linked.id);
@@ -394,7 +397,6 @@ async function verifyLink(
     authAt: now,
   });
   const out = await c.env.DB.batch([
-    inviteAcceptAudit(c.env, user.id),
     stmt(c.env.DB, "update users set last_seen_at = ?1 where id = ?2").bind(
       now,
       user.id,
@@ -408,7 +410,7 @@ async function verifyLink(
     next: p.next,
     user: hostedFields(
       user,
-      out[3]?.results[0] as Parameters<typeof hostedFields>[1],
+      out[2]?.results[0] as Parameters<typeof hostedFields>[1],
     ),
     readOnly: cap !== null,
   });
@@ -421,13 +423,32 @@ async function verifyLink(
 }
 
 export function mountCodes(app: AppType): void {
+  // The masked address for the sign-in page (#2590 G2), from this browser's
+  // own link cookie only.
+  app.get(AUTH.codeLink, async (c) => {
+    requireCodes(c);
+    const link = await readLink(c);
+    if (!link) throw new ApiError("not_found", "Not found");
+    const res = c.json({ maskedEmail: mask(link.e) });
+    res.headers.set("cache-control", "no-store");
+    return res;
+  });
+
   app.post(AUTH.codeRequest, async (c) => {
     guard(c);
     const cfg = requireCodes(c);
     const parsed = CodeRequestSchema.safeParse(
       await c.req.json().catch(() => null),
     );
-    const email = parsed.success ? normalizeEmail(parsed.data.email) : null;
+    // { link: true }: the address is the one in this browser's own link cookie.
+    const link =
+      parsed.success && "link" in parsed.data ? await readLink(c) : null;
+    const linking = link !== null;
+    const email = !parsed.success
+      ? null
+      : "link" in parsed.data
+        ? (link?.e ?? null)
+        : normalizeEmail(parsed.data.email);
     if (!parsed.success || !email)
       throw new ApiError("bad_request", "Invalid email", { field: "email" });
     const ip = clientIp(c);
@@ -459,9 +480,6 @@ export function mountCodes(app: AppType): void {
         ? prior.rid
         : b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
     const next = safeNext(c.env, parsed.data.next);
-    // A Google link for exactly this address makes this a link request.
-    const link = await readLink(c);
-    const linking = link !== null && link.e === email;
     const pending: Pending = {
       ek,
       ee: await sealEmail(c, email, ek),

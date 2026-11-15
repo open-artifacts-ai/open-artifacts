@@ -302,7 +302,7 @@ export function mountAuth(app: AppType): void {
             return redirect(
               `${SIGN_IN_PAGE}?error=needs_code&next=${encodeURIComponent(
                 id.next,
-              )}&email=${encodeURIComponent(id.email)}`,
+              )}&link=1`,
               [...clear, link],
             );
         }

@@ -2370,6 +2370,7 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/callback/google",
   "POST /auth/code/request",
   "POST /auth/code/verify",
+  "GET /auth/code/link",
   "GET /auth/unsubscribe/comments",
   "POST /auth/unsubscribe/comments",
   "POST /auth/logout",

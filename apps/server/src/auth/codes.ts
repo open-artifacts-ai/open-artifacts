@@ -92,7 +92,11 @@ const retryAfter = (kind: BucketKind, now: number) =>
  */
 export async function codesKey(
   env: Env,
-  label: "oa:login-codes" | "oa:code-cookie" | "oa:code-email",
+  label:
+    | "oa:login-codes"
+    | "oa:code-cookie"
+    | "oa:code-email"
+    | "oa:glink-cookie",
 ): Promise<string> {
   const s = env.SESSION_SECRET;
   if (typeof s !== "string" || s.length < MIN_SECRET_LENGTH)
@@ -429,6 +433,7 @@ export async function deliverCode(
         instance: instance ?? "Open Artifacts",
         appHost: env.APP_HOST,
         minutes: CODE_POLICY.ttlSec / 60,
+        ...(link ? { linkEmail: to } : {}),
       }),
     { kind: "code", now, caps: [], instance },
   );

@@ -2,7 +2,7 @@
 // its address) links after an emailed code to that exact address.
 import { env } from "cloudflare:workers";
 import { AUTH, R, SIGN_IN_PAGE } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { readSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
@@ -100,7 +100,7 @@ const subjectOf = async (email: string) =>
 async function linkFlow(e: Env, m: ReturnType<typeof mailer>, email: string) {
   const g = await google(e, weak(email));
   const link = cookieOf(g, /oa_glink=/);
-  const req = await post(e, AUTH.codeRequest, { email }, link);
+  const req = await post(e, AUTH.codeRequest, { link: true }, link);
   const pending = cookieOf(req, /oa_code=/);
   const code = m.codeFor(email);
   return { g, link, req, pending, code };
@@ -114,7 +114,15 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     const { g, link, req, pending, code } = await linkFlow(e, m, email);
     expect(g.status).toBe(302);
     expect(loc(g)).toContain(`${SIGN_IN_PAGE}?error=needs_code`);
-    expect(loc(g)).toContain(`email=${encodeURIComponent(email)}`);
+    // The address is never in the URL: the page asks for the masked one.
+    expect(loc(g)).toContain("link=1");
+    expect(loc(g)).not.toContain(encodeURIComponent(email));
+    const who = await get(e, AUTH.codeLink, link);
+    expect(who.status).toBe(200);
+    expect(await who.json()).toEqual({
+      maskedEmail: `${email.slice(0, 1)}***${email.slice(email.lastIndexOf("@"))}`,
+    });
+    expect((await get(e, AUTH.codeLink)).status).toBe(404);
     expect(link).toBeDefined();
     expect(cookieOf(g, SESSION)).toBeUndefined();
     expect(req.status).toBe(202);
@@ -221,21 +229,68 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     expect(await subjectOf(email)).toBeNull();
   });
 
-  it("an expired link cookie links nothing", async () => {
+  it("the link cookie expires on its own", async () => {
     const { e, m } = install();
     const email = uniq("exp", "custom.example");
     await seedShare(email);
     const g = await google(e, weak(email));
     const link = cookieOf(g, /oa_glink=/) ?? "";
-    // Re-sign nothing: a cookie from another install key is unreadable.
-    const bogus = `${link.split("=")[0]}=${"x".repeat(20)}.${"y".repeat(20)}`;
-    const req = await post(e, AUTH.codeRequest, { email }, bogus);
-    const pending = cookieOf(req, /oa_code=/);
-    const code = m.codeFor(email);
-    const ok = await post(e, AUTH.codeVerify, { code }, `${bogus}; ${pending}`);
-    // Ordinary guest code login; Google never linked.
+    expect((await get(e, AUTH.codeLink, link)).status).toBe(200);
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 11 * 60_000 });
+    try {
+      expect((await get(e, AUTH.codeLink, link)).status).toBe(404);
+      const req = await post(e, AUTH.codeRequest, { link: true }, link);
+      expect(req.status).toBe(400);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(() => m.codeFor(email)).toThrow();
     expect(await subjectOf(email)).toBeNull();
+  });
+
+  it("a forged link cookie is refused", async () => {
+    const { e } = install();
+    const bogus = "oa_glink=" + "x".repeat(20) + "." + "y".repeat(20);
+    expect((await get(e, AUTH.codeLink, bogus)).status).toBe(404);
+    expect(
+      (await post(e, AUTH.codeRequest, { link: true }, bogus)).status,
+    ).toBe(400);
+  });
+
+  it("the invite.accept audit row is written on the link path", async () => {
+    const { e, m } = install();
+    const email = uniq("aud", "custom.example");
+    const uid = await seedUser(email, "member");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
+    const { link, pending, code } = await linkFlow(e, m, email);
+    const ok = await post(e, AUTH.codeVerify, { code }, `${link}; ${pending}`);
     expect(ok.status).toBe(200);
+    expect(
+      (
+        await env.DB.prepare(
+          "select count(*) n from audit_events where action = 'invite.accept' and target_id = ?",
+        )
+          .bind(uid)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(1);
+  });
+
+  it("a Google account already linked to another person links nothing", async () => {
+    const { e, m } = install();
+    const email = uniq("dup", "custom.example");
+    await seedShare(email);
+    const { link, pending, code } = await linkFlow(e, m, email);
+    // Between the callback and the code, that Google account got linked elsewhere.
+    await seedUser(uniq("someone", "a.com"), "member", {
+      googleSub: `sub-${email}`,
+    });
+    const ok = await post(e, AUTH.codeVerify, { code }, `${link}; ${pending}`);
+    expect(ok.status).toBe(401);
+    expect(cookieOf(ok, SESSION)).toBeUndefined();
+    expect(await subjectOf(email)).toBeNull();
   });
 });
 
