@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.187.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.186.1...v0.187.0) (2026-11-15)
+
+
+### Features
+
+* **audit:** record bus machine approve and revoke ([#2458](https://github.com/open-artifacts-ai/open-artifacts/issues/2458)) ([#2558](https://github.com/open-artifacts-ai/open-artifacts/issues/2558)) ([fa16075](https://github.com/open-artifacts-ai/open-artifacts/commit/fa16075156696691ee5873ac5dcededa70e8b8db))
+* **bus:** fetch, unpack and check the proof of a bus release ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2565](https://github.com/open-artifacts-ai/open-artifacts/issues/2565)) ([dc2d0e5](https://github.com/open-artifacts-ai/open-artifacts/commit/dc2d0e5001a832f9507777cda3854a3421e7d536))
+* **bus:** versioned install folders with a one-step switch ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2556](https://github.com/open-artifacts-ai/open-artifacts/issues/2556)) ([c97c4cc](https://github.com/open-artifacts-ai/open-artifacts/commit/c97c4cc0a449390991d55fb42e30047630e484d2))
+* **comments:** the Decisions tab on the page ([#2381](https://github.com/open-artifacts-ai/open-artifacts/issues/2381) S2) ([#2516](https://github.com/open-artifacts-ai/open-artifacts/issues/2516)) ([20b5450](https://github.com/open-artifacts-ai/open-artifacts/commit/20b54506acb181a5a27e4bb5086c91d5bba06aed))
+* **dashboard:** the bell and For you ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) slice 1) ([#2515](https://github.com/open-artifacts-ai/open-artifacts/issues/2515)) ([9f1d6a7](https://github.com/open-artifacts-ai/open-artifacts/commit/9f1d6a70110f95b85640153939c09f48df7cc679))
+
+
+### Bug Fixes
+
+* **comments:** guard mentions of other people's agents ([#2559](https://github.com/open-artifacts-ai/open-artifacts/issues/2559)) ([#2564](https://github.com/open-artifacts-ai/open-artifacts/issues/2564)) ([f54d720](https://github.com/open-artifacts-ai/open-artifacts/commit/f54d720dc14613ebc3afec0aff4506c603019e75))
+* **setup:** one setup that survives the restart, keeps the skill and starts private ([#2557](https://github.com/open-artifacts-ai/open-artifacts/issues/2557)) ([#2560](https://github.com/open-artifacts-ai/open-artifacts/issues/2560)) ([f777733](https://github.com/open-artifacts-ai/open-artifacts/commit/f7777338e8df9321422f23fccf7d033a6447c7d4))
+
 ## [0.186.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.186.0...v0.186.1) (2026-11-15)
 
 
