@@ -225,22 +225,32 @@ describe("checkManifest", () => {
   it("accepts name and version alone for today's releases", () => {
     expect(c(base)).toBe("none");
   });
-  it("accepts a matching oaBus manifest", () => {
-    expect(c({ ...base, oaBus: { tag: "v1.2.3", commit } })).toBe("none");
+  it("accepts a matching oaBus commit", () => {
+    expect(c({ ...base, oaBus: { commit } })).toBe("none");
   });
-  it("refuses a wrong name, version, commit or tag", () => {
+  it("ignores a tag field, right or wrong", () => {
+    expect(c({ ...base, oaBus: { tag: "v9.9.9", commit } })).toBe("none");
+    expect(c({ ...base, oaBus: { tag: "v9.9.9" } })).toBe("none");
+  });
+  it("refuses a wrong name, version or commit, or a malformed commit", () => {
     expect(c({ ...base, name: "x" })).toBe("wrong_package");
     expect(c({ ...base, version: "1.2.4" })).toBe("wrong_package");
     expect(c({ ...base, oaBus: { commit: "b".repeat(40) } })).toBe(
       "wrong_package",
     );
-    expect(c({ ...base, oaBus: { tag: "v9.9.9" } })).toBe("wrong_package");
+    expect(c({ ...base, oaBus: { commit: "A".repeat(40) } })).toBe(
+      "wrong_package",
+    );
+    expect(c({ ...base, oaBus: { commit: 5 } })).toBe("wrong_package");
   });
-  it("requires tag and commit from MIN_COMMIT_VERSION on", () => {
+  it("requires the commit from MIN_COMMIT_VERSION on", () => {
     const v = MIN_COMMIT_VERSION;
     const ok = { name: base.name, version: v };
     expect(c(ok, v)).toBe("wrong_package");
     expect(c({ ...ok, oaBus: { tag: `v${v}` } }, v)).toBe("wrong_package");
-    expect(c({ ...ok, oaBus: { tag: `v${v}`, commit } }, v)).toBe("none");
+    expect(c({ ...ok, oaBus: { commit: "b".repeat(40) } }, v)).toBe(
+      "wrong_package",
+    );
+    expect(c({ ...ok, oaBus: { commit } }, v)).toBe("none");
   });
 });

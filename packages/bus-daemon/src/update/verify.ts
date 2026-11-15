@@ -129,23 +129,22 @@ export function checkManifest(
     throw new ReleaseError("wrong_package", "name differs");
   if (pkg.version !== version)
     throw new ReleaseError("wrong_package", "version differs");
+  // Only the commit is read; any `tag` field is ignored.
   const meta = isObj(pkg.oaBus) ? pkg.oaBus : undefined;
   const mustCarry = compareVersions(version, MIN_COMMIT_VERSION) >= 0;
-  if (mustCarry && !meta)
-    throw new ReleaseError("wrong_package", "no oaBus manifest");
-  if (meta) {
-    if (meta.commit !== undefined && meta.commit !== certCommit) {
-      throw new ReleaseError(
-        "wrong_package",
-        "commit differs from the certificate",
-      );
-    }
-    if (meta.tag !== undefined && meta.tag !== `v${version}`) {
-      throw new ReleaseError("wrong_package", "tag differs from the version");
-    }
-    if (mustCarry && (meta.commit === undefined || meta.tag === undefined)) {
-      throw new ReleaseError("wrong_package", "oaBus tag and commit required");
-    }
+  const commit = meta?.commit;
+  if (commit === undefined) {
+    if (mustCarry) throw new ReleaseError("wrong_package", "no oaBus commit");
+    return;
+  }
+  if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) {
+    throw new ReleaseError("wrong_package", "oaBus commit malformed");
+  }
+  if (commit !== certCommit) {
+    throw new ReleaseError(
+      "wrong_package",
+      "commit differs from the certificate",
+    );
   }
 }
 
