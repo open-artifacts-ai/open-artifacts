@@ -1,7 +1,13 @@
 import { googleEvidenceStrong, inDomains, normalizeEmail } from "@oa/auth-core";
 import type { Member, Role } from "@oa/shared";
 import { logAuth } from "../auth/audit.js";
-import { callerOf, capOfCaller, managesAdmins } from "../auth/authz.js";
+import {
+  callerOf,
+  capOfCaller,
+  inviteTtlDays,
+  isAdminRow,
+  managesAdmins,
+} from "../auth/authz.js";
 import type { AuthConfig } from "../auth/config.js";
 import { isGuestRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
@@ -190,7 +196,7 @@ export async function admit(
     const domainJoins =
       Boolean(id.tenant) &&
       cfg.domainJoin === "member" &&
-      existing.role !== "admin";
+      !isAdminRow(existing.role);
     if (!domainJoins && inviteLapsed(existing, now))
       return { ok: false, reason: "invite_expired" };
     // First link of this Google account to an existing row (invited, code-only
@@ -239,8 +245,7 @@ export const inviteLapsed = (
 ): boolean =>
   row.invitedAt !== null &&
   row.lastSeenAt === null &&
-  row.role !== "owner" &&
-  now - row.invitedAt > (row.role === "admin" ? 7 : 30) * 86_400_000;
+  (inviteTtlDays(row.role) ?? Infinity) * 86_400_000 < now - row.invitedAt;
 
 /** Google admission rule 1: the tenant (hd) is a verified domain. */
 export const googleTenantOk = (
