@@ -44,10 +44,20 @@ export function CommentsTabs({
       label: "Comments",
       n: api.listedOpen,
     },
-    { id: "decisions" as const, label: "Decisions", n: api.decisions.length },
+    // #2590: an outsider sees the comments only, no Decisions.
+    ...(api.outsider
+      ? []
+      : [
+          {
+            id: "decisions" as const,
+            label: "Decisions",
+            n: api.decisions.length,
+          },
+        ]),
   ];
   const go = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (api.outsider) return;
     e.preventDefault();
     const next = api.view === "comments" ? "decisions" : "comments";
     api.setView(next);

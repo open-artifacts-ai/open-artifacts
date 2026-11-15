@@ -148,11 +148,21 @@ export const useArtifacts = (q: ListQueryInput) =>
     queryFn: ({ signal }) =>
       api.get(withQuery(R.artifacts, q), ArtifactPage, signal),
   });
+/**
+ * PROVISIONAL (#2590): GET R.artifact gains `sharedBy` for a guest viewer, in
+ * OA Backend's draft contract. TODO(#2590): drop this once @oa/shared has it.
+ */
+export const ArtifactViewSchema = ArtifactSummarySchema.extend({
+  /** Who shared it with this guest viewer; null or absent otherwise. */
+  sharedBy: z.object({ name: z.string() }).nullable().optional(),
+});
+export type ArtifactView = z.infer<typeof ArtifactViewSchema>;
+
 export const useArtifact = (id: string) =>
   useQuery({
     queryKey: qk.artifact(id),
     queryFn: ({ signal }) =>
-      api.get(R.artifact(id), ArtifactSummarySchema, signal),
+      api.get(R.artifact(id), ArtifactViewSchema, signal),
   });
 export const useVersions = (id: string, opts?: { enabled?: boolean }) =>
   useQuery({
