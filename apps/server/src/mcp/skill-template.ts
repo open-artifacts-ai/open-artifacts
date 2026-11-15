@@ -4,7 +4,7 @@
 
 import { agentClients, LIMITS, type Snippet } from "@oa/shared";
 import { z } from "zod";
-import { docToolOff } from "../services/doc-switch.ts";
+import { DOC_GATED_TOOLS } from "../services/doc-switch.ts";
 import { LINK_RULE, renderSections } from "./instructions.ts";
 import {
   SECRET_LABELS,
@@ -90,20 +90,27 @@ function params(schema: z.ZodType): string {
     .join(", ");
 }
 
-/**
- * The tools tools/list offers: list_spaces only with the spaces feature, and
- * edit_doc only once the doc switch is open (#1100; per install it also needs
- * a paid plan, which the one-per-build skill cannot know).
- */
+/** The tools tools/list offers: list_spaces only with the spaces feature. */
 const toolDefs = (spaces: boolean) =>
-  TOOL_DEFS.filter(
-    (t) => (spaces || t.name !== "list_spaces") && !docToolOff(t.name),
-  );
+  TOOL_DEFS.filter((t) => spaces || t.name !== "list_spaces");
+
+/**
+ * Doc-gated tools (edit_doc, #1100, #2578) are written into the template
+ * between these markers, and the server strips the block at serve time unless
+ * docsAvailable(env), as tools/list does: the template is one per build, the
+ * answer is per install.
+ */
+export const DOC_TOOL_OPEN = "<!--doc-tool-->\n";
+export const DOC_TOOL_CLOSE = "\n<!--/doc-tool-->";
+/** The tool count: `@@tools:<with doc tools>:<without>@@`, resolved at serve time. */
+export const TOOL_COUNT_RE = /@@tools:(\d+):(\d+)@@/;
 
 const tools = (spaces: boolean): string =>
   toolDefs(spaces)
     .map(
-      (t) => `### ${t.name}
+      (
+        t,
+      ) => `${DOC_GATED_TOOLS.includes(t.name) ? DOC_TOOL_OPEN : ""}### ${t.name}
 
 ${descriptionFor(t.name, spaces).replace(/^Open Artifacts: /, "")}
 
@@ -111,7 +118,7 @@ Parameters (? = optional): ${params(t.inputSchema)}
 
 \`\`\`json
 ${JSON.stringify(t.example)}
-\`\`\``,
+\`\`\`${DOC_GATED_TOOLS.includes(t.name) ? DOC_TOOL_CLOSE : ""}`,
     )
     .join("\n\n");
 
@@ -187,7 +194,7 @@ ${T("upgradeLine")}Open Artifacts hosts the pages, documents and code you publis
 - MCP endpoint: \`${T("origin")}/mcp\` (Streamable HTTP).
 - OAuth (preferred): add \`${T("origin")}/mcp\` as a remote MCP server in your client. The client registers itself (dynamic client registration) and the user signs in through the browser.
 - Personal access token: the user creates one at ${T("origin")}/settings/connections and saves it with the line under Secrets. Send it as \`Authorization: Bearer <token>\`, read from \`${PAT_FILE}\` in the command or config, never pasted in.
-- Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the ${toolDefs(spaces).length} tools.
+- Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the @@tools:${toolDefs(spaces).length}:${toolDefs(spaces).filter((t) => !DOC_GATED_TOOLS.includes(t.name)).length}@@ tools.
 - Only members can connect agents; guests cannot.
 - Without MCP support, call the endpoint with curl (JSON-RPC; \`tools/call\` takes \`{ "name": "<tool>", "arguments": { ... } }\`):
 

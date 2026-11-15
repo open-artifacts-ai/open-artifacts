@@ -14,6 +14,7 @@ import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
 import { busOn } from "../services/bus.js";
+import { docsAvailable } from "../services/docs-available.js";
 import { VERSION } from "../version.gen.js";
 import { planText } from "./instructions.js";
 import {
@@ -23,6 +24,11 @@ import {
   SKILL_TEMPLATE_NO_SPACES,
 } from "./skill.generated.js";
 import { hostSlug, skillName, skillOrigin } from "./skill-common.js";
+import {
+  DOC_TOOL_CLOSE,
+  DOC_TOOL_OPEN,
+  TOOL_COUNT_RE,
+} from "./skill-template.js";
 
 export const SKILL_PATH = "/skill.md";
 export const SKILL_DOC_URI = "openartifacts://docs/skill";
@@ -38,6 +44,25 @@ type SkillEnv = Pick<
   | "HOSTED"
   | "FEATURES"
 >;
+
+/**
+ * The doc-gated tool section (edit_doc) and the tool count, per install: kept
+ * only when docsAvailable(env), as tools/list offers the tool (#2578).
+ */
+const applyDocTools = (md: string, docs: boolean): string => {
+  const withMarks = md.replace(TOOL_COUNT_RE, (_, all: string, none: string) =>
+    docs ? all : none,
+  );
+  if (docs)
+    return withMarks
+      .replaceAll(DOC_TOOL_OPEN, "")
+      .replaceAll(DOC_TOOL_CLOSE, "");
+  const a = withMarks.indexOf(`\n\n${DOC_TOOL_OPEN}`);
+  const b = withMarks.indexOf(DOC_TOOL_CLOSE);
+  return a < 0 || b < a
+    ? withMarks
+    : withMarks.slice(0, a) + withMarks.slice(b + DOC_TOOL_CLOSE.length);
+};
 
 /**
  * The install has the spaces feature: the skill keeps its spaces lines
@@ -127,7 +152,8 @@ export function renderSkill(
   const hosted = env.HOSTED === "1" ? "h" : "";
   const spaces = spacesIn(env);
   const bus = busOn(env);
-  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}|${harness ?? ""}`;
+  const docs = docsAvailable(env);
+  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}|${docs ? "d" : ""}|${harness ?? ""}`;
   let p = memo.get(key);
   if (!p) {
     p = skillName(env.APP_HOST).then((name) => {
@@ -142,7 +168,10 @@ export function renderSkill(
         busPeers: busLine(bus, skillOrigin(env.APP_HOST)),
       };
       const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
-      const md = tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
+      const md = applyDocTools(
+        tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m),
+        docs,
+      );
       // The harness note is inserted at render time, before "## Connect", so
       // the template (and every absent-harness byte) stays exactly as it was.
       const note = harnessNote(harness, bus);
@@ -185,7 +214,8 @@ export const skillEtag = (
   const hosted = env.HOSTED === "1" ? "-hosted" : "";
   const tpl = spacesIn(env) ? SKILL_HASH : `nospaces-${SKILL_HASH_NO_SPACES}`;
   const note = harnessNote(harness, busOn(env));
-  return `"${VERSION}-${plan}${doc}${hosted}-${tpl}${note ? `-${fnv(note)}` : ""}"`;
+  const docs = docsAvailable(env) ? "-docs" : "";
+  return `"${VERSION}-${plan}${doc}${hosted}${docs}-${tpl}${note ? `-${fnv(note)}` : ""}"`;
 };
 
 export async function serveSkill(c: Context<AppEnv>) {
