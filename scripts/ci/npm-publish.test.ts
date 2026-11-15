@@ -248,3 +248,43 @@ describe("publish-npm check step", () => {
     expect(r.log).toEqual([]);
   });
 });
+
+// #2543: the server build verifies the published bus release itself (the
+// updater's Sigstore check) and pins it in llms.txt. The release's deploy jobs
+// wait for publish-npm so the release is on npm; nothing is wired from
+// pack-npm's outputs, and only the build scripts (never gen, CI or tests) ask.
+describe("the bus pin in the server build (#2543)", () => {
+  const serverPkg = JSON.parse(
+    readFileSync(join(root, "apps/server/package.json"), "utf8"),
+  ) as { scripts: Record<string, string> };
+
+  it("deploy-prod and deploy-demo wait for publish-npm", () => {
+    for (const name of ["deploy-prod", "deploy-demo"])
+      expect(jobs[name].needs, name).toContain("publish-npm");
+  });
+
+  it("only the release deploys require the pin; no other job or script sets it", () => {
+    for (const name of ["deploy-prod", "deploy-demo"])
+      expect(jobs[name].env.BUS_PIN_REQUIRED, name).toBe("1");
+    for (const [name, job] of Object.entries(jobs) as [string, any][])
+      if (name !== "deploy-prod" && name !== "deploy-demo")
+        expect(JSON.stringify(job), name).not.toContain("BUS_PIN_REQUIRED");
+    for (const [k, v] of Object.entries(serverPkg.scripts))
+      expect(v, k).not.toContain("BUS_PIN_REQUIRED");
+  });
+
+  it("nothing from pack-npm is wired into the server build", () => {
+    expect(pack.outputs.integrity).toBeUndefined();
+    expect(raw).not.toContain("BUS_PKG_");
+    expect(raw).not.toContain("steps.pack.outputs.integrity");
+  });
+
+  it("the build scripts pin after gen; gen, typecheck and the tests never ask the registry", () => {
+    const { scripts } = serverPkg;
+    expect(scripts["version:pin"]).toContain("emit-version.ts --pin");
+    expect(scripts.build).toMatch(/pnpm run gen && pnpm run version:pin /);
+    for (const k of ["gen", "version:emit", "typecheck", "test", "test:authz"])
+      expect(scripts[k], k).not.toContain("--pin");
+    expect(scripts.gen).not.toContain("version:pin");
+  });
+});
