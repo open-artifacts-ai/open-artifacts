@@ -34,6 +34,7 @@ import { AuthorFace } from "../viewer/comments/AuthorFace";
 import { AskBlock, asksForMe, showsAskBody } from "../viewer/comments/asks";
 import { Markdown } from "../viewer/comments/Markdown";
 import {
+  failedToast,
   useDropItem,
   useInbox,
   useInboxCounts,
@@ -618,8 +619,7 @@ function Row({
             label: "Undo",
             onClick: () =>
               unmute.mutate(m, {
-                onError: () =>
-                  toast({ title: "Couldn't save that.", tone: "danger" }),
+                onError: failedToast,
               }),
           },
         }),

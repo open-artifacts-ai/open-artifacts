@@ -13,7 +13,9 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { errorCopy } from "../api/errorCopy";
 import { qk } from "../api/queries";
+import { toast } from "../layout/toast";
 import {
   type List as Inbox,
   type Item as InboxItem,
@@ -126,6 +128,7 @@ function editPages(qc: QueryClient, f: (p: Inbox, i: number) => Inbox) {
 const useEdit = <V, T>(
   send: (v: V) => Promise<T>,
   edit?: (page: Inbox, v: V) => Inbox,
+  failed?: (e: unknown) => void,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -138,9 +141,10 @@ const useEdit = <V, T>(
       editPages(qc, (p) => edit(p, v));
       return { prev, me };
     },
-    onError: (_e, _v, ctx) => {
+    onError: (e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(inboxKey, ctx.prev);
       if (ctx?.me) qc.setQueryData(qk.me, ctx.me);
+      failed?.(e);
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: inboxKey });
@@ -167,7 +171,11 @@ export const useReadAll = () =>
     (p) => ({ ...p, updates: p.updates.map(readNow) }),
   );
 
-/** Put off once: the server answers the deferred item, which joins Later. */
+/** A write here that failed: the app's error copy, never silence. */
+export const failedToast = (e: unknown) =>
+  toast({ title: errorCopy(e, "Couldn't save that."), tone: "danger" });
+
+/** Put off once: the server answers the deferred item, which joins Later. A failure puts the row back and says so. */
 export const useLater = () => {
   const qc = useQueryClient();
   return useEdit(
@@ -186,6 +194,7 @@ export const useLater = () => {
       return moved;
     },
     (p, v) => ({ ...p, needsYou: p.needsYou.filter((x) => x.id !== v.id) }),
+    failedToast,
   );
 };
 
