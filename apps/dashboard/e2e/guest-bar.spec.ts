@@ -139,6 +139,33 @@ for (const width of [1280, 390])
       await expect(page.locator("[data-guest-offer]")).toHaveCount(0);
     });
 
+    test(`the comments panel for a guest at ${width} ${theme}`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.setViewportSize({ width, height: 900 });
+      const shot = shooter(page, width, theme);
+      await page.goto("/a/Cd5fGhJkLm6nPqRs?role=guest");
+      await expect(page.locator("[data-guest-bar]")).toBeVisible();
+      // No Share for a guest.
+      await expect(
+        page.getByRole("button", { name: "Share", exact: true }),
+      ).toHaveCount(0);
+      await page.getByRole("button", { name: /^Comments/ }).click();
+      await expect(
+        page.getByText("Can we tighten this headline?").first(),
+      ).toBeVisible();
+      await expect(page.getByRole("tab", { name: /Decisions/ })).toHaveCount(0);
+      await expect(
+        page.getByRole("button", { name: "Resolve", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("textbox", { name: "Comment on the whole page" }),
+      ).toHaveAttribute("placeholder", "Comment on the whole page");
+      await noSidewaysScroll(page);
+      await shot("g5-panel");
+    });
+
     test(`a guest's home is Shared with you at ${width} ${theme}`, async ({
       page,
     }) => {
@@ -151,6 +178,10 @@ for (const width of [1280, 390])
         page.getByRole("heading", { level: 1, name: "Shared with you" }),
       ).toBeVisible();
       await expect(page.getByRole("tablist")).toHaveCount(0);
+      await expect(page.getByRole("combobox", { name: "Agent" })).toHaveCount(
+        0,
+      );
+      await expect(page.getByText("Needs your answer")).toHaveCount(0);
       await axe(page);
       await noSidewaysScroll(page);
       await shot("g4-home");

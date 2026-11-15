@@ -282,6 +282,7 @@ function Viewer({
     // #2019: a new pin's box opens beside its flag, except on a phone or full screen.
     besideOk: surface !== "dialog",
     viewerName: viewer?.name ?? viewer?.email ?? null,
+    outsider: authed && role === "guest",
   });
   // The card being read is a pin's: the phone sheet shortens so its pin stays
   // in view (#1657).
@@ -723,6 +724,7 @@ function Viewer({
             )}
             <TitleBar
               org={org}
+              outsider={authed && role === "guest"}
               artifact={artifact}
               version={version}
               explicitVersion={explicitVersion}

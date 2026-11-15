@@ -136,7 +136,7 @@ export function GuestOffer({
       aria-labelledby="oa-guest-offer-title"
       className="oa-vnotice mx-auto my-3 w-[calc(100%-32px)] max-w-[680px]"
     >
-      <div className="flex items-center gap-3 rounded-md border border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] px-3 py-2 text-[length:var(--oa-text-sm)] leading-[1.45] text-foreground max-[600px]:flex-wrap">
+      <div className="flex items-center gap-3 rounded-md border border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] px-3 py-2 text-[length:var(--oa-text-sm)] leading-[1.45] text-foreground max-[600px]:flex-col max-[600px]:items-stretch max-[600px]:gap-2">
         <div className="min-w-0 flex-1">
           <h2
             id="oa-guest-offer-title"

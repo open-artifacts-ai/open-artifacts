@@ -314,6 +314,7 @@ export function Library({ scope }: { scope: Scope }) {
         />
       )}
       <Filters
+        outsider={guest}
         format={s.format}
         agent={agent}
         agents={agents}

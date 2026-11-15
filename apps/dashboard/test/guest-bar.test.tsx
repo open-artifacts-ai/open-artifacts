@@ -32,12 +32,10 @@ const asGuest = (sharedBy: { name: string } | null, hosted = false) =>
         instance: { ...fixtures.me.instance, hosted },
       }),
     ),
-    http.get(`*${R.artifact(NOTES)}`, () =>
-      HttpResponse.json({
-        ...fixtures.artifacts.find((x) => x.id === NOTES),
-        sharedBy,
-      }),
-    ),
+    http.get("*/api/v1/artifacts/:id", ({ params }) => {
+      const a = fixtures.artifacts.find((x) => x.id === params.id);
+      return a ? HttpResponse.json({ ...a, sharedBy }) : undefined;
+    }),
   );
 
 describe("the guest bar", () => {
@@ -175,5 +173,22 @@ describe("a guest's home", () => {
     expect(
       screen.getByRole("link", { name: "Shared with you" }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("the guest home, filters (Design, #2590)", () => {
+  it("the guest home has no agent filter and no Needs your answer", async () => {
+    asGuest(null);
+    mount("/shared");
+    await screen.findByRole(
+      "heading",
+      { level: 1, name: "Shared with you" },
+      { timeout: FIRST_LOAD_MS },
+    );
+    expect(screen.queryByRole("combobox", { name: "Agent" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Waiting on" })).toBeNull();
+    expect(screen.queryByText("Needs your answer")).toBeNull();
+    // Format stays.
+    expect(screen.getAllByLabelText("Format").length).toBeGreaterThan(0);
   });
 });
