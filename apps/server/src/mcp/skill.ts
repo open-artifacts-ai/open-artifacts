@@ -168,9 +168,11 @@ export function renderSkill(
         busPeers: busLine(bus, skillOrigin(env.APP_HOST)),
       };
       const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
-      const md = applyDocTools(
-        tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m),
-        docs,
+      // Before the values go in: an install value containing the marker text
+      // must not be cut.
+      const md = applyDocTools(tpl, docs).replace(
+        /\{\{(\w+)\}\}/g,
+        (m, k: string) => v[k] ?? m,
       );
       // The harness note is inserted at render time, before "## Connect", so
       // the template (and every absent-harness byte) stays exactly as it was.

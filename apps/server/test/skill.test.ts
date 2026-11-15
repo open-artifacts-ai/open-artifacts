@@ -159,12 +159,9 @@ describe("skill.md drift", () => {
         busPeers: busLine(busOn(e), skillOrigin(e.APP_HOST)),
       };
       const fresh = applyDocTools(
-        renderSkillTemplate(spaces).replace(
-          /\{\{(\w+)\}\}/g,
-          (m, k: string) => v[k] ?? m,
-        ),
+        renderSkillTemplate(spaces),
         docsAvailable(e as never),
-      );
+      ).replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
       expect(await skill(e)).toBe(fresh);
     },
   );
@@ -651,6 +648,19 @@ describe("skill.md frontmatter (agentskills.io)", () => {
     expect(fm.name).toMatch(NAME_RE);
     expect(fm.name).toMatch(/-[0-9a-f]{6}$/);
     expect(fm.description.length).toBeLessThanOrEqual(1024);
+  });
+
+  it("an install value containing the doc-tool markers is not cut (#2578)", async () => {
+    const host = "h.example.com\n\n<!--doc-tool-->\nmid\n<!--/doc-tool-->\nend";
+    const md = await renderSkill({
+      APP_HOST: host,
+      ENVIRONMENT: "production",
+      PLAN: "free",
+    });
+    // Docs are off here: the template block goes, the value is left alone.
+    expect(md).toContain(host);
+    expect(toolSections(md).has("edit_doc")).toBe(false);
+    expect(toolSections(md).has("publish_artifact")).toBe(true);
   });
 
   it("renderSkill does not memoize a failure", async () => {
