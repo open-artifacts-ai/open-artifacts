@@ -18,7 +18,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, inviteAcceptAudit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
-import { googleLinkStmts, shownEffectiveName, toMember } from "./users.js";
+import { googleLinkStmts, toMember, toUserRef } from "./users.js";
 
 // Admission and account linking for direct sign-in (P2). identities
 // (provider, subject) is the only link; email links an existing ACTIVE row at
@@ -324,7 +324,7 @@ export async function codeEligibility(
   );
 }
 
-const SHARER = `select u.name as name, u.display_name as displayName, u.email as email
+const SHARER = `select u.id as id, u.name as name, u.display_name as displayName, u.email as email
   from shares s join artifacts a on a.id = s.artifact_id
   join users u on u.id = s.created_by
   where s.email = ?1 and a.deleted_at is null
@@ -332,17 +332,24 @@ const SHARER = `select u.name as name, u.display_name as displayName, u.email as
 
 /**
  * The name of whoever made the newest live share to `email` (a normalized
- * address), or null when none is live (an invite, or the page is gone). The
- * name as shares and emails show it (a chosen name, else the account name).
+ * address), or null when none is live (an invite, or the page is gone) or the
+ * sharer has no real name (never their email).
  */
 export async function sharerOf(
   env: Env,
   email: string,
 ): Promise<{ name: string } | null> {
-  const r = await stmt(env.DB, SHARER)
-    .bind(email)
-    .first<{ name: string; displayName: string | null; email: string }>();
-  return r ? { name: shownEffectiveName(r) } : null;
+  const r = await stmt(env.DB, SHARER).bind(email).first<{
+    id: string;
+    name: string;
+    displayName: string | null;
+    email: string;
+  }>();
+  // The anonymous rule (toUserRef, #851): this answers before the address is
+  // proven, so never the sharer's email, and a name that is an address counts
+  // as no name.
+  const name = r ? toUserRef(r, false).name : null;
+  return name ? { name } : null;
 }
 
 /**

@@ -357,6 +357,40 @@ describe("who shared it (#2606)", () => {
     expect(await sharedBy(e, email)).toEqual({ name: "Kept" });
   });
 
+  it("never leaks an email: a sharer with no name, or a name that is an address, gives null", async () => {
+    const { e } = install();
+    for (const [local, name, display] of [
+      ["noname", "", null],
+      ["named-addr", "boss@acme.com", null],
+      ["disp-addr", "", "boss@acme.com"],
+    ] as const) {
+      const email = uniq(local, "custom.example");
+      const owner = await seedUser(uniq(`s-${local}`, "a.com"), "member");
+      await env.DB.prepare(
+        "update users set name = ?, display_name = ? where id = ?",
+      )
+        .bind(name, display, owner)
+        .run();
+      const art = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+      await env.DB.prepare(
+        "insert into artifacts (id, owner_id, title, format, created_at, updated_at) values (?, ?, 't', 'markdown', ?, ?)",
+      )
+        .bind(art, owner, Date.now(), Date.now())
+        .run();
+      await env.DB.prepare(
+        "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+      )
+        .bind(art, email, owner, Date.now())
+        .run();
+      const g = await google(e, weak(email));
+      const r = await get(e, AUTH.codeLink, cookieOf(g, /oa_glink=/));
+      const body = await r.text();
+      expect(JSON.parse(body).sharedBy, local).toBeNull();
+      expect(body, local).not.toContain("@acme.com");
+      expect(body, local).not.toContain("@a.com");
+    }
+  });
+
   it("is null for an invite", async () => {
     const { e } = install();
     const email = uniq("who3", "custom.example");
