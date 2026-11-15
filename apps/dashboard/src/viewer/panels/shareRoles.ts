@@ -5,28 +5,21 @@ import { ShareResultSchema, type ShareRole } from "@oa/shared";
 import { z } from "zod";
 
 /**
- * PROVISIONAL (#2590, until OA Backend's #2620 lands in packages/shared): a
- * saved share that sent no email says why. "outside_no_unsubscribe": no
- * email goes outside until "Don't email me again" exists; "member_limit" /
- * "instance_limit" / "limit": over today's limit for new outside addresses.
+ * PROVISIONAL (#2590, until OA Backend's #2620 lands in packages/shared;
+ * matches #2620 at f4a162b0): a saved share that sent no email says why.
+ * "member_limit" / "instance_limit": over today's limit for new outside
+ * addresses, with `limit` the number hit; "limit": the existing
+ * per-recipient, per-share or sending cap.
  */
-export const NOT_EMAILED = [
-  "outside_no_unsubscribe",
-  "member_limit",
-  "instance_limit",
-  "limit",
-] as const;
+export const NOT_EMAILED = ["member_limit", "instance_limit", "limit"] as const;
 export type NotEmailed = (typeof NOT_EMAILED)[number];
 export const ShareSavedSchema = ShareResultSchema.extend({
   notEmailed: z.enum(NOT_EMAILED).optional(),
-  /** With member_limit or instance_limit: the day's limit (PROVISIONAL, #2620). */
+  /** With member_limit or instance_limit: the daily number that was hit. */
   limit: z.number().int().positive().optional(),
 });
 export type ShareSaved = z.infer<typeof ShareSavedSchema>;
 
-/** OA Product: the share is saved, and no email went. */
-export const NO_EMAIL_LINE =
-  "We won't email them about this share. Copy the link and send it yourself.";
 /** OA Product (#2620): over today's limits for new outside addresses; the link to copy stays. */
 /** The member limit when the server doesn't say (#2620's figure). */
 export const MEMBER_LIMIT_FALLBACK = 20;
@@ -36,14 +29,13 @@ export const instanceLimitLine = (org: string) =>
   `We didn't email them: ${org} has reached today's limit for new people outside. Copy the link and send it yourself.`;
 /** The line for a share that sent no email, by the server's reason. */
 export function notEmailedLine(
-  reason: NotEmailed | undefined,
+  reason: NotEmailed,
   org: string,
   limit?: number,
 ): string {
   if (reason === "member_limit") return memberLimitLine(org, limit);
-  if (reason === "instance_limit" || reason === "limit")
-    return instanceLimitLine(org);
-  return NO_EMAIL_LINE;
+  // instance_limit, and the generic limit (OA Product: the same line).
+  return instanceLimitLine(org);
 }
 
 /** OA Product (#2590): the note for a workspace_only share. */

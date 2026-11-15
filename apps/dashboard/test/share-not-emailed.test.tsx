@@ -1,5 +1,6 @@
 // #2590 / #2620 (PROVISIONAL until #2620 lands in packages/shared): a saved
-// share that sent no email says why, in OA Product's words.
+// share that sent no email says why, in OA Product's words. #2620 at
+// f4a162b0 dropped outside_no_unsubscribe: an unknown reason fails the parse.
 import { viewerPath } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen } from "@testing-library/react";
@@ -8,8 +9,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   instanceLimitLine,
   memberLimitLine,
-  NO_EMAIL_LINE,
+  NOT_EMAILED,
   notEmailedLine,
+  ShareSavedSchema,
 } from "../src/viewer/panels/shareRoles";
 import { installHarness, mountHosted } from "./harness";
 
@@ -30,14 +32,6 @@ const OWNED = (
 const panel = `${viewerPath(OWNED)}?panel=open&tab=share`;
 
 describe("the lines (OA Product, #2620)", () => {
-  it("outside_no_unsubscribe: the existing no-email line", () => {
-    expect(notEmailedLine("outside_no_unsubscribe", "Acme")).toBe(
-      "We won't email them about this share. Copy the link and send it yourself.",
-    );
-    expect(NO_EMAIL_LINE).toBe(
-      "We won't email them about this share. Copy the link and send it yourself.",
-    );
-  });
   it("member_limit", () => {
     expect(notEmailedLine("member_limit", "Acme")).toBe(
       "We didn't email them: you've reached today's limit of 20 new people outside Acme. Copy the link and send it yourself.",
@@ -45,6 +39,28 @@ describe("the lines (OA Product, #2620)", () => {
     expect(memberLimitLine("Acme")).toBe(
       notEmailedLine("member_limit", "Acme"),
     );
+  });
+  it("only #2620's reasons parse (outside_no_unsubscribe is gone)", () => {
+    expect(NOT_EMAILED).toEqual(["member_limit", "instance_limit", "limit"]);
+    const base = {
+      email: "a@b.co",
+      role: "viewer",
+      createdAt: "x",
+      emailed: false,
+    };
+    expect(
+      ShareSavedSchema.safeParse({
+        ...base,
+        notEmailed: "outside_no_unsubscribe",
+      }).success,
+    ).toBe(false);
+    expect(
+      ShareSavedSchema.safeParse({
+        ...base,
+        notEmailed: "member_limit",
+        limit: 20,
+      }).success,
+    ).toBe(true);
   });
   it("member_limit uses the server's limit, else 20", () => {
     expect(notEmailedLine("member_limit", "Acme", 5)).toBe(
@@ -111,10 +127,6 @@ describe("in the Share panel, after saving", () => {
 
   it.each([
     [
-      "outside_no_unsubscribe",
-      "We won't email them about this share. Copy the link and send it yourself.",
-    ],
-    [
       "member_limit",
       /^We didn't email them: you've reached today's limit of 20 new people outside .+\. Copy the link and send it yourself\.$/,
     ],
@@ -122,14 +134,14 @@ describe("in the Share panel, after saving", () => {
       "instance_limit",
       /^We didn't email them: .+ has reached today's limit for new people outside\. Copy the link and send it yourself\.$/,
     ],
+    [
+      "limit",
+      /^We didn't email them: .+ has reached today's limit for new people outside\. Copy the link and send it yourself\.$/,
+    ],
   ])("%s says so, and the link to copy stays", async (reason, line) => {
     await share(reason);
     const sent = document.querySelector("[data-share-sent]");
-    expect(sent?.textContent).toMatch(
-      typeof line === "string"
-        ? new RegExp(`^${line.replace(/[.?]/g, "\\$&")}$`)
-        : line,
-    );
+    expect(sent?.textContent).toMatch(line);
     expect(screen.getByLabelText("Artifact link")).toBeInTheDocument();
     // Amber: the notice is a warning for every reason.
     expect(

@@ -656,7 +656,7 @@ async function startMocks() {
         });
       }),
     );
-  // &notEmailed=outside_no_unsubscribe|member_limit|instance_limit (#2620,
+  // &notEmailed=member_limit|instance_limit|limit (#2620,
   // PROVISIONAL): every share is saved without an email, for that reason.
   const notEmailed = params.get("notEmailed");
   if (notEmailed)
