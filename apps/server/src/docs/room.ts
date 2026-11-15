@@ -117,6 +117,19 @@ const MSG_AWARENESS = 1;
 const SYNC_STEP1 = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
+/** The owner recorded for the room's own clientID. */
+const SERVER_ACTOR = "server";
+/** A struct may claim at most this many clocks (a GC or Skip is only a length). */
+const MAX_STRUCT_LENGTH = 1_000_000;
+/** ...and, above MIN_RATIO_LENGTH, at most this many clocks per byte of its update. */
+const MAX_LENGTH_PER_BYTE = 64;
+const MIN_RATIO_LENGTH = 4096;
+/**
+ * New clientIDs one update may introduce. The clients table has no cap: every
+ * tab or reload is a new clientID, and only ones with structs in the doc are
+ * stored (a row is a few bytes), so it grows with the doc's editing history.
+ */
+const MAX_NEW_CLIENTS_PER_UPDATE = 16;
 
 const ACTOR_RE = /^(u|ip|agent):[\x21-\x7e]{1,250}$/;
 
@@ -277,6 +290,11 @@ export class DocRoom extends DurableObject<Env> {
     );
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v BLOB NOT NULL)",
+    );
+    // Which actor first used each Yjs struct clientID (#2177). "server" owns
+    // the room's own clientID (seed, edit_doc, restore).
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS clients (client INTEGER PRIMARY KEY, actor TEXT NOT NULL)",
     );
     const sv = this.sql
       .exec<{ v: ArrayBuffer }>("SELECT v FROM meta WHERE k = 'sv'")
@@ -566,6 +584,110 @@ export class DocRoom extends DurableObject<Env> {
     this.acceptUpdate(ws, att, update);
   }
 
+  /** clientID -> owning actor, loaded from the clients table on first use. */
+  private clientOwners: Map<number, string> | null = null;
+
+  private owners(): Map<number, string> {
+    if (!this.clientOwners) {
+      this.clientOwners = new Map(
+        this.sql
+          .exec<{ client: number; actor: string }>(
+            "SELECT client, actor FROM clients",
+          )
+          .toArray()
+          .map((r) => [r.client, r.actor]),
+      );
+    }
+    return this.clientOwners;
+  }
+
+  /** Records `actor` as the owner of `client`, durably, unless it has one. */
+  private claimClients(actor: string, clients: Iterable<number>) {
+    const owners = this.owners();
+    for (const c of clients) {
+      if (owners.has(c)) continue;
+      this.sql.exec(
+        "INSERT OR IGNORE INTO clients (client, actor) VALUES (?, ?)",
+        c,
+        actor,
+      );
+      owners.set(c, actor);
+    }
+  }
+
+  /** True when a socket of another actor announced awareness client `id`. */
+  private announcedByOther(ws: WebSocket, actor: string, id: number): boolean {
+    for (const other of this.ctx.getWebSockets()) {
+      if (other === ws) continue;
+      const o = other.deserializeAttachment() as Attachment | null;
+      if (o && o.actor !== actor && o.aw.some(([c]) => c === id)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Refuses (BadFrame, nothing applied or recorded) an update that claims
+   * clocks of a clientID another actor used first, or an implausible clock
+   * range. Returns the clientIDs this update would newly own (#2177).
+   */
+  private checkClients(
+    ws: WebSocket,
+    att: Attachment,
+    update: Uint8Array,
+    structs: { id: { client: number; clock: number }; length: number }[],
+  ): Set<number> {
+    const cap = Math.max(
+      MIN_RATIO_LENGTH,
+      MAX_LENGTH_PER_BYTE * update.byteLength,
+    );
+    const owners = this.owners();
+    const fresh = new Set<number>();
+    for (const st of structs) {
+      if (st.length > MAX_STRUCT_LENGTH || st.length > cap)
+        throw new BadFrame("struct length");
+      const c = st.id.client;
+      if (fresh.has(c)) continue;
+      const owner = owners.get(c);
+      if (owner !== undefined) {
+        if (owner !== att.actor) throw new BadFrame("clientID owned");
+        continue;
+      }
+      if (this.announcedByOther(ws, att.actor, c))
+        throw new BadFrame("clientID owned");
+      fresh.add(c);
+    }
+    if (fresh.size > MAX_NEW_CLIENTS_PER_UPDATE)
+      throw new BadFrame("too many clientIDs");
+    return fresh;
+  }
+
+  /** The room's own Yjs clientID, made on first use and kept (meta). */
+  private serverClientId(): number {
+    const row = this.sql
+      .exec<{ v: number }>("SELECT v FROM meta WHERE k = 'server_client'")
+      .toArray()[0];
+    let id = row ? Number(row.v) : 0;
+    if (!id) {
+      const a = new Uint32Array(1);
+      do crypto.getRandomValues(a);
+      while (a[0] === 0 || this.owners().has(a[0] as number));
+      id = a[0] as number;
+      this.sql.exec(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('server_client', ?)",
+        id,
+      );
+      this.claimClients(SERVER_ACTOR, [id]);
+    }
+    return id;
+  }
+
+  /** A loaded doc that writes under the server's clientID (edit_doc, restore). */
+  private serverDoc(): Y.Doc {
+    const doc = this.loadDoc();
+    doc.clientID = this.serverClientId();
+    return doc;
+  }
+
   private acceptUpdate(ws: WebSocket, att: Attachment, update: Uint8Array) {
     // Decode the whole update (structs and delete set) before accepting it:
     // parseUpdateMeta skips the delete set, so a truncated update would pass
@@ -576,6 +698,7 @@ export class DocRoom extends DurableObject<Env> {
     } catch {
       throw new BadFrame("undecodable update");
     }
+    const fresh = this.checkClients(ws, att, update, structs);
     if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
       // Rows and the buffer overcount what a compacted doc holds. Never
       // compact on a socket message (a cold load costs CPU): refuse, and
@@ -609,6 +732,7 @@ export class DocRoom extends DurableObject<Env> {
       cursor.set(c, end);
     }
     for (const [c, to] of cursor) this.sv.set(c, to);
+    this.claimClients(att.actor, fresh);
     this.buffer.push(update);
     this.bufferBytes += update.byteLength;
     this.armAlarmLogged(this.now() + FLUSH_MS);
@@ -1329,7 +1453,7 @@ export class DocRoom extends DurableObject<Env> {
         json !== null
           ? docFromJSON(JSON.parse(json))
           : markdownToDoc(md ?? "").doc;
-      const doc = this.loadDoc();
+      const doc = this.serverDoc();
       try {
         const before = Y.encodeStateVector(doc);
         doc.transact(() => {
@@ -1396,7 +1520,7 @@ export class DocRoom extends DurableObject<Env> {
         savedVersion = saved?.version;
       }
       await this.ensureSeeded();
-      const doc = this.loadDoc();
+      const doc = this.serverDoc();
       let update: Uint8Array;
       let applied: number;
       let changes: OpImportChange[];
@@ -1521,6 +1645,7 @@ export class DocRoom extends DurableObject<Env> {
             ? markdownToDoc(saved.md).doc
             : docFromJSON(saved.json as never);
         const doc = new Y.Doc({ gc: true });
+        doc.clientID = this.serverClientId();
         try {
           docToYXmlFragment(node, docFragment(doc));
           const update = Y.encodeStateAsUpdate(doc);
