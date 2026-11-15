@@ -324,8 +324,9 @@ export async function inviteMemberOutcome(
           isNull(users.lastSeenAt),
           isNotNull(users.invitedAt),
           // Same who-may-manage rule as everywhere: only the owner (or the
-          // system) refreshes an admin's invite; anyone else gets the 409.
-          sql`(${adminsOk(inviter)} = 1 or ${users.role} not in ('owner', 'admin'))`,
+          // system) refreshes an admin's invite; anyone else gets the 409. Only a
+          // re-invite (an existing row) needs the check.
+          sql`(${prior ? adminsOk(inviter) : 1} = 1 or ${users.role} not in ('owner', 'admin'))`,
         ),
       )
       .returning(),
