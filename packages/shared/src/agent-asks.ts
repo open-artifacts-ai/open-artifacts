@@ -51,6 +51,8 @@ export const HeldRequestSchema = z.strictObject({
   quietUntil: z.number().nullable(),
   /** The page is open to guests or to anyone with the link: the list never applies there. */
   open: z.boolean(),
+  /** The shared space the page is in now, if any: "Allow in the space" shows only then. */
+  space: z.strictObject({ id: z.string(), name: z.string() }).nullable(),
 });
 export type HeldRequest = z.infer<typeof HeldRequestSchema>;
 
@@ -61,7 +63,7 @@ export type HeldList = z.infer<typeof HeldListSchema>;
 
 /** POST allow: what the notice showed, and how much to allow. */
 export const AllowBodySchema = z.strictObject({
-  level: z.enum(["once", "page", "all"]),
+  level: z.enum(["once", "page", "space", "all"]),
   items: z
     .array(
       z.strictObject({
@@ -71,9 +73,9 @@ export const AllowBodySchema = z.strictObject({
     )
     .min(1)
     .max(ALLOW_ITEMS_MAX),
-  /** "all": when the entry ends (ms), at most a year from now. */
+  /** "space" and "all": when the entry ends (ms), at most a year from now. */
   until: z.number().int().optional(),
-  /** The passkey assertion for R.agentAskHeldAllowChallenge (a list add, when the member has a passkey; always for "all"). */
+  /** The passkey assertion for R.agentAskHeldAllowChallenge (a list add, when the member has a passkey; always for "space" and "all"). */
   assertion: PasskeyAssertionSchema.optional(),
 });
 export type AllowBody = z.infer<typeof AllowBodySchema>;
@@ -90,5 +92,7 @@ export type AllowResult = z.infer<typeof AllowResultSchema>;
 
 export const AllowChallengeBodySchema = z.strictObject({
   until: z.number().int(),
+  /** Which entry the prompt is for (default "all"). */
+  level: z.enum(["space", "all"]).default("all"),
 });
 export type AllowChallengeBody = z.infer<typeof AllowChallengeBodySchema>;

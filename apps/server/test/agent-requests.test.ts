@@ -393,6 +393,91 @@ describe("allow", () => {
   });
 });
 
+describe("all pages in a space", () => {
+  const space = async (name: string) => {
+    const id = `sp_${newId().slice(0, 10)}`;
+    await E.DB.prepare(
+      "insert into spaces (id, kind, name, created_at) values (?, 'shared', ?, ?)",
+    )
+      .bind(id, name, Date.now())
+      .run();
+    return id;
+  };
+  const move = (artifactId: string, spaceId: string | null) =>
+    E.DB.prepare("update artifacts set space_id = ? where id = ?")
+      .bind(spaceId, artifactId)
+      .run();
+  const listen = (spaceId: string) =>
+    E.DB.prepare(
+      `insert into agent_listens (id, owner_id, member_id, scope, space_id, until, created_via, created_at)
+       values (?, ?, ?, 'space', ?, ?, 'allow_space', ?)`,
+    )
+      .bind(
+        newId(),
+        owner.userId,
+        editor.userId,
+        spaceId,
+        Date.now() + 30 * 86_400_000,
+        Date.now(),
+      )
+      .run();
+
+  it("a page in the space delivers, a page moved out holds, and a page in another space holds", async () => {
+    const launch = await space("Launch");
+    const other = await space("Other");
+    const s = await setup();
+    await move(s.id, launch);
+    await listen(launch);
+    expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("deliver");
+    await post(s.id, typed(editor), editor, "in the space", mention(s.claude));
+    expect(toOwnerAgent().map((x) => x.notice.to.name)).toEqual(["Claude"]);
+    // Moved out of the space: the entry stops applying to it.
+    await move(s.id, null);
+    expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
+    // In another space: not covered.
+    await move(s.id, other);
+    expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
+    // Back in: covered again; and never on a page open to anyone with the link.
+    await move(s.id, launch);
+    expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("deliver");
+    await E.DB.prepare(
+      "update artifacts set visibility = 'public' where id = ?",
+    )
+      .bind(s.id)
+      .run();
+    expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
+  });
+
+  it("the allow needs a page in a shared space, an end date and a passkey", async () => {
+    const s = await setup();
+    await post(s.id, typed(editor), editor, "x", mention(s.claude));
+    const [r] = await held();
+    const items = (r?.items ?? []).map((i) => ({
+      commentId: i.commentId,
+      wordsHash: i.wordsHash,
+    }));
+    const until = Date.now() + 30 * 86_400_000;
+    // Not in a space: nothing to allow.
+    expect(r?.space).toBeNull();
+    await expect(
+      allow(E, owner.userId, r?.id as string, { level: "space", items, until }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    const launch = await space("Launch");
+    await move(s.id, launch);
+    expect((await held())[0]?.space).toEqual({ id: launch, name: "Launch" });
+    await expect(
+      allow(E, owner.userId, r?.id as string, { level: "space", items, until }),
+    ).rejects.toMatchObject({ code: "passkey_required" });
+    await expect(
+      allow(E, owner.userId, r?.id as string, {
+        level: "space",
+        items,
+        until: Date.now() + 400 * 86_400_000,
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+});
+
 describe("an ask addressed to someone else's agent", () => {
   it("posts as a card, the receiver's row stays closed and empty until they allow it", async () => {
     const s = await setup();

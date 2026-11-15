@@ -50,7 +50,9 @@ export function mountAgentRequests(app: AppType): void {
     const user = member(c);
     const id = idOf(c);
     const body = await jsonBody(c, AllowChallengeBodySchema);
-    return c.json(await allowChallenge(c.env, user.id, id, body.until));
+    return c.json(
+      await allowChallenge(c.env, user.id, id, body.until, body.level),
+    );
   });
 
   app.post(R.agentAskHeldNotNow(":id"), async (c) => {

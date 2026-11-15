@@ -58,11 +58,25 @@ export async function pageIsOpen(
   return !!g;
 }
 
+/** The shared space a page is in now, if any (a personal space is not offered: it is one person's). */
+export async function spaceOf(
+  env: Env,
+  artifactId: string,
+): Promise<{ id: string; name: string } | null> {
+  return stmt(
+    env.DB,
+    `select s.id as id, s.name as name from artifacts a join spaces s on s.id = a.space_id
+      where a.id = ?1 and s.kind = 'shared' and s.deleted_at is null`,
+  )
+    .bind(artifactId)
+    .first<{ id: string; name: string }>();
+}
+
 /**
  * Whether the receiver's list takes the sender's request here, right now. The
  * row is never trusted alone: the entry must be live, the member still on the
  * team, still able to edit this page, and the page not open to guests or to
- * anyone with the link.
+ * anyone with the link; a space entry also needs the page to be in that space now.
  */
 export async function listensTo(
   env: Env,
@@ -74,7 +88,9 @@ export async function listensTo(
   const row = await stmt(
     env.DB,
     `select id from agent_listens where owner_id = ?1 and member_id = ?2 and removed_at is null
-       and until > ?3 and (scope = 'all' or artifact_id = ?4) limit 1`,
+       and until > ?3 and (scope = 'all' or artifact_id = ?4
+         or (scope = 'space' and space_id is not null
+             and space_id = (select space_id from artifacts where id = ?4))) limit 1`,
   )
     .bind(receiverId, senderId, now, artifactId)
     .first();
@@ -176,6 +192,7 @@ const itemOf = async (
   env: Env,
   receiverId: string,
   r: {
+    artifact_id: string;
     thread_id: string;
     comment_id: string;
     agent_key: string;
@@ -184,7 +201,7 @@ const itemOf = async (
   },
 ): Promise<HeldItem | null> => {
   const info = await call(() =>
-    stub(env, r.artifact_id as string).commentsHeldCanon({
+    stub(env, r.artifact_id).commentsHeldCanon({
       threadId: r.thread_id,
       commentId: r.comment_id,
       owner: receiverId,
@@ -294,6 +311,7 @@ export async function listHeld(
       lastAt: r.last_at,
       quietUntil: r.quiet_until,
       open: await pageIsOpen(env, r.artifact_id),
+      space: await spaceOf(env, r.artifact_id),
     });
   }
   return { requests: out };
@@ -307,7 +325,7 @@ const KIND: Record<string, CommentNoticeKind> = {
 };
 
 /** The binding of a passkey prompt for a "listens to" entry. */
-export const listenBinding = (level: "page" | "all", until: number) =>
+export const listenBinding = (level: "page" | "space" | "all", until: number) =>
   `${level}:${until}`;
 
 async function requestOf(env: Env, receiverId: string, id: string) {
@@ -327,6 +345,7 @@ export async function allowChallenge(
   receiverId: string,
   requestId: string,
   until: number,
+  level: "space" | "all" = "all",
   now = Date.now(),
 ) {
   const r = await requestOf(env, receiverId, requestId);
@@ -336,7 +355,7 @@ export async function allowChallenge(
     env,
     receiverId,
     r.sender_id,
-    listenBinding("all", until),
+    listenBinding(level, until),
     now,
   );
 }
@@ -386,8 +405,19 @@ export async function allow(
       "The list does not apply on a page open to guests or to anyone with the link: allow once",
     );
   let until = 0;
+  let space: { id: string; name: string } | null = null;
   if (body.level === "page") until = now + LISTEN_PAGE_MS;
-  if (body.level === "all") {
+  if (body.level === "space") {
+    space = await spaceOf(env, req.artifact_id);
+    if (!space)
+      throw new ApiError("bad_request", "This page is not in a shared space");
+    if (open)
+      throw new ApiError(
+        "bad_request",
+        "The list does not apply on a page open to guests or to anyone with the link: allow once",
+      );
+  }
+  if (body.level === "space" || body.level === "all") {
     until = body.until ?? 0;
     if (until <= now || until > now + LISTEN_MAX_MS)
       throw new ApiError("bad_request", "`until` is at most a year from now");
@@ -395,7 +425,7 @@ export async function allow(
   if (body.level !== "once") {
     // Any list add needs the passkey when the member has one; all pages always.
     const has = await hasPasskey(env, receiverId, now);
-    if (body.level === "all" || has) {
+    if (body.level === "all" || body.level === "space" || has) {
       if (!body.assertion)
         throw new ApiError("passkey_required", "This needs your passkey");
       await verifyListen(
@@ -514,13 +544,17 @@ export async function allow(
     const exists = await stmt(
       env.DB,
       `select id from agent_listens where owner_id = ?1 and member_id = ?2 and removed_at is null
-         and scope = ?3 and coalesce(artifact_id, '') = ?4`,
+         and scope = ?3 and coalesce(artifact_id, space_id, '') = ?4`,
     )
       .bind(
         receiverId,
         req.sender_id,
         body.level,
-        body.level === "all" ? "" : req.artifact_id,
+        body.level === "all"
+          ? ""
+          : body.level === "space"
+            ? (space?.id ?? "")
+            : req.artifact_id,
       )
       .first<{ id: string }>();
     if (exists)
@@ -533,18 +567,23 @@ export async function allow(
     else
       await stmt(
         env.DB,
-        `insert into agent_listens (id, owner_id, member_id, scope, artifact_id, until, created_via, created_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+        `insert into agent_listens (id, owner_id, member_id, scope, artifact_id, space_id, until, created_via, created_at)
+         values (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8)`,
       )
         .bind(
           newId(),
           receiverId,
           req.sender_id,
           body.level,
-          body.level === "all" ? null : req.artifact_id,
+          body.level === "page" ? req.artifact_id : null,
           until,
-          body.level === "all" ? "allow_all" : "allow_page",
+          body.level === "all"
+            ? "allow_all"
+            : body.level === "space"
+              ? "allow_space"
+              : "allow_page",
           now,
+          body.level === "space" ? (space?.id ?? null) : null,
         )
         .run();
     await audit(

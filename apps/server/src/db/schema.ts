@@ -667,6 +667,10 @@ export const agentListens = sqliteTable(
     artifactId: text("artifact_id").references(() => artifacts.id, {
       onDelete: "cascade",
     }),
+    // scope "space": the shared space whose pages it covers (while a page is in it).
+    spaceId: text("space_id").references(() => spaces.id, {
+      onDelete: "cascade",
+    }),
     until: integer("until").notNull(),
     createdVia: text("created_via").notNull(),
     createdAt: integer("created_at").notNull(),
@@ -674,7 +678,7 @@ export const agentListens = sqliteTable(
   },
   (t) => [
     index("agent_listens_owner_idx").on(t.ownerId, t.memberId),
-    check("agent_listens_scope", inList("scope", ["page", "all"])),
+    check("agent_listens_scope", inList("scope", ["page", "space", "all"])),
   ],
 );
 

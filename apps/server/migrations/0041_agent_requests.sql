@@ -4,6 +4,7 @@ CREATE TABLE `agent_listens` (
 	`member_id` text NOT NULL,
 	`scope` text NOT NULL,
 	`artifact_id` text,
+	`space_id` text,
 	`until` integer NOT NULL,
 	`created_via` text NOT NULL,
 	`created_at` integer NOT NULL,
@@ -11,7 +12,8 @@ CREATE TABLE `agent_listens` (
 	FOREIGN KEY (`owner_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`member_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`artifact_id`) REFERENCES `artifacts`(`id`) ON UPDATE no action ON DELETE cascade,
-	CONSTRAINT "agent_listens_scope" CHECK("scope" in ('page', 'all'))
+	FOREIGN KEY (`space_id`) REFERENCES `spaces`(`id`) ON UPDATE no action ON DELETE cascade,
+	CONSTRAINT "agent_listens_scope" CHECK("scope" in ('page', 'space', 'all'))
 );
 --> statement-breakpoint
 CREATE INDEX `agent_listens_owner_idx` ON `agent_listens` (`owner_id`,`member_id`);--> statement-breakpoint
