@@ -1,11 +1,14 @@
-import { HelloRefused } from "@oa/bus-ipc";
-import { describe, expect, it } from "vitest";
+import { BUS_CMD, HelloRefused } from "@oa/bus-ipc";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   BUSY_MESSAGE,
   type ConnectDeps,
   connectOutcome,
+  NOT_CONNECTED_MESSAGE,
   noSessionMessage,
   RESTARTING_MESSAGE,
+  resetConnectedBefore,
+  UNREACHABLE_MESSAGE,
 } from "../src/connect.ts";
 import {
   type ClaudeSession,
@@ -22,6 +25,8 @@ const deps = (o: Partial<ConnectDeps<string>> = {}): ConnectDeps<string> => ({
   sleep: async () => {},
   ...o,
 });
+
+beforeEach(() => resetConnectedBefore());
 
 describe("connectOutcome", () => {
   it("ok", async () => {
@@ -96,9 +101,9 @@ describe("connect failure kinds", () => {
 describe("noSessionMessage", () => {
   it("names the real cause for busy, the install hint otherwise", () => {
     expect(noSessionMessage({ kind: "busy" }, true)).toBe(BUSY_MESSAGE);
-    expect(
-      noSessionMessage({ kind: "no-socket", seen: false }, true),
-    ).toContain("install");
+    expect(noSessionMessage({ kind: "no-socket", seen: false }, true)).toBe(
+      NOT_CONNECTED_MESSAGE,
+    );
     expect(noSessionMessage({ kind: "no-socket", seen: true }, true)).toBe(
       RESTARTING_MESSAGE,
     );
@@ -170,7 +175,7 @@ describe("daemon restart (#2364)", () => {
     );
     expect(out).toEqual({ kind: "no-socket", seen: false });
     expect(sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(2000);
-    expect(noSessionMessage(out as never, true)).toContain("install");
+    expect(noSessionMessage(out as never, true)).toBe(NOT_CONNECTED_MESSAGE);
   });
   it("no session does not wait", async () => {
     let slept = 0;
@@ -213,10 +218,44 @@ describe("no-session reasons (#2364)", () => {
     expect(m).toContain("socket folder isn't safe");
     expect(m).toContain("doctor");
   });
-  it("none under Claude keeps the install hint", () => {
-    expect(
-      noSessionMessage({ kind: "no-session", reason: "none" }, true),
-    ).toContain("install");
+  it("never connected: none says to tell the user, exact string", () => {
+    expect(noSessionMessage({ kind: "no-session", reason: "none" }, true)).toBe(
+      `oa-bus: this session isn't connected to the bus. Tell your user. Installing restarts the bus for every session on this machine, so ask them before running \`${BUS_CMD} install\`.`,
+    );
+  });
+  it("prior success + one miss then a hit is ok", async () => {
+    await connectOutcome(deps());
+    let looks = 0;
+    const out = await connectOutcome(
+      deps({
+        findSession: () => {
+          looks += 1;
+          return looks < 2
+            ? { ok: false, reason: "none" }
+            : { ok: true, session };
+        },
+        sleep: async () => {},
+      }),
+    );
+    expect(out.kind).toBe("ok");
+  });
+  it("prior success + persistent miss retries ~2s then says wait, exact string", async () => {
+    await connectOutcome(deps());
+    let slept = 0;
+    const out = await connectOutcome(
+      deps({
+        findSession: () => ({ ok: false, reason: "none" }),
+        sleep: async (ms) => {
+          slept += ms;
+        },
+      }),
+    );
+    expect(slept).toBeGreaterThanOrEqual(2000);
+    expect(slept).toBeLessThanOrEqual(2200);
+    expect(noSessionMessage(out as never, true)).toBe(
+      "oa-bus: couldn't reach the bus just now. Wait a few seconds and try again. Don't run the installer.",
+    );
+    expect(UNREACHABLE_MESSAGE).not.toContain("npx");
   });
   it("a socket that vanishes after it was seen is restarting, not install", async () => {
     const out = await connectOutcome(failing(coded("ENOENT")));
