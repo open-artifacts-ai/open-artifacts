@@ -598,6 +598,8 @@ export const ShareResultSchema = ShareSchema.extend({
   notEmailed: z
     .enum(["member_limit", "instance_limit", "limit", "outside_no_unsubscribe"])
     .optional(),
+  /** With notEmailed member_limit or instance_limit: the daily number that was hit (20, 100, or the trial figure). */
+  limit: z.number().int().positive().optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
   recipient: ShareRecipientSchema.optional(),
   /**

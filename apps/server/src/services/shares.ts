@@ -268,13 +268,16 @@ async function emailed(
   send: () => Promise<{
     emailed: boolean;
     notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+    limit?: number;
   }>,
-): Promise<Pick<ShareResult, "emailed" | "notEmailed">> {
+): Promise<Pick<ShareResult, "emailed" | "notEmailed" | "limit">> {
   if (!created) return { emailed: false };
   const r = await send();
-  return r.notEmailed
-    ? { emailed: r.emailed, notEmailed: r.notEmailed }
-    : { emailed: r.emailed };
+  return {
+    emailed: r.emailed,
+    ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
+    ...(r.limit !== undefined ? { limit: r.limit } : {}),
+  };
 }
 
 /** Outside shares emailed per member per UTC day (#2590). */
@@ -296,6 +299,7 @@ async function emailShare(
 ): Promise<{
   emailed: boolean;
   notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+  limit?: number;
 }> {
   if (!emailEnabled(env)) return { emailed: false };
   try {
@@ -360,13 +364,22 @@ async function emailShare(
     );
     if (sent) return { emailed: true };
     if (!outcome.limited) return { emailed: false };
-    return {
-      emailed: false,
-      notEmailed:
-        outcome.reason === "member_limit" || outcome.reason === "instance_limit"
-          ? outcome.reason
-          : "limit",
-    };
+    // The number a member_limit or instance_limit refusal hit, for the page.
+    if (outcome.reason === "member_limit")
+      return {
+        emailed: false,
+        notEmailed: "member_limit",
+        limit: OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
+      };
+    if (outcome.reason === "instance_limit")
+      return {
+        emailed: false,
+        notEmailed: "instance_limit",
+        limit: trial
+          ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
+          : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
+      };
+    return { emailed: false, notEmailed: "limit" };
   } catch {
     return { emailed: false };
   }

@@ -359,6 +359,7 @@ describe("outside share email limits", () => {
     const last = all[all.length - 1];
     expect(last?.emailed).toBe(false);
     expect(last?.notEmailed).toBe("member_limit");
+    expect(last?.limit).toBe(OUTSIDE_EMAILS_PER_MEMBER_PER_DAY);
     expect(
       await env.DB.prepare("select 1 from shares where email = ?")
         .bind(last?.email)
@@ -387,6 +388,7 @@ describe("outside share email limits", () => {
     expect(full).toMatchObject({
       emailed: false,
       notEmailed: "instance_limit",
+      limit: OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
     });
     // 20 used: fine on a normal plan, full in a trial (the member's plan).
     await fill(OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL);
@@ -395,7 +397,11 @@ describe("outside share email limits", () => {
     const trialUser = withPlan(s.member, { tier: "trial" } as never);
     const email = uniq("trial", "outside.example");
     const r = await putShare(s.e, trialUser, s.id, { email, role: "viewer" });
-    expect(r).toMatchObject({ emailed: false, notEmailed: "instance_limit" });
+    expect(r).toMatchObject({
+      emailed: false,
+      notEmailed: "instance_limit",
+      limit: OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL,
+    });
     await clear();
   });
 
@@ -415,6 +421,7 @@ describe("outside share email limits", () => {
       .run();
     const r = ShareResultSchema.parse(await (await s.share(email)).json());
     expect(r).toMatchObject({ emailed: false, notEmailed: "limit" });
+    expect(r.limit).toBeUndefined();
     await clear();
   });
 });
