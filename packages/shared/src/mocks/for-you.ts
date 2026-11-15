@@ -21,8 +21,9 @@ import { FOR_YOU_ASK } from "./comments.js";
  * calm: nothing needs you; "While you were away" and two updates.
  * empty: nothing at all (first time).
  * back: the mention is back from Later.
+ * error: as mixed, but the list itself fails to load (the bell still counts).
  */
-export type ForYouVariant = "mixed" | "calm" | "empty" | "back";
+export type ForYouVariant = "mixed" | "calm" | "empty" | "back" | "error";
 
 type Deps = {
   variant?: ForYouVariant;
@@ -121,7 +122,7 @@ export function createForYouMock(d: Deps): {
   let needsYou: InboxItem[] = [];
   let later: InboxItem[] = [];
   let updates: InboxItem[] = [];
-  if (d.variant === "mixed") {
+  if (d.variant === "mixed" || d.variant === "error") {
     needsYou = [ask, mention(false)];
     updates = [
       update(
@@ -207,6 +208,8 @@ export function createForYouMock(d: Deps): {
     handlers: [
       // Updates page by INBOX_MOCK_PAGE; the cursor is the next offset.
       http.get(`*${R.meInbox}`, ({ request }) => {
+        if (d.variant === "error")
+          return d.err("bad_request", "The list failed to load");
         const from = Number(
           new URL(request.url).searchParams.get("cursor") ?? 0,
         );

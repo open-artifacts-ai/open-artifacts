@@ -352,3 +352,18 @@ for (const width of [640, 700, 820, 940])
       });
     }
   });
+
+for (const width of [1280, 390])
+  for (const theme of ["light", "dark"] as const)
+    test(`a list that fails to load offers Try again at ${width} ${theme}`, async ({
+      page,
+    }) => {
+      const shot = await start(page, width, theme, "error");
+      await bell(page).click();
+      const p = panel(page).first();
+      await expect(p.getByText("Couldn't load For you.")).toBeVisible();
+      await expect(p.getByRole("button", { name: "Try again" })).toBeVisible();
+      await axe(page);
+      await noSidewaysScroll(page);
+      await shot("14-load-failed");
+    });

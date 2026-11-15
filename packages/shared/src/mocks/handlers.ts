@@ -747,7 +747,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
     seedPins: opts.commentPins,
-    seedForYou: opts.forYou === "mixed",
+    seedForYou: opts.forYou === "mixed" || opts.forYou === "error",
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });
