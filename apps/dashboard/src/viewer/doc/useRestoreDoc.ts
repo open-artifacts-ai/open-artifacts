@@ -12,7 +12,7 @@ const restored = new Set<string>();
 export const takeRestored = (id: string) => restored.delete(id);
 
 /**
- * Restore a doc version (#1100) through its room (PROVISIONAL route, #2496):
+ * Restore a doc version (#1100) through its room (R.docRestore, #2140):
  * no confirm (the mockup's flow; nothing is lost), then the mockup's toast,
  * then back to the live doc, where the room applied it for everyone. Used by
  * the Versions panel and the older-version banner.

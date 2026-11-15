@@ -8,6 +8,7 @@ import {
   artifactCan,
   commentsSettingOf,
   type DataWriters,
+  type DocSave,
   dataWritersWarning,
   type Format,
   isId,
@@ -74,6 +75,7 @@ import {
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { noteInstanceFirst } from "./analytics.js";
 import { audit, userActor } from "./audit.js";
+import { restoreDocVersion } from "./doc-edit.js";
 import {
   apiFormat,
   docPlanInput,
@@ -1373,6 +1375,7 @@ type VersionRow = {
   agent_version: string | null;
   agent_via: string | null;
   agent_identity: string | null;
+  doc_save: string | null;
   created_by: string;
   created_at: number;
   text_indexed: number;
@@ -1406,6 +1409,90 @@ function versionFace(
   }
 }
 
+type DocSaveRaw = {
+  kind: "auto" | "named" | "before_agent" | "restore";
+  by?: {
+    kind: "agent" | "person";
+    name?: string;
+    version?: string | null;
+    via?: string | null;
+    userId?: string | null;
+  };
+};
+
+/** versions.doc_save, or undefined when absent or malformed. */
+function parseDocSave(raw: string | null): DocSaveRaw | undefined {
+  if (!raw) return undefined;
+  try {
+    const o = JSON.parse(raw) as DocSaveRaw;
+    return ["auto", "named", "before_agent", "restore"].includes(o?.kind)
+      ? o
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type PersonRow = NameCols & { id: string };
+
+/** The users a page's doc saves name, by id. */
+async function docSavePeople(
+  env: Env,
+  saves: DocSaveRaw[],
+): Promise<Map<string, PersonRow>> {
+  const ids = [
+    ...new Set(saves.flatMap((s) => (s.by?.userId ? [s.by.userId] : []))),
+  ];
+  const out = new Map<string, PersonRow>();
+  if (ids.length === 0) return out;
+  const { results } = await env.DB.prepare(
+    `select id, email, name, display_name as displayName from users
+     where id in (${ids.map(() => "?").join(",")})`,
+  )
+    .bind(...ids)
+    .all<PersonRow>();
+  for (const r of results) out.set(r.id, r);
+  return out;
+}
+
+function docSaveField(
+  d: DocSaveRaw | undefined,
+  people: Map<string, PersonRow>,
+  caller: Caller,
+  viewerId: string | null,
+): { docSave?: DocSave } {
+  if (!d) return {};
+  const by = d.by;
+  const u = by?.userId ? people.get(by.userId) : undefined;
+  if (!by || !u) return { docSave: { kind: d.kind } };
+  if (by.kind === "agent")
+    return {
+      docSave: {
+        kind: d.kind,
+        by: agentFor(
+          { name: by.name ?? "Agent", version: by.version ?? null },
+          by.via ?? null,
+          publisherOf(u.id, u),
+          viewerId,
+        ),
+      },
+    };
+  return {
+    docSave: {
+      kind: d.kind,
+      by: redact(
+        {
+          id: u.id,
+          email: u.email,
+          name: u.name ?? "",
+          displayName: u.displayName,
+        },
+        caller,
+      ),
+    },
+  };
+}
+
 /**
  * Viewer+; newest first, keyset `version < before`: at most VERSIONS_PAGE_SIZE,
  * and only while the cumulative manifest length stays within
@@ -1429,7 +1516,7 @@ export async function listVersions(
        from page window w as (order by version desc)
      )
      select v.version, v.entry, v.manifest, v.language, v.message, v.agent_name,
-       v.agent_version, v.agent_via, v.agent_identity, v.created_by,
+       v.agent_version, v.agent_via, v.agent_identity, v.doc_save, v.created_by,
        v.created_at, v.text_indexed,
        case when a.doc = 1 then 'doc' else coalesce(v.format, a.format) end as format,
        u.email, u.name, u.display_name as displayName
@@ -1453,9 +1540,16 @@ export async function listVersions(
     caller.kind !== "user" ||
     isGuestRole(caller.user.role) ||
     capsReads(capOfCaller(caller));
+  const saves = new Map<number, DocSaveRaw>();
+  for (const v of results) {
+    const d = parseDocSave(v.doc_save);
+    if (d) saves.set(v.version, d);
+  }
+  const people = await docSavePeople(env, [...saves.values()]);
   return results.map((v) => ({
     version: v.version,
     message: v.message,
+    ...docSaveField(saves.get(v.version), people, caller, viewerId),
     agent:
       v.agent_name == null
         ? null
@@ -1617,7 +1711,13 @@ export async function restoreVersion(
   agent: AgentAttr | null,
   ctx?: Ctx,
 ): Promise<PublishResult> {
-  await authorize(env, asUser(user), id, "restore");
+  const { artifact } = await authorize(env, asUser(user), id, "restore");
+  // #2140: a doc restores through its room (unsaved edits saved, one live
+  // edit, "Restored v{v}"), never as a whole-content rewrite.
+  if (artifact.doc === 1) {
+    const r = await restoreDocVersion(env, user, agent, id, v);
+    return { id, version: r.version, url: appOrigin(env) + viewerPath(id) };
+  }
   const src = await env.DB.prepare(
     `select v.entry, v.manifest, v.language, coalesce(v.format, a.format) as format
      from versions v join artifacts a on a.id = v.artifact_id

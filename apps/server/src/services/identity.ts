@@ -1,7 +1,13 @@
-import { inDomains, normalizeEmail } from "@oa/auth-core";
+import { googleEvidenceStrong, inDomains, normalizeEmail } from "@oa/auth-core";
 import type { Member, Role } from "@oa/shared";
 import { logAuth } from "../auth/audit.js";
-import { callerOf, capOfCaller, managesAdmins } from "../auth/authz.js";
+import {
+  callerOf,
+  capOfCaller,
+  inviteTtlDays,
+  isAdminRow,
+  managesAdmins,
+} from "../auth/authz.js";
 import type { AuthConfig } from "../auth/config.js";
 import { isGuestRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
@@ -10,7 +16,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { revokeUserLive } from "../runtime/revoke.js";
-import { audit, signInAudit, userActor } from "./audit.js";
+import { audit, inviteAcceptAudit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
 import { googleLinkStmts, toMember } from "./users.js";
 
@@ -22,7 +28,15 @@ export type AdmitResult =
   | { ok: true; user: Member }
   | {
       ok: false;
-      reason: "tenant" | "identity_conflict" | "removed" | "no_access";
+      reason:
+        | "tenant"
+        | "identity_conflict"
+        | "removed"
+        | "no_access"
+        /** Weak evidence for a first link to an existing row: the code step (slice 2) is not built, so refused. */
+        | "needs_code"
+        /** A never-signed-in invited row past its window (30 days, 7 for an admin). */
+        | "invite_expired";
     };
 
 type UserRow = {
@@ -40,7 +54,7 @@ const USER_COLS =
 
 const BY_SUBJECT = `select ${USER_COLS} from identities i join users u on u.id = i.user_id
   where i.provider = ?1 and i.subject = ?2 limit 1`;
-const BY_EMAIL = `select ${USER_COLS}, (select subject from identities i where i.user_id = u.id and i.provider = 'google') as subject
+const BY_EMAIL = `select ${USER_COLS}, u.invited_at as invitedAt, (select subject from identities i where i.user_id = u.id and i.provider = 'google') as subject
   from users u where u.email = ?1 limit 1`;
 
 const AN_OWNER = "select 1 as x from users where role = 'owner' limit 1";
@@ -49,36 +63,34 @@ const member = (r: UserRow) => toMember(r as Parameters<typeof toMember>[0]);
 
 const logDrift = () => logAuth({ evt: "email_drift", outcome: "kept" });
 
-/** Name, last-seen, guest promotion (hd verified) and owner role on sign-in. */
+/** Name, last-seen and owner role on sign-in; never a guest's role (#2590). */
 async function touch(
   env: Env,
   row: UserRow,
   id: VerifiedIdentity,
   now: number,
 ): Promise<Member | null> {
-  const owner = normalizeEmail(env.OWNER_EMAIL ?? "");
-  // The role is promoted from the row's CURRENT role, in SQL (promotedRole:
-  // guest becomes member, every other role is kept), never written back from
-  // the read above: an admin demotion racing this sign-in sticks (P3 T6).
+  // An email-bound identity never becomes the owner (#2520).
+  const owner = id.bound ? "" : normalizeEmail(env.OWNER_EMAIL ?? "");
+  // The role is kept from the row's CURRENT role, in SQL, never written back
+  // from the read above: an admin demotion racing this sign-in sticks (P3 T6).
+  // No login path changes a guest's role (#2590): only an admin's invite makes
+  // a member, a listed domain or not.
   // OWNER_EMAIL becomes owner only while no owner row exists (one owner).
   // An active row only: a user who stopped being active mid-sign-in matches
   // no row, gets no auth.signin row, and is refused (null). The admission
   // and its audit row commit together.
-  const [res] = await env.DB.batch<UserRow>([
+  const [, res] = await env.DB.batch<UserRow>([
+    // Before the update below, which sets last_seen_at (invite.accept reads it).
+    inviteAcceptAudit(env, row.id),
     stmt(
       env.DB,
       `update users set last_seen_at = ?1, name = coalesce(?2, name),
          role = case when ?4 = 1 and not exists (select 1 from users where role = 'owner') then 'owner'
-                     when role = 'guest' and ?5 = 1 then 'member' else role end
+                     else role end
        where id = ?3 and status = 'active'
        returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`,
-    ).bind(
-      now,
-      id.name,
-      row.id,
-      owner && row.email === owner ? 1 : 0,
-      id.tenant ? 1 : 0,
-    ),
+    ).bind(now, id.name, row.id, owner && row.email === owner ? 1 : 0),
     signInAudit(env, row.id, id.provider, id.tenant, {
       sql: "changes() > 0",
       args: [],
@@ -96,8 +108,18 @@ async function followDrift(
   env: Env,
   row: UserRow,
   email: string,
+  id: VerifiedIdentity,
 ): Promise<UserRow> {
   if (email === row.email) return row;
+  // Only strong evidence for the NEW address moves a row, and never an
+  // email-bound identity: otherwise a login whose hd is not a listed domain
+  // (or a consumer account on a work address) could walk a row onto another
+  // address, in-domain ones included (#2520 M1, Axe 4). The user keeps
+  // their old address and still signs in by subject.
+  if (id.bound || !googleEvidenceStrong(email, true, id.hd ?? id.tenant)) {
+    logDrift();
+    return row;
+  }
   // Never onto OWNER_EMAIL: drift must not hand anyone the owner address
   // (moveUserEmail refuses it too).
   try {
@@ -129,9 +151,11 @@ export async function admit(
   now = Date.now(),
 ): Promise<AdmitResult> {
   // No domains: there is no tenant, whatever the token said.
+  // An email-bound identity has no tenant, whatever else it carries.
   const id: VerifiedIdentity =
-    cfg.domains.length === 0 ? { ...raw, tenant: null } : raw;
-  if (!googleTenantOk(cfg, id.tenant)) return { ok: false, reason: "tenant" };
+    cfg.domains.length === 0 || raw.bound ? { ...raw, tenant: null } : raw;
+  if (!id.bound && !googleTenantOk(cfg, id.tenant))
+    return { ok: false, reason: "tenant" };
   const email = normalizeEmail(id.email);
   if (!email) return { ok: false, reason: "no_access" };
 
@@ -140,41 +164,110 @@ export async function admit(
     .first<UserRow>();
   if (linked) {
     if (linked.status !== "active") return { ok: false, reason: "removed" };
+    // A guest a share made, with no share left: no way in (#2590).
+    if (await unsharedGuest(env, linked))
+      return { ok: false, reason: "no_access" };
     return admitted(
-      await touch(env, await followDrift(env, linked, email), id, now),
+      await touch(env, await followDrift(env, linked, email, id), id, now),
     );
   }
 
-  const existing = await stmt(env.DB, BY_EMAIL)
-    .bind(email)
-    .first<UserRow & { subject: string | null }>();
+  const existing = await stmt(env.DB, BY_EMAIL).bind(email).first<
+    UserRow & {
+      subject: string | null;
+      invitedAt: number | null;
+    }
+  >();
   if (existing && existing.status !== "active")
     return { ok: false, reason: "removed" };
   if (existing?.subject) return { ok: false, reason: "identity_conflict" };
+  if (existing && (await unsharedGuest(env, existing)))
+    return { ok: false, reason: "no_access" };
+  if (existing) {
+    // A pending invite (invited_at set, never signed in) lapses; a re-invite
+    // refreshes it. Rows nobody invited (directory sync, share guests) never do.
+    // A colleague whose token hd is a listed domain, with join = member, is
+    // not blocked by a lapsed non-admin invite: the domain path would admit
+    // them anyway, so the row links as that path would (the strong-evidence
+    // check below still applies). An admin's lapsed invite always holds.
+    const domainJoins =
+      Boolean(id.tenant) &&
+      cfg.domainJoin === "member" &&
+      !isAdminRow(existing.role);
+    if (!domainJoins && inviteLapsed(existing, now))
+      return { ok: false, reason: "invite_expired" };
+    // First link of this Google account to an existing row (invited, code-only
+    // member or admin, guest): only strong evidence links directly (#2520
+    // M1). Weak evidence needs the emailed code, which slice 2 builds; until
+    // then it is refused. The token's hd, never the address, decides.
+    if (!googleEvidenceStrong(email, true, id.hd ?? id.tenant))
+      return { ok: false, reason: "needs_code" };
+  }
   // OWNER_EMAIL is special only while no owner exists; then normal join rules.
   const isOwner =
     email === normalizeEmail(env.OWNER_EMAIL ?? "") &&
     !(await stmt(env.DB, AN_OWNER).first());
-  if (!existing && !googleNewRowOk(cfg, isOwner))
-    return { ok: false, reason: "no_access" };
+  // No row: a bound identity (#2520) never creates a member or the owner,
+  // whatever AUTH_DOMAIN_JOIN says. Nor does an address no join rule admits.
+  // Either way a live share to the exact address makes a GUEST (#2590), on
+  // strong evidence only (weak: needs_code; no share: no_access). A guest
+  // stays a guest, a listed domain or not.
+  let role: Role = isOwner ? "owner" : "member";
+  if (!existing && (id.bound || !googleNewRowOk(cfg, isOwner))) {
+    if (!(await stmt(env.DB, SHARED).bind(email).first()))
+      return { ok: false, reason: "no_access" };
+    if (!googleEvidenceStrong(email, true, id.hd ?? id.tenant))
+      return { ok: false, reason: "needs_code" };
+    role = "guest";
+  }
 
-  const results = await env.DB.batch<UserRow & { subject: string | null }>(
-    googleLinkStmts(env, {
+  // An invited row (never seen) accepts its invite here: the audit statement
+  // goes first, while last_seen_at is still null (the link sets it).
+  const lead = existing ? [inviteAcceptAudit(env, existing.id)] : [];
+  const results = await env.DB.batch<UserRow & { subject: string | null }>([
+    ...lead,
+    ...googleLinkStmts(env, {
       email,
       name: id.name,
-      role: isOwner ? "owner" : "member",
+      role,
       subject: id.subject,
       tenant: id.tenant ?? "",
       now,
     }),
-  );
-  const row = results[2]?.results[0];
+  ]);
+  const row = results[2 + lead.length]?.results[0];
   if (!row) return { ok: false, reason: "no_access" };
   if (row.status !== "active") return { ok: false, reason: "removed" };
   if (row.subject !== id.subject)
     return { ok: false, reason: "identity_conflict" };
   return admitted(await touch(env, row, id, now));
 }
+
+/**
+ * A guest a share made (no invite) who has no share left, and no space role:
+ * they exist only through shares, so they can't log in (#2590). Normally the
+ * last share's removal has deactivated them already; this is the fence.
+ */
+const UNSHARED = `select 1 as x from users u where u.id = ?1 and u.role = 'guest'
+  and u.invited_at is null
+  and not exists (select 1 from shares s join artifacts a on a.id = s.artifact_id
+    where s.email = u.email and a.deleted_at is null)
+  and not exists (select 1 from space_members sm where sm.user_id = u.id)`;
+const unsharedGuest = async (env: Env, row: { id: string; role: string }) =>
+  isGuestRole(row.role as Role) &&
+  (await stmt(env.DB, UNSHARED).bind(row.id).first()) !== null;
+
+/**
+ * A pending invite that has lapsed: invited_at set (inviteMember only), never
+ * signed in, older than 30 days (7 for an admin). The owner never lapses.
+ */
+export const inviteLapsed = (
+  row: { role: string; invitedAt: number | null; lastSeenAt: number | null },
+  now: number,
+): boolean =>
+  row.invitedAt !== null &&
+  row.lastSeenAt === null &&
+  (inviteTtlDays(row.role) ?? Infinity) * 86_400_000 < now - row.invitedAt;
 
 /** Google admission rule 1: the tenant (hd) is a verified domain. */
 export const googleTenantOk = (
@@ -193,13 +286,16 @@ const admitted = (user: Member | null): AdmitResult =>
 export type CodeEligibility =
   | { kind: "member"; userId: string | null; role: Role }
   | { kind: "guest"; userId: string | null }
-  | { kind: "none" };
+  | { kind: "none"; reason?: "invite_expired" };
 
 /** The user row codeRule reads, by email (?1). */
 export const ELIGIBILITY = `select u.id, u.role, u.status,
+    u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
     exists (select 1 from identities i where i.user_id = u.id) as linked
   from users u where u.email = ?1 limit 1`;
-const SHARED = "select 1 as x from shares where email = ?1 limit 1";
+// A share on a deleted page admits nothing (#2598 N3).
+const SHARED = `select 1 as x from shares s join artifacts a on a.id = s.artifact_id
+  where s.email = ?1 and a.deleted_at is null limit 1`;
 
 /**
  * Who may get an emailed code (no writes; checked at request and at verify):
@@ -217,10 +313,47 @@ export async function codeEligibility(
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { kind: "none" };
-  const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
+  const row = await stmt(env.DB, ELIGIBILITY)
+    .bind(email)
+    .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
+  // The same lapse as a Google sign-in (#2520): no code for an expired invite.
+  if (row && row.status === "active" && inviteLapsed(row, Date.now()))
+    return { kind: "none", reason: "invite_expired" };
   return codeRule(cfg, email, row, async () =>
     Boolean(await stmt(env.DB, SHARED).bind(email).first()),
   );
+}
+
+/**
+ * Who may get a code to LINK a Google account that admit() refused with
+ * needs_code (#2590 G2): the person proved the Google account, the code
+ * proves the mailbox. An active, unlinked, unlapsed row (invited member or
+ * admin, or a guest); or no row and a live share (a guest row is made at
+ * verify). Never a removed or suspended row, a guest left with no share, or a
+ * row that already has a Google link. No write; checked at request and verify.
+ */
+export async function linkEligibility(
+  env: Env,
+  rawEmail: string,
+): Promise<CodeEligibility> {
+  const email = normalizeEmail(rawEmail);
+  if (!email) return { kind: "none" };
+  const row = await stmt(env.DB, ELIGIBILITY)
+    .bind(email)
+    .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
+  if (!row) {
+    return (await stmt(env.DB, SHARED).bind(email).first())
+      ? { kind: "guest", userId: null }
+      : { kind: "none" };
+  }
+  if (row.status !== "active" || row.linked || !row.id) return { kind: "none" };
+  if (inviteLapsed(row, Date.now()))
+    return { kind: "none", reason: "invite_expired" };
+  if (await unsharedGuest(env, { id: row.id, role: row.role }))
+    return { kind: "none" };
+  return isGuestRole(row.role)
+    ? { kind: "guest", userId: row.id }
+    : { kind: "member", userId: row.id, role: row.role };
 }
 
 /** The user row codeRule reads: role, status, and whether any identity is linked. */

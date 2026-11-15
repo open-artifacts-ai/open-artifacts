@@ -42,6 +42,12 @@ export const users = sqliteTable(
     role: text("role").notNull(),
     createdAt: integer("created_at").notNull(),
     lastSeenAt: integer("last_seen_at"),
+    /**
+     * When an admin last invited this address (ms; null = never invited by
+     * inviteMember: directory-synced, share-guest and code-joined rows).
+     * Only a never-signed-in row with this set lapses (#2520).
+     */
+    invitedAt: integer("invited_at"),
     /** Bumped to end every session of the user (role change, link reset, P3 sync). */
     sessionEpoch: integer("session_epoch").notNull().default(0),
     /** MemberStatus (@oa/shared): active | suspended | removed. P3's sync sets it; sign-in refuses non-active. */
@@ -446,6 +452,9 @@ export const versions = sqliteTable(
     // NULL only on rows written before 0002 (or by pre-0002 code): readers fall
     // back to artifacts.format.
     format: text("format"),
+    // #1100: JSON {kind: auto|named|before_agent|restore, by?: {...}} for a
+    // doc version saved by the room. NULL: not a doc, or a doc's first version.
+    docSave: text("doc_save"),
   },
   (t) => [
     primaryKey({ columns: [t.artifactId, t.version] }),
@@ -526,6 +535,14 @@ export const artifactAsks = sqliteTable(
     addressee: text("addressee").notNull(),
     open: integer("open").notNull(),
     answered: integer("answered").notNull().default(0),
+    // #2512: what the inbox shows, copied from the ask when it is indexed.
+    // Null on a row from before: the inbox repairs it from the DO (reconcileAsks).
+    question: text("question"),
+    // The asking comment's StoredActor, as JSON (read back through the comments face builder).
+    asker: text("asker"),
+    askedAt: text("asked_at"),
+    // 1 when the ask needs a passkey or names a risky action (#2263).
+    confirm: integer("confirm"),
   },
   (t) => [
     primaryKey({ columns: [t.artifactId, t.commentId, t.addressee] }),

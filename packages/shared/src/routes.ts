@@ -71,17 +71,16 @@ export const R = {
   restoreVersion: (id: string, v: number) =>
     `${A}/${seg(id)}/versions/${v}/restore`,
   /**
-   * PROVISIONAL (#1100, until OA Backend's #2496 lands; swap the path here):
-   * POST DocSaveVersionBody -> DocVersionResult. "Save version" on a doc: the
-   * room saves its current state as a named version. Needs edit access.
+   * POST DocSaveVersionBody -> DocVersionResult (#1100, #2496). "Save version"
+   * on a doc: the room saves its current state as a named version ("Version
+   * {n}" without a name). Needs edit access.
    */
   docSaveVersion: (id: string) => `${A}/${seg(id)}/doc/versions`,
   /**
-   * PROVISIONAL (#1100, until #2496 / #2140 land; swap the path here):
-   * POST -> DocVersionResult. Restore a doc version through its room: the
-   * room saves unsaved edits as an automatic version first, then applies
-   * version `v` as one edit everyone sees live, then saves "Restored v{v}".
-   * Needs edit access.
+   * POST -> DocVersionResult (#1100, #2140). Restore a doc version through its
+   * room: unsaved edits are saved as an automatic version first, then version
+   * `v` is applied as one edit everyone sees live, then saved as "Restored
+   * v{v}". Needs edit access.
    */
   docRestore: (id: string, v: number) =>
     `${A}/${seg(id)}/doc/versions/${v}/restore`,
@@ -114,6 +113,8 @@ export const R = {
   search: "/api/v1/search",
   /** GET -> Member[]; POST MemberInvite -> Member. Uncapped org owner or admin only (anyone else 404); space managers use spaceCandidates. */
   members: "/api/v1/members",
+  /** GET ?email= -> InviteReach (#2520): the ways in for one address, for the invite box. Owner or admin. */
+  memberReach: "/api/v1/members/reach",
   /** PATCH MemberPatch -> Member; DELETE -> 204 */
   member: (id: string) => `/api/v1/members/${seg(id)}`,
   /** GET -> Passkey[] (#2263): the caller's passkeys, session only. */
@@ -208,6 +209,10 @@ export const R = {
   busReachProposals: "/api/v1/bus/reach/proposals",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
+  /** GET -> LoginSettings (owner or admin); PUT LoginSettingsPut -> LoginSettings (owner only, needs a fresh login; 403 domain_unproven, 409 apply_pending). #2520 */
+  loginSettings: "/api/v1/settings/login",
+  /** POST -> 204: marks the first-invite question answered for the caller. #2520 */
+  loginFirstInviteSeen: "/api/v1/settings/login/first-invite-seen",
   /**
    * GET -> Usage: today's (UTC) free-plan counts. Also `cpu_limit_hits`
    * (invocations ending exceededCpu or exceededResources; limit 0) and
@@ -271,6 +276,8 @@ export const R = {
    * 4404 not_found (deleted).
    */
   doc: (id: string) => `${A}/${seg(id)}/doc`,
+  /** POST EditDocBody { ops, expectedVersion? } -> EditDocResult (#1100): the REST twin of the edit_doc tool. Needs edit access (as publish: the plan lock and token caps apply). 400 for a non-doc or any doc-ops refusal (details.reason: quote_not_found, quote_ambiguous, too_many_ops, invalid_op, ...) with nothing applied; 413 too_large (details.reason doc_too_large) past the 2 MB cap; 409 version_conflict for a stale expectedVersion. */
+  docOps: (id: string) => `${A}/${seg(id)}/doc/ops`,
   /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
   comments: (id: string) => `${A}/${seg(id)}/comments`,
   /** PATCH { status } -> CommentThread. */
@@ -486,6 +493,11 @@ export const R = {
 /** R.auditExport response header naming the cursor of the next request (absent when done). */
 export const AUDIT_NEXT_CURSOR_HEADER = "X-OA-Next-Cursor";
 
+/** Hosted Team (and its trial) read only the last AUDIT_TEAM_WINDOW_DAYS days of the log. */
+export const AUDIT_TEAM_WINDOW_DAYS = 30;
+/** R.audit and R.auditExport response header: the window in days, present only when the plan limits it (Team). */
+export const AUDIT_WINDOW_HEADER = "X-OA-Audit-Window-Days";
+
 export const AUTH = {
   login: "/auth/login",
   /** GET (Access OIDC) -> 302 next; a refusal goes to PAGES.noAccess on Access-only installs, else (direct mode) SIGN_IN_PAGE?error=no_access&next&via=access. */
@@ -503,6 +515,13 @@ export const AUTH = {
   codeRequest: "/auth/code/request",
   /** POST CodeVerify -> 200 CodeVerified. */
   codeVerify: "/auth/code/verify",
+  /**
+   * GET -> 200 { maskedEmail } for the Google account this browser is waiting
+   * to link with a code (after the callback's SIGN_IN_PAGE?error=needs_code),
+   * 404 with no such account. Then POST codeRequest { link: true } (no email:
+   * the address comes from the browser's own cookie) and CodeVerify as usual.
+   */
+  codeLink: "/auth/code/link",
 } as const;
 
 export const MCP_PATH = "/mcp";

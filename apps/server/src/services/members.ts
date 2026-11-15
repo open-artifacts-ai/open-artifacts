@@ -3,6 +3,7 @@ import {
   type AuditReason,
   INVITE_UNREACHABLE_MESSAGE,
   type InviteUnreachableDetails,
+  type LoginWay,
   type Member,
   type MemberInvite,
   type MemberInviteResult,
@@ -18,13 +19,14 @@ import {
   asc,
   eq,
   inArray,
+  isNotNull,
   isNull,
   notInArray,
   or,
   type SQL,
   sql,
 } from "drizzle-orm";
-import { managesAdmins, planOfMember } from "../auth/authz.js";
+import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
 import { effectivePlan, planError, requireTeamPlan } from "../billing/plan.js";
@@ -44,9 +46,14 @@ import {
   MAX_CLOSE,
   revokeUserLive,
 } from "../runtime/revoke.js";
-import { type AuditActor, audit, userActor } from "./audit.js";
+import {
+  type AuditActor,
+  audit,
+  inviteCreateAuditByEmail,
+  userActor,
+} from "./audit.js";
 import { wipeUserBus } from "./bus.js";
-import { inviteReach } from "./reach.js";
+import { inviteReach, waysOf } from "./reach.js";
 import {
   IDENTITIES_SQL,
   identitiesOf,
@@ -62,6 +69,16 @@ import { insertUser, toMember } from "./users.js";
 /** A guest with a live artifact in their personal space (notices' guestOwners). */
 const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifacts a
   where a.space_id = users.id and a.owner_id = users.id and a.deleted_at is null))`;
+
+/**
+ * Member.transferable: a suspended or removed person (any status but active,
+ * as statusOf reads it) with any artifact in their personal space, trash
+ * included. The same rows transferSummary counts (DEPARTED_COUNTS in
+ * services/spaces.ts), on the same indexes, as an exists per row.
+ */
+const TRANSFERABLE_SQL = `(users.status <> 'active' and (
+  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null)
+  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id)))`;
 
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
 /** A stored status; anything unknown reads as suspended (fail closed). */
@@ -88,8 +105,10 @@ export async function listMembers(
   const order = [asc(users.createdAt), asc(users.id)] as const;
   // In the list's own query: a row needs no request of its own.
   const owns = sql<number>`${sql.raw(GUEST_OWNS_SQL)}`;
-  const flag = (r: { owns: number }) =>
-    r.owns ? { personalArtifacts: true } : {};
+  const flag = (r: { owns: number; transferable: number }) => ({
+    ...(r.owns ? { personalArtifacts: true } : {}),
+    ...(r.transferable ? { transferable: true } : {}),
+  });
   const managed = await directoryManagedOf(env);
   const rows = await getDb(env)
     .select({
@@ -104,6 +123,7 @@ export async function listMembers(
       groups: sql<string | null>`${sql.raw(RESTRICTED_GROUPS_SQL)}`,
       idents: sql<string | null>`${sql.raw(IDENTITIES_SQL)}`,
       owns,
+      transferable: sql<number>`${sql.raw(TRANSFERABLE_SQL)}`,
       // A target-row fact for directoryManaged (the owner is never synced
       // away), read in SQL: role checks stay in src/auth (authz-lint).
       isOwner: sql<number>`(users.role = 'owner')`,
@@ -248,6 +268,9 @@ async function requireTrialStarted(env: Env): Promise<void> {
   if (lock) throw planError(lock);
 }
 
+/** A re-invite's email goes out at most once per address in this window. */
+const REINVITE_COOLDOWN_MS = 600_000;
+
 /**
  * Pre-creates the user row, then emails the invitee (best effort).
  * 400 on an invalid (non-ASCII) email, 409 if it exists (guest_lapsed for
@@ -264,12 +287,30 @@ export async function inviteMember(
   inviter: Member,
   input: MemberInvite,
 ): Promise<MemberInviteResult> {
+  return (await inviteMemberOutcome(env, inviter, input)).result;
+}
+
+/**
+ * inviteMember, and whether it was a re-invite (#2520): an active row that
+ * was invited and never signed in keeps its row, gets a fresh invited_at and
+ * the email again; the route answers 200 instead of 201. Every other existing
+ * row is still a 409.
+ */
+export async function inviteMemberOutcome(
+  env: Env,
+  inviter: Member,
+  input: MemberInvite,
+): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   const reach = await inviteReach(env, email, input.role);
+  const ways = waysOf(reach);
   if (reach.methods.length === 0 && !reach.googleUncertain) {
-    // An existing row is still a 409 (member_removed or conflict), not a 400.
-    if (await stmt(env.DB, EXISTING).bind(email).first())
+    // An existing row is still a 409 (conflict), not a 400.
+    const there = await stmt(env.DB, EXISTING).bind(email).first<{
+      status: string;
+    }>();
+    if (there && statusOf(there.status) !== "removed")
       await existingConflict(env, email);
     const details: InviteUnreachableDetails = {
       field: "email",
@@ -281,33 +322,129 @@ export async function inviteMember(
       details,
     );
   }
+  // A removed person (#2520): inviting them restores them as a fresh invite.
+  const gone = await stmt(env.DB, EXISTING).bind(email).first<{
+    id: string;
+    status: string;
+  }>();
+  if (gone && statusOf(gone.status) === "removed") {
+    // At most the role asked for: a guest invite restores a guest; a member
+    // invite restores a member (a guest row stays a guest); never an admin.
+    const restored = await restoreMember(
+      env,
+      gone.id,
+      inviter,
+      undefined,
+      isGuestInvite(input.role) ? "guest" : undefined,
+    );
+    const [back] = await getDb(env).batch([
+      getDb(env)
+        .update(users)
+        .set({ invitedAt: Date.now() })
+        .where(and(eq(users.id, gone.id), eq(users.status, "active")))
+        .returning(),
+      inviteCreateAuditByEmail(env, email, inviter.id, restored.role),
+    ]);
+    const row = back[0];
+    if (!row) return existingConflict(env, email);
+    return await invited(env, inviter, email, row, reach, ways, true, true);
+  }
+  // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
+  // invited_at and its own invite.create row (the existing role, as a first
+  // invite records it); the audit commits with the update, only when it hit.
+  const prior = await stmt(
+    env.DB,
+    "select role, invited_at as invitedAt from users where email = ?1",
+  )
+    .bind(email)
+    .first<{ role: string; invitedAt: number | null }>();
+  const [updated] = await getDb(env).batch([
+    getDb(env)
+      .update(users)
+      .set({ invitedAt: Date.now() })
+      .where(
+        and(
+          eq(users.email, email),
+          eq(users.status, "active"),
+          isNull(users.lastSeenAt),
+          isNotNull(users.invitedAt),
+          // Same who-may-manage rule as everywhere: only the owner (or the
+          // system) refreshes an admin's invite; anyone else gets the 409. Only a
+          // re-invite (an existing row) needs the check.
+          sql`(${prior ? adminsOk(inviter) : 1} = 1 or ${users.role} not in ('owner', 'admin'))`,
+        ),
+      )
+      .returning(),
+    inviteCreateAuditByEmail(env, email, inviter.id, prior?.role ?? input.role),
+  ]);
+  const again = updated[0];
   // Hosted billing: the first invite on a free instance passes only if the
   // 30-day trial starts (signed POST /trial/start, idempotent). Billing
   // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
   // is created. An address that already exists is the usual conflict, and
   // starts nothing.
   const plan = planOfMember(inviter);
-  if (plan?.trialEligible) {
+  if (plan?.trialEligible && !again) {
     if (await stmt(env.DB, EXISTING).bind(email).first())
       return existingConflict(env, email);
     await requireTrialStarted(env);
   }
-  const [row] = await insertUser(env, {
-    email,
-    name: "",
-    role: input.role,
-    createdAt: Date.now(),
-  })
-    .onConflictDoNothing({ target: users.email })
-    .returning();
+  // invite.create (ids and the role, never the address) commits with the
+  // row, and only when the insert made one.
+  let row = again;
+  if (!row) {
+    const [rows] = await getDb(env).batch([
+      insertUser(env, {
+        email,
+        name: "",
+        role: input.role,
+        createdAt: Date.now(),
+        invitedAt: Date.now(),
+      })
+        .onConflictDoNothing({ target: users.email })
+        .returning(),
+      inviteCreateAuditByEmail(env, email, inviter.id, input.role),
+    ]);
+    row = rows[0];
+  }
   if (!row) return existingConflict(env, email);
+  // A re-invite mails at most once per address per 10 minutes (the refresh
+  // itself always happens). sendEmail also caps invites per UTC day: the
+  // instance, 5 per recipient and the inviter's own budget.
+  const cooledDown =
+    !again ||
+    prior?.invitedAt == null ||
+    Date.now() - prior.invitedAt >= REINVITE_COOLDOWN_MS;
+  return invited(
+    env,
+    inviter,
+    email,
+    row,
+    reach,
+    ways,
+    Boolean(again),
+    cooledDown,
+  );
+}
+
+/** The invite email and result for a row an invite just wrote or refreshed. */
+async function invited(
+  env: Env,
+  inviter: Member,
+  email: string,
+  row: Parameters<typeof toMember>[0],
+  reach: Awaited<ReturnType<typeof inviteReach>>,
+  ways: LoginWay[],
+  reinvited: boolean,
+  cooledDown: boolean,
+): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
   const signInMethods: SignInProvider[] = reach.methods.length
     ? reach.methods
     : ["google"];
   let emailed = false;
-  if (emailEnabled(env)) {
+  if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
       .name;
     emailed = await sendEmail(
@@ -330,12 +467,21 @@ export async function inviteMember(
     );
   }
   return {
-    ...toMember(row),
-    emailed,
-    signInMethods,
-    ...(reach.methods.length === 0
-      ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
-      : {}),
+    reinvited,
+    result: {
+      ...toMember(row),
+      emailed,
+      signInMethods,
+      reach: { ways },
+      ...(reach.methods.length === 0
+        ? {
+            signIn: {
+              status: "uncertain",
+              reason: "outside_domains",
+            } as const,
+          }
+        : {}),
+    },
   };
 }
 
@@ -659,7 +805,12 @@ const RESTORE_TARGET = `id = ?1 and status = 'removed' and guest_lapsed = 0
   and role <> 'owner' and (role <> 'admin' or ?3 = 1)`;
 // An admin's restore: never a directory removal while sync manages the
 // install (?4 = 1), never a row whose address was released (?5, placeholder).
-const RESTORE = `${RESTORE_SET}
+// ?6 = 1: restore as a guest whatever the row held (an invite that asked for
+// a guest, #2520): never a higher role than was asked for.
+const RESTORE = `${RESTORE_SET.replace(
+  "role = case when role = 'guest' then",
+  "role = case when role = 'guest' or ?6 = 1 then",
+)}
   where ${RESTORE_TARGET} and (removed_by_sync = 0 or ?4 = 0) and email <> ?5`;
 // Directory sync's revive: only a directory removal (removed_by_sync = 1),
 // only while the row still holds Google subject ?5 (the same person, never a
@@ -695,6 +846,8 @@ export async function restoreMember(
   id: string,
   actor: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
+  /** An invite's role: "guest" restores them as a guest (never higher than asked). */
+  asRole?: "guest",
 ): Promise<Member> {
   // Hosted billing: bringing someone back adds a person, a team feature, so
   // it takes the invite's path (a free instance whose trial never ran passes
@@ -713,7 +866,14 @@ export async function restoreMember(
   if (row.email === placeholder(id)) throw addressReleased();
   if (plan?.trialEligible) await requireTrialStarted(env);
   const out = await env.DB.batch([
-    stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced, placeholder(id)),
+    stmt(env.DB, RESTORE).bind(
+      id,
+      Date.now(),
+      admins,
+      synced,
+      placeholder(id),
+      asRole === "guest" ? 1 : 0,
+    ),
     audit(env, "user.status", { type: "user", id }, userActor(actor.id), {
       reason: "admin_restore",
       detail: { status: "active" },
@@ -998,9 +1158,38 @@ export async function patchSettings(
   patch: SettingsPatch,
   opts: { spaces?: boolean; by?: AuditActor } = {},
 ): Promise<Settings> {
-  const writes = (Object.keys(KEY) as (keyof typeof KEY)[])
-    .filter((k) => patch[k] !== undefined)
-    .map((k) => stmt(env.DB, UPSERT_SETTING).bind(KEY[k], String(patch[k])));
+  const keys = (Object.keys(KEY) as (keyof typeof KEY)[]).filter(
+    (k) => patch[k] !== undefined,
+  );
+  const writes: D1PreparedStatement[] = [];
+  // settings.change: the keys that change, with old and new values. Name and
+  // default visibility are plain instance settings, no secrets. Read before
+  // the batch; the row is written only when a value differs now.
+  if (keys.length) {
+    const before = toSettings(await getSettingsKv(env));
+    const changed = keys.filter((k) => before[k] !== patch[k]);
+    if (changed.length)
+      writes.push(
+        audit(
+          env,
+          "settings.change",
+          { type: "settings", id: "instance" },
+          opts.by ?? SYSTEM,
+          {
+            detail: {
+              changes: Object.fromEntries(
+                changed.map((k) => [k, { from: before[k], to: patch[k] }]),
+              ),
+            },
+          },
+        ),
+      );
+  }
+  writes.push(
+    ...keys.map((k) =>
+      stmt(env.DB, UPSERT_SETTING).bind(KEY[k], String(patch[k])),
+    ),
+  );
   const smm = patch.spaceManagerMappings;
   if (opts.spaces && smm !== undefined)
     writes.push(

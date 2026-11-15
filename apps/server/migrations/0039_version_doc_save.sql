@@ -1,0 +1,1 @@
+ALTER TABLE `versions` ADD `doc_save` text;

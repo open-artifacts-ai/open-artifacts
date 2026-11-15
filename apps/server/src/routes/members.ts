@@ -18,9 +18,10 @@ import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { resetIdentity } from "../services/identity.js";
+import { reachForQuery } from "../services/login.js";
 import {
   eraseMember,
-  inviteMember,
+  inviteMemberOutcome,
   listMembers,
   patchMember,
   removeMember,
@@ -63,6 +64,14 @@ function requireDeparted(c: Context<AppEnv>): Member {
 const MEMBER = "/api/v1/members/:id";
 
 export function mountMembers(app: AppType): void {
+  // #2520: the ways in for one address, for the invite box.
+  app.get(R.memberReach, async (c) => {
+    requireManager(c);
+    const email = c.req.query("email");
+    if (!email) throw new ApiError("bad_request", "Missing email");
+    return c.json(await reachForQuery(c.env, email));
+  });
+
   app.get(R.members, async (c) => {
     requireManager(c);
     const q = MembersQuerySchema.safeParse(c.req.query());
@@ -72,15 +81,22 @@ export function mountMembers(app: AppType): void {
   });
 
   /**
-   * Invite; 201 with `emailed`. `emailed:false` after the 3 s send timeout
+   * Invite; 201 with `emailed`; 200 when an invited, never-signed-in row is re-invited (fresh clock, email again). `emailed:false` after the 3 s send timeout
    * means delivery isn't confirmed: the email may still arrive.
    */
+  // An address that belongs to a removed person is restored as a fresh invite
+  // (at most the role asked for: a guest invite restores a guest). One with no
+  // way in is refused first: 400 invite_unreachable, and not restored.
   app.post(R.members, async (c) => {
     const inviter = requireManager(c);
     const input = await jsonBody(c, MemberInviteSchema);
-    return c.json(await inviteMember(c.env, inviter, input), 201);
+    const out = await inviteMemberOutcome(c.env, inviter, input);
+    return c.json(out.result, out.reinvited ? 200 : 201);
   });
 
+  // Role change. An admin raises a guest to member here (a guest never
+  // becomes a member by logging in, a login domain or not, #2590); it is
+  // the one way, and it ends their sessions like any role change.
   app.patch(MEMBER, async (c) => {
     const actor = requireManager(c);
     const patch = await jsonBody(c, MemberPatchSchema);

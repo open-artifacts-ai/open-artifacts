@@ -10,6 +10,17 @@ export type VerifiedIdentity = {
   name: string | null;
   /** Verified tenant (Google `hd`), or null when the provider has none. */
   tenant: string | null;
+  /**
+   * The signature-checked token's own `hd`, whatever the install's domains
+   * (absent: tenant stands in). The only hd admit() judges evidence by.
+   */
+  hd?: string | null;
+  /**
+   * "email": admitted on strong evidence for its exact address although its
+   * hd is not a listed domain (#2520). It may only match an existing active
+   * row; it never creates one, never promotes a guest, never drifts.
+   */
+  bound?: "email";
   /** When the user last authenticated at the provider (ms), when it says. */
   authTime?: number | null;
 };

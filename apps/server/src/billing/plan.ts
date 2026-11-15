@@ -344,6 +344,13 @@ export const directoryPlanError = (tier?: string): ApiError =>
     tier ? { tier } : undefined,
   );
 
+/** Hosted: reading or exporting the audit log is Business only (#2458). */
+export const auditPlanError = (tier?: string): ApiError =>
+  new ApiError("plan_required", "The audit log is on the Business plan.", {
+    requires: "business",
+    ...(tier ? { tier } : {}),
+  });
+
 /** The refusal for a team-feature write under `lock`. */
 export function planError(lock: PlanLock): ApiError {
   const details: PlanRefusalDetails = { tier: lock.tier, reason: lock.reason };

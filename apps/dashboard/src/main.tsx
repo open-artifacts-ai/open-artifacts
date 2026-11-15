@@ -106,6 +106,21 @@ async function startMocks() {
     );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
+  // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);
+  // &sharedBy=none answers null.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/artifacts/:id", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as object;
+        return HttpResponse.json({
+          ...body,
+          sharedBy:
+            params.get("sharedBy") === "none" ? null : { name: "Ada Lovelace" },
+        });
+      }),
+    );
   if (role === "admin" || role === "member" || role === "guest")
     extra.push(
       http.get("*/api/v1/me", () =>
@@ -171,6 +186,24 @@ async function startMocks() {
           total: items.length,
         });
       }),
+    );
+  }
+  // ?mock=login&login=<scenario> (with ?hosted=1): #2520's login settings, see
+  // mockLogin.ts. Any other mock: a server without them (the Login tab hides).
+  {
+    const { LOGIN_SCENARIOS, loginAbsentHandlers, loginHandlers } =
+      await import("./mockLogin");
+    const pick = params.get("login") as (typeof LOGIN_SCENARIOS)[number] | null;
+    extra.push(
+      ...(params.get("mock") === "login"
+        ? loginHandlers(
+            pick && LOGIN_SCENARIOS.includes(pick) ? pick : "owner-off",
+            createHandlers({
+              hosted: parseHostedParam(params.get("hosted")) ?? {},
+            }),
+            () => new URLSearchParams(location.search).get("reauthed") === "1",
+          )
+        : loginAbsentHandlers()),
     );
   }
   // ?mock=restricted and ?mock=restricted-rows (with ?hosted=1): see mockRestricted.ts.
@@ -594,6 +627,8 @@ async function startMocks() {
     commentAsks: params.get("mock") === "asks" || params.get("asks") === "1",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
+    // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
+    commentDecisions: params.get("mock") === "decisions",
     // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
     commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
       params.get("passkey") ?? "",
@@ -629,6 +664,14 @@ async function startMocks() {
     commentersSignedIn: params.get("mock") === "signed-out",
     // ?mock=bus (#1293): the bus is on, with machines and agents.
     bus: params.get("mock") === "bus",
+    // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
+    // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
+    forYou:
+      params.get("mock") === "foryou"
+        ? ((["calm", "empty", "back", "error"] as const).find(
+            (v) => v === params.get("foryou"),
+          ) ?? "mixed")
+        : undefined,
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room
@@ -677,6 +720,16 @@ async function startMocks() {
       ),
     );
   }
+  // #2590 G2 (PROVISIONAL): ?glink=1 stands for the oa_glink cookie of a
+  // guest Google turned away (sam@partner.org); without it, /auth/code/link
+  // answers 404.
+  const { codeLinkHandlers } = await import("./mockCodeLink");
+  extra.push(
+    ...codeLinkHandlers(
+      params.get("glink") === "1" ? "sam@partner.org" : null,
+      () => mainHandlers,
+    ),
+  );
   await setupWorker(
     ...extra,
     ...mainHandlers,

@@ -55,6 +55,8 @@ export type FilterProps = {
   onAgent: (a: string | undefined) => void;
   onClear: () => void;
   onView: (v: "grid" | "list") => void;
+  /** #2590: a signed-in guest: no agent filter and no "Needs your answer". */
+  outsider?: boolean;
 };
 
 /** A single-choice switch: a toggle group that never deselects. */
@@ -122,67 +124,71 @@ export function Filters(p: FilterProps) {
           ))}
         </SelectContent>
       </Select>
-      <Select
-        value={p.via ? VIA : p.agent ? `${AGENT}${p.agent}` : ALL}
-        onValueChange={(v) => {
-          if (v === ALL) p.onAgent(undefined);
-          else if (v !== VIA) p.onAgent(v.slice(AGENT.length));
-        }}
-      >
-        <SelectTrigger
-          aria-label="Agent"
-          size="sm"
-          className={`max-w-full min-w-[140px] ${TEXT}`}
+      {!p.outsider && (
+        <Select
+          value={p.via ? VIA : p.agent ? `${AGENT}${p.agent}` : ALL}
+          onValueChange={(v) => {
+            if (v === ALL) p.onAgent(undefined);
+            else if (v !== VIA) p.onAgent(v.slice(AGENT.length));
+          }}
         >
-          {/* A connection's label can run long. The value is a flex box, where
+          <SelectTrigger
+            aria-label="Agent"
+            size="sm"
+            className={`max-w-full min-w-[140px] ${TEXT}`}
+          >
+            {/* A connection's label can run long. The value is a flex box, where
               text-overflow does nothing, so the text truncates in its own span. */}
-          <SelectValue>
-            <span className="block min-w-0 truncate">
-              {p.via?.label ?? p.agent ?? "All agents"}
-            </span>
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent position="popper">
-          <SelectItem value={ALL} className={TEXT}>
-            All agents
-          </SelectItem>
-          {p.via && (
-            <SelectItem value={VIA} className={TEXT}>
-              {p.via.label}
+            <SelectValue>
+              <span className="block min-w-0 truncate">
+                {p.via?.label ?? p.agent ?? "All agents"}
+              </span>
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent position="popper">
+            <SelectItem value={ALL} className={TEXT}>
+              All agents
             </SelectItem>
-          )}
-          {agents.map((a) => (
-            <SelectItem key={a} value={`${AGENT}${a}`} className={TEXT}>
-              {a}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {/* biome-ignore lint/a11y/useSemanticElements: a fieldset would bring its own border and legend */}
-      <div
-        role="group"
-        aria-label="Waiting on"
-        className="flex flex-wrap gap-[var(--oa-space-2)]"
-      >
-        {WAITING.map((o) => {
-          const on = (p.waiting ?? ALL) === o.value;
-          return (
-            <button
-              key={o.value}
-              type="button"
-              aria-pressed={on}
-              onClick={() =>
-                p.onWaiting(
-                  o.value === ALL ? undefined : (o.value as "needs_answer"),
-                )
-              }
-              className={`h-7 rounded-full border px-[var(--oa-space-3)] ${TEXT} transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${on ? "border-transparent bg-[var(--oa-accent)] text-[var(--oa-accent-text)]" : "border-input bg-background text-foreground hover:bg-muted"}`}
-            >
-              {o.label}
-            </button>
-          );
-        })}
-      </div>
+            {p.via && (
+              <SelectItem value={VIA} className={TEXT}>
+                {p.via.label}
+              </SelectItem>
+            )}
+            {agents.map((a) => (
+              <SelectItem key={a} value={`${AGENT}${a}`} className={TEXT}>
+                {a}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      {!p.outsider && (
+        // biome-ignore lint/a11y/useSemanticElements: a fieldset would bring its own border and legend
+        <div
+          role="group"
+          aria-label="Waiting on"
+          className="flex flex-wrap gap-[var(--oa-space-2)]"
+        >
+          {WAITING.map((o) => {
+            const on = (p.waiting ?? ALL) === o.value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                aria-pressed={on}
+                onClick={() =>
+                  p.onWaiting(
+                    o.value === ALL ? undefined : (o.value as "needs_answer"),
+                  )
+                }
+                className={`h-7 rounded-full border px-[var(--oa-space-3)] ${TEXT} transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${on ? "border-transparent bg-[var(--oa-accent)] text-[var(--oa-accent-text)]" : "border-input bg-background text-foreground hover:bg-muted"}`}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
       {(p.format || p.agent || p.via || p.waiting) && (
         <Button variant="ghost" size="sm" className={TEXT} onClick={p.onClear}>
           Clear filters

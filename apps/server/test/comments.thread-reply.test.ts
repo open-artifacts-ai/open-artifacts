@@ -75,7 +75,13 @@ beforeAll(() => {
 afterAll(() => {
   installDelivery(prev);
 });
-beforeEach(() => bus.clear());
+beforeEach(async () => {
+  bus.clear();
+  // #2559: the hourly mention limits are not what these tests are about.
+  await E.DB.prepare(
+    "delete from counters where key like 'notice:mention:%'",
+  ).run();
+});
 
 type U = { cookie: string; userId: string; member: Member; email: string };
 async function mk(prefix: string): Promise<U> {
@@ -141,11 +147,16 @@ const post = (id: string, u: U, body: object) =>
     method: "POST",
     body: { anchor: { kind: "note" }, body: "hello", ...body },
   });
-const reply = (id: string, tid: string, u: U, body: object = {}) =>
-  api(app, R.commentReplies(id, tid), u.cookie, {
+const reply = async (id: string, tid: string, u: U, body: object = {}) => {
+  // #2559: these tests count replies, not the hourly mention limits.
+  await E.DB.prepare(
+    "delete from counters where key like 'notice:mention:%'",
+  ).run();
+  return api(app, R.commentReplies(id, tid), u.cookie, {
     method: "POST",
     body: { body: "again", ...body },
   });
+};
 const threadReplies = () =>
   bus.sent.filter((x) => x.notice.coalesceKey.includes(":thread_reply:"));
 const names = () =>
@@ -272,7 +283,17 @@ describe("thread_reply notices (#1900)", () => {
       },
     );
     expect(threadReplies()).toHaveLength(0);
-    expect(bus.sent.map((x) => x.notice.to.name)).toEqual(["Pi"]);
+    // #2559: an agent's mention never wakes another person's agent (Pi is the owner's)...
+    expect(bus.sent.map((x) => x.notice.to.name)).toEqual([]);
+    // ...but still reaches the same person's other agents.
+    await agentReply(
+      s.id,
+      t.id,
+      agentWho(editor, "ns-editor", "Codex"),
+      editor,
+      { mentions: [{ key: s.codex }] },
+    );
+    expect(bus.sent.map((x) => x.notice.to.name)).toEqual(["Codex"]);
   });
 
   it("no second notice for the agent the same comment already mentioned", async () => {
@@ -617,7 +638,7 @@ describe("the publishing agent joins page-wide threads (#1968)", () => {
       short: null,
       capped,
     });
-    const me = { kind: "user", id: viewer.userId } as const;
+    const me = { kind: "user", id: viewer.userId, typed: true } as const;
     // The route sets `capped` from capsReads(cap): guest and restricted, never "plan".
     await addThread(E, art, me, as(true), { anchor: NOTE, body: "capped" });
     expect(bus.sent).toHaveLength(0);

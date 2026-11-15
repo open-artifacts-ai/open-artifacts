@@ -49,7 +49,7 @@ import {
   type Via,
   viaKey,
 } from "./agent-usage.js";
-import { type AuditActor, audit, userActor } from "./audit.js";
+import { type AuditActor, audit, auditText, userActor } from "./audit.js";
 import type {
   DeliveryOutcome,
   DeliveryScope,
@@ -126,6 +126,10 @@ export type BusHubRpc = {
   namesOf(
     identityIds: string[],
   ): Promise<{ identityId: string; name: string }[]>;
+  /** #2512: which of this member's agent identities wait on their owner, and since when (ms). */
+  waitingOf(
+    identityIds: string[],
+  ): Promise<{ identityId: string; since: number }[]>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(opts?: {
     away?: boolean;
@@ -438,8 +442,27 @@ export async function revokeBusMachine(
   userId: string,
   id: string,
 ): Promise<boolean> {
-  const [, row] = await env.DB.batch([
+  // machine.revoke: the machine's state is this D1 row (the hub only closes
+  // sockets), so the audit row shares the batch and lands only when the
+  // revoke changed a row: a repeat, or another member's id, writes none.
+  const was = await stmt(
+    env.DB,
+    "select label from bus_machines where id = ?1 and user_id = ?2",
+  )
+    .bind(id, userId)
+    .first<{ label: string }>();
+  const [, , row] = await env.DB.batch([
     stmt(env.DB, REVOKE_ONE).bind(id, userId, Date.now()),
+    audit(
+      env,
+      "machine.revoke",
+      { type: "bus_machine", id },
+      userActor(userId),
+      {
+        when: { sql: "changes() > 0", args: [] },
+        detail: { label: auditText(was?.label ?? "") },
+      },
+    ),
     stmt(env.DB, ONE_OF).bind(id, userId),
   ]);
   const m = row?.results[0] as
@@ -540,6 +563,40 @@ export async function agentNamesOf(
     for (const r of rows ?? []) out.set(r.identityId, r.name);
   } catch (e) {
     logError("bus_names_lookup_failed", e);
+  }
+  return out;
+}
+
+/**
+ * #2512: which of `userId`'s own agents (identity ids) wait on their owner now,
+ * with the time (ms) they started, from that member's hub only. A miss, a slow
+ * or failing hub give an empty map; never throws.
+ */
+export async function agentsWaitingOn(
+  env: Env,
+  userId: string,
+  identityIds: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  try {
+    if (!busOn(env) || identityIds.length === 0) return out;
+    const rows = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub) return null;
+        const chunks: string[][] = [];
+        for (let i = 0; i < identityIds.length; i += NAMES_OF_MAX)
+          chunks.push(identityIds.slice(i, i + NAMES_OF_MAX));
+        return (
+          await Promise.all(chunks.map((ids) => hub.waitingOf(ids)))
+        ).flat();
+      })(),
+      LINK_LOOKUP_MS,
+    );
+    for (const r of rows ?? []) out.set(r.identityId, r.since);
+  } catch (e) {
+    logError("bus_waiting_lookup_failed", e);
   }
   return out;
 }

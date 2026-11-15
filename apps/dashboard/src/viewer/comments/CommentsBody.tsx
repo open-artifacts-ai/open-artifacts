@@ -61,6 +61,7 @@ import {
   removeMention,
   showsAskBody,
 } from "./asks";
+import { CommentsTabs, DecisionsView } from "./Decisions";
 import {
   focusRow,
   holdAnchor,
@@ -820,6 +821,7 @@ function Composer({
       {!canMention &&
         !guest &&
         !capped &&
+        !api.outsider &&
         initial === "" &&
         /(^|\s)@/.test(text) && (
           <p className={`${TXT} text-muted-foreground`}>
@@ -1601,14 +1603,17 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                 });
               }}
               extra={
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={status.isPending}
-                  onClick={toggle}
-                >
-                  {resolved ? "Reopen" : "Resolve"}
-                </Button>
+                // #2590: an outsider doesn't resolve threads.
+                api.outsider ? undefined : (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={status.isPending}
+                    onClick={toggle}
+                  >
+                    {resolved ? "Reopen" : "Resolve"}
+                  </Button>
+                )
               }
             />
           </>
@@ -1625,14 +1630,16 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               >
                 Reply
               </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={status.isPending}
-                onClick={toggle}
-              >
-                {resolved ? "Reopen" : "Resolve"}
-              </Button>
+              {!api.outsider && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={status.isPending}
+                  onClick={toggle}
+                >
+                  {resolved ? "Reopen" : "Resolve"}
+                </Button>
+              )}
             </div>
           )
         )}
@@ -1890,8 +1897,10 @@ export function CommentsBody({
   const ordered = visible(api.ordered);
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
+  const decisions = api.view === "decisions";
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
-  const stickyRow = compact && (forMe.length > 0 || resolvedCount > 0);
+  const stickyRow =
+    compact && !decisions && (forMe.length > 0 || resolvedCount > 0);
   // #2118: one composer at a time: a quote open hides the whole-page box
   // (mounted still, so a typed note survives) until Cancel or send.
   const draftOpen = api.draft != null && api.canComment;
@@ -1923,15 +1932,12 @@ export function CommentsBody({
       {heading && (
         <div
           data-comments-header=""
-          className="sticky top-0 z-20 -mx-4 -mt-4 flex items-baseline justify-between gap-2 bg-[var(--oa-bg)] px-4 pt-4 pb-2"
+          className="sticky top-0 z-20 -mx-4 -mt-4 flex items-baseline justify-between gap-2 border-b border-b-border bg-[var(--oa-bg)] px-4 pt-4"
         >
-          <h2 className={`m-0 font-semibold ${CTXT}`}>Comments</h2>
-          {api.listedOpen > 0 && (
-            <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
-          )}
+          <CommentsTabs api={api} />
         </div>
       )}
-      {(forMe.length > 0 || resolvedCount > 0) && (
+      {!decisions && (forMe.length > 0 || resolvedCount > 0) && (
         // #2486: with no band in the compact panel this row sticks, so the
         // asks pill stays in reach; it is the header the scroll code steps under.
         <div
@@ -1963,9 +1969,9 @@ export function CommentsBody({
           )}
         </div>
       )}
-      <Tools api={api} />
-      <LostDrafts api={api} />
-      {api.draft && api.canComment && !api.pinBeside && (
+      {!decisions && <Tools api={api} />}
+      {!decisions && <LostDrafts api={api} />}
+      {!decisions && api.draft && api.canComment && !api.pinBeside && (
         <NewThread
           key={JSON.stringify(
             "pin" in api.draft ? api.draft.pin : api.draft.anchor,
@@ -1977,8 +1983,8 @@ export function CommentsBody({
           is not shown there. Hidden with CSS, never unmounted: a typed draft has
           to survive a pin tap, and dragging the sheet up brings the box back. */}
       <div
-        hidden={draftOpen}
-        className={short || draftOpen ? "hidden" : "contents"}
+        hidden={draftOpen || decisions}
+        className={short || draftOpen || decisions ? "hidden" : "contents"}
       >
         {api.canComment ? (
           <NoteComposer api={api} />
@@ -1986,54 +1992,66 @@ export function CommentsBody({
           api.guest && <SignInLink box />
         )}
       </div>
-      {api.error != null && !api.threads.length ? (
-        <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
-          <p>Couldn't load comments.</p>
-          <Button
-            size="xs"
-            variant="outline"
-            className="self-start"
-            onClick={api.refetch}
-          >
-            Retry
-          </Button>
-        </div>
-      ) : api.loading ? (
-        <p className={`${TXT} ${MUTED}`} aria-busy="true">
-          Loading comments…
-        </p>
-      ) : none ? (
-        <p className={`${TXT} ${MUTED}`}>
-          {api.pinFormat === "image" && api.canComment
-            ? "No comments yet. Place a pin to add one."
-            : textFormat && api.canComment
-              ? "No comments yet. Select text to add one."
-              : "No comments yet."}
-        </p>
-      ) : (
-        <>
-          <ul className="m-0 flex list-none flex-col gap-3 p-0">
-            {ordered.map((t) => (
-              <ThreadCard key={t.id} t={t} api={api} />
-            ))}
-          </ul>
-          {orphans.length > 0 && (
-            <section
-              aria-labelledby="oa-orphans"
-              className="flex flex-col gap-3"
+      <div
+        role="tabpanel"
+        id={`oa-panel-${api.view}`}
+        aria-labelledby={`oa-tab-${api.view}`}
+        className="contents"
+      >
+        {api.error != null && !api.threads.length ? (
+          <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
+            <p>Couldn't load comments.</p>
+            <Button
+              size="xs"
+              variant="outline"
+              className="self-start"
+              onClick={api.refetch}
             >
-              <h3 id="oa-orphans" className={`${TXT} font-medium`}>
-                On earlier text
-              </h3>
-              <ul className="m-0 flex list-none flex-col gap-3 p-0">
-                {orphans.map((t) => (
-                  <ThreadCard key={t.id} t={t} api={api} />
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
-      )}
+              Retry
+            </Button>
+          </div>
+        ) : api.loading ? (
+          <p className={`${TXT} ${MUTED}`} aria-busy="true">
+            Loading comments…
+          </p>
+        ) : decisions ? (
+          <DecisionsView
+            api={api}
+            renderThread={(t) => <ThreadCard key={t.id} t={t} api={api} />}
+          />
+        ) : none ? (
+          <p className={`${TXT} ${MUTED}`}>
+            {api.pinFormat === "image" && api.canComment
+              ? "No comments yet. Place a pin to add one."
+              : textFormat && api.canComment
+                ? "No comments yet. Select text to add one."
+                : "No comments yet."}
+          </p>
+        ) : (
+          <>
+            <ul className="m-0 flex list-none flex-col gap-3 p-0">
+              {ordered.map((t) => (
+                <ThreadCard key={t.id} t={t} api={api} />
+              ))}
+            </ul>
+            {orphans.length > 0 && (
+              <section
+                aria-labelledby="oa-orphans"
+                className="flex flex-col gap-3"
+              >
+                <h3 id="oa-orphans" className={`${TXT} font-medium`}>
+                  On earlier text
+                </h3>
+                <ul className="m-0 flex list-none flex-col gap-3 p-0">
+                  {orphans.map((t) => (
+                    <ThreadCard key={t.id} t={t} api={api} />
+                  ))}
+                </ul>
+              </section>
+            )}
+          </>
+        )}
+      </div>
       {keep.pill === "down" && (
         <NewReplyPill
           dir="down"

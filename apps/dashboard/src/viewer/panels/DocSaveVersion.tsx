@@ -13,7 +13,7 @@ import {
 } from "../doc/versions";
 import { SM, TXT } from "../ui";
 
-/** The server's limit on a version name (PROVISIONAL, #2496). */
+/** The server's limit on a version name (DocSaveVersionBodySchema, #2496). */
 const MAX_NAME = 100;
 
 /**

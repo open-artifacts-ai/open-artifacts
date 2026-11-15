@@ -77,6 +77,8 @@ export const ERROR_CODES = [
   // Ask deciders (#2381).
   "not_decider",
   "already_decided",
+  "already_replaced",
+  "replaced",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -86,6 +88,11 @@ export const ERROR_CODES = [
   "use_edit_doc",
   // Collaborative docs (#1100): a self-host needs Workers Paid for docs.
   "docs_need_paid",
+  // Collaborative docs (#1100): docs are not available on this instance yet.
+  "docs_unavailable",
+  // Login settings (#2520): PUT R.settings/login.
+  "domain_unproven",
+  "apply_pending",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -214,6 +221,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   not_decider: 403,
   /** #2381: the decider already picked, so the decision cannot be taken back. */
   already_decided: 409,
+  /** #2323: another ask already replaces that ask. */
+  already_replaced: 409,
+  /** #2323: the ask was replaced by a newer one, so it takes no more picks. */
+  replaced: 409,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */
@@ -224,6 +235,12 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   use_edit_doc: 400,
   /** Publishing format "doc" on a self-host whose PLAN is not paid (#1100). Nothing is published. */
   docs_need_paid: 400,
+  /** Docs are not available on this instance yet (#1100): creating or changing one is refused with the next step. Nothing is published. */
+  docs_unavailable: 400,
+  /** PUT settings/login (#2520): the owner's login doesn't prove that domain is their Google Workspace's; details DomainUnprovenDetails. */
+  domain_unproven: 403,
+  /** PUT settings/login (#2520): refused, an earlier change is still being applied (a hosted redeploy, about a minute). */
+  apply_pending: 409,
 };
 
 /**
@@ -309,3 +326,7 @@ export const DATA_EDITORS_ONLY_MESSAGE =
 
 export const QUOTA_MESSAGE =
   "Daily free-plan limit reached; resets at 00:00 UTC";
+
+/** 403 domain_unproven details (#2520): the domain the owner's login didn't prove. */
+export const DomainUnprovenDetailsSchema = z.object({ domain: z.string() });
+export type DomainUnprovenDetails = z.infer<typeof DomainUnprovenDetailsSchema>;

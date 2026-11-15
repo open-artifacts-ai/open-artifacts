@@ -14,10 +14,12 @@ import {
   BusRoleProposeInputSchema,
   CreateUploadInputSchema,
   DATA_WRITERS_NOTE,
+  EditDocInputSchema,
   GetArtifactInputSchema,
   IdInputSchema,
   LIMITS,
   ListCommentsInputSchema,
+  ListQueryNoDocSchema,
   ListQuerySchema,
   ListSpacesInputSchema,
   ListVersionsInputSchema,
@@ -62,7 +64,7 @@ export const TOOL_DEFS = [
   },
   {
     name: "list_artifacts",
-    inputSchema: ListQuerySchema,
+    inputSchema: ListQueryNoDocSchema,
     example: { scope: "mine", format: "html", limit: 10 },
     description:
       "Open Artifacts: List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent, agentVia (one of your own connections, g:<grantId> or t:<tokenId>) or updatedSince; page with cursor.",
@@ -87,6 +89,23 @@ export const TOOL_DEFS = [
     example: { id: ID, version: 2 },
     description:
       "Open Artifacts: Restore an earlier version by publishing a copy of it as the new latest version.",
+  },
+  {
+    name: "edit_doc",
+    inputSchema: EditDocInputSchema,
+    example: {
+      id: ID,
+      ops: [
+        { op: "replace", quote: "Revenue is up.", with: "Revenue is up 12%." },
+        {
+          op: "insert",
+          after: "Revenue is up 12%.",
+          markdown: "\n\nCosts held flat.",
+        },
+      ],
+    },
+    description:
+      "Open Artifacts: Edit a doc (an artifact with format doc) with small anchored operations; people may be typing in it, and their edits merge with yours. Read it first with get_artifact, then send only what changes, up to 50 operations per call, applied together or not at all. Operations: { op: 'replace', quote, with }; { op: 'insert', after | before: quote, markdown } or { op: 'insert', at: 'start' | 'end', markdown }; { op: 'delete', quote }; { op: 'format', quote, mark } (inline: bold, italic, strike, code, link with href; block: paragraph, heading1-3, blockquote, codeBlock, bulletList, orderedList, taskList; remove: true takes an inline mark off). A quote is the text people see, copied from the doc, and must match exactly one place; add `prefix` and `suffix` (the text right before and after) to pick one when it matches several (quote_ambiguous; quote_not_found names the closest text). Do not rewrite the whole doc: a whole-content publish to a doc is refused with use_edit_doc. If people had unsaved edits, a version is saved first. Optional `expectedVersion` (the version you read) refuses with version_conflict when another version is current. Returns the version, size in bytes and what each operation changed. Needs edit access.",
   },
   {
     name: "share_artifact",
@@ -197,7 +216,7 @@ export const TOOL_DEFS = [
     inputSchema: AddCommentInputSchema,
     example: { id: ID, body: "Is this figure for Q3?" },
     description:
-      'Open Artifacts: comment on an artifact you can open. Without `threadId` it starts a thread: `anchor` is { kind: "note" } (the default, the whole artifact), a text anchor { kind: "text", exact, prefix, suffix } (on html, a quote the stored page does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side, and no block hint) or a pin. With `threadId` it replies (no anchor). `body` is 1 to 2,000 characters. Subject to the same rate limits as the web app (rate_limited: wait, then retry). `ask` turns the comment into a question put to people or agents (owner and editors only; forbidden otherwise): { question, options: [{ id, label, detail?, action? }], recommended?: { optionId, why }, to: [{ key }] } with `to` keys naming agents on the artifact or people who can read it; it works on a new thread or a reply. Addressees answer with one option. Set `action` (merge, deploy, delete, share, public or command) on an option that carries out that action. The server then sets `ask.confirm: "passkey"` when the person asked wants a passkey for it: they pick in the web app with their passkey, and a pick made any other way is refused. Read `ask.confirm` and `ask.answer.verified` from the server; never send them. `ask.decider: { key }` names who decides (a person who can edit the page; default your own user; never on an ask that names an action). Your own user stays on the ask and can take it back. Everyone else asked weighs in: `ask.picks` lists each latest pick by person, `ask.answer` is the decision (the decider\'s pick) only.',
+      'Open Artifacts: comment on an artifact you can open. Without `threadId` it starts a thread: `anchor` is { kind: "note" } (the default, the whole artifact), a text anchor { kind: "text", exact, prefix, suffix } (on html, a quote the stored page does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side, and no block hint) or a pin. With `threadId` it replies (no anchor). `body` is 1 to 2,000 characters. Subject to the same rate limits as the web app (rate_limited: wait, then retry). `ask` turns the comment into a question put to people or agents (owner and editors only; forbidden otherwise): { question, options: [{ id, label, detail?, action? }], recommended?: { optionId, why }, to: [{ key }] } with `to` keys naming agents on the artifact or people who can read it; it works on a new thread or a reply. Addressees answer with one option. Set `action` (merge, deploy, delete, share, public or command) on an option that carries out that action. The server then sets `ask.confirm: "passkey"` when the person asked wants a passkey for it: they pick in the web app with their passkey, and a pick made any other way is refused. Read `ask.confirm` and `ask.answer.verified` from the server; never send them. `ask.decider: { key }` names who decides (a person who can edit the page; default your own user; never on an ask that names an action). Your own user stays on the ask and can take it back. `ask.replaces: <comment id>` marks an earlier ask you posted yourself as replaced by this one (same artifact; 409 already_replaced when another ask replaces it). Everyone else asked weighs in: `ask.picks` lists each latest pick by person, `ask.answer` is the decision (the decider\'s pick) only.',
   },
   {
     name: "resolve_comment",
@@ -290,6 +309,8 @@ export const toolConfig = <N extends ToolName>(
     // A deployment with docs on (DOCS_ENABLED) takes the schema that names doc.
     inputSchema: (docs && name === "publish_artifact"
       ? PublishToolInputSchema
-      : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
+      : docs && name === "list_artifacts"
+        ? ListQuerySchema
+        : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

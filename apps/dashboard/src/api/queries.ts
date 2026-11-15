@@ -149,11 +149,21 @@ export const useArtifacts = (q: ListQueryInput) =>
     queryFn: ({ signal }) =>
       api.get(withQuery(R.artifacts, q), ArtifactPage, signal),
   });
+/**
+ * PROVISIONAL (#2590): GET R.artifact gains `sharedBy` for a guest viewer, in
+ * OA Backend's draft contract. TODO(#2590): drop this once @oa/shared has it.
+ */
+export const ArtifactViewSchema = ArtifactSummarySchema.extend({
+  /** Who shared it with this guest viewer; null or absent otherwise. */
+  sharedBy: z.object({ name: z.string() }).nullable().optional(),
+});
+export type ArtifactView = z.infer<typeof ArtifactViewSchema>;
+
 export const useArtifact = (id: string) =>
   useQuery({
     queryKey: qk.artifact(id),
     queryFn: ({ signal }) =>
-      api.get(R.artifact(id), ArtifactSummarySchema, signal),
+      api.get(R.artifact(id), ArtifactViewSchema, signal),
   });
 export const useVersions = (id: string, opts?: { enabled?: boolean }) =>
   useQuery({
@@ -490,7 +500,7 @@ export const useRestoreVersion = (id: string) =>
     () => [...artifactKeys(id)(), qk.versions(id)],
   );
 /**
- * PROVISIONAL (#1100, #2496): a doc's "Save version" (a named version of what
+ * #1100 (#2496): a doc's "Save version" (a named version of what
  * its room holds now). The room also broadcasts a saved frame.
  */
 export const useDocSaveVersion = (id: string) =>
@@ -505,7 +515,7 @@ export const useDocSaveVersion = (id: string) =>
     () => [...artifactKeys(id)(), qk.versions(id)],
   );
 /**
- * PROVISIONAL (#1100, #2496 / #2140): restore a doc version through its room,
+ * #1100 (#2140): restore a doc version through its room,
  * which saves unsaved edits first and applies the restore live for everyone.
  */
 export const useDocRestore = (id: string) =>

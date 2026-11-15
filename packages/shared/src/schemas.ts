@@ -392,6 +392,31 @@ export const ArtifactPatchResultSchema = ArtifactSummarySchema.extend({
 });
 export type ArtifactPatchResult = z.infer<typeof ArtifactPatchResultSchema>;
 
+/**
+ * How the room saved a doc version (#1100): `auto` (a pause, 30 minutes, the
+ * last editor leaving), `named` (Save version), `before_agent` (people's
+ * edits saved before an agent edited; `by` is that agent) or `restore`.
+ * `by`: an agent ref when an agent, else the person's user ref.
+ */
+export const DocSaveSchema = z.object({
+  kind: z.enum(["auto", "named", "before_agent", "restore"]),
+  by: z.union([AgentRefSchema, UserRefSchema]).optional(),
+});
+export type DocSave = z.infer<typeof DocSaveSchema>;
+
+/** The body of POST R.docSaveVersion (#2496). No name: the server names it "Version {n}". */
+export const DocSaveVersionBodySchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+});
+export type DocSaveVersionBody = z.infer<typeof DocSaveVersionBodySchema>;
+
+/** What R.docSaveVersion and R.docRestore answer. */
+export const DocVersionResultSchema = z.object({
+  /** The version the call saved (the restore's "Restored v{n}" version). */
+  version: z.number().int(),
+});
+export type DocVersionResult = z.infer<typeof DocVersionResultSchema>;
+
 export const VersionInfoSchema = z.object({
   version: z.number().int(),
   message: z.string().nullable(),
@@ -410,44 +435,10 @@ export const VersionInfoSchema = z.object({
    * Pins carry the hash the server stamped from the same bytes (#1490).
    */
   contentHash: z.string().nullable(),
-  /**
-   * PROVISIONAL (#1100, OA Backend's marker, coming in the edit_doc PR): how
-   * a doc version was saved. See DocSaveSchema. Absent on other artifacts,
-   * and from servers that don't send it yet.
-   */
-  docSave: z.lazy(() => DocSaveSchema).optional(),
+  /** Docs only: how the room saved this version. Absent for other artifacts. */
+  docSave: DocSaveSchema.optional(),
 });
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
-
-/**
- * PROVISIONAL (#1100, Backend's marker): `kind` "auto" (saved by itself: a
- * pause, every 30 minutes, the last editor leaving), "named" (Save version;
- * the name is the version's `message`), "before_agent" (saved by itself
- * just before an agent edits; `by` is that agent) or "restore" (a restore;
- * `message` "Restored v3"). `by`: who, in the versions' existing ref shapes,
- * an agent's (AgentRef) or a person's (UserRef).
- */
-export const DocSaveSchema = z.object({
-  kind: z.enum(["auto", "named", "before_agent", "restore"]),
-  by: z.union([AgentRefSchema, UserRefSchema]).optional(),
-});
-export type DocSave = z.infer<typeof DocSaveSchema>;
-
-/**
- * PROVISIONAL (#1100, #2496): the body of POST R.docSaveVersion. No name:
- * the server names it "Version {n}".
- */
-export const DocSaveVersionBodySchema = z.object({
-  name: z.string().trim().min(1).max(100).optional(),
-});
-export type DocSaveVersionBody = z.infer<typeof DocSaveVersionBodySchema>;
-
-/** PROVISIONAL (#1100, #2496): what R.docSaveVersion and R.docRestore answer. */
-export const DocVersionResultSchema = z.object({
-  /** The version the call saved (the restore's "Restored v{n}" version). */
-  version: z.number().int(),
-});
-export type DocVersionResult = z.infer<typeof DocVersionResultSchema>;
 
 /**
  * A connection, as `versions.agent_via` records it: `g:<grantId>` (an OAuth
@@ -462,35 +453,42 @@ export const AgentViaSchema = z.string().regex(/^[gt]:[A-Za-z0-9_-]{1,64}$/);
  * caller has a role in. spaceId narrows any scope; another user's personal
  * space is 400 space_personal.
  */
-export const ListQuerySchema = z
-  .object({
-    scope: z
-      .enum(["mine", "shared", "team", "all", "space", "spaces"])
-      .default("all"),
-    /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
-    spaceId: z.string().optional(),
-    format: FormatSchema.optional(),
-    visibility: VisibilitySchema.optional(),
-    /** An owner's email, or the literal "me" for the caller. */
-    owner: z.string().optional(),
-    agent: z.string().optional(),
-    q: z.string().optional(),
-    updatedSince: z.string().optional(),
-    cursor: z.string().optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(25),
-    includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
-    /** #1535: needs_answer = open asks addressed to the caller. */
-    filter: z.enum(["needs_answer"]).optional(),
-    /**
-     * Artifacts with any version from this connection (AgentViaSchema). Only
-     * the caller's own grant or token matches; any other is an empty page.
-     */
-    agentVia: AgentViaSchema.optional(),
-  })
-  .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
-    message: 'scope "space" requires spaceId',
-    path: ["spaceId"],
-  });
+const listQuery = (format: typeof FormatSchema) =>
+  z
+    .object({
+      scope: z
+        .enum(["mine", "shared", "team", "all", "space", "spaces"])
+        .default("all"),
+      /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
+      spaceId: z.string().optional(),
+      format: format.optional(),
+      visibility: VisibilitySchema.optional(),
+      /** An owner's email, or the literal "me" for the caller. */
+      owner: z.string().optional(),
+      agent: z.string().optional(),
+      q: z.string().optional(),
+      updatedSince: z.string().optional(),
+      cursor: z.string().optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+      /** #1535: needs_answer = open asks addressed to the caller. */
+      filter: z.enum(["needs_answer"]).optional(),
+      /**
+       * Artifacts with any version from this connection (AgentViaSchema). Only
+       * the caller's own grant or token matches; any other is an empty page.
+       */
+      agentVia: AgentViaSchema.optional(),
+    })
+    .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
+      message: 'scope "space" requires spaceId',
+      path: ["spaceId"],
+    });
+export const ListQuerySchema = listQuery(FormatSchema);
+/** ListQuerySchema without the doc format filter, while docs are unavailable (#2140). */
+export const ListQueryNoDocSchema = listQuery(
+  z.enum(STORED_FORMATS) as unknown as typeof FormatSchema,
+);
+
 export type ListQuery = z.infer<typeof ListQuerySchema>;
 export type ListQueryInput = z.input<typeof ListQuerySchema>;
 
@@ -541,15 +539,47 @@ export const ShareSchema = z.object({
 export type Share = z.infer<typeof ShareSchema>;
 
 /**
+ * One way an address can log in here (#2520).
+ * - google: Google works now (Gmail, or an address in the login domains);
+ * - google_workspace: works if the address is a Google Workspace account on
+ *   its own domain;
+ * - google_after_code: a personal Google account works after a one-time
+ *   code to the address, first login only;
+ * - email_code: an email code alone.
+ */
+export const LoginWaySchema = z.enum([
+  "google",
+  "google_workspace",
+  "google_after_code",
+  "email_code",
+]);
+export type LoginWay = z.infer<typeof LoginWaySchema>;
+
+/** The ways in for one address (GET R.memberReach, MemberInviteResult.reach). */
+export const InviteReachSchema = z.object({
+  /** [] = this address can't log in here. */
+  ways: z.array(LoginWaySchema),
+  /** The address belongs to a removed person (ISO date); inviting restores them. */
+  removed: z.object({ at: z.string() }).optional(),
+});
+export type InviteReach = z.infer<typeof InviteReachSchema>;
+
+/**
  * ShareResult.recipient: present only when the recipient can't sign in on
  * this install yet (the share still applies). needs_invite: in a verified
  * domain on an invite-only install, so an admin must invite them as a
  * member; outside_domains: outside the verified domains and no guest
- * sign-in is offered (see InviteUnreachableReasonSchema).
+ * sign-in is offered (see InviteUnreachableReasonSchema); workspace_only:
+ * only a Google Workspace account at that address can sign in (#2590).
  */
 export const ShareRecipientSchema = z.object({
   canSignIn: z.literal(false),
-  reason: z.enum(["needs_invite", "outside_domains", "no_sign_in_method"]),
+  reason: z.enum([
+    "needs_invite",
+    "outside_domains",
+    "no_sign_in_method",
+    "workspace_only",
+  ]),
 });
 export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
 
@@ -565,6 +595,8 @@ export const ShareResultSchema = ShareSchema.extend({
    * copy and the email agree. Sent by direct-sign-in and Access installs.
    */
   signInMethods: z.array(SignInProviderIdSchema).optional(),
+  /** The ways in for the recipient, [] when nothing admits them (#2590). */
+  reach: InviteReachSchema.optional(),
 });
 export type ShareResult = z.infer<typeof ShareResultSchema>;
 
@@ -600,6 +632,12 @@ export const MemberSchema = z.object({
   /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
   personalArtifacts: z.boolean().optional(),
   /**
+   * GET R.members: a suspended or removed member with any artifact in their
+   * personal space, trash included (what R.memberTransfer counts), so a client
+   * asks for a transfer summary only for them. Absent otherwise.
+   */
+  transferable: z.boolean().optional(),
+  /**
    * GET R.members (#1146): true when removing this person can be undone by
    * directory sync, which would bring their address back as a new, empty
    * account (Google sync on and a Workspace connected, no Google link, an
@@ -609,7 +647,10 @@ export const MemberSchema = z.object({
 });
 export type Member = z.infer<typeof MemberSchema>;
 
-export const MemberRoleInputSchema = RoleSchema.exclude(["owner", "guest"]);
+/** The roles an invite may name (#2520: a guest invite too). */
+export const MemberRoleInputSchema = RoleSchema.exclude(["owner"]);
+/** The roles a role change may name: an invite's, but never guest. */
+export const MemberPatchRoleSchema = RoleSchema.exclude(["owner", "guest"]);
 
 export const MemberInviteSchema = z.strictObject({
   email: z.string().email(),
@@ -641,11 +682,13 @@ export const MemberInviteResultSchema = MemberSchema.extend({
    * (["google"] when signIn is uncertain). The same list the email uses.
    */
   signInMethods: z.array(SignInProviderIdSchema).optional(),
+  /** The ways in for this address (#2520). */
+  reach: InviteReachSchema.optional(),
 });
 export type MemberInviteResult = z.infer<typeof MemberInviteResultSchema>;
 
 export const MemberPatchSchema = z.strictObject({
-  role: MemberRoleInputSchema,
+  role: MemberPatchRoleSchema,
 });
 export type MemberPatch = z.infer<typeof MemberPatchSchema>;
 
@@ -1455,6 +1498,32 @@ export const RestoreVersionInputSchema = z.strictObject({
 });
 export type RestoreVersionInput = z.infer<typeof RestoreVersionInputSchema>;
 
+/**
+ * edit_doc (#1100): small anchored operations on a doc, applied through its
+ * room. The operations are validated by @oa/doc-ops (too_many_ops,
+ * invalid_op, quote_not_found, ...), so here each is only an object.
+ */
+export const EditDocBodySchema = z.strictObject({
+  ops: z.array(z.record(z.string(), z.unknown())).min(1).max(50),
+  expectedVersion: z.number().int().min(1).optional(),
+});
+export type EditDocBody = z.infer<typeof EditDocBodySchema>;
+
+export const EditDocInputSchema = EditDocBodySchema.extend({ id: IdSchema });
+export type EditDocInput = z.infer<typeof EditDocInputSchema>;
+
+/** edit_doc's result: the version the edit sits on, the doc's stored bytes, and what each operation changed. */
+export interface EditDocResult {
+  id: string;
+  /** The artifact's current version. Edits show in the next saved version. */
+  version: number;
+  bytes: number;
+  applied: number;
+  /** A version saved first, because people had unsaved edits. */
+  savedVersion?: number;
+  changes: unknown[];
+}
+
 export const ShareArtifactInputSchema = ShareInputSchema.extend({
   id: IdSchema,
 });
@@ -1647,3 +1716,29 @@ export const PasskeyChallengeSchema = z.object({
   expiresAt: z.string(),
 });
 export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;
+
+/** GET R.loginSettings (#2520). */
+export const LoginSettingsSchema = z.object({
+  /** The login domains (AUTH_DOMAINS). */
+  domains: z.array(z.string()),
+  /** Anyone at a login domain can join (AUTH_DOMAIN_JOIN). */
+  autoJoin: z.boolean(),
+  /** The caller may change these here. */
+  editable: z.boolean(),
+  /** The domain the owner could add now: their token hd at their last Google login; null for a Gmail owner. */
+  provable: z.string().nullable(),
+  /** Active people whose address is in the login domains, however they came in (invited, joined or shared). */
+  joined: z.number().int().nonnegative(),
+  /** The caller has answered the first-invite question (per person). */
+  firstInviteSeen: z.boolean(),
+  /** A change was accepted and is still being applied. */
+  applying: z.boolean().optional(),
+});
+export type LoginSettings = z.infer<typeof LoginSettingsSchema>;
+
+/** PUT R.loginSettings body. */
+export const LoginSettingsPutSchema = z.strictObject({
+  autoJoin: z.boolean(),
+  domains: z.array(z.string().min(1).max(253)).max(20),
+});
+export type LoginSettingsPut = z.infer<typeof LoginSettingsPutSchema>;

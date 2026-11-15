@@ -59,6 +59,7 @@ import {
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FsTip, FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
+import { GuestBar, GuestOffer, useFirstCommentOffer } from "./guest";
 import { FullLive, GoneBanner, LiveAnnouncer, TitleLive } from "./LiveChip";
 import {
   createLimiter,
@@ -167,6 +168,7 @@ function Viewer({
   role,
   hosted,
   plan,
+  org = "",
   chromeless,
   colState,
   slot,
@@ -208,6 +210,8 @@ function Viewer({
   /** The signed-in install is hosted (Me.instance.hosted). */
   hosted: boolean;
   plan: Me["instance"]["plan"] | undefined;
+  /** #2509: the instance's name, which a team badge shows. */
+  org?: string;
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
@@ -279,6 +283,7 @@ function Viewer({
     // #2019: a new pin's box opens beside its flag, except on a phone or full screen.
     besideOk: surface !== "dialog",
     viewerName: viewer?.name ?? viewer?.email ?? null,
+    outsider: authed && role === "guest",
   });
   // The card being read is a pin's: the phone sheet shortens so its pin stays
   // in view (#1657).
@@ -295,6 +300,16 @@ function Viewer({
   }, [cmt.mode]);
   const cmtRef = useRef(cmt);
   cmtRef.current = cmt;
+  // #2590: the guest's own comments, once loaded, for the after-first-comment offer.
+  const offer = useFirstCommentOffer(
+    role === "guest" && authed,
+    cmt.loading || cmt.error
+      ? null
+      : cmt.threads.reduce(
+          (n, t) => n + t.comments.filter((c) => c.author.me).length,
+          0,
+        ),
+  );
   const commentsOn =
     cmt.enabled && (authed || cmt.canComment || cmt.threads.length > 0);
   // The panel's Comments tab: offered only where comments are on and the list
@@ -701,8 +716,20 @@ function Viewer({
       <div ref={rootRef} className="oa-viewer">
         {!chromeless && (
           <>
-            <Crumbs title={artifact.title} />
+            {role === "guest" && authed ? (
+              <GuestBar
+                sender={
+                  (artifact as { sharedBy?: { name: string } | null }).sharedBy
+                    ?.name ?? null
+                }
+                hosted={hosted}
+              />
+            ) : (
+              <Crumbs title={artifact.title} />
+            )}
             <TitleBar
+              org={org}
+              outsider={authed && role === "guest"}
               artifact={artifact}
               version={version}
               explicitVersion={explicitVersion}
@@ -731,6 +758,9 @@ function Viewer({
               guest={role === "guest"}
               hosted={hosted}
             />
+            {offer.show && (
+              <GuestOffer hosted={hosted} onDismiss={offer.dismiss} />
+            )}
             {explicitVersion &&
               gone === null &&
               version < Math.max(artifact.currentVersion, newest) && (
@@ -1101,6 +1131,7 @@ function ArtifactShell({
               role={authed ? me.me.user.role : undefined}
               hosted={authed && me.me.instance.hosted === true}
               plan={authed ? me.me.instance.plan : undefined}
+              org={authed ? me.me.instance.name : ""}
               viewer={
                 authed
                   ? { email: me.me.user.email, name: me.me.user.name }

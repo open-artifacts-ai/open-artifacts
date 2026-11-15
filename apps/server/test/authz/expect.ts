@@ -414,6 +414,8 @@ function guardExpected(
     // Parity 2: the install-wide guest summary, the uncapped owner's only.
     case "notices.manage":
     case "onboarding.manage":
+    // #2520: the login domains and joining rule, the uncapped owner.
+    case "login.manage":
       return yes(t.role === "owner" && !t.capped);
     // Parity 2: one's own guest-share notice, any non-guest (a cap too).
     case "notices.own":

@@ -115,14 +115,15 @@ describe("admit (Google)", () => {
     ).toBe(0);
   });
 
-  it("a guest logging in with a verified Google identity becomes a member", async () => {
+  it("a guest logging in with a verified Google identity stays a guest (#2590)", async () => {
     const id = g();
     const userId = await seedUser(id.email, "guest", { googleSub: id.subject });
+    await seedShare(id.email);
     expect(await admit(env, cfg(), id)).toMatchObject({
       ok: true,
-      user: { role: "member" },
+      user: { role: "guest" },
     });
-    expect((await rowOf(userId)).role).toBe("member");
+    expect((await rowOf(userId)).role).toBe("guest");
   });
 
   it("no user, join member: creates a member and links (google, sub)", async () => {
@@ -253,11 +254,14 @@ describe("admit (Google)", () => {
     expect(await count("users where email = ?", boss)).toBe(0);
   });
 
-  it("a guest row is promoted to member by hd (alias email domain)", async () => {
+  it("a guest row on an alias email domain is not linked by hd alone (needs_code, #2520 M1)", async () => {
     const email = uniq("g", "alias.com");
     const uid = await seedUser(email, "guest");
+    await seedShare(email);
     const r = await admit(env, cfg(), g({ email }));
-    expect(r).toMatchObject({ ok: true, user: { id: uid, role: "member" } });
+    expect(r).toEqual({ ok: false, reason: "needs_code" });
+    expect((await rowOf(uid)).role).toBe("guest");
+    expect(await subjectOf(uid)).toBeNull();
   });
 
   it("tenant outside the domains: tenant", async () => {
@@ -711,13 +715,16 @@ describe("admit (Google, no domains)", () => {
 
   it("an invited guest stays a guest (not promoted without a tenant)", async () => {
     const id = gm();
-    await seedUser(id.email, "guest");
+    const uid = await seedUser(id.email, "guest");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
     const r = await admit(env, authConfig(e()), id);
     expect(r).toMatchObject({ ok: true, user: { role: "guest" } });
   });
 
   it("an invited Workspace address (hd = its domain) is admitted; tenant stays null", async () => {
-    const id = gm({ email: uniq("w", "acme.com") });
+    const id = gm({ email: uniq("w", "acme.com"), hd: "acme.com" });
     await seedUser(id.email, "member");
     expect(await admit(env, authConfig(e()), id)).toMatchObject({
       ok: true,

@@ -588,6 +588,41 @@ export const SURFACES: readonly Surface[] = [
       ),
     ),
   },
+  // #1100: edit_doc over REST. The world's artifacts aren't docs, so an
+  // allowed caller reaches 400 not_a_doc after the publish check (nothing written).
+  rest(
+    "rest doc ops",
+    "publish",
+    [`POST ${ARTS}/doc/ops`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/ops`,
+      () => ({ body: { ops: [{ op: "delete", quote: "probe" }] } }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "rest doc save version",
+    "publish",
+    [`POST ${ARTS}/doc/versions`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions`,
+      () => ({ body: { name: "probe" } }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "rest doc restore",
+    "publish",
+    [`POST ${ARTS}/doc/versions/:v/restore`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions/1/restore`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "rest restore_version",
     "restore",
@@ -1157,6 +1192,18 @@ export const SURFACES: readonly Surface[] = [
     tool("restore_version", (id) => ({ id, version: 1 })),
     "data",
   ),
+  // #1100: offered while docs are available (the matrix opens DOC_SWITCH). The
+  // world's artifacts aren't docs, so an allowed caller reaches bad_request
+  // not_a_doc after the publish check (nothing written).
+  mcp(
+    "edit_doc",
+    "publish",
+    tool(
+      "edit_doc",
+      (id) => ({ id, ops: [{ op: "delete", quote: "probe" }] }),
+      (o) => o.isError && /^bad_request\b/.test(o.text),
+    ),
+  ),
   withReal(
     mcp(
       "share_artifact",
@@ -1668,6 +1715,19 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  "POST /api/v1/settings/login/first-invite-seen": {
+    real: { req: () => ({ path: "" }), allow: ok(204) },
+  },
+  // Refuse: a body that isn't a login change. A real change needs a fresh
+  // login (401 reauth_required) and then proof of a domain; the matrix's
+  // session has neither, so reaching reauth_required is past the owner rule.
+  "PUT /api/v1/settings/login": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { autoJoin: false, domains: [] } }),
+      allow: code("reauth_required"),
+    },
+  },
   "PATCH /api/v1/settings": {
     refuse: invalid(),
     // An empty patch: settings.manage, then nothing to change.
@@ -2173,6 +2233,7 @@ const MANAGER = { user: true, space: "manager" } as const;
 const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
+  ["GET /api/v1/me/inbox", U, [200]],
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
@@ -2189,6 +2250,11 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["PUT /api/v1/members/:id/restricted", org("restricted.member")],
   ["DELETE /api/v1/members/:id/restricted", org("restricted.member")],
   ["GET /api/v1/settings", org("settings.read"), [200]],
+  // #2520: no ?email= is a 400 past the guard.
+  ["GET /api/v1/members/reach", org("members.manage"), [400]],
+  ["GET /api/v1/settings/login", org("members.manage"), [200]],
+  ["POST /api/v1/settings/login/first-invite-seen", org("members.manage")],
+  ["PUT /api/v1/settings/login", org("login.manage")],
   ["PATCH /api/v1/settings", org("settings.manage")],
   ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
   ["PUT /api/v1/onboarding", org("onboarding.manage")],
@@ -2351,6 +2417,7 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/callback/google",
   "POST /auth/code/request",
   "POST /auth/code/verify",
+  "GET /auth/code/link",
   "GET /auth/unsubscribe/comments",
   "POST /auth/unsubscribe/comments",
   "POST /auth/logout",

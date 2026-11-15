@@ -9,7 +9,7 @@ const RESTORED = /^Restored v\d+$/;
 
 /**
  * How a doc version was saved: Backend's `docSave.kind` when it sends one
- * (PROVISIONAL, the edit_doc PR); otherwise read from the message: none is
+ * (#2542); otherwise read from the message: none is
  * an automatic save, "Restored v3" a restore, anything else a name.
  */
 export function docSaveKind(x: VersionInfo): DocSaveKind {

@@ -41,6 +41,7 @@ import {
 import { renderSkillTemplate } from "../src/mcp/skill-template.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import { busOn } from "../src/services/bus.js";
+import { DOC_GATED_TOOLS, docToolOff } from "../src/services/doc-switch.js";
 import { VERSION } from "../src/version.gen.js";
 import { login } from "./helpers.js";
 import { APP, callWorker, connect, E } from "./mcp-helpers.js";
@@ -222,14 +223,16 @@ describe("skill.md drift", () => {
       true,
     );
     // Spaces off (the default test env): every tool but list_spaces.
-    const n = TOOL_DEFS.length - 1;
+    // Doc-gated tools join the skill once the doc switch is open.
+    const docs = DOC_GATED_TOOLS.filter(docToolOff).length;
+    const n = TOOL_DEFS.length - 1 - docs;
     expect(md).toContain(`tools/list shows the ${n} tools`);
     // The tool count appears once; the version (e.g. 0.17.0) is not a count.
     expect(
       md.replaceAll(VERSION, "").match(new RegExp(`\\b${n}\\b`, "g")) ?? [],
     ).toHaveLength(1);
     expect(await skill(E({ FEATURES: "spaces" }))).toContain(
-      `tools/list shows the ${TOOL_DEFS.length} tools`,
+      `tools/list shows the ${TOOL_DEFS.length - docs} tools`,
     );
   });
 
@@ -302,12 +305,16 @@ describe("skill.md drift", () => {
       "human's asks in one list on its status page",
       "Find peers by bus name",
       "The bus is part of Open Artifacts setup, not an extra.",
-      "setup is not finished: tell your person, and when they say go, run `npx @open-artifacts/bus install --instance",
+      'setup is not finished: tell your person, and when they say go, follow the "Install the bus" step of',
       "They approve this machine once in their browser.",
       "ask your person what to call you",
       "I'm {name}, your agent. Type @{name} in any comment and I'll answer in the thread. Try it here.",
       'When they pick, do it and reply in the thread; "Nothing for now" gets a one-line reply.',
       "Do this once, never on later pages.",
+      "Setup is unfinished only when the `list_artifacts` tool with `scope: \"mine\"` shows no pages of your person on this instance (colleagues' pages don't count).",
+      "If they already have pages, never re-run setup or ask for a name again.",
+      'with `visibility: "private"`',
+      "tell your person Open Artifacts is connected",
       "it comes from the bus client, not from /mcp",
       "To message agents, use the bus tools installed for your harness",
       "the oa_bus MCP server, or the oa-bus extension",

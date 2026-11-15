@@ -3,9 +3,10 @@ import {
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
   GoogleTokenError,
+  googleEvidenceStrong,
+  inDomains,
   noDomainIdentityOk,
   brokerRedeemRequest as signedRedeemRequest,
-  verifyGoogleIdToken,
   verifyGoogleIdTokenAnyDomain,
 } from "@oa/auth-core";
 import { AUTH } from "@oa/shared";
@@ -176,27 +177,44 @@ export const googleProvider: OidcProvider = {
       // admission is by owner/invite. A consumer account can sit on any
       // address (an ex-employee's, a lapsed domain), so the email only
       // counts for a Gmail address, or when hd equals the email's domain.
-      let id: Awaited<ReturnType<typeof verifyGoogleIdTokenAnyDomain>>;
+      const id = await verifyGoogleIdTokenAnyDomain(
+        { clientId: g.clientId },
+        idToken,
+        expectNonce,
+      );
+      // No domains: any hd, and the address counts only on the no-domain rule.
       if (g.domains.length === 0) {
-        id = await verifyGoogleIdTokenAnyDomain(
-          { clientId: g.clientId },
-          idToken,
-          expectNonce,
-        );
-        if (!noDomainIdentityOk(id.email, id.hd))
-          throw new GoogleTokenError("tenant");
-      } else
-        id = await verifyGoogleIdToken(
-          { clientId: g.clientId, domains: g.domains },
-          idToken,
-          expectNonce,
-        );
+        // Weak evidence is not refused here: admit() decides (an existing
+        // row or a share recipient gets needs_code), and a bound identity
+        // never creates a row or the owner (#2590).
+        return {
+          provider: "google",
+          subject: id.sub,
+          email: id.email,
+          name: id.name,
+          tenant: null,
+          hd: id.hd,
+          ...(noDomainIdentityOk(id.email, id.hd)
+            ? {}
+            : { bound: "email" as const }),
+          authTime: id.authTime,
+        };
+      }
+      // Domains: an hd in the list is the tenant, exactly as before. Any
+      // other account (an invitee on Gmail or another Workspace) is admitted
+      // only on strong evidence for its exact address, bound to an existing
+      // row (#2520); the verified token's hd decides, never the address.
+      const inList = inDomains(g.domains, id.hd);
+      // Weak evidence outside the list flows to admit() too (#2590): it is
+      // bound to an existing row or a share, and refused with needs_code.
       return {
         provider: "google",
         subject: id.sub,
         email: id.email,
         name: id.name,
-        tenant: g.domains.length === 0 ? null : id.hd,
+        tenant: inList ? id.hd : null,
+        hd: id.hd,
+        ...(inList ? {} : { bound: "email" as const }),
         authTime: id.authTime,
       };
     } catch (e) {

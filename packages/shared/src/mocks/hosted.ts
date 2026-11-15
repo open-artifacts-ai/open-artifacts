@@ -1352,6 +1352,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         });
       if (o.turnstile && r.data.turnstileToken === "fail")
         return err("turnstile_failed", "Verification failed; try again");
+      // { link: true } finishes a Google login; the mock has no such cookie.
+      if ("link" in r.data)
+        return err("bad_request", "Invalid email", { field: "email" });
       const email = r.data.email.toLowerCase();
       const n = (requests.get(email) ?? 0) + 1;
       requests.set(email, n);
@@ -1628,6 +1631,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
               ...m,
               ...(m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
                 ? { personalArtifacts: true }
+                : {}),
+              // As the server: a departed member with artifacts, trash included.
+              ...((m.status ?? "active") !== "active" &&
+              (departed.get(m.id)?.live ?? 0) +
+                (departed.get(m.id)?.deleted ?? 0) >
+                0
+                ? { transferable: true }
                 : {}),
               ...(managed(m) ? { directoryManaged: true } : {}),
             })),
