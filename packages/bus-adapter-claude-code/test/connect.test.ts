@@ -1,4 +1,4 @@
-import { HelloRefused } from "@oa/bus-ipc";
+import { BUS_CMD, HelloRefused } from "@oa/bus-ipc";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   BUSY_MESSAGE,
@@ -220,7 +220,7 @@ describe("no-session reasons (#2364)", () => {
   });
   it("never connected: none says to tell the user, exact string", () => {
     expect(noSessionMessage({ kind: "no-session", reason: "none" }, true)).toBe(
-      "oa-bus: this session isn't connected to the bus. Tell your user. Installing restarts the bus for every session on this machine, so ask them before running `npx @open-artifacts/bus install`.",
+      `oa-bus: this session isn't connected to the bus. Tell your user. Installing restarts the bus for every session on this machine, so ask them before running \`${BUS_CMD} install\`.`,
     );
   });
   it("prior success + one miss then a hit is ok", async () => {
@@ -234,6 +234,7 @@ describe("no-session reasons (#2364)", () => {
             ? { ok: false, reason: "none" }
             : { ok: true, session };
         },
+        sleep: async () => {},
       }),
     );
     expect(out.kind).toBe("ok");

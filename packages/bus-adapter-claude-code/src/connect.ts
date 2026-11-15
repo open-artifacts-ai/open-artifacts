@@ -17,9 +17,9 @@ const RESTART_STEP_MS = 200;
 export const UNREACHABLE_MESSAGE =
   "oa-bus: couldn't reach the bus just now. Wait a few seconds and try again. Don't run the installer.";
 
-export const NOT_CONNECTED_MESSAGE = `oa-bus: this session isn't connected to the bus. Tell your user. Installing restarts the bus for every session on this machine, so ask them before running \`npx @open-artifacts/bus install\`.`;
+export const NOT_CONNECTED_MESSAGE = `oa-bus: this session isn't connected to the bus. Tell your user. Installing restarts the bus for every session on this machine, so ask them before running \`${BUS_CMD} install\`.`;
 
-/** True once this process has found a session or connected: a later miss is transient, not a missing install. */
+/** True once this process has connected: a later miss is transient, not a missing install. */
 let connectedBefore = false;
 /** For tests. */
 export function resetConnectedBefore(): void {
