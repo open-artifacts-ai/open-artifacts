@@ -1,7 +1,14 @@
-import { label, readPolicy, updateCommand } from "@oa/bus-daemon";
+import {
+  clearInstallRequest,
+  label,
+  loginActive,
+  readPolicy,
+  requestInstall,
+  updateCommand,
+} from "@oa/bus-daemon";
 import { type Ctx, say, sayErr } from "../context.ts";
 
-/** PR 4 replaces this with the real install of the staged version. */
+/** Installs the staged version; true once it is the running one. */
 export type InstallStaged = (version: string) => Promise<boolean>;
 
 /**
@@ -44,4 +51,36 @@ export async function update(
   if (!(await installStaged(version))) return 1;
   say(ctx, c.updateDone(version));
   return 0;
+}
+
+/** How long the person waits for the restart and the daemon's 60 s check. */
+export const INSTALL_WAIT_MS = 100_000;
+const POLL_MS = 500;
+
+/**
+ * Leaves the daemon a request to switch to the staged version, through the
+ * same path the updater takes (re-hash, pending, swap, restart, self-check),
+ * and waits for it to be the current version. Refuses while a login or an
+ * approval is in progress: the restart would cut it off.
+ */
+export async function installViaDaemon(
+  ctx: Ctx,
+  version: string,
+  waitMs = INSTALL_WAIT_MS,
+): Promise<boolean> {
+  const c = ctx.copy;
+  if (loginActive(ctx.home)) {
+    sayErr(ctx, c.updateBusy());
+    return false;
+  }
+  requestInstall(ctx.home, version, ctx.now());
+  for (let waited = 0; waited <= waitMs; waited += POLL_MS) {
+    const s = readPolicy(ctx.home);
+    if (s.current === version && !s.pending) return true;
+    if (s.failed.includes(version)) break;
+    await ctx.sleep(POLL_MS);
+  }
+  clearInstallRequest(ctx.home);
+  sayErr(ctx, c.updateNotInstalled(version));
+  return false;
 }
