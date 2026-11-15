@@ -162,6 +162,8 @@ describe("the owner's switch", () => {
       .bind(colleague.userId)
       .first<{ email: string }>();
     expect((await s.share(mem?.email as string)).status).toBe(200);
+    // An address at a login domain is not outside, even with no row yet.
+    expect((await s.share(uniq("team", "a.com"))).status).toBe(200);
     await setSwitch("true");
     expect((await s.share(email)).status).toBe(200);
     await setSwitch(null);

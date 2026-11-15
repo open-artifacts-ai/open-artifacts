@@ -169,7 +169,7 @@ export async function admit(
     if (
       (await unsharedGuest(env, linked)) ||
       (isGuestRole(linked.role as Role) &&
-        (await outsiderLoginOff(env, linked.id)))
+        (await outsiderLoginOff(env, linked.id, linked.email)))
     )
       return { ok: false, reason: "no_access" };
     return admitted(
@@ -190,7 +190,7 @@ export async function admit(
     existing &&
     ((await unsharedGuest(env, existing)) ||
       (isGuestRole(existing.role as Role) &&
-        (await outsiderLoginOff(env, existing.id))))
+        (await outsiderLoginOff(env, existing.id, existing.email))))
   )
     return { ok: false, reason: "no_access" };
   if (existing) {
@@ -227,7 +227,7 @@ export async function admit(
     if (!(await stmt(env.DB, SHARED).bind(email).first()))
       return { ok: false, reason: "no_access" };
     // The owner's switch (#2590): off ends share-made guests' logins.
-    if (await outsiderLoginOff(env, null))
+    if (await outsiderLoginOff(env, null, email))
       return { ok: false, reason: "no_access" };
     if (!googleEvidenceStrong(email, true, id.hd ?? id.tenant))
       return { ok: false, reason: "needs_code" };
@@ -336,7 +336,10 @@ export async function codeEligibility(
     Boolean(await stmt(env.DB, SHARED).bind(email).first()),
   );
   // The owner's switch (#2590): off ends share-made guests' logins by code too.
-  if (rule.kind === "guest" && (await outsiderLoginOff(env, rule.userId)))
+  if (
+    rule.kind === "guest" &&
+    (await outsiderLoginOff(env, rule.userId, email))
+  )
     return { kind: "none" };
   return rule;
 }
@@ -360,7 +363,7 @@ export async function linkEligibility(
     .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
   if (!row) {
     return (await stmt(env.DB, SHARED).bind(email).first()) &&
-      !(await outsiderLoginOff(env, null))
+      !(await outsiderLoginOff(env, null, email))
       ? { kind: "guest", userId: null }
       : { kind: "none" };
   }
@@ -370,7 +373,7 @@ export async function linkEligibility(
   if (await unsharedGuest(env, { id: row.id, role: row.role }))
     return { kind: "none" };
   if (isGuestRole(row.role)) {
-    if (await outsiderLoginOff(env, row.id)) return { kind: "none" };
+    if (await outsiderLoginOff(env, row.id, email)) return { kind: "none" };
     return { kind: "guest", userId: row.id };
   }
   return { kind: "member", userId: row.id, role: row.role };

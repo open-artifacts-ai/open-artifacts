@@ -231,7 +231,7 @@ export async function upsertOnLogin(
     // The owner's switch (#2590): off ends share-made guests' logins.
     if (
       isGuestRole(existing.role as Role) &&
-      (await outsiderLoginOff(env, existing.id))
+      (await outsiderLoginOff(env, existing.id, e))
     )
       return null;
     const set: Partial<UserRow> = { lastSeenAt: Date.now() };
@@ -261,7 +261,8 @@ export async function upsertOnLogin(
     .from(shares)
     .where(eq(shares.email, e))
     .limit(1);
-  if (shared.length === 0 || (await outsiderLoginOff(env, null))) return null;
+  if (shared.length === 0 || (await outsiderLoginOff(env, null, e)))
+    return null;
   // Concurrent first logins race on the unique email: the loser just refreshes.
   return toMember(await upsert(env, e, name, "guest", false, auditQ));
 }

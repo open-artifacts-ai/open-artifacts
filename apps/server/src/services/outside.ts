@@ -3,6 +3,8 @@
 // hosted Business tier (off). Read the way billing reads the plan (readPlan):
 // self-hosted and any unreadable plan count as on. Off refuses new outside
 // shares (putShare) and ends share-made guests' logins, on every path.
+import { inDomains } from "@oa/auth-core";
+import { authConfig } from "../auth/config.js";
 import type { EffectivePlan } from "../billing/plan.js";
 import { readPlan } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
@@ -31,18 +33,25 @@ export async function outsideSharingOn(env: Env): Promise<boolean> {
   return outsideDefault(await readPlan(env).catch(() => null));
 }
 
+/** An address outside the instance: not in the login domains (with none set, every address). */
+export const outsideAddress = (env: Env, email: string): boolean =>
+  !inDomains(authConfig(env).domains, email.slice(email.lastIndexOf("@") + 1));
+
 const SHARE_GUEST =
   "select 1 as x from users where id = ?1 and role = 'guest' and invited_at is null";
 
 /**
  * A login refused because the switch is off: a share-made guest (a guest row
  * nobody invited, or no row yet and a share). Invited guests and members are
- * never affected. `userId` null: no row.
+ * never affected, nor an address in the login domains (not outside).
+ * `userId` null: no row.
  */
 export async function outsiderLoginOff(
   env: Env,
   userId: string | null,
+  email: string,
 ): Promise<boolean> {
+  if (!outsideAddress(env, email)) return false;
   if (
     userId !== null &&
     !(await stmt(env.DB, SHARE_GUEST).bind(userId).first())

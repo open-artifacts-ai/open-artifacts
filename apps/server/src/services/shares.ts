@@ -31,7 +31,7 @@ import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
-import { outsideSharingOn } from "./outside.js";
+import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
@@ -178,6 +178,7 @@ export async function putShare(
   // #2590: with the owner's switch off, no new share to an address outside
   // the instance (no user row here). A person already in stays shareable.
   if (
+    outsideAddress(env, email) &&
     !(await stmt(env.DB, IS_USER).bind(email).first()) &&
     !(await outsideSharingOn(env))
   )
@@ -329,26 +330,28 @@ async function emailShare(
         instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
         outcome,
-        extraCaps: [
-          {
-            cap: [
-              `email:out:u:${user.id}`,
-              OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
-              day,
+        extraCaps: !outsideAddress(env, email)
+          ? []
+          : [
+              {
+                cap: [
+                  `email:out:u:${user.id}`,
+                  OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
+                  day,
+                ],
+                reason: "member_limit",
+              },
+              {
+                cap: [
+                  "email:out:*",
+                  trial
+                    ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
+                    : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
+                  day,
+                ],
+                reason: "instance_limit",
+              },
             ],
-            reason: "member_limit",
-          },
-          {
-            cap: [
-              "email:out:*",
-              trial
-                ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
-                : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
-              day,
-            ],
-            reason: "instance_limit",
-          },
-        ],
       },
     );
     if (sent) return { emailed: true };
