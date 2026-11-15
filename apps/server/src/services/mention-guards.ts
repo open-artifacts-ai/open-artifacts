@@ -7,7 +7,7 @@ import { getUser } from "./users.js";
 // #2559: three guards on waking another person's agent from a comment.
 
 /** Mentions (or asks) of other people's agents one person may send per hour. */
-export const MENTIONS_PER_SENDER_PER_HOUR = 20;
+export const MENTIONS_PER_SENDER_PER_HOUR = 10;
 /** Mentions (or asks) of one person's agents, from anyone, per hour. */
 export const MENTIONS_PER_RECEIVER_PER_HOUR = 40;
 
