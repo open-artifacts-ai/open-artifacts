@@ -70,6 +70,30 @@ describe("pack-npm", () => {
     expect(run).toContain('"oa-bus $version"');
     expect(run).toContain("sha256sum");
   });
+
+  it("writes only oaBus.commit, the release commit, before npm pack", () => {
+    const run = stepById(pack.steps, "pack").run as string;
+    const set = run.indexOf('npm pkg set "oaBus.commit=$commit"');
+    expect(set).toBeGreaterThan(-1);
+    expect(set).toBeLessThan(run.indexOf("npm pack "));
+    expect(run).toContain("commit=$(git rev-parse HEAD)");
+    expect(run).toContain("^[0-9a-f]{40}$");
+    expect(run).toContain('[ "$commit" = "$GITHUB_SHA" ]');
+    // The only package.json fields the step may set: version, and oaBus.commit.
+    expect(run.match(/npm pkg set "[^"=]+/g)).toEqual([
+      'npm pkg set "version',
+      'npm pkg set "oaBus.commit',
+    ]);
+  });
+
+  it("leaves publish-npm publishing the same pack-npm tarball", () => {
+    expect(pub.needs).toEqual(["release-please", "pack-npm"]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(pub.env.SHA256).toBe("${{ needs.pack-npm.outputs.sha256 }}");
+    expect(publishStep.run).toBe(
+      'npm publish "$TARBALL" --provenance --access public --ignore-scripts',
+    );
+  });
 });
 
 describe("publish-npm", () => {
