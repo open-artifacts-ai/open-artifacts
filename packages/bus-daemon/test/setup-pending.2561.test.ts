@@ -102,9 +102,7 @@ describe("setup pending on self (#2561)", () => {
     expect((await selfRow(a)).agent).not.toHaveProperty("setup_pending");
     await vi.waitFor(
       async () =>
-        expect((await selfRow(a)).agent.setup_pending).toBe(
-          SETUP_PENDING_TEXT,
-        ),
+        expect((await selfRow(a)).agent.setup_pending).toBe(SETUP_PENDING_TEXT),
       { timeout: 10_000, interval: 50 },
     );
     stop();
