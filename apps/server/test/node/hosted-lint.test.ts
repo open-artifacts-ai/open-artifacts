@@ -22,6 +22,8 @@ const READS: Record<string, string> = {
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":
     "fail closed: hosted Google login requires the broker transport",
+  "services/shares.ts: emailShare":
+    "tightens (#2590): hosted sends from our own domain, so an outside address gets no email until it can opt out (Don't email me again), and outside shares have daily limits; self-host sends as before",
   "services/onboarding.ts: seedWelcome":
     "#2287: only a hosted instance seeds the Welcome",
   "routes/codes.ts: (anonymous)":
