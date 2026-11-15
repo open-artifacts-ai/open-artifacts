@@ -109,12 +109,13 @@ export const installHarness = () => {
     observers = [];
     lastClient = makeQueryClient();
     events = createArtifactEvents();
+    const base = createHandlers({ events });
     server.use(
       http.all("*/api/v1/*", ({ request }) => {
         seen.push(new URL(request.url));
         return undefined;
       }),
-      ...createHandlers({ events }),
+      ...base,
       ...events.handlers,
       // #2520's PROVISIONAL routes: absent unless a test serves them.
       ...loginAbsentHandlers(),
