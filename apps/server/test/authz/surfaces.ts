@@ -1070,6 +1070,18 @@ export const SURFACES: readonly Surface[] = [
       badRequest,
     ),
   ),
+  // #2511: the asker withdraws its ask; the service refuses anyone else. A malformed id stops at 400.
+  rest(
+    "comments ask withdraw",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/withdraw`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
   rest(
     "artifact agents",
     "comments.read",
@@ -1360,6 +1372,26 @@ export const SURFACES: readonly Surface[] = [
     tool(
       "resolve_comment",
       (id) => ({ id, threadId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
+  // #2511: withdraw and edit over MCP; a thread that does not exist stops them
+  // after the access rules, so nothing is written.
+  mcp(
+    "withdraw_ask",
+    "comments.write",
+    tool(
+      "withdraw_ask",
+      (id) => ({ id, threadId: SOME_ID, commentId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
+  mcp(
+    "edit_comment",
+    "comments.write",
+    tool(
+      "edit_comment",
+      (id) => ({ id, threadId: SOME_ID, commentId: SOME_ID, body: "x" }),
       (o) => o.isError && /^not_found: No such thread/.test(o.text),
     ),
   ),

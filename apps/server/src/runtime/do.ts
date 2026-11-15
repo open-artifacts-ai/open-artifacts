@@ -93,6 +93,7 @@ import {
   threadExists,
   threadStatus,
   touchThread,
+  withdrawAsk,
   withdrawTargets,
 } from "./comments-store.js";
 import {
@@ -639,6 +640,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "replaces")
       )
         sql.exec("alter table comment_asks add column replaces text");
+      // #2511: comment_asks.withdrawn, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "withdrawn")
+      )
+        sql.exec("alter table comment_asks add column withdrawn text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -2283,6 +2294,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // A newer ask replaced this one: a stale card cannot approve it (#2323).
       if (r.ask.replacedBy)
         fail("replaced", "A newer ask replaced this one: pick on that");
+      // #2511: a withdrawn ask takes no picks.
+      if (r.ask.withdrawn) fail("withdrawn", "This ask was withdrawn");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
       // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
@@ -2387,6 +2400,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "forbidden",
           "Only the person who asked can take the decision back",
         );
+      if (r.ask.withdrawn) fail("withdrawn", "This ask was withdrawn");
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.decider || r.ask.decider === a.by.ref)
         fail("bad_request", "You already decide this");
@@ -2397,6 +2411,48 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
     });
     this.broadcastComments();
+    return out;
+  }
+
+  /**
+   * #2511: withdraws an ask (the service checked who may). 409 already_answered
+   * once it has a decision; idempotent; `replacedBy` names the card on another
+   * artifact that replaces it. Returns the comment as then stored and whether it changed.
+   */
+  commentsWithdraw(a: {
+    threadId: string;
+    commentId: string;
+    by: StoredActor;
+    rate: string;
+    replacedBy?: { artifactId: string; threadId: string; commentId: string };
+  }): { comment: StoredComment; changed: boolean } {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      this.countComment(a.rate, false);
+      let changed: boolean;
+      try {
+        changed = withdrawAsk(
+          this.sql,
+          a.threadId,
+          a.commentId,
+          a.by,
+          this.iso(),
+          a.replacedBy,
+        );
+      } catch (e) {
+        const m = /^oa:([a-z_]+):(.*)$/.exec(
+          e instanceof Error ? e.message : "",
+        );
+        if (m) fail(m[1] as ErrorCode, m[2] ?? "");
+        throw e;
+      }
+      if (changed) touchThread(this.sql, a.threadId, this.iso());
+      return {
+        comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
+        changed,
+      };
+    });
+    if (out.changed) this.broadcastComments();
     return out;
   }
 
@@ -2777,6 +2833,7 @@ type RpcMethods =
   | "commentsReply"
   | "commentsAnswer"
   | "commentsTakeBack"
+  | "commentsWithdraw"
   | "commentsTargetStates"
   | "commentsTargetSettle"
   | "commentsAskerRefund"

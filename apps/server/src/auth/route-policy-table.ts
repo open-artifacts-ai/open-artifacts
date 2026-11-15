@@ -296,6 +296,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     "comments.write",
     { anon401: COMMENT },
   ),
+  // #2511: the asker (the asking agent, or the person it acts for) withdraws its ask.
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
   [`GET ${ARTS}/agents`]: art("comments.read"),
   // #2035: stop (or undo) a thread's reply notices to one agent. The floor is
   // comments.write (never a guest or restricted cap); the service allows only
@@ -557,6 +562,8 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   list_comments: art("comments.read"),
   add_comment: art("comments.write"),
   resolve_comment: art("comments.write"),
+  withdraw_ask: art("comments.write"),
+  edit_comment: art("comments.write"),
   list_spaces: { user: "the caller's own publishable spaces" },
   // #1372: proposes only (the caller's own hub); offered while the bus is on.
   bus_role_propose: { org: "mcp.connect" },

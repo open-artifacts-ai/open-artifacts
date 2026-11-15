@@ -7,6 +7,7 @@ import {
   NewThreadBodySchema,
   ReplyBodySchema,
   TakeBackBodySchema,
+  WithdrawBodySchema,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { z } from "zod";
@@ -47,6 +48,7 @@ import {
   setStatus,
   setThreadAgent,
   takeBackAsk,
+  withdrawAsk,
 } from "../services/comments.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
@@ -66,6 +68,7 @@ const COMMENT = `${THREAD}/comments/:commentId`;
 const ANSWER = `${COMMENT}/answer`;
 const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
 const ASK_DECIDER = `${COMMENT}/ask/decider`;
+const WITHDRAW = `${COMMENT}/withdraw`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -415,6 +418,34 @@ export function mountComments(app: AppType): void {
       throw new ApiError("forbidden", "Only the person who asked can do this");
     return c.json(
       await takeBackAsk(c.env, id, threadId, commentId, who, viewer),
+    );
+  });
+
+  // #2511: the asker withdraws its ask before any decision.
+  app.post(WITHDRAW, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const raw = WithdrawBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    const { who, viewer } = await identity(
+      c,
+      id,
+      false,
+      modOf(cw, level, artifact),
+    );
+    if (!who)
+      throw new ApiError("forbidden", "Only the person who asked can do this");
+    return c.json(
+      await withdrawAsk(
+        c.env,
+        id,
+        threadId,
+        commentId,
+        who,
+        viewer,
+        raw.data.replacedBy,
+      ),
     );
   });
 
