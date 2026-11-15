@@ -185,8 +185,8 @@ describe("share recipient reach (review item 37)", () => {
   // workspace_only warning (it used to be unflagged, #799).
   it("only Google might admit a no-row recipient: workspace_only, and the email names Google", async () => {
     const { share, sent } = await setup(direct, {
+      ...HOSTED,
       AUTH_PROVIDERS: "google",
-      AUTH_DOMAIN_JOIN: "member",
     });
     const email = uniq("sec", "secondary.com");
     expect((await share(email)).recipient).toEqual({
@@ -242,11 +242,13 @@ describe("the share email names the level the recipient will have", () => {
     expect(m?.html).not.toContain("Editor");
   });
 
-  it("Access-only: an Editor share reads Commenter", async () => {
+  it("Access-only (self-host): an Editor share reads Commenter, in the normal share email", async () => {
     const { share, sent } = await setup((o) => ({ ...env, ...o }) as Env, {});
     const email = uniq("acc", "a.com");
     await share(email, "editor");
-    expect(sent.find((x) => x.to === email)?.text).not.toContain("Your role");
+    expect(sent.find((x) => x.to === email)?.text).toContain(
+      "Your role: Commenter",
+    );
   });
 
   it("in a verified domain, an Editor share stays Editor: they'll be a member", async () => {
@@ -320,6 +322,7 @@ describe("guest on a share row, and the email, from one rule", () => {
       true,
     ],
     ["Google and codes, invite, in-domain", direct, HOSTED, IN, false],
+    ["hosted, outside", direct, HOSTED, OUT, true],
   ])("%s", async (name, make, over, domain, guest) => {
     const { share, list, sent } = await setup(make, over);
     const email = uniq("r", domain);
@@ -335,7 +338,9 @@ describe("guest on a share row, and the email, from one rule", () => {
     const outsideMail = text.includes(
       "shared a page with you on Open Artifacts",
     );
-    expect(outsideMail).toBe(domain === OUT || name === "Access-only");
+    // The outside rules are hosted's: a self-host install keeps the normal
+    // share email for every recipient.
+    expect(outsideMail).toBe(over.HOSTED === "1" && domain === OUT);
     if (outsideMail) expect(text).not.toContain("Your role");
     else expect(text).toContain(`Your role: ${guest ? "Commenter" : "Editor"}`);
   });

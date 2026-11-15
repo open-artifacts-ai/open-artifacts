@@ -27,7 +27,14 @@ import {
   putShare,
 } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
-import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
+import {
+  direct,
+  mailer,
+  seedShare,
+  seedUser,
+  TEST_BROKER_KEY,
+  uniq,
+} from "./auth-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 
 // The outside share email is off until "Don't email me again" exists
@@ -74,10 +81,19 @@ const setSwitch = (v: "true" | "false" | null) =>
         .bind(OUTSIDE_SHARING_KEY, v)
         .run();
 
+/** A hosted install: the outside email, its limits and its switch are hosted's. */
+const HOSTED: Partial<Env> = {
+  HOSTED: "1",
+  AUTH_DOMAIN_JOIN: "invite",
+  AUTH_BROKER_URL: "https://auth.h.test",
+  BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+  GOOGLE_CLIENT_SECRET: "",
+};
+
 /** A member with a published page, and a mailer that records mail. */
 async function sharer(over: Partial<Env> = {}, name = "Pat Sharer") {
   const m = mailer();
-  const e = direct({ ...m.env, ...over }) as Env;
+  const e = direct({ ...m.env, ...HOSTED, ...over }) as Env;
   const o = await login(uniq("own", "a.com"), "member");
   await env.DB.prepare("update users set display_name = ? where id = ?")
     .bind(name, o.userId)
@@ -480,7 +496,7 @@ describe("the outside share email", () => {
   it("names the sender and address, cuts the title, and never links the title", async () => {
     const long = "T".repeat(150);
     const m = mailer();
-    const e = direct({ ...m.env }) as Env;
+    const e = direct({ ...m.env, ...HOSTED }) as Env;
     const o = await login(uniq("own", "a.com"), "member");
     await env.DB.prepare("update users set display_name = ? where id = ?")
       .bind("Pat Sharer", o.userId)
@@ -522,7 +538,7 @@ describe("the outside share email", () => {
 
   it("a title or name that looks like a URL is dropped: A page, and the bare address", async () => {
     const m = mailer();
-    const e = direct({ ...m.env }) as Env;
+    const e = direct({ ...m.env, ...HOSTED }) as Env;
     // [title, display name, title shown, name shown (null: the bare address)]
     const cases: [string, string, string, string | null][] = [
       ["see https://evil.example/x", "Pat", "A page", "Pat"],
@@ -568,7 +584,7 @@ describe("the outside share email", () => {
 
   it("no other sender text: a hostile title is plain, escaped text", async () => {
     const m = mailer();
-    const e = direct({ ...m.env }) as Env;
+    const e = direct({ ...m.env, ...HOSTED }) as Env;
     const o = await login(uniq("own", "a.com"), "member");
     const member = await getUser(env, o.userId);
     if (!member) throw new Error("no user");

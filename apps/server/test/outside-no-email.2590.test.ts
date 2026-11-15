@@ -8,19 +8,28 @@ import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import { OUTSIDE_SHARE_EMAIL_ON } from "../src/services/outside-email.js";
 import { getUser } from "../src/services/users.js";
-import { direct, mailer, uniq } from "./auth-helpers.js";
+import { direct, mailer, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import { fetchAndWait, login } from "./helpers.js";
 
 const app = createApp();
+
+/** A hosted install (the outside rules are hosted's). */
+const HOSTED: Partial<Env> = {
+  HOSTED: "1",
+  AUTH_DOMAIN_JOIN: "invite",
+  AUTH_BROKER_URL: "https://auth.h.test",
+  BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+  GOOGLE_CLIENT_SECRET: "",
+};
 
 describe("no email to an outside address", () => {
   it("is off by default", () => {
     expect(OUTSIDE_SHARE_EMAIL_ON).toBe(false);
   });
 
-  it("the share saves, nothing is sent, and the reason is outside_no_unsubscribe; an address at a login domain still gets its email", async () => {
+  async function world(over: Partial<Env>) {
     const m = mailer();
-    const e = direct({ ...m.env }) as Env;
+    const e = direct({ ...m.env, ...over }) as Env;
     const o = await login(uniq("own", "a.com"), "member");
     const member = await getUser(env, o.userId);
     if (!member) throw new Error("no user");
@@ -49,6 +58,11 @@ describe("no email to an outside address", () => {
       expect(r.status).toBe(200);
       return ShareResultSchema.parse(await r.json());
     };
+    return { m, share };
+  }
+
+  it("hosted: the share saves, nothing is sent, and the reason is outside_no_unsubscribe; an address at a login domain still gets its email", async () => {
+    const { m, share } = await world(HOSTED);
     const outside = uniq("out", "gmail.com");
     const s = await share(outside);
     expect(s).toMatchObject({
@@ -65,5 +79,15 @@ describe("no email to an outside address", () => {
     const team = uniq("team", "a.com");
     expect(await share(team)).toMatchObject({ emailed: true });
     expect(m.sent.some((x) => x.to === team)).toBe(true);
+  });
+
+  it("self-host: the outside address gets the normal share email, as on main", async () => {
+    const { m, share } = await world({});
+    const outside = uniq("out", "gmail.com");
+    const s = await share(outside);
+    expect(s).toMatchObject({ emailed: true });
+    expect(s.notEmailed).toBeUndefined();
+    const mail = m.sent.find((x) => x.to === outside);
+    expect(mail?.text).toContain("Your role:");
   });
 });

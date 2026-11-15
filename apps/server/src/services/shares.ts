@@ -326,7 +326,10 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return { emailed: false };
-    const outside = outsideAddress(env, email);
+    // The outside rules (the email switch, outsideShareEmail, the limits) are
+    // hosted's: a self-hosted install keeps the normal share email for every
+    // recipient, outside the login domains or not.
+    const outside = env.HOSTED === "1" && outsideAddress(env, email);
     // No email to an outside address until it can opt out (outside-email.ts).
     if (!outsideEmail.on && outside)
       return { emailed: false, notEmailed: "outside_no_unsubscribe" };
