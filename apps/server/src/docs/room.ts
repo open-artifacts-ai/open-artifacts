@@ -598,8 +598,44 @@ export class DocRoom extends DurableObject<Env> {
           .toArray()
           .map((r) => [r.client, r.actor]),
       );
+      this.seedLegacyOwners(this.clientOwners);
     }
     return this.clientOwners;
+  }
+
+  /**
+   * A room that stored state before ownership existed has structs and an
+   * empty clients table, so the first sender would win each old id, among them
+   * the server's own earlier ones (seed, edit_doc and restore wrote under
+   * random ids). Once, on first load: every id already in the stored doc is
+   * recorded as the server's. People's tabs take a new clientID on every
+   * load, so only a tab left open across this change is affected (its next
+   * reconnect is refused, and a reload fixes it). #2615.
+   */
+  private seedLegacyOwners(owners: Map<number, string>) {
+    const flag = this.sql
+      .exec("SELECT 1 FROM meta WHERE k = 'owners_seeded'")
+      .toArray();
+    if (flag.length > 0) return;
+    if (owners.size === 0 && this.storedBytes() > 0) {
+      const doc = this.loadDoc();
+      try {
+        for (const client of doc.store.clients.keys()) {
+          this.sql.exec(
+            "INSERT OR IGNORE INTO clients (client, actor) VALUES (?, ?)",
+            client,
+            SERVER_ACTOR,
+          );
+          owners.set(client, SERVER_ACTOR);
+        }
+      } finally {
+        doc.destroy();
+      }
+    }
+    this.sql.exec(
+      "INSERT OR REPLACE INTO meta (k, v) VALUES ('owners_seeded', ?)",
+      this.now(),
+    );
   }
 
   /** Records `actor` as the owner of `client`, durably, unless it has one. */

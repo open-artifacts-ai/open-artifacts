@@ -375,3 +375,66 @@ describe("accepted updates are stored before they are broadcast (#2177)", () => 
     c.ws.close();
   });
 });
+
+describe("rooms from before ownership existed (#2615)", () => {
+  it("records the ids already in the doc as the server's, once, on first load", async () => {
+    const room = await fresh();
+    const OLD = 424242;
+    // A room as the old code left it: state, no clients rows, no flag.
+    await inRoom(room, (x) => {
+      const r = x as unknown as {
+        sql: SqlStorage;
+        rowCount: number;
+        rowBytes: number;
+        sv: Map<number, number>;
+      };
+      const d = new Y.Doc();
+      d.clientID = OLD;
+      d.getText("t").insert(0, "old text");
+      const u = Y.encodeStateAsUpdate(d);
+      r.sql.exec("INSERT INTO updates (data, at) VALUES (?, ?)", u, 0);
+      r.sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('seeded', 1)");
+      r.rowCount = 1;
+      r.rowBytes = u.byteLength;
+      r.sv = Y.decodeStateVector(Y.encodeStateVector(d));
+    });
+    const b = await connect(room, { actor: BOB });
+    // Nobody can take the old id: a forged update for it is refused.
+    b.ws.send(gcUpdate(OLD, 8, 1));
+    await b.closed;
+    expect(b.frames.some((f) => f.code === "bad_update")).toBe(true);
+    const rows = await inRoom(room, (x) =>
+      (x as unknown as { sql: SqlStorage }).sql
+        .exec<{ actor: string }>(
+          "SELECT actor FROM clients WHERE client = ?",
+          OLD,
+        )
+        .toArray(),
+    );
+    expect(rows).toEqual([{ actor: "server" }]);
+    // Once: a later load does not re-run it.
+    const flag = await inRoom(room, (x) =>
+      (x as unknown as { sql: SqlStorage }).sql
+        .exec("SELECT 1 FROM meta WHERE k = 'owners_seeded'")
+        .toArray(),
+    );
+    expect(flag).toHaveLength(1);
+  });
+
+  it("a new room is not seeded from its first state", async () => {
+    const room = await fresh();
+    const a = await connect(room);
+    write(a, "# Plan\n\nTyped.\n");
+    await a.ping();
+    const n = await inRoom(room, (x) =>
+      (x as unknown as { sql: SqlStorage }).sql
+        .exec<{ n: number }>(
+          "SELECT count(*) AS n FROM clients WHERE actor = 'server'",
+        )
+        .one(),
+    );
+    // Only the room's own seed id, never the person's.
+    expect(n.n).toBeLessThanOrEqual(1);
+    a.ws.close();
+  });
+});
