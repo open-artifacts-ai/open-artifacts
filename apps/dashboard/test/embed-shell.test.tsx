@@ -92,7 +92,7 @@ describe("embed mode", () => {
     privateIs404();
     const { id } = byTitle("Landing page"); // private
     const redirect = mount(`/a/${id}/full`);
-    await screen.findByRole("heading", { name: "This artifact isn't public" });
+    await screen.findByRole("heading", { name: "This artifact is restricted" });
     const link = screen.getByRole("link", { name: "Open in Open Artifacts" });
     expect(link).toHaveAttribute("href", `/a/${id}`);
     expect(link).toHaveAttribute("target", "_blank");
@@ -113,7 +113,7 @@ describe("embed mode", () => {
 
   it("any other route renders the panel, not the app", async () => {
     const redirect = mount("/settings/profile");
-    await screen.findByRole("heading", { name: "This artifact isn't public" });
+    await screen.findByRole("heading", { name: "This artifact is restricted" });
     expect(screen.queryByRole("navigation")).toBeNull();
     expect(redirect).not.toHaveBeenCalled();
     expect(credentialed).toEqual([]);
