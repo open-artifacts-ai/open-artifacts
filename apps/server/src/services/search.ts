@@ -536,6 +536,7 @@ export function searchQuery(
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller),
+      commenter: sql<number>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 1 else 0 end)`,
       // The joined space, for `space` and `can` (withSpace).
       space: spaceCols(caller, decorates(env, caller)),
       sb: snip(3),
@@ -626,7 +627,15 @@ export async function search(
       out.lastAgent = shownLastAgent(r.lastPub, caller);
       return [
         {
-          ...decorate(env, caller, out, level, r.a.spaceId, r.space),
+          ...decorate(
+            env,
+            caller,
+            out,
+            level,
+            r.a.spaceId,
+            r.space,
+            r.commenter === 1,
+          ),
           snippet: pickSnippet(r.sb ?? "", r.sd ?? "", r.st ?? ""),
         },
       ];

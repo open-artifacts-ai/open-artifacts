@@ -357,3 +357,26 @@ describe("the outsider mark on live data is sticky (#2590)", () => {
     expect(await closed).toBe(4403);
   });
 });
+
+describe("can.comment on the artifact summary (#2590)", () => {
+  const can = async (id: string, u: U) => {
+    const one = (await (await api(app, R.artifact(id), u.cookie)).json()) as {
+      can?: { comment?: boolean };
+    };
+    const list = (await (await api(app, R.artifacts, u.cookie)).json()) as {
+      items: { id: string; can?: { comment?: boolean } }[];
+    };
+    return [
+      one.can?.comment,
+      list.items.find((a) => a.id === id)?.can?.comment,
+    ];
+  };
+
+  it("a guest with a commenter share can comment; with a viewer share, not", async () => {
+    const id = await page();
+    await share(id, guest.email, "commenter");
+    expect(await can(id, guest)).toEqual([true, true]);
+    await share(id, guest.email, "viewer");
+    expect(await can(id, guest)).toEqual([false, false]);
+  });
+});

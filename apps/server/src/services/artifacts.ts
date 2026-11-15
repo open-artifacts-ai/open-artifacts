@@ -1018,14 +1018,14 @@ export async function getSummary(
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
   if (!decorates(env, caller))
-    return decorate(env, caller, out, r.level, null, null);
+    return decorate(env, caller, out, r.level, null, null, r.commenter);
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
     .select(spaceCols(caller, true, sql`${spaces.id}`))
     .from(spaces)
     .where(eq(spaces.id, r.artifact.spaceId ?? ""))
     .limit(1);
-  return withSpace(caller, out, r.level, r.artifact.spaceId, sp);
+  return withSpace(caller, out, r.level, r.artifact.spaceId, sp, r.commenter);
 }
 
 /** The artifact's space row as withSpace reads it (null: no row). */
@@ -1054,12 +1054,19 @@ export const spaceCols = (
     : sql<number>`0`,
 });
 
-/** Whether the caller may post: comments on, not capped, and signed in where only signed-in people may (#2080). */
+/**
+ * Whether the caller may post: comments on, not capped (a guest holding a
+ * commenter share is the exception, #2590), and signed in where only
+ * signed-in people may (#2080).
+ */
 function canComment(
   caller: Caller,
   out: Pick<ArtifactSummary, "comments" | "commenters">,
+  commenter = false,
 ): boolean {
-  if (capOfCaller(caller) || out.comments === false) return false;
+  const cap = capOfCaller(caller);
+  if ((cap && !(cap === "guest" && commenter)) || out.comments === false)
+    return false;
   return !(out.commenters === "signed-in" && caller.kind === "anonymous");
 }
 
@@ -1102,6 +1109,8 @@ export function withSpace<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
+  /** The caller's own share is a commenter one (#2590). */
+  commenter = false,
 ): T {
   const shared = sp?.kind === "shared";
   if (sp?.kind && (!shared || (sp.rank ?? 0) > 0))
@@ -1116,7 +1125,7 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = canComment(caller, out);
+  out.can.comment = canComment(caller, out, commenter);
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
@@ -1156,6 +1165,7 @@ export function withCan<T extends ArtifactSummary>(
   caller: Caller,
   out: T,
   level: AccessLevel,
+  commenter = false,
 ): T {
   out.can = {
     ...artifactCan(level, {
@@ -1165,7 +1175,7 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: canComment(caller, out),
+    comment: canComment(caller, out, commenter),
   };
   return commentsLast(sharingFree(caller, out, true));
 }
@@ -1181,6 +1191,7 @@ export function decorate<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
+  commenter = false,
 ): T {
   if (caller.kind !== "user") {
     // #2080: a signed-out viewer of a signed-in-only artifact learns it
@@ -1190,8 +1201,8 @@ export function decorate<T extends ArtifactSummary>(
     return out;
   }
   return decorates(env, caller)
-    ? withSpace(caller, out, level, spaceId, sp)
-    : withCan(caller, out, level);
+    ? withSpace(caller, out, level, spaceId, sp, commenter)
+    : withCan(caller, out, level, commenter);
 }
 
 // --------------------------------------------------------------------- list
@@ -1290,6 +1301,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
+      commenter: sql<number>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 1 else 0 end)`,
       lastPub: lastPublisherSql,
       asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
@@ -1351,7 +1363,17 @@ export async function list(
     );
     out.lastAgent = shownLastAgent(r.lastPub, caller);
     if (r.asksForYou > 0) out.asksForYou = r.asksForYou;
-    items.push(decorate(env, caller, out, level, r.a.spaceId, r.space));
+    items.push(
+      decorate(
+        env,
+        caller,
+        out,
+        level,
+        r.a.spaceId,
+        r.space,
+        r.commenter === 1,
+      ),
+    );
   }
   return {
     items,
