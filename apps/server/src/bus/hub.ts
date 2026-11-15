@@ -338,10 +338,6 @@ const idsGated = (ws: WebSocket | null): boolean => {
 };
 
 /** What this hub supports, listed in `hello_ok.caps` to a hello that listed ids. */
-/** #2561: the first `self` on a marked machine takes the mark; routes.ts sets it. */
-const CLAIM_SETUP = `update bus_machines set setup_pending = 0
-  where id = ?1 and setup_pending = 1 and revoked_at is null returning id`;
-
 const HUB_CAPS = [
   BUS_CAPS.rename,
   BUS_CAPS.roles,
@@ -381,6 +377,10 @@ const setupGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.setup);
 };
+
+/** #2561: the first `self` on a marked machine takes the mark; routes.ts sets it. */
+const CLAIM_SETUP = `update bus_machines set setup_pending = 0
+  where id = ?1 and setup_pending = 1 and revoked_at is null returning id`;
 
 /** #2198: `acked` goes only to a socket whose hello listed BUS_CAPS.ackConfirm. */
 const ackConfirmGated = (ws: WebSocket): boolean => {
@@ -5804,29 +5804,6 @@ export class BusHub extends DurableObject<Env> {
    * flight and FOLLOW_TIMEOUT_MS each. Errors answer in the frame's own id
    * with the service's stable codes; anything else is `internal`.
    */
-  /**
-   * #2561: hands this machine's "setup pending" mark to one claim. The UPDATE
-   * is the claim: one statement flips 1 to 0 and returns the row, so two
-   * sessions racing get one `true`. A failed D1 write answers false and leaves
-   * the mark for the next claim.
-   */
-  async #setupClaim(
-    ws: WebSocket,
-    id: string,
-    machineId: string,
-  ): Promise<void> {
-    let pending = false;
-    try {
-      const row = await stmt(this.env.DB, CLAIM_SETUP)
-        .bind(machineId)
-        .first<{ id: string }>();
-      pending = row !== null;
-    } catch {
-      logEvent("setup_claim_failed", { machineId });
-    }
-    sendFrame(ws, { v: 1, id, type: "setup_claimed", pending });
-  }
-
   async #follows(
     ws: WebSocket,
     f: Extract<ClientFrame, { type: "follow" | "unfollow" | "following" }>,
@@ -5905,6 +5882,31 @@ export class BusHub extends DurableObject<Env> {
       clearTimeout(timer);
       this.#followsInFlight--;
     }
+  }
+
+  /**
+   * #2561: hands this machine's "setup pending" mark to one claim. The UPDATE
+   * is the claim: one statement flips 1 to 0 and returns the row, so two
+   * sessions racing get one `true`. A failed D1 write answers false and leaves
+   * the mark for the next claim. Once the UPDATE ran, the mark is gone: a
+   * link drop or a daemon restart before the daemon shows it loses it, which
+   * costs one naming ask (accepted).
+   */
+  async #setupClaim(
+    ws: WebSocket,
+    id: string,
+    machineId: string,
+  ): Promise<void> {
+    let pending = false;
+    try {
+      const row = await stmt(this.env.DB, CLAIM_SETUP)
+        .bind(machineId)
+        .first<{ id: string }>();
+      pending = row !== null;
+    } catch {
+      logEvent("setup_claim_failed", { machineId });
+    }
+    sendFrame(ws, { v: 1, id, type: "setup_claimed", pending });
   }
 
   /**

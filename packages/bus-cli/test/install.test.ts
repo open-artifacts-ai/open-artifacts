@@ -1099,6 +1099,36 @@ describe("install marks setup pending (#2561)", () => {
     expect(await run(off)).toBe(0);
   });
 
+  it("a plain rerun with the same harnesses marks nothing", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    expect(await run(ctx)).toBe(0);
+    expect(setupCalls(ctx)).toHaveLength(1);
+    vi.mocked(ctx.fetch).mockClear();
+    expect(await run(ctx)).toBe(0);
+    expect(setupCalls(ctx)).toHaveLength(0);
+  });
+
+  it("wiring a harness that was not wired before marks again", async () => {
+    const some = allHarnesses();
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...some,
+      which: (c: string) => ["claude", "opencode"].includes(c),
+    });
+    expect(await run(ctx)).toBe(0);
+    vi.mocked(ctx.fetch).mockClear();
+    ctx.which = some.which;
+    expect(await run(ctx)).toBe(0);
+    expect(setupCalls(ctx)).toHaveLength(1);
+  });
+
+  it("the mark call times out instead of hanging", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    expect(await run(ctx)).toBe(0);
+    const init = setupCalls(ctx)[0]?.[1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("--check marks nothing", async () => {
     const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
     await run(ctx, { check: true });
