@@ -41,7 +41,7 @@ import {
 import { renderSkillTemplate } from "../src/mcp/skill-template.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import { busOn } from "../src/services/bus.js";
-import { DOC_SWITCH } from "../src/services/doc-switch.js";
+import { DOC_GATED_TOOLS, docToolOff } from "../src/services/doc-switch.js";
 import { VERSION } from "../src/version.gen.js";
 import { login } from "./helpers.js";
 import { APP, callWorker, connect, E } from "./mcp-helpers.js";
@@ -223,8 +223,8 @@ describe("skill.md drift", () => {
       true,
     );
     // Spaces off (the default test env): every tool but list_spaces.
-    // edit_doc joins the skill once the doc switch is open.
-    const docs = DOC_SWITCH.creation ? 0 : 1;
+    // Doc-gated tools join the skill once the doc switch is open.
+    const docs = DOC_GATED_TOOLS.filter(docToolOff).length;
     const n = TOOL_DEFS.length - 1 - docs;
     expect(md).toContain(`tools/list shows the ${n} tools`);
     // The tool count appears once; the version (e.g. 0.17.0) is not a count.

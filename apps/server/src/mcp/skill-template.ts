@@ -4,7 +4,7 @@
 
 import { agentClients, LIMITS, type Snippet } from "@oa/shared";
 import { z } from "zod";
-import { DOC_SWITCH } from "../services/doc-switch.ts";
+import { docToolOff } from "../services/doc-switch.ts";
 import { LINK_RULE, renderSections } from "./instructions.ts";
 import {
   SECRET_LABELS,
@@ -97,9 +97,7 @@ function params(schema: z.ZodType): string {
  */
 const toolDefs = (spaces: boolean) =>
   TOOL_DEFS.filter(
-    (t) =>
-      (spaces || t.name !== "list_spaces") &&
-      (DOC_SWITCH.creation || t.name !== "edit_doc"),
+    (t) => (spaces || t.name !== "list_spaces") && !docToolOff(t.name),
   );
 
 const tools = (spaces: boolean): string =>

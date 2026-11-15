@@ -23,7 +23,11 @@ import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { type AppEnv, readOnlyCap } from "../src/http/middleware.js";
 import worker from "../src/index.js";
 import manifest from "../src/mcp/tool-manifest.json";
-import { DOC_SWITCH } from "../src/services/doc-switch.js";
+import {
+  DOC_GATED_TOOLS,
+  DOC_SWITCH,
+  docToolOff,
+} from "../src/services/doc-switch.js";
 import { getUser } from "../src/services/users.js";
 import {
   ARTIFACTS,
@@ -121,14 +125,18 @@ const answering = (routes: readonly RouteDef[]) => [
   ),
 ];
 
+// The manifest was generated with the switch as it was at import, before the
+// world opens it.
+const GATED_IN_MANIFEST = DOC_GATED_TOOLS.filter((n) => !docToolOff(n));
+
 describe("coverage (derived from the router and the registries)", () => {
   it("SURFACES cover every artifact entry in ROUTE_POLICY and every MCP tool", () => {
     expect(uncovered(SURFACES, ROUTE_POLICY, TOOL_POLICY)).toEqual([]);
-    // edit_doc stays out of the public manifest until the doc switch opens (#1100).
+    // Doc-gated tools stay out of the public manifest until the doc switch opens (#1100).
     expect(
       manifest
         .map((t) => t.name)
-        .concat("edit_doc")
+        .concat(DOC_GATED_TOOLS.filter((n) => !GATED_IN_MANIFEST.includes(n)))
         .sort(),
     ).toEqual(Object.keys(TOOL_POLICY).sort());
   });
