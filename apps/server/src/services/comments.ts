@@ -736,6 +736,25 @@ export const maskBody = (body: string, pairs: [string, string][]): string => {
 const isTyped = (a: StoredActor): boolean =>
   a.kind === "user" && a.typed === true && !a.agent;
 
+/**
+ * #2381: the decision this one changed: the decider's latest pick that is
+ * not the current decision's option (none for a first decision).
+ */
+const wasOf = (ask: StoredAsk): { was?: { optionId: string; at: string } } => {
+  if (!ask.answer) return {};
+  const who = ask.answer.by.ref;
+  // Only picks made as the decider: a weigh-in before they decided is not a "was".
+  const mine = (ask.history ?? []).filter(
+    (p) => p.by.ref === who && p.decision === true,
+  );
+  for (let i = mine.length - 1; i >= 0; i--) {
+    const p = mine[i] as StoredPick;
+    if (p.optionId !== ask.answer.optionId)
+      return { was: { optionId: p.optionId, at: p.at } };
+  }
+  return {};
+};
+
 /** #2381: who decides, who chose them, the viewer's part and everyone's latest pick. */
 const deciderFields = (
   c: StoredComment,
@@ -835,6 +854,8 @@ const commentOf = (
               : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
             ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
+            ...(c.ask.replaces ? { replaces: c.ask.replaces } : {}),
+            ...(c.ask.replacedBy ? { replacedBy: c.ask.replacedBy } : {}),
             ...deciderFields(c, c.ask, viewer, users),
             ...(c.ask.answer
               ? {
@@ -843,10 +864,13 @@ const commentOf = (
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
+                    ...wasOf(c.ask),
                     ...(c.ask.answer.verified
                       ? { verified: c.ask.answer.verified }
                       : {}),
+                    // A replaced ask is never a yes: the newer ask is the question now (#2323).
                     yes:
+                      !c.ask.replacedBy &&
                       viewer.userId !== null &&
                       (c.ask.confirm !== "passkey" ||
                         c.ask.answer.verified === "passkey") &&
@@ -1306,6 +1330,7 @@ async function resolveExtras(
       to,
       ...(confirm ? { confirm } : {}),
       ...(decider ? { decider } : {}),
+      ...(askIn.replaces ? { replaces: askIn.replaces } : {}),
     };
   }
   const agents = new Map<string, Resolved["agents"][number]>();
@@ -1941,6 +1966,11 @@ export async function answerChallenge(
     throw new ApiError("bad_request", "This ask does not need a passkey");
   if (status === "resolved")
     throw new ApiError("conflict", "This ask is closed");
+  if (ask.replacedBy)
+    throw new ApiError(
+      "replaced",
+      "A newer ask replaced this one: pick on that",
+    );
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
   if (ask.answer?.optionId === optionId)
@@ -1983,6 +2013,11 @@ export async function answerAsk(
     threadId,
     commentId,
   );
+  if (ask.replacedBy)
+    throw new ApiError(
+      "replaced",
+      "A newer ask replaced this one: pick on that",
+    );
   let verified: "passkey" | undefined;
   const needsPasskey =
     ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));
