@@ -801,6 +801,7 @@ function Composer({
       {!canMention &&
         !guest &&
         !capped &&
+        !api.outsider &&
         initial === "" &&
         /(^|\s)@/.test(text) && (
           <p className={`${TXT} text-muted-foreground`}>
@@ -1582,14 +1583,17 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                 });
               }}
               extra={
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={status.isPending}
-                  onClick={toggle}
-                >
-                  {resolved ? "Reopen" : "Resolve"}
-                </Button>
+                // #2590: an outsider doesn't resolve threads.
+                api.outsider ? undefined : (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={status.isPending}
+                    onClick={toggle}
+                  >
+                    {resolved ? "Reopen" : "Resolve"}
+                  </Button>
+                )
               }
             />
           </>
@@ -1606,14 +1610,16 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               >
                 Reply
               </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={status.isPending}
-                onClick={toggle}
-              >
-                {resolved ? "Reopen" : "Resolve"}
-              </Button>
+              {!api.outsider && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={status.isPending}
+                  onClick={toggle}
+                >
+                  {resolved ? "Reopen" : "Resolve"}
+                </Button>
+              )}
             </div>
           )
         )}

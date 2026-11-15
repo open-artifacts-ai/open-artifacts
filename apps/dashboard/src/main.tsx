@@ -50,6 +50,21 @@ async function startMocks() {
     );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
+  // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);
+  // &sharedBy=none answers null.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/artifacts/:id", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as object;
+        return HttpResponse.json({
+          ...body,
+          sharedBy:
+            params.get("sharedBy") === "none" ? null : { name: "Ada Lovelace" },
+        });
+      }),
+    );
   if (role === "admin" || role === "member" || role === "guest")
     extra.push(
       http.get("*/api/v1/me", () =>

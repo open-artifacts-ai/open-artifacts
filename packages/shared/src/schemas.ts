@@ -539,15 +539,47 @@ export const ShareSchema = z.object({
 export type Share = z.infer<typeof ShareSchema>;
 
 /**
+ * One way an address can log in here (#2520).
+ * - google: Google works now (Gmail, or an address in the login domains);
+ * - google_workspace: works if the address is a Google Workspace account on
+ *   its own domain;
+ * - google_after_code: a personal Google account works after a one-time
+ *   code to the address, first login only;
+ * - email_code: an email code alone.
+ */
+export const LoginWaySchema = z.enum([
+  "google",
+  "google_workspace",
+  "google_after_code",
+  "email_code",
+]);
+export type LoginWay = z.infer<typeof LoginWaySchema>;
+
+/** The ways in for one address (GET R.memberReach, MemberInviteResult.reach). */
+export const InviteReachSchema = z.object({
+  /** [] = this address can't log in here. */
+  ways: z.array(LoginWaySchema),
+  /** The address belongs to a removed person (ISO date); inviting restores them. */
+  removed: z.object({ at: z.string() }).optional(),
+});
+export type InviteReach = z.infer<typeof InviteReachSchema>;
+
+/**
  * ShareResult.recipient: present only when the recipient can't sign in on
  * this install yet (the share still applies). needs_invite: in a verified
  * domain on an invite-only install, so an admin must invite them as a
  * member; outside_domains: outside the verified domains and no guest
- * sign-in is offered (see InviteUnreachableReasonSchema).
+ * sign-in is offered (see InviteUnreachableReasonSchema); workspace_only:
+ * only a Google Workspace account at that address can sign in (#2590).
  */
 export const ShareRecipientSchema = z.object({
   canSignIn: z.literal(false),
-  reason: z.enum(["needs_invite", "outside_domains", "no_sign_in_method"]),
+  reason: z.enum([
+    "needs_invite",
+    "outside_domains",
+    "no_sign_in_method",
+    "workspace_only",
+  ]),
 });
 export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
 
@@ -563,6 +595,8 @@ export const ShareResultSchema = ShareSchema.extend({
    * copy and the email agree. Sent by direct-sign-in and Access installs.
    */
   signInMethods: z.array(SignInProviderIdSchema).optional(),
+  /** The ways in for the recipient, [] when nothing admits them (#2590). */
+  reach: InviteReachSchema.optional(),
 });
 export type ShareResult = z.infer<typeof ShareResultSchema>;
 
@@ -598,6 +632,12 @@ export const MemberSchema = z.object({
   /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
   personalArtifacts: z.boolean().optional(),
   /**
+   * GET R.members: a suspended or removed member with any artifact in their
+   * personal space, trash included (what R.memberTransfer counts), so a client
+   * asks for a transfer summary only for them. Absent otherwise.
+   */
+  transferable: z.boolean().optional(),
+  /**
    * GET R.members (#1146): true when removing this person can be undone by
    * directory sync, which would bring their address back as a new, empty
    * account (Google sync on and a Workspace connected, no Google link, an
@@ -607,7 +647,10 @@ export const MemberSchema = z.object({
 });
 export type Member = z.infer<typeof MemberSchema>;
 
-export const MemberRoleInputSchema = RoleSchema.exclude(["owner", "guest"]);
+/** The roles an invite may name (#2520: a guest invite too). */
+export const MemberRoleInputSchema = RoleSchema.exclude(["owner"]);
+/** The roles a role change may name: an invite's, but never guest. */
+export const MemberPatchRoleSchema = RoleSchema.exclude(["owner", "guest"]);
 
 export const MemberInviteSchema = z.strictObject({
   email: z.string().email(),
@@ -639,11 +682,13 @@ export const MemberInviteResultSchema = MemberSchema.extend({
    * (["google"] when signIn is uncertain). The same list the email uses.
    */
   signInMethods: z.array(SignInProviderIdSchema).optional(),
+  /** The ways in for this address (#2520). */
+  reach: InviteReachSchema.optional(),
 });
 export type MemberInviteResult = z.infer<typeof MemberInviteResultSchema>;
 
 export const MemberPatchSchema = z.strictObject({
-  role: MemberRoleInputSchema,
+  role: MemberPatchRoleSchema,
 });
 export type MemberPatch = z.infer<typeof MemberPatchSchema>;
 
@@ -1671,3 +1716,29 @@ export const PasskeyChallengeSchema = z.object({
   expiresAt: z.string(),
 });
 export type PasskeyChallenge = z.infer<typeof PasskeyChallengeSchema>;
+
+/** GET R.loginSettings (#2520). */
+export const LoginSettingsSchema = z.object({
+  /** The login domains (AUTH_DOMAINS). */
+  domains: z.array(z.string()),
+  /** Anyone at a login domain can join (AUTH_DOMAIN_JOIN). */
+  autoJoin: z.boolean(),
+  /** The caller may change these here. */
+  editable: z.boolean(),
+  /** The domain the owner could add now: their token hd at their last Google login; null for a Gmail owner. */
+  provable: z.string().nullable(),
+  /** Active people whose address is in the login domains, however they came in (invited, joined or shared). */
+  joined: z.number().int().nonnegative(),
+  /** The caller has answered the first-invite question (per person). */
+  firstInviteSeen: z.boolean(),
+  /** A change was accepted and is still being applied. */
+  applying: z.boolean().optional(),
+});
+export type LoginSettings = z.infer<typeof LoginSettingsSchema>;
+
+/** PUT R.loginSettings body. */
+export const LoginSettingsPutSchema = z.strictObject({
+  autoJoin: z.boolean(),
+  domains: z.array(z.string().min(1).max(253)).max(20),
+});
+export type LoginSettingsPut = z.infer<typeof LoginSettingsPutSchema>;

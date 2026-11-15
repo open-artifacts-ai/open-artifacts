@@ -1,8 +1,16 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { markFailed, readPolicy, setStaged, writeState } from "@oa/bus-daemon";
+import {
+  clearInstallRequest,
+  markFailed,
+  markLoginActive,
+  readInstallRequest,
+  readPolicy,
+  setStaged,
+  writeState,
+} from "@oa/bus-daemon";
 import { describe, expect, it, vi } from "vitest";
-import { update } from "../src/commands/update.ts";
+import { installViaDaemon, update } from "../src/commands/update.ts";
 import { parse } from "../src/index.ts";
 import { main } from "../src/main.ts";
 import { fakeCtx } from "./fake.ts";
@@ -51,8 +59,21 @@ describe("oa-bus auto-update", () => {
 });
 
 describe("oa-bus update", () => {
-  it("is not registered as a command yet", () => {
-    expect(() => parse(["update"])).toThrow(/unknown command/);
+  it("is registered, takes no argument and no --yes", () => {
+    expect(parse(["update"])).toMatchObject({ cmd: "update" });
+    expect(() => parse(["update", "1.2.3"])).toThrow(/unexpected/);
+    expect(() => parse(["update", "--yes"])).toThrow(/does not apply/);
+    expect(() => parse(["update", "-y"])).toThrow(/does not apply/);
+  });
+  it("through main: with nothing staged it says so and installs nothing", async () => {
+    const c = world();
+    expect(await main(["update"], () => c)).toBe(0);
+    expect(c.out()[0]).toMatch(/^Up to date\. Nothing is waiting/);
+  });
+  it("through main: not in a terminal, exit 2", async () => {
+    const c = world(false);
+    setStaged(c.home, "1.6.0", 1);
+    expect(await main(["update"], () => c)).toBe(2);
   });
   it("refuses without a terminal, exit 2", async () => {
     const c = world(false);
@@ -136,5 +157,54 @@ describe("oa-bus update", () => {
     expect(install).not.toHaveBeenCalled();
     expect(await main(["auto-update", "status"], () => c)).toBe(0);
     expect(c.out()).toContain("Update needs you");
+  });
+});
+
+describe("installViaDaemon", () => {
+  const ctxFor = () => {
+    const c = world();
+    setStaged(c.home, "1.6.0", 1);
+    c.now = () => 1000;
+    return c;
+  };
+  it("leaves a request and returns once the version is current", async () => {
+    const c = ctxFor();
+    c.sleep = async () => {
+      // The daemon: consumes the request, restarts, passes the self-check.
+      expect(readInstallRequest(c.home)).toEqual({
+        version: "1.6.0",
+        at: 1000,
+      });
+      clearInstallRequest(c.home);
+      writeState(c.home, { armed: true, current: "1.6.0" });
+    };
+    expect(await installViaDaemon(c, "1.6.0", 5000)).toBe(true);
+  });
+  it("gives up with the daemon silent, and withdraws its request", async () => {
+    const c = ctxFor();
+    c.sleep = async () => {};
+    expect(await installViaDaemon(c, "1.6.0", 2000)).toBe(false);
+    expect(readInstallRequest(c.home)).toBeUndefined();
+    expect(c.err().join("\n")).toContain("1.6.0 was not installed. Run ");
+  });
+  it("stops at once when the version failed to start", async () => {
+    const c = ctxFor();
+    c.sleep = async () => {
+      markFailed(c.home, "1.6.0");
+    };
+    const sleeps = vi.fn(c.sleep);
+    c.sleep = sleeps;
+    expect(await installViaDaemon(c, "1.6.0", 60_000)).toBe(false);
+    expect(sleeps.mock.calls.length).toBeLessThan(3);
+  });
+  it("refuses while a login is in progress and leaves no request", async () => {
+    const c = ctxFor();
+    const done = markLoginActive(c.home);
+    expect(await installViaDaemon(c, "1.6.0", 1000)).toBe(false);
+    expect(c.err().join("\n")).toContain(
+      "A login or an approval is in progress.",
+    );
+    expect(readInstallRequest(c.home)).toBeUndefined();
+    done();
   });
 });

@@ -212,9 +212,17 @@ test("#800: inviting outside the login domain says how they would log in", async
   const button = page.getByRole("button", {
     name: /^(Invite people|Add member)$/,
   });
-  // "Invite people" once the server has #2520's login settings.
-  const rows = (await button.textContent())?.trim() === "Invite people";
   await button.click();
+  // Which dialog opens, not the button's first label: the label can change
+  // from "Add member" to "Invite people" once the login settings load
+  // (#2520), between a read of it and the click.
+  const opened = page.getByRole("dialog", {
+    name: /^(Invite people|Add a member)$/,
+  });
+  await expect(opened).toBeVisible();
+  // "Invite people" on a server with #2520's login settings.
+  const rows =
+    (await page.getByRole("dialog", { name: "Invite people" }).count()) > 0;
   if (rows) {
     const d = page.getByRole("dialog", { name: "Invite people" });
     await d.getByRole("textbox", { name: "Email" }).fill(`${maybe} `);

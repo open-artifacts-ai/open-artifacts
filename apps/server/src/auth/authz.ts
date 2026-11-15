@@ -768,3 +768,6 @@ export function inviteTtlDays(role: string): number | null {
 
 /** True for an admin's row: its lapsed invite is never waived by the domain path. */
 export const isAdminRow = (role: string): boolean => role === "admin";
+
+/** True for a guest invite: restoring that address brings them back as a guest only (#2520). */
+export const isGuestInvite = (role: string): boolean => role === "guest";

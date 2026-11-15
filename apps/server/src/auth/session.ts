@@ -43,6 +43,8 @@ export async function signSession(
      */
     epoch: number;
     tenant?: string;
+    /** The verified token hd (SessionPayload.h); proof only, never access. */
+    hd?: string;
     maxAgeS?: number;
     /**
      * When a forced re-authentication happened (ms): Google's auth_time after
@@ -60,6 +62,7 @@ export async function signSession(
     iat: now,
     p: opts.provider,
     ...(opts.tenant ? { t: opts.tenant } : {}),
+    ...(opts.hd ? { h: opts.hd.toLowerCase() } : {}),
     e: opts.epoch,
     ...(opts.authAt !== undefined ? { a: opts.authAt } : {}),
   };
@@ -98,6 +101,7 @@ export async function readSession(
     const prov = s.p ?? "access";
     if (!PROVIDERS.includes(prov)) return null;
     if (s.t !== undefined && typeof s.t !== "string") return null;
+    if (s.h !== undefined && typeof s.h !== "string") return null;
     const e = s.e ?? 0;
     if (!Number.isSafeInteger(e) || e < 0) return null;
     const iat =
@@ -111,6 +115,7 @@ export async function readSession(
       iat,
       p: prov,
       ...(s.t !== undefined ? { t: s.t } : {}),
+      ...(s.h !== undefined ? { h: s.h } : {}),
       e,
       ...(a !== undefined ? { a } : {}),
     };

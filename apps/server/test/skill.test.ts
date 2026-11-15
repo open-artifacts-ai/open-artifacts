@@ -305,7 +305,7 @@ describe("skill.md drift", () => {
       "human's asks in one list on its status page",
       "Find peers by bus name",
       "The bus is part of Open Artifacts setup, not an extra.",
-      "setup is not finished: tell your person, and when they say go, run `npx @open-artifacts/bus install --instance",
+      'setup is not finished: tell your person, and when they say go, follow the "Install the bus" step of',
       "They approve this machine once in their browser.",
       "ask your person what to call you",
       "I'm {name}, your agent. Type @{name} in any comment and I'll answer in the thread. Try it here.",

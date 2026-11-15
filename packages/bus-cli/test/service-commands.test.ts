@@ -262,7 +262,10 @@ describe("a Node upgrade or move does not break the bus (#1729)", () => {
     // bin is a symlink into versions/<v>; each kept version has its launcher.
     const real = realpathSync(launcher);
     const isLauncher = (f: string) =>
-      f === real || /[\\/]versions[\\/][^\\/]+[\\/]node$/.test(f);
+      f === real ||
+      // The rescue shim's launcher is the same text, kept outside versions/.
+      f === join(ctx.home, "rescue-node") ||
+      /[\\/]versions[\\/][^\\/]+[\\/]node$/.test(f);
     const holders = [ctx.userHome, ctx.home]
       .flatMap(files)
       .filter((f) => !isLauncher(f) && readFileSync(f).includes(GONE));
@@ -275,7 +278,14 @@ describe("a Node upgrade or move does not break the bus (#1729)", () => {
       files(ctx.userHome).filter(
         (f) => f.endsWith(name) && readFileSync(f, "utf8").includes(launcher),
       );
-    expect(naming("oa-bus.service")).toHaveLength(1);
+    // The unit runs the rescue shim, which execs the launcher (#2552).
+    expect(
+      files(ctx.userHome).filter(
+        (f) =>
+          f.endsWith("oa-bus.service") &&
+          readFileSync(f, "utf8").includes(join(ctx.home, "rescue")),
+      ),
+    ).toHaveLength(1);
     expect(naming("opencode.json")).toHaveLength(1);
     expect(naming("config.toml")).toHaveLength(1);
   });

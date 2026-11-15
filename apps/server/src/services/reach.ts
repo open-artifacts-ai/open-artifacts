@@ -8,7 +8,11 @@
 // - codes: codeRule, the rule codeEligibility applies.
 // One D1 read at most (the share lookup codeRule may ask for).
 import { inDomains, noDomainIdentityOk } from "@oa/auth-core";
-import { orderSignInMethods, type ShareRecipient } from "@oa/shared";
+import {
+  type LoginWay,
+  orderSignInMethods,
+  type ShareRecipient,
+} from "@oa/shared";
 import {
   type AuthConfig,
   authConfig,
@@ -38,6 +42,26 @@ export type Reach = {
   inDomain: boolean;
 };
 
+/** LoginWay order, as the schema lists them. */
+const WAY_ORDER: readonly LoginWay[] = [
+  "google",
+  "google_workspace",
+  "google_after_code",
+  "email_code",
+];
+
+/**
+ * The ways in from what reachOf found. "google_after_code" waits for the code
+ * step (slice 2), so it is never returned yet.
+ */
+export function waysOf(r: Reach): LoginWay[] {
+  const ways = new Set<LoginWay>();
+  if (r.methods.includes("google")) ways.add("google");
+  else if (r.googleUncertain) ways.add("google_workspace");
+  if (r.methods.includes("email")) ways.add("email_code");
+  return WAY_ORDER.filter((w) => ways.has(w));
+}
+
 const domainOf = (email: string) => email.slice(email.lastIndexOf("@") + 1);
 
 /**
@@ -59,7 +83,13 @@ export async function reachOf(
   if (offered.has("access") && (row ? row.status === "active" : await shared()))
     methods.push("access");
   // admit: a removed or suspended row is refused; no row needs a join rule.
-  if (offered.has("google") && active && (row || googleNewRowOk(cfg, false))) {
+  // A share to the exact address makes a guest on strong evidence (#2590), so
+  // Google admits a recipient with no row too, on any install.
+  if (
+    offered.has("google") &&
+    active &&
+    (row || googleNewRowOk(cfg, false) || (await shared()))
+  ) {
     // Accepted assumption (review #799): an address in a verified domain is
     // treated as certain, as if its Google tenant (hd) were that domain. A
     // consumer Google account registered with a work address has no hd and
@@ -125,9 +155,10 @@ export const inviteReach = (
  * A share recipient (review item 37), after the share is written: which
  * methods admit them, and ShareResult.recipient when none could (the share
  * still applies). Only for no row or an active one: a removed or suspended
- * person is out of scope here. Google that only might admit them (outside
- * AUTH_DOMAINS) isn't flagged, and the email names Google for them, so the
- * flag and the email agree.
+ * person is out of scope here. A way is certain only when it surely admits
+ * them today: Google for Gmail or an address in the login domains, codes where
+ * on. Google that only might admit them (outside AUTH_DOMAINS: a Workspace
+ * account) is flagged "workspace_only", and the email names Google for them.
  */
 export async function shareReach(
   env: Env,
@@ -137,13 +168,25 @@ export async function shareReach(
   recipient?: ShareRecipient;
   /** The address's org role, null with no user row (guestRecipients takes it). */
   role: string | null;
+  /** The ways in for the address, [] when none (#2590). */
+  ways: LoginWay[];
 }> {
   const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
   const role = row?.role ?? null;
   const r = await reachOf(env, email, row, async () => true);
-  if (r.methods.length > 0) return { methods: r.methods, role };
-  if (r.googleUncertain) return { methods: ["google"], role };
-  if (row && row.status !== "active") return { methods: [], role };
+  const ways = waysOf(r);
+  if (r.methods.length > 0) return { methods: r.methods, role, ways };
+  // Only Google as a Workspace account might admit them (#2590): the email
+  // names Google, and the sharer is warned it works only if the address is a
+  // Google Workspace account (a consumer account waits for the code step).
+  if (r.googleUncertain)
+    return {
+      methods: ["google"],
+      recipient: { canSignIn: false, reason: "workspace_only" },
+      role,
+      ways,
+    };
+  if (row && row.status !== "active") return { methods: [], role, ways };
   // In a verified domain: an invite as a member would let them in, unless
   // no offered method admits a member there either.
   // No domains at all: nothing is "outside" them, only an invite admits.
@@ -156,5 +199,10 @@ export async function shareReach(
           inv?.googleUncertain
         ? "needs_invite"
         : "no_sign_in_method";
-  return { methods: [], recipient: { canSignIn: false, reason }, role };
+  return {
+    methods: [],
+    recipient: { canSignIn: false, reason },
+    role,
+    ways,
+  };
 }
