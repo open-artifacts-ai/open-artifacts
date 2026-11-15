@@ -235,6 +235,12 @@ export function shareEmail(
 
 const OUTSIDE_TITLE_MAX = 80;
 
+/** Looks like a URL or holds one: "://", "www.", or a domain-like token. */
+const urlish = (s: string): boolean =>
+  /:\/\/|www\.|(?:^|[^\p{L}\p{N}-])[\p{L}\p{N}-]+\.[\p{L}]{2,}(?![\p{L}\p{N}])/iu.test(
+    s,
+  );
+
 const OUTSIDE_TXT = `{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
 
 {{pageTitle}}
@@ -290,15 +296,21 @@ export function outsideShareEmail(
     methods.length > 0
       ? `Open it with ${methods.map(phrase).join(" or ")}.`
       : signInSentence(p.signIn, values.recipientEmail, p);
-  const title = oneLine(p.title, OUTSIDE_TITLE_MAX);
+  // Sender-controlled text that looks like a URL is dropped (a mail client
+  // would link it): "A page" for the title, the bare address for the name.
+  const title = urlish(p.title)
+    ? "A page"
+    : oneLine(p.title, OUTSIDE_TITLE_MAX);
+  const senderEmail = oneLine(p.senderEmail, 320);
+  const sender = urlish(values.inviterName) ? senderEmail : values.inviterName;
   return render(
     OUTSIDE_HTML,
     OUTSIDE_TXT,
     `{{senderName}} shared "{{pageTitle}}" with you`,
     {
       ...values,
-      senderName: values.inviterName,
-      senderEmail: oneLine(p.senderEmail, 320),
+      senderName: sender,
+      senderEmail,
       pageTitle: title,
       pageUrl: linkOn(origin, p.path),
       openLine,

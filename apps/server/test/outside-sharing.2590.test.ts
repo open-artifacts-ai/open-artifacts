@@ -14,7 +14,11 @@ import {
   linkEligibility,
 } from "../src/services/identity.js";
 import { settingsView } from "../src/services/members.js";
-import { OUTSIDE_SHARING_KEY, outsideFrom } from "../src/services/outside.js";
+import {
+  OUTSIDE_SHARING_KEY,
+  outsideDefault,
+  outsideSharingOn,
+} from "../src/services/outside.js";
 import { outsideEmail } from "../src/services/outside-email.js";
 import {
   OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
@@ -98,20 +102,53 @@ async function sharer(over: Partial<Env> = {}, name = "Pat Sharer") {
 }
 
 describe("the owner's switch", () => {
-  it("defaults on, and off on the hosted Business tier", async () => {
-    await setSwitch(null);
-    expect(outsideFrom(undefined, null)).toBe(true);
+  it("the default is on, and off on the hosted Business tier", () => {
+    expect(outsideDefault(null)).toBe(true);
     for (const tier of ["solo", "free", "trial", "team"])
-      expect(outsideFrom(undefined, { tier } as never)).toBe(true);
-    expect(outsideFrom(undefined, { tier: "business" } as never)).toBe(false);
-    // A stored choice wins over the tier.
-    expect(outsideFrom("true", { tier: "business" } as never)).toBe(true);
-    expect(outsideFrom("false", null)).toBe(false);
+      expect(outsideDefault({ tier } as never)).toBe(true);
+    expect(outsideDefault({ tier: "business" } as never)).toBe(false);
+  });
+
+  it("a stored fact: the first read writes the default once, with a system audit row; a later tier change moves nothing", async () => {
+    await setSwitch(null);
+    const audits = async () =>
+      (
+        await env.DB.prepare(
+          "select count(*) n from audit_events where action = 'settings.change' and actor_kind = 'system'",
+        ).first<{ n: number }>()
+      )?.n as number;
+    const before = await audits();
+    // A Team instance (the default is on) with a share-made guest.
+    expect(await outsideSharingOn(env)).toBe(true);
+    expect(await audits()).toBe(before + 1);
     expect(
-      (await settingsView(env, false, { tier: "business" } as never))
-        .outsideSharing,
-    ).toBe(false);
-    expect((await settingsView(env, false)).outsideSharing).toBe(true);
+      await env.DB.prepare("select value from settings where key = ?")
+        .bind(OUTSIDE_SHARING_KEY)
+        .first(),
+    ).toEqual({ value: "true" });
+    expect(await outsideSharingOn(env)).toBe(true);
+    expect(await audits()).toBe(before + 1);
+    // The instance moves to Business: the stored value stays, and the guest
+    // still gets in; the page and enforcement read the same fact.
+    const e = direct({ AUTH_DOMAIN_JOIN: "invite", TIER: "business" }) as Env;
+    const email = uniq("stay", "gmail.com");
+    await seedShare(email);
+    expect(
+      await admit(e, authConfig(e), {
+        provider: "google",
+        subject: `sub-${email}`,
+        email,
+        name: "G",
+        tenant: null,
+        hd: null,
+        bound: "email",
+      }),
+    ).toMatchObject({ ok: true, user: { role: "guest" } });
+    expect((await settingsView(e, false)).outsideSharing).toBe(true);
+    // An explicit off still ends them.
+    await setSwitch("false");
+    expect((await settingsView(e, false)).outsideSharing).toBe(false);
+    await setSwitch(null);
   });
 
   it("only the owner changes it, and the change is audited as settings.change", async () => {
@@ -124,6 +161,8 @@ describe("the owner's switch", () => {
     });
     expect(denied.status).toBe(403);
     expect((await errOf(denied)).code).toBe("owner_only");
+    // The first read writes the default (a system audit row): not this change.
+    await outsideSharingOn(env);
     const before = (
       await env.DB.prepare(
         "select count(*) n from audit_events where action = 'settings.change'",
@@ -271,6 +310,30 @@ describe("turning the switch off ends outside guests' sessions", () => {
   });
 });
 
+describe("past the fan-out cap", () => {
+  it("every share-made guest's session ends, also those the socket revoke didn't reach", async () => {
+    await setSwitch(null);
+    const e = direct({ AUTH_DOMAIN_JOIN: "invite" }) as Env;
+    const owner = await login(uniq("own", "a.com"), "owner");
+    const guests = [];
+    // The free-plan cap is 20: 22 guests, two past it.
+    for (let i = 0; i < 22; i++)
+      guests.push(await login(uniq(`cap${i}`, "outside.example"), "guest"));
+    const last = guests[guests.length - 1];
+    if (!last) throw new Error("no guests");
+    expect((await call(e, R.me, last.cookie)).status).toBe(200);
+    const r = await call(e, R.settings, owner.cookie, "PATCH", {
+      outsideSharing: false,
+    });
+    expect(r.status).toBe(200);
+    const statuses = await Promise.all(
+      guests.map(async (g) => (await call(e, R.me, g.cookie)).status),
+    );
+    expect(statuses.every((s) => s === 401)).toBe(true);
+    await setSwitch(null);
+  });
+});
+
 describe("outside share email limits", () => {
   const outsiders = async (
     n: number,
@@ -398,6 +461,52 @@ describe("the outside share email", () => {
     );
     expect(links).toEqual([`https://${env.APP_HOST}/a/${id}`]);
     expect(mail?.html).toContain(">Open the page<");
+  });
+
+  it("a title or name that looks like a URL is dropped: A page, and the bare address", async () => {
+    const m = mailer();
+    const e = direct({ ...m.env }) as Env;
+    // [title, display name, title shown, name shown (null: the bare address)]
+    const cases: [string, string, string, string | null][] = [
+      ["see https://evil.example/x", "Pat", "A page", "Pat"],
+      ["www.evil.example plan", "Pat", "A page", "Pat"],
+      ["open evil.example now", "Pat", "A page", "Pat"],
+      ["Q3 plan", "http://evil.example", "Q3 plan", null],
+      ["Q3 plan", "evil.example Support", "Q3 plan", null],
+      ["Q3 plan", "Pat Sharer", "Q3 plan", "Pat Sharer"],
+    ];
+    for (const [title, name, shown, nameShown] of cases) {
+      const o = await login(uniq("own", "a.com"), "member");
+      await env.DB.prepare("update users set display_name = ? where id = ?")
+        .bind(name, o.userId)
+        .run();
+      const member = await getUser(env, o.userId);
+      if (!member) throw new Error("no user");
+      const { id } = await publish(
+        env,
+        member,
+        { title, format: "markdown", content: "x" } as never,
+        null,
+        undefined,
+        "create",
+      );
+      const email = uniq("to", "gmail.com");
+      expect(
+        (
+          await call(e, R.shares(id), o.cookie, "PUT", {
+            email,
+            role: "viewer",
+          })
+        ).status,
+      ).toBe(200);
+      const mail = m.sent.find((x) => x.to === email);
+      const sender = nameShown ?? member.email;
+      expect(mail?.subject, title + name).toBe(
+        `${sender} shared "${shown}" with you`,
+      );
+      expect(mail?.text).not.toContain("evil.example");
+      expect(mail?.html).not.toContain("evil.example");
+    }
   });
 
   it("no other sender text: a hostile title is plain, escaped text", async () => {

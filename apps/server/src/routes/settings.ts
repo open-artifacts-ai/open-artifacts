@@ -53,9 +53,7 @@ export function mountSettings(app: AppType): void {
     const user = requireUser(c);
     if (!orgCan(user, "settings.read"))
       throw new ApiError("not_found", "Not found");
-    return c.json(
-      await settingsView(c.env, spacesOn(c.env), planOfMember(user)),
-    );
+    return c.json(await settingsView(c.env, spacesOn(c.env)));
   });
 
   app.patch(R.settings, async (c) => {
@@ -72,7 +70,6 @@ export function mountSettings(app: AppType): void {
       await patchSettings(c.env, patch, {
         spaces: spacesOn(c.env),
         by: userActor(actor.id),
-        plan: planOfMember(actor),
         ctx: execCtx(c),
       }),
     );

@@ -9,6 +9,7 @@ import type { EffectivePlan } from "../billing/plan.js";
 import { readPlan } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { audit } from "./audit.js";
 
 export const OUTSIDE_SHARING_KEY = "outside_sharing";
 
@@ -16,21 +17,51 @@ export const OUTSIDE_SHARING_KEY = "outside_sharing";
 export const outsideDefault = (plan: EffectivePlan | null): boolean =>
   plan?.tier !== "business";
 
-/** The effective switch, from the stored value (if any) and the plan. */
-export const outsideFrom = (
-  stored: string | undefined,
-  plan: EffectivePlan | null,
-): boolean =>
-  stored === "true" ? true : stored === "false" ? false : outsideDefault(plan);
-
-/** Whether outside sharing is on for this install now. */
+/**
+ * Whether outside sharing is on, as a stored fact (#2590): the first read with
+ * nothing stored writes the plan's default once (on, but off on hosted
+ * Business), with a settings.change audit row, actor system, in the same
+ * batch. After that it is never derived from the plan again, so moving to
+ * another tier changes nothing until the owner does. The page and every
+ * enforcement read this same value. An unreadable plan writes nothing (on
+ * for now) so a billing outage can't fix a wrong default.
+ */
 export async function outsideSharingOn(env: Env): Promise<boolean> {
-  const row = await stmt(env.DB, "select value from settings where key = ?1")
-    .bind(OUTSIDE_SHARING_KEY)
-    .first<{ value: string }>();
-  if (row?.value === "true") return true;
-  if (row?.value === "false") return false;
-  return outsideDefault(await readPlan(env).catch(() => null));
+  const read = () =>
+    stmt(env.DB, "select value from settings where key = ?1")
+      .bind(OUTSIDE_SHARING_KEY)
+      .first<{ value: string }>();
+  const stored = await read();
+  if (stored) return stored.value === "true";
+  let plan: EffectivePlan | null;
+  try {
+    plan = await readPlan(env);
+  } catch {
+    return true;
+  }
+  const on = outsideDefault(plan);
+  await env.DB.batch([
+    audit(
+      env,
+      "settings.change",
+      { type: "settings", id: "instance" },
+      { kind: "system", id: null },
+      {
+        detail: { changes: { outsideSharing: { from: null, to: on } } },
+        when: {
+          sql: "not exists (select 1 from settings where key = ?)",
+          args: [OUTSIDE_SHARING_KEY],
+        },
+      },
+    ),
+    stmt(
+      env.DB,
+      "insert into settings (key, value) values (?1, ?2) on conflict (key) do nothing",
+    ).bind(OUTSIDE_SHARING_KEY, String(on)),
+  ]);
+  // A concurrent first read may have written the other way round: what is
+  // stored now is the fact.
+  return (await read())?.value === "true";
 }
 
 /** An address outside the instance: not in the login domains (with none set, every address). */

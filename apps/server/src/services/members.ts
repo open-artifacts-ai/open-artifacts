@@ -60,7 +60,7 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
-import { OUTSIDE_SHARING_KEY, outsideFrom } from "./outside.js";
+import { OUTSIDE_SHARING_KEY, outsideSharingOn } from "./outside.js";
 import { inviteReach, waysOf } from "./reach.js";
 import {
   IDENTITIES_SQL,
@@ -1146,13 +1146,11 @@ export const SPACE_MANAGER_MAPPINGS_KEY = "space_manager_mappings";
 export async function settingsView(
   env: Env,
   spaces: boolean,
-  plan: EffectivePlan | null = null,
 ): Promise<Settings> {
+  // The stored fact (outside.ts): the first read writes the default once.
+  const outsideSharing = await outsideSharingOn(env);
   const kv = await getSettingsKv(env);
-  const s: Settings = {
-    ...toSettings(kv),
-    outsideSharing: outsideFrom(kv.get(OUTSIDE_SHARING_KEY), plan),
-  };
+  const s: Settings = { ...toSettings(kv), outsideSharing };
   return spaces
     ? {
         ...s,
@@ -1183,7 +1181,6 @@ export async function patchSettings(
   opts: {
     spaces?: boolean;
     by?: AuditActor;
-    plan?: EffectivePlan | null;
     ctx?: Pick<ExecutionContext, "waitUntil">;
   } = {},
 ): Promise<Settings> {
@@ -1195,13 +1192,10 @@ export async function patchSettings(
   // default visibility are plain instance settings, no secrets. Read before
   // the batch; the row is written only when a value differs now.
   if (keys.length) {
-    const kv = await getSettingsKv(env);
+    const outsideSharing = await outsideSharingOn(env);
     const before: Settings = {
-      ...toSettings(kv),
-      outsideSharing: outsideFrom(
-        kv.get(OUTSIDE_SHARING_KEY),
-        opts.plan ?? null,
-      ),
+      ...toSettings(await getSettingsKv(env)),
+      outsideSharing,
     };
     const changed = keys.filter((k) => before[k] !== patch[k]);
     if (changed.length)
@@ -1250,14 +1244,13 @@ export async function patchSettings(
   // #2590: turning outside sharing off ends share-made guests' sessions now
   // (their logins are refused from here on), not only their next login: the
   // epoch bump ends every session, and their live sockets close
-  // (revokeUsersLive, under its fan-out cap, as the plan lock does).
+  // (revokeUsersLive, under its fan-out cap, as the plan lock does). Past the
+  // cap the rest keep no session either: the epoch bump (one UPDATE for all of
+  // them) ends theirs at their next authorization; only their open sockets
+  // wait for the socket TTL.
   let revoked: string[] = [];
   if (keys.includes("outsideSharing") && patch.outsideSharing === false) {
-    const was = outsideFrom(
-      (await getSettingsKv(env)).get(OUTSIDE_SHARING_KEY),
-      opts.plan ?? null,
-    );
-    if (was) {
+    if (await outsideSharingOn(env)) {
       const domains = JSON.stringify(authConfig(env).domains);
       const { results } = await stmt(env.DB, OUTSIDE_GUESTS)
         .bind(domains, revokeFanoutCap(env) + 1)
@@ -1269,5 +1262,5 @@ export async function patchSettings(
   if (writes.length) await env.DB.batch(writes);
   if (revoked.length)
     await revokeUsersLive(env, revoked, "outside sharing off", opts.ctx);
-  return settingsView(env, opts.spaces === true, opts.plan ?? null);
+  return settingsView(env, opts.spaces === true);
 }
