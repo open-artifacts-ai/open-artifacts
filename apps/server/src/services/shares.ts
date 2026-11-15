@@ -16,10 +16,15 @@ import {
   suspendedMember,
 } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { capOf } from "../auth/policy.js";
+import { capOf, isCommenterRole } from "../auth/policy.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
+import {
+  SHARE_ROLE_CASE,
+  shareRoleSql,
+  storedShare,
+} from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import { outsideShareEmail, senderName } from "../email/templates.js";
@@ -41,10 +46,13 @@ export const MAX_SHARES = 200;
  * What a guest's share comes to, in words. Copy only: access is decided in
  * src/auth. A stored editor gets edit back if they become a member.
  */
+const GUEST_LINE: Record<ShareRole, string> = {
+  viewer: "They're a guest, so they can only view.",
+  commenter: "They're a guest, so they can view and comment.",
+  editor: "They're a guest, so they can only view for now.",
+};
 export const guestShareLine = (s: { role: ShareRole }): string =>
-  s.role === "viewer"
-    ? "They're a guest, so they can only view."
-    : "They're a guest, so they can only view for now.";
+  GUEST_LINE[s.role];
 
 const toShare = (r: {
   email: string;
@@ -72,7 +80,7 @@ export async function listShares(
   const rows = await getDb(env)
     .select({
       email: shares.email,
-      role: shares.role,
+      role: shareRoleSql(),
       createdAt: shares.createdAt,
       orgRole: users.role,
       rm: users.restrictedManual,
@@ -102,7 +110,7 @@ export async function listShares(
     rows.map(async (r) => ({
       ...toShare(r),
       ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
-      ...(viewOnly(r) ? { viewOnly: true } : {}),
+      ...(viewOnly(r) && !isCommenterRole(r.role) ? { viewOnly: true } : {}),
     })),
   );
 }
@@ -131,8 +139,7 @@ const shareAudit = (
     },
   );
 
-const SAME_SHARE =
-  "SELECT email, role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ?";
+const SAME_SHARE = `SELECT email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ? AND can_comment = ?`;
 const IS_USER = "select 1 as x from users where email = ? limit 1";
 // Only a lapsed guest (removed by the last-share cleanup): an admin or
 // directory removal clears guest_lapsed and stays removed (P3 T6).
@@ -164,7 +171,7 @@ export async function putShare(
   env: Env,
   user: Member,
   id: string,
-  s: { email: string; role: ShareRole },
+  s: { email: string; role?: ShareRole },
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<ShareResult> {
   const artifact = await ownerOnly(env, user, id);
@@ -176,6 +183,13 @@ export async function putShare(
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))
     throw new ApiError("bad_request", "Cannot share with yourself");
+  // No role given: a guest comments, anyone else views.
+  const reach = await shareReach(env, email);
+  const guest = await guestRecipients(env)(email, reach.role);
+  // An outsider is never stored as editor: a guest comments at most.
+  const asked = s.role ?? (guest ? "commenter" : "viewer");
+  const role: ShareRole = guest && asked === "editor" ? "commenter" : asked;
+  const stored = storedShare(role);
   // #2590: with the owner's switch off, no new share to an address outside
   // the instance (no user row here). A person already in stays shareable.
   if (
@@ -199,21 +213,21 @@ export async function putShare(
     createdAt: number;
   }>([
     env.DB.prepare(
-      `INSERT INTO shares (artifact_id, email, role, created_by, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5
+      `INSERT INTO shares (artifact_id, email, role, can_comment, created_by, created_at)
+       SELECT ?1, ?2, ?3, ?7, ?4, ?5
        WHERE (SELECT count(*) FROM shares WHERE artifact_id = ?1) < ?6
           OR EXISTS (SELECT 1 FROM shares WHERE artifact_id = ?1 AND email = ?2)
-       ON CONFLICT (artifact_id, email) DO UPDATE SET role = excluded.role
-         WHERE shares.role <> excluded.role
-       RETURNING email, role, created_at AS createdAt`,
-    ).bind(id, email, s.role, user.id, now, MAX_SHARES),
-    shareAudit(env, "artifact.share", user, artifact, { role: s.role }),
+       ON CONFLICT (artifact_id, email) DO UPDATE SET role = excluded.role, can_comment = excluded.can_comment
+         WHERE shares.role <> excluded.role OR shares.can_comment <> excluded.can_comment
+       RETURNING email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt`,
+    ).bind(id, email, stored.role, user.id, now, MAX_SHARES, stored.canComment),
+    shareAudit(env, "artifact.share", user, artifact, { role }),
   ]);
   // No row back: unchanged (already at this role) or refused at the cap.
   const row =
     res?.results[0] ??
     (await stmt(env.DB, SAME_SHARE)
-      .bind(id, email, s.role)
+      .bind(id, email, stored.role, stored.canComment)
       .first<{ email: string; role: string; createdAt: number }>());
   if (!row)
     throw new ApiError(
@@ -225,7 +239,7 @@ export async function putShare(
   // A changed share at viewer is a downgrade from editor: the sockets opened
   // as editor close, and the artifact's DO refuses accepts authorized before
   // it (P3 T7). Not the person's presence: their other artifacts are unaffected.
-  if (res?.results[0] && !created && s.role === "viewer")
+  if (res?.results[0] && !created && role !== "editor")
     await closeRuntimeSockets(env, [id], "share narrowed", ctx);
   // A guest deactivated when their last share went comes back on a new one
   // (same row: their history and name are intact). After the insert, so a
@@ -246,8 +260,6 @@ export async function putShare(
   if (created) await inBackground(ctx, notifyShared(env, user.id, email, id));
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
-  const reach = await shareReach(env, email);
-  const guest = await guestRecipients(env)(email, reach.role);
   return {
     ...toShare(row),
     ...(guest ? { guest: true } : {}),

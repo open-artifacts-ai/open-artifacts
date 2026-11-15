@@ -10,6 +10,7 @@ import {
   type BusRolePut,
   BusRoleSchema,
   BusRolesSchema,
+  DocVersionResultSchema,
   type ListQueryInput,
   ListQuerySchema,
   type Me,
@@ -198,6 +199,7 @@ export const useShares = (id: string, enabled = true) =>
   useQuery({
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
+      // PROVISIONAL (#2590): the wide role, until packages/shared has it.
       api.get(R.shares(id), z.array(ShareSchema), signal),
     enabled,
   });
@@ -498,6 +500,31 @@ export const useRestoreVersion = (id: string) =>
       api.send("POST", R.restoreVersion(id, v), undefined, PublishResultSchema),
     () => [...artifactKeys(id)(), qk.versions(id)],
   );
+/**
+ * #1100 (#2496): a doc's "Save version" (a named version of what
+ * its room holds now). The room also broadcasts a saved frame.
+ */
+export const useDocSaveVersion = (id: string) =>
+  useInvalidating(
+    (name: string | undefined) =>
+      api.send(
+        "POST",
+        R.docSaveVersion(id),
+        name ? { name } : {},
+        DocVersionResultSchema,
+      ),
+    () => [...artifactKeys(id)(), qk.versions(id)],
+  );
+/**
+ * #1100 (#2140): restore a doc version through its room,
+ * which saves unsaved edits first and applies the restore live for everyone.
+ */
+export const useDocRestore = (id: string) =>
+  useInvalidating(
+    (v: number) =>
+      api.send("POST", R.docRestore(id, v), undefined, DocVersionResultSchema),
+    () => [...artifactKeys(id)(), qk.versions(id)],
+  );
 export const usePatchArtifact = (id: string) =>
   useInvalidating(
     (patch: ArtifactPatch) =>
@@ -512,6 +539,7 @@ export const useDeleteArtifact = (id: string) =>
   );
 export const usePutShare = (id: string) =>
   useInvalidating(
+    // PROVISIONAL (#2590): the wide role, until packages/shared has it.
     (input: ShareInput) =>
       api.send("PUT", R.shares(id), input, ShareResultSchema),
     () => [qk.shares(id)],

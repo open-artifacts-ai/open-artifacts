@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { authorize, canCtx } from "../../auth/authz.js";
-import { can, dataWriteCreates } from "../../auth/policy.js";
+import { can, dataWriteCreates, isGuestRole } from "../../auth/policy.js";
 import { requireFreeData } from "../../billing/caps.js";
 import { recordDataCreator } from "../../billing/creators.js";
 import { ApiError } from "../../http/errors.js";
@@ -130,7 +130,7 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
         const { s, creator } = await storeOf(t, i.id, "data.write");
         await freeDataCap(t.env, s, i.collection, i.docId, true, creator);
         const doc = await runtimeCall(() =>
-          s.set(i.collection, i.docId, i.data, actor),
+          s.set(i.collection, i.docId, i.data, actor, isGuestRole(t.user.role)),
         );
         await counted(creator);
         return ok(`Set "${i.docId}" in ${where(i.id, i.collection)}`, doc);
@@ -145,7 +145,13 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
         const { s, creator } = await storeOf(t, i.id, "data.write");
         await freeDataCap(t.env, s, i.collection, i.docId, true, creator);
         const doc = await runtimeCall(() =>
-          s.update(i.collection, i.docId, i.patch, actor),
+          s.update(
+            i.collection,
+            i.docId,
+            i.patch,
+            actor,
+            isGuestRole(t.user.role),
+          ),
         );
         await counted(creator);
         return ok(`Updated "${i.docId}" in ${where(i.id, i.collection)}`, doc);

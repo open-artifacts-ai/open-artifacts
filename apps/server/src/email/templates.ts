@@ -111,6 +111,7 @@ const FORMAT_LABEL: Record<Format, string> = {
 };
 const ROLE_LABEL: Record<ShareRole, string> = {
   viewer: "Viewer",
+  commenter: "Commenter",
   editor: "Editor",
 };
 

@@ -36,6 +36,7 @@ import {
   PinBar,
   PinBeside,
 } from "./comments/CommentsBody";
+import { quoteToNote } from "./comments/noteQuote";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -433,8 +434,12 @@ function Viewer({
   const caps = artifact.capabilities;
   const live = caps.db || caps.viewer || caps.storage;
   const can = useCan(artifact);
-  // #1100: a collaborative doc is edited in place of the frame.
-  const isDoc = isDocArtifact(artifact);
+  // #1100: a collaborative doc is edited in place of the frame. An older
+  // version of it (opened from Versions) shows what was saved, read-only, in
+  // the frame like any version.
+  const isDoc =
+    isDocArtifact(artifact) &&
+    !(explicitVersion && version !== artifact.currentVersion);
   const [docStatus, setDocStatus] = useState<DocLabel | null>(null);
   const renameDoc = usePatchArtifact(artifact.id);
   // The room broadcasts saved and restored versions: refresh the version
@@ -832,6 +837,16 @@ function Viewer({
                 onStatus={setDocStatus}
                 onVersion={onDocVersion}
                 onCurrentVersion={onDocCurrentVersion}
+                onCommentSelection={
+                  cmt.canComment && commentsOn
+                    ? (quote) => {
+                        // #1100: the selection, quoted, in the whole-page
+                        // composer; the list opens wherever it lives.
+                        quoteToNote(artifact.id, quote);
+                        openSurface.current();
+                      }
+                    : undefined
+                }
                 fullActions={
                   <>
                     {/* Mounted only when the doc is full and the viewer is signed

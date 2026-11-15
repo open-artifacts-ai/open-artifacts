@@ -31,7 +31,13 @@ import { draftBadge, threadBadge } from "./pinBadge";
 type Bridge = ReturnType<typeof createBridge>;
 
 /** A post that failed after its box had closed: the text to put back and why. `clear` drops it once a box has taken it. */
-export type Lost = { text: string; error: unknown; clear?: () => void };
+export type Lost = {
+  text: string;
+  error: unknown;
+  clear?: () => void;
+  /** Open the box and put the cursor right after this text (a doc's quote, #1100). */
+  focusEnd?: boolean;
+};
 
 export type PinPoint = { x: number; y: number; page?: number };
 /** A comment being started: on selected text, or on a placed pin (the server stamps the pin's contentHash). */

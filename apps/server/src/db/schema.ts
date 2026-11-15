@@ -1,6 +1,5 @@
 import {
   RoleSchema,
-  ShareRoleSchema,
   SpaceKindSchema,
   SpaceRoleSchema,
   STORED_FORMATS,
@@ -504,6 +503,8 @@ export const shares = sqliteTable(
       .references(() => artifacts.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
     role: text("role").notNull(),
+    /** 1 with role 'viewer': a "commenter" share (db/share-role.ts maps it). */
+    canComment: integer("can_comment").notNull().default(0),
     createdBy: text("created_by")
       .notNull()
       .references(() => users.id),
@@ -512,7 +513,7 @@ export const shares = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.artifactId, t.email] }),
     index("shares_email_idx").on(t.email),
-    check("shares_role_check", inList("role", ShareRoleSchema.options)),
+    check("shares_role_check", inList("role", ["viewer", "editor"])),
   ],
 );
 

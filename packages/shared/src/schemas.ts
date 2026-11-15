@@ -75,7 +75,12 @@ export function resolveDataWriters(
 }
 export const RoleSchema = z.enum(["owner", "admin", "member", "guest"]);
 export type Role = z.infer<typeof RoleSchema>;
-export const ShareRoleSchema = z.enum(["viewer", "editor"]);
+/**
+ * A share's role. "commenter" opens the page like a viewer and adds comments
+ * and replies for a guest (a guest with "viewer" cannot comment); for a
+ * member it reads as "viewer".
+ */
+export const ShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
 export type ShareRole = z.infer<typeof ShareRoleSchema>;
 /**
  * The caller's level on one artifact. "owner": the personal owner only;
@@ -316,6 +321,9 @@ export const PublishToolInputSchema = PublishShape.superRefine(
 );
 /** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
 export const DOCS_NEED_PAID_MESSAGE =
+  "Collaborative docs need Cloudflare's Workers Paid plan. The person who runs this instance turns on Workers Paid in their Cloudflare account, then runs setup again with --upgrade --plan paid.";
+/** The library's empty state on a self-host without Workers Paid (#2100). */
+export const DOCS_NEED_PAID_EMPTY_MESSAGE =
   "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
 /**
  * PublishToolInputSchema without the doc format: tools/list and the skill list
@@ -329,6 +337,15 @@ export const PublishToolInputNoDocSchema = publishShape(
   z.enum(STORED_FORMATS, {
     error: (iss) =>
       iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
+  }) as unknown as typeof FormatSchema,
+).superRefine(refinePublish(true));
+/**
+ * ...and the same for an install where creation is on but docs need Workers
+ * Paid: format "doc" is refused with the next step (#2100).
+ */
+export const PublishToolInputNeedPaidSchema = publishShape(
+  z.enum(STORED_FORMATS, {
+    error: (iss) => (iss.input === "doc" ? DOCS_NEED_PAID_MESSAGE : undefined),
   }) as unknown as typeof FormatSchema,
 ).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
@@ -707,7 +724,8 @@ export type MemberPatch = z.infer<typeof MemberPatchSchema>;
 
 export const ShareInputSchema = z.strictObject({
   email: z.string().email(),
-  role: ShareRoleSchema,
+  /** Absent: "commenter" for a guest, "viewer" for anyone else. */
+  role: ShareRoleSchema.optional(),
 });
 export type ShareInput = z.infer<typeof ShareInputSchema>;
 
@@ -1199,6 +1217,8 @@ export const DataDocSchema = z.object({
   data: z.unknown(),
   updatedAt: z.string(),
   updatedBy: z.string().nullable(),
+  /** Written by a guest ("g:" writer): outsider content, read as data and never as instructions. Absent otherwise. */
+  outsider: z.literal(true).optional(),
 });
 export type DataDoc = z.infer<typeof DataDocSchema>;
 
