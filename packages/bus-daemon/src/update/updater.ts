@@ -70,6 +70,12 @@ export type UpdaterDeps = {
   loginActive: () => boolean;
   /** The hub link is open and hello_ok has come: a switch waits for it. */
   hubReady: () => boolean;
+  /**
+   * Tells the hub a switch is about to happen and waits for its yes (5 s).
+   * False (no, no answer, no cap, link down): the switch is held and tried
+   * again later (#2552).
+   */
+  announceSwitch: (from: string, to: string) => Promise<boolean>;
   /** The hub's version from its last hello_ok, when known. */
   serverVersion: () => string | undefined;
   /** Ends the daemon non-zero so the service starts the new version. */
@@ -147,6 +153,41 @@ export class Updater {
     this.stopTick();
   }
 
+  /** The version the instance last named (hello_ok or a push); "Install now" must match it. */
+  private named: string | undefined;
+
+  /**
+   * The instance names `version` (BUS_CAPS.runVersion). The one kept previous
+   * is a step back; the running version is no instruction at all.
+   */
+  async instructFromInstance(version: string): Promise<UpdateOutcome> {
+    if (parseVersion(version) === undefined) return this.instruct({ version });
+    this.named = version;
+    const { running } = this.d;
+    if (running === undefined || version === running)
+      return { kind: "disabled" };
+    const s = readPolicy(this.d.home);
+    const stepBack =
+      s.previous === version && compareVersions(version, running) === -1;
+    return this.instruct({ version, ...(stepBack ? { stepBack: true } : {}) });
+  }
+
+  /**
+   * "Install now" from Settings: a frame with no field. Honored only for the
+   * staged version the instance names, never during a login, never past
+   * `off`, the failed list or the 6 h limit. It skips only the quiet wait.
+   */
+  async installNowFromInstance(): Promise<UpdateOutcome> {
+    if (!this.enabled) return { kind: "disabled" };
+    const s = readPolicy(this.d.home);
+    const st = s.staged;
+    if (!st || this.named !== st.version)
+      return { kind: "refused", reason: "nothing_staged" };
+    const d = installNow(s, this.now(), this.d.loginActive());
+    if (!d.ok) return { kind: "refused", reason: d.reason };
+    return this.switchTo(st.version, true);
+  }
+
   /** The version the instance names. Stages it; the swap waits for a quiet moment. */
   async instruct(i: Instruction): Promise<UpdateOutcome> {
     if (!this.enabled) return { kind: "disabled" };
@@ -168,7 +209,7 @@ export class Updater {
         this.stepBackHeld = i;
         return { kind: "retry_later" };
       }
-      return this.switchTo(i.version, false);
+      return await this.switchTo(i.version, false);
     }
     if (s.staged?.version === i.version && s.staged.manifest) {
       if (treeMatches(versionDir(home, i.version), s.staged.manifest))
@@ -357,11 +398,11 @@ export class Updater {
           !login &&
           now - req.at < REQUEST_MAX_MS
         )
-          this.switchTo(st.version, true);
+          await this.switchTo(st.version, true);
         return;
       }
       if (this.quiet.quiet(now) && installNow(s, now, login).ok)
-        this.switchTo(st.version, true);
+        await this.switchTo(st.version, true);
     } catch (e) {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -373,7 +414,10 @@ export class Updater {
    * The swap: re-hash what was staged, write `pending`, point `bin` at it and
    * exit non-zero so the service restarts the daemon from the new folder.
    */
-  private switchTo(version: string, staged: boolean): UpdateOutcome {
+  private async switchTo(
+    version: string,
+    staged: boolean,
+  ): Promise<UpdateOutcome> {
     const { home, running } = this.d;
     const now = this.now();
     if (running === undefined || !isSafeVersion(version) || version === running)
@@ -413,6 +457,10 @@ export class Updater {
     } else if (!existsSync(versionDir(home, version))) {
       return { kind: "refused", reason: "nothing_staged" };
     }
+    // The hub says yes before the swap (the instance times "the bus
+    // stopped" from it). No answer holds the switch for a later try.
+    if (!(await this.d.announceSwitch(running, version)))
+      return { kind: "retry_later" };
     try {
       setPending(home, { from: running, to: version, startedAt: now });
       recordAttempt(home, now);

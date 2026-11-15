@@ -363,6 +363,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public: "share notices; form CSRF, checks canConnect, plan cap refuses",
   },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
+  // #2552 the version the instance names: owner only, cookie session only (handler).
+  "PUT /api/v1/bus/run-version": { org: "bus.run_version" },
+  // #2552 "Install now" for the caller's own machine: browser session only (handler).
+  "POST /api/v1/bus/machines/:id/install-now": { org: "mcp.connect" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
   // #1299: the hosted canary's probe of the reserved ping hub; a read, so a

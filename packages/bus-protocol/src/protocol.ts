@@ -347,6 +347,93 @@ const Follows = z.strictObject({
   follows: z.array(FollowEntry).max(MAX_FOLLOWS),
 });
 
+/** Strict x.y.z, at most 32 chars (#2552): the only thing an instance may name. */
+export const RunVersionSchema = z
+  .string()
+  .max(32)
+  .regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+
+/**
+ * Why an update report was sent: a closed set, so a report never carries
+ * free text of its own (that is `detail`, capped).
+ */
+export const UPDATE_REASONS = [
+  "ok",
+  "unhealthy",
+  "hub_unreachable",
+  "proof_failed",
+  "no_attestation",
+  "bad_tar",
+  "bad_version",
+  "bad_instruction",
+  "fetch_failed",
+  "too_large",
+  "bad_redirect",
+  "wrong_package",
+  "stale_trust_root",
+  "node_too_old",
+  "not_forward",
+  "ahead_of_server",
+  "rate_limited",
+  "refused_backoff",
+  "not_quiet_24h",
+  "needs_you",
+  "staged_changed",
+  "nothing_staged",
+  "other",
+] as const;
+export type UpdateReason = (typeof UPDATE_REASONS)[number];
+
+export const UPDATE_EVENTS = [
+  "updated",
+  "refused",
+  "stepped_back",
+  "needs_you",
+  "held",
+  "switching",
+] as const;
+
+/** A version, or "" when the report has none to name (a malformed instruction). */
+const ReportVersion = RunVersionSchema.or(z.literal(""));
+
+/**
+ * A machine's update report (#2552, BUS_CAPS.runVersion). The hub keeps the
+ * latest per machine. `switching` is answered by `update_ack` before the
+ * machine swaps; the others get no answer.
+ */
+const UpdateReport = z.strictObject({
+  ...base,
+  type: z.literal("update_report"),
+  event: z.enum(UPDATE_EVENTS),
+  from: ReportVersion,
+  to: ReportVersion,
+  reason: z.enum(UPDATE_REASONS),
+  detail: WellFormedText.pipe(z.string().max(200)).optional(),
+  /** The rescue shim's own version on this machine (0: none). */
+  rescue_version: z.number().int().min(0).max(100000),
+  at: IsoTimeSchema,
+});
+
+/** The version the instance names, pushed while connected. */
+const RunVersionPush = z.strictObject({
+  ...base,
+  type: z.literal("run_version"),
+  run_version: RunVersionSchema,
+});
+
+/**
+ * "Install now" from Settings. No field: it names no version, source or URL.
+ * The daemon honors it only for the version already staged and named.
+ */
+const InstallNow = z.strictObject({ ...base, type: z.literal("install_now") });
+
+/** The hub's yes or no to a `switching` report, and nothing else. */
+const UpdateAck = z.strictObject({
+  ...base,
+  type: z.literal("update_ack"),
+  ok: z.boolean(),
+});
+
 const HelloOk = z.strictObject({
   ...base,
   type: z.literal("hello_ok"),
@@ -358,6 +445,8 @@ const HelloOk = z.strictObject({
    * listed caps, so a client that never sends caps never sees it.
    */
   caps: CapsSchema.optional(),
+  /** The version the instance names (BUS_CAPS.runVersion); absent: it names none. */
+  run_version: RunVersionSchema.optional(),
 });
 
 const AgentOk = z.strictObject({
@@ -525,6 +614,7 @@ export const CLIENT_FRAMES = [
   "following",
   "link_bind",
   "waiting_query",
+  "update_report",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -543,6 +633,9 @@ export const SERVER_FRAMES = [
   "link_bound",
   "waiting_counts",
   "acked",
+  "run_version",
+  "install_now",
+  "update_ack",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -562,6 +655,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   Following,
   LinkBind,
   WaitingQuery,
+  UpdateReport,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -580,6 +674,9 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   LinkBound,
   WaitingCounts,
   Acked,
+  RunVersionPush,
+  InstallNow,
+  UpdateAck,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -598,6 +695,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Following,
   LinkBind,
   WaitingQuery,
+  UpdateReport,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -614,6 +712,9 @@ export const FrameSchema = z.discriminatedUnion("type", [
   LinkBound,
   WaitingCounts,
   Acked,
+  RunVersionPush,
+  InstallNow,
+  UpdateAck,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -626,6 +727,7 @@ export type RefuseFrame = z.infer<typeof Refuse>;
 export type HelloFrame = z.infer<typeof Hello>;
 export type RenameFrame = z.infer<typeof Rename>;
 export type RenamedFrame = z.infer<typeof Renamed>;
+export type UpdateReportFrame = z.infer<typeof UpdateReport>;
 export type FollowEntryWire = z.infer<typeof FollowEntry>;
 
 /**

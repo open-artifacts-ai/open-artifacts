@@ -88,6 +88,8 @@ const RPC_ALLOWLIST = [
   "expireLinkProposalsOf",
   "expireRoleProposalsOf",
   "identityOf",
+  // #2552: a fieldless frame to one machine of the member; the named version changed.
+  "installNow",
   "listLinks",
   "listReach",
   "listRoleProposals",
@@ -102,6 +104,7 @@ const RPC_ALLOWLIST = [
   "putReach",
   "putRole",
   "revokeMachine",
+  "runVersionChanged",
   "snapshot",
   "viewLinkProposal",
   "viewReachProposal",

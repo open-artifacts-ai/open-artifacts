@@ -22,6 +22,7 @@ import {
   readPolicy,
   readReports,
   readState,
+  recordAttempt,
   requestInstall,
   runningVersion,
   setPending,
@@ -69,6 +70,7 @@ describe("the loop is off in this PR", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit,
       log: () => {},
@@ -324,6 +326,7 @@ describe("the install request", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -416,6 +419,7 @@ describe("the updater loop (enabled by a test only)", () => {
       }),
       loginActive: over.login ?? (() => false),
       hubReady: () => hubUp.v,
+      announceSwitch: async () => true,
       serverVersion: () => "1.2.0",
       exit,
       log: () => {},
@@ -671,6 +675,7 @@ describe("the updater loop (enabled by a test only)", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -696,6 +701,7 @@ describe("review fixes (#2552)", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -824,5 +830,134 @@ describe("review fixes (#2552)", () => {
     expect(readState(home).armed).toBe(false);
     installVersion(home, "1.1.0", () => {});
     expect(readState(home).armed).toBe(true);
+  });
+});
+
+describe("the instance's install_now and announced switches (#2552)", () => {
+  const build = (
+    over: { login?: () => boolean; announce?: () => boolean } = {},
+  ) => {
+    const { home, fill } = world();
+    const exit = vi.fn();
+    let clock = T;
+    const f2 = (v: string) => ({
+      rel: { version: v } as FetchedRelease,
+      ver: {
+        version: v,
+        sha512: "x",
+        commit: "c",
+        entries: [
+          { path: "package", type: "dir", data: Buffer.alloc(0) },
+          { path: "package/dist", type: "dir", data: Buffer.alloc(0) },
+          {
+            path: "package/dist/index.js",
+            type: "file",
+            data: Buffer.from(`// ${v}`),
+          },
+        ],
+        packageJson: { name: "n", version: v, oaBus: { settingsKinds: ["a"] } },
+      } as VerifiedRelease,
+    });
+    const rel = f2("1.1.0");
+    const calls: string[] = [];
+    const u = new Updater({
+      home,
+      running: "1.0.0",
+      enabled: true,
+      now: () => clock,
+      busy: () => ({ pending: 1, outbox: 0, codexQueue: 0 }),
+      loginActive: over.login ?? (() => false),
+      hubReady: () => true,
+      announceSwitch: async (from, to) => {
+        calls.push(`${from}>${to}@${currentVersion(home)}`);
+        return over.announce?.() ?? true;
+      },
+      serverVersion: () => undefined,
+      exit,
+      log: () => {},
+      fetch: async () => rel.rel,
+      verify: () => rel.ver,
+    });
+    return {
+      home,
+      fill,
+      u,
+      exit,
+      calls,
+      advance: (ms: number) => (clock += ms),
+    };
+  };
+
+  it("install_now swaps the staged version the instance named, announcing first", async () => {
+    const w = build();
+    await w.u.instructFromInstance("1.1.0");
+    expect(readPolicy(w.home).staged?.version).toBe("1.1.0");
+    expect(await w.u.installNowFromInstance()).toMatchObject({
+      kind: "switching",
+    });
+    // The announcement came before bin moved.
+    expect(w.calls).toEqual(["1.0.0>1.1.0@1.0.0"]);
+    expect(currentVersion(w.home)).toBe("1.1.0");
+    expect(w.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("install_now without a named staged version does nothing", async () => {
+    const w = build();
+    expect(await w.u.installNowFromInstance()).toMatchObject({
+      reason: "nothing_staged",
+    });
+    // Staged by an instruction the instance has not named through the instance path.
+    await w.u.instruct({ version: "1.1.0" });
+    expect(await w.u.installNowFromInstance()).toMatchObject({
+      reason: "nothing_staged",
+    });
+    expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("install_now honors off, a login, the 6 h limit and a held switch", async () => {
+    const off = build();
+    await off.u.instructFromInstance("1.1.0");
+    const j = JSON.parse(readFileSync(join(off.home, "update.json"), "utf8"));
+    writeFileSync(
+      join(off.home, "update.json"),
+      JSON.stringify({ ...j, off: true }),
+    );
+    expect(await off.u.installNowFromInstance()).toMatchObject({
+      reason: "off",
+    });
+
+    let login = true;
+    const l = build({ login: () => login });
+    await l.u.instructFromInstance("1.1.0");
+    expect(await l.u.installNowFromInstance()).toMatchObject({
+      reason: "login_in_progress",
+    });
+    login = false;
+
+    const r = build();
+    await r.u.instructFromInstance("1.1.0");
+    recordAttempt(r.home, T);
+    expect(await r.u.installNowFromInstance()).toMatchObject({
+      reason: "rate_limited",
+    });
+
+    const held = build({ announce: () => false });
+    await held.u.instructFromInstance("1.1.0");
+    expect(await held.u.installNowFromInstance()).toEqual({
+      kind: "retry_later",
+    });
+    expect(currentVersion(held.home)).toBe("1.0.0");
+    expect(readPolicy(held.home).pending).toBeUndefined();
+  });
+
+  it("naming the running version is no instruction; naming the kept previous is a step back", async () => {
+    const w = build();
+    expect(await w.u.instructFromInstance("1.0.0")).toEqual({
+      kind: "disabled",
+    });
+    expect(await w.u.instructFromInstance("0.9.0")).toMatchObject({
+      kind: "switching",
+    });
+    expect(currentVersion(w.home)).toBe("0.9.0");
   });
 });

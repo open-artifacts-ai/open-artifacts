@@ -22,6 +22,7 @@ import {
   BusReachProposeSchema,
   BusReachPutSchema,
   BusRolePutSchema,
+  BusRunVersionPutSchema,
   type Member,
   R,
 } from "@oa/shared";
@@ -51,6 +52,7 @@ import {
   deleteBusLink,
   deleteBusReach,
   deleteBusRole,
+  installNowOnMachine,
   listBusAgents,
   listBusLinks,
   listBusMachines,
@@ -63,6 +65,7 @@ import {
   putBusReach,
   putBusRole,
   revokeBusMachine,
+  setBusRunVersion,
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
@@ -764,6 +767,35 @@ export function mountBus(app: AppType): void {
     const id = c.req.param("id") ?? "";
     if (!(await revokeBusMachine(c.env, user.id, id))) throw notFound();
     return c.body(null, 204);
+  });
+  // #2552: the owner names the version the instance's machines run. Owner
+  // only (the policy gate), in an interactive cookie session: no PAT, OAuth
+  // grant or machine token, so no agent can name a version.
+  app.put(R.busRunVersion, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw notFound();
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const body = await jsonBody(c, BusRunVersionPutSchema);
+    await setBusRunVersion(c.env, user.id, body.version);
+    return c.body(null, 204);
+  });
+  // #2552 "Install now": the machine's own member, in a browser session.
+  app.post(`${R.busMachines}/:id/install-now`, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const id = c.req.param("id") ?? "";
+    switch (await installNowOnMachine(c.env, user.id, id)) {
+      case "machine_unknown":
+        throw notFound();
+      case "offline":
+        throw new ApiError("conflict", "That machine is not connected", {
+          reason: "machine_offline",
+        });
+      default:
+        return c.body(null, 204);
+    }
   });
   // #1299: the hosted canary's probe. Reads the reserved hub, never the caller's.
   app.get(R.busPing, async (c) => {

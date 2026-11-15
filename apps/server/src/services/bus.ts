@@ -37,6 +37,7 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
+import { RUN_VERSION_KEY } from "../bus/updates.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
@@ -100,6 +101,10 @@ export const busCloseKind = (reason: string): BusCloseKind =>
 
 /** What the Worker calls on a member's BusHub (bus/hub.ts), typed here so callers need not load the DO. */
 export type BusHubRpc = {
+  /** #2552: sockets of one machine that took an `install_now` frame. */
+  installNow(machineId: string): Promise<number>;
+  /** #2552: the instance's named version changed; push it to this hub's sockets. */
+  runVersionChanged(): Promise<void>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
@@ -1694,4 +1699,75 @@ async function auditReachDecision(
         r.reason,
       ),
     }).run();
+}
+
+/**
+ * #2552: the owner names the version the instance's machines run, or clears
+ * it. Audited bus.run_version.set (the new value, or null). The owner's own
+ * hub is told at once so its connected machines hear it; every other
+ * member's hub learns it at its next hello or report.
+ */
+export async function setBusRunVersion(
+  env: Env,
+  ownerId: string,
+  version: string | null,
+): Promise<void> {
+  await env.DB.batch([
+    version === null
+      ? stmt(env.DB, "delete from settings where key = ?").bind(RUN_VERSION_KEY)
+      : stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        ).bind(RUN_VERSION_KEY, version),
+    audit(
+      env,
+      "bus.run_version.set",
+      { type: "settings", id: RUN_VERSION_KEY },
+      userActor(ownerId),
+      { detail: { version } },
+    ),
+  ]);
+  const hub = busHub(env, ownerId);
+  if (!hub) return;
+  try {
+    await within(hub.runVersionChanged(), BUS_HUB_TIMEOUT_MS);
+  } catch (e) {
+    logError("bus_run_version_push_failed", e);
+  }
+}
+
+/**
+ * #2552 "Install now": a fieldless frame to the member's own machine. The
+ * caller is a signed-in member in a browser session (the route checks); the
+ * machine must be theirs and not revoked. Audited bus.install_now. Returns
+ * "machine_unknown" (the route's 404), "offline" (no socket took it) or "sent".
+ */
+export async function installNowOnMachine(
+  env: Env,
+  userId: string,
+  machineId: string,
+): Promise<"sent" | "offline" | "machine_unknown"> {
+  const row = await stmt(
+    env.DB,
+    "select label from bus_machines where id = ?1 and user_id = ?2 and revoked_at is null",
+  )
+    .bind(machineId, userId)
+    .first<{ label: string }>();
+  if (!row) return "machine_unknown";
+  await audit(
+    env,
+    "bus.install_now",
+    { type: "bus_machine", id: machineId },
+    userActor(userId),
+    { detail: { label: auditText(row.label) } },
+  ).run();
+  const hub = busHub(env, userId);
+  if (!hub) return "offline";
+  try {
+    const n = await within(hub.installNow(machineId), BUS_HUB_TIMEOUT_MS);
+    return n !== null && n > 0 ? "sent" : "offline";
+  } catch (e) {
+    logError("bus_install_now_failed", e);
+    return "offline";
+  }
 }
