@@ -29,6 +29,7 @@ import type { Isolation, Service, ServiceProblem } from "../context.ts";
 import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
 import { codexHomeEnv } from "./codex.ts";
+import { rescueOf, writeRescue } from "./rescue.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 export const LAUNCHD_LABEL = "com.open-artifacts.bus";
@@ -302,6 +303,9 @@ export function installCli(
     if (!existsSync(join(tmp, "package.json")))
       writeFileSync(join(tmp, "package.json"), '{ "type": "module" }\n');
   });
+  // The shim the service runs lives outside versions/: only a hand-run install
+  // writes it (#2552).
+  if (node !== undefined) writeRescue(home, launcherText(node));
   return join(home, "bin", entryName(src));
 }
 
@@ -606,7 +610,12 @@ export function systemService(d: ServiceDeps): Service {
         err: join(logs, "daemon.log"),
       };
       // A service's daemon exits 0 on a lasting failure: no restart loop.
-      const unit: Unit = { ...u, env: { ...u.env, OA_BUS_SERVICE: "1" } };
+      const unit: Unit = {
+        ...u,
+        // The service runs the rescue shim, which execs bin/node (#2552).
+        ...(d.platform === "win32" ? {} : { node: rescueOf(h) }),
+        env: { ...u.env, OA_BUS_SERVICE: "1" },
+      };
       // Refuse a line break before anything is written.
       renderPlist(unit);
       // Stop the unit's daemon, then whatever else holds the socket (a

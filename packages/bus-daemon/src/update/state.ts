@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { stateFile } from "./layout.ts";
 import {
+  compareVersions,
   emptyPolicy,
   MAX_LIST,
   type PolicyState,
@@ -44,6 +45,20 @@ function load(home: string): Raw {
     // fall through
   }
   return { kind: "bad" };
+}
+
+/** A staged folder's file hashes: relative path to 64 hex digits. */
+export const MAX_MANIFEST = 5000;
+function readManifest(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const e = Object.entries(v);
+  if (e.length === 0 || e.length > MAX_MANIFEST) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, h] of e) {
+    if (typeof h !== "string" || !/^[0-9a-f]{64}$/.test(h)) return undefined;
+    out[k] = h;
+  }
+  return out;
 }
 
 const ver = (v: unknown) => (parseVersion(v) ? (v as string) : undefined);
@@ -86,10 +101,34 @@ export function readPolicy(home: string): PolicyState {
     }
   const lastAt = num(j.lastAt);
   if (lastAt !== undefined) s.lastAt = lastAt;
-  const st = j.staged as { version?: unknown; readySince?: unknown } | null;
+  const st = j.staged as {
+    version?: unknown;
+    readySince?: unknown;
+    manifest?: unknown;
+  } | null;
   const rs = num(st?.readySince);
-  if (st && typeof st === "object" && ver(st.version) && rs !== undefined)
+  if (st && typeof st === "object" && ver(st.version) && rs !== undefined) {
     s.staged = { version: st.version as string, readySince: rs };
+    const m = readManifest(st.manifest);
+    if (m) s.staged.manifest = m;
+  }
+  const pd = j.pending as Record<string, unknown> | null;
+  if (pd && typeof pd === "object" && !Array.isArray(pd)) {
+    const at = num(pd.startedAt);
+    const attempts = num(pd.attempts);
+    if (
+      ver(pd.from) &&
+      ver(pd.to) &&
+      at !== undefined &&
+      attempts !== undefined
+    )
+      s.pending = {
+        from: pd.from as string,
+        to: pd.to as string,
+        startedAt: at,
+        attempts,
+      };
+  }
   if (
     j.notified &&
     typeof j.notified === "object" &&
@@ -123,6 +162,7 @@ const OWNED = [
   "refused",
   "lastAt",
   "staged",
+  "pending",
   "notified",
   "needsYou",
 ] as const;
@@ -175,7 +215,10 @@ export function setIntroShown(home: string): void {
   setCliKey(home, "introShown", true);
 }
 
-const edit = (home: string, f: (s: PolicyState) => void): PolicyState => {
+export const editPolicy = (
+  home: string,
+  f: (s: PolicyState) => void,
+): PolicyState => {
   const s = readPolicy(home);
   f(s);
   writePolicy(home, s);
@@ -184,13 +227,13 @@ const edit = (home: string, f: (s: PolicyState) => void): PolicyState => {
 
 /** Records an attempt (a step-back too). lastAt never moves backward. */
 export const recordAttempt = (home: string, now: number) =>
-  edit(home, (s) => {
+  editPolicy(home, (s) => {
     s.lastAt = Math.max(now, s.lastAt ?? 0);
   });
 
 /** Failed to start: remembered and never retried. */
 export const markFailed = (home: string, version: string) =>
-  edit(home, (s) => {
+  editPolicy(home, (s) => {
     if (!parseVersion(version)) return;
     if (!s.failed.includes(version)) s.failed.push(version);
     if (s.staged?.version === version) delete s.staged;
@@ -198,7 +241,7 @@ export const markFailed = (home: string, version: string) =>
 
 /** Proof refused: reported loudly, retried later with a growing backoff. */
 export const markRefused = (home: string, version: string, now: number) =>
-  edit(home, (s) => {
+  editPolicy(home, (s) => {
     if (!parseVersion(version)) return;
     const count = (s.refused[version]?.count ?? 0) + 1;
     delete s.refused[version];
@@ -214,7 +257,7 @@ export function markNotified(
 ): boolean {
   if (!parseVersion(version)) return false;
   let fresh = false;
-  edit(home, (s) => {
+  editPolicy(home, (s) => {
     const list = s.notified[version] ?? [];
     if (list.includes(kind)) return;
     fresh = true;
@@ -224,7 +267,88 @@ export function markNotified(
   return fresh;
 }
 
-export const setStaged = (home: string, version: string, now: number) =>
-  edit(home, (s) => {
-    if (parseVersion(version)) s.staged = { version, readySince: now };
+export const setStaged = (
+  home: string,
+  version: string,
+  now: number,
+  manifest?: Record<string, string>,
+) =>
+  editPolicy(home, (s) => {
+    if (parseVersion(version))
+      s.staged = {
+        version,
+        readySince: now,
+        ...(manifest ? { manifest } : {}),
+      };
   });
+
+export const clearStaged = (home: string) =>
+  editPolicy(home, (s) => {
+    delete s.staged;
+  });
+
+/** A switch is about to happen: the self-check and the rescue shim read it. */
+export const setPending = (
+  home: string,
+  p: { from: string; to: string; startedAt: number },
+) =>
+  editPolicy(home, (s) => {
+    if (parseVersion(p.from) && parseVersion(p.to))
+      s.pending = { ...p, attempts: 0 };
+  });
+
+export const clearPending = (home: string) =>
+  editPolicy(home, (s) => {
+    delete s.pending;
+  });
+
+/** The release wants something this build cannot do alone: "Update needs you". */
+export const setNeedsYou = (home: string, v: boolean) =>
+  editPolicy(home, (s) => {
+    s.needsYou = v;
+  });
+
+/** Raises newestRun to `version` when it is newer; never lowers it. */
+export const noteRun = (home: string, version: string) =>
+  editPolicy(home, (s) => {
+    if (
+      parseVersion(version) &&
+      (s.newestRun === undefined || compareVersions(version, s.newestRun) === 1)
+    )
+      s.newestRun = version;
+  });
+
+/**
+ * `oa-bus update` leaves a request for the daemon to install the staged
+ * version. CLI-only key, like `off`: the daemon only clears it.
+ */
+export function requestInstall(
+  home: string,
+  version: string,
+  at: number,
+): void {
+  const r = load(home);
+  const base = r.kind === "ok" ? { ...r.j } : {};
+  base.installRequest = { version, at };
+  put(home, base);
+}
+
+export function readInstallRequest(
+  home: string,
+): { version: string; at: number } | undefined {
+  const r = load(home);
+  if (r.kind !== "ok") return undefined;
+  const q = r.j.installRequest as { version?: unknown; at?: unknown } | null;
+  const at = num(q?.at);
+  return q && ver(q.version) && at !== undefined
+    ? { version: q.version as string, at }
+    : undefined;
+}
+
+export function clearInstallRequest(home: string): void {
+  const r = load(home);
+  if (r.kind !== "ok" || !("installRequest" in r.j)) return;
+  const next = { ...r.j };
+  delete next.installRequest;
+  put(home, next);
+}

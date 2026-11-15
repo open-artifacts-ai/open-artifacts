@@ -254,7 +254,7 @@ describe("systemService: launchd", () => {
     await s.ensure();
     const plist = readFileSync(plistOf(userHome), "utf8");
     expect(plist).toContain(
-      `<string>${home}/bin/node</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
+      `<string>${home}/rescue</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
     );
     expect(plist).toContain(
       "<key>PATH</key><string>/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin</string>",
@@ -401,7 +401,7 @@ describe("systemService: systemd", () => {
     await s.ensure();
     const u = readFileSync(unitOf(userHome), "utf8");
     expect(u).toContain(
-      `ExecStart="${home}/bin/node" "${home}/bin/dist/index.js" daemon`,
+      `ExecStart="${home}/rescue" "${home}/bin/dist/index.js" daemon`,
     );
     expect(u).toContain(
       'Environment="PATH=/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/bin"',

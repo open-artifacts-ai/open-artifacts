@@ -27,8 +27,18 @@ export type PolicyState = {
   refused: Record<string, { at: number; count: number }>;
   /** When the last attempt began (ms); a step-back counts. */
   lastAt?: number;
-  /** The one staged, proven version waiting for a quiet moment. */
-  staged?: { version: string; readySince: number };
+  /**
+   * The one staged, proven version waiting for a quiet moment. `manifest` is
+   * the sha256 of every file in its folder, taken at stage time and checked
+   * again right before the swap.
+   */
+  staged?: {
+    version: string;
+    readySince: number;
+    manifest?: Record<string, string>;
+  };
+  /** A switch under way: written before the swap, cleared by the self-check. */
+  pending?: { from: string; to: string; startedAt: number; attempts: number };
   /** Notices already sent, per version. */
   notified: Record<string, string[]>;
   /** The first-time line has been shown. */
