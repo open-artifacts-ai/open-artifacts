@@ -140,7 +140,11 @@ const post = (
     { moderator: true },
   ) as Promise<Thread>;
 const mention = (key: string) => ({ mentions: [{ key }] });
-const toOwnerAgent = () => bus.sent.filter((x) => x.userId === owner.userId);
+/** Notices to the owner's agents about one page (earlier tests' background notices must not bleed in). */
+const toOwnerAgent = (id: string) =>
+  bus.sent.filter(
+    (x) => x.userId === owner.userId && x.notice.artifactId === id,
+  );
 const held = async (u: U = owner) => (await listHeld(E, u.userId)).requests;
 const listAs = async (id: string, v: CommentViewer) =>
   (await listComments(E, id, "all", v)).threads;
@@ -155,7 +159,7 @@ describe("holding", () => {
       "where does the 42% come from?",
       mention(s.claude),
     );
-    expect(toOwnerAgent()).toHaveLength(0);
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
     // The asker's view: the comment, the mention still queued, nothing refused.
     const seen = (await listAs(s.id, view(editor)))[0]?.comments[0];
     expect(seen?.body).toBe("where does the 42% come from?");
@@ -171,9 +175,7 @@ describe("holding", () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "secret words", mention(s.claude));
     const agentView = (await listAs(s.id, asAgent(owner)))[0]?.comments[0];
-    expect(agentView?.body).toBe(
-      expect.stringContaining("is waiting for your person") as never,
-    );
+    expect(agentView?.body).toContain("is waiting for your person");
     expect(JSON.stringify(agentView)).not.toContain("secret words");
     expect((await listAs(s.id, view(owner)))[0]?.comments[0]?.body).toBe(
       "secret words",
@@ -186,14 +188,14 @@ describe("holding", () => {
   it("an agent's or a token's comment holds nothing and wakes nothing", async () => {
     const s = await setup();
     await post(s.id, token(editor), editor, "from a token", mention(s.claude));
-    expect(toOwnerAgent()).toHaveLength(0);
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
     expect(await held()).toHaveLength(0);
   });
 
   it("a note on the page where the page agent is someone else's is held too, and a follower notice from a non-listed member goes nowhere", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "a plain note");
-    expect(toOwnerAgent()).toHaveLength(0);
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
   });
 });
 
@@ -210,9 +212,10 @@ describe("allow", () => {
       })),
     });
     expect(out).toEqual({ sent: 1, changed: 0, waiting: 0 });
-    expect(toOwnerAgent().map((x) => x.notice.to.name)).toEqual(["Claude"]);
-    // Delivered as someone else's words, never the receiver's own.
-    expect(toOwnerAgent()[0]?.notice.text).not.toMatch(/your user/i);
+    expect(toOwnerAgent(s.id).map((x) => x.notice.to.name)).toEqual(["Claude"]);
+    // Delivered as someone else's words, never as the receiver's own (the "your user" tier).
+    expect(toOwnerAgent(s.id)[0]?.notice.text).not.toContain("your user");
+    expect(toOwnerAgent(s.id)[0]?.notice.text).toContain("mentioned");
     expect((await listAs(s.id, asAgent(owner)))[0]?.comments[0]?.body).toBe(
       "one",
     );
@@ -250,7 +253,7 @@ describe("allow", () => {
       items: shown,
     });
     expect(out).toEqual({ sent: 0, changed: 1, waiting: 0 });
-    expect(toOwnerAgent()).toHaveLength(0);
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
     // Still masked, and the notice now shows the new words with a new hash.
     expect(
       JSON.stringify((await listAs(s.id, asAgent(owner)))[0]?.comments[0]),
@@ -296,7 +299,7 @@ describe("allow", () => {
     });
     bus.sent = [];
     await post(s.id, typed(editor), editor, "second", mention(s.claude));
-    expect(toOwnerAgent().map((x) => x.notice.to.name)).toEqual(["Claude"]);
+    expect(toOwnerAgent(s.id).map((x) => x.notice.to.name)).toEqual(["Claude"]);
     expect(await held()).toHaveLength(0);
     // The entry is live: it ends when the member loses edit rights on the page.
     await putShare(E, owner.member, s.id, {
@@ -401,7 +404,16 @@ describe("all pages in a space", () => {
     )
       .bind(id, name, Date.now())
       .run();
-    return id;
+    return members(id);
+  };
+  const members = async (spaceId: string) => {
+    for (const u of [owner, editor])
+      await E.DB.prepare(
+        "insert or ignore into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', ?)",
+      )
+        .bind(spaceId, u.userId, Date.now())
+        .run();
+    return spaceId;
   };
   const move = (artifactId: string, spaceId: string | null) =>
     E.DB.prepare("update artifacts set space_id = ? where id = ?")
@@ -430,7 +442,7 @@ describe("all pages in a space", () => {
     await listen(launch);
     expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("deliver");
     await post(s.id, typed(editor), editor, "in the space", mention(s.claude));
-    expect(toOwnerAgent().map((x) => x.notice.to.name)).toEqual(["Claude"]);
+    expect(toOwnerAgent(s.id).map((x) => x.notice.to.name)).toEqual(["Claude"]);
     // Moved out of the space: the entry stops applying to it.
     await move(s.id, null);
     expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
@@ -506,7 +518,7 @@ describe("an ask addressed to someone else's agent", () => {
       .bind(owner.userId, s.id)
       .first<{ open: number; held: number; question: string | null }>();
     expect(row).toMatchObject({ open: 0, held: 1, question: null });
-    expect(toOwnerAgent()).toHaveLength(0);
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
     const [r] = await held();
     await allow(E, owner.userId, r?.id as string, {
       level: "once",
