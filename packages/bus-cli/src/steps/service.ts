@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -22,6 +23,7 @@ import {
   resolve,
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installVersion, isSafeVersion } from "@oa/bus-daemon";
 import { BUS_CMD } from "@oa/bus-protocol";
 import type { Isolation, Service, ServiceProblem } from "../context.ts";
 import type { Deps } from "../deps.ts";
@@ -256,39 +258,51 @@ exit 127
 /** The launcher's path under a bus home. */
 export const launcherOf = (home: string) => join(home, "bin", "node");
 
+/** The package's version for its folder name; "dev" for the workspace shim. */
+function versionOf(src: CliSource): string {
+  if (src.kind === "dev") return "dev";
+  try {
+    const j = JSON.parse(
+      readFileSync(join(dirname(dirname(src.file)), "package.json"), "utf8"),
+    );
+    if (isSafeVersion(j?.version)) return j.version;
+  } catch {
+    // unreadable: not a version
+  }
+  return `unknown-${Date.now()}`;
+}
+
 /**
- * Replaces `<home>/bin` with a copy of `src`; returns the entry to run. The
- * home and bin are 0700: whoever can write them picks what launchd runs. With
- * `node`, also writes the launcher (`launcherOf(home)`) that finds a node.
+ * Installs `src` as `<home>/versions/<version>` and points `<home>/bin` at it
+ * with one rename (no moment without a bin); returns the entry to run. One
+ * previous version is kept. The home and versions are 0700: whoever can write
+ * them picks what launchd runs. With `node`, also writes the launcher
+ * (`launcherOf(home)`) that finds a node. A hand-run install arms update.json.
  */
 export function installCli(
   home: string,
   src: CliSource,
   node?: string,
 ): string {
-  const bin = join(home, "bin");
-  const tmp = `${bin}.${process.pid}.tmp`;
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
-  rmSync(tmp, { recursive: true, force: true });
-  mkdirSync(tmp);
-  if (src.kind === "bundle") {
-    // dist/index.js finds its assets at ../assets: copy the package's layout.
-    const pkg = dirname(dirname(src.file));
-    for (const name of ["dist", "assets", "package.json"])
-      if (existsSync(join(pkg, name)))
-        cpSync(join(pkg, name), join(tmp, name), { recursive: true });
-  } else writeFileSync(join(tmp, entryName(src)), shim(src));
-  chmodSync(tmp, 0o700);
-  if (node !== undefined) {
-    writeFileSync(join(tmp, "node"), launcherText(node), { mode: 0o700 });
-    chmodSync(join(tmp, "node"), 0o700);
-  }
-  if (!existsSync(join(tmp, "package.json")))
-    writeFileSync(join(tmp, "package.json"), '{ "type": "module" }\n');
-  rmSync(bin, { recursive: true, force: true });
-  renameSync(tmp, bin);
-  return join(bin, entryName(src));
+  installVersion(home, versionOf(src), (tmp) => {
+    if (src.kind === "bundle") {
+      // dist/index.js finds its assets at ../assets: copy the package's layout.
+      const pkg = dirname(dirname(src.file));
+      for (const name of ["dist", "assets", "package.json"])
+        if (existsSync(join(pkg, name)))
+          cpSync(join(pkg, name), join(tmp, name), { recursive: true });
+    } else writeFileSync(join(tmp, entryName(src)), shim(src));
+    chmodSync(tmp, 0o700);
+    if (node !== undefined) {
+      writeFileSync(join(tmp, "node"), launcherText(node), { mode: 0o700 });
+      chmodSync(join(tmp, "node"), 0o700);
+    }
+    if (!existsSync(join(tmp, "package.json")))
+      writeFileSync(join(tmp, "package.json"), '{ "type": "module" }\n');
+  });
+  return join(home, "bin", entryName(src));
 }
 
 /** The file itself, a symlink included (existsSync follows the link). */

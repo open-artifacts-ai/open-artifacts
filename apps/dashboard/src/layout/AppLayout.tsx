@@ -39,6 +39,7 @@ import { useSignOut } from "../auth/signOut";
 import { useMe } from "../auth/useMe";
 import { canUseBus } from "../bus/access";
 import { isEmbed, isFullPath } from "../embed";
+import { ForYouBell } from "../foryou/ForYou";
 import { SearchBox } from "../library/SearchBox";
 import { EdgePanel } from "../pages/Edge";
 import { NotPublic } from "../pages/NotPublic";
@@ -554,6 +555,7 @@ function TopBar({ me }: { me: Me | null }) {
         <span data-header-email="" className="max-[640px]:hidden">
           {me.user.email}
         </span>
+        <ForYouBell />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button

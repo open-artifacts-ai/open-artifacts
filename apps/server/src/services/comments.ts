@@ -98,6 +98,12 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
+import {
+  isOutsideMember,
+  MentionGate,
+  OWN_AGENTS_ONLY,
+  TOO_MANY_MENTIONS,
+} from "./mention-guards.js";
 import { noteCommented } from "./onboarding.js";
 import {
   mentionedKey,
@@ -736,6 +742,25 @@ export const maskBody = (body: string, pairs: [string, string][]): string => {
 const isTyped = (a: StoredActor): boolean =>
   a.kind === "user" && a.typed === true && !a.agent;
 
+/**
+ * #2381: the decision this one changed: the decider's latest pick that is
+ * not the current decision's option (none for a first decision).
+ */
+const wasOf = (ask: StoredAsk): { was?: { optionId: string; at: string } } => {
+  if (!ask.answer) return {};
+  const who = ask.answer.by.ref;
+  // Only picks made as the decider: a weigh-in before they decided is not a "was".
+  const mine = (ask.history ?? []).filter(
+    (p) => p.by.ref === who && p.decision === true,
+  );
+  for (let i = mine.length - 1; i >= 0; i--) {
+    const p = mine[i] as StoredPick;
+    if (p.optionId !== ask.answer.optionId)
+      return { was: { optionId: p.optionId, at: p.at } };
+  }
+  return {};
+};
+
 /** #2381: who decides, who chose them, the viewer's part and everyone's latest pick. */
 const deciderFields = (
   c: StoredComment,
@@ -835,6 +860,8 @@ const commentOf = (
               : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
             ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
+            ...(c.ask.replaces ? { replaces: c.ask.replaces } : {}),
+            ...(c.ask.replacedBy ? { replacedBy: c.ask.replacedBy } : {}),
             ...deciderFields(c, c.ask, viewer, users),
             ...(c.ask.answer
               ? {
@@ -843,10 +870,13 @@ const commentOf = (
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
+                    ...wasOf(c.ask),
                     ...(c.ask.answer.verified
                       ? { verified: c.ask.answer.verified }
                       : {}),
+                    // A replaced ask is never a yes: the newer ask is the question now (#2323).
                     yes:
+                      !c.ask.replacedBy &&
                       viewer.userId !== null &&
                       (c.ask.confirm !== "passkey" ||
                         c.ask.answer.verified === "passkey") &&
@@ -1012,27 +1042,33 @@ export type Announce = {
 };
 
 /** Followers hear of a new comment (once, never the author's own agents); never throws. */
-const announce = (
+const announce = async (
   env: Env,
   artifactId: string,
   who: CommentWho,
   after: Announce | undefined,
   /** The comment's mentions and ask: those agents already heard of it. */
   r?: Resolved,
-) =>
-  after
-    ? inBackground(
-        after.ctx,
-        notifyCommented(
-          env,
-          artifactId,
-          after.version,
-          who.kind === "user" ? who.id : null,
-          Date.now(),
-          new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
-        ),
-      )
-    : undefined;
+) => {
+  // #2559: only a person typing tells other people's follower agents (the
+  // author's own agents never hear it), not an outside member, and each one
+  // told takes a slot from the mention limits (over them, it is not told).
+  if (!after || !typedByPerson(who) || who.kind !== "user") return;
+  if (await isOutsideMember(env, who.id)) return;
+  const gate = (r && gateOf(env, who, r)) ?? new MentionGate(env, who.id);
+  return inBackground(
+    after.ctx,
+    notifyCommented(
+      env,
+      artifactId,
+      after.version,
+      who.id,
+      Date.now(),
+      new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
+      (receiverId) => gate.take(receiverId),
+    ),
+  );
+};
 
 /** Emails the people a new thread or reply concerns (#1467), after the response; never throws. */
 const emailPeople = (
@@ -1077,7 +1113,22 @@ type Resolved = {
   /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
   mentionKind: "mention" | "asker";
   participants: StoredParticipant[];
+  /** #2559: a non-fatal notice for the response (a mention over the limit). */
+  notice?: string;
+  /** #2559: this comment's draw on the mention limits (one sender slot per comment). */
+  gate?: MentionGate;
 };
+
+/** The comment's mention-limit gate: made once per comment, by its author. */
+const gateOf = (env: Env, who: CommentWho, r: Resolved): MentionGate | null => {
+  if (who.kind !== "user") return null;
+  r.gate ??= new MentionGate(env, who.id);
+  return r.gate;
+};
+
+/** A comment a person typed in the web app: no token, no agent (#1797). */
+const typedByPerson = (who: CommentWho): boolean =>
+  who.kind === "user" && who.typed === true && !who.agent;
 
 const participantOf = (a: RosterAgent): StoredParticipant => ({
   ...storedAgent(a),
@@ -1306,11 +1357,33 @@ async function resolveExtras(
       to,
       ...(confirm ? { confirm } : {}),
       ...(decider ? { decider } : {}),
+      ...(askIn.replaces ? { replaces: askIn.replaces } : {}),
     };
   }
   const agents = new Map<string, Resolved["agents"][number]>();
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
   for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
+  // #2559: guards on waking another person's agent (mention or ask).
+  let notice: string | undefined;
+  const others = [...agents.values()].filter(
+    (e) => e.agent.userId !== viewerId,
+  );
+  const gate = gateOf(env, who, none);
+  if (others.length > 0) {
+    // 1: an outside member names only their own agents.
+    if (viewerId && (await isOutsideMember(env, viewerId)))
+      throw new ApiError("forbidden", OWN_AGENTS_ONLY);
+    // 3: only a person typing wakes another person's agent; the mention stays
+    // on the comment and reads "gone". 2: and only under the hourly limits.
+    for (const e of others) {
+      let wake = typedByPerson(who);
+      if (wake && gate && !(await gate.take(e.agent.userId))) {
+        wake = false;
+        notice = TOO_MANY_MENTIONS;
+      }
+      if (!wake) agents.delete(e.agent.key);
+    }
+  }
   // A mention makes an agent follow (#1535); an ask alone does
   // not. Only one the follows did not hold: another member's unfollow is never undone.
   const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
@@ -1330,6 +1403,8 @@ async function resolveExtras(
       ...participantOf(x.agent),
       readd: true as const,
     })),
+    ...(notice ? { notice } : {}),
+    ...(gate ? { gate } : {}),
   };
 }
 
@@ -1369,7 +1444,7 @@ async function deliver(
   c: StoredComment,
   r: Resolved,
 ): Promise<StoredComment> {
-  if (r.agents.length === 0) return c;
+  if (r.agents.length === 0 && r.mentions.length === 0) return c;
   const version = Math.max(1, a.currentVersion);
   const outcome = new Map<string, DeliveryState>();
   // Concurrent, and the POST waits NOTICE_BUDGET_MS at most in total: a
@@ -1490,6 +1565,7 @@ async function addThreadInner(
 ): Promise<Thread> {
   const body = checkBody(raw.body);
   const r0 = await resolveExtras(env, a.id, who, raw, opts);
+  gateOf(env, who, r0);
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -1498,14 +1574,27 @@ async function addThreadInner(
   };
   const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
   if (!taken) await take();
-  const page =
+  const page0 =
     // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
     anchor.kind === "note" &&
+    r0.mentions.length === 0 &&
     r0.agents.length === 0 &&
     who.kind === "user" &&
     !outsider(viewer)
       ? await pagePublisher(env, a, who)
       : null;
+  // #2559: an agent's or a token's note never wakes another person's page agent.
+  let page: RosterAgent | null = null;
+  if (page0 && who.kind === "user") {
+    if (page0.userId === who.id) page = page0;
+    else if (typedByPerson(who)) {
+      // Another person's page agent: not for an outside member, and under the mention limits.
+      if (await isOutsideMember(env, who.id)) page = null;
+      else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
+        page = page0;
+      else r0.notice = TOO_MANY_MENTIONS;
+    }
+  }
   if (page) {
     r0.extras = { ...r0.extras, mentions: [storedAgent(page)] };
     r0.agents.push({ agent: page, kind: "mention" });
@@ -1554,13 +1643,16 @@ async function addThreadInner(
       root.ask.decider ?? root.author.ref,
       askInfo(root),
     );
-  if (root && r.agents.length > 0) {
+  if (root && (r.agents.length > 0 || r.mentions.length > 0)) {
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
   }
   await announce(env, a.id, who, opts.after, r);
   await emailPeople(env, a.id, t.id, root, false, opts.after);
-  return (await threadViews(env, a.id, [t], viewer))[0] as Thread;
+  const view = (await threadViews(env, a.id, [t], viewer))[0] as Thread;
+  const first = view.comments[0];
+  if (r.notice && first) view.comments[0] = { ...first, notice: r.notice };
+  return view;
 }
 
 /**
@@ -1661,6 +1753,8 @@ async function threadReply(
   c: StoredComment,
   r: Resolved,
   viewer: CommentViewer,
+  /** #2559: told when a reply's wake is held back by the mention limits. */
+  limited?: () => void,
 ): Promise<StoredComment> {
   // Members only (#1900, #1968): never an agent, a signed-out visitor, a guest
   // or a guest-role member.
@@ -1679,7 +1773,22 @@ async function threadReply(
     if (due.length === 0) return c;
     const reached: RosterAgent[] = [];
     const users = new Map<string, boolean>();
+    // #2559: a comment not typed by a person wakes only its author's own agents.
+    const typed = isTyped(c.author);
+    let outside: boolean | undefined;
     for (const p of due) {
+      if (p.owner !== c.author.ref) {
+        if (!typed) continue;
+        // Another person's agent: not for an outside member, and under the mention limits.
+        outside ??= await isOutsideMember(env, c.author.ref);
+        if (outside) continue;
+        if (
+          !(await (r.gate ?? new MentionGate(env, c.author.ref)).take(p.owner))
+        ) {
+          limited?.();
+          continue;
+        }
+      }
       let ok = users.get(p.owner);
       if (ok === undefined) {
         const user = await getUser(env, p.owner);
@@ -1798,6 +1907,7 @@ async function addReplyInner(
       await resolveExtras(env, artifactId, who, extras, opts),
     );
   }
+  gateOf(env, who, r);
   const participants = [
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),
@@ -1836,11 +1946,15 @@ async function addReplyInner(
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   // #1900: a person's reply also tells the thread's other agents, once each.
-  c = await threadReply(env, a, threadId, c, r, viewer);
-  if (r.agents.length === 0) {
+  c = await threadReply(env, a, threadId, c, r, viewer, () => {
+    r = { ...r, notice: TOO_MANY_MENTIONS };
+  });
+  const withNotice = (v: Comment): Comment =>
+    r.notice ? { ...v, notice: r.notice } : v;
+  if (r.agents.length === 0 && r.mentions.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
     await emailPeople(env, artifactId, threadId, c, true, opts.after);
-    return commentView(env, c, viewer);
+    return withNotice(await commentView(env, c, viewer));
   }
   const sent = await deliver(env, a, threadId, c, r);
   // The bound is spent when a notice goes out or is held; a reply whose agents
@@ -1855,7 +1969,7 @@ async function addReplyInner(
     ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
   await emailPeople(env, artifactId, threadId, sent, true, opts.after);
-  return commentView(env, sent, viewer);
+  return withNotice(await commentView(env, sent, viewer));
 }
 
 /** How the pick reached the server (#2263): only a browser session may carry a passkey. */
@@ -1941,6 +2055,11 @@ export async function answerChallenge(
     throw new ApiError("bad_request", "This ask does not need a passkey");
   if (status === "resolved")
     throw new ApiError("conflict", "This ask is closed");
+  if (ask.replacedBy)
+    throw new ApiError(
+      "replaced",
+      "A newer ask replaced this one: pick on that",
+    );
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
   if (ask.answer?.optionId === optionId)
@@ -1983,6 +2102,11 @@ export async function answerAsk(
     threadId,
     commentId,
   );
+  if (ask.replacedBy)
+    throw new ApiError(
+      "replaced",
+      "A newer ask replaced this one: pick on that",
+    );
   let verified: "passkey" | undefined;
   const needsPasskey =
     ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));
@@ -2161,8 +2285,11 @@ export async function artifactAgents(
   guest = false,
 ): Promise<ArtifactAgent[]> {
   const masked = guest || viewerId === null;
-  return (await agentRoster(env, artifactId, viewerId, true, true)).map(
-    ({ key, name, online, state, lastActiveAt, machine, owner }) => ({
+  // #2559: an outside member's @ list holds only their own agents.
+  const outside = viewerId !== null && (await isOutsideMember(env, viewerId));
+  return (await agentRoster(env, artifactId, viewerId, true, true))
+    .filter((a) => !outside || a.userId === viewerId)
+    .map(({ key, name, online, state, lastActiveAt, machine, owner }) => ({
       key,
       name,
       online,
@@ -2170,8 +2297,7 @@ export async function artifactAgents(
       lastActiveAt: masked ? null : lastActiveAt,
       machine: masked ? null : machine,
       owner,
-    }),
-  );
+    }));
 }
 
 /** Resolve or reopen. */

@@ -609,9 +609,14 @@ describe("the comment notice", () => {
     await follow(E, owner.userId, addr("owner-agent"), id);
     await follow(E, reader.userId, addr("reader-agent"), id);
 
-    const t = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "SECRET BODY" }),
-    ).thread;
+    // #2559: only a comment a person typed in the web app tells followers; a
+    // token's (MCP) comment tells nobody (checked below).
+    const t = (await (
+      await api(app, comments(id), owner.cookie, {
+        method: "POST",
+        body: { anchor: { kind: "note" }, body: "SECRET BODY" },
+      })
+    ).json()) as Thread;
     // Only the follower who is not the author hears it.
     let got = await heard(id, 1);
     expect(got.map((s) => [s.userId, s.notice.kind, s.notice.to.name])).toEqual(
@@ -625,15 +630,16 @@ describe("the comment notice", () => {
     expect(n.notBefore).toBeUndefined();
 
     // A reply is a comment: one more, from the other side.
-    sc(
-      await tool(reader.client, "add_comment", {
-        id,
-        threadId: t.id,
-        body: "hi",
-      }),
-    );
+    await api(app, R.commentReplies(id, t.id), reader.cookie, {
+      method: "POST",
+      body: { body: "hi" },
+    });
     got = await heard(id, 2);
     expect(got[1]?.userId).toBe(owner.userId);
+    // A token's comment tells no follower.
+    sc(await tool(owner.client, "add_comment", { id, body: "from a token" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bus.sent.filter((s) => s.notice.artifactId === id)).toHaveLength(2);
 
     // A resolve is not a comment, and a refused comment is not one either.
     sc(await tool(owner.client, "resolve_comment", { id, threadId: t.id }));
@@ -719,7 +725,10 @@ describe("the comment notice", () => {
     });
     expect(r.status).toBe(201);
     // A member's comment is the marker that the guest's sent nothing first.
-    await tool(reader.client, "add_comment", { id, body: "member" });
+    await api(app, comments(id), reader.cookie, {
+      method: "POST",
+      body: { anchor: { kind: "note" }, body: "member" },
+    });
     expect(await heardAll(id)).toBe(1);
   });
 
