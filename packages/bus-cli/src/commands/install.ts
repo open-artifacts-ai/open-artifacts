@@ -537,13 +537,6 @@ function harnessesStepDef(opts: InstallOpts, bus: string): Step<Ctx> {
   };
 }
 
-/**
- * #2561: tells the hub this machine was just installed, so the next session
- * there that calls `self` asks the person for a name, once. Best effort: an
- * older hub answers 404, an offline one nothing (it times out), and neither
- * stops the install. Called only for a new machine or a newly wired harness,
- * never for a plain rerun or upgrade.
- */
 const machineToken = (ctx: Ctx): string | undefined => {
   const m = readMachine(ctx.home);
   return m.state === "ok" && !m.revoked ? m.token : undefined;
@@ -559,6 +552,13 @@ const wiredNow = async (ctx: Ctx): Promise<Set<string>> =>
       .map(([h]) => h),
   );
 
+/**
+ * #2561: tells the hub this machine was just installed, so the next session
+ * there that calls `self` asks the person for a name, once. Best effort: an
+ * older hub answers 404, an offline one nothing (it times out), and neither
+ * stops the install. Called only for a new machine or a newly wired harness,
+ * never for a plain rerun or upgrade.
+ */
 async function markSetupPending(ctx: Ctx): Promise<void> {
   const m = readMachine(ctx.home);
   if (m.state !== "ok" || m.revoked) return;
