@@ -627,6 +627,16 @@ async function startMocks() {
       ),
     );
   }
+  // #2590 G2 (PROVISIONAL): ?glink=1 stands for the oa_glink cookie of a
+  // guest Google turned away (sam@partner.org); without it, /auth/code/link
+  // answers 404.
+  const { codeLinkHandlers } = await import("./mockCodeLink");
+  extra.push(
+    ...codeLinkHandlers(
+      params.get("glink") === "1" ? "sam@partner.org" : null,
+      () => mainHandlers,
+    ),
+  );
   await setupWorker(
     ...extra,
     ...mainHandlers,

@@ -1,8 +1,8 @@
 import { AUTH } from "@oa/shared";
 import { brand } from "@oa/ui/brand";
 import { Button } from "@oa/ui/shadcn";
-import { Link } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useAuthProviders } from "../api/auth";
 import {
   type AuthProviders,
@@ -14,6 +14,7 @@ import { safeNext } from "../auth/safeNext";
 import { Notice } from "../layout/Notice";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { CodeSignIn } from "./CodeSignIn";
+import { useCodeLink } from "./codeLink";
 
 /** Light and dark variants of one brand image; CSS shows the matching one. */
 function Themed({
@@ -221,13 +222,13 @@ function HostedSignIn({
   next,
   method,
   via,
-  email: prefill,
+  link,
 }: {
   providers: AuthProviders;
   error: SignInError | null;
   next: string;
-  /** #2590: the address a needs_code redirect named. */
-  email?: string;
+  /** #2590 G2: needs_code came with link=1 (the server holds the address). */
+  link?: boolean;
   method?: "code";
   /** Which sign-in refused a no_access. */
   via?: "access" | "google";
@@ -245,6 +246,24 @@ function HostedSignIn({
       p.id === "access" && safeNext(p.start) === p.start,
   );
   const email = providers.providers.find((p) => p.id === "email");
+  // #2590 G2: the masked address the link names (PROVISIONAL, codeLink.ts).
+  const navigate = useNavigate();
+  const wantLink = error === "needs_code" && link === true && !!email;
+  const linkQuery = useCodeLink(wantLink);
+  const linked = wantLink ? linkQuery : null;
+  // No link any more (404): start over, at the sign-in page.
+  const startOver = useCallback(
+    () =>
+      void navigate({
+        to: SIGN_IN_PAGE as string,
+        search: { next } as never,
+        replace: true,
+      }),
+    [navigate, next],
+  );
+  useEffect(() => {
+    if (wantLink && linkQuery.data === null) startOver();
+  }, [wantLink, linkQuery.data, startOver]);
   const domain = google?.domains[0];
   const googleHref = google ? startHref(google.start, next) : undefined;
   const banner = error && (
@@ -311,9 +330,9 @@ function HostedSignIn({
 
   const guests = email?.guests ? email : undefined;
 
-  // #2590: Google turned a guest away (needs_code): the code form, with the
-  // address the server named, and a note instead of an error.
-  if (error === "needs_code" && email)
+  // #2590 G2: Google turned a guest away (needs_code, link=1): the code
+  // for the address the server holds, shown masked; a note, not an error.
+  if (error === "needs_code" && linked && email)
     return (
       <>
         <h1>Log in to {name}</h1>
@@ -322,15 +341,30 @@ function HostedSignIn({
             <Notice tone="info">{NEEDS_CODE}</Notice>
           </div>
         )}
-        <CodeSignIn
-          next={next}
-          turnstileSiteKey={email.turnstileSiteKey}
-          googleHref={googleHref}
-          onStep={onStep}
-          variant="guest"
-          initialEmail={prefill}
-          submitLabel="Email me a code"
-        />
+        {linked.isPending ? (
+          <p aria-busy="true" className="oa-split-sub" />
+        ) : linked.data ? (
+          <CodeSignIn
+            next={next}
+            turnstileSiteKey={email.turnstileSiteKey}
+            googleHref={googleHref}
+            onStep={onStep}
+            variant="guest"
+            link={{ maskedEmail: linked.data }}
+            onStartOver={startOver}
+            submitLabel="Email me a code"
+          />
+        ) : (
+          // Asking failed (not a 404): the usual way in, by hand.
+          <CodeSignIn
+            next={next}
+            turnstileSiteKey={email.turnstileSiteKey}
+            googleHref={googleHref}
+            onStep={onStep}
+            variant="guest"
+            submitLabel="Email me a code"
+          />
+        )}
       </>
     );
 
@@ -420,14 +454,14 @@ export function SignIn({
   next,
   method,
   via,
-  email,
+  link,
 }: {
   error?: string;
   next?: string;
   method?: string;
   via?: "access" | "google";
-  /** #2590: the address to prefill after error=needs_code (already off the URL). */
-  email?: string;
+  /** #2590 G2: ?link=1, the server holds a refused guest's address. */
+  link?: boolean;
 }) {
   useDocumentTitle("Log in");
   const providers = useAuthProviders();
@@ -464,7 +498,7 @@ export function SignIn({
         next={safeNext(next)}
         method={method === "code" ? "code" : undefined}
         via={via}
-        email={email}
+        link={link}
       />
     </Shell>
   );

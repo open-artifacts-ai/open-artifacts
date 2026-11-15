@@ -5,11 +5,9 @@ import {
   createRouter,
   type RouterHistory,
   redirect,
-  useNavigate,
   useParams,
   useSearch,
 } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
 import { hasFeature } from "./api/contract";
 import { useMe } from "./auth/useMe";
 import { AgentsPage } from "./bus/AgentsPage";
@@ -102,36 +100,23 @@ function FullRoute() {
   return <Shell id={id} chromeless />;
 }
 
-/** #2590: an email address from the URL, or nothing. */
-const addressOrNone = (v: unknown) =>
-  typeof v === "string" &&
-  v.length <= 254 &&
-  /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)
-    ? v
-    : undefined;
-
 /** `/sign-in`: the SPA owns the chooser and the code forms. */
 function SignInRoute() {
-  const search = useSearch({ strict: false }) as {
+  const { error, next, method, via, link } = useSearch({ strict: false }) as {
     error?: string;
     next?: string;
     method?: string;
     via?: "access" | "google";
-    email?: string;
+    link?: string;
   };
-  const { error, next, method, via } = search;
-  const navigate = useNavigate();
-  // #2590: `?email=` (a guest Google refused, error=needs_code) prefills the
-  // code form once, then leaves the URL (replaceState): the address never
-  // stays in the address bar or history.
-  const [email] = useState(() => addressOrNone(search.email));
-  useEffect(() => {
-    if (search.email === undefined) return;
-    const { email: _, ...rest } = search;
-    void navigate({ to: "/sign-in", search: rest as never, replace: true });
-  }, [search, navigate]);
   return (
-    <SignIn error={error} next={next} method={method} via={via} email={email} />
+    <SignIn
+      error={error}
+      next={next}
+      method={method}
+      via={via}
+      link={link === "1"}
+    />
   );
 }
 
@@ -362,15 +347,15 @@ const routeTree = root.addChildren([
       const method = s.method === "code" ? "code" : undefined;
       // Which sign-in refused a no_access (#799); anything else is dropped.
       const via = s.via === "access" || s.via === "google" ? s.via : undefined;
-      // #2590: the address to prefill after error=needs_code; anything that
-      // isn't an address is dropped.
-      const email = addressOrNone(s.email);
+      // #2590 G2: link=1 (the server holds a refused guest's address);
+      // anything else is dropped. Never an address in the URL.
+      const link = s.link === "1" || s.link === 1 ? "1" : undefined;
       return {
         ...(error !== undefined && { error }),
         ...(next && { next }),
         ...(method && { method }),
         ...(via && { via }),
-        ...(email && { email }),
+        ...(link && { link }),
       };
     },
     component: SignInRoute,

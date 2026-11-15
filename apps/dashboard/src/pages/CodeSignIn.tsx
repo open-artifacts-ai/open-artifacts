@@ -10,6 +10,7 @@ import {
 } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
 import { safeNext } from "../auth/safeNext";
+import { requestLinkedCode } from "./codeLink";
 import { Turnstile, type TurnstileHandle } from "./Turnstile";
 
 /** The server's `codeLength` when it is an integer in 4..12, else `CODE_POLICY.length`. */
@@ -129,7 +130,8 @@ export function CodeSignIn({
   googleHref,
   onStep,
   variant = "trial",
-  initialEmail,
+  link,
+  onStartOver,
   submitLabel,
 }: {
   /** Already through `safeNext`. */
@@ -142,13 +144,19 @@ export function CodeSignIn({
   onStep?: (step: "email" | "code") => void;
   /** "trial": codes are the main way in. "guest": the `?method=code` page next to Google. */
   variant?: "trial" | "guest";
-  /** #2590: the address to start with (a guest Google refused). */
-  initialEmail?: string;
+  /**
+   * #2590 G2: a guest Google turned away. The address is the server's (the
+   * oa_glink cookie); the page shows it masked and asks for a code with
+   * { link: true }, never the address itself.
+   */
+  link?: { maskedEmail: string };
+  /** "Use a different email" leaves the page (the link mode has no field). */
+  onStartOver?: () => void;
   /** The send button's words, when the page names them. */
   submitLabel?: string;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
-  const [email, setEmail] = useState(initialEmail ?? "");
+  const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -214,7 +222,12 @@ export function CodeSignIn({
       ...(token ? { turnstileToken: token } : {}),
     };
     try {
-      const res = await requestCode(body);
+      const res = link
+        ? await requestLinkedCode({
+            next: body.next ?? "/",
+            ...(token ? { turnstileToken: token } : {}),
+          })
+        : await requestCode(body);
       spendToken();
       setPending({
         email: address,
@@ -323,6 +336,7 @@ export function CodeSignIn({
   };
 
   const startOver = () => {
+    if (onStartOver) return onStartOver();
     backToEmail();
     setError(null);
     setSlotError(null);
@@ -431,6 +445,40 @@ export function CodeSignIn({
       </>
     );
   }
+
+  // #2590 G2: the address is the server's; show it, send for it.
+  if (link)
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send("");
+        }}
+        noValidate
+        aria-busy={busy || undefined}
+      >
+        <p style={{ margin: 0, fontSize: 13 }}>Email</p>
+        <p data-masked-email="" style={{ margin: "4px 0 0", fontWeight: 600 }}>
+          {link.maskedEmail}
+        </p>
+        {error && (
+          <p role="alert" style={{ margin: "8px 0 0", fontSize: 13 }}>
+            {error}
+          </p>
+        )}
+        {notice && <HeldNotice>{notice}</HeldNotice>}
+        {slot}
+        <Button
+          type="submit"
+          className="oa-split-btn"
+          style={{ marginTop: 16 }}
+          disabled={busy || held}
+          aria-describedby={notice ? HELD_ID : undefined}
+        >
+          {submitLabel ?? "Email me a code"}
+        </Button>
+      </form>
+    );
 
   return (
     <form onSubmit={onSubmitEmail} noValidate aria-busy={busy || undefined}>

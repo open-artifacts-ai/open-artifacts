@@ -1,7 +1,8 @@
 // #2590 G2: after Google turns a guest away, /sign-in?error=needs_code&
-// email=<addr> prefills the code form, takes the address out of the URL and
-// sends the code same-origin. At 1280 and 390, light and dark, with axe.
-// PNGs to SHOTS_DIR when set.
+// link=1 shows the masked address the server holds (GET /auth/code/link)
+// and asks for a code with { link: true }, same-origin; no address ever in
+// the URL. A gone link starts over. At 1280 and 390, light and dark, with
+// axe. PNGs to SHOTS_DIR when set. PROVISIONAL routes (codeLink.ts).
 import { createRequire } from "node:module";
 import { expect, type Page, type Request, test } from "@playwright/test";
 
@@ -33,24 +34,23 @@ for (const scheme of ["light", "dark"] as const)
   for (const width of [1280, 390])
     test.describe(`${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 860 } });
-      test("needs_code: the address prefilled, off the URL, and a code on request", async ({
+      test("needs_code with link=1: the masked address, and a code on request", async ({
         page,
       }, info) => {
+        // glink=1 is the mock's stand-in for the oa_glink cookie.
         await page.goto(
-          "/sign-in?hosted=1&error=needs_code&email=sam%40partner.org&next=%2F",
+          "/sign-in?hosted=1&error=needs_code&link=1&glink=1&next=%2F",
         );
-        const field = page.getByRole("textbox", { name: "Email" });
-        await expect(field).toHaveValue("sam@partner.org");
+        await expect(page.getByText("s***@partner.org")).toBeVisible();
         await expect(
           page.getByText(
             "We couldn't log you in with Google for this address. We'll email you a code instead.",
           ),
         ).toBeVisible();
-        // The address left the URL (and history: replaced, not pushed).
-        await expect
-          .poll(() => page.evaluate(() => location.search))
-          .not.toContain("email");
-        expect(page.url()).not.toContain("partner.org");
+        await expect(page.getByRole("textbox", { name: "Email" })).toHaveCount(
+          0,
+        );
+        expect(page.url()).not.toContain("partner");
         await settle(page);
         const name = `signin-needs-code-${scheme}-${width}.png`;
         await page.screenshot({
@@ -63,9 +63,19 @@ for (const scheme of ["light", "dark"] as const)
         );
         await page.getByRole("button", { name: "Email me a code" }).click();
         const req = await sent;
-        // Same-origin, so the server's cookie goes along.
+        // Same-origin, so the cookie goes along; no address in the body.
         expect(new URL(req.url()).origin).toBe(new URL(page.url()).origin);
-        expect(req.postDataJSON()).toMatchObject({ email: "sam@partner.org" });
+        expect(req.postDataJSON()).toEqual({ link: true, next: "/" });
         await expect(page.getByRole("textbox", { name: "Code" })).toBeVisible();
+      });
+
+      test("a link that's gone starts over at sign-in", async ({ page }) => {
+        await page.goto("/sign-in?hosted=1&error=needs_code&link=1&next=%2F");
+        await expect
+          .poll(() => page.evaluate(() => location.search))
+          .not.toContain("needs_code");
+        await expect(
+          page.getByRole("link", { name: "Continue with Google" }),
+        ).toBeVisible();
       });
     });
