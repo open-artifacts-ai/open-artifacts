@@ -1,4 +1,4 @@
-import { label, readPolicy, setOff, writePolicy } from "@oa/bus-daemon";
+import { label, readPolicy, setIntroShown, setOff } from "@oa/bus-daemon";
 import { type Ctx, say } from "../context.ts";
 
 /**
@@ -21,10 +21,9 @@ export async function autoUpdate(
     return 0;
   }
   const s = readPolicy(ctx.home);
-  if (!s.introShown) {
+  if (!s.introShown && !s.unreadable) {
     say(ctx, c.autoUpdateIntro());
-    s.introShown = true;
-    writePolicy(ctx.home, s);
+    setIntroShown(ctx.home);
   }
   say(
     ctx,

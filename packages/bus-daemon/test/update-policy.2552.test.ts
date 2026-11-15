@@ -16,8 +16,10 @@ import {
   installNow,
   isBusy,
   label,
+  MAX_LIST,
   markFailed,
   markNotified,
+  markRefused,
   type PolicyState,
   QUIET_MS,
   QuietTracker,
@@ -25,6 +27,7 @@ import {
   readPolicy,
   readyDue,
   recordAttempt,
+  refusedBackoff,
   SIX_HOURS_MS,
   setOff,
   setStaged,
@@ -36,6 +39,7 @@ import {
 const T = 1_000_000_000_000;
 const st = (o: Partial<PolicyState> = {}): PolicyState => ({
   ...emptyPolicy(),
+  armed: true,
   newestRun: "1.5.0",
   current: "1.5.0",
   previous: "1.4.0",
@@ -195,13 +199,14 @@ describe("accept", () => {
     ),
   ];
   it.each(rows)("%s", (_n, over, i, now, server, want) => {
-    expect(accept(st(over), i, now, server)).toEqual(want);
+    expect(accept(st(over), i, now, server ? { server } : {})).toEqual(want);
   });
 
   it("compares numerically, not as strings", () => {
     expect(compareVersions("1.10.0", "1.9.0")).toBe(1);
     expect(compareVersions("1.2.3", "1.2.3")).toBe(0);
-    expect(compareVersions("1.2", "1.2.3")).toBeUndefined();
+    expect(compareVersions("1.9.0", "1.10.0")).toBe(-1);
+    expect(() => compareVersions("1.2", "1.2.3")).toThrow();
   });
 });
 
@@ -301,9 +306,12 @@ describe("install now and oa-bus update", () => {
     expect(updateCommand(st({ staged, failed: ["1.6.0"] }), tty)).toEqual(
       no("failed"),
     );
-    expect(
-      updateCommand(st({ staged }), { ...tty, loginOrApproval: true }),
-    ).toEqual(no("login_in_progress"));
+    expect(updateCommand(st({ staged, armed: false }), tty)).toEqual(
+      no("not_armed"),
+    );
+    expect(updateCommand(st({ staged, unreadable: true }), tty)).toEqual(
+      no("unreadable"),
+    );
   });
 });
 
@@ -351,6 +359,7 @@ describe("state file", () => {
   });
   it("a failed version is remembered, un-staged, and refused", () => {
     const h = home();
+    writeState(h, { armed: true });
     setStaged(h, "1.6.0", T);
     markFailed(h, "1.6.0");
     const s = readPolicy(h);
@@ -378,6 +387,7 @@ describe("state file", () => {
   });
   it("nothing from the instance can clear off: accept never writes, and only the CLI imports setOff", () => {
     const h = home();
+    writeState(h, { armed: true });
     setOff(h, true);
     accept(
       readPolicy(h),
@@ -416,5 +426,138 @@ describe("state file", () => {
     const dir = new URL("../src/update/", import.meta.url).pathname;
     for (const f of readdirSync(dir))
       expect(readFileSync(join(dir, f), "utf8")).not.toMatch(/process\.env/);
+  });
+});
+
+describe("review fixes", () => {
+  const home = () => mkdtempSync(join(tmpdir(), "oa-pol-"));
+  const file = (h: string) => join(h, "update.json");
+
+  it("the running version is in the floor even with no file", () => {
+    const h = home();
+    const s = readPolicy(h);
+    expect(
+      accept({ ...s, armed: true }, { version: "1.4.0" }, T, {
+        running: "1.5.0",
+      }),
+    ).toEqual(no("not_forward"));
+    expect(
+      accept({ ...s, armed: true }, { version: "1.5.0" }, T, {
+        running: "1.5.0",
+      }),
+    ).toEqual(no("not_forward"));
+    expect(
+      accept({ ...s, armed: true }, { version: "1.5.1" }, T, {
+        running: "1.5.0",
+      }),
+    ).toEqual(ok);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["partial: no armed", { newestRun: "1.5.0" }],
+    ["armed false", { armed: false }],
+    ["armed as a string", { armed: "true" }],
+  ])("%s file: no updates", (_n, body) => {
+    const h = home();
+    if (body) writeFileSync(file(h), JSON.stringify(body));
+    const s = readPolicy(h);
+    expect(s.unreadable).toBe(false);
+    expect(accept(s, { version: "9.0.0" }, T)).toEqual(no("not_armed"));
+  });
+
+  it.each([
+    ["corrupt", "{not json"],
+    ["truncated", '{"armed": tru'],
+    ["an array", "[]"],
+    ["null", "null"],
+    ["empty", ""],
+  ])("%s file: no updates, Update needs you, never overwritten", (_n, text) => {
+    const h = home();
+    writeFileSync(file(h), text);
+    const s = readPolicy(h);
+    expect(s.unreadable).toBe(true);
+    expect(accept(s, { version: "9.0.0" }, T)).toEqual(no("unreadable"));
+    expect(label(s, T)).toBe("Update needs you");
+    expect(() => recordAttempt(h, T)).toThrow(/unreadable/);
+    expect(readFileSync(file(h), "utf8")).toBe(text);
+  });
+
+  it("an unreadable path (a directory) is unreadable, not missing", () => {
+    const h = home();
+    mkdirSync(file(h));
+    expect(readPolicy(h).unreadable).toBe(true);
+  });
+
+  it("a stale state object cannot clear off (daemon write racing the CLI)", () => {
+    const h = home();
+    writeState(h, { armed: true });
+    const stale = readPolicy(h); // the daemon read it: off is false
+    setOff(h, true); // the person runs `oa-bus auto-update off`
+    stale.lastAt = T;
+    writePolicy(h, stale); // the daemon writes its stale copy
+    const s = readPolicy(h);
+    expect(s.off).toBe(true);
+    expect(s.lastAt).toBe(T);
+    expect(s.armed).toBe(true);
+    // a stale copy claiming off:true cannot set it either
+    setOff(h, false);
+    writePolicy(h, { ...stale, off: true, introShown: true, armed: false });
+    const r = readPolicy(h);
+    expect(r.off).toBe(false);
+    expect(r.introShown).toBe(false);
+    expect(r.armed).toBe(true);
+  });
+
+  it("failed to start is never retried; refused is retried after a growing backoff", () => {
+    const h = home();
+    writeState(h, { armed: true });
+    markFailed(h, "1.6.0");
+    markRefused(h, "1.7.0", T);
+    const s = readPolicy(h);
+    const D = 24 * 3600_000;
+    expect(accept(s, { version: "1.6.0" }, T + 400 * D)).toEqual(no("failed"));
+    expect(accept(s, { version: "1.7.0" }, T + D - 1)).toEqual(
+      no("refused_backoff"),
+    );
+    expect(accept(s, { version: "1.7.0" }, T + D)).toEqual(ok);
+    expect(accept(s, { version: "1.7.0" }, T - 5 * D)).toEqual(
+      no("refused_backoff"),
+    );
+    // second refusal: 48 h
+    markRefused(h, "1.7.0", T + D);
+    const s2 = readPolicy(h);
+    expect(accept(s2, { version: "1.7.0" }, T + 3 * D - 1)).toEqual(
+      no("refused_backoff"),
+    );
+    expect(accept(s2, { version: "1.7.0" }, T + 3 * D)).toEqual(ok);
+    expect([1, 2, 3, 4, 5, 6, 9, 50].map((n) => refusedBackoff(n) / D)).toEqual(
+      [1, 2, 4, 7, 7, 7, 7, 7],
+    );
+  });
+
+  it("lists are capped at the last 20", () => {
+    const h = home();
+    writeState(h, { armed: true });
+    for (let i = 0; i < 30; i++) {
+      markFailed(h, `1.${i}.0`);
+      markRefused(h, `2.${i}.0`, T);
+      markNotified(h, `3.${i}.0`, "ready");
+    }
+    const s = readPolicy(h);
+    expect(s.failed).toHaveLength(MAX_LIST);
+    expect(s.failed.at(-1)).toBe("1.29.0");
+    expect(s.failed[0]).toBe("1.10.0");
+    expect(Object.keys(s.refused)).toHaveLength(MAX_LIST);
+    expect(Object.keys(s.notified)).toHaveLength(MAX_LIST);
+    // a hand-edited long file is trimmed on read
+    writeFileSync(
+      file(h),
+      JSON.stringify({
+        armed: true,
+        failed: Array.from({ length: 50 }, (_, i) => `1.${i}.0`),
+      }),
+    );
+    expect(readPolicy(h).failed).toHaveLength(MAX_LIST);
   });
 });

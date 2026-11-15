@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { markFailed, readPolicy, setStaged } from "@oa/bus-daemon";
+import { markFailed, readPolicy, setStaged, writeState } from "@oa/bus-daemon";
 import { describe, expect, it, vi } from "vitest";
 import { update } from "../src/commands/update.ts";
 import { parse } from "../src/index.ts";
@@ -10,6 +10,7 @@ import { fakeCtx } from "./fake.ts";
 const world = (tty = true, answer = "yes") => {
   const ctx = fakeCtx({}, tty);
   mkdirSync(ctx.home, { recursive: true });
+  writeState(ctx.home, { armed: true });
   ctx.stdinIsTTY = tty;
   ctx.readLine = vi.fn(async () => answer);
   return ctx;
@@ -112,6 +113,7 @@ describe("oa-bus update", () => {
     writeFileSync(
       join(c.home, "update.json"),
       JSON.stringify({
+        armed: true,
         staged: { version: "1.6.0", readySince: 1 },
         failed: ["1.6.0"],
       }),
@@ -124,5 +126,15 @@ describe("oa-bus update", () => {
     setStaged(d.home, "1.6.0", 1);
     await main(["auto-update", "off"], () => d);
     expect(await update(d, vi.fn())).toBe(1);
+  });
+  it("a corrupt update.json means no update and Update needs you", async () => {
+    const c = world();
+    writeFileSync(join(c.home, "update.json"), "{nope");
+    const install = vi.fn(async () => true);
+    expect(await update(c, install)).toBe(0);
+    expect(c.out()[0]).toMatch(/^Update needs you\./);
+    expect(install).not.toHaveBeenCalled();
+    expect(await main(["auto-update", "status"], () => c)).toBe(0);
+    expect(c.out()).toContain("Update needs you");
   });
 });

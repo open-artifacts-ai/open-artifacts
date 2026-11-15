@@ -9,6 +9,10 @@ export const READY_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /** What update.json holds for the policy, beside the layout's keys. */
 export type PolicyState = {
+  /** Only a hand-run install writes it. A missing file is not armed. */
+  armed: boolean;
+  /** update.json exists but cannot be read: no updates, "Update needs you". */
+  unreadable: boolean;
   /** Set only by the local CLI. Nothing from the instance can clear it. */
   off: boolean;
   /** The newest version this machine has ever run. */
@@ -17,8 +21,10 @@ export type PolicyState = {
   previous?: string;
   /** The version running now (the layout's `current`). */
   current?: string;
-  /** Versions that failed to start or were refused; never tried again. */
+  /** Versions that failed to start; never tried again (last MAX_LIST). */
   failed: string[];
+  /** Versions whose proof was refused: retried later with a long backoff. */
+  refused: Record<string, { at: number; count: number }>;
   /** When the last attempt began (ms); a step-back counts. */
   lastAt?: number;
   /** The one staged, proven version waiting for a quiet moment. */
@@ -31,9 +37,24 @@ export type PolicyState = {
   needsYou: boolean;
 };
 
+/** Longest failed / refused / notified list kept. */
+export const MAX_LIST = 20;
+export const REFUSED_BACKOFF_MS = 24 * 60 * 60 * 1000;
+export const REFUSED_BACKOFF_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** 24 h after the first refusal, doubling each time, never past 7 d. */
+export const refusedBackoff = (count: number): number =>
+  Math.min(
+    REFUSED_BACKOFF_MS * 2 ** Math.max(0, Math.min(count, 30) - 1),
+    REFUSED_BACKOFF_MAX_MS,
+  );
+
 export const emptyPolicy = (): PolicyState => ({
+  armed: false,
+  unreadable: false,
   off: false,
   failed: [],
+  refused: {},
   notified: {},
   introShown: false,
   needsYou: false,
@@ -54,11 +75,11 @@ export function parseVersion(v: unknown): [number, number, number] | undefined {
   return n.every(Number.isSafeInteger) ? n : undefined;
 }
 
-/** -1, 0, 1; undefined when either is not x.y.z. */
-export function compareVersions(a: string, b: string): -1 | 0 | 1 | undefined {
+/** -1, 0, 1. Both must be x.y.z (check with parseVersion first). */
+export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   const x = parseVersion(a);
   const y = parseVersion(b);
-  if (!x || !y) return undefined;
+  if (!x || !y) throw new RangeError("compareVersions needs x.y.z");
   for (let i = 0; i < 3; i++) {
     if ((x[i] as number) < (y[i] as number)) return -1;
     if ((x[i] as number) > (y[i] as number)) return 1;
@@ -68,6 +89,9 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 | undefined {
 
 export type Refusal =
   | "bad_version"
+  | "not_armed"
+  | "unreadable"
+  | "refused_backoff"
   | "off"
   | "failed"
   | "not_forward"
@@ -81,9 +105,13 @@ export type Decision = { ok: true } | { ok: false; reason: Refusal };
 const no = (reason: Refusal): Decision => ({ ok: false, reason });
 const yes: Decision = { ok: true };
 
-/** Newest of newestRun and current; what "forward" is measured from. */
-function floor(s: PolicyState): string | undefined {
-  const known = [s.newestRun, s.current].filter(
+/**
+ * Newest of the running code's own version, newestRun and current: what
+ * "forward" is measured from. The running version is always in it, so a lost
+ * or emptied update.json never lets an older version in.
+ */
+function floor(s: PolicyState, running?: string): string | undefined {
+  const known = [running, s.newestRun, s.current].filter(
     (v): v is string => parseVersion(v) !== undefined,
   );
   return known.reduce<string | undefined>(
@@ -114,12 +142,18 @@ export function accept(
   s: PolicyState,
   i: Instruction,
   now: number,
-  serverVersion?: string,
+  o: { server?: string; running?: string } = {},
 ): Decision {
+  const serverVersion = o.server;
   if (parseVersion(i.version) === undefined) return no("bad_version");
+  if (s.unreadable) return no("unreadable");
+  if (!s.armed) return no("not_armed");
   if (s.off) return no("off");
   if (s.failed.includes(i.version)) return no("failed");
-  const base = floor(s);
+  const ref = s.refused[i.version];
+  if (ref && Math.max(now, ref.at) - ref.at < refusedBackoff(ref.count))
+    return no("refused_backoff");
+  const base = floor(s, o.running);
   const isStepBack =
     i.stepBack === true && s.previous !== undefined && i.version === s.previous;
   if (!isStepBack) {
@@ -187,6 +221,8 @@ export function installNow(
   now: number,
   loginOrApproval: boolean,
 ): Decision {
+  if (s.unreadable) return no("unreadable");
+  if (!s.armed) return no("not_armed");
   if (s.off) return no("off");
   const st = s.staged;
   if (!st) return no("nothing_staged");
@@ -198,20 +234,22 @@ export function installNow(
 
 /**
  * `oa-bus update`, run by a person. Installs only the staged version; needs a
- * terminal (stdin and stdout); may pass the 6 h limit; still refuses off, a
- * failed version and a login in progress. Not a security boundary: an agent
- * with a terminal can run it.
+ * terminal (stdin and stdout); may pass the 6 h limit; still refuses off and
+ * a failed version. It cannot see a login in progress (that lives in the
+ * daemon): PR 4 asks the daemon before it installs. Not a security boundary:
+ * an agent with a terminal can run it.
  */
 export function updateCommand(
   s: PolicyState,
-  o: { stdinTTY: boolean; stdoutTTY: boolean; loginOrApproval?: boolean },
+  o: { stdinTTY: boolean; stdoutTTY: boolean },
 ): Decision {
+  if (s.unreadable || !s.armed)
+    return no(s.unreadable ? "unreadable" : "not_armed");
   if (!o.stdinTTY || !o.stdoutTTY) return no("not_a_terminal");
   if (s.off) return no("off");
   const st = s.staged;
   if (!st) return no("nothing_staged");
   if (s.failed.includes(st.version)) return no("failed");
-  if (o.loginOrApproval) return no("login_in_progress");
   return yes;
 }
 
@@ -223,7 +261,7 @@ export type UpdateLabel =
 
 /** The state a person sees. */
 export function label(s: PolicyState, now: number): UpdateLabel {
-  if (s.needsYou) return "Update needs you";
+  if (s.needsYou || s.unreadable) return "Update needs you";
   const st = s.staged;
   if (!st) return "Up to date";
   return s.notified[st.version]?.includes("ready") || readyDue(s, now)
