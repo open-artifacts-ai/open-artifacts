@@ -2,7 +2,7 @@
 // limits, and what the outside email says.
 import { env } from "cloudflare:workers";
 import { R, SettingsSchema, ShareResultSchema } from "@oa/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { withPlan } from "../src/auth/authz.js";
 import { authConfig } from "../src/auth/config.js";
@@ -306,6 +306,56 @@ describe("turning the switch off ends outside guests' sessions", () => {
     const again = await login(uniq("sg2", "outside.example"), "guest");
     await call(e, R.settings, owner.cookie, "PATCH", { outsideSharing: false });
     expect(await me(e, again.cookie)).toBe(200);
+    await setSwitch(null);
+  });
+});
+
+describe("an existing Business instance that already shares outside", () => {
+  it("stores on at the first write, and its guest keeps access", async () => {
+    // The default for Business is off; with no stored value yet and an outside
+    // share on record, the stored value is on. (The test world has no billing
+    // gate, so the Business default is exercised through the rule's input.)
+    await setSwitch(null);
+    const email = uniq("keep", "gmail.com");
+    await seedShare(email);
+    const e = direct({ AUTH_DOMAIN_JOIN: "invite" }) as Env;
+    // Business, as the plan the first read sees.
+    const plan = await import("../src/billing/plan.js");
+    const spy = vi.spyOn(plan, "readPlan").mockResolvedValue({
+      tier: "business",
+    } as never);
+    try {
+      expect(await outsideSharingOn(env)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(
+      await env.DB.prepare("select value from settings where key = ?")
+        .bind(OUTSIDE_SHARING_KEY)
+        .first(),
+    ).toEqual({ value: "true" });
+    expect(
+      await admit(e, authConfig(e), {
+        provider: "google",
+        subject: `sub-${email}`,
+        email,
+        name: "G",
+        tenant: null,
+        hd: null,
+        bound: "email",
+      }),
+    ).toMatchObject({ ok: true, user: { role: "guest" } });
+    await setSwitch(null);
+    // With no outside share, Business stores off.
+    await env.DB.prepare("delete from shares").run();
+    const spy2 = vi.spyOn(plan, "readPlan").mockResolvedValue({
+      tier: "business",
+    } as never);
+    try {
+      expect(await outsideSharingOn(env)).toBe(false);
+    } finally {
+      spy2.mockRestore();
+    }
     await setSwitch(null);
   });
 });

@@ -21,8 +21,9 @@ export const outsideDefault = (plan: EffectivePlan | null): boolean =>
  * Whether outside sharing is on, as a stored fact (#2590): the first read with
  * nothing stored writes the plan's default once (on, but off on hosted
  * Business), with a settings.change audit row, actor system, in the same
- * batch. After that it is never derived from the plan again, so moving to
- * another tier changes nothing until the owner does. The page and every
+ * batch (on when any outside share already exists). After that it is never
+ * derived from the plan again, so moving to another tier changes nothing until
+ * the owner does. The page and every
  * enforcement read this same value. An unreadable plan writes nothing (on
  * for now) so a billing outage can't fix a wrong default.
  */
@@ -39,7 +40,18 @@ export async function outsideSharingOn(env: Env): Promise<boolean> {
   } catch {
     return true;
   }
-  const on = outsideDefault(plan);
+  // An instance that already shares outside keeps doing so: with any share to
+  // an outside address on record, the first stored value is on, whatever the
+  // plan's default (turning it off is the owner's call).
+  const on =
+    outsideDefault(plan) ||
+    (await stmt(
+      env.DB,
+      `select 1 as x from shares
+        where lower(substr(email, instr(email, '@') + 1)) not in (select value from json_each(?1)) limit 1`,
+    )
+      .bind(JSON.stringify(authConfig(env).domains))
+      .first()) !== null;
   await env.DB.batch([
     audit(
       env,
