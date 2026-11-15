@@ -734,10 +734,37 @@ export class DocRoom extends DurableObject<Env> {
       }
       cursor.set(c, end);
     }
+    // Stored before it is broadcast, in the same step as the ownership of the
+    // clientIDs it claims: a restart must never lose structs that a peer holds
+    // and an owner is recorded for (that peer's resync would be refused
+    // forever, #2177). One write per accepted update; compaction (and the
+    // flush alarm) stay batched.
+    const svBefore = new Map<number, number | undefined>();
+    for (const c of cursor.keys()) svBefore.set(c, this.sv.get(c));
     for (const [c, to] of cursor) this.sv.set(c, to);
-    this.claimClients(att.actor, fresh);
     this.buffer.push(update);
     this.bufferBytes += update.byteLength;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.claimClients(att.actor, fresh);
+        this.writeBuffer();
+      });
+    } catch (e) {
+      // Not stored, so not accepted: undo what memory took, tell nobody. The
+      // socket fails and the client's reconnect resyncs the update.
+      for (const [c, was] of svBefore)
+        if (was === undefined) this.sv.delete(c);
+        else this.sv.set(c, was);
+      for (const c of fresh) this.owners().delete(c);
+      const i = this.buffer.lastIndexOf(update);
+      if (i >= 0) {
+        this.buffer.splice(i, 1);
+        this.bufferBytes -= update.byteLength;
+      }
+      throw e;
+    }
+    if (this.rowCount > COMPACT_ROWS || this.rowBytes > COMPACT_ROW_BYTES)
+      this.compactPending = true;
     this.armAlarmLogged(this.now() + FLUSH_MS);
     this.touch(contributorOf(att));
     const out = encoding.createEncoder();

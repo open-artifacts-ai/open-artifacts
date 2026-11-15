@@ -93,7 +93,12 @@ interface Client {
 
 async function connect(
   room: Room,
-  o: { actor?: string; role?: "edit" | "read"; name?: string } = {},
+  o: {
+    actor?: string;
+    role?: "edit" | "read";
+    name?: string;
+    doc?: Y.Doc;
+  } = {},
 ): Promise<Client> {
   const res = await room.stub.fetch("https://room/ws", {
     headers: {
@@ -106,7 +111,7 @@ async function connect(
   });
   const ws = res.webSocket as WebSocket;
   ws.accept();
-  const doc = new Y.Doc();
+  const doc = o.doc ?? new Y.Doc();
   const frames: Client["frames"] = [];
   const checks = new Set<() => void>();
   let pongs = 0;
@@ -323,5 +328,50 @@ describe("clientID ownership (#2177)", () => {
     );
     expect(after.n).toBe(1);
     a.ws.close();
+  });
+});
+
+describe("accepted updates are stored before they are broadcast (#2177)", () => {
+  it("a peer's resync after a room restart is accepted and the doc converges", async () => {
+    const room = await fresh();
+    const a = await connect(room);
+    const b = await connect(room, { actor: BOB });
+    write(b, "# Plan\n\nShip it on Friday.\n\nBob typed this.\n");
+    await b.ping();
+    // Broadcast to A, which now holds Bob's structs.
+    await a.until(() => mdOf(a).includes("Bob typed this."));
+    // The room restarts inside the flush window: memory is gone, storage is
+    // all that is left.
+    await inRoom(room, (x) => {
+      const r = x as unknown as {
+        buffer: Uint8Array[];
+        bufferBytes: number;
+        clientOwners: unknown;
+        sv: Map<number, number>;
+        sql: SqlStorage;
+      };
+      r.buffer = [];
+      r.bufferBytes = 0;
+      r.clientOwners = null;
+      const row = r.sql
+        .exec<{ v: ArrayBuffer }>("SELECT v FROM meta WHERE k = 'sv'")
+        .toArray()[0];
+      r.sv = row ? Y.decodeStateVector(new Uint8Array(row.v)) : new Map();
+    });
+    a.ws.close();
+    b.ws.close();
+    // A reconnects with its doc, Bob's structs included: the sync resends
+    // only what the room lacks, which must be nothing of Bob's.
+    const a2 = await connect(room, { doc: a.doc });
+    await a2.ping();
+    expect(a2.ws.readyState).toBe(1);
+    expect(a2.frames.some((f) => f.code === "bad_update")).toBe(false);
+    expect(await inRoom(room, (x) => x.markdown())).toContain(
+      "Bob typed this.",
+    );
+    const c = await connect(room);
+    await c.until(() => mdOf(c).includes("Bob typed this."));
+    a2.ws.close();
+    c.ws.close();
   });
 });
