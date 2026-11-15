@@ -19,7 +19,6 @@ import {
   outsideDefault,
   outsideSharingOn,
 } from "../src/services/outside.js";
-import { outsideEmail } from "../src/services/outside-email.js";
 import {
   OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
   OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL,
@@ -36,15 +35,6 @@ import {
   uniq,
 } from "./auth-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
-
-// The outside share email is off until "Don't email me again" exists
-// (outside-email.ts); these tests exercise it, so switch it on here.
-beforeAll(() => {
-  outsideEmail.on = true;
-});
-afterAll(() => {
-  outsideEmail.on = false;
-});
 
 const app = createApp();
 const APP = "http://app.localhost";

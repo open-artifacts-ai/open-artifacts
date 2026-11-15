@@ -253,9 +253,7 @@ Open the page:
 
 --
 
-You got this because {{senderName}} shared a page with {{recipientEmail}}. If you weren't expecting it, you can ignore this email.
-
-{{appHost}}
+You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
 `;
 
 const OUTSIDE_HTML = `<!doctype html>
@@ -265,8 +263,7 @@ const OUTSIDE_HTML = `<!doctype html>
 <p style="font-weight:600">{{pageTitle}}</p>
 <p>{{openLine}}</p>
 <p><a href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
-<p style="color:#5d636e">You got this because {{senderName}} shared a page with {{recipientEmail}}. If you weren't expecting it, you can ignore this email.</p>
-<p style="color:#5d636e">{{appHost}}</p>
+<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
 </body></html>
 `;
 
@@ -274,7 +271,7 @@ const OUTSIDE_HTML = `<!doctype html>
  * A page shared with someone who has no account here (#2590). The only text
  * the sender controls is their name and address and the page title (cut to
  * OUTSIDE_TITLE_MAX characters, plain text, never a link). OA Product owns the
- * wording. "Don't email me again" is not here: it needs cloud-wide state.
+ * wording. The footer is plain text: no promotion, no link.
  */
 export function outsideShareEmail(
   p: Common &

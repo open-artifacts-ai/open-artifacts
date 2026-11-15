@@ -4,25 +4,15 @@
 // sign-in that can't work.
 import { env } from "cloudflare:workers";
 import { R, ShareResultSchema, ShareSchema } from "@oa/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import { admit } from "../src/services/identity.js";
-import { outsideEmail } from "../src/services/outside-email.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import { fetchAndWait, login } from "./helpers.js";
-
-// The outside share email is off until "Don't email me again" exists
-// (outside-email.ts); these tests exercise it, so switch it on here.
-beforeAll(() => {
-  outsideEmail.on = true;
-});
-afterAll(() => {
-  outsideEmail.on = false;
-});
 
 const app = createApp();
 

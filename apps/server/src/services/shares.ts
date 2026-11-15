@@ -42,7 +42,6 @@ import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
-import { outsideEmail } from "./outside-email.js";
 import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
@@ -327,15 +326,11 @@ async function emailShare(
     ]);
     if (member) return { emailed: false };
     // An outside address gets the outside email (plain template, a capped
-    // title, no URL-like sender text) on every install. The email switch and
-    // the daily limits are hosted's: a self-hosted install sends it, without
-    // limits. Anyone else (a login domain's address) gets the normal share
+    // title, no URL-like sender text) on every install. The daily limits are
+    // hosted's: a self-hosted install sends it, without limits. Anyone else (a login domain's address) gets the normal share
     // email, with its role line, as on main.
     const outside = outsideAddress(env, email);
     const hosted = env.HOSTED === "1";
-    // No email to an outside address until it can opt out (outside-email.ts).
-    if (!outsideEmail.on && hosted && outside)
-      return { emailed: false, notEmailed: "outside_no_unsubscribe" };
     // No user row. An outside address (#2590) gets the outside email, under
     // its own daily limits (apart from the usual ones; the share is saved
     // whatever they say). Anyone else (an address at a login domain, an
