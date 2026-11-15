@@ -759,3 +759,12 @@ export async function publishTarget(
 function sharedIds(email: string): SQL {
   return sql`${artifacts.id} in (select ${shares.artifactId} from ${shares} where ${shares.email} = ${email})`;
 }
+
+/** Days an unused invite lives by role: the owner never lapses (null), an admin 7, anyone else 30. */
+export function inviteTtlDays(role: string): number | null {
+  if (role === "owner") return null;
+  return role === "admin" ? 7 : 30;
+}
+
+/** True for an admin's row: its lapsed invite is never waived by the domain path. */
+export const isAdminRow = (role: string): boolean => role === "admin";

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import type { Member } from "@oa/shared";
 import { describe, expect, it } from "vitest";
+import { withCap } from "../src/auth/authz.js";
 import { authConfig } from "../src/auth/config.js";
 import type { VerifiedIdentity } from "../src/auth/providers/types.js";
 import type { Env } from "../src/env.js";
@@ -379,6 +380,7 @@ describe("re-invite", () => {
     email: "o@a.com",
     name: "O",
   } as Member;
+  withCap(owner, null);
 
   it("an expired invite, re-invited, logs in; a signed-in or uninvited row is still a conflict", async () => {
     const { e, c } = cfgOf();
