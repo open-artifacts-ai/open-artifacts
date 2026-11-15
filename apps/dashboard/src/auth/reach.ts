@@ -1,6 +1,6 @@
 // Who can sign in here (review items 11 and 37): Design's copy for a refused
-// invite, an invite that may not sign in, and a share whose recipient can't
-// sign in yet. The server's messages are never shown for these.
+// invite and a share whose recipient can't sign in yet (#2520 dropped the
+// "may not be able to log in" warning). The server's messages are never shown for these.
 import { useAuthProviders } from "../api/auth";
 import {
   type InviteUnreachableReason,
@@ -35,10 +35,6 @@ export const inviteRefusedCopy = (
   reason === "outside_domains"
     ? `${email} can't log in here. Only addresses at ${domains} can. Use one of those addresses.`
     : `No login method here fits ${email}. Use another address, or ask the owner to add a login method.`;
-
-/** 201 with signIn "uncertain": the invite stands, but warn (inline, under its heading). */
-export const inviteUncertainCopy = (email: string, domains: string) =>
-  `${email} is outside ${domains}, so they may not be able to log in. If they can't, invite an address at ${domains}.`;
 
 // The email's phrases (server signInSentence), about the recipient.
 const METHOD_PHRASE: Record<SignInProviderId, string> = {

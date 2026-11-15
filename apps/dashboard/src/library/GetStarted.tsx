@@ -289,7 +289,9 @@ export function GetStarted({
                 size="sm"
                 className="h-[30px] bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
               >
-                <AppLink href="/settings/members">Invite people</AppLink>
+                <AppLink href="/settings/members?invite=1">
+                  Invite people
+                </AppLink>
               </Button>
               <Button
                 variant="ghost"
