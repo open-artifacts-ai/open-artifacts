@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.192.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.191.0...v0.192.0) (2026-11-15)
+
+
+### Features
+
+* **share:** someone outside gets Can view or Can comment ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2597](https://github.com/open-artifacts-ai/open-artifacts/issues/2597)) ([5df2ee3](https://github.com/open-artifacts-ai/open-artifacts/commit/5df2ee324356a66f6e700c3c27f2ab1fc38395a6))
+
+
+### Bug Fixes
+
+* **docs:** a room refuses updates for another socket's clientID ([#2177](https://github.com/open-artifacts-ai/open-artifacts/issues/2177)) ([#2572](https://github.com/open-artifacts-ai/open-artifacts/issues/2572)) ([b7563d7](https://github.com/open-artifacts-ai/open-artifacts/commit/b7563d79c90071913d580570ac4d14cdb2c05dc5))
+* **docs:** rate-limit save and restore; restores don't fill the size cap ([#2591](https://github.com/open-artifacts-ai/open-artifacts/issues/2591)) ([#2616](https://github.com/open-artifacts-ai/open-artifacts/issues/2616)) ([d5b29e5](https://github.com/open-artifacts-ai/open-artifacts/commit/d5b29e550a3ea360f619d8a05e733b868e07f866))
+* **docs:** the skill lists edit_doc per install, at serve time ([#2578](https://github.com/open-artifacts-ai/open-artifacts/issues/2578)) ([#2614](https://github.com/open-artifacts-ai/open-artifacts/issues/2614)) ([9ae7051](https://github.com/open-artifacts-ai/open-artifacts/commit/9ae705104222d4e44fa3d0f3e85faf6e9f3a4ebe))
+
 ## [0.191.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.190.1...v0.191.0) (2026-11-15)
 
 
