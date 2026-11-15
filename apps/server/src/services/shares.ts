@@ -270,8 +270,6 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return false;
-    // No user row here: the level they'll have, as the share rows show it.
-    const viewOnly = await guestRecipients(env)(email, null);
     return await sendEmail(
       env,
       user.id,
@@ -285,7 +283,7 @@ async function emailShare(
           title: artifact.title,
           path: viewerPath(artifact.id),
           format: apiFormat(artifact.format, artifact.doc),
-          role: viewOnly ? "viewer" : role,
+          role,
           signIn: reach.methods,
           cantSignIn: reach.recipient?.reason,
         }),
