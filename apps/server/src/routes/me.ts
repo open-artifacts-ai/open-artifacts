@@ -17,7 +17,7 @@ import {
   planOfMember,
   requireUser,
 } from "../auth/authz.js";
-import { orgCan } from "../auth/policy.js";
+import { isGuestRole, orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { creatorCount, monthOf } from "../billing/creators.js";
 import { refreshPlan } from "../billing/store.js";
@@ -34,8 +34,10 @@ import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { busOn } from "../services/bus.js";
 import { docsState } from "../services/docs-available.js";
+import { inboxOf, needsYouCount } from "../services/inbox.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
+import { instanceOwnerName } from "../services/onboarding.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
@@ -83,10 +85,25 @@ async function toMe(
     },
     ...profile,
   };
-  const cap = capOfCaller(caller(c));
+  // #2632: for a guest's "ask {owner} to make you a member"; nobody else gets the key.
+  if (isGuestRole(user.role)) me.instanceOwner = await instanceOwnerName(c.env);
+  const who0 = caller(c);
+  const cap = capOfCaller(who0);
   // Parity 2: one-time notices of guest shares, Access-only installs only.
   const notices = await meNotices(c.env, user, cap, kv);
   if (notices) me.notices = notices;
+  // #2512: the header badge, from one indexed query (no bus lookups). A
+  // failure leaves it out: /me still answers.
+  if (who0.kind === "user") {
+    try {
+      me.inbox = {
+        needsYou: await needsYouCount(c.env, who0),
+        unreadUpdates: 0,
+      };
+    } catch (e) {
+      logWarn("me_inbox_count_failed", e);
+    }
+  }
   const exp = c.var.sessionExp;
   // Hosted billing: the plan as this request's user load read it (null off
   // hosted billing).
@@ -236,6 +253,16 @@ export function mountMe(app: AppType): void {
   app.get(R.me, async (c) => {
     const user = requireUser(c);
     return c.json(await toMe(c, user, await getProfile(c.env, user.id)));
+  });
+
+  // #2512: the "For you" inbox. Signed-in callers only, like /me; the list is
+  // the caller's own, so no one reads another person's.
+  app.get(R.meInbox, async (c) => {
+    requireUser(c);
+    const who = caller(c);
+    if (who.kind !== "user")
+      throw new ApiError("unauthorized", "Login required");
+    return c.json(await inboxOf(c.env, who));
   });
 
   // Session (CSRF-guarded by csrf() in createApp) or PAT; guests included.

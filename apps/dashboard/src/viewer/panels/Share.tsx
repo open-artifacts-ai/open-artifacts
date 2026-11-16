@@ -3,6 +3,7 @@ import {
   type ArtifactSummary,
   type DataWriters,
   type ShareRole,
+  type Share as ShareRow,
   ShareSchema,
   type Visibility,
   viewerPath,
@@ -19,12 +20,16 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
+import { useAuthProviders } from "../../api/auth";
 import { ApiClientError } from "../../api/client";
 import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
+  qk,
   useDeleteShare,
+  useMembers,
   usePatchArtifact,
   usePutShare,
   useShares,
@@ -32,35 +37,60 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
-import { signInWith, useSignInDomains } from "../../auth/reach";
+import {
+  signInWith,
+  useSignInDomainList,
+  useSignInDomains,
+} from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { LoadError } from "../../layout/LoadError";
-import { Modal } from "../../layout/Modal";
 import { Notice } from "../../layout/Notice";
 import { personName } from "../../layout/person";
 import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
-import { visibilityHint } from "../../spaces/SpaceMarker";
+import {
+  type NotEmailed,
+  notEmailedLine,
+  OUTSIDER_DEFAULT,
+  outsideAddress,
+  outsideLine,
+  roleLabel,
+  roleOptions,
+  WORKSPACE_ONLY_ADMIN,
+  workspaceOnlyNote,
+} from "./shareRoles";
 
-const VIS: { value: Visibility; label: string }[] = [
-  { value: "private", label: "Private" },
-  { value: "team", label: "Team" },
-  { value: "public", label: "Public" },
-];
-const ROLES: { value: ShareRole; label: string }[] = [
-  { value: "viewer", label: "Viewer" },
-  { value: "editor", label: "Editor" },
-];
-const NOTE: Record<Visibility, string> = {
-  private: "Only you and the people below can open it.",
-  team: "Everyone in the workspace can open it.",
-  public: "Anyone with the link can view. It won't appear in search engines.",
-};
+const VIS: Visibility[] = ["private", "team", "public"];
+/**
+ * #2509 General access: what each choice is called and the line under it
+ * (OA Product's strings). People read these; the value stays private, team
+ * or public. In a space, Restricted names who already has access.
+ */
+const ACCESS = (
+  v: Visibility,
+  org: string,
+  space: ArtifactSummary["space"],
+): [string, string] =>
+  v === "private"
+    ? [
+        "Restricted",
+        space?.kind === "shared"
+          ? `People with access to ${space.name}, and anyone you add.`
+          : space
+            ? "Only you and anyone you add can open it."
+            : "Only people you add can open it.",
+      ]
+    : v === "team"
+      ? [`Anyone at ${org}`, `Every member of ${org} can open it.`]
+      : [
+          "Anyone with the link",
+          "No login needed. It won't appear in search engines.",
+        ];
 /** #681: who may change the page's live data. */
 const WRITERS: { value: DataWriters; label: string }[] = [
   { value: "viewers", label: "Everyone who can see it" },
@@ -151,26 +181,33 @@ function RecipientLine({
   );
 }
 
+/**
+ * A share's role. #2590: an outsider's choices are Can comment and Can view
+ * (OA Product); a member's stay Viewer and Editor.
+ */
 function RoleSelect({
   label,
   value,
   onChange,
+  outsider = false,
 }: {
   label: string;
   value: ShareRole;
   onChange: (r: ShareRole) => void;
+  outsider?: boolean;
 }) {
+  const options = roleOptions(outsider, value);
   return (
     <Select value={value} onValueChange={(v) => onChange(v as ShareRole)}>
       <SelectTrigger
         aria-label={label}
         size="sm"
-        className={`w-[96px] flex-none ${TEXT}`}
+        className={`${outsider ? "w-[140px]" : "w-[96px]"} flex-none ${TEXT}`}
       >
         <SelectValue />
       </SelectTrigger>
       <SelectContent position="popper">
-        {ROLES.map((r) => (
+        {options.map((r) => (
           <SelectItem key={r.value} value={r.value} className={TEXT}>
             {r.label}
           </SelectItem>
@@ -191,10 +228,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const publicOff =
     space?.publicLinks === false && artifact.visibility !== "public";
   const shares = useShares(id, people);
+  const qc = useQueryClient();
   const patch = usePatchArtifact(id);
   const put = usePutShare(id);
   const del = useDeleteShare(id);
-  const [confirmPublic, setConfirmPublic] = useState(false);
   // A 409 on a visibility change: the choice reverts to the server's value.
   const [conflict, setConflict] = useState(false);
   // The control only stages a choice; Save visibility commits it.
@@ -211,13 +248,19 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     stage?.from === artifact.visibility ? stage.to : artifact.visibility;
   const changed = staged !== artifact.visibility;
   const [email, setEmail] = useState("");
+  // A member's pick, and an outsider's (#2590: Can comment unless changed).
   const [role, setRole] = useState<ShareRole>("viewer");
+  const [outsiderRole, setOutsiderRole] = useState<ShareRole>(OUTSIDER_DEFAULT);
   const [invalid, setInvalid] = useState(false);
   const [shared, setShared] = useState<{
     email: string;
     emailed: boolean;
     /** Set when they can't sign in yet: the box warns instead. */
     recipient?: ShareRecipient;
+    /** PROVISIONAL (#2620): why no email went, when the server says. */
+    notEmailed?: NotEmailed;
+    /** The day's limit, with a limit reason (PROVISIONAL, #2620). */
+    limit?: number;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
     /** The role picked: a guest's row corrects Editor, once, just after. */
@@ -228,6 +271,31 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const me = state.status === "authed" ? state.me : null;
   const install = me?.instance.name ?? "";
   const sends = emailEnabled(me);
+  const domainList = useSignInDomainList();
+  const providers = useAuthProviders().data?.providers ?? [];
+  const methods = {
+    google: providers.some((p) => p.id === "google"),
+    // Codes need email: where it's off, so are they (#2590), whatever the
+    // providers list says. The same state as the "We won't email them" line.
+    codes: sends && providers.some((p) => p.id === "email"),
+  };
+  // With no login domains, an address is outside unless it's a known member
+  // (#2590). Only owners and admins can list members.
+  const listMembers = isOrgAdmin(me) && domainList.length === 0;
+  const memberList = useMembers(undefined, listMembers).data;
+  const known = memberList
+    ? new Set(
+        memberList
+          .filter(
+            (m) => m.role !== "guest" && (m.status ?? "active") === "active",
+          )
+          .map((m) => m.email.toLowerCase()),
+      )
+    : null;
+  const typedOutside =
+    outsideAddress(email, domainList, listMembers ? known : null) === true;
+  const outsideNote = typedOutside ? outsideLine(email.trim(), methods) : null;
+  const pick = typedOutside ? outsiderRole : role;
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -259,17 +327,38 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     if (!e) return;
     inviteOnce((done) =>
       put.mutate(
-        { email: e, role },
+        { email: e, role: pick },
         {
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
+            // #2590: the server may store another role than the one picked
+            // (an outsider's Editor becomes commenter): the row shows the
+            // stored one at once, before the list refetches.
+            qc.setQueryData<ShareRow[]>(qk.shares(id), (list) => {
+              if (!list) return list;
+              const was = list.find((x) => x.email === r.email);
+              const row: ShareRow = {
+                ...was,
+                email: r.email,
+                role: r.role,
+                createdAt: r.createdAt,
+                ...(r.guest !== undefined ? { guest: r.guest } : {}),
+              };
+              return was
+                ? list.map((x) => (x === was ? row : x))
+                : [...list, row];
+            });
+            // The list's own answer (viewOnly and the rest) follows.
+            void qc.invalidateQueries({ queryKey: qk.shares(id) });
             setShared({
               email: e,
               emailed: r.emailed,
               recipient: r.recipient,
+              ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
+              ...(r.limit !== undefined ? { limit: r.limit } : {}),
               with: signInWith(r.signInMethods),
-              role,
+              role: r.role,
             });
           },
           onError: (x) => fail(x, "Couldn't share"),
@@ -299,46 +388,64 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           after it. The accent marks the chosen visibility. */}
       <section>
         <h3 id="oa-share-vis" className={H3}>
-          Visibility
+          General access
         </h3>
         {vis ? (
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            aria-label="Visibility"
-            value={staged}
-            onValueChange={(v) =>
-              v && !patch.isPending && setPending(v as Visibility)
-            }
+          <div
+            role="radiogroup"
+            aria-labelledby="oa-share-vis"
+            className="flex flex-col gap-[var(--oa-space-1)]"
           >
-            {VIS.map((o) => (
-              <ToggleGroupItem
-                key={o.value}
-                value={o.value}
-                disabled={o.value === "public" && publicOff}
-                aria-describedby={
-                  o.value === "public" && space?.publicLinks === false
-                    ? "oa-share-public-off"
-                    : undefined
-                }
-                className={`px-[var(--oa-space-3)] ${CONTROL}`}
-                // Radio semantics: arrowing to an option chooses it, as the
-                // radiogroup role promises (Radix only moves focus).
-                // TODO: drop once Design's ToggleGroup primitive selects on arrow.
-                onFocus={() => !patch.isPending && setPending(o.value)}
-              >
-                {o.label}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+            {VIS.map((v) => {
+              const [label, line] = ACCESS(v, install, space);
+              const off = v === "public" && publicOff;
+              return (
+                <label
+                  key={v}
+                  data-access={v}
+                  className={`flex gap-[var(--oa-space-2)] rounded-[var(--oa-radius-md)] border border-transparent px-[var(--oa-space-2)] py-[var(--oa-space-2)] ${off ? "opacity-60" : "cursor-pointer hover:bg-[var(--oa-surface-2)]"} has-[:checked]:border-[var(--oa-accent)] has-[:checked]:bg-[var(--oa-accent-soft)] has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-[var(--oa-focus)]`}
+                >
+                  <input
+                    type="radio"
+                    name={`oa-access-${id}`}
+                    value={v}
+                    checked={staged === v}
+                    disabled={off}
+                    aria-labelledby={`oa-access-${v}-label`}
+                    aria-describedby={
+                      v === "public" && space?.publicLinks === false
+                        ? `oa-access-${v}-line oa-share-public-off`
+                        : `oa-access-${v}-line`
+                    }
+                    className="mt-[3px] size-[14px] flex-none accent-[var(--oa-accent)] outline-none"
+                    onChange={() => !patch.isPending && setPending(v)}
+                  />
+                  <span className="flex min-w-0 flex-col">
+                    <span
+                      id={`oa-access-${v}-label`}
+                      className={`${TEXT} font-medium`}
+                    >
+                      {label}
+                    </span>
+                    <span
+                      id={`oa-access-${v}-line`}
+                      className={`${TEXT} ${MUTED}`}
+                    >
+                      {line}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         ) : (
-          <VisibilityBadge visibility={artifact.visibility} />
+          <>
+            <VisibilityBadge visibility={artifact.visibility} org={install} />
+            <p className={`oa-vis-note mt-[var(--oa-space-2)] ${MUTED}`}>
+              {ACCESS(artifact.visibility, install, space)[1]}
+            </p>
+          </>
         )}
-        <p className={`oa-vis-note mt-[var(--oa-space-2)] ${MUTED}`}>
-          {/* Hosted: the help text names the space or the org (D6 section 9). */}
-          {visibilityHint(staged, artifact.space, install) ?? NOTE[staged]}
-        </p>
         {conflict && (
           <div className="mt-[var(--oa-space-2)]">
             <ConflictNote />
@@ -349,7 +456,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             id="oa-share-public-off"
             className={`mt-[var(--oa-space-1)] ${MUTED}`}
           >
-            Public links are off for {space.name}. A space manager can turn them
+            Sharing by link is off for {space.name}. A space manager can turn it
             on.
           </p>
         )}
@@ -360,11 +467,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               className={CONTROL}
               disabled={patch.isPending}
               aria-busy={patch.isPending || undefined}
-              onClick={() =>
-                staged === "public"
-                  ? setConfirmPublic(true)
-                  : commitVisibility(staged)
-              }
+              // #2509: Anyone with the link applies like the others, with no confirm.
+              onClick={() => commitVisibility(staged)}
             >
               Save visibility
             </Button>
@@ -404,7 +508,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 setInvalid(false);
               }}
             />
-            <RoleSelect label="Invite role" value={role} onChange={setRole} />
+            <RoleSelect
+              label="Invite role"
+              outsider={typedOutside}
+              value={pick}
+              onChange={typedOutside ? setOutsiderRole : setRole}
+            />
             <Button
               type="submit"
               variant="outline"
@@ -424,16 +533,43 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               Enter a valid email address.
             </p>
           )}
+          {outsideNote && (
+            <p className={`mt-[var(--oa-space-3)] mb-0 ${MUTED}`}>
+              {outsideNote}
+            </p>
+          )}
           <p className={`mt-[var(--oa-space-3)] ${MUTED}`}>
             {sends
               ? "We'll email them a link. You can also copy it and send it yourself."
-              : "No email is sent. Copy the link and share it yourself."}
+              : "We won't email them about this share. Copy the link and send it yourself."}
           </p>
         </section>
       )}
 
       <section>
-        {shared?.recipient ? (
+        {shared?.recipient?.reason === "workspace_only" ? (
+          // #2590: a note, not a warning: the share is saved and works if
+          // the address is a Google account; the link is worth sending.
+          <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+            <Notice
+              tone="info"
+              title={`Shared with ${shared.email}`}
+              onDismiss={() => setShared(null)}
+            >
+              <p>{workspaceOnlyNote(shared.email)}</p>
+              {isOrgAdmin(me) && (
+                <p>
+                  {WORKSPACE_ONLY_ADMIN.before}
+                  <AppLink href="/settings/login" className="underline">
+                    {WORKSPACE_ONLY_ADMIN.link}
+                  </AppLink>
+                  {WORKSPACE_ONLY_ADMIN.after}
+                </p>
+              )}
+              <CopyLink link={link} label="Artifact link" />
+            </Notice>
+          </div>
+        ) : shared?.recipient ? (
           // They can't sign in yet: one warning box, and no link that won't work for them.
           <div className="mb-[var(--oa-space-4)]">
             <Notice
@@ -444,7 +580,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <p>
                 <RecipientLine
                   email={shared.email}
-                  reason={shared.recipient.reason}
+                  reason={shared.recipient.reason as ShareRecipient["reason"]}
                   admin={isOrgAdmin(me)}
                   domains={domains}
                 />
@@ -455,20 +591,23 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           shared && (
             <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
               <Notice
-                tone="success"
+                // Amber when no email went for a reason the server named (#2620).
+                tone={shared.notEmailed ? "warning" : "success"}
                 title={`Shared with ${shared.email}`}
                 onDismiss={() => setShared(null)}
               >
-                <p>
-                  {shared.emailed
-                    ? shared.with
-                      ? `We emailed them a link. They'll log in with ${shared.with}.`
-                      : "We emailed them a link. They'll log in with a one-time code."
-                    : artifact.visibility === "public"
-                      ? "Send them this link. They can open it without logging in."
-                      : shared.with
-                        ? `Send them this link. They'll log in with ${shared.with}.`
-                        : "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact."}
+                <p data-share-sent="">
+                  {shared.notEmailed
+                    ? notEmailedLine(shared.notEmailed, install, shared.limit)
+                    : shared.emailed
+                      ? shared.with
+                        ? `We emailed them a link. They'll log in with ${shared.with}.`
+                        : "We emailed them a link. They'll log in with a one-time code."
+                      : artifact.visibility === "public"
+                        ? "Send them this link. They can open it without logging in."
+                        : shared.with
+                          ? `Send them this link. They'll log in with ${shared.with}.`
+                          : "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact."}
                 </p>
                 {/* emailed:false with email on is not a failure here: members and
                   re-shares are never emailed, so there's no "didn't send" line. */}
@@ -497,6 +636,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <>
                 <RoleSelect
                   label={`Role for ${s.email}`}
+                  outsider={s.guest === true}
                   value={s.role}
                   onChange={(r) =>
                     put.mutate(
@@ -525,14 +665,18 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 </Button>
               </>
             ) : (
-              <span className="text-muted-foreground">{s.role}</span>
+              <span className="text-muted-foreground">
+                {roleLabel(s.role, s.guest === true)}
+              </span>
             );
             // Guests first; then a member who can only view (never why),
             // flagged only where the stored role says more than they get.
+            // #2590: an outsider's picker says Can comment or Can view;
+            // only an old Editor share on a guest still needs the caption.
             const caption = s.guest
               ? s.role === "editor"
                 ? "Guest · can only view for now"
-                : "Guest · can only view"
+                : null
               : s.viewOnly && s.role === "editor"
                 ? "Can only view for now"
                 : null;
@@ -680,34 +824,6 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       >
         Copy link
       </Button>
-
-      <Modal
-        open={confirmPublic}
-        onClose={() => setConfirmPublic(false)}
-        title="Make this public?"
-        description="Anyone with the link can view. It won't appear in search engines."
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setConfirmPublic(false);
-                setPending(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                setConfirmPublic(false);
-                commitVisibility("public");
-              }}
-            >
-              Make public
-            </Button>
-          </>
-        }
-      />
     </div>
   );
 }

@@ -55,7 +55,10 @@ beforeAll(() => {
   prev = installDelivery(bus);
 });
 afterAll(() => installDelivery(prev));
-beforeEach(() => {
+beforeEach(async () => {
+  await E.DB.prepare(
+    "delete from counters where key like 'notice:mention:%'",
+  ).run();
   bus.sent = [];
   bus.outcome = "delivered";
 });
@@ -129,7 +132,11 @@ async function setup() {
   return { id: a.id, owner, editor };
 }
 
-const who = (u: U): CommentWho => ({ kind: "user", id: u.userId });
+const who = (u: U): CommentWho => ({
+  kind: "user",
+  id: u.userId,
+  typed: true,
+});
 const view = (u: U) => ({ userId: u.userId, short: null, moderator: true });
 const art = (id: string) =>
   ({ id, format: "html", currentVersion: 1 }) as never;
@@ -705,11 +712,12 @@ describe("route and hub reads", () => {
     await E.DB.prepare("update users set role = 'guest' where id = ?")
       .bind(guest.userId)
       .run();
-    const sh = await api(app, R.shares(s.id), s.owner.cookie, {
-      method: "PUT",
-      body: { email: guest.email, role: "editor" },
-    });
-    expect(sh.status).toBe(200);
+    // A stored editor row (an outsider is clamped when shared through the API).
+    await E.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'editor', ?, ?)",
+    )
+      .bind(s.id, guest.email, s.owner.userId, Date.now())
+      .run();
     await machineFor(s.owner.userId);
     await follow(E, s.owner.userId, { namespace: "ns-o", name: "Mine" }, s.id);
     const h = hubs({

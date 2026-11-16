@@ -64,6 +64,12 @@ export type Surface = {
    * throwaway artifact. scripts/authz-probe.ts never runs either.
    */
   mutates?: "data" | "access";
+  /**
+   * An MCP tool the install offers only conditionally (edit_doc, with docs
+   * on). scripts/authz-probe.ts runs the surface only where tools/list shows
+   * it; the local matrix opens the switch, so it always runs there.
+   */
+  offeredTool?: string;
   probe(
     base: string,
     cred: Cred,
@@ -224,6 +230,8 @@ const exact =
     return classify(`${method} ${path(id)}`, r, allow);
   };
 
+/** edit_doc's tool error for an artifact that is not a doc (#1100, #2490). */
+const NOT_A_DOC = /not[ _]a[ _]doc/i;
 const badRequest = (r: { status: number; code: string }) =>
   r.status === 400 && r.code === "bad_request";
 /** #681: a data write refused by dataWriters "editors". */
@@ -271,6 +279,71 @@ export type ToolOut = {
   text: string;
   structured?: Record<string, unknown>;
 };
+
+/**
+ * The tool names /mcp offers this token (tools/list), or null when it can't
+ * be read (no token, a refusal, an unparsable reply): the caller then runs
+ * every surface rather than hide one.
+ */
+export async function offeredTools(
+  io: ProbeIO | undefined,
+  base: string,
+  cred: Cred,
+): Promise<Set<string> | null> {
+  if (!cred.token) return null;
+  try {
+    const r = await doFetch(
+      io,
+      new Request(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${cred.token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    if (r.status !== 200) return null;
+    const text = await r.text();
+    const json = text.trimStart().startsWith("{")
+      ? text
+      : (text
+          .split("\n")
+          .find((l) => l.startsWith("data:"))
+          ?.slice(5) ?? "");
+    const msg = JSON.parse(json) as { result?: { tools?: { name: string }[] } };
+    const tools = msg.result?.tools;
+    return tools ? new Set(tools.map((t) => t.name)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A tool tools/list does not offer: every caller must get the unknown-tool
+ * answer ("unknown_tool"), a refused or absent token included (it never
+ * reaches the lookup). A tool hidden from the list but still callable shows
+ * up as "callable".
+ */
+export async function hiddenToolAnswer(
+  io: ProbeIO | undefined,
+  base: string,
+  cred: Cred,
+  name: string,
+): Promise<"unknown_tool" | "callable"> {
+  const unknown = /unknown tool|tool [\w-]+ not found|method not found/i;
+  let o: ToolOut;
+  try {
+    o = await callTool(io, base, cred, name, { id: SOME_ID });
+  } catch (e) {
+    // /mcp's JSON-RPC error for a tool it does not have.
+    return unknown.test((e as Error).message) ? "unknown_tool" : "callable";
+  }
+  if (DENY_MCP.has(o.http)) return "unknown_tool";
+  return o.isError && unknown.test(o.text) ? "unknown_tool" : "callable";
+}
 
 /** One tools/call on /mcp (stateless JSON-RPC), as the caller's agent token. */
 export async function callTool(
@@ -491,7 +564,9 @@ const mcp = (
   action: SurfaceAction,
   probe: Surface["probe"],
   mutates?: Surface["mutates"],
+  offeredTool?: string,
 ): Surface => ({
+  ...(offeredTool ? { offeredTool } : {}),
   name: `mcp ${name}`,
   action,
   via: "mcp",
@@ -588,6 +663,41 @@ export const SURFACES: readonly Surface[] = [
       ),
     ),
   },
+  // #1100: edit_doc over REST. The world's artifacts aren't docs, so an
+  // allowed caller reaches 400 not_a_doc after the publish check (nothing written).
+  rest(
+    "rest doc ops",
+    "publish",
+    [`POST ${ARTS}/doc/ops`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/ops`,
+      () => ({ body: { ops: [{ op: "delete", quote: "probe" }] } }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "rest doc save version",
+    "publish",
+    [`POST ${ARTS}/doc/versions`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions`,
+      () => ({ body: { name: "probe" } }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "rest doc restore",
+    "publish",
+    [`POST ${ARTS}/doc/versions/:v/restore`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions/1/restore`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "rest restore_version",
     "restore",
@@ -1035,6 +1145,18 @@ export const SURFACES: readonly Surface[] = [
       badRequest,
     ),
   ),
+  // #2511: the asker withdraws its ask; the service refuses anyone else. A malformed id stops at 400.
+  rest(
+    "comments ask withdraw",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/withdraw`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
   rest(
     "artifact agents",
     "comments.read",
@@ -1156,6 +1278,24 @@ export const SURFACES: readonly Surface[] = [
     "restore",
     tool("restore_version", (id) => ({ id, version: 1 })),
     "data",
+  ),
+  // #1100: offered while docs are available (the matrix opens DOC_SWITCH). The
+  // world's artifacts aren't docs, so an allowed caller reaches bad_request
+  // not_a_doc after the publish check (nothing written).
+  mcp(
+    "edit_doc",
+    "publish",
+    tool(
+      "edit_doc",
+      (id) => ({ id, ops: [{ op: "delete", quote: "probe" }] }),
+      // The "not a doc" tool error is the allowed answer, as the REST doc
+      // route counts 400 not-a-doc (#2490): matched by the not-a-doc reason
+      // only, never any bad_request (a schema error can precede the access
+      // check) and never a denial.
+      (o) => o.isError && NOT_A_DOC.test(o.text),
+    ),
+    undefined,
+    "edit_doc",
   ),
   withReal(
     mcp(
@@ -1313,6 +1453,26 @@ export const SURFACES: readonly Surface[] = [
     tool(
       "resolve_comment",
       (id) => ({ id, threadId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
+  // #2511: withdraw and edit over MCP; a thread that does not exist stops them
+  // after the access rules, so nothing is written.
+  mcp(
+    "withdraw_ask",
+    "comments.write",
+    tool(
+      "withdraw_ask",
+      (id) => ({ id, threadId: SOME_ID, commentId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
+  mcp(
+    "edit_comment",
+    "comments.write",
+    tool(
+      "edit_comment",
+      (id) => ({ id, threadId: SOME_ID, commentId: SOME_ID, body: "x" }),
       (o) => o.isError && /^not_found: No such thread/.test(o.text),
     ),
   ),
@@ -1666,6 +1826,19 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       needs: ["restrictedId"],
       req: (r) => ({ path: `${MEMBERS}/${r.restrictedId}/restricted` }),
       allow: ok(200),
+    },
+  },
+  "POST /api/v1/settings/login/first-invite-seen": {
+    real: { req: () => ({ path: "" }), allow: ok(204) },
+  },
+  // Refuse: a body that isn't a login change. A real change needs a fresh
+  // login (401 reauth_required) and then proof of a domain; the matrix's
+  // session has neither, so reaching reauth_required is past the owner rule.
+  "PUT /api/v1/settings/login": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { autoJoin: false, domains: [] } }),
+      allow: code("reauth_required"),
     },
   },
   "PATCH /api/v1/settings": {
@@ -2127,6 +2300,8 @@ function orgProbe(
     if (method === "GET") {
       const r = await send(io, base, p, cred);
       // A 409 is allowed only as member_active (past the transfer guard).
+      // A guest on a member-only read (members_only): seen, refused.
+      if (r.status === 403 && r.code === "members_only") return "deny";
       return classify(route, r, (x) =>
         x.status === 409
           ? okStatus.includes(409) && x.code === "member_active"
@@ -2159,6 +2334,7 @@ function orgProbe(
     });
     // A create by a capped caller: the contract's 403, a refusal.
     if (r.status === 403 && r.code === "space_forbidden") return "deny";
+    if (r.status === 403 && r.code === "members_only") return "deny";
     if (!t.real && !w.refuse && !DENY.has(r.status))
       throw new Unexpected(`${route}: real only (no throwaways): ${r.status}`);
     return classify(route, r, allow);
@@ -2173,6 +2349,7 @@ const MANAGER = { user: true, space: "manager" } as const;
 const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
+  ["GET /api/v1/me/inbox", U, [200]],
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
@@ -2189,9 +2366,14 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["PUT /api/v1/members/:id/restricted", org("restricted.member")],
   ["DELETE /api/v1/members/:id/restricted", org("restricted.member")],
   ["GET /api/v1/settings", org("settings.read"), [200]],
+  // #2520: no ?email= is a 400 past the guard.
+  ["GET /api/v1/members/reach", org("members.manage"), [400]],
+  ["GET /api/v1/settings/login", org("members.manage"), [200]],
+  ["POST /api/v1/settings/login/first-invite-seen", org("members.manage")],
+  ["PUT /api/v1/settings/login", org("login.manage")],
   ["PATCH /api/v1/settings", org("settings.manage")],
-  ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
-  ["PUT /api/v1/onboarding", org("onboarding.manage")],
+  ["GET /api/v1/onboarding", org("onboarding.own"), [200]],
+  ["PUT /api/v1/onboarding", org("onboarding.own")],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],
@@ -2351,6 +2533,7 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/callback/google",
   "POST /auth/code/request",
   "POST /auth/code/verify",
+  "GET /auth/code/link",
   "GET /auth/unsubscribe/comments",
   "POST /auth/unsubscribe/comments",
   "POST /auth/logout",

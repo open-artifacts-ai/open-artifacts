@@ -61,6 +61,7 @@ import {
   removeMention,
   showsAskBody,
 } from "./asks";
+import { CommentsTabs, DecisionsView } from "./Decisions";
 import {
   focusRow,
   holdAnchor,
@@ -79,6 +80,7 @@ import {
 } from "./lostPosts";
 import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged } from "./model";
+import { takeNoteQuote, useNoteQuote } from "./noteQuote";
 import { besideWidth, placeBeside } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
@@ -499,16 +501,35 @@ function Composer({
   // later one (the post failed while this box was already on screen again)
   // goes in front of whatever is typed, never over it.
   const seeded = useRef(seed);
+  // A seed that asks for it (a doc's quote, #1100): the cursor goes right
+  // after its text once the box shows it.
+  const [caretTo, setCaretTo] = useState<number | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the seed
   useEffect(() => {
     if (!seed) return;
     if (seed !== seeded.current) {
       seeded.current = seed;
-      setText((cur) => (cur.trim() ? `${seed.text}\n${cur}` : seed.text));
+      // A quote ends in its own blank line: what was typed follows it.
+      const join = seed.focusEnd ? "" : "\n";
+      setText((cur) => (cur.trim() ? `${seed.text}${join}${cur}` : seed.text));
       setError(seed.error);
+    }
+    if (seed.focusEnd) {
+      setOpen(true);
+      setCaretTo(seed.text.length);
     }
     seed.clear?.();
   }, [seed]);
+  useEffect(() => {
+    if (caretTo === null) return;
+    const el = ref.current;
+    if (!el) return;
+    // The panel's own scroller brings it into view (never the page).
+    focusField(el);
+    el.setSelectionRange(caretTo, caretTo);
+    setCaret(caretTo);
+    setCaretTo(null);
+  }, [caretTo]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -800,6 +821,7 @@ function Composer({
       {!canMention &&
         !guest &&
         !capped &&
+        !api.outsider &&
         initial === "" &&
         /(^|\s)@/.test(text) && (
           <p className={`${TXT} text-muted-foreground`}>
@@ -1151,6 +1173,12 @@ function CommentRow({
               api.canComment ? () => api.select(thread.id, true) : undefined
             }
             askQuestion={askQuestion}
+            openCard={(id) => {
+              const to = api.threads.find((x) =>
+                x.comments.some((k) => k.id === id),
+              );
+              if (to) api.reveal(to.id);
+            }}
             guest={api.guest}
             from={!askHead}
             boxed={!askHead}
@@ -1581,14 +1609,17 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                 });
               }}
               extra={
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={status.isPending}
-                  onClick={toggle}
-                >
-                  {resolved ? "Reopen" : "Resolve"}
-                </Button>
+                // #2590: an outsider doesn't resolve threads.
+                api.outsider ? undefined : (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={status.isPending}
+                    onClick={toggle}
+                  >
+                    {resolved ? "Reopen" : "Resolve"}
+                  </Button>
+                )
               }
             />
           </>
@@ -1605,14 +1636,16 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               >
                 Reply
               </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={status.isPending}
-                onClick={toggle}
-              >
-                {resolved ? "Reopen" : "Resolve"}
-              </Button>
+              {!api.outsider && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={status.isPending}
+                  onClick={toggle}
+                >
+                  {resolved ? "Reopen" : "Resolve"}
+                </Button>
+              )}
             </div>
           )
         )}
@@ -1775,6 +1808,20 @@ function NewThread({
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   const lost = useLost(lostKey.note(api.artifactId));
+  // #1100: a doc's "Comment" on a selection hands its quote here.
+  const quote = useNoteQuote(api.artifactId);
+  const quoteSeed = useMemo<Lost | null>(
+    () =>
+      quote
+        ? {
+            text: quote.text,
+            error: null,
+            focusEnd: true,
+            clear: () => takeNoteQuote(api.artifactId, quote),
+          }
+        : null,
+    [quote, api.artifactId],
+  );
   const compact = useContext(Compact);
   return (
     <div className="flex flex-col gap-2">
@@ -1792,7 +1839,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         mentionable
         instant
         collapse={compact}
-        seed={lost.lost}
+        seed={quoteSeed ?? lost.lost}
         onLost={lost.onLost}
         onSubmit={(body, x) => {
           lost.clear();
@@ -1856,8 +1903,10 @@ export function CommentsBody({
   const ordered = visible(api.ordered);
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
+  const decisions = api.view === "decisions";
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
-  const stickyRow = compact && (forMe.length > 0 || resolvedCount > 0);
+  const stickyRow =
+    compact && !decisions && (forMe.length > 0 || resolvedCount > 0);
   // #2118: one composer at a time: a quote open hides the whole-page box
   // (mounted still, so a typed note survives) until Cancel or send.
   const draftOpen = api.draft != null && api.canComment;
@@ -1889,15 +1938,12 @@ export function CommentsBody({
       {heading && (
         <div
           data-comments-header=""
-          className="sticky top-0 z-20 -mx-4 -mt-4 flex items-baseline justify-between gap-2 bg-[var(--oa-bg)] px-4 pt-4 pb-2"
+          className="sticky top-0 z-20 -mx-4 -mt-4 flex items-baseline justify-between gap-2 border-b border-b-border bg-[var(--oa-bg)] px-4 pt-4"
         >
-          <h2 className={`m-0 font-semibold ${CTXT}`}>Comments</h2>
-          {api.listedOpen > 0 && (
-            <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
-          )}
+          <CommentsTabs api={api} />
         </div>
       )}
-      {(forMe.length > 0 || resolvedCount > 0) && (
+      {!decisions && (forMe.length > 0 || resolvedCount > 0) && (
         // #2486: with no band in the compact panel this row sticks, so the
         // asks pill stays in reach; it is the header the scroll code steps under.
         <div
@@ -1929,9 +1975,9 @@ export function CommentsBody({
           )}
         </div>
       )}
-      <Tools api={api} />
-      <LostDrafts api={api} />
-      {api.draft && api.canComment && !api.pinBeside && (
+      {!decisions && <Tools api={api} />}
+      {!decisions && <LostDrafts api={api} />}
+      {!decisions && api.draft && api.canComment && !api.pinBeside && (
         <NewThread
           key={JSON.stringify(
             "pin" in api.draft ? api.draft.pin : api.draft.anchor,
@@ -1943,8 +1989,8 @@ export function CommentsBody({
           is not shown there. Hidden with CSS, never unmounted: a typed draft has
           to survive a pin tap, and dragging the sheet up brings the box back. */}
       <div
-        hidden={draftOpen}
-        className={short || draftOpen ? "hidden" : "contents"}
+        hidden={draftOpen || decisions}
+        className={short || draftOpen || decisions ? "hidden" : "contents"}
       >
         {api.canComment ? (
           <NoteComposer api={api} />
@@ -1952,54 +1998,66 @@ export function CommentsBody({
           api.guest && <SignInLink box />
         )}
       </div>
-      {api.error != null && !api.threads.length ? (
-        <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
-          <p>Couldn't load comments.</p>
-          <Button
-            size="xs"
-            variant="outline"
-            className="self-start"
-            onClick={api.refetch}
-          >
-            Retry
-          </Button>
-        </div>
-      ) : api.loading ? (
-        <p className={`${TXT} ${MUTED}`} aria-busy="true">
-          Loading comments…
-        </p>
-      ) : none ? (
-        <p className={`${TXT} ${MUTED}`}>
-          {api.pinFormat === "image" && api.canComment
-            ? "No comments yet. Place a pin to add one."
-            : textFormat && api.canComment
-              ? "No comments yet. Select text to add one."
-              : "No comments yet."}
-        </p>
-      ) : (
-        <>
-          <ul className="m-0 flex list-none flex-col gap-3 p-0">
-            {ordered.map((t) => (
-              <ThreadCard key={t.id} t={t} api={api} />
-            ))}
-          </ul>
-          {orphans.length > 0 && (
-            <section
-              aria-labelledby="oa-orphans"
-              className="flex flex-col gap-3"
+      <div
+        role="tabpanel"
+        id={`oa-panel-${api.view}`}
+        aria-labelledby={`oa-tab-${api.view}`}
+        className="contents"
+      >
+        {api.error != null && !api.threads.length ? (
+          <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
+            <p>Couldn't load comments.</p>
+            <Button
+              size="xs"
+              variant="outline"
+              className="self-start"
+              onClick={api.refetch}
             >
-              <h3 id="oa-orphans" className={`${TXT} font-medium`}>
-                On earlier text
-              </h3>
-              <ul className="m-0 flex list-none flex-col gap-3 p-0">
-                {orphans.map((t) => (
-                  <ThreadCard key={t.id} t={t} api={api} />
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
-      )}
+              Retry
+            </Button>
+          </div>
+        ) : api.loading ? (
+          <p className={`${TXT} ${MUTED}`} aria-busy="true">
+            Loading comments…
+          </p>
+        ) : decisions ? (
+          <DecisionsView
+            api={api}
+            renderThread={(t) => <ThreadCard key={t.id} t={t} api={api} />}
+          />
+        ) : none ? (
+          <p className={`${TXT} ${MUTED}`}>
+            {api.pinFormat === "image" && api.canComment
+              ? "No comments yet. Place a pin to add one."
+              : textFormat && api.canComment
+                ? "No comments yet. Select text to add one."
+                : "No comments yet."}
+          </p>
+        ) : (
+          <>
+            <ul className="m-0 flex list-none flex-col gap-3 p-0">
+              {ordered.map((t) => (
+                <ThreadCard key={t.id} t={t} api={api} />
+              ))}
+            </ul>
+            {orphans.length > 0 && (
+              <section
+                aria-labelledby="oa-orphans"
+                className="flex flex-col gap-3"
+              >
+                <h3 id="oa-orphans" className={`${TXT} font-medium`}>
+                  On earlier text
+                </h3>
+                <ul className="m-0 flex list-none flex-col gap-3 p-0">
+                  {orphans.map((t) => (
+                    <ThreadCard key={t.id} t={t} api={api} />
+                  ))}
+                </ul>
+              </section>
+            )}
+          </>
+        )}
+      </div>
       {keep.pill === "down" && (
         <NewReplyPill
           dir="down"

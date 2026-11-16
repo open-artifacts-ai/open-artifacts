@@ -65,6 +65,7 @@ import {
   DataPatchBodySchema,
   DataQuerySchema,
   DataSetBodySchema,
+  DocSaveVersionBodySchema,
   type FileEntry,
   type InstanceUpdate,
   ListQuerySchema,
@@ -89,6 +90,7 @@ import {
   TrashQuerySchema,
   UploadCreateInputSchema,
   type UserRef,
+  type VersionInfo,
 } from "../schemas.js";
 import {
   bytesHead,
@@ -124,6 +126,10 @@ export type MockOptions = {
   commentAsks?: boolean;
   /** #2381: seed asks in each decider state on "Landing page". */
   commentDeciders?: boolean;
+  /** #2511: seed asks in each withdrawn state on "Landing page". */
+  commentWithdrawn?: boolean;
+  /** #2381 S2: seed decided asks on "Landing page": resolved, replaced, passkey-verified, changed. */
+  commentDecisions?: boolean;
   /** #2263: with commentAsks, also seed a passkey-confirm ask; the mode is what the server answers. */
   commentPasskey?: "ok" | "none" | "cooling" | "expired" | "many";
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
@@ -170,6 +176,9 @@ export type MockOptions = {
         mentionStalled?: boolean;
         askAnswered?: boolean;
         opened?: boolean;
+        /** #2632: the optional sixth step, and who added the caller. */
+        teamStep?: boolean;
+        invitedBy?: string;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
@@ -422,7 +431,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const tokens = fresh && !fresh.agentConnected ? [] : f.tokens;
   const clients = fresh ? [] : f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
-  // R.onboarding: install-wide, the owner only (anyone else 404).
+  // R.onboarding: the caller's own (#2632: any non-guest member; a guest gets 403).
   const onboarding: Onboarding = {
     dismissed: false,
     completed: false,
@@ -457,6 +466,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       mentionReplied: w.mentionReplied ?? false,
       mentionStalled: w.mentionStalled ?? false,
       askAnswered: w.askAnswered ?? false,
+      teamStep: w.teamStep ?? false,
+      invitedBy: w.invitedBy ? { name: w.invitedBy } : null,
     });
   }
   if (opts.bus) {
@@ -544,6 +555,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       list: FileEntry[];
       bodies: Map<string, string>;
       restoredFrom?: number;
+      /** #1100: how a doc version was saved. */
+      docSave?: VersionInfo["docSave"];
     },
   ): Response => {
     const list = versions[a.id] ?? [];
@@ -562,6 +575,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       textIndexed: !v.list.some((x) => x.contentType === "application/pdf"),
       format: v.format,
       contentHash: fakeHash(version, v.entry),
+      ...(v.docSave ? { docSave: v.docSave } : {}),
     });
     a.format = v.format;
     for (const [p, b] of v.bodies) files.set(`${a.id}/${version}/${p}`, b);
@@ -743,6 +757,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
     seedDeciders: opts.commentDeciders,
+    seedDecisions: opts.commentDecisions,
+    seedWithdrawn: opts.commentWithdrawn,
     passkeyMode: opts.commentPasskey,
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
@@ -1208,6 +1224,65 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         });
       }, "write"),
     ),
+    // #1100 (#2496, #2140): a doc's Save version and restore. The mock
+    // has no room: both add a version as the room would.
+    http.post(
+      `${A}/doc/versions`,
+      withArt(async (a, { request }) => {
+        const parsed = DocSaveVersionBodySchema.safeParse(
+          await request.json().catch(() => ({})),
+        );
+        if (!parsed.success)
+          return err(
+            "bad_request",
+            "Invalid version name",
+            parsed.error.issues,
+          );
+        const list = versions[a.id] ?? [];
+        const latest = list[0];
+        if (!latest) return notFound();
+        const n = Math.max(0, ...list.map((x) => x.version)) + 1;
+        const res = addVersion(a, {
+          message: parsed.data.name ?? `Version ${n}`,
+          entry: latest.entry,
+          language: latest.language,
+          format: latest.format,
+          list: structuredClone(latest.files),
+          bodies: new Map(
+            latest.files.map((x) => [
+              x.path,
+              fileBody(a.id, latest.version, x.path),
+            ]),
+          ),
+          docSave: { kind: "named", by: userRef(me.user) },
+        });
+        return HttpResponse.json({ version: n }, { status: res.status });
+      }, "write"),
+    ),
+    http.post(
+      `${A}/doc/versions/:v/restore`,
+      withArt((a, { params }) => {
+        const src = (versions[a.id] ?? []).find(
+          (x) => x.version === Number(params.v),
+        );
+        if (!src) return notFound();
+        const n =
+          Math.max(0, ...(versions[a.id] ?? []).map((x) => x.version)) + 1;
+        const res = addVersion(a, {
+          message: `Restored v${src.version}`,
+          entry: src.entry,
+          language: src.language,
+          format: src.format,
+          list: structuredClone(src.files),
+          bodies: new Map(
+            src.files.map((x) => [x.path, fileBody(a.id, src.version, x.path)]),
+          ),
+          restoredFrom: src.version,
+          docSave: { kind: "restore", by: userRef(me.user) },
+        });
+        return HttpResponse.json({ version: n }, { status: res.status });
+      }, "write"),
+    ),
     http.put(
       `${A}/versions/:v/text`,
       withArt((a, { params }) => {
@@ -1280,9 +1355,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const list = shares[a.id] ?? [];
         shares[a.id] = list;
         const i = byId(list, (s) => s.email, email);
+        // The server's rule: a guest defaults to commenter and is never stored as editor.
+        const guest = h?.shareGuest(email) === true;
+        const asked = r.data.role ?? (guest ? "commenter" : "viewer");
         const share: Share = {
           email,
-          role: r.data.role,
+          role: guest && asked === "editor" ? "commenter" : asked,
           createdAt: list[i]?.createdAt ?? iso(),
         };
         if (i >= 0) list[i] = share;
@@ -1460,7 +1538,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return HttpResponse.json(settings());
     }),
     http.get("*/api/v1/onboarding", () =>
-      me.user.role === "owner"
+      me.user.role !== "guest"
         ? HttpResponse.json({
             ...onboarding,
             // As the server answers: the caller's oldest artifact that is not
@@ -1479,10 +1557,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
                   return x ? { id: x.id, title: x.title } : null;
                 })(),
           })
-        : notFound(),
+        : err("members_only", "The checklist is for members"),
     ),
     http.put("*/api/v1/onboarding", async ({ request }) => {
-      if (me.user.role !== "owner") return notFound();
+      if (me.user.role === "guest")
+        return err("members_only", "The checklist is for members");
       const r = await body(request, OnboardingPatchSchema);
       if (r.error) return r.error;
       Object.assign(onboarding, r.data);

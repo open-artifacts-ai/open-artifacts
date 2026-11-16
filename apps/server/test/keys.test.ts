@@ -43,6 +43,7 @@ describe("deriveKey", () => {
       "oa:code-cookie",
       "oa:login-codes",
       "oa:code-email",
+      "oa:glink-cookie",
       "oa:audit-cursor",
       "oa:comment-unsub",
       "oa:directory-state",

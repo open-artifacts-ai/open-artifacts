@@ -79,6 +79,32 @@ def hermes_session_title(root_ref, db=None):
         return None
 
 
+def hermes_session_exists(session_id):
+    """Whether Hermes's history still has this session, and it has not ended (read-only SessionDB).
+
+    True when Hermes cannot be asked (no API here): the caller's own age limit then decides."""
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+    except Exception:
+        return True
+    try:
+        path = get_hermes_home() / "state.db"
+        if not path.exists():
+            return False
+        db = _dbs.get(path)
+        if db is None:
+            db = _dbs[path] = SessionDB(path, read_only=True)
+        # A compression rotates the id: the newest session of the lineage is the live one.
+        lineage = db.get_compression_lineage(session_id)
+        tip = lineage[-1] if lineage else session_id
+        row = db.get_session(tip)
+        # An idle, daily or compression reset ends the row (ended_at) without on_session_finalize.
+        return row is not None and not row.get("ended_at")
+    except Exception:
+        return True
+
+
 class Roots:
     def __init__(self, lineage_root=hermes_lineage_root):
         self._lineage_root = lineage_root

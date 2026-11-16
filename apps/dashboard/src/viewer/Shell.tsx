@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
+import { firstName } from "../api/myOnboarding";
 import {
   qk,
   useArtifact,
@@ -25,9 +26,10 @@ import { useMe } from "../auth/useMe";
 import { isEmbed } from "../embed";
 import { useCpuSignals } from "../layout/cpu";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { isMember } from "../library/MemberGetStarted";
 import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
-import { createBridge, type ScrollPos } from "./bridge";
+import { createBridge, type ScrollPos, type WelcomeGreet } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
 import {
@@ -36,6 +38,7 @@ import {
   PinBar,
   PinBeside,
 } from "./comments/CommentsBody";
+import { quoteToNote } from "./comments/noteQuote";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -58,6 +61,7 @@ import {
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FsTip, FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
+import { GuestBar, GuestOffer, useFirstCommentOffer } from "./guest";
 import { FullLive, GoneBanner, LiveAnnouncer, TitleLive } from "./LiveChip";
 import {
   createLimiter,
@@ -166,6 +170,7 @@ function Viewer({
   role,
   hosted,
   plan,
+  org = "",
   chromeless,
   colState,
   slot,
@@ -207,6 +212,8 @@ function Viewer({
   /** The signed-in install is hosted (Me.instance.hosted). */
   hosted: boolean;
   plan: Me["instance"]["plan"] | undefined;
+  /** #2509: the instance's name, which a team badge shows. */
+  org?: string;
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
@@ -278,6 +285,7 @@ function Viewer({
     // #2019: a new pin's box opens beside its flag, except on a phone or full screen.
     besideOk: surface !== "dialog",
     viewerName: viewer?.name ?? viewer?.email ?? null,
+    outsider: authed && role === "guest",
   });
   // The card being read is a pin's: the phone sheet shortens so its pin stays
   // in view (#1657).
@@ -294,6 +302,16 @@ function Viewer({
   }, [cmt.mode]);
   const cmtRef = useRef(cmt);
   cmtRef.current = cmt;
+  // #2590: the guest's own comments, once loaded, for the after-first-comment offer.
+  const offer = useFirstCommentOffer(
+    role === "guest" && authed,
+    cmt.loading || cmt.error
+      ? null
+      : cmt.threads.reduce(
+          (n, t) => n + t.comments.filter((c) => c.author.me).length,
+          0,
+        ),
+  );
   const commentsOn =
     cmt.enabled && (authed || cmt.canComment || cmt.threads.length > 0);
   // The panel's Comments tab: offered only where comments are on and the list
@@ -340,9 +358,18 @@ function Viewer({
   const latest = useRef({ artifact, viewer, theme });
   latest.current = { artifact, viewer, theme };
   // #2287: the Welcome page may ask how far the checklist is; the bridge
-  // answers only the owner, and only on the Welcome artifact.
-  const gate = useRef({ owner: role === "owner" });
-  gate.current = { owner: role === "owner" };
+  // answers only the owner, and (#2632) a member, on their own Welcome.
+  const member = isMember(role);
+  // From the props the shell already has (no fetch of its own): the bridge
+  // adds the rest (who added them, the sixth step) from R.onboarding.
+  const greet: WelcomeGreet | undefined =
+    member && viewer ? { firstName: firstName(viewer.name), org } : undefined;
+  const gate = useRef<{
+    owner: boolean;
+    member: boolean;
+    greet?: WelcomeGreet;
+  }>({ owner: role === "owner", member, greet });
+  gate.current = { owner: role === "owner", member, greet };
   const fx = useArtifactSideEffects(
     artifact,
     version,
@@ -418,8 +445,12 @@ function Viewer({
   const caps = artifact.capabilities;
   const live = caps.db || caps.viewer || caps.storage;
   const can = useCan(artifact);
-  // #1100: a collaborative doc is edited in place of the frame.
-  const isDoc = isDocArtifact(artifact);
+  // #1100: a collaborative doc is edited in place of the frame. An older
+  // version of it (opened from Versions) shows what was saved, read-only, in
+  // the frame like any version.
+  const isDoc =
+    isDocArtifact(artifact) &&
+    !(explicitVersion && version !== artifact.currentVersion);
   const [docStatus, setDocStatus] = useState<DocLabel | null>(null);
   const renameDoc = usePatchArtifact(artifact.id);
   // The room broadcasts saved and restored versions: refresh the version
@@ -696,8 +727,20 @@ function Viewer({
       <div ref={rootRef} className="oa-viewer">
         {!chromeless && (
           <>
-            <Crumbs title={artifact.title} />
+            {role === "guest" && authed ? (
+              <GuestBar
+                sender={
+                  (artifact as { sharedBy?: { name: string } | null }).sharedBy
+                    ?.name ?? null
+                }
+                hosted={hosted}
+              />
+            ) : (
+              <Crumbs title={artifact.title} />
+            )}
             <TitleBar
+              org={org}
+              outsider={authed && role === "guest"}
               artifact={artifact}
               version={version}
               explicitVersion={explicitVersion}
@@ -726,6 +769,9 @@ function Viewer({
               guest={role === "guest"}
               hosted={hosted}
             />
+            {offer.show && (
+              <GuestOffer hosted={hosted} onDismiss={offer.dismiss} />
+            )}
             {explicitVersion &&
               gone === null &&
               version < Math.max(artifact.currentVersion, newest) && (
@@ -802,6 +848,16 @@ function Viewer({
                 onStatus={setDocStatus}
                 onVersion={onDocVersion}
                 onCurrentVersion={onDocCurrentVersion}
+                onCommentSelection={
+                  cmt.canComment && commentsOn
+                    ? (quote) => {
+                        // #1100: the selection, quoted, in the whole-page
+                        // composer; the list opens wherever it lives.
+                        quoteToNote(artifact.id, quote);
+                        openSurface.current();
+                      }
+                    : undefined
+                }
                 fullActions={
                   <>
                     {/* Mounted only when the doc is full and the viewer is signed
@@ -1086,6 +1142,7 @@ function ArtifactShell({
               role={authed ? me.me.user.role : undefined}
               hosted={authed && me.me.instance.hosted === true}
               plan={authed ? me.me.instance.plan : undefined}
+              org={authed ? me.me.instance.name : ""}
               viewer={
                 authed
                   ? { email: me.me.user.email, name: me.me.user.name }

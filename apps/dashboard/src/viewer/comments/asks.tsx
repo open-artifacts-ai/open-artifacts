@@ -7,6 +7,7 @@ import type {
   KeyRef,
   MentionDelivery,
 } from "@oa/shared";
+import { viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import {
   CheckCheck,
@@ -25,6 +26,7 @@ import {
   usePasskeyAnswer,
   useTakeBackAsk,
 } from "../../api/comments";
+import { AppLink } from "../../library/AppLink";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import { AuthorFace, PartyFace } from "./AuthorFace";
@@ -54,6 +56,8 @@ const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
 
 /** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
 const needsMe = (ask: AskT): boolean => {
+  // A withdrawn or replaced card waits for no one (#2511).
+  if (ask.withdrawn || ask.replacedBy) return false;
   if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
   if (ask.role === "weigh") return !myPickOf(ask) && !ask.answer;
   return (
@@ -626,6 +630,7 @@ export function AskBlock({
   face,
   from = true,
   boxed = true,
+  openCard,
 }: {
   /** The "X asks you" line; off where the card's header already says it (#2486). */
   from?: boolean;
@@ -646,6 +651,8 @@ export function AskBlock({
   reply?: () => void;
   /** Open a question to the agent that asked (#1794), when the viewer may reply. */
   askQuestion?: () => void;
+  /** #2511: jump to and open the thread of the card that replaced this one (a withdrawn card's link). */
+  openCard?: (commentId: string) => void;
 }) {
   const ask = c.ask;
   const plain = useAnswerAsk(artifactId);
@@ -692,6 +699,67 @@ export function AskBlock({
     setChanging(false);
   }, [picked]);
   if (!ask) return null;
+  // #2511: a withdrawn card (or one a newer card replaced) has no buttons and takes no picks.
+  if (ask.withdrawn || ask.replacedBy) {
+    const to = ask.withdrawn?.replacedBy;
+    return (
+      <div className="flex flex-col gap-1">
+        <div
+          className={`flex flex-col gap-1.5 rounded-md ${boxed ? "p-2 ring-1 ring-border" : ""}`}
+          data-ask=""
+          data-ask-withdrawn=""
+        >
+          {from && <AskFrom c={c} face={face} />}
+          {body}
+          <div
+            className={`${TXT} font-semibold break-words ${MUTED} line-through`}
+          >
+            <Markdown body={ask.question} />
+          </div>
+          <p data-ask-withdrawn-line="" className={`m-0 ${TXT} ${MUTED}`}>
+            {to ? (
+              to.title ? (
+                <>
+                  Withdrawn. Replaced by a card on{" "}
+                  <AppLink
+                    href={viewerPath(to.artifactId)}
+                    className="underline underline-offset-2"
+                  >
+                    {to.title}
+                  </AppLink>
+                  .
+                </>
+              ) : (
+                "Withdrawn. Replaced by a card on another page."
+              )
+            ) : ask.replacedBy ? (
+              <>
+                Withdrawn. See{" "}
+                {openCard ? (
+                  <a
+                    href={`#${ask.replacedBy}`}
+                    data-ask-new-card=""
+                    className="underline underline-offset-2"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      if (ask.replacedBy) openCard(ask.replacedBy);
+                    }}
+                  >
+                    the new card
+                  </a>
+                ) : (
+                  "the new card"
+                )}
+                .
+              </>
+            ) : (
+              "Withdrawn"
+            )}
+          </p>
+        </div>
+      </div>
+    );
+  }
   const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
   // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
   const pk = ask.confirm === "passkey" || viaPasskey;

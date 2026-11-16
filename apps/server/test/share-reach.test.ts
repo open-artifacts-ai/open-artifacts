@@ -73,20 +73,22 @@ async function setup(make: (o: Partial<Env>) => Env, over: Partial<Env>) {
 }
 
 describe("share recipient reach (review item 37)", () => {
-  it("hosted, in-domain non-member: share applies, recipient needs_invite, honest email", async () => {
+  // #2590: a share admits an in-domain non-member as a guest on Google, so
+  // there is no needs_invite and no flag; the email names Google, not a code.
+  it("hosted, in-domain non-member: the share admits them as a guest, no flag, the email names Google", async () => {
     const { share, sent } = await setup(direct, HOSTED);
     const email = uniq("in", "a.com");
     const s = await share(email);
     expect(s).toMatchObject({ email, role: "viewer", emailed: true });
-    expect(s.recipient).toEqual({ canSignIn: false, reason: "needs_invite" });
+    expect(s.recipient).toBeUndefined();
+    expect(s.reach).toEqual({ ways: ["google"] });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toMatch(
-      /You can't log in to .+ yet\. Ask an admin there to invite you, then open this link again\./,
-    );
-    for (const part of [m?.text, m?.html]) {
+    // An address at a login domain gets the normal share email.
+    expect(m?.text).toContain("You'll log in with your Google account.");
+    expect(m?.text).not.toContain("can't log in");
+    expect(m?.text).not.toContain("invite you");
+    for (const part of [m?.text, m?.html])
       expect(part).not.toContain("one-time code");
-      expect(part).not.toContain("log in with");
-    }
   });
 
   it("hosted, in-domain member: no flag", async () => {
@@ -102,7 +104,7 @@ describe("share recipient reach (review item 37)", () => {
     const s = await share(email);
     expect(s.recipient).toBeUndefined();
     expect(sent.find((x) => x.to === email)?.text).toContain(
-      `You'll log in with a one-time code sent to ${email}.`,
+      "Open it with a one-time code.",
     );
   });
 
@@ -110,22 +112,38 @@ describe("share recipient reach (review item 37)", () => {
   const NO_ADDRESS =
     /This address can't log in to .+\. Ask .+ to share it with an address that can\./;
 
-  it("Google only, outside the domain: outside_domains, and the email says so", async () => {
+  // #2590: Google alone outside the domains works only for a Workspace
+  // account (a consumer account waits for the code step), so it is not a
+  // certain way: the sharer is warned (workspace_only), and the email still
+  // names Google.
+  it("Google only, outside the domain: workspace_only warning, the email names Google", async () => {
     const { share, sent } = await setup(direct, {
       ...HOSTED,
       AUTH_PROVIDERS: "google",
     });
     const email = uniq("g", "out.com");
-    expect((await share(email)).recipient).toEqual({
+    const s = await share(email);
+    expect(s.recipient).toEqual({
       canSignIn: false,
-      reason: "outside_domains",
+      reason: "workspace_only",
     });
+    expect(s.reach).toEqual({ ways: ["google_workspace"] });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toMatch(NO_ADDRESS);
+    expect(m?.text).toContain(`Open it with your Google account (${email}).`);
     expect(m?.text).not.toContain("invite you");
   });
 
-  it("Google only, no domains: a non-Gmail address needs an invite, not outside_domains", async () => {
+  it("Google only, outside the domain, a Gmail address: a certain way, no flag", async () => {
+    const { share } = await setup(direct, {
+      ...HOSTED,
+      AUTH_PROVIDERS: "google",
+    });
+    const s = await share(uniq("g", "gmail.com"));
+    expect(s.recipient).toBeUndefined();
+    expect(s.reach).toEqual({ ways: ["google"] });
+  });
+
+  it("Google only, no domains: a non-Gmail address is workspace_only, not outside_domains", async () => {
     const { share } = await setup(direct, {
       ...HOSTED,
       AUTH_PROVIDERS: "google",
@@ -133,7 +151,7 @@ describe("share recipient reach (review item 37)", () => {
     });
     const email = uniq("g", "out.com");
     const r = (await share(email)).recipient;
-    expect(r).toEqual({ canSignIn: false, reason: "needs_invite" });
+    expect(r).toEqual({ canSignIn: false, reason: "workspace_only" });
   });
 
   it("email only, domain codes off, in-domain: no_sign_in_method (an invite wouldn't help), and the email says so", async () => {
@@ -151,18 +169,22 @@ describe("share recipient reach (review item 37)", () => {
     expect(m?.text).not.toContain("one-time code");
   });
 
-  // #799 nit: a no-row recipient whom only Google might admit (outside
-  // AUTH_DOMAINS, domain join on): no flag, and the email names Google
-  // rather than saying they can't sign in.
-  it("only Google might admit a no-row recipient: no flag, and the email names Google", async () => {
+  // A no-row recipient whom only Google might admit (outside AUTH_DOMAINS,
+  // domain join on): the email names Google rather than saying they can't
+  // sign in. #2590: it is not a certain way, so the sharer gets the
+  // workspace_only warning (it used to be unflagged, #799).
+  it("only Google might admit a no-row recipient: workspace_only, and the email names Google", async () => {
     const { share, sent } = await setup(direct, {
+      ...HOSTED,
       AUTH_PROVIDERS: "google",
-      AUTH_DOMAIN_JOIN: "member",
     });
     const email = uniq("sec", "secondary.com");
-    expect((await share(email)).recipient).toBeUndefined();
+    expect((await share(email)).recipient).toEqual({
+      canSignIn: false,
+      reason: "workspace_only",
+    });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("You'll log in with your Google account.");
+    expect(m?.text).toContain(`Open it with your Google account (${email}).`);
     expect(m?.text).not.toContain("can't log in");
   });
 
@@ -188,7 +210,7 @@ function namesExactly(text: string | undefined, methods: readonly string[]) {
   const PHRASE: Record<string, string> = {
     google: "your Google account",
     access: "your organization's single sign-on",
-    email: "a one-time code sent to",
+    email: "a one-time code.",
   };
   for (const [m, phrase] of Object.entries(PHRASE))
     expect(text ?? "", m).toSatisfy(
@@ -200,28 +222,28 @@ function namesExactly(text: string | undefined, methods: readonly string[]) {
 }
 
 describe("the share email names the level the recipient will have", () => {
-  it("outside the domains, an Editor share reads Viewer: they'll be a guest", async () => {
+  it("outside the domains, an Editor share reads Commenter: they'll be a guest (#2590)", async () => {
     const { share, sent } = await setup(direct, HOSTED);
     const email = uniq("g", "out.com");
     await share(email, "editor");
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("Your role: Viewer");
+    // The outside email (#2590) carries no role line; the level is the row's.
+    expect(m?.text).not.toContain("Your role");
     expect(m?.html).not.toContain("Editor");
   });
 
-  it("Access-only: an Editor share reads Viewer", async () => {
+  it("Access-only (self-host, no login domains): every address is outside, so no role line", async () => {
     const { share, sent } = await setup((o) => ({ ...env, ...o }) as Env, {});
     const email = uniq("acc", "a.com");
     await share(email, "editor");
-    expect(sent.find((x) => x.to === email)?.text).toContain(
-      "Your role: Viewer",
-    );
+    expect(sent.find((x) => x.to === email)?.text).not.toContain("Your role");
   });
 
   it("in a verified domain, an Editor share stays Editor: they'll be a member", async () => {
     const { share, sent } = await setup(direct, HOSTED);
     const email = uniq("in", "a.com");
     await share(email, "editor");
+    // The normal share email keeps its role line (an outside one has none).
     expect(sent.find((x) => x.to === email)?.text).toContain(
       "Your role: Editor",
     );
@@ -288,16 +310,28 @@ describe("guest on a share row, and the email, from one rule", () => {
       true,
     ],
     ["Google and codes, invite, in-domain", direct, HOSTED, IN, false],
-  ])("%s", async (_name, make, over, domain, guest) => {
+    ["hosted, outside", direct, HOSTED, OUT, true],
+  ])("%s", async (name, make, over, domain, guest) => {
     const { share, list, sent } = await setup(make, over);
     const email = uniq("r", domain);
     await share(email, "editor");
     const row = (await list()).find((r) => r.email === email);
-    expect(row?.role).toBe("editor");
+    // An outsider is stored as commenter, never editor (#2590).
+    expect(row?.role).toBe(guest ? "commenter" : "editor");
     expect(row?.guest === true).toBe(guest);
-    expect(sent.find((x) => x.to === email)?.text).toContain(
-      `Your role: ${guest ? "Viewer" : "Editor"}`,
+    // An outside address (outside the login domains, or on an install with
+    // none) gets the outside email, which has no role line (#2590); an
+    // address at a login domain gets the normal share email, with its role.
+    const text = sent.find((x) => x.to === email)?.text ?? "";
+    const outsideMail = text.includes(
+      "shared a page with you on Open Artifacts",
     );
+    // An outside address gets the outside email on every install; an address
+    // at a login domain gets the normal one. (An install with no login
+    // domains, Access-only, has every address outside.)
+    expect(outsideMail).toBe(domain === OUT || name === "Access-only");
+    if (outsideMail) expect(text).not.toContain("Your role");
+    else expect(text).toContain(`Your role: ${guest ? "Commenter" : "Editor"}`);
   });
 
   it("once a shared address has a member row, the row's role decides", async () => {
@@ -306,7 +340,7 @@ describe("guest on a share row, and the email, from one rule", () => {
     const email = uniq("join", IN);
     await share(email, "editor");
     const row = async () => (await list()).find((r) => r.email === email);
-    expect(await row()).toMatchObject({ role: "editor", guest: true });
+    expect(await row()).toMatchObject({ role: "commenter", guest: true });
     const signedIn = await admit(e, authConfig(e), {
       provider: "google",
       subject: uniq("sub", IN),
@@ -315,7 +349,8 @@ describe("guest on a share row, and the email, from one rule", () => {
       tenant: IN,
     });
     expect(signedIn).toMatchObject({ ok: true, user: { role: "member" } });
-    expect(await row()).toMatchObject({ role: "editor" });
+    // Stored as commenter at share time (an outsider is never stored as editor).
+    expect(await row()).toMatchObject({ role: "commenter" });
     expect(await row()).not.toHaveProperty("guest");
   });
 
@@ -362,14 +397,14 @@ describe("guest on a share row, and the email, from one rule", () => {
 
 describe("ShareResult.signInMethods (#799)", () => {
   it.each([
-    ["hosted, in-domain non-member", direct, HOSTED, "a.com", []],
+    ["hosted, in-domain non-member", direct, HOSTED, "a.com", ["google"]],
     ["hosted, outside guest", direct, HOSTED, "out.com", ["email"]],
     [
       "Google only, outside",
       direct,
       { ...HOSTED, AUTH_PROVIDERS: "google" },
       "out.com",
-      [],
+      ["google"],
     ],
     [
       "email only, domain codes off, in-domain",

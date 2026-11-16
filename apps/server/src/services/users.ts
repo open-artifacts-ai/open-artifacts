@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { withCap, withPlan } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { capOf, planCapsRole } from "../auth/policy.js";
+import { capOf, isGuestRole, planCapsRole } from "../auth/policy.js";
 import { seedPlan } from "../billing/features.js";
 import {
   billingActive,
@@ -17,7 +17,8 @@ import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { publicName, readsAsAgent } from "./agent-display.js";
-import { signInAuditByEmail } from "./audit.js";
+import { inviteAcceptAuditDrizzle, signInAuditByEmail } from "./audit.js";
+import { outsiderLoginOff } from "./outside.js";
 
 type UserRow = typeof users.$inferSelect;
 type NameFields = Pick<UserRow, "email" | "name" | "displayName">;
@@ -100,6 +101,7 @@ export function insertUser(
     role: Role;
     createdAt: number;
     lastSeenAt?: number;
+    invitedAt?: number;
   },
 ) {
   return getDb(env)
@@ -226,13 +228,31 @@ export async function upsertOnLogin(
     // Deactivated (a guest whose last share went, or P3's sync): no sign-in.
     // A new share reactivates a guest (putShare).
     if (existing.status !== "active") return null;
+    // The owner's switch (#2590): off ends share-made guests' logins.
+    if (
+      isGuestRole(existing.role as Role) &&
+      (await outsiderLoginOff(env, existing.id, e))
+    )
+      return null;
     const set: Partial<UserRow> = { lastSeenAt: Date.now() };
     if (name !== null) set.name = name;
-    const [row] = await withAudit(
-      env,
-      db.update(users).set(set).where(eq(users.id, existing.id)).returning(),
-      auditQ,
-    );
+    const update = db
+      .update(users)
+      .set(set)
+      .where(eq(users.id, existing.id))
+      .returning();
+    // A never-seen row may be an invite: invite.accept goes first, while
+    // last_seen_at is still null (it writes only for an invited row).
+    if (existing.lastSeenAt === null) {
+      const [, res] = await db.batch([
+        inviteAcceptAuditDrizzle(env, existing.id),
+        update,
+        ...(auditQ ? [auditQ] : []),
+      ]);
+      const row = (res as UserRow[])[0];
+      return row ? toMember(row) : null;
+    }
+    const [row] = await withAudit(env, update, auditQ);
     return row ? toMember(row) : null;
   }
 
@@ -241,7 +261,8 @@ export async function upsertOnLogin(
     .from(shares)
     .where(eq(shares.email, e))
     .limit(1);
-  if (shared.length === 0) return null;
+  if (shared.length === 0 || (await outsiderLoginOff(env, null, e)))
+    return null;
   // Concurrent first logins race on the unique email: the loser just refreshes.
   return toMember(await upsert(env, e, name, "guest", false, auditQ));
 }

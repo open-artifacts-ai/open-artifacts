@@ -63,12 +63,15 @@ describe("sign-up nudge in the viewer (#1564)", () => {
     expect(nudge()).toBeNull();
   });
 
-  it("a guest on a hosted install sees it", async () => {
+  it("a guest on a hosted install gets the guest bar instead (#2590)", async () => {
     mountHosted(viewerPath(PUBLIC), true, (m) => ({
       ...m,
       user: { ...m.user, role: "guest" },
     }));
-    expect(await screen.findByText(COPY)).toBeVisible();
+    await screen.findByText(/You're a guest/);
+    await frame();
+    await wait(50);
+    expect(nudge()).toBeNull();
   });
 
   it("a member on a hosted install does not", async () => {
@@ -108,10 +111,8 @@ describe("sign-up nudge in the viewer (#1564)", () => {
   });
 
   it("the dismissal key holds no email", async () => {
-    mountHosted(viewerPath(PUBLIC), true, (m) => ({
-      ...m,
-      user: { ...m.user, role: "guest" },
-    }));
+    anonymous(true);
+    mount(viewerPath(PUBLIC));
     await screen.findByText(COPY);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     const keys = Object.keys(localStorage).filter((k) =>

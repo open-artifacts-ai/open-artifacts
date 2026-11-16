@@ -1,12 +1,12 @@
-// #2478: the first time each activation step of the instance owner happened,
-// one settings row per owner and step, written once (the first time is kept).
+// #2478: the first time each activation step of a member happened (#2632:
+// any non-guest member, not only the owner), one settings row per person and step, written once (the first time is kept).
 // Timestamps only: never a title, a name or any text.
 //
 // One function per first-time, called from exactly one place each. They are
 // the seam where a PostHog event goes next (#2479): each returns true only
 // for the call that wrote the row, so an event fires once.
 
-import { isInstanceOwner } from "../auth/policy.js";
+import { isGuestRole } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
@@ -27,7 +27,7 @@ export const MENTION_STALLED_MS = 2 * 60 * 1000;
 const SET_FIRST = `insert into settings (key, value) values (?1, ?2)
   on conflict (key) do nothing`;
 
-/** Writes `key` once, for the instance owner only; true when this call wrote it. Never throws. */
+/** Writes `key` once, for a non-guest member; true when this call wrote it. Never throws. */
 async function first(
   env: Env,
   userId: string,
@@ -36,7 +36,7 @@ async function first(
 ): Promise<boolean> {
   try {
     const user = await getUser(env, userId);
-    if (!user || !isInstanceOwner(user)) return false;
+    if (!user || isGuestRole(user.role)) return false;
     const r = await stmt(env.DB, SET_FIRST).bind(key, String(Date.now())).run();
     return r.meta.changes > 0;
   } catch (e) {
@@ -47,7 +47,7 @@ async function first(
 
 /**
  * The cheap gate before any thread read: `key` is still unset and `userId` is
- * the instance owner. One settings read, then one user read, only while unset.
+ * a non-guest member. One settings read, then one user read, only while unset.
  */
 export async function pendingFirst(
   env: Env,
@@ -59,7 +59,7 @@ export async function pendingFirst(
     .first();
   if (row) return false;
   const user = await getUser(env, userId);
-  return !!user && isInstanceOwner(user);
+  return !!user && !isGuestRole(user.role);
 }
 
 /** True when the owner's named time is already recorded (one settings read). */

@@ -124,6 +124,25 @@ describe("POST AUTH.codeRequest", () => {
     expect(m.sent.map((x) => x.to)).toEqual([guest]);
   });
 
+  it("an expired invite's request response is the same as an unknown address (no reason leaks)", async () => {
+    const guest = uniq("lapsed", "x.com");
+    const uid = await seedUser(guest, "guest");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now() - 40 * 86_400_000, uid)
+      .run();
+    const m = mailer();
+    const on = withMail(direct(), m);
+    const a = await request(on, guest);
+    const b = await request(on, uniq("nobody", "x.com"));
+    expect(a.status).toBe(b.status);
+    const aText = await a.text();
+    const bBody = JSON.parse(await b.text());
+    expect(Object.keys(JSON.parse(aText))).toEqual(Object.keys(bBody));
+    for (const t of [aText, JSON.stringify([...a.headers])])
+      expect(t).not.toMatch(/invite_expired|reason|ineligible/);
+    expect(m.sent).toHaveLength(0);
+  });
+
   it("masks the address and sets the pending cookie (HttpOnly, Lax, 10 min)", async () => {
     const r = await request(direct(), "someone@x.com");
     expect(CodeRequestedSchema.parse(await r.json()).maskedEmail).toBe(
@@ -1064,5 +1083,63 @@ describe("a failed resend's restore", () => {
     }
     // 1 + 3 + 2 tries: the earlier code's five are spent.
     expect((await verify(e, first, cookie, { ip })).status).toBe(401);
+  });
+});
+
+describe("the Welcome on the email-code path (#2632)", () => {
+  const welcomes = (userId: string) =>
+    env.DB.prepare(
+      "select id from artifacts where owner_id = ?1 and title = 'Welcome'",
+    )
+      .bind(userId)
+      .all();
+  async function signIn(email: string) {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json(TURNSTILE_OK),
+    );
+    const m = mailer();
+    const e = withMail(trial(), m);
+    const r1 = await request(e, email, { token: "ok" });
+    return verify(e, m.codeFor(email), cookieOf(r1, CODE_COOKIE));
+  }
+
+  it("a member's own private Welcome is seeded on their first code sign-in, once", async () => {
+    const email = uniq("mem");
+    const id = await seedUser(email, "member");
+    expect((await signIn(email)).status).toBe(200);
+    expect((await welcomes(id)).results).toHaveLength(1);
+    // Private, and the member's own: one Welcome row per person, never a second.
+    await env.DB.prepare("update users set last_seen_at = null where id = ?1")
+      .bind(id)
+      .run();
+    const { seedWelcome } = await import("../src/services/onboarding.js");
+    const { getUser } = await import("../src/services/users.js");
+    const u = await getUser(env, id);
+    if (u) await seedWelcome(env, u);
+    expect((await welcomes(id)).results).toHaveLength(1);
+    expect(
+      (
+        await env.DB.prepare(
+          "select visibility from artifacts where owner_id = ?1 and title = 'Welcome'",
+        )
+          .bind(id)
+          .first<{ visibility: string }>()
+      )?.visibility,
+    ).toBe("private");
+  });
+
+  it("a guest's code sign-in seeds nothing", async () => {
+    const email = uniq("g", "x.com");
+    const id = await seedUser(email, "guest");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json(TURNSTILE_OK),
+    );
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const r1 = await request(e, email);
+    expect(
+      (await verify(e, m.codeFor(email), cookieOf(r1, CODE_COOKIE))).status,
+    ).toBe(200);
+    expect((await welcomes(id)).results).toHaveLength(0);
   });
 });

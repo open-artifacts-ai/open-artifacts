@@ -109,15 +109,15 @@ describe("notifications contract", () => {
     expect(el.safeParse({ ...item, href: "/a/x#c" }).success).toBe(true);
   });
 
-  it("parses machine, away, agentId and mutes", () => {
+  it("parses proposal, away, agentId and mutes", () => {
     const el = InboxSchema.shape.needsYou.element;
     expect(
       el.safeParse({
         ...item,
-        kind: "machine",
+        kind: "proposal",
         actor: { kind: "agent", name: "b", me: false },
         agentKey: "ag1",
-        machine: { id: "m1", name: "laptop" },
+        proposal: { id: "p1", kind: "role", agentName: "builder" },
       }).success,
     ).toBe(true);
     expect(
@@ -143,14 +143,14 @@ describe("notifications contract", () => {
     );
   });
 
-  it("allows a null artifact only for machine and away", () => {
+  it("allows a null artifact only for proposal and away", () => {
     const el = InboxSchema.shape.needsYou.element;
     expect(el.safeParse({ ...item, artifact: null }).success).toBe(false);
     expect(
       el.safeParse({ ...item, kind: "mention", artifact: null }).success,
     ).toBe(false);
     expect(
-      el.safeParse({ ...item, kind: "machine", artifact: null }).success,
+      el.safeParse({ ...item, kind: "proposal", artifact: null }).success,
     ).toBe(true);
     expect(
       el.safeParse({ ...item, kind: "away", artifact: null }).success,

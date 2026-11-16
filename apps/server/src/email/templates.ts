@@ -111,6 +111,7 @@ const FORMAT_LABEL: Record<Format, string> = {
 };
 const ROLE_LABEL: Record<ShareRole, string> = {
   viewer: "Viewer",
+  commenter: "Commenter",
   editor: "Editor",
 };
 
@@ -233,9 +234,91 @@ export function shareEmail(
   );
 }
 
+const OUTSIDE_TITLE_MAX = 80;
+
+/** Looks like a URL or holds one: "://", "www.", or a domain-like token. */
+const urlish = (s: string): boolean =>
+  /:\/\/|www\.|(?:^|[^\p{L}\p{N}-])[\p{L}\p{N}-]+\.[\p{L}]{2,}(?![\p{L}\p{N}])/iu.test(
+    s,
+  );
+
+const OUTSIDE_TXT = `{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
+
+{{pageTitle}}
+
+{{openLine}}
+
+Open the page:
+{{pageUrl}}
+
+--
+
+You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
+`;
+
+const OUTSIDE_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{senderName}} shared a page with you</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
+<p style="font-weight:600">{{pageTitle}}</p>
+<p>{{openLine}}</p>
+<p><a href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
+<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
+</body></html>
+`;
+
+/**
+ * A page shared with someone who has no account here (#2590). The only text
+ * the sender controls is their name and address and the page title (cut to
+ * OUTSIDE_TITLE_MAX characters, plain text, never a link). OA Product owns the
+ * wording. The footer is plain text: no promotion, no link.
+ */
+export function outsideShareEmail(
+  p: Common &
+    SignIn & {
+      title: string;
+      /** Viewer path on the app host, e.g. `/a/<id>`. */
+      path: string;
+      senderEmail: string;
+    },
+): EmailContent {
+  const { origin, values } = common(p);
+  const methods = orderSignInMethods(p.signIn);
+  const phrase = (m: SignInProvider) =>
+    m === "google"
+      ? `your Google account (${values.recipientEmail})`
+      : m === "email"
+        ? "a one-time code"
+        : "your organization's single sign-on";
+  const openLine =
+    methods.length > 0
+      ? `Open it with ${methods.map(phrase).join(" or ")}.`
+      : signInSentence(p.signIn, values.recipientEmail, p);
+  // Sender-controlled text that looks like a URL is dropped (a mail client
+  // would link it): "A page" for the title, the bare address for the name.
+  const title = urlish(p.title)
+    ? "A page"
+    : oneLine(p.title, OUTSIDE_TITLE_MAX);
+  const senderEmail = oneLine(p.senderEmail, 320);
+  const sender = urlish(values.inviterName) ? senderEmail : values.inviterName;
+  return render(
+    OUTSIDE_HTML,
+    OUTSIDE_TXT,
+    `{{senderName}} shared "{{pageTitle}}" with you`,
+    {
+      ...values,
+      senderName: sender,
+      senderEmail,
+      pageTitle: title,
+      pageUrl: linkOn(origin, p.path),
+      openLine,
+    },
+  );
+}
+
 const CODE_TXT = `Your {{instanceName}} login code is {{code}}
 
-Enter it on the login page. It expires in {{minutes}} minutes and works once.
+{{enterLine}} It expires in {{minutes}} minutes and works once.
 
 If you didn't ask for this, ignore this email: nobody can log in without the code.
 
@@ -247,11 +330,16 @@ const CODE_HTML = `<!doctype html>
 <body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <p>Your {{instanceName}} login code is</p>
 <p style="font:600 28px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px">{{code}}</p>
-<p>Enter it on the login page. It expires in {{minutes}} minutes and works once.</p>
+<p>{{enterLine}} It expires in {{minutes}} minutes and works once.</p>
 <p style="color:#5d636e">If you didn't ask for this, ignore this email: nobody can log in without the code.</p>
 <p style="color:#5d636e">{{appHost}}</p>
 </body></html>
 `;
+
+/** The line that tells a login code from a Google link what it does (#2590 G2; OA Product owns the wording). */
+export const GOOGLE_LINK_CODE_LINE = (email: string): string =>
+  `Enter this code to finish logging in with Google as ${email}.`;
+const PLAIN_CODE_LINE = "Enter it on the login page.";
 
 /**
  * A login code, shown as "1234 5678" (Design). No link carries the code,
@@ -262,6 +350,8 @@ export function loginCodeEmail(p: {
   instance: string;
   appHost: string;
   minutes: number;
+  /** The address of the Google account this code finishes logging in (a link code). */
+  linkEmail?: string;
 }): EmailContent {
   if (!/^\d{8}$/.test(p.code)) throw new Error("invalid code");
   const url = new URL(`https://${p.appHost}/`);
@@ -271,6 +361,9 @@ export function loginCodeEmail(p: {
     code: `${p.code.slice(0, 4)} ${p.code.slice(4)}`,
     minutes: String(p.minutes),
     appHost: url.host,
+    enterLine: p.linkEmail
+      ? GOOGLE_LINK_CODE_LINE(oneLine(p.linkEmail, 320))
+      : PLAIN_CODE_LINE,
   };
   return render(
     CODE_HTML,

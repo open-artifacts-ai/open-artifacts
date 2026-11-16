@@ -149,19 +149,34 @@ describe("first open of Welcome", () => {
     expect(router.state.location.pathname).toBe("/");
   });
 
-  it("does not redirect a member (the state is the owner's)", async () => {
+  // #2632: every member gets their own Welcome, as the owner does.
+  it("redirects a member to their own Welcome, once", async () => {
     const puts = calls("PUT");
-    const gets = calls("GET");
     const router = mountHosted(
       "/",
       true,
       (m) => ({ ...m, user: { ...m.user, role: "member" } }),
       [state(), welcomeArtifact(), putOnboarding()],
     );
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/a/${WELCOME}`),
+    );
+    expect(
+      puts.filter((c) => c.path === "/api/v1/onboarding").map((c) => c.body),
+    ).toEqual([{ welcomeOpened: true }]);
+  });
+
+  it("does not redirect a guest (a guest has no steps)", async () => {
+    const gets = calls("GET");
+    const router = mountHosted(
+      "/",
+      true,
+      (m) => ({ ...m, user: { ...m.user, role: "guest" } }),
+      [state(), welcomeArtifact(), putOnboarding()],
+    );
     await wait(400);
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).not.toBe(`/a/${WELCOME}`);
     expect(gets.filter((c) => c.path === "/api/v1/onboarding")).toHaveLength(0);
-    expect(puts.filter((c) => c.path === "/api/v1/onboarding")).toHaveLength(0);
   });
 });
 

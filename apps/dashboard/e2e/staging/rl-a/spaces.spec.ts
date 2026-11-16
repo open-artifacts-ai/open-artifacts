@@ -21,6 +21,7 @@ import {
   SPACES,
   t19Spaces,
   test,
+  transferred,
 } from "./fixtures";
 
 // T19 step 3: spaces on rl-a. People and roles come from the session hook
@@ -201,9 +202,11 @@ test("public links off in t19-exec: Public is disabled, and anonymous /full gets
   const page = mgr.page;
   await page.goto(`/a/${id}`);
   await page.getByRole("button", { name: "Share" }).click();
-  await expect(page.getByRole("radio", { name: "Public" })).toBeDisabled();
   await expect(
-    page.getByText(`Public links are off for ${exec.name}.`),
+    page.getByRole("radio", { name: "Anyone with the link" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText(`Sharing by link is off for ${exec.name}.`),
   ).toBeVisible();
   const pub = await api(mgr, R.artifact(id), {
     method: "PATCH",
@@ -298,8 +301,8 @@ test("Remove someone with personal artifacts: Departed lists them, and Transfer 
   const gone = await person(browser, "gone", "member");
   const titles = [`T19 ${RUN} gone one`, `T19 ${RUN} gone two`];
   const ids: string[] = [];
-  // After the transfer they're the heir's: the heir deletes them.
-  for (const t of titles) ids.push((await publish(gone, page1(t), heir)).id);
+  // Gone's until the transfer below; then cleanup deletes them as the heir.
+  for (const t of titles) ids.push((await publish(gone, page1(t))).id);
 
   const page = admin.page;
   await page.goto("/settings/members");
@@ -325,6 +328,7 @@ test("Remove someone with personal artifacts: Departed lists them, and Transfer 
   await expect(
     page.getByText(`Moved 2 artifacts to ${heir.name}.`).first(),
   ).toBeVisible();
+  transferred(ids, heir);
   await expect(row).toHaveCount(0);
 
   for (const id of ids) {

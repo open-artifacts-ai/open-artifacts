@@ -53,26 +53,32 @@ const patches = () => {
 };
 
 describe("share panel", () => {
-  it("going public asks first; cancelling keeps the visibility and sends no PATCH", async () => {
+  it("#2509: General access lists each choice with its line; Anyone with the link applies with no confirm", async () => {
     const bodies = patches();
     mount(panel(OWNED));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    fireEvent.click(within(group).getByRole("radio", { name: "Public" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
-    await screen.findByText(
-      "Anyone with the link can view. It won't appear in search engines.",
-      { selector: '[role="dialog"] *' },
-    );
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
+    });
+    for (const [name, line] of [
+      ["Restricted", "Only people you add can open it."],
+      [
+        "Anyone at Acme Artifacts",
+        "Every member of Acme Artifacts can open it.",
+      ],
+      [
+        "Anyone with the link",
+        "No login needed. It won't appear in search engines.",
+      ],
+    ])
+      expect(
+        within(group).getByRole("radio", { name }),
+      ).toHaveAccessibleDescription(line);
     fireEvent.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Cancel",
-      }),
+      within(group).getByRole("radio", { name: "Anyone with the link" }),
     );
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(bodies).toEqual([]);
-    expect(
-      within(group).getByRole("radio", { name: "Private" }),
-    ).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
+    await waitFor(() => expect(bodies).toEqual([{ visibility: "public" }]));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("an invalid or non-ASCII email never calls the API", async () => {
@@ -100,7 +106,7 @@ describe("share panel", () => {
     mount(panel(OWNED));
     expect(
       await screen.findByText(
-        "No email is sent. Copy the link and share it yourself.",
+        "We won't email them about this share. Copy the link and send it yourself.",
       ),
     ).toBeInTheDocument();
     fireEvent.change(await screen.findByRole("textbox", { name: "Email" }), {
@@ -127,8 +133,9 @@ describe("share panel", () => {
   });
 
   it.each([
+    // #2590: only an old Editor share on a guest keeps the caption; a
+    // viewer or commenter guest's picker says Can view or Can comment.
     ["editor", "Editor", "Guest · can only view for now"],
-    ["viewer", "Viewer", "Guest · can only view"],
   ])(
     "a guest's row with stored %s: email, caption, then the select and Remove",
     async (role, shown, caption) => {
@@ -192,7 +199,8 @@ describe("share panel", () => {
       expect(caption.parentElement).toContainElement(
         screen.getByRole("button", { name: "Remove dan@example.com" }),
       );
-      expect(document.body).not.toHaveTextContent(/restrict/i);
+      // #2509: "Restricted" now names the general access; the row itself has no restricted chip.
+      expect(email.closest("li")).not.toHaveTextContent(/restrict/i);
     });
 
     it("a viewer share: no line", async () => {
@@ -218,6 +226,8 @@ describe("share panel", () => {
       expect(screen.queryByText(NOW)).toBeNull();
     });
 
+    // #2590: a known member (bob) keeps Editor; on the plain mocks (no
+    // login domains) any other address is outside.
     it("right after sharing as Editor: the caption, and no status note", async () => {
       let list: object[] = [];
       server.use(
@@ -238,12 +248,12 @@ describe("share panel", () => {
       );
       fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
       fireEvent.change(screen.getByLabelText("Email"), {
-        target: { value: "dan@example.com" },
+        target: { value: "bob@example.com" },
       });
       fireEvent.click(screen.getByRole("button", { name: "Add" }));
       expect(await screen.findByText(NOW)).toBeVisible();
       expect(screen.queryByText("They can only view for now.")).toBeNull();
-      const row = (await screen.findByTitle("dan@example.com")).closest(
+      const row = (await screen.findByTitle("bob@example.com")).closest(
         "li",
       ) as HTMLElement;
       expect(within(row).queryByRole("status")).toBeNull();
@@ -266,28 +276,58 @@ describe("share panel", () => {
       await screen.findByTitle(email);
     };
 
+    // #2590: with no login domains (codes only), an address that isn't a
+    // known member is outside: it gets Can comment / Can view, never Editor.
+    // The line still shows when the server says a share picked as Editor is
+    // a guest's (a member's row the server sees otherwise).
+    const CODES = { providers: ["email" as const] };
     it("gets the status line just after inviting, and not on a later open", async () => {
-      const guest = "gia@elsewhere.test";
-      mountHosted(panel(OWNED));
-      await invite(guest, "Editor");
+      const who = "dan@example.com";
+      let list: object[] = [];
+      const guestRows = [
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json(list),
+        ),
+        http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+          const b = (await request.json()) as { email: string; role: string };
+          const row = {
+            ...b,
+            createdAt: "2026-10-01T00:00:00.000Z",
+            guest: true,
+          };
+          list = [row];
+          return HttpResponse.json({ ...row, emailed: false });
+        }),
+      ];
+      mountHosted(panel(OWNED), CODES, undefined, guestRows);
+      await invite(who, "Editor");
       const line = await screen.findByText(LINE);
       expect(line).toHaveAttribute("role", "status");
-      expect(screen.getByTitle(guest).closest("li")).toContainElement(line);
+      expect(screen.getByTitle(who).closest("li")).toContainElement(line);
       cleanup();
-      mount(panel(OWNED));
-      await screen.findByTitle(guest);
+      mountHosted(panel(OWNED), CODES, undefined, guestRows);
+      await screen.findByTitle(who);
       expect(
         await screen.findByText("Guest · can only view for now"),
       ).toBeTruthy();
       expect(screen.queryByText(LINE)).toBeNull();
     });
 
-    it("no line for a guest invited as Viewer, or a member as Editor", async () => {
-      mountHosted(panel(OWNED));
-      await invite("gus@elsewhere.test", "Viewer");
-      await screen.findByText("Guest · can only view");
-      expect(screen.queryByText(LINE)).toBeNull();
-      await invite("carol@example.com", "Editor");
+    it("an unknown address is outside (Can comment / Can view); a known member as Editor gets no line", async () => {
+      mountHosted(panel(OWNED), CODES);
+      await screen.findByRole("combobox", { name: "Invite role" });
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "gus@elsewhere.test" },
+      });
+      await waitFor(() =>
+        expect(
+          screen.getByRole("combobox", { name: "Invite role" }),
+        ).toHaveTextContent("Can comment"),
+      );
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "" },
+      });
+      await invite("dan@example.com", "Editor");
       expect(screen.queryByText(LINE)).toBeNull();
     });
   });
@@ -393,13 +433,17 @@ describe("share panel", () => {
       ),
     );
     mount(panel(OWNED));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
+    });
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
     await screen.findByText("Boom");
     expect(
-      within(group).getByRole("radio", { name: "Private" }),
-    ).toHaveAttribute("aria-checked", "true");
+      within(group).getByRole("radio", { name: "Restricted" }),
+    ).toBeChecked();
   });
 
   it.each([
@@ -413,7 +457,9 @@ describe("share panel", () => {
     });
     mount(panel(aid));
     fireEvent.click(await screen.findByRole("button", { name: "Copy link" }));
-    expect(screen.queryByRole("radiogroup", { name: "Visibility" })).toBeNull();
+    expect(
+      screen.queryByRole("radiogroup", { name: "General access" }),
+    ).toBeNull();
     expect(screen.queryByRole("textbox", { name: "Email" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Remove / })).toBeNull();
     await waitFor(() =>
@@ -460,21 +506,27 @@ describe("409 conflict", () => {
   it("visibility: the choice reverts to the server's value, with the status under it", async () => {
     server.use(conflictPatch);
     mount(panel(OWNED));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
+    });
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
     const note = await screen.findByText(CONFLICT_COPY);
     expect(note).toHaveAttribute("role", "status");
     await waitFor(() =>
       expect(
-        within(group).getByRole("radio", { name: "Private" }),
+        within(group).getByRole("radio", { name: "Restricted" }),
       ).toBeChecked(),
     );
     expect(
       screen.queryByRole("button", { name: "Save visibility" }),
     ).toBeNull();
     // Choosing again clears it.
-    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+    );
     expect(screen.queryByText(CONFLICT_COPY)).toBeNull();
   });
 });
@@ -521,31 +573,33 @@ describe("details panel", () => {
 });
 
 describe("share panel review fixes", () => {
-  it("arrowing Private to Public with the keyboard and cancelling sends no PATCH", async () => {
+  it("choosing another option and cancelling sends no PATCH", async () => {
     const bodies = patches();
     mount(panel(OWNED));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    const priv = within(group).getByRole("radio", { name: "Private" });
-    priv.focus();
-    fireEvent.keyDown(priv, { key: "ArrowRight" });
-    fireEvent.keyDown(within(group).getByRole("radio", { name: "Team" }), {
-      key: "ArrowRight",
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
     });
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone with the link" }),
+    );
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
     await wait(50);
     expect(bodies).toEqual([]);
     expect(
-      within(group).getByRole("radio", { name: "Private" }),
-    ).toHaveAttribute("aria-checked", "true");
+      within(group).getByRole("radio", { name: "Restricted" }),
+    ).toBeChecked();
   });
 
-  it("confirming Make public sends only the visibility", async () => {
+  it("saving Anyone with the link sends only the visibility", async () => {
     const bodies = patches();
     mount(panel(OWNED));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    fireEvent.click(within(group).getByRole("radio", { name: "Public" }));
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
+    });
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone with the link" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Make public" }));
     await waitFor(() => expect(bodies).toEqual([{ visibility: "public" }]));
   });
 
@@ -559,18 +613,25 @@ describe("share panel review fixes", () => {
     );
     const bodies = patches();
     mount(panel(OWNED));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    fireEvent.click(within(group).getByRole("radio", { name: "Public" }));
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
+    });
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone with the link" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Make public" }));
     await waitFor(() => expect(bodies).toEqual([{ visibility: "public" }]));
   });
 
   it("leaving public sends only the visibility (#681)", async () => {
     const bodies = patches();
     mount(panel(POLL));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
+    });
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
     await waitFor(() => expect(bodies).toEqual([{ visibility: "team" }]));
   });
@@ -700,8 +761,12 @@ describe("one request per action (useSingleFlight)", () => {
   it("two Save visibility clicks in one tick send one PATCH", async () => {
     const bodies = patches();
     mount(panel(OWNED));
-    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    const group = await screen.findByRole("radiogroup", {
+      name: "General access",
+    });
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone at Acme Artifacts" }),
+    );
     const save = screen.getByRole("button", { name: "Save visibility" });
     act(() => {
       fireEvent.click(save);
@@ -804,7 +869,7 @@ describe("share panel: who can comment (#2080)", () => {
       }),
     );
     mount(panel(OWNED));
-    await screen.findByRole("radiogroup", { name: "Visibility" });
+    await screen.findByRole("radiogroup", { name: "General access" });
     expect(screen.queryByRole("group", { name: "Who can comment" })).toBeNull();
   });
 });

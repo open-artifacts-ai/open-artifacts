@@ -248,7 +248,13 @@ export function TitleBar({
   gone = false,
   comments,
   asks,
+  org = "",
+  outsider = false,
 }: {
+  /** #2509: the instance's name, which a team badge shows. */
+  org?: string;
+  /** #2590: a signed-in guest, outside the team: no Share. */
+  outsider?: boolean;
   /**
    * #1614: unanswered asks addressed to the viewer; absent when the page has no asks.
    * `inPanel` (#2486): the open panel shows the pill itself, so the bar doesn't.
@@ -294,6 +300,7 @@ export function TitleBar({
     [
       artifact.title,
       artifact.visibility,
+      org,
       pill ? asks.count : "",
       comments?.open,
       comments?.selecting,
@@ -307,7 +314,7 @@ export function TitleBar({
   const offerUndo = useOfferUndo();
   const [confirm, setConfirm] = useState(false);
   const can = useCan(artifact);
-  const canShare = authed && (can.share || can.setVisibility);
+  const canShare = authed && !outsider && (can.share || can.setVisibility);
   const canDelete = authed && can.delete;
   const canEdit = authed && can.edit;
   // Live data the caller can't change: guests and contractors (D10), and
@@ -401,6 +408,7 @@ export function TitleBar({
         <VisibilityBadge
           visibility={artifact.visibility}
           iconOnly={stage >= 2}
+          org={org}
         />
         {viewOnly && (
           <TooltipProvider>

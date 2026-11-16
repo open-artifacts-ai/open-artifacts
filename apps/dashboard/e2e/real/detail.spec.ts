@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { artifactFrame, expect, publishViaApi, test, uniq } from "./fixtures";
 
 /**
@@ -63,6 +63,22 @@ async function expectDetail(
   await expect(panel).toHaveCount(0);
 }
 
+/** The element's box once it's on screen and scrolled into view (retried: the list may re-render as it settles). */
+async function inView(l: Locator) {
+  // A member's Get started slot (#2632) settles first: the card that
+  // replaces it can be shorter and move the results up.
+  await expect(l.page().locator("[data-member-slot]")).toHaveCount(0);
+  let box: { x: number; y: number; width: number; height: number } | null =
+    null;
+  await expect(async () => {
+    await l.scrollIntoViewIfNeeded({ timeout: 2_000 });
+    box = await l.boundingBox();
+    expect(box).not.toBeNull();
+  }).toPass();
+  if (!box) throw new Error("no box");
+  return box as { x: number; y: number; width: number; height: number };
+}
+
 test("library → detail: card, thumbnail and deep links", async ({
   page,
   member,
@@ -104,9 +120,9 @@ test("library → detail: card, thumbnail and deep links", async ({
     // The thumbnail, where a user naturally clicks.
     await page.goto("/");
     // A mouse click where the user aims, not a locator click: whatever covers the
-    // thumbnail (the card's link) must take it.
-    const thumb = await card(a.title).locator(".lib-thumb").boundingBox();
-    if (!thumb) throw new Error("thumbnail has no box");
+    // thumbnail (the card's link) must take it. In view first: a member's Get
+    // started card (#2632) can push it below the fold.
+    const thumb = await inView(card(a.title).locator(".lib-thumb"));
     await page.mouse.click(
       thumb.x + thumb.width / 2,
       thumb.y + thumb.height / 2,
@@ -121,12 +137,12 @@ test("library → detail: card, thumbnail and deep links", async ({
 
     // List view: the row's timestamp, away from the title.
     await page.goto("/?view=list");
-    const time = await page
-      .locator("article.lib-row")
-      .filter({ hasText: a.title })
-      .locator("time")
-      .boundingBox();
-    if (!time) throw new Error("row time has no box");
+    const time = await inView(
+      page
+        .locator("article.lib-row")
+        .filter({ hasText: a.title })
+        .locator("time"),
+    );
     await page.mouse.click(time.x + time.width / 2, time.y + time.height / 2);
     await expectDetail(page, a.id, a.title, a.heading);
   }

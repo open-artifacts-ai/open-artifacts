@@ -260,6 +260,34 @@
       "when": 1794618187129,
       "tag": "0036_version_contributors",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1794651459897,
+      "tag": "0037_inbox_ask_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1794659474317,
+      "tag": "0038_invited_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1794656965122,
+      "tag": "0039_version_doc_save",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1794768254809,
+      "tag": "0040_share_can_comment",
+      "breakpoints": true
     }
   ]
 }

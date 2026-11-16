@@ -20,6 +20,7 @@ import {
   listAudit,
 } from "../src/services/audit.js";
 import { admit, resetIdentity } from "../src/services/identity.js";
+import { outsideSharingOn } from "../src/services/outside.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 import { api, login } from "./helpers.js";
 
@@ -57,6 +58,9 @@ let member: { cookie: string; userId: string };
 let guest: { cookie: string; userId: string };
 
 beforeAll(async () => {
+  // The first read of the outsideSharing setting stores its default with a
+  // system settings.change row (#2590): store it before any test counts rows.
+  await outsideSharingOn(env);
   owner = await login(uniq("owner"), "owner");
   admin = await login(uniq("admin"), "admin");
   member = await login(uniq("member"));
@@ -152,10 +156,10 @@ describe("shares", () => {
       emailed: false,
     });
     expect(await rowsFor(art)).toHaveLength(1);
-    await share(owner.cookie, art, "same@y.com", "editor");
+    await share(owner.cookie, art, "same@y.com", "commenter");
     const rows = await rowsFor(art);
     expect(rows).toHaveLength(2);
-    expect(JSON.parse(rows[1]?.detail ?? "")).toEqual({ role: "editor" });
+    expect(JSON.parse(rows[1]?.detail ?? "")).toEqual({ role: "commenter" });
   });
 
   it("a share refused at the cap writes no audit row", async () => {
@@ -504,7 +508,8 @@ describe("R.audit and R.auditExport", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toContain("application/x-ndjson");
     const lines = (await r.text()).split("\n").filter(Boolean);
-    expect(lines.length).toBe(n);
+    // Plus the export's own audit.export row, the newest.
+    expect(lines.length).toBe(n + 1);
     for (const l of lines) expect(JSON.parse(l)).toHaveProperty("action");
     expect(r.headers.get(AUDIT_NEXT_CURSOR_HEADER)).toBeNull();
   });
@@ -529,11 +534,13 @@ describe("R.audit and R.auditExport", () => {
     const r2 = await api(app, `${R.auditExport}?cursor=${next}`, owner.cookie);
     expect(r2.headers.get(AUDIT_NEXT_CURSOR_HEADER)).toBeNull();
     const l2 = (await r2.text()).split("\n").filter(Boolean);
-    expect(l1.length + l2.length).toBe(total);
+    // Each export records itself (r1, r2), after the count above; the seeded
+    // rows sit in the future, so those two fall inside the later pages.
+    expect(l1.length + l2.length).toBe(total + 2);
     const ids = new Set(
       [...l1, ...l2].map((l) => (JSON.parse(l) as AuditEvent).id),
     );
-    expect(ids.size).toBe(total);
+    expect(ids.size).toBe(total + 2);
     expect(
       (await api(app, `${R.auditExport}?cursor=nope!`, owner.cookie)).status,
     ).toBe(400);

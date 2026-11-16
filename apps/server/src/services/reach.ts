@@ -8,7 +8,11 @@
 // - codes: codeRule, the rule codeEligibility applies.
 // One D1 read at most (the share lookup codeRule may ask for).
 import { inDomains, noDomainIdentityOk } from "@oa/auth-core";
-import { orderSignInMethods, type ShareRecipient } from "@oa/shared";
+import {
+  type LoginWay,
+  orderSignInMethods,
+  type ShareRecipient,
+} from "@oa/shared";
 import {
   type AuthConfig,
   authConfig,
@@ -36,7 +40,35 @@ export type Reach = {
   googleUncertain: boolean;
   /** The address's domain is one of AUTH_DOMAINS. */
   inDomain: boolean;
+  /**
+   * Google admits them, but not on its own evidence: a consumer account on a
+   * custom address (or a Workspace one) is let in after an emailed code,
+   * first login only (#2590 G2). Only where Google and codes are both offered.
+   * A Google client of type Internal (no outside account can log in) isn't
+   * visible to config; the sharer's warning can't tell it apart.
+   */
+  googleAfterCode: boolean;
 };
+
+/** LoginWay order, as the schema lists them. */
+const WAY_ORDER: readonly LoginWay[] = [
+  "google",
+  "google_workspace",
+  "google_after_code",
+  "email_code",
+];
+
+/**
+ * The ways in from what reachOf found.
+ */
+export function waysOf(r: Reach): LoginWay[] {
+  const ways = new Set<LoginWay>();
+  if (r.methods.includes("google")) ways.add("google");
+  else if (r.googleUncertain) ways.add("google_workspace");
+  if (r.googleAfterCode) ways.add("google_after_code");
+  if (r.methods.includes("email")) ways.add("email_code");
+  return WAY_ORDER.filter((w) => ways.has(w));
+}
 
 const domainOf = (email: string) => email.slice(email.lastIndexOf("@") + 1);
 
@@ -59,7 +91,14 @@ export async function reachOf(
   if (offered.has("access") && (row ? row.status === "active" : await shared()))
     methods.push("access");
   // admit: a removed or suspended row is refused; no row needs a join rule.
-  if (offered.has("google") && active && (row || googleNewRowOk(cfg, false))) {
+  // A share to the exact address makes a guest on strong evidence (#2590), so
+  // Google admits a recipient with no row too, on any install.
+  let googleAfterCode = false;
+  if (
+    offered.has("google") &&
+    active &&
+    (row || googleNewRowOk(cfg, false) || (await shared()))
+  ) {
     // Accepted assumption (review #799): an address in a verified domain is
     // treated as certain, as if its Google tenant (hd) were that domain. A
     // consumer Google account registered with a work address has no hd and
@@ -67,12 +106,16 @@ export async function reachOf(
     // only a Workspace secondary domain could pass, so that is "uncertain".
     // No domains: only a Gmail address is certain; any other might be a
     // Workspace whose hd matches its domain.
+    // A Gmail address is certain either way: an invitee signs in with it
+    // bound to the exact address (#2520).
     const certain =
-      cfg.domains.length === 0
-        ? noDomainIdentityOk(email, null)
-        : googleTenantOk(cfg, domain);
+      noDomainIdentityOk(email, null) ||
+      (cfg.domains.length > 0 && googleTenantOk(cfg, domain));
     if (certain) methods.push("google");
-    else googleUncertain = true;
+    else {
+      googleUncertain = true;
+      googleAfterCode = offered.has("email");
+    }
   }
   if (
     offered.has("email") &&
@@ -83,6 +126,7 @@ export async function reachOf(
     methods: orderSignInMethods(methods),
     googleUncertain,
     inDomain: inDomains(cfg.domains, domain),
+    googleAfterCode,
   };
 }
 
@@ -124,9 +168,10 @@ export const inviteReach = (
  * A share recipient (review item 37), after the share is written: which
  * methods admit them, and ShareResult.recipient when none could (the share
  * still applies). Only for no row or an active one: a removed or suspended
- * person is out of scope here. Google that only might admit them (outside
- * AUTH_DOMAINS) isn't flagged, and the email names Google for them, so the
- * flag and the email agree.
+ * person is out of scope here. A way is certain only when it surely admits
+ * them today: Google for Gmail or an address in the login domains, codes where
+ * on. Google that only might admit them (outside AUTH_DOMAINS: a Workspace
+ * account) is flagged "workspace_only", and the email names Google for them.
  */
 export async function shareReach(
   env: Env,
@@ -136,13 +181,31 @@ export async function shareReach(
   recipient?: ShareRecipient;
   /** The address's org role, null with no user row (guestRecipients takes it). */
   role: string | null;
+  /** The ways in for the address, [] when none (#2590). */
+  ways: LoginWay[];
 }> {
   const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
   const role = row?.role ?? null;
   const r = await reachOf(env, email, row, async () => true);
-  if (r.methods.length > 0) return { methods: r.methods, role };
-  if (r.googleUncertain) return { methods: ["google"], role };
-  if (row && row.status !== "active") return { methods: [], role };
+  const ways = waysOf(r);
+  if (r.methods.length > 0) return { methods: r.methods, role, ways };
+  // Only Google as a Workspace account might admit them (#2590): the email
+  // names Google, and the sharer is warned it works only if the address is a
+  // Google Workspace account (a consumer account waits for the code step).
+  // Where codes are on, a consumer account is let in after a code, so the
+  // warning only applies where they are off.
+  if (r.googleUncertain)
+    return {
+      methods: ["google"],
+      ...(r.googleAfterCode
+        ? {}
+        : {
+            recipient: { canSignIn: false, reason: "workspace_only" } as const,
+          }),
+      role,
+      ways,
+    };
+  if (row && row.status !== "active") return { methods: [], role, ways };
   // In a verified domain: an invite as a member would let them in, unless
   // no offered method admits a member there either.
   // No domains at all: nothing is "outside" them, only an invite admits.
@@ -155,5 +218,10 @@ export async function shareReach(
           inv?.googleUncertain
         ? "needs_invite"
         : "no_sign_in_method";
-  return { methods: [], recipient: { canSignIn: false, reason }, role };
+  return {
+    methods: [],
+    recipient: { canSignIn: false, reason },
+    role,
+    ways,
+  };
 }

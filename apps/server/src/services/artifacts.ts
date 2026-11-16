@@ -8,6 +8,7 @@ import {
   artifactCan,
   commentsSettingOf,
   type DataWriters,
+  type DocSave,
   dataWritersWarning,
   type Format,
   isId,
@@ -74,6 +75,7 @@ import {
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { noteInstanceFirst } from "./analytics.js";
 import { audit, userActor } from "./audit.js";
+import { restoreDocVersion } from "./doc-edit.js";
 import {
   apiFormat,
   docPlanInput,
@@ -208,6 +210,8 @@ export async function publish(
   agent: AgentAttr | null,
   ctx?: Ctx,
   mode: PublishMode = "any",
+  /** `noCreator`: the page is not the person's own work (the seeded Welcome), so no creator row is written. */
+  opts: { noCreator?: boolean } = {},
 ): Promise<PublishResult> {
   // Under a suspension nothing becomes public: create and new version alike.
   refuseSuspendedPublic(user, input.visibility);
@@ -557,7 +561,7 @@ export async function publish(
   // Hosted billing: the publisher is this month's creator once the version
   // row exists (an agent's publish counts for its owner). restoreVersion
   // never writes one.
-  const creator = creatorStmt(env, user.id, id, now);
+  const creator = opts.noCreator ? null : creatorStmt(env, user.id, id, now);
   if (creator) stmts.push(creator);
   if (!create && (input.title !== undefined || input.description !== undefined))
     stmts.push(syncTitleStmt(env, id));
@@ -1017,14 +1021,14 @@ export async function getSummary(
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
   if (!decorates(env, caller))
-    return decorate(env, caller, out, r.level, null, null);
+    return decorate(env, caller, out, r.level, null, null, r.commenter);
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
     .select(spaceCols(caller, true, sql`${spaces.id}`))
     .from(spaces)
     .where(eq(spaces.id, r.artifact.spaceId ?? ""))
     .limit(1);
-  return withSpace(caller, out, r.level, r.artifact.spaceId, sp);
+  return withSpace(caller, out, r.level, r.artifact.spaceId, sp, r.commenter);
 }
 
 /** The artifact's space row as withSpace reads it (null: no row). */
@@ -1053,12 +1057,19 @@ export const spaceCols = (
     : sql<number>`0`,
 });
 
-/** Whether the caller may post: comments on, not capped, and signed in where only signed-in people may (#2080). */
+/**
+ * Whether the caller may post: comments on, not capped (a guest holding a
+ * commenter share is the exception, #2590), and signed in where only
+ * signed-in people may (#2080).
+ */
 function canComment(
   caller: Caller,
   out: Pick<ArtifactSummary, "comments" | "commenters">,
+  commenter = false,
 ): boolean {
-  if (capOfCaller(caller) || out.comments === false) return false;
+  const cap = capOfCaller(caller);
+  if ((cap && !(cap === "guest" && commenter)) || out.comments === false)
+    return false;
   return !(out.commenters === "signed-in" && caller.kind === "anonymous");
 }
 
@@ -1101,6 +1112,8 @@ export function withSpace<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
+  /** The caller's own share is a commenter one (#2590). */
+  commenter = false,
 ): T {
   const shared = sp?.kind === "shared";
   if (sp?.kind && (!shared || (sp.rank ?? 0) > 0))
@@ -1115,7 +1128,7 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = canComment(caller, out);
+  out.can.comment = canComment(caller, out, commenter);
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
@@ -1155,6 +1168,7 @@ export function withCan<T extends ArtifactSummary>(
   caller: Caller,
   out: T,
   level: AccessLevel,
+  commenter = false,
 ): T {
   out.can = {
     ...artifactCan(level, {
@@ -1164,7 +1178,7 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: canComment(caller, out),
+    comment: canComment(caller, out, commenter),
   };
   return commentsLast(sharingFree(caller, out, true));
 }
@@ -1180,6 +1194,7 @@ export function decorate<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
+  commenter = false,
 ): T {
   if (caller.kind !== "user") {
     // #2080: a signed-out viewer of a signed-in-only artifact learns it
@@ -1189,8 +1204,8 @@ export function decorate<T extends ArtifactSummary>(
     return out;
   }
   return decorates(env, caller)
-    ? withSpace(caller, out, level, spaceId, sp)
-    : withCan(caller, out, level);
+    ? withSpace(caller, out, level, spaceId, sp, commenter)
+    : withCan(caller, out, level, commenter);
 }
 
 // --------------------------------------------------------------------- list
@@ -1289,6 +1304,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
+      commenter: sql<number>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 1 else 0 end)`,
       lastPub: lastPublisherSql,
       asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
@@ -1350,7 +1366,17 @@ export async function list(
     );
     out.lastAgent = shownLastAgent(r.lastPub, caller);
     if (r.asksForYou > 0) out.asksForYou = r.asksForYou;
-    items.push(decorate(env, caller, out, level, r.a.spaceId, r.space));
+    items.push(
+      decorate(
+        env,
+        caller,
+        out,
+        level,
+        r.a.spaceId,
+        r.space,
+        r.commenter === 1,
+      ),
+    );
   }
   return {
     items,
@@ -1373,6 +1399,7 @@ type VersionRow = {
   agent_version: string | null;
   agent_via: string | null;
   agent_identity: string | null;
+  doc_save: string | null;
   created_by: string;
   created_at: number;
   text_indexed: number;
@@ -1406,6 +1433,90 @@ function versionFace(
   }
 }
 
+type DocSaveRaw = {
+  kind: "auto" | "named" | "before_agent" | "restore";
+  by?: {
+    kind: "agent" | "person";
+    name?: string;
+    version?: string | null;
+    via?: string | null;
+    userId?: string | null;
+  };
+};
+
+/** versions.doc_save, or undefined when absent or malformed. */
+function parseDocSave(raw: string | null): DocSaveRaw | undefined {
+  if (!raw) return undefined;
+  try {
+    const o = JSON.parse(raw) as DocSaveRaw;
+    return ["auto", "named", "before_agent", "restore"].includes(o?.kind)
+      ? o
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type PersonRow = NameCols & { id: string };
+
+/** The users a page's doc saves name, by id. */
+async function docSavePeople(
+  env: Env,
+  saves: DocSaveRaw[],
+): Promise<Map<string, PersonRow>> {
+  const ids = [
+    ...new Set(saves.flatMap((s) => (s.by?.userId ? [s.by.userId] : []))),
+  ];
+  const out = new Map<string, PersonRow>();
+  if (ids.length === 0) return out;
+  const { results } = await env.DB.prepare(
+    `select id, email, name, display_name as displayName from users
+     where id in (${ids.map(() => "?").join(",")})`,
+  )
+    .bind(...ids)
+    .all<PersonRow>();
+  for (const r of results) out.set(r.id, r);
+  return out;
+}
+
+function docSaveField(
+  d: DocSaveRaw | undefined,
+  people: Map<string, PersonRow>,
+  caller: Caller,
+  viewerId: string | null,
+): { docSave?: DocSave } {
+  if (!d) return {};
+  const by = d.by;
+  const u = by?.userId ? people.get(by.userId) : undefined;
+  if (!by || !u) return { docSave: { kind: d.kind } };
+  if (by.kind === "agent")
+    return {
+      docSave: {
+        kind: d.kind,
+        by: agentFor(
+          { name: by.name ?? "Agent", version: by.version ?? null },
+          by.via ?? null,
+          publisherOf(u.id, u),
+          viewerId,
+        ),
+      },
+    };
+  return {
+    docSave: {
+      kind: d.kind,
+      by: redact(
+        {
+          id: u.id,
+          email: u.email,
+          name: u.name ?? "",
+          displayName: u.displayName,
+        },
+        caller,
+      ),
+    },
+  };
+}
+
 /**
  * Viewer+; newest first, keyset `version < before`: at most VERSIONS_PAGE_SIZE,
  * and only while the cumulative manifest length stays within
@@ -1429,7 +1540,7 @@ export async function listVersions(
        from page window w as (order by version desc)
      )
      select v.version, v.entry, v.manifest, v.language, v.message, v.agent_name,
-       v.agent_version, v.agent_via, v.agent_identity, v.created_by,
+       v.agent_version, v.agent_via, v.agent_identity, v.doc_save, v.created_by,
        v.created_at, v.text_indexed,
        case when a.doc = 1 then 'doc' else coalesce(v.format, a.format) end as format,
        u.email, u.name, u.display_name as displayName
@@ -1453,9 +1564,16 @@ export async function listVersions(
     caller.kind !== "user" ||
     isGuestRole(caller.user.role) ||
     capsReads(capOfCaller(caller));
+  const saves = new Map<number, DocSaveRaw>();
+  for (const v of results) {
+    const d = parseDocSave(v.doc_save);
+    if (d) saves.set(v.version, d);
+  }
+  const people = await docSavePeople(env, [...saves.values()]);
   return results.map((v) => ({
     version: v.version,
     message: v.message,
+    ...docSaveField(saves.get(v.version), people, caller, viewerId),
     agent:
       v.agent_name == null
         ? null
@@ -1617,7 +1735,13 @@ export async function restoreVersion(
   agent: AgentAttr | null,
   ctx?: Ctx,
 ): Promise<PublishResult> {
-  await authorize(env, asUser(user), id, "restore");
+  const { artifact } = await authorize(env, asUser(user), id, "restore");
+  // #2140: a doc restores through its room (unsaved edits saved, one live
+  // edit, "Restored v{v}"), never as a whole-content rewrite.
+  if (artifact.doc === 1) {
+    const r = await restoreDocVersion(env, user, agent, id, v);
+    return { id, version: r.version, url: appOrigin(env) + viewerPath(id) };
+  }
   const src = await env.DB.prepare(
     `select v.entry, v.manifest, v.language, coalesce(v.format, a.format) as format
      from versions v join artifacts a on a.id = v.artifact_id
@@ -2205,6 +2329,29 @@ async function purgeOne(
     ),
   ]);
   return true;
+}
+
+/**
+ * Hard-deletes one artifact now, with its files and runtime (erasing a person
+ * takes their seeded Welcome with them). True when it is gone.
+ */
+export async function purgeNow(env: Env, id: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "select rowid as rid from artifacts where id = ?",
+  )
+    .bind(id)
+    .first<{ rid: number }>();
+  if (!row) return true;
+  const now = Date.now();
+  await env.DB.prepare(
+    "update artifacts set deleted_at = coalesce(deleted_at, ?1) where id = ?2",
+  )
+    .bind(now, id)
+    .run();
+  return purgeOne(env, id, row.rid, now + 1, {
+    deletes: PURGE_R2_DELETES,
+    listed: PURGE_KEYS_LISTED,
+  });
 }
 
 async function destroyRuntime(env: Env, id: string): Promise<void> {

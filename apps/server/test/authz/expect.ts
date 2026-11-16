@@ -353,6 +353,12 @@ export const CAPPED_WRITES: readonly string[] = [
   "DELETE /api/v1/bus/machines/:id",
   "DELETE /api/v1/bus/reach/:id",
   "POST /api/v1/notices/guest_shares/dismiss",
+  // #2590: the route's own policy decides (a guest holding a commenter share).
+  "PUT /api/v1/artifacts/:id/data/:col/:doc",
+  "PATCH /api/v1/artifacts/:id/data/:col/:doc",
+  "DELETE /api/v1/artifacts/:id/data/:col/:doc",
+  "POST /api/v1/artifacts/:id/comments",
+  "POST /api/v1/artifacts/:id/comments/:threadId/replies",
 ];
 
 /**
@@ -413,10 +419,13 @@ function guardExpected(
     case "broker.check":
     // Parity 2: the install-wide guest summary, the uncapped owner's only.
     case "notices.manage":
-    case "onboarding.manage":
+    // #2520: the login domains and joining rule, the uncapped owner.
+    case "login.manage":
       return yes(t.role === "owner" && !t.capped);
     // Parity 2: one's own guest-share notice, any non-guest (a cap too).
     case "notices.own":
+    // #2632: one's own first-run checklist, any non-guest (a cap too).
+    case "onboarding.own":
       return yes(t.team);
     case "tokens.create":
     // #1291: bus agents (GET R.busAgents), as canConnect.

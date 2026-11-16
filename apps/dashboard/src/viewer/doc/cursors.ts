@@ -1,6 +1,11 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PartyFace } from "../comments/AuthorFace";
+
 // Remote cursors (design rule 3): a 2px caret with a small name flag. People's
-// flags are pill-shaped; an agent's flag has a rounded-square mark in the
-// agent's own colour. Outsiders see a generic "Agent".
+// flags are pill-shaped; an agent's flag leads with its face, the same tile
+// as everywhere else (AuthorFace: a linked agent's animal, else the dashed
+// robot). Outsiders see a generic "Agent" with the dashed robot.
 //
 // The flag shows for FLAG_MS after that person's cursor moves, or while the
 // caret is hovered; otherwise only the coloured caret and a small dot (a
@@ -12,6 +17,22 @@ export interface CaretUser {
   kind?: "user" | "agent";
   /** The sender's client id, when it sends one: tells two tabs of one name apart. */
   cid?: number;
+  /**
+   * PROVISIONAL (#1100, until OA Backend's agent editing sets awareness): a
+   * linked agent's face, as versions and comments carry it (#2118).
+   */
+  linked?: boolean;
+  animal?: { id: string; color: number };
+}
+
+/** An agent's tile (AuthorFace's), as markup for the caret's flag. */
+function agentFace(u: CaretUser, outsider: boolean): string {
+  const linked = !outsider && u.linked === true && !!u.animal;
+  return renderToStaticMarkup(
+    createElement(PartyFace, {
+      p: { linked, animal: linked ? u.animal : undefined },
+    }),
+  );
 }
 
 /** How long a name flag stays open after its cursor moves. */
@@ -108,8 +129,9 @@ export function renderCaret(
   flag.style.setProperty("--oa-flag-fg", readable(color));
   if (agent) {
     const mark = document.createElement("span");
-    mark.className = "oa-doc-flag-mark";
+    mark.className = "oa-doc-flag-face";
     mark.setAttribute("aria-hidden", "true");
+    mark.innerHTML = agentFace(u, outsider);
     flag.append(mark);
   }
   flag.append(document.createTextNode(name));

@@ -20,10 +20,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@oa/ui/shadcn";
+import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
-import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
+import { hasFeature } from "../api/contract";
 import { billingContext, errorCopy } from "../api/errorCopy";
+import { useLoginSettings } from "../api/loginSettings";
+import { SETUP, shortDate } from "../api/memberSetup";
 import {
   useInviteMember,
   useMembers,
@@ -36,18 +39,11 @@ import {
 import { trialEndsOn, trialWouldStart } from "../api/trial";
 import { emailEnabled } from "../auth/emailEnabled";
 import { useFrozen } from "../auth/permissions";
-import {
-  inviteRefusedCopy,
-  inviteUncertainCopy,
-  signInWith,
-  useSignInDomains,
-} from "../auth/reach";
+import { signInWith, useSignInDomains } from "../auth/reach";
 import { useMe } from "../auth/useMe";
-import { CopyLink } from "../layout/CopyLink";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
-import { PLAN_PAGE } from "../layout/PlanBanner";
 import {
   isReleased,
   personFirst,
@@ -57,8 +53,8 @@ import {
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
+import { setupPrompt } from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
 import {
@@ -67,7 +63,15 @@ import {
   seesDeparted,
   useDeparted,
 } from "./departed";
+import { domainMarkWaiting } from "./domainJoin";
 import { EraseDialog } from "./EraseDialog";
+import {
+  InvitePeople,
+  inviteFailure,
+  inviteSent,
+  withPlanLink,
+} from "./InviteDialog";
+import { INVITE } from "./loginCopy";
 import { restrictionReason } from "./restriction";
 import { ThawBanner } from "./ThawBanner";
 import { TransferDialog } from "./Transfer";
@@ -146,26 +150,27 @@ function TrialNotice({ endsOn }: { endsOn: string }) {
   );
 }
 
-/**
- * "Choose a plan" in `text`, as a link to Plan and billing. Only the owner
- * wording of a plan refusal has those words (a member's says "choose a plan"
- * in lower case, as plain text).
- */
-function withPlanLink(text: string) {
-  const at = text.indexOf("Choose a plan");
-  if (at < 0) return text;
-  return (
-    <>
-      {text.slice(0, at)}
-      <AppLink href={PLAN_PAGE} className="underline">
-        Choose a plan
-      </AppLink>
-      {text.slice(at + "Choose a plan".length)}
-    </>
-  );
+function InviteDialog({ onClose }: { onClose: () => void }) {
+  const state = useMe();
+  const me = state.status === "authed" ? state.me : null;
+  // #2520: a server with login settings gets the list of addresses.
+  const login = useLoginSettings();
+  if (login.data)
+    return (
+      <InvitePeople
+        settings={login.data}
+        parse={parseInviteEmail}
+        restoreCopy={(e, email) => restoreRefusal(e, email, undefined, me)}
+        onClose={onClose}
+      />
+    );
+  // Until the server says whether it has them: never one dialog, then the other.
+  if (login.isPending) return null;
+  return <OneInviteDialog onClose={onClose} />;
 }
 
-function InviteDialog({ onClose }: { onClose: () => void }) {
+/** One address, on a server without #2520's login settings. */
+function OneInviteDialog({ onClose }: { onClose: () => void }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const sends = emailEnabled(me);
@@ -201,7 +206,10 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const submit = () => {
     if (sending.current || invite.isPending) return;
     const parsed = parseInviteEmail(email);
-    if (!parsed) return setError("Enter a valid email address (ASCII only).");
+    if (!parsed)
+      return setError(
+        "Enter a valid email address. Use plain letters and numbers, without accents.",
+      );
     setError(null);
     setRemoved(null);
     sending.current = true;
@@ -225,72 +233,12 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               ? MemberRemovedDetailsSchema.safeParse(e.details)
               : null;
           if (gone?.success) return setRemoved({ ...gone.data, email: parsed });
-          // Directory sync removed them: it revives them when Workspace restores the account (Manager's ruling).
-          if (e instanceof ApiClientError && e.code === "directory_managed")
-            return setError(
-              `Removed by your Google Workspace. They come back if their Workspace account is restored.`,
-            );
-          // A lapsed guest can't be restored: a new share brings them back.
-          if (e instanceof ApiClientError && e.code === "guest_lapsed")
-            return setError(
-              `${parsed} was a guest whose access lapsed. Share an artifact with them to bring them back.`,
-            );
-          // Nothing was created: Design's copy, not the server's message.
-          const refused =
-            e instanceof ApiClientError && e.code === "invite_unreachable"
-              ? InviteUnreachableDetailsSchema.safeParse(e.details)
-              : null;
-          setError(
-            refused?.success
-              ? inviteRefusedCopy(refused.data.reason, parsed, domains)
-              : e instanceof ApiClientError
-                ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
-                  ? errorCopy(e, e.message, {
-                      ...billingContext(me),
-                      refused: "invite",
-                    })
-                  : e.message
-                : "Couldn't add.",
-          );
+          setError(inviteFailure(e, parsed, domains, me));
         },
       },
     );
   };
-  if (added) {
-    // location.origin is the app host, where sign-in starts.
-    const url = location.origin;
-    return (
-      <Modal
-        onClose={onClose}
-        title={
-          // Design (#800): an uncertain invite is "Invite sent", emailed or not.
-          added.uncertain
-            ? `Invite sent to ${added.email}`
-            : added.emailed
-              ? `Invitation sent to ${added.email}`
-              : `${added.email} can now log in`
-        }
-        description={
-          added.emailed
-            ? `They can also log in at ${url} with ${added.with ?? "a one-time code"}.`
-            : `Send them this link. They'll log in at ${url} with ${added.with ?? "a one-time code sent to that address"}.`
-        }
-        footer={<Button onClick={onClose}>Done</Button>}
-      >
-        {added.uncertain && (
-          <Notice tone="warning" compact>
-            {inviteUncertainCopy(added.email, domains)}
-          </Notice>
-        )}
-        {sends && !added.emailed && (
-          <p role="status" className={errorText}>
-            The email didn't send. Copy the link and share it yourself.
-          </p>
-        )}
-        <CopyLink link={url} label="Login link" />
-      </Modal>
-    );
-  }
+  if (added) return inviteSent(added, sends, onClose);
   return (
     <Modal
       // Closing mid-request would drop a refusal nobody sees (the invite's,
@@ -395,6 +343,56 @@ const lastSeen = (iso: string | null) => {
 /** Who, role, last seen, action; at <= 600px, who and role, then the rest. */
 const ROW =
   "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px]";
+/** #2632: owners and admins see a Setup column after the role. */
+const ROW_SETUP =
+  "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_156px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px] max-[600px]:gap-y-[2px]";
+
+/**
+ * #2632: one person's setup (MemberSchema `setup`). Green "Set up"
+ * for five of five, else the count and the step holding it up, "Invited"
+ * before a first login, a dash for guests (no line on a phone).
+ */
+function SetupCell({ m }: { m: Member }) {
+  const label = <span className="sr-only">{SETUP.heading}: </span>;
+  if (m.role === "guest")
+    return (
+      <span
+        data-setup="guest"
+        className="text-[length:var(--oa-text-sm)] text-muted-foreground max-[600px]:hidden"
+      >
+        {label}
+        {SETUP.guest}
+      </span>
+    );
+  const s = m.setup;
+  if (!s) return <span className="max-[600px]:hidden" />;
+  const reminded = s.remindedAt ? shortDate(s.remindedAt) : null;
+  return (
+    <span
+      data-setup={s.state}
+      className="flex min-w-0 flex-col text-[length:var(--oa-text-sm)] max-[600px]:col-span-2 max-[600px]:mt-[6px]"
+    >
+      {label}
+      {s.state === "set" ? (
+        <span className="font-medium text-[var(--oa-success)]">
+          {SETUP.set}
+        </span>
+      ) : s.state === "invited" ? (
+        <span className="text-muted-foreground">{SETUP.invited}</span>
+      ) : (
+        <>
+          <span className="font-medium">{SETUP.of(s.done)}</span>
+          {s.stalled && (
+            <small className="text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]">
+              {SETUP.stalled[s.stalled]}
+            </small>
+          )}
+        </>
+      )}
+      {reminded && <small className={muted}>{SETUP.reminded(reminded)}</small>}
+    </span>
+  );
+}
 
 /** The Restricted badge: warning-soft, unlike the neutral role badges. */
 const RESTRICTED_BADGE =
@@ -432,7 +430,10 @@ function Row({
   spaces,
   owner,
   frozen,
+  staff = false,
 }: {
+  /** #2632: the viewer is an owner or admin: the Setup column shows. */
+  staff?: boolean;
   /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
   frozen: boolean;
   m: Member;
@@ -466,8 +467,23 @@ function Row({
     m.role === "member" && (m.status ?? "active") === "active";
   const address = secondLine(m);
   const first = personFirst(m);
+  // #2632: for someone not set up, the line to pass on yourself.
+  const copyLine =
+    staff && (m.setup?.state === "partial" || m.setup?.state === "invited");
+  const copySetup = () => {
+    const failed = () =>
+      toast({
+        title: "Couldn't copy",
+        description: "Select it and copy it yourself.",
+        tone: "danger",
+      });
+    if (!navigator.clipboard) return failed();
+    navigator.clipboard
+      .writeText(setupPrompt())
+      .then(() => toast({ title: SETUP.copied(first) }), failed);
+  };
   return (
-    <li className={ROW}>
+    <li className={staff ? ROW_SETUP : ROW}>
       <div className="flex min-w-0 items-center gap-[10px]">
         <UserAvatar name={m.name} email={m.email} />
         <div className="min-w-0">
@@ -512,6 +528,7 @@ function Row({
           }}
         />
       )}
+      {staff && <SetupCell m={m} />}
       {/* Labelled inline: there is no column header at any width. */}
       <span className={muted}>
         {why && (
@@ -536,7 +553,9 @@ function Row({
             <Button
               variant="ghost"
               size="sm"
-              className="justify-self-end"
+              className={
+                staff ? "justify-self-end max-[600px]:h-6" : "justify-self-end"
+              }
               disabled={frozen}
               aria-label={`More for ${label}`}
             >
@@ -557,6 +576,11 @@ function Row({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
+            {copyLine && (
+              <DropdownMenuItem onSelect={copySetup}>
+                {SETUP.copyLine}
+              </DropdownMenuItem>
+            )}
             {m.personalArtifacts && (
               <DropdownMenuItem onSelect={() => setMoving(true)}>
                 Transfer their artifacts
@@ -714,7 +738,14 @@ export function Members() {
   useDocumentTitle("Members");
   const state = useMe();
   const q = useMembers();
-  const [inviting, setInviting] = useState(false);
+  // #2520: Get started's "Invite people" (?invite=1), or back from the login
+  // the first-invite step asked for, opens the dialog.
+  const loginSettings = useLoginSettings();
+  const search = useRouterState({ select: (s) => s.location.searchStr });
+  const [inviting, setInviting] = useState(
+    () =>
+      new URLSearchParams(search).get("invite") === "1" || domainMarkWaiting(),
+  );
   const me = state.status === "authed" ? state.me.user : null;
   // A capped owner (restricted) acts like an admin here, as the server does.
   const owner =
@@ -781,14 +812,19 @@ export function Members() {
                 Removed ({removed.length})
               </Button>
             )}
-            <Button
-              size="sm"
-              className="text-[length:var(--oa-text-sm)]"
-              disabled={frozen}
-              onClick={() => setInviting(true)}
-            >
-              Add member
-            </Button>
+            {/* Only once the login settings have answered: the label (and the
+                dialog it opens) never changes under a reader or a click. */}
+            {!loginSettings.isPending && (
+              <Button
+                size="sm"
+                className="text-[length:var(--oa-text-sm)]"
+                disabled={frozen}
+                onClick={() => setInviting(true)}
+              >
+                {/* #2520: a server with login settings gets Product's name. */}
+                {loginSettings.data ? INVITE.button : "Add member"}
+              </Button>
+            )}
           </div>
         }
       >
@@ -828,13 +864,16 @@ export function Members() {
                     spaces={spaces}
                     owner={owner}
                     frozen={frozen}
+                    staff={admin}
                   />
                 ))}
               </ul>
             )}
           </>
         )}
-        {inviting && <InviteDialog onClose={() => setInviting(false)} />}
+        {inviting && !frozen && (
+          <InviteDialog onClose={() => setInviting(false)} />
+        )}
       </SettingsCard>
     </div>
   );

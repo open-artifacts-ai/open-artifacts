@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -1246,6 +1247,32 @@ describe("purge safety", () => {
     expect(existsSync(join(home, "config.json"))).toBe(true);
     expect(existsSync(join(home, "integrations/opencode"))).toBe(false);
     expect(existsSync(join(home, "integrations/other"))).toBe(true);
+  });
+
+  it("removes the version folders, the bin link and update.json (#2552)", () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-purge-"));
+    writeFileSync(join(home, "machine.json"), "{}");
+    mkdirSync(join(home, "versions/1.0.0/dist"), { recursive: true });
+    writeFileSync(join(home, "versions/1.0.0/dist/index.js"), "x");
+    mkdirSync(join(home, "versions/0.9.0"));
+    symlinkSync(join("versions", "1.0.0"), join(home, "bin"));
+    writeFileSync(join(home, "update.json"), "{}");
+    symlinkSync(
+      join("versions", "1.0.0"),
+      join(home, `bin.${process.pid}.new`),
+    );
+    expect(purge(home, own)).toMatchObject({ leftDir: false });
+    expect(existsSync(home)).toBe(false);
+  });
+
+  it("keeps a symlinked versions folder: it is someone's, never followed", () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-purge-"));
+    const other = mkdtempSync(join(tmpdir(), "ob-other-"));
+    writeFileSync(join(other, "mine"), "x");
+    writeFileSync(join(home, "machine.json"), "{}");
+    symlinkSync(other, join(home, "versions"));
+    purge(home, shared);
+    expect(readFileSync(join(other, "mine"), "utf8")).toBe("x");
   });
 
   it("removes the bus's folders once they are empty, then the home", () => {

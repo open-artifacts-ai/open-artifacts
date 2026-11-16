@@ -329,6 +329,11 @@ function expected(
 }
 
 beforeAll(async () => {
+  // This matrix is about payment plans, not the owner's outside-sharing
+  // switch (#2590, off by default on Business): the switch is on throughout.
+  await env.DB.prepare(
+    "insert into settings (key, value) values ('outside_sharing', 'true') on conflict (key) do update set value = 'true'",
+  ).run();
   pinMiddayUtc();
   await clearBilling();
   await cachePlan(ROWS.none);
@@ -388,6 +393,9 @@ beforeAll(async () => {
 afterAll(async () => {
   vi.useRealTimers();
   await clearBilling();
+  await env.DB.prepare(
+    "delete from settings where key = 'outside_sharing'",
+  ).run();
 });
 
 describe.each(["none", "solo", "readOnly"] as const)("plan %s", (state) => {
@@ -474,18 +482,6 @@ const EXEMPT: Exempt[] = [
     name: "list members",
     ok: ["owner", "admin"],
     run: (w) => send(props, R.members, cred(w)),
-  },
-  {
-    name: "read the audit log",
-    ok: ["owner", "admin"],
-    run: (w) => send(props, R.audit, cred(w)),
-  },
-  // A capped read (audit.read refuses any cap) that the plan cap exempts:
-  // settings.read ignores caps altogether, so it would prove nothing.
-  {
-    name: "export the audit log",
-    ok: ["owner", "admin"],
-    run: (w) => send(props, R.auditExport, cred(w)),
   },
   // The reads a locked admin still needs to see the team they would keep or drop.
   {
@@ -592,5 +588,37 @@ describe.each(["solo", "readOnly"] as const)(
         (await send(props, R.directoryGroups, cred("member"))).status,
       ).toBe(404);
     });
+  },
+);
+
+// #2458: the audit log on hosted: Business reads all, Team the last 30 days
+// (audit.plan.test.ts), Solo and free are refused 403 plan_required (a
+// member is still 404 first).
+describe.each(["none", "solo", "readOnly"] as const)(
+  "plan %s: the audit log",
+  (state) => {
+    beforeAll(async () => {
+      await clearBilling();
+      await cachePlan(ROWS[state]);
+    });
+    it.each([
+      ["read", R.audit],
+      ["export", R.auditExport],
+    ] as const)(
+      "%s: Solo refused, Team and Business read",
+      async (_n, route) => {
+        for (const w of ["owner", "admin"] as const) {
+          const r = await send(props, route, cred(w));
+          // Business and Team (here lapsed) read; only Solo is refused.
+          if (state !== "solo") expect(r.status).toBe(200);
+          else {
+            expect(r.status).toBe(403);
+            const e = ((await r.json()) as { error: { code: string } }).error;
+            expect(e.code).toBe("plan_required");
+          }
+        }
+        expect((await send(props, route, cred("member"))).status).toBe(404);
+      },
+    );
   },
 );

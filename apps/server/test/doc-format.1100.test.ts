@@ -67,7 +67,7 @@ describe("the gate: hosted, or a self-host on Workers Paid", () => {
       const e = await errOf(r);
       expect(e.code).toBe("docs_need_paid");
       expect(e.message).toBe(
-        "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.",
+        "Collaborative docs need Cloudflare's Workers Paid plan. The person who runs this instance turns on Workers Paid in their Cloudflare account, then runs setup again with --upgrade --plan paid.",
       );
     } finally {
       (env as { PLAN?: string }).PLAN = "paid";
