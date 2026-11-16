@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 
 from . import copy
@@ -21,6 +22,9 @@ from .wrap import wrap
 SHOWN_MAX = 1000
 # A delivery waits this long for the current bus name before using the welcome's.
 SELF_TIMEOUT_S = 2.0
+# A wake (a keyed inject_message that starts a turn) holds back further wakes for this root until
+# its turn starts, or this long: mail that arrives meanwhile rides in on that turn's context.
+WAKE_HOLD_S = 60.0
 
 
 def slug_of(text, kind="hermes"):
@@ -201,13 +205,19 @@ class _Root:
         self.retry = None
         self.stopped = False
         self.shown = {}
+        # The gateway's routing key for this root's session, learned in a turn hook; None until then.
+        self.session_key = None
+        # When a wake was last sent and its turn has not started yet.
+        self.woken_at = None
 
 
 class Bus:
     """`inject` is ctx.inject_message; `connect` makes a Link (replaced in tests)."""
 
     def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None,
-                 current_session=None, codex_runtime=None, habits_marker=None, title_of=None):
+                 current_session=None, codex_runtime=None, habits_marker=None, title_of=None,
+                 clock=None):
+        self._clock = clock or time.monotonic
         self.roots = roots
         # The user-set session title of a root, or None.
         self._title_of = title_of or hermes_session_title
@@ -443,17 +453,41 @@ class Bus:
 
     def _try_inject(self, root, text):
         """Injects into the interactive CLI when it is on this root's session and idle.
-        inject_message addresses the one CLI of the process, whatever session it is on now."""
+        inject_message addresses the one CLI of the process, whatever session it is on now.
+        Any other root is woken by its session key when Hermes gave us one (see _wake)."""
         if self._inject is None:
             return False
         with root.lock:
             idle = root.platform == "cli" and not root.busy
-        if not idle or not self._is_current_cli(root):
-            return False
+        if idle and self._is_current_cli(root):
+            try:
+                return bool(self._inject(text))
+            except Exception:
+                return False
+        return self._wake(root, text)
+
+    def _wake(self, root, text):
+        """Starts a turn for a root that is not an idle current CLI: inject_message(session_key=...)
+        queues the text on that session (starting a turn when it is idle) in a gateway or TUI host.
+        Never for a CLI root: Hermes's classic CLI ignores the key and takes the text for its current
+        session. One wake per root at a time: while one is pending, the text stays queued and the
+        woken turn's context carries it. False when it is not accepted (then it stays queued)."""
+        with root.lock:
+            key = root.session_key
+            if not key or root.platform in (None, "cli"):
+                return False
+            now = self._clock()
+            if root.woken_at is not None and now - root.woken_at < WAKE_HOLD_S:
+                return False
+            root.woken_at = now
         try:
-            return bool(self._inject(text))
+            ok = bool(self._inject(text, session_key=key))
         except Exception:
-            return False
+            ok = False
+        if not ok:
+            with root.lock:
+                root.woken_at = None
+        return ok
 
     def _hand_over(self, root, text):
         """A bus notice: injected when the CLI is idle on this root, else queued for the next turn."""
@@ -469,7 +503,8 @@ class Bus:
         p = self._habits_marker
         return os.path.isfile(p) and not os.path.islink(p)
 
-    def turn_start(self, session_id, platform, user_message=None, conversation_history=None):
+    def turn_start(self, session_id, platform, user_message=None, conversation_history=None,
+                   session_key=None):
         """pre_llm_call: the queued messages as this turn's context, or None.
 
         Hermes drops a hook's context when the turn's real content is not text, and never
@@ -483,6 +518,9 @@ class Bus:
         with root.lock:
             root.busy = True
             root.platform = platform or root.platform
+            root.woken_at = None  # the turn a wake asked for has started
+            if isinstance(session_key, str) and session_key:
+                root.session_key = session_key
             if platform == "cli":
                 self._cli_root = ref
             out = []
@@ -509,6 +547,16 @@ class Bus:
                 self._ack_root(root, msg_id)
         parts = [t for t, _ in out] + ([HABITS] if habits else [])
         return {"context": "\n\n".join(parts)}
+
+    def session_open(self, session_id):
+        """on_session_open / on_session_start: the link opens now, not at the session's first turn.
+        Nothing here waits on the daemon, and a session that cannot be placed (a subagent, an unknown
+        id) is left alone."""
+        try:
+            ref = self.roots.resolve(session_id)
+        except NotOnBus:
+            return
+        self.touch(ref)
 
     def turn_end(self, session_id):
         """on_session_end: the end of one run_conversation call."""

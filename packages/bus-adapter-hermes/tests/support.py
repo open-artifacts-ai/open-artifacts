@@ -24,6 +24,7 @@ class FakeCtx:
         self.hooks = {}
         self.middleware = {}
         self.injected = []
+        self.keys = []
         self.inject_result = inject_result
 
     def register_tool(self, name, toolset, schema, handler, **kw):
@@ -35,8 +36,9 @@ class FakeCtx:
     def register_middleware(self, kind, callback):
         self.middleware.setdefault(kind, []).append(callback)
 
-    def inject_message(self, content, role="user"):
+    def inject_message(self, content, role="user", *, session_key=None, origin=None):
         self.injected.append(content)
+        self.keys.append(session_key)
         return self.inject_result
 
 

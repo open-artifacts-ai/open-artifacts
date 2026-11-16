@@ -1,6 +1,7 @@
 """Registers the bus tools and hooks with Hermes (a plugin's `register(ctx)`)."""
 
 import atexit
+import os
 
 from . import proof as _proof
 
@@ -11,6 +12,17 @@ from .tools import TOOLS, Tools
 
 def _servers():
     return _proof.proof_servers()
+
+
+def _bound_session_key():
+    """The gateway's routing key for the session this hook runs for, or None (not a gateway process,
+    an older Hermes, or no session bound to this thread)."""
+    try:
+        from gateway.session_context import bound_session_key
+
+        return bound_session_key() or None
+    except Exception:
+        return None
 
 
 def register(ctx, roots=None, bus=None, proof_servers=None, install=None):
@@ -42,7 +54,14 @@ def register(ctx, roots=None, bus=None, proof_servers=None, install=None):
                 put_on_wire(bus, mine)
             except Exception:
                 pass
-        return bus.turn_start(session_id, platform, user_message, conversation_history)
+        return bus.turn_start(session_id, platform, user_message, conversation_history,
+                              session_key=_bound_session_key())
+
+    def on_session_open(session_id=None, **_kw):
+        bus.session_open(session_id)
+
+    def on_session_start(session_id=None, **_kw):
+        bus.session_open(session_id)
 
     def on_session_end(session_id=None, **_kw):
         bus.turn_end(session_id)
@@ -54,9 +73,21 @@ def register(ctx, roots=None, bus=None, proof_servers=None, install=None):
         roots.note_subagent(parent_session_id, child_session_id)
 
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    # Presence before the first turn: on_session_open (a local session created or resumed) and
+    # on_session_start (a messaging chat's first turn). An older Hermes without either keeps
+    # opening the link at the first pre_llm_call.
+    for name, cb in (("on_session_open", on_session_open), ("on_session_start", on_session_start)):
+        try:
+            ctx.register_hook(name, cb)
+        except Exception:
+            pass
     ctx.register_hook("on_session_end", on_session_end)
     ctx.register_hook("on_session_finalize", on_session_finalize)
     ctx.register_hook("subagent_start", subagent_start)
+    # The CLI's current session, when Hermes already knows it at load.
+    current = os.environ.get("HERMES_SESSION_ID")
+    if current:
+        bus._spawn(lambda: bus.session_open(current))
     atexit.register(bus.close_all)
     # A reload unloads the plugin without exiting: shut this Bus then, so the next one can take over
     # the proof wiring. An older Hermes has no on_unload.
