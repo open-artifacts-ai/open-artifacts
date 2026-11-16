@@ -147,7 +147,9 @@ const toOwnerAgent = (id: string) =>
   bus.sent.filter(
     (x) => x.userId === owner.userId && x.notice.artifactId === id,
   );
-const held = async (u: U = owner) => (await listHeld(E, u.userId)).requests;
+/** The owner's held requests on one page (the owner collects holds from every test). */
+const held = async (id: string, u: U = owner) =>
+  (await listHeld(E, u.userId)).requests.filter((r) => r.artifact.id === id);
 const listAs = async (id: string, v: CommentViewer) =>
   (await listComments(E, id, "all", v)).threads;
 
@@ -166,7 +168,7 @@ describe("holding", () => {
     const seen = (await listAs(s.id, view(editor)))[0]?.comments[0];
     expect(seen?.body).toBe("where does the 42% come from?");
     expect(seen?.mentions?.[0]?.delivery).toBe("queued");
-    const [r] = await held();
+    const [r] = await held(s.id);
     expect(r?.sender.id).toBe(editor.userId);
     expect(r?.items).toHaveLength(1);
     expect(r?.items[0]?.body).toBe("where does the 42% come from?");
@@ -193,7 +195,7 @@ describe("holding", () => {
     expect(toOwnerAgent(s.id).map((x) => x.notice.text.slice(0, 90))).toEqual(
       [],
     );
-    expect(await held()).toHaveLength(0);
+    expect(await held(s.id)).toHaveLength(0);
   });
 
   it("a note on the page where the page agent is someone else's is held too, and a follower notice from a non-listed member goes nowhere", async () => {
@@ -207,7 +209,7 @@ describe("allow", () => {
   it("once passes exactly the shown words, marks them as a teammate's, and unmasks", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "one", mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     const out = await allow(E, owner.userId, r?.id as string, {
       level: "once",
       items: (r?.items ?? []).map((i) => ({
@@ -225,10 +227,10 @@ describe("allow", () => {
     expect((await listAs(s.id, asAgent(owner)))[0]?.comments[0]?.body).toBe(
       "one",
     );
-    expect(await held()).toHaveLength(0);
+    expect(await held(s.id)).toHaveLength(0);
     // Once is once: the next request asks again.
     await post(s.id, typed(editor), editor, "two", mention(s.claude));
-    expect(await held()).toHaveLength(1);
+    expect(await held(s.id)).toHaveLength(1);
   });
 
   it("an edit after the notice is never delivered", async () => {
@@ -240,7 +242,7 @@ describe("allow", () => {
       "before",
       mention(s.claude),
     );
-    const [r] = await held();
+    const [r] = await held(s.id);
     const shown = (r?.items ?? []).map((i) => ({
       commentId: i.commentId,
       wordsHash: i.wordsHash,
@@ -264,7 +266,7 @@ describe("allow", () => {
     expect(
       JSON.stringify((await listAs(s.id, asAgent(owner)))[0]?.comments[0]),
     ).not.toContain("new words");
-    const again = (await held())[0]?.items[0];
+    const again = (await held(s.id))[0]?.items[0];
     expect(again?.body).toBe("after, with new words");
     expect(again?.wordsHash).not.toBe(shown[0]?.wordsHash);
   });
@@ -272,7 +274,7 @@ describe("allow", () => {
   it("a hash that is not the one shown, or someone else's request, passes nothing", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     const out = await allow(E, owner.userId, r?.id as string, {
       level: "once",
       items: [
@@ -294,7 +296,7 @@ describe("allow", () => {
   it("for this page lists the sender: later requests go straight to the agent", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "first", mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     // No passkey on this member: no assertion needed.
     await allow(E, owner.userId, r?.id as string, {
       level: "page",
@@ -306,7 +308,7 @@ describe("allow", () => {
     bus.sent = [];
     await post(s.id, typed(editor), editor, "second", mention(s.claude));
     expect(toOwnerAgent(s.id).map((x) => x.notice.to.name)).toEqual(["Claude"]);
-    expect(await held()).toHaveLength(0);
+    expect(await held(s.id)).toHaveLength(0);
     // The entry is live: it ends when the member loses edit rights on the page.
     await putShare(E, owner.member, s.id, {
       email: editor.email,
@@ -318,7 +320,7 @@ describe("allow", () => {
   it("the list never applies on a page open to anyone with the link", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     await allow(E, owner.userId, r?.id as string, {
       level: "page",
       items: (r?.items ?? []).map((i) => ({
@@ -338,7 +340,7 @@ describe("allow", () => {
   it("all pages needs a passkey, an end date within a year, and a page not open", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     const items = (r?.items ?? []).map((i) => ({
       commentId: i.commentId,
       wordsHash: i.wordsHash,
@@ -363,7 +365,7 @@ describe("allow", () => {
   it("not now quiets the sender for a day and changes nothing the asker sees", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     await notNow(E, owner.userId, r?.id as string);
     const row = await E.DB.prepare(
       "select quiet_until as q from held_requests where id = ?",
@@ -381,7 +383,7 @@ describe("allow", () => {
     const s = await setup();
     for (let n = 0; n < 3; n++)
       await post(s.id, typed(editor), editor, `m${n}`, mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     const items = (r?.items ?? []).map((i) => ({
       commentId: i.commentId,
       wordsHash: i.wordsHash,
@@ -398,7 +400,7 @@ describe("allow", () => {
     });
     expect(out.sent).toBe(1);
     expect(out.waiting).toBe(2);
-    expect((await held())[0]?.items).toHaveLength(2);
+    expect((await held(s.id))[0]?.items).toHaveLength(2);
   });
 });
 
@@ -475,7 +477,7 @@ describe("all pages in a space", () => {
   it("the allow needs a page in a shared space, an end date and a passkey", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
-    const [r] = await held();
+    const [r] = await held(s.id);
     const items = (r?.items ?? []).map((i) => ({
       commentId: i.commentId,
       wordsHash: i.wordsHash,
@@ -488,7 +490,10 @@ describe("all pages in a space", () => {
     ).rejects.toMatchObject({ code: "bad_request" });
     const launch = await space("Launch");
     await move(s.id, launch);
-    expect((await held())[0]?.space).toEqual({ id: launch, name: "Launch" });
+    expect((await held(s.id))[0]?.space).toEqual({
+      id: launch,
+      name: "Launch",
+    });
     await expect(
       allow(E, owner.userId, r?.id as string, { level: "space", items, until }),
     ).rejects.toMatchObject({ code: "passkey_required" });
@@ -509,7 +514,9 @@ describe("the inbox", () => {
     await post(s.id, typed(editor), editor, "two", mention(s.claude));
     const me = callerOf(owner.member) as Parameters<typeof inboxOf>[1];
     const mine = async () =>
-      (await inboxOf(E, me)).needsYou.filter((i) => i.kind === "request");
+      (await inboxOf(E, me)).needsYou.filter(
+        (i) => i.kind === "request" && i.artifact?.id === s.id,
+      );
     const [item] = await mine();
     expect(await mine()).toHaveLength(1);
     expect(item).toMatchObject({
@@ -521,7 +528,7 @@ describe("the inbox", () => {
     // The words are never in the item.
     expect(JSON.stringify(item)).not.toContain("one");
     expect((await needsYouCount(E, me)) >= 1).toBe(true);
-    const [r] = await held();
+    const [r] = await held(s.id);
     await notNow(E, owner.userId, r?.id as string);
     expect(await mine()).toHaveLength(0);
   });
@@ -556,7 +563,7 @@ describe("an ask addressed to someone else's agent", () => {
       .first<{ open: number; held: number; question: string | null }>();
     expect(row).toMatchObject({ open: 0, held: 1, question: null });
     expect(toOwnerAgent(s.id)).toHaveLength(0);
-    const [r] = await held();
+    const [r] = await held(s.id);
     await allow(E, owner.userId, r?.id as string, {
       level: "once",
       items: (r?.items ?? []).map((i) => ({
