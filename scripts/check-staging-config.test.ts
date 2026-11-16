@@ -322,10 +322,9 @@ describe("DocRoom (#1100 tag v5, ships unbound; the doc route binds DOC_ROOM lat
 });
 
 describe("DOCS_PREVIEW is an unsupported preview", () => {
-  // The var opens doc creation (docCreationOpen) only in a build that defines
-  // __OA_DOCS_PREVIEW_ALLOWED__ true: the staging config. No other config sets
-  // the var, and the release template defines the flag false, so a release
-  // bundle ignores the var whatever a config says.
+  // A plain runtime var that opens doc creation (docCreationOpen), also in a
+  // release bundle. This repo's public configs and setup steps must not set it
+  // (the cloud deploy and provisioner refuse it on prod installs).
   const VAR = /(?<![A-Z_])DOCS_PREVIEW(?![A-Z_])/;
   const files = [
     "apps/server/wrangler.template.jsonc",
@@ -339,19 +338,6 @@ describe("DOCS_PREVIEW is an unsupported preview", () => {
     it(`${f} does not set the DOCS_PREVIEW var`, () => {
       expect(readFileSync(join(root, f), "utf8")).not.toMatch(VAR);
     });
-  it("the release template defines the build flag false", () => {
-    const t = JSON.parse(
-      strip(
-        readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
-      ),
-    );
-    expect(t.define?.__OA_DOCS_PREVIEW_ALLOWED__).toBe("false");
-  });
-  it("the staging config is the one build that allows it", () => {
-    expect(env.define?.__OA_DOCS_PREVIEW_ALLOWED__).toBe("true");
-    const v = env.vars?.DOCS_PREVIEW;
-    expect(v === undefined || v === "1").toBe(true);
-  });
   it("the self-host setup writes no DOCS_PREVIEW", () => {
     const dir = join(root, "scripts/setup/src");
     const walk = (d: string): string[] =>
@@ -364,5 +350,9 @@ describe("DOCS_PREVIEW is an unsupported preview", () => {
       );
     for (const f of walk(dir))
       expect(readFileSync(f, "utf8"), f).not.toMatch(VAR);
+  });
+  it("the staging config sets it only to 1, if at all", () => {
+    const v = env.vars?.DOCS_PREVIEW;
+    expect(v === undefined || v === "1").toBe(true);
   });
 });

@@ -117,10 +117,9 @@ export interface Env {
   /**
    * An unsupported preview: "1" opens doc creation as if DOC_SWITCH.creation
    * were true (docCreationOpen), so docs can be tried before the switch ships.
-   * Honoured only in a build that defines __OA_DOCS_PREVIEW_ALLOWED__ as true
-   * (wrangler.staging.jsonc, tests); the release template defines it false, so
-   * a release bundle ignores it whatever a config sets, and a test fails if
-   * the template or any public config mentions it. docsAvailable's paid-plan
+   * A plain runtime var: the release bundle honours it, so a prod install must
+   * never carry it (this repo's public configs and the setup steps do not;
+   * the cloud deploy and provisioner refuse it). docsAvailable's paid-plan
    * rule still applies.
    */
   DOCS_PREVIEW?: string;

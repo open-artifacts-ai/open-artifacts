@@ -85,10 +85,7 @@
     "WORKER_NAME": "{{WORKER_NAME}}",
     "OAUTH_KV_ID": "{{KV_ID}}"
   },
-  "define": {
-    "__OA_TEST_HOOKS_ALLOWED__": "false",
-    "__OA_DOCS_PREVIEW_ALLOWED__": "false"
-  },
+  "define": { "__OA_TEST_HOOKS_ALLOWED__": "false" },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "invocation_logs": false }

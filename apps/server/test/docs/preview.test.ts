@@ -4,11 +4,7 @@ import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
-import {
-  DOC_SWITCH,
-  DOCS_PREVIEW_ALLOWED,
-  docCreationOpen,
-} from "../../src/services/doc-switch.js";
+import { DOC_SWITCH, docCreationOpen } from "../../src/services/doc-switch.js";
 import { docsAvailable } from "../../src/services/docs-available.js";
 import { api, errOf, login } from "../helpers.js";
 
@@ -53,18 +49,6 @@ const me = async () =>
   ).instance;
 
 describe("docCreationOpen", () => {
-  it("a build that does not allow the preview ignores the var", () => {
-    // The release bundle: __OA_DOCS_PREVIEW_ALLOWED__ is false.
-    expect(DOCS_PREVIEW_ALLOWED).toBe(true); // the test build allows it
-    expect(docCreationOpen({ DOCS_PREVIEW: "1" }, false)).toBe(false);
-    DOC_SWITCH.creation = true;
-    try {
-      expect(docCreationOpen({}, false)).toBe(true);
-    } finally {
-      DOC_SWITCH.creation = false;
-    }
-  });
-
   it("is off without the switch or the var, on with either", () => {
     expect(docCreationOpen({})).toBe(false);
     expect(docCreationOpen({ DOCS_PREVIEW: "0" })).toBe(false);

@@ -100,9 +100,6 @@
       // Secrets are NOT configured here. Deploys overwrite vars, so
       // ACCESS_CLIENT_ID lives here. It is a public OIDC client id (not a
       // secret), set by the ops-staging-access workflow on 2026-10-18.
-      // Honours DOCS_PREVIEW (an unsupported preview); the release template
-      // defines this false (doc-switch.ts).
-      "define": { "__OA_DOCS_PREVIEW_ALLOWED__": "true" },
       "vars": {
         "ENVIRONMENT": "production",
         "APP_HOST": "staging.open-artifacts.com",
