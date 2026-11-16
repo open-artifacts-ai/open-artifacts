@@ -202,6 +202,65 @@ export async function turnOff(): Promise<boolean> {
   return left.items.length === 0;
 }
 
+/** Each sign-out step waits at most this long, then sign-out goes on (Axe M1). */
+export const SIGN_OUT_STEP_MS = 1500;
+
+/** `p`, or undefined after `ms`; never rejects. */
+const bounded = <T>(p: Promise<T>, ms: number) =>
+  new Promise<T | undefined>((done) => {
+    const t = setTimeout(() => done(undefined), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        done(v);
+      },
+      () => {
+        clearTimeout(t);
+        done(undefined);
+      },
+    );
+  });
+
+/**
+ * Axe M1: signing out turns browser notifications off for this browser.
+ * Call before the logout request ends the session: first remove this
+ * browser's subscription on the server (PROVISIONAL: R.mePushSubscription
+ * DELETE), then the browser's own. Best effort: each step waits at most
+ * `stepMs`, and this never throws, so sign-out never fails or hangs on it.
+ */
+export async function forgetThisBrowser(
+  stepMs = SIGN_OUT_STEP_MS,
+): Promise<void> {
+  let id: string | null = null;
+  try {
+    id = localStorage.getItem(SUB_KEY);
+    localStorage.removeItem(SUB_KEY);
+  } catch {
+    id = null;
+  }
+  if (id) {
+    const stop = new AbortController();
+    await bounded(
+      api.send(
+        "DELETE",
+        R.mePushSubscription(id),
+        undefined,
+        undefined,
+        stop.signal,
+      ),
+      stepMs,
+    );
+    stop.abort();
+  }
+  await bounded(
+    (async () => {
+      const sub = await currentSubscription();
+      await sub?.unsubscribe();
+    })(),
+    stepMs,
+  );
+}
+
 /** Whether this browser has notifications on (its own subscription), read once. */
 export function useThisBrowserOn() {
   const [on, setOn] = useState<boolean | undefined>(undefined);

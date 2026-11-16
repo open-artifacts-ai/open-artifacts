@@ -119,6 +119,56 @@ describe("layout behaviour", () => {
     await waitFor(() => expect(redirect).toHaveBeenCalledWith("/sign-in"));
   });
 
+  // Axe M1: signing out turns this browser's notifications off first.
+  const pushThenLogout = (path: string) => {
+    localStorage.setItem("oa.push.subscription", "sub_1");
+    const order: string[] = [];
+    const m = mount(async (u, i) => {
+      const url = String(u);
+      if (url.includes("/api/v1/me/push/subscriptions/sub_1")) {
+        order.push(`${i?.method} push`);
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes(AUTH.logout)) {
+        order.push(`${i?.method} logout`);
+        return new Response(null, { status: 204 });
+      }
+      return meAs("member");
+    }, path);
+    return { ...m, order };
+  };
+  afterEach(() => localStorage.clear());
+
+  it("Log out (account menu) deletes this browser's push subscription before the session ends", async () => {
+    const { redirect, order } = pushThenLogout("/");
+    await signOut();
+    await waitFor(() => expect(redirect).toHaveBeenCalledWith("/sign-in"));
+    expect(order).toEqual(["DELETE push", "POST logout"]);
+    expect(localStorage.getItem("oa.push.subscription")).toBeNull();
+  });
+
+  it("Log out (No access page) deletes this browser's push subscription before the session ends", async () => {
+    const { redirect, order } = pushThenLogout("/no-access");
+    fireEvent.click(await screen.findByRole("button", { name: "Log out" }));
+    await waitFor(() => expect(redirect).toHaveBeenCalledWith("/sign-in"));
+    expect(order).toEqual(["DELETE push", "POST logout"]);
+  });
+
+  it("a failing push delete never stops the sign-out", async () => {
+    localStorage.setItem("oa.push.subscription", "sub_1");
+    const { redirect } = mount(
+      async (u) =>
+        String(u).includes("/api/v1/me/push/subscriptions/")
+          ? json({ error: { code: "internal", message: "x" } }, 500)
+          : String(u).includes(AUTH.logout)
+            ? new Response(null, { status: 204 })
+            : meAs("member"),
+      "/",
+    );
+    await signOut();
+    await waitFor(() => expect(redirect).toHaveBeenCalledWith("/sign-in"));
+  });
+
   it("failed logout (500) does not pretend the user is logged out", async () => {
     const { redirect } = mount(
       async (u) =>
