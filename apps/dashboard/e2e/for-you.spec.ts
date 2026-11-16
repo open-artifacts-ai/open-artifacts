@@ -1,6 +1,6 @@
 // #2512 slice 1: the bell and "For you" on mocks (?mock=foryou, PROVISIONAL contract),
-// at 1280 and 390, light and dark: axe, no sideways scroll, Later once, an ask answered
-// in the panel. FOR_YOU_SHOTS_DIR picks where the PNGs go (none when unset).
+// at 1280 and 390, light and dark: axe, no sideways scroll, an ask answered in the
+// panel, and (#2575) a mention of your agent as an Update. FOR_YOU_SHOTS_DIR picks where the PNGs go (none when unset).
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { expect, type Page, test } from "@playwright/test";
@@ -78,23 +78,21 @@ async function start(
 
 for (const width of [1280, 390])
   for (const theme of ["light", "dark"] as const) {
-    test(`mixed, Later and an answered ask at ${width} ${theme}`, async ({
-      page,
-    }) => {
+    test(`mixed and an answered ask at ${width} ${theme}`, async ({ page }) => {
       const shot = await start(page, width, theme);
-      await expect(bell(page)).toHaveAccessibleName("For you, 2 need you");
-      await expect(page.locator("[data-bell-count]")).toHaveText("2");
+      await expect(bell(page)).toHaveAccessibleName("For you, 1 needs you");
+      await expect(page.locator("[data-bell-count]")).toHaveText("1");
       await expect(page.locator("[data-bell-dot]")).toHaveCount(0);
-      await shot("1-bell-2");
+      await shot("1-bell-1");
       await bell(page).click();
       const p = panel(page).first();
       await expect(
         p.getByText("Ship the landing with the waitlist?"),
       ).toBeVisible();
-      // The server's order: the waiting ask, then the mention.
+      // #2575: only the waiting ask needs you; the mention is an Update.
       const rows = p.locator("[data-for-you-item][data-level=needs_you]");
+      await expect(rows).toHaveCount(1);
       await expect(rows.first()).toContainText("waiting 4 min");
-      await expect(rows.nth(1)).toContainText("Sam Rivera mentioned you");
       if (width === 390) {
         // A full screen, rows at least 56px tall.
         const box = await p.boundingBox();
@@ -112,22 +110,6 @@ for (const width of [1280, 390])
       await axe(page);
       await noSidewaysScroll(page);
       await shot("2-open-mixed");
-
-      // Later, once: the mention folds into "Later (1)" and the bell drops to 1.
-      await rows.nth(1).getByRole("button", { name: "Later" }).click();
-      const menu = page.getByRole("menu");
-      await expect(
-        menu.getByRole("menuitem", { name: "In an hour" }),
-      ).toBeVisible();
-      await shot("3-later-menu");
-      await menu.getByRole("menuitem", { name: "Tomorrow morning" }).click();
-      await expect(p.getByText("Later (1)")).toBeVisible();
-      await expect(p.getByText("Back tomorrow at 8:00")).toBeVisible();
-      await expect(bell(page)).toHaveAttribute(
-        "aria-label",
-        "For you, 1 needs you",
-      );
-      await shot("4-after-later");
 
       // The ask opens as its full card; answering removes the row.
       await p
@@ -153,7 +135,7 @@ for (const width of [1280, 390])
       ).toHaveCount(0);
       // Focus moves to the next row, never <body>.
       await expect(page.locator(":focus")).toHaveAccessibleName(
-        /^OA Design replied\s*, unread$/,
+        /^Sam mentioned OA Design on Launch post\s*, unread$/,
       );
       // Nothing needs you now: the unread update lights the dot instead.
       await expect(bell(page)).toHaveAttribute(
@@ -197,20 +179,27 @@ for (const width of [1280, 390])
       await shot("9-open-first-time");
     });
 
-    test(`back from later at ${width} ${theme}`, async ({ page }) => {
-      const shot = await start(page, width, theme, "back");
-      await expect(bell(page)).toHaveAccessibleName("For you, 1 needs you");
+    test(`a mention of your agent is an Update at ${width} ${theme}`, async ({
+      page,
+    }) => {
+      const shot = await start(page, width, theme);
       await bell(page).click();
-      const row = panel(page)
-        .first()
-        .locator('[data-for-you-item="itm:mention1"]');
-      await expect(row.getByText("Back from later")).toBeVisible();
-      await expect(row.getByRole("link", { name: "Open" })).toBeVisible();
-      // Put off once: no Later this time.
-      await expect(row.getByRole("button", { name: "Later" })).toHaveCount(0);
+      const p = panel(page).first();
+      const row = p.locator('[data-for-you-item="itm:mention1"]');
+      await expect(row).toHaveAttribute("data-level", "update");
+      await expect(
+        row.getByRole("link", {
+          name: /^Sam mentioned OA Design on Launch post\s*, unread$/,
+        }),
+      ).toBeVisible();
+      await expect(row.locator("[data-unread-dot]")).toBeVisible();
+      await expect(row.getByRole("button", { name: /Later/ })).toHaveCount(0);
       await axe(page);
       await noSidewaysScroll(page);
-      await shot("10-back-from-later");
+      await shot("10-mention-update");
+      await row.getByRole("button", { name: "More actions" }).click();
+      await page.getByRole("menuitem", { name: "Mark as read" }).click();
+      await expect(row.locator("[data-unread-dot]")).toHaveCount(0);
     });
   }
 
@@ -271,7 +260,7 @@ for (const width of [1280, 760, 390])
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width, height: 900 });
       await page.goto("/a/De6gHjKmNp7qRsTu?mock=foryou");
-      await expect(bell(page)).toHaveAccessibleName("For you, 2 need you");
+      await expect(bell(page)).toHaveAccessibleName("For you, 1 needs you");
       const bar = page.locator(".oa-vt");
       // The bell sits in the bar's last row, inside it.
       const [b, r] = await Promise.all([

@@ -26,13 +26,6 @@ export const countsOf = (i: Pick<Inbox, "needsYou" | "updates">) => ({
   unreadUpdates: i.updates.filter((x) => x.readAt === null).length,
 });
 
-/** Only an item with one obvious action (a button on its row) may be put off, and only once. */
-export const canLater = (x: InboxItem) =>
-  x.level === "needs_you" &&
-  x.kind === "mention" &&
-  !x.later &&
-  !x.backFromLater;
-
 export const unread = (x: InboxItem) =>
   x.level === "update" && x.readAt === null;
 
@@ -139,6 +132,9 @@ export function contextLine(x: InboxItem, now = Date.now()): string {
     }
     case "share":
       return `"${title}" · ${when}`;
+    // #2575: the server's line already names the page.
+    case "mention":
+      return when;
     case "away":
       return x.away ? awayText(x.away) : when;
     default:

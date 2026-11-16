@@ -38,7 +38,6 @@ import {
   useDropItem,
   useInbox,
   useInboxCounts,
-  useLater,
   useMarkRead,
   useMute,
   useReadAll,
@@ -50,7 +49,6 @@ import {
   backText,
   bellName,
   bellState,
-  canLater,
   contextLine,
   safePath,
   unread,
@@ -604,7 +602,6 @@ function Row({
   close: () => void;
 }) {
   const go = useGo(close);
-  const later = useLater();
   const markRead = useMarkRead();
   const mute = useMute();
   const unmute = useUnmute();
@@ -657,8 +654,7 @@ function Row({
     go(e, x.href);
   };
   const urgency = needs && waitMs(x) !== undefined;
-  const acts =
-    !put && needs && (urgency || x.backFromLater || x.kind === "mention");
+  const acts = !put && needs && (urgency || x.backFromLater);
   return (
     <li
       data-for-you-item={x.id}
@@ -720,42 +716,6 @@ function Row({
               >
                 Back from later
               </span>
-            )}
-            {/* A mention's one action: open it where it was said. */}
-            {x.kind === "mention" && href && (
-              <a
-                href={href}
-                onClick={follow}
-                className={`${BTN} border-[var(--oa-accent)] bg-[var(--oa-accent)] text-[var(--oa-accent-text)] no-underline`}
-              >
-                Open
-              </a>
-            )}
-            {canLater(x) && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
-                  >
-                    Later <span aria-hidden="true">▾</span>
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="min-w-[180px]">
-                  <DropdownMenuItem
-                    onSelect={() => later.mutate({ id: x.id, until: "hour" })}
-                  >
-                    In an hour
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() =>
-                      later.mutate({ id: x.id, until: "morning" })
-                    }
-                  >
-                    Tomorrow morning
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
             )}
           </div>
         )}

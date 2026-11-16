@@ -17,13 +17,13 @@ import { R } from "../routes.js";
 import { FOR_YOU_ASK } from "./comments.js";
 
 /**
- * mixed: two need you (a waiting ask, a mention) and two updates.
+ * mixed: one needs you (a waiting ask) and three updates, one a mention of
+ * your agent (#2575).
  * calm: nothing needs you; "While you were away" and two updates.
  * empty: nothing at all (first time).
- * back: the mention is back from Later.
  * error: as mixed, but the list itself fails to load (the bell still counts).
  */
-export type ForYouVariant = "mixed" | "calm" | "empty" | "back" | "error";
+export type ForYouVariant = "mixed" | "calm" | "empty" | "error";
 
 type Deps = {
   variant?: ForYouVariant;
@@ -79,24 +79,6 @@ export function createForYouMock(d: Deps): {
     createdAt: ago(4 * MIN),
     readAt: null,
   };
-  /** Design v10: a mention that needs you, with Open and Later. */
-  const mention = (back: boolean): InboxItem => ({
-    id: "itm:mention1",
-    level: "needs_you",
-    kind: "mention",
-    artifact: page(d.otherId, "Pricing table"),
-    actor: person("Sam Rivera"),
-    text: "Sam Rivera mentioned you",
-    href: `/a/${d.otherId}`,
-    createdAt: ago(back ? 26 * 60 * MIN : 20 * MIN),
-    readAt: null,
-    ...(back
-      ? {
-          backFromLater: true as const,
-          later: { until: ago(MIN), used: true as const },
-        }
-      : {}),
-  });
   const update = (
     id: string,
     kind: InboxItem["kind"],
@@ -123,8 +105,18 @@ export function createForYouMock(d: Deps): {
   let later: InboxItem[] = [];
   let updates: InboxItem[] = [];
   if (d.variant === "mixed" || d.variant === "error") {
-    needsYou = [ask, mention(false)];
+    needsYou = [ask];
     updates = [
+      // #2575: a mention of your agent is an Update; `text` is the server's line.
+      update(
+        "itm:mention1",
+        "mention",
+        "Sam mentioned OA Design on Launch post",
+        "Launch post",
+        20 * MIN,
+        false,
+        person("Sam Rivera"),
+      ),
       update(
         "itm:reply1",
         "reply",
@@ -185,7 +177,6 @@ export function createForYouMock(d: Deps): {
       ),
     ];
   }
-  if (d.variant === "back") needsYou = [mention(true)];
 
   const open = () =>
     needsYou.filter((x) => {

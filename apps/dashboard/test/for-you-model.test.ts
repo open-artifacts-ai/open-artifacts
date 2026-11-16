@@ -9,7 +9,6 @@ import {
   backText,
   bellName,
   bellState,
-  canLater,
   contextLine,
   countsOf,
   safePath,
@@ -73,23 +72,6 @@ describe("the bell", () => {
   });
 });
 
-describe("Later", () => {
-  const mention = item({
-    id: "itm:m",
-    kind: "mention",
-    actor: { kind: "user", name: "Sam Rivera", me: false },
-  });
-  it("is offered once, and only on a single-action item", () => {
-    expect(canLater(mention)).toBe(true);
-    expect(canLater({ ...mention, backFromLater: true })).toBe(false);
-    expect(
-      canLater({ ...mention, later: { until: at(-60), used: true } }),
-    ).toBe(false);
-    expect(canLater(item({ id: "ask:c1" }))).toBe(false);
-    expect(canLater(upd("u", false))).toBe(false);
-  });
-});
-
 describe("asks", () => {
   it("finds the comment from the item id", () => {
     expect(askComment(item({ id: "ask:c1" }))).toBe("c1");
@@ -139,8 +121,14 @@ describe("words", () => {
   });
 
   it("writes each kind's line", () => {
-    const m = item({ id: "itm:m", kind: "mention", createdAt: at(20) });
-    expect(contextLine(m, NOW)).toBe('on "Open Artifacts Asks" · 20 min ago');
+    const m = item({
+      id: "itm:m",
+      level: "update",
+      kind: "mention",
+      createdAt: at(20),
+    });
+    // #2575: a mention's line names the page; its context is the time.
+    expect(contextLine(m, NOW)).toBe("20 min ago");
     const r = item({
       id: "itm:r",
       level: "update",

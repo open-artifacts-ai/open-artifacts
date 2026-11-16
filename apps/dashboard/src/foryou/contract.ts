@@ -23,7 +23,10 @@ type ShownKind = (typeof SHOWN_KINDS)[number];
 export type Item = InboxItem & { kind: ShownKind };
 
 const shown = (x: InboxItem): x is Item =>
-  (SHOWN_KINDS as readonly string[]).includes(x.kind);
+  (SHOWN_KINDS as readonly string[]).includes(x.kind) &&
+  // #2575: a mention of your agent is an Update; a Needs-you mention (an
+  // older server's) is skipped.
+  !(x.kind === "mention" && x.level !== "update");
 
 /** One item, or null when it isn't one this client shows. */
 export function readItem(raw: unknown): Item | null {

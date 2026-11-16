@@ -20,7 +20,6 @@ import {
   type List as Inbox,
   type Item as InboxItem,
   ListSchema as InboxSchema,
-  LaterItemSchema,
 } from "./contract";
 import { countsOf } from "./model";
 
@@ -174,29 +173,6 @@ export const useReadAll = () =>
 /** A write here that failed: the app's error copy, never silence. */
 export const failedToast = (e: unknown) =>
   toast({ title: errorCopy(e, "Couldn't save that."), tone: "danger" });
-
-/** Put off once: the server answers the deferred item, which joins Later. A failure puts the row back and says so. */
-export const useLater = () => {
-  const qc = useQueryClient();
-  return useEdit(
-    async (v: { id: string; until: "hour" | "morning" }) => {
-      const moved = await api.send(
-        "POST",
-        R.meInboxLater(v.id),
-        { until: v.until },
-        LaterItemSchema,
-      );
-      editPages(qc, (p, i) =>
-        i === 0 && moved
-          ? { ...p, later: [...p.later.filter((x) => x.id !== v.id), moved] }
-          : p,
-      );
-      return moved;
-    },
-    (p, v) => ({ ...p, needsYou: p.needsYou.filter((x) => x.id !== v.id) }),
-    failedToast,
-  );
-};
 
 /** A mute stops push only: the row stays. */
 export const useMute = () =>

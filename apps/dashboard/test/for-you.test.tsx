@@ -9,7 +9,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { getResponse, HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import type { List as Inbox, Item as InboxItem } from "../src/foryou/contract";
 import {
@@ -29,7 +29,7 @@ const LANDING_ID = "Cd5fGhJkLm6nPqRs";
 const bell = () =>
   screen.findByRole("button", { name: /^For you/ }, { timeout: FIRST_LOAD_MS });
 
-const forYou = (variant: "mixed" | "calm" | "empty" | "back") =>
+const forYou = (variant: "mixed" | "calm" | "empty") =>
   server.use(...createHandlers({ events, forYou: variant }));
 
 const openPanel = async () => {
@@ -57,8 +57,8 @@ describe("the bell", () => {
     forYou("mixed");
     mount("/");
     const b = await bell();
-    expect(b).toHaveAccessibleName("For you, 2 need you");
-    expect(b.querySelector("[data-bell-count]")).toHaveTextContent("2");
+    expect(b).toHaveAccessibleName("For you, 1 needs you");
+    expect(b.querySelector("[data-bell-count]")).toHaveTextContent("1");
     expect(b.querySelector("[data-bell-dot]")).toBeNull();
     expect(gets.some((c) => c.path === R.meInbox)).toBe(false);
   });
@@ -83,7 +83,7 @@ describe("the bell", () => {
   it("is in the viewer's title bar too", async () => {
     forYou("mixed");
     mount("/a/Cd5fGhJkLm6nPqRs");
-    expect(await bell()).toHaveAccessibleName("For you, 2 need you");
+    expect(await bell()).toHaveAccessibleName("For you, 1 needs you");
   });
 });
 
@@ -96,12 +96,8 @@ describe("For you", () => {
     const rows = within(needs).getAllByRole("listitem");
     expect(rows.map((r) => r.getAttribute("data-for-you-item"))).toEqual([
       "ask:fyAskComment1",
-      "itm:mention1",
     ]);
     expect(rows[0]).toHaveTextContent("waiting 4 min");
-    expect(
-      within(rows[1] as HTMLElement).getByRole("link", { name: "Open" }),
-    ).toHaveAttribute("href", "/a/De6gHjKmNp7qRsTu");
     const ups = within(panel).getByRole("region", { name: "Updates" });
     expect(
       within(ups).getByRole("button", { name: "Mark all read" }),
@@ -276,15 +272,88 @@ describe("For you", () => {
     );
   });
 
-  it("a returned item is marked, with no Later", async () => {
-    forYou("back");
+  it("#2575: a mention of your agent is an Update: the server's line as plain text, the unread dot and Mark as read, no Later", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    const needs = within(panel).getByRole("region", { name: "Needs you" });
+    expect(
+      needs.querySelector('[data-for-you-item="itm:mention1"]'),
+    ).toBeNull();
+    const ups = within(panel).getByRole("region", { name: "Updates" });
+    const row = ups.querySelector(
+      '[data-for-you-item="itm:mention1"]',
+    ) as HTMLElement;
+    expect(row).toHaveAttribute("data-level", "update");
+    const link = within(row).getByRole("link", {
+      name: "Sam mentioned OA Design on Launch post, unread",
+    });
+    expect(link).toHaveAttribute("href", "/a/De6gHjKmNp7qRsTu");
+    expect(row.querySelector("[data-unread-dot]")).not.toBeNull();
+    // The line names the page already: the context is the time only.
+    expect(row.querySelector("small")?.textContent).not.toContain(
+      "Launch post",
+    );
+    expect(within(row).queryByRole("button", { name: /Later/ })).toBeNull();
+    expect(within(row).queryByRole("link", { name: "Open" })).toBeNull();
+    fireEvent.pointerDown(
+      within(row).getByRole("button", { name: "More actions" }),
+      { button: 0, pointerType: "mouse" },
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Mark as read" }),
+    ).toBeInTheDocument();
+  });
+
+  it("#2575: the server's line is shown as text, never as markup", async () => {
+    const base = createHandlers({ events, forYou: "mixed" });
+    server.use(
+      http.get(`*${R.meInbox}`, async ({ request }) => {
+        const res = await getResponse(base, request);
+        const body = (await res?.json()) as { updates: InboxItem[] };
+        return HttpResponse.json({
+          ...body,
+          updates: body.updates.map((x) =>
+            x.id === "itm:mention1"
+              ? { ...x, text: "Sam mentioned <b>OA</b> **Design**" }
+              : x,
+          ),
+        });
+      }),
+      ...base,
+    );
     mount("/");
     const panel = await openPanel();
     const row = panel.querySelector(
       '[data-for-you-item="itm:mention1"]',
     ) as HTMLElement;
-    expect(row).toHaveTextContent("Back from later");
-    expect(within(row).queryByRole("button", { name: "Later" })).toBeNull();
+    expect(row.querySelector("b b, strong")).toBeNull();
+    expect(row).toHaveTextContent("Sam mentioned <b>OA</b> **Design**");
+  });
+
+  it("#2575: a Needs-you mention (an older server's) is skipped", async () => {
+    const base = createHandlers({ events, forYou: "mixed" });
+    server.use(
+      http.get(`*${R.meInbox}`, async ({ request }) => {
+        const res = await getResponse(base, request);
+        const body = (await res?.json()) as {
+          needsYou: InboxItem[];
+          updates: InboxItem[];
+        };
+        const m = body.updates.find((x) => x.id === "itm:mention1");
+        return HttpResponse.json({
+          ...body,
+          needsYou: [
+            ...body.needsYou,
+            { ...m, id: "itm:old", level: "needs_you" },
+          ],
+        });
+      }),
+      ...base,
+    );
+    mount("/");
+    const panel = await openPanel();
+    expect(panel.querySelector('[data-for-you-item="itm:old"]')).toBeNull();
   });
 });
 
@@ -296,7 +365,7 @@ describe("staying fresh", () => {
       forYou("mixed");
       mount("/");
       const b = await bell();
-      expect(b).toHaveAccessibleName("For you, 2 need you");
+      expect(b).toHaveAccessibleName("For you, 1 needs you");
       const meGets = () => gets.filter((c) => c.path === R.me).length;
       // The server's counts change: the next refresh shows them.
       let needsYou = 5;
@@ -702,52 +771,33 @@ describe("failures and announcements", () => {
     await findVisibleToast("Something went wrong");
   });
 
-  it("a Later that fails puts the row back and says so", async () => {
-    forYou("mixed");
-    server.use(
-      http.post("*/api/v1/me/inbox/:id/later", () =>
-        HttpResponse.json(
-          { error: { code: "not_found", message: "Not found" } },
-          { status: 404 },
-        ),
-      ),
-    );
-    mount("/");
-    const panel = await openPanel();
-    const row = () =>
-      panel.querySelector('[data-for-you-item="itm:mention1"]') as HTMLElement;
-    fireEvent.pointerDown(
-      within(row()).getByRole("button", { name: /Later/ }),
-      {
-        button: 0,
-        pointerType: "mouse",
-      },
-    );
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Tomorrow morning" }),
-    );
-    await findVisibleToast("Not found");
-    await waitFor(() => expect(row()).not.toBeNull());
-    expect(await bell()).toHaveAccessibleName("For you, 2 need you");
-  });
-
   it("announces a change in the count, politely", async () => {
     forYou("mixed");
     mount("/");
-    const panel = await openPanel();
+    // The panel stays shut: an open list's counts would answer for Me.inbox.
+    await bell();
     const live = document.querySelector("[data-for-you-live]");
     expect(live).toHaveAttribute("aria-live", "polite");
     expect(live).toHaveTextContent("");
-    const row = panel.querySelector(
-      '[data-for-you-item="itm:mention1"]',
-    ) as HTMLElement;
-    fireEvent.pointerDown(within(row).getByRole("button", { name: /Later/ }), {
-      button: 0,
-      pointerType: "mouse",
-    });
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Tomorrow morning" }),
+    // The server's count changes; the next refresh (on focus) brings it.
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json({
+          ...fixtures.me,
+          inbox: { needsYou: 3, unreadUpdates: 0 },
+        }),
+      ),
     );
-    await waitFor(() => expect(live).toHaveTextContent("For you, 1 needs you"));
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    try {
+      await waitFor(() =>
+        expect(live).toHaveTextContent("For you, 3 need you"),
+      );
+    } finally {
+      focusManager.setFocused(undefined);
+    }
   });
 });
