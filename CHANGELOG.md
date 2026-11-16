@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.1...v0.199.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **onboarding:** seed the Welcome after sign-in, not during it ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632)) ([#2667](https://github.com/open-artifacts-ai/open-artifacts/issues/2667)) ([adf3628](https://github.com/open-artifacts-ai/open-artifacts/commit/adf362852cb03079a68661849f3487ce705912d4))
+
 ## [0.199.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.0...v0.199.1) (2026-11-16)
 
 
