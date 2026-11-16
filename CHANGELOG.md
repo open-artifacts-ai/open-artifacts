@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.198.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.197.0...v0.198.0) (2026-11-16)
+
+
+### Features
+
+* **onboarding:** every member gets their own Welcome and Library card ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) slice 1) ([#2634](https://github.com/open-artifacts-ai/open-artifacts/issues/2634)) ([d0340d0](https://github.com/open-artifacts-ai/open-artifacts/commit/d0340d087cd9fad762414274e5cf7f8d83b6bbf7))
+
 ## [0.197.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.196.0...v0.197.0) (2026-11-16)
 
 
