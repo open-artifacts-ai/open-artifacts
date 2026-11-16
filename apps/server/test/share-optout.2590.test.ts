@@ -177,6 +177,48 @@ describe("the opt-out page", () => {
   });
 });
 
+describe("the instance name in the opt-out words", () => {
+  const setName = (name: string) =>
+    env.DB.prepare(
+      "insert into settings (key, value) values ('name', ?) on conflict (key) do update set value = excluded.value",
+    )
+      .bind(name)
+      .run();
+
+  it("a name that looks like a URL is replaced by the host, in the email and on the page", async () => {
+    const t = await signOptoutToken(env, uniq("nm", "gmail.com"));
+    const path = `${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(t)}`;
+    try {
+      for (const name of [
+        "https://evil.example/x",
+        "www.evil.example",
+        "Acme evil.example Co",
+      ]) {
+        await setName(name);
+        const page = await (await hit("GET", path)).text();
+        expect(page, name).not.toContain("evil.example");
+        expect(page, name).toContain(`Stop emails from ${env.APP_HOST}?`);
+        const { m, share } = await world();
+        const to = uniq("nm", "gmail.com");
+        await share(to);
+        const mail = m.sent.find((x) => x.to === to);
+        expect(mail?.html, name).not.toContain("evil.example");
+        expect(mail?.text, name).not.toContain("evil.example");
+        expect(mail?.text, name).toContain(
+          `Don't email me from ${env.APP_HOST} again:`,
+        );
+      }
+      // A plain name stays.
+      await setName("Acme Co");
+      expect(await (await hit("GET", path)).text()).toContain(
+        "Stop emails from Acme Co?",
+      );
+    } finally {
+      await env.DB.prepare("delete from settings where key = 'name'").run();
+    }
+  });
+});
+
 describe("the email and the opt-out", () => {
   it("carries the link and the RFC 8058 headers; a POST on the link stops later shares", async () => {
     const { m, share } = await world();

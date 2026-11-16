@@ -73,7 +73,3 @@ export const OPTOUT_COPY = {
   badBody:
     "This link doesn't work. Open the most recent email from us and use the link there.",
 } as const;
-
-/** The name shown for the install: its display name, else its host. */
-export const orgName = (name: string | null | undefined, host: string) =>
-  name?.trim() || host;

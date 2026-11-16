@@ -2,11 +2,10 @@ import type { Context } from "hono";
 import { stmt } from "../db/stmt.js";
 import {
   OPTOUT_COPY,
-  orgName,
   SHARE_OPTOUT_PATH,
   verifyOptoutToken,
 } from "../email/share-optout.js";
-import { fill, oneLine } from "../email/templates.js";
+import { fill, oneLine, orgName } from "../email/templates.js";
 import type { AppEnv } from "../http/middleware.js";
 import { escapeHtml } from "../mcp/template.js";
 import { getSettings } from "../services/members.js";

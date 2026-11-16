@@ -17,7 +17,7 @@ import {
   SHARE_HTML,
   SHARE_TXT,
 } from "./email-templates.js";
-import { OPTOUT_COPY, orgName } from "./share-optout.js";
+import { OPTOUT_COPY } from "./share-optout.js";
 
 export type EmailContent = {
   subject: string;
@@ -238,10 +238,20 @@ export function shareEmail(
 const OUTSIDE_TITLE_MAX = 80;
 
 /** Looks like a URL or holds one: "://", "www.", or a domain-like token. */
-const urlish = (s: string): boolean =>
+export const urlish = (s: string): boolean =>
   /:\/\/|www\.|(?:^|[^\p{L}\p{N}-])[\p{L}\p{N}-]+\.[\p{L}]{2,}(?![\p{L}\p{N}])/iu.test(
     s,
   );
+
+/**
+ * The install's name for text a stranger reads (the opt-out link and page): its
+ * display name, else its host. A name that looks like a URL or holds one is
+ * not shown (a mail client would link it): the host stands in.
+ */
+export const orgName = (name: string | null | undefined, host: string) => {
+  const n = name?.trim();
+  return n && !urlish(n) ? n : host;
+};
 
 const OUTSIDE_TXT = `{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
 
