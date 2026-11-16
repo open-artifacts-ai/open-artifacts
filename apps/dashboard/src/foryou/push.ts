@@ -25,8 +25,14 @@ const NUDGE_KEY = "oa.push.nudge.dismissed";
 /** OA Product's words (#2512, slice 3) and Design's (screens, tab 3), word for word. */
 export const PUSH_WORDS = {
   cant: "This browser can't show notifications.",
+  /** OA Product: the full line under the Needs you row when blocked. */
   blocked:
-    "Notifications are blocked for this site in your browser. To turn them on, click the lock icon in the address bar and allow notifications.",
+    "Your browser is blocking notifications from this site. Allow them in your browser's site settings.",
+  /** The "This browser" cell, short (Design and OA Product). */
+  blockedHere: "Blocked in this browser",
+  notAvailable: "Not available",
+  /** Design: over the interrupt settings when this browser can't notify at all. */
+  unavailableHere: "Browser notifications aren't available here.",
   failed: "Couldn't turn on notifications. Try again.",
   turnOn: "Turn on",
   notNow: "Not now",
@@ -212,16 +218,23 @@ export function useThisBrowserOn() {
   return [on, setOn] as const;
 }
 
-export const nudgeDismissed = () => {
+/** "Not now" keeps the nudge away on this browser for this long, at least (Design). */
+export const NUDGE_QUIET_MS = 30 * 24 * 3600_000;
+/** "Not now" was said on this browser, less than 30 days ago (or as "1", by an older build, for good). */
+export const nudgeDismissed = (now = Date.now()) => {
   try {
-    return localStorage.getItem(NUDGE_KEY) === "1";
+    const v = localStorage.getItem(NUDGE_KEY);
+    if (v === null) return false;
+    if (v === "1") return true;
+    const at = Number(v);
+    return Number.isFinite(at) && now - at < NUDGE_QUIET_MS;
   } catch {
     return false;
   }
 };
-export const dismissNudge = () => {
+export const dismissNudge = (now = Date.now()) => {
   try {
-    localStorage.setItem(NUDGE_KEY, "1");
+    localStorage.setItem(NUDGE_KEY, String(now));
   } catch {
     // Session only.
   }

@@ -6,7 +6,12 @@ import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SW_SCOPE, SW_URL } from "../src/foryou/push";
+import {
+  dismissNudge,
+  nudgeDismissed,
+  SW_SCOPE,
+  SW_URL,
+} from "../src/foryou/push";
 import { prefsToSave, thisBrowser } from "../src/settings/ForYouPrefs";
 import { calls, events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
@@ -209,30 +214,48 @@ describe("this browser's notifications (slice 3)", () => {
     expect(dels.map((c) => c.path)).toContain(R.mePushSubscription("sub_1"));
   });
 
-  it("a refusal shows how to unblock, and nothing is subscribed", async () => {
+  it("a refusal: Blocked in the cell, how to unblock under the row; interrupts stay live", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     const f = fakePush("default", "denied");
     mount("/settings/notifications");
-    const sw = await needs();
-    fireEvent.click(sw);
-    await waitFor(() =>
-      expect(sw).toHaveAccessibleDescription(
-        "Notifications are blocked for this site in your browser. To turn them on, click the lock icon in the address bar and allow notifications.",
-      ),
-    );
-    expect(sw).toBeDisabled();
-    expect(f.register).not.toHaveBeenCalled();
-  });
-
-  it("a browser that can't says so, in place of the switch", async () => {
-    server.use(...createHandlers({ events, forYou: "mixed" }));
-    await levels();
+    fireEvent.click(await needs());
     expect(
-      await screen.findByText("This browser can't show notifications."),
+      await screen.findByText("Blocked in this browser"),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("switch", { name: "Needs you in this browser" }),
     ).toBeNull();
+    const note = document.querySelector("[data-push-note]") as HTMLElement;
+    expect(note.textContent).toBe(
+      "Your browser is blocking notifications from this site. Allow them in your browser's site settings.",
+    );
+    expect(note).toHaveAttribute("colspan", "3");
+    expect(f.register).not.toHaveBeenCalled();
+    // Blocked here isn't "can't": the interrupt settings stay live.
+    expect(
+      screen.getByRole("combobox", { name: "Interrupt me for" }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByText("Browser notifications aren't available here."),
+    ).toBeNull();
+  });
+
+  it("a browser that can't: Not available, the line under the row, interrupts off", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    await levels();
+    expect(await screen.findByText("Not available")).toBeInTheDocument();
+    expect(document.querySelector("[data-push-note]")?.textContent).toBe(
+      "This browser can't show notifications.",
+    );
+    expect(
+      screen.queryByRole("switch", { name: "Needs you in this browser" }),
+    ).toBeNull();
+    expect(
+      screen.getByText("Browser notifications aren't available here."),
+    ).toBeInTheDocument();
+    for (const name of ["Interrupt me for", "On lock screens"])
+      expect(screen.getByRole("combobox", { name })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeDisabled();
   });
 
   it("no push key on the server: no browser column at all", async () => {
@@ -252,6 +275,25 @@ describe("this browser's notifications (slice 3)", () => {
     expect(
       screen.queryByRole("switch", { name: "Needs you in this browser" }),
     ).toBeNull();
+    expect(
+      screen.getByText("Browser notifications aren't available here."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "On lock screens" }),
+    ).toBeDisabled();
+  });
+});
+
+describe("the nudge's Not now (Design)", () => {
+  it("keeps it away on this browser for at least 30 days", () => {
+    const t0 = Date.UTC(2026, 10, 16);
+    expect(nudgeDismissed(t0)).toBe(false);
+    dismissNudge(t0);
+    expect(nudgeDismissed(t0 + 29 * 24 * 3600_000)).toBe(true);
+    expect(nudgeDismissed(t0 + 30 * 24 * 3600_000 - 1)).toBe(true);
+    // An older build's "for good" still counts.
+    localStorage.setItem("oa.push.nudge.dismissed", "1");
+    expect(nudgeDismissed(t0 + 400 * 24 * 3600_000)).toBe(true);
   });
 });
 

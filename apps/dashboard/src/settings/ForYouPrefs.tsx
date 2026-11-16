@@ -18,6 +18,7 @@ import {
   PermissionRefused,
   PUSH_WORDS,
   permission,
+  pushSupported,
   thisBrowser,
   turnOff,
   turnOn,
@@ -40,6 +41,7 @@ export const HALF_HOURS = Array.from({ length: 48 }, (_, i) => {
 
 export { thisBrowser } from "../foryou/push";
 
+const MUTED_SM = "text-[12.5px] text-[var(--oa-text-muted)]";
 const BOX =
   "rounded-[12px] border border-[var(--oa-divider)] bg-[var(--oa-surface)] px-3.5 py-3 text-[length:var(--oa-text-sm)]";
 const ROW =
@@ -52,10 +54,13 @@ export function ForYouPrefs() {
   // #2512 slice 3: no push key on the server: the browser column isn't shown.
   const key = usePushKey(true);
   if (!prefs.data || key.isPending) return null;
+  // Design: no key on the server, or a browser that can't: the interrupt
+  // settings have nothing to act on here.
+  const available = !!key.data && pushSupported();
   return (
     <>
       <Levels prefs={prefs.data} pushKey={key.data ?? null} />
-      <Interrupts prefs={prefs.data} />
+      <Interrupts prefs={prefs.data} unavailable={!available} />
       {mutes.data && mutes.data.items.length > 0 && (
         <Muted items={mutes.data.items} />
       )}
@@ -77,10 +82,10 @@ export const prefsToSave = (
   timeZone: browserTimeZone(),
 });
 
-function useSave() {
+function useSave(live: boolean) {
   const save = useSavePrefs();
   return (next: NotificationPrefs) =>
-    save.mutate(prefsToSave(next), {
+    save.mutate(prefsToSave(next, live), {
       onError: () =>
         toast({ title: "Couldn't save. Try again.", tone: "danger" }),
     });
@@ -94,6 +99,17 @@ function Levels({
   pushKey: string | null;
 }) {
   const browser = pushKey !== null;
+  const supported = pushSupported();
+  // Lifted here: the cell says it short, the row under it says it in full.
+  const [perm, setPerm] = useState(permission);
+  const blocked = supported && perm === "denied";
+  const note = !browser
+    ? null
+    : !supported
+      ? PUSH_WORDS.cant
+      : blocked
+        ? PUSH_WORDS.blocked
+        : null;
   const th =
     "px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-[var(--oa-text-muted)] max-[600px]:px-2.5";
   const td =
@@ -129,10 +145,37 @@ function Levels({
             <td className={td}>Always</td>
             {browser && pushKey && (
               <td className={td}>
-                <NeedsYouBrowser prefs={prefs} pushKey={pushKey} sub={sub} />
+                {!supported ? (
+                  <span data-push="unsupported" className={MUTED_SM}>
+                    {PUSH_WORDS.notAvailable}
+                  </span>
+                ) : blocked ? (
+                  <span data-push="blocked" className={MUTED_SM}>
+                    {PUSH_WORDS.blockedHere}
+                  </span>
+                ) : (
+                  <NeedsYouBrowser
+                    prefs={prefs}
+                    pushKey={pushKey}
+                    sub={sub}
+                    onRefused={setPerm}
+                  />
+                )}
               </td>
             )}
           </tr>
+          {note && (
+            // Design: the full line goes under the row, across the table.
+            <tr>
+              <td
+                colSpan={3}
+                data-push-note=""
+                className="border-t border-[var(--oa-divider)] bg-[var(--oa-surface-2,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--oa-text-2)] max-[600px]:px-2.5"
+              >
+                {note}
+              </td>
+            </tr>
+          )}
           <tr>
             <th scope="row" className={`${td} text-left font-normal`}>
               <b className="font-semibold">Updates</b>
@@ -173,22 +216,17 @@ function NeedsYouBrowser({
   prefs,
   pushKey,
   sub,
+  onRefused,
 }: {
   prefs: NotificationPrefs;
   pushKey: string;
   sub: string;
+  /** The browser's prompt answered: the row shows the blocked state. */
+  onRefused: (p: NotificationPermission) => void;
 }) {
   const save = useSavePrefs();
   const [on, setOn] = useThisBrowserOn();
   const [busy, setBusy] = useState(false);
-  const [perm, setPerm] = useState(permission);
-  if (perm === "unsupported")
-    return (
-      <small data-push="unsupported" className={sub.replace("mt-0.5 ", "")}>
-        {PUSH_WORDS.cant}
-      </small>
-    );
-  const blocked = perm === "denied";
   const change = async (next: boolean) => {
     setBusy(true);
     try {
@@ -212,10 +250,9 @@ function NeedsYouBrowser({
           });
       }
     } catch (e) {
-      if (e instanceof PermissionRefused) setPerm(e.state);
+      if (e instanceof PermissionRefused) onRefused(e.state);
       else toast({ title: PUSH_WORDS.failed, tone: "danger" });
     } finally {
-      setPerm(permission());
       setBusy(false);
     }
   };
@@ -224,20 +261,16 @@ function NeedsYouBrowser({
       <Switch
         label="Needs you in this browser"
         describedBy="oa-needs-browser"
-        checked={on === true && !blocked}
-        disabled={busy || on === undefined || blocked}
+        checked={on === true}
+        disabled={busy || on === undefined}
         onChange={(next) => void change(next)}
       />
       <small
         id="oa-needs-browser"
         className={sub}
-        data-push={blocked ? "blocked" : on ? "on" : "off"}
+        data-push={on ? "on" : "off"}
       >
-        {blocked
-          ? PUSH_WORDS.blocked
-          : on
-            ? PUSH_WORDS.onFor(thisBrowser())
-            : ""}
+        {on ? PUSH_WORDS.onFor(thisBrowser()) : ""}
       </small>
     </>
   );
@@ -251,9 +284,16 @@ function NeedsYouBrowser({
  */
 export const INTERRUPTS_LIVE = true;
 
-function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
-  const save = useSave();
-  const live = INTERRUPTS_LIVE;
+function Interrupts({
+  prefs,
+  unavailable,
+}: {
+  prefs: NotificationPrefs;
+  /** No push key on the server, or a browser that can't notify (Design). */
+  unavailable: boolean;
+}) {
+  const live = INTERRUPTS_LIVE && !unavailable;
+  const save = useSave(live);
   // Design (#2674): while "Coming later" is on, quiet hours are drawn off,
   // whatever the server stored.
   const quiet = live ? prefs.quietHours : null;
@@ -267,7 +307,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
     >
       {!live && (
         <p id="oa-interrupts-later" className={`m-0 pb-2 ${muted}`}>
-          Coming later
+          {unavailable ? PUSH_WORDS.unavailableHere : "Coming later"}
         </p>
       )}
       <div className={ROW}>

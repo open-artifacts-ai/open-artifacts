@@ -12,7 +12,8 @@ const AXE = createRequire(import.meta.url).resolve("axe-core/axe.min.js", {
 });
 const OUT = process.env.FOR_YOU_SHOTS_DIR;
 const BLOCKED =
-  "Notifications are blocked for this site in your browser. To turn them on, click the lock icon in the address bar and allow notifications.";
+  "Your browser is blocking notifications from this site. Allow them in your browser's site settings.";
+const UNAVAILABLE = "Browser notifications aren't available here.";
 
 type Stub = {
   /** The permission at load, and what the browser's prompt answers. */
@@ -187,8 +188,14 @@ for (const width of [1280, 390])
         await stub(page, { answer: "denied" });
         await page.goto("/settings/notifications?mock=foryou");
         await needs(page).click();
-        await expect(page.getByText(BLOCKED)).toBeVisible();
-        await expect(needs(page)).toBeDisabled();
+        await expect(page.locator("[data-push-note]")).toHaveText(BLOCKED);
+        await expect(page.getByText("Blocked in this browser")).toBeVisible();
+        await expect(needs(page)).toHaveCount(0);
+        // Blocked isn't "can't": the interrupt settings stay live.
+        await expect(
+          page.getByRole("combobox", { name: "Interrupt me for" }),
+        ).toBeEnabled();
+        await expect(page.getByText(UNAVAILABLE)).toHaveCount(0);
         await shot(page, "p3-settings-blocked");
         await axe(page);
         expect(await sideways(page)).toBe(false);
@@ -197,10 +204,15 @@ for (const width of [1280, 390])
       test("a browser that can't", async ({ page }) => {
         await stub(page, { unsupported: true });
         await page.goto("/settings/notifications?mock=foryou");
-        await expect(
-          page.getByText("This browser can't show notifications."),
-        ).toBeVisible();
+        await expect(page.locator("[data-push-note]")).toHaveText(
+          "This browser can't show notifications.",
+        );
+        await expect(page.getByText("Not available")).toBeVisible();
         await expect(needs(page)).toHaveCount(0);
+        await expect(page.getByText(UNAVAILABLE)).toBeVisible();
+        await expect(
+          page.getByRole("switch", { name: "Quiet hours" }),
+        ).toBeDisabled();
         await shot(page, "p4-settings-unsupported");
         await axe(page);
       });
@@ -212,6 +224,9 @@ for (const width of [1280, 390])
         await expect(
           page.getByRole("columnheader", { name: "This browser" }),
         ).toHaveCount(0);
+        await expect(page.getByText(UNAVAILABLE)).toBeVisible();
+        for (const name of ["Interrupt me for", "On lock screens"])
+          await expect(page.getByRole("combobox", { name })).toBeDisabled();
         await shot(page, "p5-settings-no-key");
         await axe(page);
       });
@@ -240,5 +255,28 @@ for (const width of [1280, 390])
         await nudge.getByRole("button", { name: "Turn on" }).click();
         expect((await put).postDataJSON().needsYou.browser).toBe(true);
         await expect(nudge).toHaveCount(0);
+      });
+
+      test("Not now keeps the nudge away for at least 30 days", async ({
+        page,
+      }) => {
+        test.skip(width === 390, "no nudge on a phone");
+        await stub(page);
+        await page.goto("/?mock=foryou");
+        await page.getByRole("button", { name: /^For you/ }).click();
+        const nudge = page.locator("[data-push-nudge]");
+        await nudge.getByRole("button", { name: "Not now" }).click();
+        await expect(nudge).toHaveCount(0);
+        // A reload, and 29 days later: still away.
+        await page.evaluate(() =>
+          localStorage.setItem(
+            "oa.push.nudge.dismissed",
+            String(Date.now() - 29 * 24 * 3600_000),
+          ),
+        );
+        await page.reload();
+        await page.getByRole("button", { name: /^For you/ }).click();
+        await expect(page.getByText("Needs you").first()).toBeVisible();
+        await expect(page.locator("[data-push-nudge]")).toHaveCount(0);
       });
     });
