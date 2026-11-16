@@ -156,8 +156,8 @@ export async function handleEmailEvent(
   );
 }
 
-/** The bounce types the platform may report that end a delivery for good. Anything else, or none, is not terminal. */
-const TERMINAL_BOUNCE_TYPES = new Set(["hard", "permanent"]);
+/** The bounce type the platform reports for a delivery that ended for good ("hard"; the others are "soft" and null for a complaint). Anything else, or none, is not terminal. */
+const TERMINAL_BOUNCE_TYPES = new Set(["hard"]);
 
 /**
  * Hosted: pulls the events the platform holds for this install over the

@@ -174,7 +174,7 @@ describe("the pull", () => {
         events: [
           ev(c as string, "complained"),
           ev(bounced[0] as string, "bounced", "hard"),
-          ev(bounced[1] as string, "bounced", "permanent"),
+          ev(bounced[1] as string, "bounced", "hard"),
         ],
       },
       { events: [ev(bounced[2] as string, "bounced", "hard")] },
@@ -197,6 +197,7 @@ describe("the pull", () => {
         events: [
           ...ids.flatMap((id) => [
             ev(id, "bounced", "soft"),
+            ev(id, "bounced", "permanent"),
             ev(id, "bounced"),
             ev(id, "bounced", null),
             ev(id, "bounced", "mystery"),
