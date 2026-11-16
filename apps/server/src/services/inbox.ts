@@ -41,7 +41,8 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
     .from(artifactAsks)
     .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
     .where(forMe(caller));
-  return Math.min(r[0]?.n ?? 0, NEEDS_YOU_MAX);
+  const held = await heldRequestRows(env, caller).catch(() => []);
+  return Math.min((r[0]?.n ?? 0) + held.length, NEEDS_YOU_MAX);
 }
 
 type Row = {
@@ -240,8 +241,81 @@ export async function memberSetUpUpdates(
 }
 
 /** The whole inbox response. Later and the cursor are the next slices. */
+/** Requests to the caller's agents that wait for them, not quieted by "Not now": one row each. */
+const heldRequestRows = async (env: Env, caller: Me, now = Date.now()) =>
+  (
+    await env.DB.prepare(
+      `select r.id, r.sender_id, r.artifact_id, r.created_at, a.title as title
+         from held_requests r join artifacts a on a.id = r.artifact_id and a.deleted_at is null
+        where r.receiver_id = ?1 and (r.quiet_until is null or r.quiet_until <= ?2)
+          and exists (select 1 from held_request_items i where i.request_id = r.id and i.state = 'held' and i.expires_at > ?2)
+        order by r.last_at limit ?3`,
+    )
+      .bind(caller.user.id, now, NEEDS_YOU_MAX)
+      .all<{
+        id: string;
+        sender_id: string;
+        artifact_id: string;
+        created_at: number;
+        title: string;
+      }>()
+  ).results;
+
+/**
+ * #2577: someone asked one of the caller's agents; the request is held for them. One item per
+ * (sender, page), however many requests: the words are read when it opens, never here.
+ */
+export async function heldRequestItems(
+  env: Env,
+  caller: Me,
+): Promise<InboxItem[]> {
+  const rows = await heldRequestRows(env, caller);
+  if (rows.length === 0) return [];
+  const viewer: CommentViewer = {
+    userId: caller.user.id,
+    short: null,
+    guest: isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+  };
+  const faces = await askerFaces(
+    env,
+    viewer,
+    rows.map((r): StoredActor => ({ kind: "user", ref: r.sender_id })),
+  );
+  return rows.map((r, i): InboxItem => {
+    const face = faces[i] as CommentAuthor;
+    return {
+      id: `request:${r.id}`,
+      level: "needs_you",
+      kind: "request",
+      urgency: "approval",
+      waitingSince: iso(new Date(r.created_at).toISOString()),
+      artifact: { id: r.artifact_id, title: r.title },
+      actor: face,
+      text: `${face.name} wants to ask your agent`,
+      href: viewerPath(r.artifact_id),
+      createdAt: new Date(r.created_at).toISOString(),
+      readAt: null,
+    };
+  });
+}
+
 export async function inboxOf(env: Env, caller: Me): Promise<Inbox> {
-  const list = await needsYou(env, caller);
+  const asks = await needsYou(env, caller);
+  const requests = await heldRequestItems(env, caller).catch((e) => {
+    logWarn("inbox_held_requests_failed", e);
+    return [];
+  });
+  // Waiting agents first, then what needs an approval (asks and requests, oldest first), then the rest.
+  const byAge = (a: InboxItem, b: InboxItem) =>
+    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  const list = [
+    ...asks.filter((i) => i.urgency === "waiting"),
+    ...[...asks.filter((i) => i.urgency === "approval"), ...requests].sort(
+      byAge,
+    ),
+    ...asks.filter((i) => i.urgency !== "waiting" && i.urgency !== "approval"),
+  ];
   const updates = await memberSetUpUpdates(env, caller).catch((e) => {
     logWarn("inbox_member_set_up_failed", e);
     return [];

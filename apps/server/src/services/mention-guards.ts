@@ -52,6 +52,21 @@ export async function isOutsideMember(
   return !inDomains(domains, user.email.slice(user.email.lastIndexOf("@") + 1));
 }
 
+/** #2577: one delivery to a person's agents after an allow: a slot of the receiver's hourly limit. False: over it. */
+export async function takeReceiverSlot(
+  env: Env,
+  receiverId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const hour = new Date(now).toISOString().slice(0, 13);
+  const to: Cap = [
+    `notice:mention:to:${receiverId}`,
+    MENTIONS_PER_RECEIVER_PER_HOUR,
+    hour,
+  ];
+  return (await takeAll(env, [to])) === -1;
+}
+
 /**
  * One comment's draw on the mention limits. The sender's slot is taken once
  * per comment, on its first wake of another person's agent; the receiver's

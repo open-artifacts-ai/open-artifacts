@@ -46,6 +46,9 @@ export const SHAPE = {
   reserved_artifacts: 1_000,
   uploads: 100_000,
   artifact_asks: 3_000, // asks are rare: about one live artifact in a hundred
+  held_requests: 500, // #2577: requests to someone else's agent, held for their person
+  held_request_items: 800,
+  agent_listens: 300,
   data_writes_total: 1, // the install-wide write counter: one row
   tokens: 30_000,
   passkeys: 2_000, // #2263
@@ -509,6 +512,64 @@ export const RULES: Record<string, Rule> = {
         addressee: u.id,
         open: answered || c.rand() < 0.2 ? 0 : 1,
         answered,
+      };
+    },
+  },
+  // #2577: held requests to someone else's agent, their items and the "listens to" list.
+  held_requests: {
+    rows: (c) => c.count("held_requests"),
+    row(i, c) {
+      const a = c.artifacts[(i * 83) % c.artifacts.length];
+      const r = c.users[(i * 6007) % c.users.length];
+      const u = c.users[(i * 4021 + 1) % c.users.length];
+      if (!a || !r || !u || r.id === u.id) return null;
+      const t = Date.now() - c.int(7 * 86_400_000);
+      return {
+        id: `hrq_${i}`,
+        receiver_id: r.id,
+        sender_id: u.id,
+        artifact_id: a.id,
+        created_at: t,
+        last_at: t,
+        quiet_until: null,
+      };
+    },
+  },
+  held_request_items: {
+    rows: (c) => c.count("held_request_items"),
+    row(i, c) {
+      const n = c.count("held_requests");
+      return {
+        id: c.id("hi"),
+        request_id: `hrq_${i % n}`,
+        thread_id: c.id("th"),
+        comment_id: c.id("cm"),
+        agent_key: `agent:seed${i}`,
+        way: c.pick(["mention", "reply", "ask"]),
+        state: "held",
+        created_at: Date.now(),
+        expires_at: Date.now() + 7 * 86_400_000,
+      };
+    },
+  },
+  agent_listens: {
+    rows: (c) => c.count("agent_listens"),
+    row(i, c) {
+      const a = c.artifacts[(i * 71) % c.artifacts.length];
+      const o = c.users[(i * 5003) % c.users.length];
+      const m = c.users[(i * 3989 + 1) % c.users.length];
+      if (!a || !o || !m || o.id === m.id) return null;
+      const all = i % 3 === 0;
+      return {
+        id: c.id("al"),
+        owner_id: o.id,
+        member_id: m.id,
+        scope: all ? "all" : "page",
+        artifact_id: all ? null : a.id,
+        until: Date.now() + 30 * 86_400_000,
+        created_via: "allow_page",
+        created_at: Date.now(),
+        removed_at: null,
       };
     },
   },
