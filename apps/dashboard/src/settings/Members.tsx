@@ -345,7 +345,7 @@ const ROW =
   "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px]";
 /** #2632: owners and admins see a Setup column after the role. */
 const ROW_SETUP =
-  "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_156px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px]";
+  "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_156px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px] max-[600px]:gap-y-[2px]";
 
 /**
  * #2632: one person's setup (PROVISIONAL, api/memberSetup.ts). Green "Set up"
@@ -370,7 +370,7 @@ function SetupCell({ m }: { m: MemberWithSetup }) {
   return (
     <span
       data-setup={s.state}
-      className="flex min-w-0 flex-col text-[length:var(--oa-text-sm)] max-[600px]:col-span-2"
+      className="flex min-w-0 flex-col text-[length:var(--oa-text-sm)] max-[600px]:col-span-2 max-[600px]:mt-[6px]"
     >
       {label}
       {s.state === "set" ? (
@@ -553,7 +553,9 @@ function Row({
             <Button
               variant="ghost"
               size="sm"
-              className="justify-self-end"
+              className={
+                staff ? "justify-self-end max-[600px]:h-6" : "justify-self-end"
+              }
               disabled={frozen}
               aria-label={`More for ${label}`}
             >
