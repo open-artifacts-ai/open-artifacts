@@ -539,7 +539,6 @@ export const useDeleteArtifact = (id: string) =>
   );
 export const usePutShare = (id: string) =>
   useInvalidating(
-    // PROVISIONAL (#2590): the wide role, until packages/shared has it.
     (input: ShareInput) =>
       api.send("PUT", R.shares(id), input, ShareResultSchema),
     () => [qk.shares(id)],
