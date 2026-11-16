@@ -1,22 +1,84 @@
-// #2512 slice 2: Settings › Notifications for For you (R.meNotificationPrefs, R.meInboxMutes).
+// #2512 slices 2 and 3: Settings › Notifications for For you
+// (R.meNotificationPrefs, R.meInboxMutes) and this browser's notifications
+// (R.mePushKey, R.mePushSubscriptions).
 import { R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { HttpResponse, http } from "msw";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SW_SCOPE, SW_URL } from "../src/foryou/push";
 import { thisBrowser } from "../src/settings/ForYouPrefs";
 import { calls, events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
 
-const page = async () => {
+/** A browser that can do web push, with our worker and its subscription faked. */
+function fakePush(start: NotificationPermission, answer = start) {
+  let sub: object | null = null;
+  const subscription = {
+    endpoint: "https://push.example.com/abc",
+    toJSON: () => ({
+      endpoint: "https://push.example.com/abc",
+      keys: { p256dh: "BNcRdreALRFX", auth: "tBHItJI5svbpez" },
+    }),
+    unsubscribe: async () => {
+      sub = null;
+      return true;
+    },
+  };
+  const pushManager = {
+    getSubscription: async () => sub,
+    subscribe: vi.fn(async () => {
+      sub = subscription;
+      return subscription;
+    }),
+  };
+  const reg = {
+    scope: `${location.origin}${SW_SCOPE}`,
+    active: {},
+    installing: null,
+    waiting: null,
+    pushManager,
+  };
+  const register = vi.fn(async () => reg);
+  const n = {
+    permission: start,
+    requestPermission: vi.fn(async () => {
+      n.permission = answer;
+      return answer;
+    }),
+  };
+  vi.stubGlobal("Notification", n);
+  vi.stubGlobal("PushManager", function PushManager() {});
+  Object.defineProperty(navigator, "serviceWorker", {
+    configurable: true,
+    value: {
+      register,
+      getRegistration: async (scope: string) =>
+        scope === SW_SCOPE && sub ? reg : undefined,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    },
+  });
+  return { register, pushManager, n };
+}
+afterEach(() => {
+  vi.unstubAllGlobals();
+  delete (navigator as { serviceWorker?: unknown }).serviceWorker;
+  localStorage.clear();
+});
+
+const levels = async () => {
   mount("/settings/notifications");
-  return screen.findByRole(
+  return screen.findByRole("table", {}, { timeout: FIRST_LOAD_MS });
+};
+const needs = () =>
+  screen.findByRole(
     "switch",
     { name: "Needs you in this browser" },
     { timeout: FIRST_LOAD_MS },
   );
-};
 
 describe("For you settings", () => {
   it("are absent on a server without For you; the email switch stays", async () => {
@@ -27,16 +89,15 @@ describe("For you settings", () => {
       { name: "Notifications" },
       { timeout: FIRST_LOAD_MS },
     );
-    expect(
-      screen.queryByRole("switch", { name: "Needs you in this browser" }),
-    ).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
     expect(gets.some((c) => c.path === R.meNotificationPrefs)).toBe(false);
   });
 
   it("shows the levels, quiet hours, interrupts, lock screens and mutes", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    const needs = await page();
-    expect(needs).toHaveAttribute("aria-checked", "false");
+    fakePush("default");
+    mount("/settings/notifications");
+    expect(await needs()).toHaveAttribute("aria-checked", "false");
     expect(
       screen.getByRole("switch", { name: "Updates in this browser" }),
     ).toBeDisabled();
@@ -58,30 +119,32 @@ describe("For you settings", () => {
     ).toBeInTheDocument();
   });
 
-  // Design (#2512 slice 2 review): these wait for browser notifications.
-  it("quiet hours, interrupts and lock screens wait: disabled under Coming later, nothing saved", async () => {
+  // Slice 3: the interrupt settings are live with browser notifications.
+  it("saves the whole prefs in the browser's zone (quiet hours off)", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    await page();
+    fakePush("default");
+    mount("/settings/notifications");
+    await needs();
     const puts = calls("PUT");
-    const box = screen.getByRole("region", { name: "When to interrupt" });
-    expect(box).toHaveAccessibleDescription("Coming later");
-    for (const name of [
-      "Quiet hours start",
-      "Quiet hours end",
-      "Interrupt me for",
-      "On lock screens",
-    ])
-      expect(screen.getByRole("combobox", { name })).toBeDisabled();
-    const quiet = screen.getByRole("switch", { name: "Quiet hours" });
-    expect(quiet).toBeDisabled();
-    fireEvent.click(quiet);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(puts.filter((c) => c.path === R.meNotificationPrefs)).toEqual([]);
+    expect(screen.queryByText("Coming later", { selector: "p" })).toBeNull();
+    fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
+    await waitFor(() =>
+      expect(puts.find((c) => c.path === R.meNotificationPrefs)?.body).toEqual({
+        needsYou: { inApp: true, browser: false },
+        updates: { inApp: true, browser: false },
+        browserAllAsks: false,
+        quietHours: null,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        lockScreenDetail: false,
+      }),
+    );
   });
 
   it("unmutes", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    await page();
+    fakePush("default");
+    mount("/settings/notifications");
+    await needs();
     const dels = calls("DELETE");
     const muted = screen.getByRole("region", { name: "Muted" });
     fireEvent.click(
@@ -94,24 +157,100 @@ describe("For you settings", () => {
       R.meInboxMute("agent", "agent:polish"),
     );
   });
+});
 
-  it("the browser switches wait for slice 3: disabled, Coming later, no prompt", async () => {
+describe("this browser's notifications (slice 3)", () => {
+  it("are asked for only on the click, then subscribe, register and save", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    const ask = vi.fn();
-    vi.stubGlobal("Notification", {
-      permission: "default",
-      requestPermission: ask,
-    });
-    const needs = await page();
+    const f = fakePush("default", "granted");
+    const posts = calls("POST");
     const puts = calls("PUT");
-    expect(needs).toBeDisabled();
-    expect(needs).toHaveAccessibleDescription("Coming later");
+    mount("/settings/notifications");
+    const sw = await needs();
+    // Nothing is asked before the click.
+    expect(f.n.requestPermission).not.toHaveBeenCalled();
+    expect(f.register).not.toHaveBeenCalled();
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    expect(f.n.requestPermission).toHaveBeenCalledTimes(1);
+    expect(f.register).toHaveBeenCalledWith(SW_URL, { scope: SW_SCOPE });
+    expect(f.pushManager.subscribe).toHaveBeenCalledWith(
+      expect.objectContaining({ userVisibleOnly: true }),
+    );
     expect(
-      screen.getByRole("switch", { name: "Updates in this browser" }),
-    ).toHaveAccessibleDescription("Coming later");
-    fireEvent.click(needs);
-    expect(puts).toEqual([]);
-    expect(ask).not.toHaveBeenCalled();
+      posts.find((c) => c.path === R.mePushSubscriptions)?.body,
+    ).toMatchObject({
+      endpoint: "https://push.example.com/abc",
+      keys: { p256dh: "BNcRdreALRFX", auth: "tBHItJI5svbpez" },
+    });
+    await waitFor(() =>
+      expect(
+        (
+          puts.find((c) => c.path === R.meNotificationPrefs)?.body as
+            | { needsYou: { browser: boolean } }
+            | undefined
+        )?.needsYou.browser,
+      ).toBe(true),
+    );
+    expect(sw).toHaveAccessibleDescription(/^On for /);
+  });
+
+  it("turning off removes this browser's subscription", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    fakePush("default", "granted");
+    const dels = calls("DELETE");
+    mount("/settings/notifications");
+    const sw = await needs();
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "false"));
+    expect(dels.map((c) => c.path)).toContain(R.mePushSubscription("sub_1"));
+  });
+
+  it("a refusal shows how to unblock, and nothing is subscribed", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    const f = fakePush("default", "denied");
+    mount("/settings/notifications");
+    const sw = await needs();
+    fireEvent.click(sw);
+    await waitFor(() =>
+      expect(sw).toHaveAccessibleDescription(
+        "Notifications are blocked for this site in your browser. To turn them on, click the lock icon in the address bar and allow notifications.",
+      ),
+    );
+    expect(sw).toBeDisabled();
+    expect(f.register).not.toHaveBeenCalled();
+  });
+
+  it("a browser that can't says so, in place of the switch", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    await levels();
+    expect(
+      await screen.findByText("This browser can't show notifications."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Needs you in this browser" }),
+    ).toBeNull();
+  });
+
+  it("no push key on the server: no browser column at all", async () => {
+    server.use(
+      // First: server.use's earlier handlers win.
+      http.get(`*${R.mePushKey}`, () =>
+        HttpResponse.json(
+          { error: { code: "push_unavailable", message: "No key" } },
+          { status: 404 },
+        ),
+      ),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    fakePush("default");
+    const t = await levels();
+    expect(within(t).queryByText("This browser")).toBeNull();
+    expect(
+      screen.queryByRole("switch", { name: "Needs you in this browser" }),
+    ).toBeNull();
   });
 });
 

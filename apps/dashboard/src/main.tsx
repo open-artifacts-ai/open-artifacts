@@ -104,6 +104,16 @@ async function startMocks() {
         }),
       ),
     );
+  // &push=off (#2512 slice 3): the server has no push key (404 push_unavailable).
+  if (params.get("push") === "off")
+    extra.push(
+      http.get("*/api/v1/me/push/key", () =>
+        HttpResponse.json(
+          { error: { code: "push_unavailable", message: "No push key" } },
+          { status: 404 },
+        ),
+      ),
+    );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);

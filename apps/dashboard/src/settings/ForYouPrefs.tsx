@@ -6,6 +6,7 @@
  */
 import type { InboxMutes, NotificationPrefs } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
+import { useState } from "react";
 import {
   browserTimeZone,
   useMutes,
@@ -13,6 +14,16 @@ import {
   useSavePrefs,
   useUnmute,
 } from "../foryou/api";
+import {
+  PermissionRefused,
+  PUSH_WORDS,
+  permission,
+  thisBrowser,
+  turnOff,
+  turnOn,
+  usePushKey,
+  useThisBrowserOn,
+} from "../foryou/push";
 import { toast } from "../layout/toast";
 import { OptionSelect } from "./OptionSelect";
 import { Switch } from "./spaces/Switch";
@@ -27,30 +38,7 @@ export const HALF_HOURS = Array.from({ length: 48 }, (_, i) => {
   return { value: t, label: t };
 });
 
-/** "Chrome on this Mac": this browser, for the browser column's "On for …" (slice 3). */
-export function thisBrowser(ua = navigator.userAgent): string {
-  const browser = /Edg\//.test(ua)
-    ? "Edge"
-    : /Firefox\//.test(ua)
-      ? "Firefox"
-      : /Chrome\//.test(ua)
-        ? "Chrome"
-        : /Safari\//.test(ua)
-          ? "Safari"
-          : "this browser";
-  const device = /iPhone/.test(ua)
-    ? "iPhone"
-    : /iPad/.test(ua)
-      ? "iPad"
-      : /Android/.test(ua)
-        ? "phone"
-        : /Mac OS X|Macintosh/.test(ua)
-          ? "Mac"
-          : /Windows/.test(ua)
-            ? "PC"
-            : "computer";
-  return `${browser} on this ${device}`;
-}
+export { thisBrowser } from "../foryou/push";
 
 const BOX =
   "rounded-[12px] border border-[var(--oa-divider)] bg-[var(--oa-surface)] px-3.5 py-3 text-[length:var(--oa-text-sm)]";
@@ -61,10 +49,12 @@ const ROW =
 export function ForYouPrefs() {
   const prefs = usePrefs(true);
   const mutes = useMutes(true);
-  if (!prefs.data) return null;
+  // #2512 slice 3: no push key on the server: the browser column isn't shown.
+  const key = usePushKey(true);
+  if (!prefs.data || key.isPending) return null;
   return (
     <>
-      <Levels prefs={prefs.data} />
+      <Levels prefs={prefs.data} pushKey={key.data ?? null} />
       <Interrupts prefs={prefs.data} />
       {mutes.data && mutes.data.items.length > 0 && (
         <Muted items={mutes.data.items} />
@@ -86,7 +76,14 @@ function useSave() {
     );
 }
 
-function Levels({ prefs }: { prefs: NotificationPrefs }) {
+function Levels({
+  prefs,
+  pushKey,
+}: {
+  prefs: NotificationPrefs;
+  pushKey: string | null;
+}) {
+  const browser = pushKey !== null;
   const th =
     "px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-[var(--oa-text-muted)] max-[600px]:px-2.5";
   const td =
@@ -104,9 +101,11 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             <th scope="col" className={th}>
               In the app
             </th>
-            <th scope="col" className={th}>
-              This browser
-            </th>
+            {browser && (
+              <th scope="col" className={th}>
+                This browser
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -118,19 +117,11 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
               </small>
             </th>
             <td className={td}>Always</td>
-            <td className={td}>
-              {/* Browser notifications come in slice 3: shown, not yet usable. */}
-              <Switch
-                label="Needs you in this browser"
-                describedBy="oa-needs-browser"
-                checked={prefs.needsYou.browser}
-                disabled
-                onChange={() => {}}
-              />
-              <small id="oa-needs-browser" className={sub}>
-                Coming later
-              </small>
-            </td>
+            {browser && pushKey && (
+              <td className={td}>
+                <NeedsYouBrowser prefs={prefs} pushKey={pushKey} sub={sub} />
+              </td>
+            )}
           </tr>
           <tr>
             <th scope="row" className={`${td} text-left font-normal`}>
@@ -140,23 +131,105 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
               </small>
             </th>
             <td className={td}>Always</td>
-            <td className={td}>
-              {/* v1: updates never reach the browser (updates.browser is fixed false). */}
-              <Switch
-                label="Updates in this browser"
-                describedBy="oa-updates-browser"
-                checked={false}
-                disabled
-                onChange={() => {}}
-              />
-              <small id="oa-updates-browser" className={sub}>
-                Coming later
-              </small>
-            </td>
+            {browser && (
+              <td className={td}>
+                {/* v1: updates never reach the browser (updates.browser is fixed false). */}
+                <Switch
+                  label="Updates in this browser"
+                  describedBy="oa-updates-browser"
+                  checked={false}
+                  disabled
+                  onChange={() => {}}
+                />
+                <small id="oa-updates-browser" className={sub}>
+                  Coming later
+                </small>
+              </td>
+            )}
           </tr>
         </tbody>
       </table>
     </section>
+  );
+}
+
+/**
+ * #2512 slice 3: browser notifications for "Needs you" in this browser. The
+ * switch shows this browser's own subscription; turning it on asks the browser
+ * (from this click only), subscribes and saves needsYou.browser. A browser
+ * that can't do it says so; a blocked one says how to unblock.
+ */
+function NeedsYouBrowser({
+  prefs,
+  pushKey,
+  sub,
+}: {
+  prefs: NotificationPrefs;
+  pushKey: string;
+  sub: string;
+}) {
+  const save = useSavePrefs();
+  const [on, setOn] = useThisBrowserOn();
+  const [busy, setBusy] = useState(false);
+  const [perm, setPerm] = useState(permission);
+  if (perm === "unsupported")
+    return (
+      <small data-push="unsupported" className={sub.replace("mt-0.5 ", "")}>
+        {PUSH_WORDS.cant}
+      </small>
+    );
+  const blocked = perm === "denied";
+  const change = async (next: boolean) => {
+    setBusy(true);
+    try {
+      if (next) {
+        await turnOn(pushKey, thisBrowser());
+        setOn(true);
+        if (!prefs.needsYou.browser)
+          await save.mutateAsync({
+            ...prefs,
+            needsYou: { ...prefs.needsYou, browser: true },
+            timeZone: browserTimeZone(),
+          });
+      } else {
+        const none = await turnOff();
+        setOn(false);
+        if (none && prefs.needsYou.browser)
+          await save.mutateAsync({
+            ...prefs,
+            needsYou: { ...prefs.needsYou, browser: false },
+            timeZone: browserTimeZone(),
+          });
+      }
+    } catch (e) {
+      if (e instanceof PermissionRefused) setPerm(e.state);
+      else toast({ title: PUSH_WORDS.failed, tone: "danger" });
+    } finally {
+      setPerm(permission());
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Switch
+        label="Needs you in this browser"
+        describedBy="oa-needs-browser"
+        checked={on === true && !blocked}
+        disabled={busy || on === undefined || blocked}
+        onChange={(next) => void change(next)}
+      />
+      <small
+        id="oa-needs-browser"
+        className={sub}
+        data-push={blocked ? "blocked" : on ? "on" : "off"}
+      >
+        {blocked
+          ? PUSH_WORDS.blocked
+          : on
+            ? PUSH_WORDS.onFor(thisBrowser())
+            : ""}
+      </small>
+    </>
   );
 }
 
@@ -166,7 +239,7 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
  * doesn't use them yet (no prefs route, no away status). Until then they show,
  * disabled, under one "Coming later" line. Flip it when slice 3 lands.
  */
-export const INTERRUPTS_LIVE = false;
+export const INTERRUPTS_LIVE = true;
 
 function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
   const save = useSave();
