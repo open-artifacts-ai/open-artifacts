@@ -1,10 +1,10 @@
 // #2512 slices 2 and 3: Settings › Notifications for For you
 // (R.meNotificationPrefs, R.meInboxMutes) and this browser's notifications
 // (R.mePushKey, R.mePushSubscriptions).
-import { R } from "@oa/shared";
+import { NotificationPrefsSchema, R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { getResponse, HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dismissNudge,
@@ -96,6 +96,37 @@ describe("For you settings", () => {
     );
     expect(screen.queryByRole("table")).toBeNull();
     expect(gets.some((c) => c.path === R.meNotificationPrefs)).toBe(false);
+  });
+
+  it("the quiet-hours line names the real end time (OA Product, #2677)", async () => {
+    const base = createHandlers({ events, forYou: "mixed" });
+    server.use(
+      // First wins: this prefs answer, then the rest of the mock.
+      http.get(`*${R.meNotificationPrefs}`, async ({ request }) => {
+        const res = await getResponse(base, request);
+        const body = (await res?.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          ...body,
+          quietHours: { start: "21:30", end: "06:00" },
+        });
+      }),
+      ...base,
+    );
+    fakePush("default");
+    mount("/settings/notifications");
+    await needs();
+    const hint = await screen.findByText(/away until/);
+    expect(hint).toHaveTextContent('Your own agents see "away until 06:00"');
+    expect(hint.textContent).not.toMatch(/\{end\}|T\d\d:|Z\b|undefined/);
+  });
+
+  it("an end time that isn't HH:MM (an ISO string) never parses", () => {
+    expect(
+      NotificationPrefsSchema.shape.quietHours.safeParse({
+        start: "22:00",
+        end: "2026-11-17T07:30:00.000Z",
+      }).success,
+    ).toBe(false);
   });
 
   it("shows the levels, quiet hours, interrupts, lock screens and mutes", async () => {
