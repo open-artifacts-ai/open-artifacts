@@ -40,12 +40,17 @@ describe("email events pull contract", () => {
       ).toBe(false);
   });
 
-  it("the answer: { events: [{ messageId, kind, bounceType? }] }", () => {
+  it("the answer: { events: [{ eventId, messageId, kind, bounceType }] }", () => {
     const ok = {
       events: [
         { eventId: "e1", messageId: "m1", kind: "bounced", bounceType: "hard" },
-        { eventId: "e2", messageId: "m2", kind: "complained" },
-        { eventId: "e3", messageId: "m3", kind: "bounced", bounceType: null },
+        {
+          eventId: "e2",
+          messageId: "m2",
+          kind: "complained",
+          bounceType: null,
+        },
+        { eventId: "e3", messageId: "m3", kind: "bounced", bounceType: "soft" },
       ],
     };
     expect(EmailEventsPullResponseSchema.parse(ok)).toEqual(ok);
@@ -59,13 +64,37 @@ describe("email events pull contract", () => {
       { events: [{ messageId: "m", kind: "bounced" }] },
       { events: [{ eventId: "e", messageId: "", kind: "bounced" }] },
       { events: [{ eventId: "", messageId: "m", kind: "bounced" }] },
-      { events: [{ eventId: "e", messageId: "m", kind: "" }] },
+      {
+        events: [{ eventId: "e", messageId: "m", kind: "", bounceType: null }],
+      },
+      {
+        events: [
+          { eventId: "e", messageId: "m", kind: "failed", bounceType: "hard" },
+        ],
+      },
+      { events: [{ eventId: "e", messageId: "m", kind: "bounced" }] },
       {
         events: [
           {
             eventId: "e",
             messageId: "m",
             kind: "bounced",
+            bounceType: "permanent",
+          },
+        ],
+      },
+      {
+        events: [
+          { eventId: "e", messageId: "m", kind: "bounced", bounceType: "HARD" },
+        ],
+      },
+      {
+        events: [
+          {
+            eventId: "e",
+            messageId: "m",
+            kind: "bounced",
+            bounceType: "hard",
             recipient: "a@b.co",
           },
         ],
@@ -76,6 +105,7 @@ describe("email events pull contract", () => {
           eventId: `e${i}`,
           messageId: `m${i}`,
           kind: "bounced",
+          bounceType: "hard",
         })),
       },
     ])

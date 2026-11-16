@@ -135,11 +135,15 @@ const pausedUntil = async (userId: string) =>
       .bind(userId)
       .first<{ until_at: number }>()
   )?.until_at ?? null;
-const ev = (messageId: string, kind: string, bounceType?: string | null) => ({
+const ev = (
+  messageId: string,
+  kind: "bounced" | "complained",
+  bounceType: "hard" | "soft" | null = kind === "bounced" ? "hard" : null,
+) => ({
   eventId: `ev-${crypto.randomUUID()}`,
   messageId,
   kind,
-  ...(bounceType === undefined ? {} : { bounceType }),
+  bounceType,
 });
 
 describe("the pull", () => {
@@ -189,23 +193,13 @@ describe("the pull", () => {
     });
   });
 
-  it("only a known terminal bounceType counts: soft, missing, null, unknown; failed and other kinds never; unknown message ids nothing", async () => {
+  it("only a hard bounce counts: soft and complaints on unknown ids never pause; unknown message ids nothing", async () => {
     const a = await sender();
     const ids = await a.sentIds(4);
     const { gate } = gateServing([
       {
         events: [
-          ...ids.flatMap((id) => [
-            ev(id, "bounced", "soft"),
-            ev(id, "bounced", "permanent"),
-            ev(id, "bounced"),
-            ev(id, "bounced", null),
-            ev(id, "bounced", "mystery"),
-            ev(id, "bounced", "HARD"),
-            ev(id, "failed", "hard"),
-            ev(id, "delivered"),
-            ev(id, "deferred"),
-          ]),
+          ...ids.map((id) => ev(id, "bounced", "soft")),
           ev("msg-someone-elses", "complained"),
           ev("msg-someone-elses", "bounced", "hard"),
         ],
@@ -222,6 +216,30 @@ describe("the pull", () => {
           .first<{ n: number }>()
       )?.n,
     ).toBe(0);
+  });
+
+  it("a response with a kind or bounceType the contract doesn't have is malformed: no events, nothing acknowledged", async () => {
+    const a = await sender();
+    const ids = await a.sentIds(3);
+    const warn = vi.spyOn(console, "warn");
+    for (const bad of [
+      { kind: "failed", bounceType: "hard" },
+      { kind: "bounced", bounceType: "permanent" },
+      { kind: "bounced" },
+    ]) {
+      const g = gateServing([
+        {
+          events: [
+            ev(ids[0] as string, "bounced", "hard"),
+            { eventId: "bad", messageId: ids[1], ...bad },
+          ],
+        },
+      ]);
+      expect(await pull(g.gate, a.e, pullEmailEvents)).toBe(0);
+      expect(g.seen.map((x) => x.path)).toEqual([EMAIL_EVENTS_PULL_PATH]);
+    }
+    warn.mockRestore();
+    expect(await pausedUntil(a.member.id)).toBeNull();
   });
 
   it("a gate that can't answer pulls nothing and never throws: no gate, a refusal, a 500, a wrong-shaped answer", async () => {
@@ -245,7 +263,13 @@ describe("the pull", () => {
         gateServing([
           {
             events: [
-              { messageId: id, kind: "complained", recipient: "a@b.co" },
+              {
+                eventId: "e1",
+                messageId: id,
+                kind: "complained",
+                bounceType: null,
+                recipient: "a@b.co",
+              },
             ],
           },
         ]).gate,
@@ -276,13 +300,13 @@ describe("the pull", () => {
 });
 
 describe("processed, then acknowledged", () => {
-  it("acknowledges every handled event in batches of 100, after it is applied", async () => {
+  it("acknowledges a full pull of 100 events in one ack, after they are applied", async () => {
     const a = await sender();
     const [id] = await a.sentIds(1);
-    // 250 events: a complaint first, the rest ignorable.
+    // 100 events (a pull's most): a complaint first, the rest ignorable.
     const events = [
       ev(id as string, "complained"),
-      ...Array.from({ length: 249 }, () =>
+      ...Array.from({ length: 99 }, () =>
         ev("msg-not-ours", "bounced", "hard"),
       ),
     ];
@@ -296,10 +320,8 @@ describe("processed, then acknowledged", () => {
     expect(seen.map((x) => x.path)).toEqual([
       EMAIL_EVENTS_PULL_PATH,
       EMAIL_EVENTS_ACK_PATH,
-      EMAIL_EVENTS_ACK_PATH,
-      EMAIL_EVENTS_ACK_PATH,
     ]);
-    expect(acks.map((x) => x.length)).toEqual([100, 100, 50]);
+    expect(acks.map((x) => x.length)).toEqual([100]);
     expect(acks.flat()).toEqual(events.map((e) => e.eventId));
     // The pause was written before the first ack went out.
     expect(pausedAtFirstAck).not.toBeNull();

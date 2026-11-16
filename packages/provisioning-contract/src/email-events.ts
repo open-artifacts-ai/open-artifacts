@@ -14,7 +14,7 @@ export const EMAIL_EVENTS_ACK_PATH = "/email-events/ack";
 /** Event ids one ack may name at most. */
 export const EMAIL_EVENTS_ACK_MAX = 100;
 /** Events one pull may return at most. */
-export const EMAIL_EVENTS_PULL_MAX = 500;
+export const EMAIL_EVENTS_PULL_MAX = 100;
 
 /** The request: exactly { ts, nonce }. */
 export const EmailEventsPullBodySchema = z.strictObject({
@@ -25,17 +25,16 @@ export const EmailEventsPullBodySchema = z.strictObject({
 export type EmailEventsPullBody = z.infer<typeof EmailEventsPullBodySchema>;
 
 /**
- * One event on a message this install sent. `kind` is the event: "bounced",
- * "failed" or "complained" (anything else is ignored by the install).
- * `bounceType` says how a bounce ended ("hard" is terminal); missing or any
- * value the install does not know is not terminal.
+ * One event on a message this install sent. `kind` is "bounced" or
+ * "complained". `bounceType` is always present: "hard" (terminal) or "soft" for
+ * a bounce, null for a complaint.
  */
 export const EmailEventSchema = z.strictObject({
   /** The platform's id for this event: what the install acknowledges, and what makes a repeat a no-op. */
   eventId: z.string().min(1).max(200),
   messageId: z.string().min(1).max(200),
-  kind: z.string().min(1).max(40),
-  bounceType: z.string().min(1).max(40).nullish(),
+  kind: z.enum(["bounced", "complained"]),
+  bounceType: z.enum(["hard", "soft"]).nullable(),
 });
 export type EmailEvent = z.infer<typeof EmailEventSchema>;
 

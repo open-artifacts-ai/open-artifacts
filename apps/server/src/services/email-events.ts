@@ -156,17 +156,15 @@ export async function handleEmailEvent(
   );
 }
 
-/** The bounce type the platform reports for a delivery that ended for good ("hard"; the others are "soft" and null for a complaint). Anything else, or none, is not terminal. */
-const TERMINAL_BOUNCE_TYPES = new Set(["hard"]);
-
 /**
  * Hosted: pulls the events the platform holds for this install over the
  * LoginGate (POST /email-events/pull, which deletes nothing), applies each
  * once by its eventId, and only then acknowledges them (POST
  * /email-events/ack, 100 at a time). The same rules as the Queue path: a
- * complaint pauses at once, a bounce counts only when its bounceType is a
- * known terminal one, "failed" and anything else never counts, and only message
- * ids this install recorded matter. An event this install already processed
+ * complaint pauses at once, a bounce counts only when its bounceType is "hard"
+ * ("soft" never does), and only message ids this install recorded matter. The
+ * contract admits no other kind or bounceType: a response that has one is
+ * malformed and counts as no events. An event this install already processed
  * (its id is in share_email_events_seen) is a no-op, so a failed ack just
  * means the platform serves it again. An event that could not be applied is not
  * acknowledged and comes back (the platform keeps it 14 days). Never throws:
@@ -198,19 +196,12 @@ export async function pullEmailEvents(env: Env): Promise<number> {
         .bind(e.eventId)
         .first();
       if (!seen) {
-        const kind =
-          e.kind === "complained"
-            ? "complained"
-            : e.kind === "bounced"
-              ? "bounced"
-              : null;
         if (
-          kind &&
-          (await applySendingEvent(env, {
+          await applySendingEvent(env, {
             messageId: e.messageId,
-            kind,
-            terminal: TERMINAL_BOUNCE_TYPES.has(e.bounceType ?? ""),
-          }))
+            kind: e.kind,
+            terminal: e.bounceType === "hard",
+          })
         )
           paused++;
         await stmt(
