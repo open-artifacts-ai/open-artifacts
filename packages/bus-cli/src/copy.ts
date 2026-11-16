@@ -412,7 +412,7 @@ export function copy(
       warn(
         `Update available: ${cutMiddle(hub, 19, more)} (this machine runs ${cutMiddle(mine, 19, more)})`,
       ),
-      next(`Run ${BUS_CMD}@latest install.`),
+      next(`Run ${bus} upgrade.`),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
     hubProblem: (problem: string) => [
@@ -573,6 +573,7 @@ export function copy(
       "  link         <dir> <dir> or list; unlink <dir> <dir>",
       "  leads        check [name]",
       "  auto-update  off, on or status: whether the bus keeps itself up to date",
+      "  upgrade      [x.y.z] Install a newer bus, after checking its release proof",
       "  update       Install the update that is waiting",
       "  mcp          <claude|opencode|codex|pi>: the MCP server a harness runs",
       "  version      Print the version",
@@ -933,7 +934,7 @@ export function copy(
     shimForeign: (where: string) => [
       warn(`Left ${clip(where, 30)} alone: it isn't from Open Artifacts.`),
       next(
-        `Typing \`oa-bus\` runs that file, not this install. Remove it, or use \`${BUS_CMD}\`.`,
+        `Typing \`oa-bus\` runs that file, not this install. Remove it, or use \`${bus}\`.`,
       ),
     ],
     shimOtherHome: (where: string, home: string) => [
@@ -941,7 +942,7 @@ export function copy(
         `Left ${clip(where, 30)} alone: it belongs to the install in ${clip(home, 30)}.`,
       ),
       next(
-        `Typing \`oa-bus\` runs that install, not this one. Use \`${BUS_CMD}\` for this one.`,
+        `Typing \`oa-bus\` runs that install, not this one. Use \`${bus}\` for this one.`,
       ),
     ],
     shimRemoved: (where: string) =>
@@ -955,12 +956,12 @@ export function copy(
     shimDoctorOther: (where: string) => [
       warn(`oa-bus on your PATH is not this install's (${clip(where, 30)})`),
       next(
-        `Remove it, or put this install's first. Re-run ${BUS_CMD} install to refresh ours.`,
+        `Remove it, or put this install's first. Re-run ${bus} install to refresh ours.`,
       ),
     ],
     shimDoctorMissing: () => [
       warn("oa-bus is not on your PATH"),
-      next(`Run ${BUS_CMD} install to add it.`),
+      next(`Run ${bus} install to add it.`),
     ],
     codexSkill: (where: string) =>
       done(`Codex skill installed in ${clip(where, 20)}`),
@@ -1128,6 +1129,26 @@ export function copy(
       `Install ${v} now? The bus restarts for a few seconds. Type yes to continue: `,
     updateDeclined: () => "Nothing was installed.",
     updateDone: (v: string) => `Installed ${v}.`,
+    // `upgrade` (#2543): a hand upgrade through the installed bus. New strings, for Product.
+    upgradeUsage: () => `usage: ${bus} upgrade [x.y.z]`,
+    upgradeNotInstalled: () =>
+      'There is no bus on this machine to upgrade. Run the "Install the bus" step of your instance\'s llms.txt.',
+    upgradeNoServerVersion: () =>
+      "Couldn't read the instance's version, so the bus can't tell which release to install. Try again when the instance is reachable.",
+    upgradePreRelease: (server: string) =>
+      `This instance runs a pre-release (${server}). Name the release: ${bus} upgrade x.y.z`,
+    upgradeAhead: (v: string, server: string) =>
+      `${v} is newer than the instance (${server}), so it won't be installed.`,
+    upgradeCurrent: (v: string) => `The bus is already at ${v}.`,
+    upgradeNotForward: (v: string, running: string) =>
+      `${v} is older than this bus (${running}), so it won't be installed.`,
+    upgradeChecking: (v: string) =>
+      `Checking the bus ${v} against its release proof...`,
+    upgradeRefused: (v: string, code: string) =>
+      `The bus ${v} did not pass its release proof (${code}), so nothing was installed.`,
+    upgradeInstalling: (v: string) => `The proof passed. Installing ${v}...`,
+    upgradeInstallFailed: (v: string, code: number) =>
+      `The installer for ${v} stopped with exit code ${code}.`,
     // New in PR 4, not in the issue's copy: for Product.
     updateBusy: () =>
       "A login or an approval is in progress. Try again when it is done.",

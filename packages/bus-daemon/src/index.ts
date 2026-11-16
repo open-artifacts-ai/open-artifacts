@@ -183,13 +183,17 @@ export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
 export * from "./transports/opencode.ts";
 export * from "./transports/pi.ts";
+export { ReleaseError, type ReleaseErrorCode } from "./update/errors.ts";
+export { type FetchedRelease, fetchRelease } from "./update/fetch.ts";
 export * from "./update/layout.ts";
 export * from "./update/login-flag.ts";
 export * from "./update/policy.ts";
 export * from "./update/reports.ts";
 export * from "./update/selfcheck.ts";
 export * from "./update/state.ts";
+export { unpackTo } from "./update/tar.ts";
 export * from "./update/updater.ts";
+export { type VerifiedRelease, verifyRelease } from "./update/verify.ts";
 
 const NOTICE_RETRY_MS = 30_000;
 /** #1956: a ref binding whose link has been closed this long lapses, even if its pid lives. */
