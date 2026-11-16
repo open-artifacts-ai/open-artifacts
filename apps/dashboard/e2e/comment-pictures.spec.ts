@@ -167,6 +167,11 @@ for (const scheme of ["light", "dark"] as const)
         await card
           .locator("[data-attach-input]")
           .setInputFiles([await file(page, 220), await file(page, 140)]);
+        // Both uploads are at the mock's gate before anything is checked.
+        await page.waitForFunction(
+          () =>
+            (window as unknown as { __oaPicHeld?: number }).__oaPicHeld === 2,
+        );
         await expect(card.getByText("Uploading 2 of 2…")).toBeVisible();
         await expect(
           card.getByRole("button", { name: "Comment", exact: true }),

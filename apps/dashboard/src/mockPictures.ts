@@ -5,7 +5,7 @@
 // - A new thread or reply keeps its `pictures`, and the list shows them.
 // - ?mock=pictures: the first thread's first comment has two pictures and
 //   its reply one; &picfail=1: the first upload fails once; e2e may hold
-//   uploads with window.__oaPicHold = true and window.__oaPicRelease().
+//   uploads (window.__oaPicHold, __oaPicHeld, __oaPicRelease, below).
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
 
 type Pic = {
@@ -53,19 +53,28 @@ export function pictureHandlers(
     { id: "fx_error", type: "image/svg+xml", w: 1280, h: 800, bytes: 1 },
   ];
   const ZW = "​";
-  const hold = () =>
-    new Promise<void>((ok) => {
-      const w = window as unknown as {
-        __oaPicHold?: boolean;
-        __oaPicRelease?: () => void;
-      };
-      if (!w.__oaPicHold) return ok();
-      const prev = w.__oaPicRelease;
-      w.__oaPicRelease = () => {
-        prev?.();
-        ok();
-      };
-    });
+  // e2e: window.__oaPicHold = true holds every PUT at a gate;
+  // window.__oaPicHeld counts the ones waiting; window.__oaPicRelease()
+  // opens the gate for them and for any that arrive later.
+  type Gate = {
+    __oaPicHold?: boolean;
+    __oaPicHeld?: number;
+    __oaPicRelease?: () => void;
+    __oaPicGate?: Promise<void>;
+  };
+  const hold = async () => {
+    const w = window as unknown as Gate;
+    if (!w.__oaPicHold) return;
+    if (!w.__oaPicGate)
+      w.__oaPicGate = new Promise<void>((open) => {
+        w.__oaPicRelease = () => {
+          w.__oaPicHold = false;
+          open();
+        };
+      });
+    w.__oaPicHeld = (w.__oaPicHeld ?? 0) + 1;
+    await w.__oaPicGate;
+  };
 
   /** The shared handler answers with the body we pass; pictures ride on top. */
   const withPictures = async (request: Request) => {
