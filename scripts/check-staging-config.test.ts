@@ -321,9 +321,12 @@ describe("DocRoom (#1100 tag v5, ships unbound; the doc route binds DOC_ROOM lat
   }
 });
 
-describe("DOCS_PREVIEW is staging only (#docs-preview)", () => {
-  // The var opens doc creation (docCreationOpen); only the staging config may
-  // set it. Every other deploy config, template and setup step must not.
+describe("DOCS_PREVIEW is an unsupported preview", () => {
+  // The var opens doc creation (docCreationOpen) only in a build that defines
+  // __OA_DOCS_PREVIEW_ALLOWED__ true: the staging config. No other config sets
+  // the var, and the release template defines the flag false, so a release
+  // bundle ignores the var whatever a config says.
+  const VAR = /(?<![A-Z_])DOCS_PREVIEW(?![A-Z_])/;
   const files = [
     "apps/server/wrangler.template.jsonc",
     "apps/server/wrangler.test.jsonc",
@@ -333,9 +336,22 @@ describe("DOCS_PREVIEW is staging only (#docs-preview)", () => {
     "apps/demo-ops/wrangler.jsonc",
   ];
   for (const f of files)
-    it(`${f} does not set DOCS_PREVIEW`, () => {
-      expect(readFileSync(join(root, f), "utf8")).not.toContain("DOCS_PREVIEW");
+    it(`${f} does not set the DOCS_PREVIEW var`, () => {
+      expect(readFileSync(join(root, f), "utf8")).not.toMatch(VAR);
     });
+  it("the release template defines the build flag false", () => {
+    const t = JSON.parse(
+      strip(
+        readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
+      ),
+    );
+    expect(t.define?.__OA_DOCS_PREVIEW_ALLOWED__).toBe("false");
+  });
+  it("the staging config is the one build that allows it", () => {
+    expect(env.define?.__OA_DOCS_PREVIEW_ALLOWED__).toBe("true");
+    const v = env.vars?.DOCS_PREVIEW;
+    expect(v === undefined || v === "1").toBe(true);
+  });
   it("the self-host setup writes no DOCS_PREVIEW", () => {
     const dir = join(root, "scripts/setup/src");
     const walk = (d: string): string[] =>
@@ -347,10 +363,6 @@ describe("DOCS_PREVIEW is staging only (#docs-preview)", () => {
             : [],
       );
     for (const f of walk(dir))
-      expect(readFileSync(f, "utf8"), f).not.toContain("DOCS_PREVIEW");
-  });
-  it("only the staging config may set it (and with the value 1)", () => {
-    const v = env.vars?.DOCS_PREVIEW;
-    expect(v === undefined || v === "1").toBe(true);
+      expect(readFileSync(f, "utf8"), f).not.toMatch(VAR);
   });
 });

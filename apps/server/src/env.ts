@@ -115,10 +115,13 @@ export interface Env {
    */
   ANON_WRITES_PER_MIN?: string;
   /**
-   * Staging only: "1" opens doc creation as if DOC_SWITCH.creation were true
-   * (docCreationOpen), so docs can be tried before the switch ships. Never set
-   * it in a prod config or a template (scripts/check-staging-config.test.ts
-   * fails if one does). docsAvailable's paid-plan rule still applies.
+   * An unsupported preview: "1" opens doc creation as if DOC_SWITCH.creation
+   * were true (docCreationOpen), so docs can be tried before the switch ships.
+   * Honoured only in a build that defines __OA_DOCS_PREVIEW_ALLOWED__ as true
+   * (wrangler.staging.jsonc, tests); the release template defines it false, so
+   * a release bundle ignores it whatever a config sets, and a test fails if
+   * the template or any public config mentions it. docsAvailable's paid-plan
+   * rule still applies.
    */
   DOCS_PREVIEW?: string;
   /**

@@ -7,13 +7,27 @@
  */
 export const DOC_SWITCH: { creation: boolean } = { creation: false };
 
+declare const __OA_DOCS_PREVIEW_ALLOWED__: boolean | undefined;
+/**
+ * Build-time guard, like the test hooks': true only where the bundler defines
+ * `__OA_DOCS_PREVIEW_ALLOWED__` as true (wrangler.staging.jsonc and the test
+ * builds). The release template defines it false, so a release bundle ignores
+ * DOCS_PREVIEW whatever a config sets.
+ */
+export const DOCS_PREVIEW_ALLOWED: boolean =
+  typeof __OA_DOCS_PREVIEW_ALLOWED__ !== "undefined" &&
+  __OA_DOCS_PREVIEW_ALLOWED__ === true;
+
 /**
  * Whether doc creation is open for this deployment: DOC_SWITCH.creation, or
- * the staging-only DOCS_PREVIEW=1 (never set in a prod config; a test fails
- * if one does). Every reader of the switch goes through here. No imports.
+ * DOCS_PREVIEW=1 in a build that allows it (an unsupported preview; see env.ts).
+ * Every reader of the switch goes through here. No imports.
  */
-export const docCreationOpen = (env: { DOCS_PREVIEW?: string }): boolean =>
-  DOC_SWITCH.creation || env.DOCS_PREVIEW === "1";
+export const docCreationOpen = (
+  env: { DOCS_PREVIEW?: string },
+  previewAllowed: boolean = DOCS_PREVIEW_ALLOWED,
+): boolean =>
+  DOC_SWITCH.creation || (previewAllowed && env.DOCS_PREVIEW === "1");
 
 /**
  * Tools that exist (TOOL_DEFS, TOOL_POLICY) but are offered, written into the
