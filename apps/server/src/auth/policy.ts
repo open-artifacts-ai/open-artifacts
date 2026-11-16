@@ -92,8 +92,8 @@ export type OrgAction =
   | "notices.manage"
   /** See and dismiss one's own guest-share notice (Me.notices.guestShares): any non-guest member. */
   | "notices.own"
-  /** Read and change the first-run checklist state (R.onboarding): the uncapped org owner. */
-  | "onboarding.manage"
+  /** Read and change one's own first-run checklist state (R.onboarding, #2632): any non-guest member. */
+  | "onboarding.own"
   /** Change the login domains and joining rule (R.loginSettings PUT, #2520): the uncapped org owner. */
   | "login.manage"
   /** Turn outside sharing on or off (Settings.outsideSharing, #2590): the uncapped org owner. */
@@ -544,6 +544,11 @@ export function orgCan(
     // owns the artifacts it lists.
     case "notices.own":
       return TEAM_ROLES.includes(m.role);
+    // One's own first-run checklist (R.onboarding, #2632): owners, admins and
+    // members read it under any cap (a restricted member, a plan lock, a code
+    // session), but write it only uncapped. A guest never has one.
+    case "onboarding.own":
+      return TEAM_ROLES.includes(m.role) && (opts.read === true || !capped);
     case "directory.manage":
     // Disconnect: owner only too (the route also needs a cookie session).
     case "directory.disconnect":
@@ -553,8 +558,6 @@ export function orgCan(
     case "signin.problems":
     // The install-wide guest summary and its dismissal (parity 2).
     case "notices.manage":
-    // The first-run checklist's state (R.onboarding).
-    case "onboarding.manage":
     // The login domains and joining rule (#2520).
     case "login.manage":
     // The outside-sharing switch (#2590).

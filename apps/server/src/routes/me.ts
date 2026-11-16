@@ -17,7 +17,7 @@ import {
   planOfMember,
   requireUser,
 } from "../auth/authz.js";
-import { orgCan } from "../auth/policy.js";
+import { isGuestRole, orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { creatorCount, monthOf } from "../billing/creators.js";
 import { refreshPlan } from "../billing/store.js";
@@ -37,6 +37,7 @@ import { docsState } from "../services/docs-available.js";
 import { inboxOf, needsYouCount } from "../services/inbox.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
+import { instanceOwnerName } from "../services/onboarding.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
@@ -84,6 +85,8 @@ async function toMe(
     },
     ...profile,
   };
+  // #2632: for a guest's "ask {owner} to make you a member"; nobody else gets the key.
+  if (isGuestRole(user.role)) me.instanceOwner = await instanceOwnerName(c.env);
   const who0 = caller(c);
   const cap = capOfCaller(who0);
   // Parity 2: one-time notices of guest shares, Access-only installs only.

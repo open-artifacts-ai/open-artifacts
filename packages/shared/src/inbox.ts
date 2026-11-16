@@ -42,10 +42,11 @@ export const InboxItemSchema = z
       "decision",
       "proposal",
       "away",
+      "member_set_up",
     ]),
     urgency: z.enum(["waiting", "approval", "plain"]).optional(),
     waitingSince: Iso.optional(),
-    /** Null only for kind "proposal" and "away"; every other kind has its page. */
+    /** Null only for kind "proposal", "away" and "member_set_up"; every other kind has its page. */
     artifact: z.object({ id: z.string(), title: z.string() }).nullable(),
     actor: CommentAuthorSchema.nullable(),
     /** The agent's bus identity id, used by Mute agent. */
@@ -75,7 +76,8 @@ export const InboxItemSchema = z
     if (
       item.artifact === null &&
       item.kind !== "proposal" &&
-      item.kind !== "away"
+      item.kind !== "away" &&
+      item.kind !== "member_set_up"
     )
       ctx.addIssue({
         code: "custom",

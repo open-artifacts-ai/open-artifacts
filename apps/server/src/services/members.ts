@@ -46,6 +46,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
+import { untouchedWelcomeSql } from "../onboarding/untouched.js";
 import {
   closeRuntimeSockets,
   MAX_CLOSE,
@@ -60,6 +61,7 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
+import { invitedByKey, purgeSeededWelcome } from "./onboarding.js";
 import { OUTSIDE_SHARING_KEY, outsideSharingOn } from "./outside.js";
 import { inviteReach, waysOf } from "./reach.js";
 import {
@@ -85,8 +87,8 @@ const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifact
  * services/spaces.ts), on the same indexes, as an exists per row.
  */
 const TRANSFERABLE_SQL = `(users.status <> 'active' and (
-  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null)
-  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id)))`;
+  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null and not ${untouchedWelcomeSql("a")})
+  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id and not ${untouchedWelcomeSql("a")})))`;
 
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
 /** A stored status; anything unknown reads as suspended (fail closed). */
@@ -451,6 +453,19 @@ async function invited(
   const signInMethods: SignInProvider[] = reach.methods.length
     ? reach.methods
     : ["google"];
+  // #2632: who added them, for their Welcome and the "is set up" line.
+  await stmt(
+    env.DB,
+    `insert into settings (key, value) values (?1, ?2)
+     on conflict (key) do update set value = excluded.value`,
+  )
+    .bind(invitedByKey(row.id), inviter.id)
+    .run()
+    .catch((e) =>
+      logWarn("invited_by_failed", {
+        code: e instanceof Error ? e.name : "error",
+      }),
+    );
   let emailed = false;
   if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
@@ -1060,6 +1075,7 @@ export async function eraseMember(
     throw active();
   // Idempotent, and a retry also finishes a hub wipe that failed (#1291).
   if (row.erasedAt !== null) return wipeUserBus(env, id);
+  await purgeSeededWelcome(env, id);
   await checkNothingLeft(env, id);
   const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
   const out = await env.DB.batch([

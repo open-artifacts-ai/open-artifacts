@@ -184,6 +184,8 @@ export function mountAuth(app: AppType): void {
         logAuth({ provider: "access", outcome: "refused", stage: "no_access" });
         return refuse(next);
       }
+      // #2632: a member's own Welcome, once (Access sign-in too); never throws.
+      await seedWelcome(c.env, user);
       const now = Date.now();
       const sess = sessionCookie(
         await signSession(c.env, user.id, now, {
@@ -308,7 +310,7 @@ export function mountAuth(app: AppType): void {
         }
         return toSignIn(r.reason, id.next, clear, "google");
       }
-      // #2287: a hosted instance's first owner gets the Welcome; never throws.
+      // #2287, #2632: every member's own Welcome, once; never throws.
       await seedWelcome(c.env, r.user);
       try {
         await onGoogleSignIn(c.env, r.user);
