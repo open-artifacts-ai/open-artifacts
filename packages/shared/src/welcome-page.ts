@@ -67,6 +67,9 @@ ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 .open:hover{border-color:var(--muted)}
 .step a.open{color:var(--fg)}
 .member-done{margin-top:12px}
+.count{margin:12px 0 0;font-size:14px;color:var(--muted)}
+.connect-body{display:block;margin-top:10px}
+.connect-body .panel{background:var(--soft)}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
 @media (max-width:420px){main{padding:24px 16px 40px}h1{font-size:24px}}
 </style>
@@ -76,6 +79,7 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-si
 <h1 id="title">Welcome</h1>
 <p class="lead" id="lead">This is your Open Artifacts instance. Your agents publish pages here, and you read them, comment, and answer their questions.</p>
 
+<div id="connect-section">
 <h2>Connect your agent</h2>
 <p>Paste this into your agent. It connects to this instance and learns how to publish here.</p>
 <div role="tablist" aria-label="Your agent"><button role="tab" type="button" id="tab-any" aria-controls="panel-any" aria-selected="true" tabindex="0">Any agent</button><button role="tab" type="button" id="tab-claude" aria-controls="panel-claude" aria-selected="false" tabindex="-1">Claude Code</button><button role="tab" type="button" id="tab-codex" aria-controls="panel-codex" aria-selected="false" tabindex="-1">Codex</button><button role="tab" type="button" id="tab-cursor" aria-controls="panel-cursor" aria-selected="false" tabindex="-1">Cursor</button></div>
@@ -88,6 +92,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
   }
 }</pre><p class="note">Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.</p></div>
 <button class="copy" id="copy" type="button">Copy</button>
+</div>
 
 <h2>Get started</h2>
 <ol class="steps">
@@ -103,7 +108,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 
 <footer>You can delete this page any time. Nothing else depends on it.</footer>
 </main>
-<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","nameHint":"Your agent will suggest a name. It's what you'll type after @ in comments.","mentionHint":"Open your first page, type @ in a comment and pick {name}. It replies in the thread.","askHint":"Your first page has a question from {name}. Pick an option.","fallback":"your agent","member":{"welcome":"Welcome, {first}","lead":"{inviter} added you to {org}. Five steps and your agent is working here with you.","leadNoInviter":"Five steps and your agent is working here with you.","connectHint":"Paste the line below into your agent.","publishHint":"Your agent publishes one during setup. It's private until you share it.","mentionHint":"Open your first page, type @ in a comment and pick your agent. It replies in the thread.","askHint":"Your first page has a question from your agent. Pick an option.","alsoHint":"See what {org} is working on and leave a comment.","done":"Your agent hears your comments and answers them. Next: see what {org} is working on."}}</script>
+<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","nameHint":"Your agent will suggest a name. It's what you'll type after @ in comments.","mentionHint":"Open your first page, type @ in a comment and pick {name}. It replies in the thread.","askHint":"Your first page has a question from {name}. Pick an option.","fallback":"your agent","member":{"welcome":"Welcome, {first}","lead":"{inviter} added you to {org}. Five steps and your agent is working here with you.","leadNoInviter":"Five steps and your agent is working here with you.","connectHint":"Paste the line below into your agent.","publishHint":"Your agent publishes one during setup. It's private until you share it.","mentionHint":"Open your first page, type @ in a comment and pick your agent. It replies in the thread.","askHint":"Your first page has a question from your agent. Pick an option.","alsoHint":"See what {org} is working on and leave a comment.","count":"{n} of 5 done","done":"Your agent hears your comments and answers them. Next: see what {org} is working on."}}</script>
 <script>
 (function(){
   var D = JSON.parse(document.getElementById("oa-welcome-data").textContent);
@@ -184,7 +189,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     return l;
   }
   var M = D.member;
-  var memberDone = null;
+  var memberDone = null, connectBody = null, countLine = null;
   // #2632: a member's own Welcome. The shell says who it's for; the owner's
   // page is unchanged. The sixth step never counts toward "You're set."
   function greet(w){
@@ -192,6 +197,19 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       var tpl = document.getElementById("member-tpl");
       all.parentNode.insertBefore(tpl.content.cloneNode(true), all.nextSibling);
       memberDone = document.getElementById("member-done");
+    }
+    if (!connectBody) {
+      // The member's screen: the line and Copy live in step 1.
+      connectBody = document.createElement("span");
+      connectBody.className = "connect-body";
+      connectBody.appendChild(document.getElementById("panel-any"));
+      connectBody.appendChild(copy);
+      document.getElementById("connect-section").hidden = true;
+      countLine = document.createElement("p");
+      countLine.className = "count";
+      countLine.id = "count";
+      var lead = document.getElementById("lead");
+      lead.parentNode.insertBefore(countLine, lead.nextSibling);
     }
     var org = w.org || "";
     document.getElementById("title").textContent = w.firstName ? M.welcome.replace("{first}", w.firstName) : "Welcome";
@@ -204,7 +222,9 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     var w = p.who && p.who.member ? p.who : null;
     if (w) greet(w);
     var nm = p.agentName || D.fallback;
-    line(items.connect, p.agentConnected, "Connect your agent", "Agent connected", w ? M.connectHint : "");
+    var cl = line(items.connect, p.agentConnected, "Connect your agent", "Agent connected", w ? M.connectHint : "");
+    // Step 1 holds the line until the agent is connected, then is its done row.
+    if (w && !p.agentConnected) cl.appendChild(connectBody);
     line(items.name, !!p.agentNamed, "Name your agent", "Named: " + nm, D.nameHint);
     var l = line(items.publish, !!p.firstArtifact, "Publish your first artifact", "", w ? M.publishHint : D.publishHint);
     if (p.firstArtifact) {
@@ -223,7 +243,11 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     if (!stalled.hidden) ml.appendChild(stalled);
     var done = !!(p.agentConnected && p.agentNamed && p.firstArtifact && p.mentionReplied && p.askAnswered);
     all.hidden = !done || !!w;
-    if (w) memberDone.hidden = !done;
+    if (w) {
+      memberDone.hidden = !done;
+      var n = [p.agentConnected, p.agentNamed, p.firstArtifact, p.mentionReplied, p.askAnswered].filter(Boolean).length;
+      countLine.textContent = M.count.replace("{n}", String(n));
+    }
     // A member keeps polling for the optional sixth step until it's done too.
     return done && (!w || !!w.teammateCommented);
   }

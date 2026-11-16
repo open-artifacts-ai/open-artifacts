@@ -203,11 +203,11 @@ describe("a guest", () => {
     expect(card()).toBeNull();
   });
 
-  it("without the owner's name, says the owner (PLACEHOLDER)", async () => {
+  it("without the owner's name, says an owner", async () => {
     mountHosted("/shared", true, as("guest"), [refused()]);
     expect(
       await screen.findByText(
-        "Guests can read and comment. To publish, ask the owner to make you a member.",
+        "Guests can read and comment. To publish, ask an owner to make you a member.",
       ),
     ).toBeTruthy();
   });

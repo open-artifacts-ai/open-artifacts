@@ -112,6 +112,18 @@ for (const scheme of ["light", "dark"] as const)
           f.getByText("Also try: comment on a teammate's page"),
         ).toBeVisible();
         await expect(done(page)).toHaveCount(0);
+        await expect(f.getByText("0 of 5 done")).toBeVisible();
+        // The line to paste and Copy are inside step 1 (Design).
+        const one = f.locator('[data-step="connect"]');
+        await expect(
+          one.getByText("Set up Open Artifacts for me: follow", {
+            exact: false,
+          }),
+        ).toBeVisible();
+        await expect(one.getByRole("button", { name: "Copy" })).toBeVisible();
+        await expect(
+          f.getByRole("heading", { name: "Connect your agent" }),
+        ).toBeHidden();
         await shot(page, info, `member-welcome-0-${scheme}-${width}.png`);
         await axe(page);
       });
@@ -121,6 +133,11 @@ for (const scheme of ["light", "dark"] as const)
           `/a/${ID}?mock=welcome&role=member&opened=1&ticks=connect,name,publish`,
         );
         await expect(done(page)).toHaveCount(3, { timeout: 15_000 });
+        await expect(frame(page).getByText("3 of 5 done")).toBeVisible();
+        // Connected: step 1 is its done row, without the line.
+        await expect(
+          frame(page).locator('[data-step="connect"] pre'),
+        ).toHaveCount(0);
         await shot(page, info, `member-welcome-3-${scheme}-${width}.png`);
       });
 

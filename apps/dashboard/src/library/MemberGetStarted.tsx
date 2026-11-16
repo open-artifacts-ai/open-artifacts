@@ -154,8 +154,8 @@ export function MemberGetStarted() {
  */
 export const guestPublish = (owner: string) =>
   `Guests can read and comment. To publish, ask ${owner} to make you a member.`;
-/** PLACEHOLDER (#2632, for OA Product): the owner's name isn't known. */
-export const OWNER_UNKNOWN = "the owner";
+/** OA Product (#2632): the owner's name isn't known. */
+export const OWNER_UNKNOWN = "an owner";
 
 export function GuestPublishNote() {
   const name = useOwnerName(true);
