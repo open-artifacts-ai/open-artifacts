@@ -160,12 +160,31 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
   );
 }
 
+/**
+ * Design (#2512 slice 2 review): quiet hours, "Interrupt me for" and "On lock
+ * screens" only matter once browser notifications ship (slice 3); the server
+ * doesn't use them yet (no prefs route, no away status). Until then they show,
+ * disabled, under one "Coming later" line. Flip it when slice 3 lands.
+ */
+export const INTERRUPTS_LIVE = false;
+
 function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
   const save = useSave();
+  const live = INTERRUPTS_LIVE;
   const quiet = prefs.quietHours;
   const end = quiet?.end ?? QUIET_DEFAULT.end;
   return (
-    <section aria-label="When to interrupt" className={BOX}>
+    <section
+      aria-label="When to interrupt"
+      aria-describedby={live ? undefined : "oa-interrupts-later"}
+      className={BOX}
+      data-interrupts={live ? "live" : "later"}
+    >
+      {!live && (
+        <p id="oa-interrupts-later" className={`m-0 pb-2 ${muted}`}>
+          Coming later
+        </p>
+      )}
       <div className={ROW}>
         <div className="min-w-0">
           <b className="font-semibold" id="oa-quiet-label">
@@ -181,6 +200,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
             label="Quiet hours"
             describedBy="oa-quiet-hint"
             checked={quiet !== null}
+            disabled={!live}
             onChange={(on) =>
               save({ ...prefs, quietHours: on ? QUIET_DEFAULT : null })
             }
@@ -190,7 +210,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
               label="Quiet hours start"
               value={quiet?.start ?? QUIET_DEFAULT.start}
               options={HALF_HOURS}
-              disabled={!quiet}
+              disabled={!live || !quiet}
               onChange={(start) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, start } })
               }
@@ -202,7 +222,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
               label="Quiet hours end"
               value={end}
               options={HALF_HOURS}
-              disabled={!quiet}
+              disabled={!live || !quiet}
               onChange={(e) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, end: e } })
               }
@@ -222,6 +242,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
           <OptionSelect
             label="Interrupt me for"
             value={prefs.browserAllAsks ? "all" : "waiting"}
+            disabled={!live}
             options={[
               { value: "waiting", label: "Asks waiting for you" },
               { value: "all", label: "Every ask put to me" },
@@ -236,6 +257,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
           <OptionSelect
             label="On lock screens"
             value={prefs.lockScreenDetail ? "show" : "hide"}
+            disabled={!live}
             options={[
               { value: "hide", label: "Hide details" },
               { value: "show", label: "Show details" },

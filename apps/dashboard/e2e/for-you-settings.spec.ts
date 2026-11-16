@@ -104,26 +104,24 @@ for (const width of [1280, 390])
         });
       }
 
-      // A save: Every ask put to me.
-      const put = page.waitForRequest(
-        (r) =>
-          r.method() === "PUT" && r.url().includes("/me/notification-prefs"),
-      );
-      await page.getByRole("combobox", { name: "Interrupt me for" }).click();
-      await page.getByRole("option", { name: "Every ask put to me" }).click();
-      const body = (await put).postDataJSON();
-      expect(body.browserAllAsks).toBe(true);
-      expect(body.timeZone).toBe(
-        await page.evaluate(
-          () => Intl.DateTimeFormat().resolvedOptions().timeZone,
-        ),
-      );
-
-      // Quiet hours off: the times can't change.
-      await page.getByRole("switch", { name: "Quiet hours" }).click();
+      // Design: these wait for browser notifications (slice 3).
       await expect(
-        page.getByRole("combobox", { name: "Quiet hours start" }),
+        page.getByRole("region", { name: "When to interrupt" }),
+      ).toContainText("Coming later");
+      await expect(
+        page.getByRole("switch", { name: "Quiet hours" }),
       ).toBeDisabled();
+      for (const name of ["Interrupt me for", "On lock screens"])
+        await expect(page.getByRole("combobox", { name })).toBeDisabled();
+      // The Email card is as wide as the cards above it.
+      const w = async (sel: string) =>
+        (await page.locator(sel).first().boundingBox())?.width ?? 0;
+      expect(
+        Math.abs(
+          (await w("[data-notification-levels]")) -
+            (await w('section[aria-label="Notifications"]')),
+        ),
+      ).toBeLessThanOrEqual(1);
 
       // Unmute.
       await muted.getByRole("button", { name: "Unmute OA Polish" }).click();

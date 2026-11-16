@@ -36,7 +36,8 @@ function CommentEmail({ me }: { me: Me }) {
   const on =
     sender && (update.isPending ? update.variables?.commentEmail : saved);
   return (
-    <section className="max-w-[560px]" aria-label="Notifications">
+    // Design: the same width as the For you cards above it.
+    <section aria-label="Notifications">
       <SettingsCard id="oa-notifications-email" title="Email">
         <div className="flex items-start justify-between gap-[var(--oa-space-3)]">
           <div>

@@ -58,24 +58,25 @@ describe("For you settings", () => {
     ).toBeInTheDocument();
   });
 
-  it("saves the whole prefs in the browser's zone (quiet hours off)", async () => {
+  // Design (#2512 slice 2 review): these wait for browser notifications.
+  it("quiet hours, interrupts and lock screens wait: disabled under Coming later, nothing saved", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     await page();
     const puts = calls("PUT");
-    fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
-    await waitFor(() =>
-      expect(puts.find((c) => c.path === R.meNotificationPrefs)?.body).toEqual({
-        needsYou: { inApp: true, browser: false },
-        updates: { inApp: true, browser: false },
-        browserAllAsks: false,
-        quietHours: null,
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        lockScreenDetail: false,
-      }),
-    );
-    expect(
-      screen.getByRole("combobox", { name: "Quiet hours start" }),
-    ).toBeDisabled();
+    const box = screen.getByRole("region", { name: "When to interrupt" });
+    expect(box).toHaveAccessibleDescription("Coming later");
+    for (const name of [
+      "Quiet hours start",
+      "Quiet hours end",
+      "Interrupt me for",
+      "On lock screens",
+    ])
+      expect(screen.getByRole("combobox", { name })).toBeDisabled();
+    const quiet = screen.getByRole("switch", { name: "Quiet hours" });
+    expect(quiet).toBeDisabled();
+    fireEvent.click(quiet);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(puts.filter((c) => c.path === R.meNotificationPrefs)).toEqual([]);
   });
 
   it("unmutes", async () => {
