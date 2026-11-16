@@ -136,7 +136,8 @@ async function startMocks() {
           pageAgent: {
             key: "agent:0123456789abcdef0123456789abcdef",
             name: "OA Design",
-            for: pageAgent === "own" ? null : "Leo Urbina",
+            for: pageAgent === "own" ? "Ada Lovelace" : "Leo Urbina",
+            me: pageAgent === "own",
             linked: true,
             animal: { id: "duck", color: 6 },
           },

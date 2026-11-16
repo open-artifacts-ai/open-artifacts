@@ -94,7 +94,7 @@ const noteBox = (c: HTMLElement) =>
 
 describe("the chip on a new thread (#2610)", () => {
   it("a plain note: Notifying {agent}, sent by default", async () => {
-    server.use(withPageAgent({ ...AGENT, for: null }));
+    server.use(withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }));
     const p = posts();
     mount(viewerPath(OWNED));
     const c = await col();
@@ -115,7 +115,7 @@ describe("the chip on a new thread (#2610)", () => {
   });
 
   it("✕ removes it and the thread opts out", async () => {
-    server.use(withPageAgent({ ...AGENT, for: null }));
+    server.use(withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }));
     const p = posts();
     mount(viewerPath(OWNED));
     const c = await col();
@@ -136,15 +136,24 @@ describe("the chip on a new thread (#2610)", () => {
   });
 
   it("a teammate's agent says whose it is", async () => {
-    server.use(withPageAgent({ ...AGENT, for: "Leo Urbina" }));
+    server.use(withPageAgent({ ...AGENT, for: "Leo Urbina", me: false }));
     mount(viewerPath(OWNED));
     await col();
     await waitFor(() => expect(chip()).not.toBeNull());
     expect(chip()?.textContent).toContain("OA Design · Leo's agent");
   });
 
+  it("your own agent is just its name, even with `for` set", async () => {
+    server.use(withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }));
+    mount(viewerPath(OWNED));
+    await col();
+    await waitFor(() => expect(chip()).not.toBeNull());
+    expect(chip()?.textContent).not.toContain("'s agent");
+    expect(chip()?.textContent).toContain("OA Design");
+  });
+
   it("a comment on selected text: the chip, and the opt-out with it", async () => {
-    server.use(withPageAgent({ ...AGENT, for: null }));
+    server.use(withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }));
     const p = posts();
     mount(viewerPath(OWNED));
     await col();
@@ -194,7 +203,7 @@ describe("the chip on a new thread (#2610)", () => {
       viewerPath(OWNED),
       true,
       (m: Me): Me => ({ ...m, user: { ...m.user, role: "guest" } }),
-      [withPageAgent({ ...AGENT, for: "Leo Urbina" })],
+      [withPageAgent({ ...AGENT, for: "Leo Urbina", me: false })],
     );
     await col();
     await new Promise((r) => setTimeout(r, 300));
@@ -202,7 +211,7 @@ describe("the chip on a new thread (#2610)", () => {
   });
 
   it("no chip on a reply", async () => {
-    server.use(withPageAgent({ ...AGENT, for: null }));
+    server.use(withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }));
     mount(viewerPath(OWNED));
     const c = await col();
     await waitFor(() => expect(chip()).not.toBeNull());

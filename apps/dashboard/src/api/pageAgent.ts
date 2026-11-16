@@ -5,15 +5,18 @@
 // - GET R.artifact gains `pageAgent?: { key, name, for }`, sent to members
 //   only: the agent that published the page (the server's pagePublisher).
 //   Absent for a page a person published, a gone agent, guests and signed-out
-//   visitors. `for` is the person's name when it is another member's agent,
-//   null for the caller's own (as `owner` on the mention list).
+//   visitors. `for` is the person whose agent it is; `me` says it is the
+//   caller's own (as on a comment author).
 // - POST R.comments (a new thread) takes `notifyPageAgent: false` to opt out.
 import { z } from "zod";
 
 export const PageAgentSchema = z.object({
   key: z.string(),
   name: z.string(),
+  /** The person whose agent it is. */
   for: z.string().nullable().optional(),
+  /** The caller's own agent. */
+  me: z.boolean().optional(),
   /** The agent's face, when the server sends it (as on thread agents). */
   linked: z.boolean().optional(),
   animal: z

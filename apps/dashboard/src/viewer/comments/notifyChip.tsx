@@ -36,9 +36,11 @@ export function NotifyChip({
   agent: PageAgent;
   onRemove: () => void;
 }) {
-  const label = agent.for
-    ? NOTIFY.teammate(agent.name, firstOf(agent.for))
-    : agent.name;
+  // A teammate's agent says whose it is; the caller's own is just its name.
+  const label =
+    !agent.me && agent.for
+      ? NOTIFY.teammate(agent.name, firstOf(agent.for))
+      : agent.name;
   const stop = NOTIFY.stop(agent.name);
   return (
     <span
