@@ -1,7 +1,12 @@
 // T19: the dashboard against real staging installs (the T19 plan). rl-a runs
 // the flows through its test hooks; leo, the user's install, gets anonymous
 // read-only checks only. Needs REDLINE_TARGETS for rl-a (pnpm test:e2e:staging).
+import { randomBytes } from "node:crypto";
 import { defineConfig, devices } from "@playwright/test";
+
+// One T19 run id for every worker and the purge teardown (rl-a/fixtures.ts
+// RUN): set here, in the main process, before any worker starts.
+process.env.T19_RUN ??= randomBytes(3).toString("hex");
 
 export default defineConfig({
   testDir: "e2e/staging",
@@ -21,7 +26,13 @@ export default defineConfig({
     ...devices["Desktop Chrome"],
   },
   projects: [
-    { name: "rl-a guard", testMatch: "rl-a/guard.setup.ts" },
+    {
+      name: "rl-a guard",
+      testMatch: "rl-a/guard.setup.ts",
+      teardown: "rl-a purge",
+    },
+    // After every rl-a case (#2680): erases this run's people and old runs'.
+    { name: "rl-a purge", testMatch: "rl-a/purge.teardown.ts" },
     {
       name: "rl-a",
       testMatch: "rl-a/*.spec.ts",

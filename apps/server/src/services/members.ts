@@ -1053,12 +1053,13 @@ async function checkNothingLeft(env: Env, id: string): Promise<void> {
  * member_active when not removed, the owner, or the owner's configured
  * address; 409 member_owns_artifacts { live, deleted }. Idempotent: an
  * erased row resolves with nothing written. The route allows only an
- * interactive cookie session.
+ * interactive cookie session; SYSTEM_ACTOR is the test hooks' people purge
+ * (#2680), audited as system.
  */
 export async function eraseMember(
   env: Env,
   id: string,
-  actor: Member,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   const row = await getRow(env, id);
@@ -1083,7 +1084,7 @@ export async function eraseMember(
     stmt(env.DB, ERASE_USER).bind(...args),
     // Directly after the users update: audited only when it changed the row.
     // No detail: audit rows hold ids and enums only.
-    audit(env, "user.erased", { type: "user", id }, userActor(actor.id), {
+    audit(env, "user.erased", { type: "user", id }, auditActor(actor), {
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);

@@ -26,6 +26,7 @@ export const TEST_HOOKS = {
   codeCapsReset: "/__test/code-caps/reset",
   directoryGroups: "/__test/directory-groups",
   directoryHeld: "/__test/directory-held",
+  peoplePurge: "/__test/people-purge",
 } as const;
 
 /**
@@ -121,6 +122,30 @@ export const TestCodeCapsResetResultSchema = z.object({
 export type TestCodeCapsResetResult = z.infer<
   typeof TestCodeCapsResetResultSchema
 >;
+
+/** The address prefix TEST_HOOKS.peoplePurge acts on: T19's people only. */
+export const TEST_PURGE_PREFIX = /^t19-[a-z0-9-]{0,40}$/;
+/** Most people one TEST_HOOKS.peoplePurge call erases. */
+export const TEST_PURGE_MAX = 25;
+/**
+ * POST TEST_HOOKS.peoplePurge (#2680): erases up to `limit` people under
+ * TEST_DOMAIN whose address starts with `prefix` (a `t19-` prefix) and who
+ * were created before `before` (ms), oldest first: their personal space's
+ * artifacts (trashed ones too) are purged, they are removed, then erased.
+ * Never the owner. `left` counts the matching people still there.
+ */
+export const TestPeoplePurgeInputSchema = z.strictObject({
+  prefix: z.string().regex(TEST_PURGE_PREFIX),
+  before: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(TEST_PURGE_MAX),
+});
+export type TestPeoplePurgeInput = z.infer<typeof TestPeoplePurgeInputSchema>;
+export const TestPeoplePurgeResultSchema = z.object({
+  erased: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  left: z.number().int().nonnegative(),
+});
+export type TestPeoplePurgeResult = z.infer<typeof TestPeoplePurgeResultSchema>;
 
 /** Hook group ids: the hook spaces' `test-` rule (checked again in SQL). */
 export const TEST_GROUP_ID = /^test-[A-Za-z0-9_-]{1,59}$/;
