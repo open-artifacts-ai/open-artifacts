@@ -353,6 +353,8 @@ export const CAPPED_WRITES: readonly string[] = [
   "DELETE /api/v1/bus/machines/:id",
   "DELETE /api/v1/bus/reach/:id",
   "POST /api/v1/notices/guest_shares/dismiss",
+  // #2632: hiding or finishing their own first-run checklist (a guest gets 403).
+  "PUT /api/v1/onboarding",
   // #2590: the route's own policy decides (a guest holding a commenter share).
   "PUT /api/v1/artifacts/:id/data/:col/:doc",
   "PATCH /api/v1/artifacts/:id/data/:col/:doc",
