@@ -114,7 +114,7 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             <th scope="row" className={`${td} text-left font-normal`}>
               <b className="font-semibold">Needs you</b>
               <small className={sub}>
-                Asks, approvals, a stuck agent, a failed payment
+                Asks, approvals, a stuck agent
               </small>
             </th>
             <td className={td}>Always</td>

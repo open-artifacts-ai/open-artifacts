@@ -82,23 +82,26 @@ export function createForYouMock(d: Deps): {
     readAt: null,
   };
   /** Design v10: a mention that needs you, with Open and Later. */
-  const mention = (back: boolean): InboxItem => ({
-    id: "itm:mention1",
-    level: "needs_you",
-    kind: "mention",
-    artifact: page(d.otherId, "Pricing table"),
-    actor: person("Sam Rivera"),
-    text: "Sam Rivera mentioned you",
-    href: `/a/${d.otherId}`,
-    createdAt: ago(back ? 26 * 60 * MIN : 20 * MIN),
-    readAt: null,
-    ...(back
-      ? {
-          backFromLater: true as const,
-          later: { until: ago(MIN), used: true as const },
-        }
-      : {}),
-  });
+  const mention = (back: boolean): InboxItem =>
+    ({
+      id: "itm:mention1",
+      level: "needs_you",
+      kind: "mention",
+      artifact: page(d.otherId, "Pricing table"),
+      actor: person("Sam Rivera"),
+      text: "Sam Rivera mentioned you",
+      // #2570 (contract v7, PROVISIONAL): the comment's quote on a mention.
+      excerpt: "Can you check the yearly numbers?",
+      href: `/a/${d.otherId}`,
+      createdAt: ago(back ? 26 * 60 * MIN : 20 * MIN),
+      readAt: null,
+      ...(back
+        ? {
+            backFromLater: true as const,
+            later: { until: ago(MIN), used: true as const },
+          }
+        : {}),
+    }) as InboxItem;
   const update = (
     id: string,
     kind: InboxItem["kind"],

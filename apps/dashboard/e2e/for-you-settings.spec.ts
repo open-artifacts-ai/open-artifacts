@@ -62,6 +62,8 @@ for (const width of [1280, 390])
         "In the app",
         "This browser",
       ]);
+      await expect(levels).toContainText("Asks, approvals, a stuck agent");
+      await expect(levels).not.toContainText("failed payment");
       await expect(
         page.getByRole("switch", { name: "Needs you in this browser" }),
       ).toHaveAttribute("aria-checked", "false");

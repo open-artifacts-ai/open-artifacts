@@ -20,15 +20,27 @@ export const SHOWN_KINDS = [
 ] as const;
 type ShownKind = (typeof SHOWN_KINDS)[number];
 
-export type Item = InboxItem & { kind: ShownKind };
+export type Item = InboxItem & {
+  kind: ShownKind;
+  /** #2570 (contract v7, PROVISIONAL until @oa/shared has it): a mention's comment quote. */
+  excerpt?: string;
+};
 
 const shown = (x: InboxItem): x is Item =>
   (SHOWN_KINDS as readonly string[]).includes(x.kind);
 
+/** #2570: the quote, when the server sends one (the shared schema drops it). */
+const excerptOf = (raw: unknown) => {
+  const e = (raw as { excerpt?: unknown } | null)?.excerpt;
+  return typeof e === "string" && e.trim() ? e.trim() : undefined;
+};
+
 /** One item, or null when it isn't one this client shows. */
 export function readItem(raw: unknown): Item | null {
   const p = InboxItemSchema.safeParse(raw);
-  return p.success && shown(p.data) ? p.data : null;
+  if (!p.success || !shown(p.data)) return null;
+  const excerpt = excerptOf(raw);
+  return excerpt ? { ...p.data, excerpt } : p.data;
 }
 
 /** Keeps the items it can show; drops the rest. */

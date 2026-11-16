@@ -95,6 +95,10 @@ for (const width of [1280, 390])
       const rows = p.locator("[data-for-you-item][data-level=needs_you]");
       await expect(rows.first()).toContainText("waiting 4 min");
       await expect(rows.nth(1)).toContainText("Sam Rivera mentioned you");
+      // #2570: the comment's quote on the mention row.
+      await expect(rows.nth(1)).toContainText(
+        '"Can you check the yearly numbers?" · on "Pricing table"',
+      );
       if (width === 390) {
         // A full screen, rows at least 56px tall.
         const box = await p.boundingBox();
