@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.2...v0.199.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **t19:** erase each run's people on rl-a, and old runs' leftovers ([#2680](https://github.com/open-artifacts-ai/open-artifacts/issues/2680)) ([#2683](https://github.com/open-artifacts-ai/open-artifacts/issues/2683)) ([8f9d84c](https://github.com/open-artifacts-ai/open-artifacts/commit/8f9d84ce8a4d4c95a573bf441a97f600b94c0337))
+
 ## [0.199.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.1...v0.199.2) (2026-11-16)
 
 
