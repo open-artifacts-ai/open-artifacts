@@ -98,6 +98,10 @@ for (const scheme of ["light", "dark"] as const)
           if (s.n === "no-passkey") {
             await expect(high).toBeDisabled();
             await expect(page.getByLabel(RULE)).toBeDisabled();
+            await expect(high).toHaveAttribute("aria-checked", "false");
+            await expect(
+              page.getByRole("button", { name: "Add a passkey" }),
+            ).toHaveCount(2);
             await expect(
               page.getByText("Add a passkey to use these."),
             ).toBeVisible();
@@ -128,7 +132,7 @@ for (const scheme of ["light", "dark"] as const)
           ),
         ).toBeVisible();
         await expect(
-          page.getByRole("button", { name: "Add a passkey" }),
+          page.getByRole("button", { name: "Add a passkey" }).first(),
         ).toBeFocused();
         await shot(page, `reauth-return-${scheme}-${width}`);
       });
@@ -139,7 +143,10 @@ for (const scheme of ["light", "dark"] as const)
         await authenticator(page);
         await page.goto("/settings/security?mock=passkey-usable");
         await expect(page.getByText("MacBook")).toBeVisible();
-        await page.getByRole("button", { name: "Add a passkey" }).click();
+        await page
+          .getByRole("button", { name: "Add a passkey" })
+          .first()
+          .click();
         // Approved by the existing passkey; creating takes a second click.
         const create = page.getByRole("button", { name: "Add passkey" });
         await expect(create).toBeFocused();
@@ -179,6 +186,7 @@ for (const scheme of ["light", "dark"] as const)
         await expect(rule).toHaveValue(
           "anything that emails a customer or a partner",
         );
+        await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
       });
 
       test("the passkey prompt on turning a switch off", async ({ page }) => {
@@ -199,7 +207,10 @@ for (const scheme of ["light", "dark"] as const)
       test("remove a passkey with its confirm", async ({ page }) => {
         await authenticator(page);
         await page.goto("/settings/security?mock=passkey-usable");
-        await page.getByRole("button", { name: "Add a passkey" }).click();
+        await page
+          .getByRole("button", { name: "Add a passkey" })
+          .first()
+          .click();
         await page.getByRole("button", { name: "Add passkey" }).click();
         await expect(page.getByText("Passkey", { exact: true })).toBeVisible();
         await page.getByRole("button", { name: "Remove MacBook" }).click();

@@ -42,6 +42,11 @@ export const HIGH_STAKES_SWITCH = "Ask for my passkey on high-stakes decisions";
 export const HIGH_STAKES_HELP =
   "When an agent or a person marks a decision as high stakes, approving it needs your passkey. Saying no never does.";
 export const EVERY_ANSWER_SWITCH = "Ask on every answer";
+export const EVERY_ANSWER_HELP =
+  "Your passkey is needed for every answer you give, high stakes or not.";
+export const PASSKEYS_LINE =
+  "Use a passkey to log in and to approve high-stakes decisions.";
+export const SAVED_LINE = "Saved.";
 export const OWN_RULE_LABEL = "Also treat as high stakes:";
 export const OWN_RULE_PLACEHOLDER =
   "For example: anything that emails a customer";
@@ -142,6 +147,8 @@ function SecurityBody() {
     queryKey: qkSettings,
     queryFn: ({ signal }) => getPasskeySettings(signal),
   });
+  // The Passkeys card's add, for the button beside "Add a passkey to use these."
+  const startAdd = useRef<() => void>(() => {});
   const refresh = () =>
     Promise.all([
       qc.invalidateQueries({ queryKey: qkPasskeys }),
@@ -154,8 +161,10 @@ function SecurityBody() {
         loading={keys.isPending}
         failed={keys.isError}
         refresh={refresh}
+        startAdd={startAdd}
       />
       <HighStakes
+        onAdd={() => startAdd.current()}
         settings={settings.data}
         failed={settings.isError}
         hasPasskey={
@@ -172,11 +181,13 @@ function PasskeyList({
   loading,
   failed,
   refresh,
+  startAdd,
 }: {
   keys: Passkey[] | undefined;
   loading: boolean;
   failed: boolean;
   refresh: () => Promise<unknown>;
+  startAdd: { current: () => void };
 }) {
   const [adding, setAdding] = useState(false);
   // A failure sits under the row that caused it (`id`), or under the list (add).
@@ -242,6 +253,7 @@ function PasskeyList({
     }
   }
 
+  startAdd.current = () => void add();
   async function add() {
     // aria-disabled keeps focus on the button
     if (adding || full || loading || approved) return;
@@ -376,7 +388,7 @@ function PasskeyList({
     <SettingsCard
       id="oa-passkeys"
       title="Passkeys"
-      subtitle="Approve risky actions with your fingerprint, face, device PIN or a security key."
+      subtitle={PASSKEYS_LINE}
       focusable
       action={
         <Button
@@ -546,10 +558,12 @@ function HighStakes({
   settings,
   failed,
   hasPasskey,
+  onAdd,
 }: {
   settings: PasskeySettings | undefined;
   failed: boolean;
   hasPasskey: boolean | undefined;
+  onAdd: () => void;
 }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<Row | null>(null);
@@ -561,6 +575,7 @@ function HighStakes({
   } | null>(null);
   // null: not edited, so the field reads through from the server.
   const [draft, setDraft] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const none = hasPasskey === false;
   const off = !settings || none;
   const rule = draft ?? settings?.ownRule ?? "";
@@ -570,6 +585,7 @@ function HighStakes({
     if (!settings || busy) return;
     setBusy(row);
     setNote(null);
+    setSaved(false);
     try {
       // Build the change from the server's state now, so an assertion never
       // binds settings the person did not see.
@@ -586,7 +602,10 @@ function HighStakes({
         () => setNote({ row, text: WAITING, error: false }),
       );
       qc.setQueryData(qkSettings, saved);
-      if (row === "ownRule") setDraft(null);
+      if (row === "ownRule") {
+        setDraft(null);
+        setSaved(true);
+      }
       setNote(null);
     } catch (e) {
       setNote({ row, text: failureLine(e, "changed"), error: true });
@@ -633,7 +652,8 @@ function HighStakes({
             [help?.id, none && "oa-passkey-none"].filter(Boolean).join(" ") ||
             undefined
           }
-          checked={settings?.[row] ?? false}
+          // Design: with no passkey, both show off (never a dimmed on).
+          checked={!none && (settings?.[row] ?? false)}
           disabled={off}
           onChange={(next) => void change(row, { [row]: next })}
         />
@@ -646,15 +666,23 @@ function HighStakes({
     <SettingsCard id="oa-passkey-asks" title={HIGH_STAKES_HEADING}>
       {failed && <p className={errorText}>Couldn't load these settings.</p>}
       {none && settings && (
-        <p id="oa-passkey-none" className={`m-0 ${muted}`}>
-          {NO_PASSKEY_LINE}
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-[var(--oa-space-3)]">
+          <p id="oa-passkey-none" className={`m-0 ${muted}`}>
+            {NO_PASSKEY_LINE}
+          </p>
+          <Button size="sm" className="flex-none" onClick={onAdd}>
+            Add a passkey
+          </Button>
+        </div>
       )}
       {switchRow("highStakes", HIGH_STAKES_SWITCH, {
         id: "oa-passkey-high-help",
         text: HIGH_STAKES_HELP,
       })}
-      {switchRow("everyAnswer", EVERY_ANSWER_SWITCH)}
+      {switchRow("everyAnswer", EVERY_ANSWER_SWITCH, {
+        id: "oa-passkey-every-help",
+        text: EVERY_ANSWER_HELP,
+      })}
       <form
         className="grid gap-[var(--oa-space-2)]"
         onSubmit={(e) => {
@@ -678,6 +706,7 @@ function HighStakes({
           }
           onChange={(e) => {
             setDraft(e.target.value);
+            setSaved(false);
             if (note?.row === "ownRule") setNote(null);
           }}
         />
@@ -697,6 +726,11 @@ function HighStakes({
           </Button>
         </div>
         {noteFor("ownRule")}
+        {saved && !note && (
+          <p role="status" className={`m-0 ${muted}`}>
+            {SAVED_LINE}
+          </p>
+        )}
       </form>
     </SettingsCard>
   );

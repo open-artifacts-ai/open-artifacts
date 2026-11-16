@@ -89,6 +89,9 @@ function settingsServer(initial: PasskeySettings, put?: () => Response) {
   return { puts, challenges };
 }
 
+/** The Passkeys card's Add (with no passkey, a second one sits by the switches). */
+const addBtn = () =>
+  screen.getAllByRole("button", { name: "Add a passkey" })[0] as HTMLElement;
 const HIGH = "Ask for my passkey on high-stakes decisions";
 const EVERY = "Ask on every answer";
 const RULE = "Also treat as high stakes:";
@@ -128,7 +131,16 @@ describe("Settings › Security: a passkey on high-stakes decisions (#2661)", ()
     expect(high).toHaveAccessibleDescription(
       "When an agent or a person marks a decision as high stakes, approving it needs your passkey. Saying no never does.",
     );
-    expect(await live(EVERY)).toHaveAttribute("aria-checked", "false");
+    const every = await live(EVERY);
+    expect(every).toHaveAttribute("aria-checked", "false");
+    expect(every).toHaveAccessibleDescription(
+      "Your passkey is needed for every answer you give, high stakes or not.",
+    );
+    expect(
+      screen.getByText(
+        "Use a passkey to log in and to approve high-stakes decisions.",
+      ),
+    ).toBeVisible();
     const rule = await ruleField();
     expect(rule).toHaveAttribute(
       "placeholder",
@@ -157,17 +169,32 @@ describe("Settings › Security: a passkey on high-stakes decisions (#2661)", ()
       expect(text).not.toMatch(w);
   });
 
-  it("with no passkey, the switches and the field are disabled and say to add one", async () => {
+  it("with no passkey: both switches off and disabled (never a dimmed on), the field disabled, and Add a passkey right there", async () => {
     use("none");
     mount("/settings/security");
-    await screen.findByText("Add a passkey to use these.");
+    const line = await screen.findByText("Add a passkey to use these.");
     for (const n of [HIGH, EVERY]) {
       const s = await sw(n);
       expect(s).toBeDisabled();
+      expect(s).toHaveAttribute("aria-checked", "false");
       expect(s).toHaveAccessibleDescription(/Add a passkey to use these\.$/);
     }
     expect(await screen.findByLabelText(RULE)).toBeDisabled();
     expect(screen.getByText("No passkeys yet.")).toBeInTheDocument();
+    // The button beside the line starts the same add as the Passkeys card's.
+    const here = within(line.parentElement as HTMLElement).getByRole("button", {
+      name: "Add a passkey",
+    });
+    fireEvent.click(here);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  });
+
+  it("a server that still says on, with no passkey, shows off", async () => {
+    settingsServer({ ...base, hasPasskey: false, everyAnswer: true });
+    mount("/settings/security");
+    await screen.findByText("Add a passkey to use these.");
+    for (const n of [HIGH, EVERY])
+      expect(await sw(n)).toHaveAttribute("aria-checked", "false");
   });
 
   it.each([
@@ -243,6 +270,10 @@ describe("Settings › Security: a passkey on high-stakes decisions (#2661)", ()
     expect(challenges).toEqual([body]);
     await waitFor(() => expect(rule.value).toBe(body.ownRule));
     expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(await screen.findByText("Saved.")).toBeVisible();
+    // Typing again clears it.
+    fireEvent.change(rule, { target: { value: "more" } });
+    expect(screen.queryByText("Saved.")).toBeNull();
   });
 
   it("clearing the rule needs the passkey too", async () => {
@@ -497,7 +528,7 @@ describe("Settings › Security: passkeys", () => {
     const posts = calls("POST");
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     expect(await screen.findByText("Passkey")).toBeVisible();
     expect(create).toHaveBeenCalledTimes(1);
     expect(posts.find((c) => c.path === R.passkeyRegisterFinish)?.body).toEqual(
@@ -518,7 +549,7 @@ describe("Settings › Security: passkeys", () => {
     const posts = calls("POST");
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     const next = await screen.findByRole("button", { name: "Add passkey" });
     expect(
       screen.getByText(
@@ -527,7 +558,7 @@ describe("Settings › Security: passkeys", () => {
     ).toBeVisible();
     expect(next).toHaveFocus();
     // One primary action: the header button steps back, the sign-in note goes.
-    const header = screen.getByRole("button", { name: "Add a passkey" });
+    const header = addBtn();
     expect(header).toHaveAttribute("aria-disabled", "true");
     expect(header.className).not.toMatch(/bg-primary/);
     expect(screen.queryByText(/asks you to log in again first/)).toBeNull();
@@ -576,7 +607,7 @@ describe("Settings › Security: passkeys", () => {
     const posts = calls("POST");
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     await screen.findByRole("button", { name: "Add passkey" });
     expect(posts.some((c) => c.path === R.passkeyRegisterChallenge)).toBe(true);
     expect(posts.find((c) => c.path === R.passkeyRegisterBegin)?.body).toEqual({
@@ -588,7 +619,7 @@ describe("Settings › Security: passkeys", () => {
     use("usable");
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     const next = await screen.findByRole("button", { name: "Add passkey" });
     create.mockRejectedValueOnce(new DOMException("no", "NotAllowedError"));
     fireEvent.click(next);
@@ -613,7 +644,7 @@ describe("Settings › Security: passkeys", () => {
     use("usable");
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     const next = await screen.findByRole("button", { name: "Add passkey" });
     create.mockRejectedValueOnce(new DOMException("dup", "InvalidStateError"));
     fireEvent.click(next);
@@ -624,7 +655,7 @@ describe("Settings › Security: passkeys", () => {
     ).toBeVisible();
     expect(screen.queryByRole("button", { name: "Add passkey" })).toBeNull();
     // The header button is back: not aria-disabled, primary again.
-    const header = screen.getByRole("button", { name: "Add a passkey" });
+    const header = addBtn();
     expect(header).not.toHaveAttribute("aria-disabled");
     expect(header.className).toMatch(/bg-primary/);
   });
@@ -635,7 +666,7 @@ describe("Settings › Security: passkeys", () => {
     const posts = calls("POST");
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     expect(await screen.findByText("Nothing was added.")).toBeVisible();
     expect(posts.some((c) => c.path === R.passkeyRegisterBegin)).toBe(false);
     expect(create).not.toHaveBeenCalled();
@@ -667,7 +698,7 @@ describe("Settings › Security: passkeys", () => {
     );
     mount("/settings/security");
     await screen.findByText("This laptop");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     const line = await screen.findByText(
       /^Your new passkey can approve from .+\. Nothing was added\.$/,
     );
@@ -689,7 +720,7 @@ describe("Settings › Security: passkeys", () => {
     const posts = calls("POST");
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     const line = await screen.findByText(
       /^Your new passkey can approve from .+\. Nothing was added\.$/,
     );
@@ -718,7 +749,7 @@ describe("Settings › Security: passkeys", () => {
     const posts = calls("POST");
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(get).not.toHaveBeenCalled();
     expect(
@@ -738,7 +769,7 @@ describe("Settings › Security: passkeys", () => {
     );
     mount("/settings/security");
     await screen.findByText("MacBook");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     await waitFor(() => expect(redirect).toHaveBeenCalledTimes(1));
     expect(get).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).not.toBeNull();
@@ -749,7 +780,7 @@ describe("Settings › Security: passkeys", () => {
     create.mockRejectedValue(new DOMException("no", "NotAllowedError"));
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     expect(await screen.findByText("Nothing was added.")).toBeVisible();
     expect(screen.getByText("No passkeys yet.")).toBeVisible();
   });
@@ -766,7 +797,7 @@ describe("Settings › Security: passkeys", () => {
     );
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     await waitFor(() =>
       expect(redirect).toHaveBeenCalledWith(
         `${location.origin}/sign-in?reauth=1`,
@@ -786,7 +817,7 @@ describe("Settings › Security: passkeys", () => {
     );
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     expect(await screen.findByText(/Nothing was added\.$/)).toBeVisible();
     expect(redirect).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).toBeNull();
@@ -818,7 +849,7 @@ describe("Settings › Security: stale state, return from login, pending removal
     create.mockRejectedValue(new DOMException("dup", "InvalidStateError"));
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     expect(
       await screen.findByText(
         "This device already has a passkey for this account. Nothing was added.",
@@ -852,7 +883,7 @@ describe("Settings › Security: stale state, return from login, pending removal
     );
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(addBtn());
     await waitFor(() => expect(redirect).toHaveBeenCalledTimes(1));
   });
 
@@ -921,7 +952,7 @@ describe("Settings › Security: stale state, return from login, pending removal
     create.mockReturnValue(new Promise(() => {}));
     mount("/settings/security");
     await screen.findByText("No passkeys yet.");
-    const add = screen.getByRole("button", { name: "Add a passkey" });
+    const add = addBtn();
     add.focus();
     fireEvent.click(add);
     const busy = await screen.findByRole("button", { name: "Adding…" });
