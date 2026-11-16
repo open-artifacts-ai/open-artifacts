@@ -743,14 +743,15 @@ export const reservedArtifacts = sqliteTable("reserved_artifacts", {
 
 /**
  * Outside share emails by the sending message id (#2650), so a bounce or
- * complaint event can be traced to the member who sent it. The address is a
- * hash, never the address. Old rows are swept after 30 days.
+ * complaint event can be traced to the member who sent it. Never the address.
+ * Old rows are swept after 30 days.
  */
 export const shareEmailMessages = sqliteTable("share_email_messages", {
   messageId: text("message_id").primaryKey(),
   userId: text("user_id").notNull(),
-  addressHash: text("address_hash").notNull(),
   createdAt: integer("created_at").notNull(),
+  /** When a terminal bounce on this message was reported (#2650): three in 7 days pause the sender. */
+  bouncedAt: integer("bounced_at"),
 });
 
 /** A member whose outside share emails are paused until `untilAt` (ms): a bounce or complaint on one of them (#2650). */

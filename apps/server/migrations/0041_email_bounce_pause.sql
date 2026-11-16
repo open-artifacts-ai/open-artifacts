@@ -1,8 +1,8 @@
 CREATE TABLE `share_email_messages` (
 	`message_id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
-	`address_hash` text NOT NULL,
-	`created_at` integer NOT NULL
+	`created_at` integer NOT NULL,
+	`bounced_at` integer
 );
 --> statement-breakpoint
 CREATE TABLE `share_email_pauses` (

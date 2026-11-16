@@ -39,7 +39,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { apiFormat } from "./doc-format.js";
-import { recordShareEmail, senderPaused } from "./email-events.js";
+import { pausedUntil, recordShareEmail } from "./email-events.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
@@ -286,14 +286,18 @@ async function emailed(
     emailed: boolean;
     notEmailed?: NonNullable<ShareResult["notEmailed"]>;
     limit?: number;
+    pausedUntil?: string;
   }>,
-): Promise<Pick<ShareResult, "emailed" | "notEmailed" | "limit">> {
+): Promise<
+  Pick<ShareResult, "emailed" | "notEmailed" | "limit" | "pausedUntil">
+> {
   if (!created) return { emailed: false };
   const r = await send();
   return {
     emailed: r.emailed,
     ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
     ...(r.limit !== undefined ? { limit: r.limit } : {}),
+    ...(r.pausedUntil ? { pausedUntil: r.pausedUntil } : {}),
   };
 }
 
@@ -318,6 +322,7 @@ async function emailShare(
   emailed: boolean;
   notEmailed?: NonNullable<ShareResult["notEmailed"]>;
   limit?: number;
+  pausedUntil?: string;
 }> {
   if (!emailEnabled(env)) return { emailed: false };
   try {
@@ -339,12 +344,18 @@ async function emailShare(
     // A bounce or complaint on this member's earlier outside share email
     // pauses them for 7 days (#2650): the share is saved, nothing is sent, and
     // the sharer is told only "skipped".
-    if (outside && (await senderPaused(env, user.id))) {
+    const paused = outside ? await pausedUntil(env, user.id) : null;
+    if (paused !== null) {
       logInfo("share_email_skipped", {
         reason: "sender_paused",
         artifactId: artifact.id,
       });
-      return { emailed: false, notEmailed: "skipped" };
+      // The sender's own pause, never which recipient bounced.
+      return {
+        emailed: false,
+        notEmailed: "sender_paused",
+        pausedUntil: new Date(paused).toISOString(),
+      };
     }
     const day = new Date().toISOString().slice(0, 10);
     const trial = planOfMember(user)?.tier === "trial";
@@ -412,8 +423,8 @@ async function emailShare(
     if (sent) {
       // Which member sent it, so a bounce or complaint can pause them.
       if (outside && outcome.messageId)
-        await recordShareEmail(env, outcome.messageId, user.id, email).catch(
-          (e) => logWarn("share_email_record_failed", e),
+        await recordShareEmail(env, outcome.messageId, user.id).catch((e) =>
+          logWarn("share_email_record_failed", e),
         );
       return { emailed: true };
     }

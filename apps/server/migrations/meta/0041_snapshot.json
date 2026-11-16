@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "5bcc72e6-3c06-491d-b871-d1462ec76676",
+  "id": "c8a31a86-93ec-4c96-a884-f5b99c1769ea",
   "prevId": "5c526c81-5a61-4c7e-a2d1-3f25eaef259b",
   "tables": {
     "agent_grants": {
@@ -1821,18 +1821,18 @@
           "notNull": true,
           "autoincrement": false
         },
-        "address_hash": {
-          "name": "address_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "bounced_at": {
+          "name": "bounced_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         }
       },

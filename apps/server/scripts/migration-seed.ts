@@ -494,8 +494,8 @@ export const RULES: Record<string, Rule> = {
       return {
         message_id: c.id("msg"),
         user_id: u.id,
-        address_hash: i.toString(16).padStart(64, "0"),
         created_at: c.time(),
+        bounced_at: c.rand() < 0.01 ? c.time() : null,
       };
     },
   },

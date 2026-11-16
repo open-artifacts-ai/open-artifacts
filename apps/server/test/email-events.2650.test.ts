@@ -9,7 +9,6 @@ import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { publish } from "../src/services/artifacts.js";
 import {
-  addressKey,
   SENDER_PAUSE_MS,
   sweepEmailEvents,
 } from "../src/services/email-events.js";
@@ -120,7 +119,7 @@ const pausedUntil = async (userId: string) =>
   )?.until_at ?? null;
 
 describe("recording the sender", () => {
-  it("an outside share email stores its message id against the member and the address hash, never the address", async () => {
+  it("an outside share email stores its message id against the member, never the address", async () => {
     const { share, ids, member } = await sender();
     const to = uniq("out", "gmail.com");
     expect(await share(to)).toMatchObject({ emailed: true });
@@ -128,9 +127,14 @@ describe("recording the sender", () => {
       "select * from share_email_messages where message_id = ?",
     )
       .bind(ids[to])
-      .first<{ user_id: string; address_hash: string }>();
+      .first<Record<string, unknown>>();
     expect(row?.user_id).toBe(member.id);
-    expect(row?.address_hash).toBe(await addressKey(to));
+    expect(Object.keys(row ?? {}).sort()).toEqual([
+      "bounced_at",
+      "created_at",
+      "message_id",
+      "user_id",
+    ]);
     expect(JSON.stringify(row)).not.toContain(to);
   });
 
@@ -148,111 +152,187 @@ describe("recording the sender", () => {
   });
 });
 
-describe("a bounce or complaint pauses the sender", () => {
-  it.each([
-    ["message.bounced", { terminal: true }],
-    ["message.bounced", {}],
-    ["message.failed", {}],
-    ["message.complained", {}],
-  ])(
-    "%s %j: the member's next outside share is saved, not emailed, and reads skipped",
-    async (type, extra) => {
-      const a = await sender();
-      const b = await sender();
-      const first = uniq("out", "gmail.com");
-      await a.share(first);
-      const log = vi.spyOn(console, "log");
-      const res = await consume(
-        [event(type, a.ids[first] as string, extra)],
-        withQueue(a.e),
-      );
-      expect(res).toMatchObject({ acked: 1, retried: 0 });
-      const until = await pausedUntil(a.member.id);
-      expect(until).toBeGreaterThan(Date.now() + SENDER_PAUSE_MS - 60_000);
-      expect(until).toBeLessThanOrEqual(Date.now() + SENDER_PAUSE_MS);
-      // The sharer is told only "skipped"; the log has the real reason.
-      const next = uniq("out", "gmail.com");
-      const r = await a.share(next);
-      expect(r).toMatchObject({ emailed: false, notEmailed: "skipped" });
-      expect(JSON.stringify(r)).not.toMatch(/pause|bounce|complain/);
-      expect(a.ids[next]).toBeUndefined();
-      expect(
-        log.mock.calls.some((c) =>
-          String(c[0]).includes('"reason":"sender_paused"'),
-        ),
-      ).toBe(true);
-      log.mockRestore();
-      // The share exists.
-      expect(
-        await env.DB.prepare("select 1 from shares where email = ?")
-          .bind(next)
-          .first(),
-      ).not.toBeNull();
-      // Another member is not affected; neither is this member's team email.
-      expect(await b.share(uniq("out", "gmail.com"))).toMatchObject({
-        emailed: true,
-      });
-      expect(await a.share(uniq("team", "a.com"))).toMatchObject({
-        emailed: true,
-      });
-    },
-  );
-
-  it("not a pause: a soft bounce, delivered, deferred, rejected, an unknown message id, a malformed event", async () => {
-    const a = await sender();
+/** Shares `n` outside emails and returns their message ids. */
+async function sent(a: Awaited<ReturnType<typeof sender>>, n: number) {
+  const ids: string[] = [];
+  for (let i = 0; i < n; i++) {
     const to = uniq("out", "gmail.com");
     await a.share(to);
-    const id = a.ids[to] as string;
+    ids.push(a.ids[to] as string);
+  }
+  return ids;
+}
+
+describe("a complaint pauses at once", () => {
+  it("the member's next outside share is saved, not emailed, and reads sender_paused with when it ends", async () => {
+    const a = await sender();
+    const b = await sender();
+    const [id] = await sent(a, 1);
+    const log = vi.spyOn(console, "log");
+    const res = await consume(
+      [event("message.complained", id as string)],
+      withQueue(a.e),
+    );
+    expect(res).toMatchObject({ acked: 1, retried: 0 });
+    const until = await pausedUntil(a.member.id);
+    expect(until).toBeGreaterThan(Date.now() + SENDER_PAUSE_MS - 60_000);
+    expect(until).toBeLessThanOrEqual(Date.now() + SENDER_PAUSE_MS);
+    const next = uniq("out", "gmail.com");
+    const r = await a.share(next);
+    expect(r).toMatchObject({ emailed: false, notEmailed: "sender_paused" });
+    expect(new Date(r.pausedUntil as string).getTime()).toBe(until);
+    // Never which recipient bounced, or that anyone did.
+    expect(JSON.stringify(r)).not.toMatch(/bounce|complain/);
+    expect(a.ids[next]).toBeUndefined();
+    expect(
+      log.mock.calls.some((c) =>
+        String(c[0]).includes('"reason":"sender_paused"'),
+      ),
+    ).toBe(true);
+    log.mockRestore();
+    expect(
+      await env.DB.prepare("select 1 from shares where email = ?")
+        .bind(next)
+        .first(),
+    ).not.toBeNull();
+    // Another member is not affected; neither is this member's team email.
+    expect(await b.share(uniq("out", "gmail.com"))).toMatchObject({
+      emailed: true,
+    });
+    expect(await a.share(uniq("team", "a.com"))).toMatchObject({
+      emailed: true,
+    });
+  });
+});
+
+describe("bounces: the third terminal one in 7 days", () => {
+  it("one or two terminal bounces change nothing; the third pauses", async () => {
+    const a = await sender();
+    const ids = await sent(a, 3);
+    const q = withQueue(a.e);
+    await consume(
+      [event("message.bounced", ids[0] as string, { terminal: true })],
+      q,
+    );
+    await consume(
+      [event("message.bounced", ids[1] as string, { terminal: true })],
+      q,
+    );
+    expect(await pausedUntil(a.member.id)).toBeNull();
+    expect(await a.share(uniq("out", "gmail.com"))).toMatchObject({
+      emailed: true,
+    });
+    await consume(
+      [event("message.bounced", ids[2] as string, { terminal: true })],
+      q,
+    );
+    expect(await pausedUntil(a.member.id)).not.toBeNull();
+    expect(await a.share(uniq("out", "gmail.com"))).toMatchObject({
+      emailed: false,
+      notEmailed: "sender_paused",
+    });
+  });
+
+  it("a redelivered event counts once", async () => {
+    const a = await sender();
+    const ids = await sent(a, 3);
+    const q = withQueue(a.e);
+    const ev = event("message.bounced", ids[0] as string, { terminal: true });
+    await consume([ev, ev, ev, ev], q);
+    expect(await pausedUntil(a.member.id)).toBeNull();
+  });
+
+  it("bounces older than 7 days don't count", async () => {
+    const a = await sender();
+    const ids = await sent(a, 3);
+    const q = withQueue(a.e);
+    await consume(
+      [event("message.bounced", ids[0] as string, { terminal: true })],
+      q,
+    );
+    await consume(
+      [event("message.bounced", ids[1] as string, { terminal: true })],
+      q,
+    );
+    await env.DB.prepare(
+      "update share_email_messages set bounced_at = ? where message_id = ?",
+    )
+      .bind(Date.now() - 8 * 86_400_000, ids[0])
+      .run();
+    await consume(
+      [event("message.bounced", ids[2] as string, { terminal: true })],
+      q,
+    );
+    expect(await pausedUntil(a.member.id)).toBeNull();
+  });
+
+  it("only an explicit terminal counts: a missing field, terminal false, failed, delivered, deferred, rejected", async () => {
+    const a = await sender();
+    const ids = await sent(a, 4);
+    const q = withQueue(a.e);
+    for (const id of ids)
+      await consume(
+        [
+          event("message.bounced", id),
+          event("message.bounced", id, { terminal: false }),
+          event("message.failed", id, { terminal: true }),
+          event("message.delivered", id),
+          event("message.deferred", id),
+          event("message.rejected", id),
+        ],
+        q,
+      );
+    expect(await pausedUntil(a.member.id)).toBeNull();
+    expect(
+      (
+        await env.DB.prepare(
+          "select count(*) n from share_email_messages where user_id = ? and bounced_at is not null",
+        )
+          .bind(a.member.id)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(0);
+    expect(await a.share(uniq("out", "gmail.com"))).toMatchObject({
+      emailed: true,
+    });
+  });
+
+  it("an unknown message id and malformed events change nothing and are acked", async () => {
+    const a = await sender();
     const res = await consume(
       [
-        event("message.bounced", id, { terminal: false }),
-        event("message.delivered", id),
-        event("message.deferred", id),
-        event("message.rejected", id),
         event("message.complained", "msg-someone-elses"),
+        event("message.bounced", "msg-someone-elses", { terminal: true }),
         { nope: true },
         "text",
         null,
       ],
       withQueue(a.e),
     );
-    expect(res).toMatchObject({ acked: 8, retried: 0 });
+    expect(res).toMatchObject({ acked: 5, retried: 0 });
     expect(await pausedUntil(a.member.id)).toBeNull();
-    expect(await a.share(uniq("out", "gmail.com"))).toMatchObject({
-      emailed: true,
-    });
   });
+});
 
-  it("the pause lasts 7 days: after it, outside share emails go again; a later event extends it, never shortens", async () => {
+describe("the pause", () => {
+  it("lasts 7 days: after it emails go again; a later pause extends, never shortens", async () => {
     const a = await sender();
-    const to = uniq("out", "gmail.com");
-    await a.share(to);
-    await consume(
-      [event("message.complained", a.ids[to] as string)],
-      withQueue(a.e),
-    );
+    const [id] = await sent(a, 1);
+    const q = withQueue(a.e);
+    await consume([event("message.complained", id as string)], q);
     const first = (await pausedUntil(a.member.id)) as number;
-    // A second event at once keeps the later end.
-    await consume(
-      [event("message.bounced", a.ids[to] as string)],
-      withQueue(a.e),
-    );
+    await consume([event("message.complained", id as string)], q);
     expect((await pausedUntil(a.member.id)) as number).toBeGreaterThanOrEqual(
       first,
     );
-    // An older end is never written over a later one.
     await env.DB.prepare(
       "update share_email_pauses set until_at = ? where user_id = ?",
     )
       .bind(Date.now() + 30 * 86_400_000, a.member.id)
       .run();
     const far = (await pausedUntil(a.member.id)) as number;
-    await consume(
-      [event("message.bounced", a.ids[to] as string)],
-      withQueue(a.e),
-    );
+    await consume([event("message.complained", id as string)], q);
     expect(await pausedUntil(a.member.id)).toBe(far);
-    // Expired: emails go again.
     await env.DB.prepare(
       "update share_email_pauses set until_at = ? where user_id = ?",
     )
@@ -314,7 +394,7 @@ describe("the daily sweep", () => {
     const fresh = `msg-fresh-${crypto.randomUUID()}`;
     const u = await login(uniq("sw", "a.com"), "member");
     await env.DB.prepare(
-      "insert into share_email_messages (message_id, user_id, address_hash, created_at) values (?, ?, 'h', ?), (?, ?, 'h', ?)",
+      "insert into share_email_messages (message_id, user_id, created_at) values (?, ?, ?), (?, ?, ?)",
     )
       .bind(
         old,

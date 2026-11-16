@@ -1,54 +1,58 @@
 // Bounces and complaints on outside share emails (#2650). Cloudflare Email
-// Service publishes sending events (message.bounced, message.failed,
-// message.complained) to a Queue; the platform binds this Worker as its
-// consumer and sets EMAIL_EVENTS_QUEUE. A bounce or complaint on a member's
-// outside share email pauses that member's outside share emails for 7 days: a
-// stranger's complaint is the sender's reputation to protect. The sharer sees
-// notEmailed "skipped" (never why); the log carries sender_paused.
+// Service publishes sending events (message.bounced, message.complained, ...)
+// to a Queue; the platform binds this Worker as its consumer and sets
+// EMAIL_EVENTS_QUEUE. A complaint pauses the member's outside share emails for
+// 7 days at once; a bounce counts only when the event says it is terminal, and
+// the third terminal bounce within 7 days pauses them: a stranger's complaint
+// is the sender's reputation to protect, one bad address is not.
+// message.failed never pauses: it can be our failure or the provider's.
+// The sharer sees their own pause (notEmailed "sender_paused", pausedUntil),
+// never which recipient bounced; the log carries sender_paused.
+//
+// PIN BEFORE ENABLING: the event shapes below are read from Cloudflare's
+// documentation (payload.messageId, payload.terminal, the type names), not
+// from live events. They must be checked against one real bounce and one real
+// complaint on staging before EMAIL_EVENTS_QUEUE is set anywhere real.
 import { z } from "zod";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
-import { sha256Hex } from "../util/crypto.js";
 
 export const SENDER_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Terminal bounces within SENDER_PAUSE_MS that pause a member. */
+export const BOUNCES_TO_PAUSE = 3;
 /** How long a message id stays traceable to its sender. */
 const MESSAGE_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** The row key of an address: the SHA-256 of its normalized form, never the address. */
-export const addressKey = (email: string): Promise<string> =>
-  sha256Hex(email.trim().toLowerCase());
-
-/** Remembers which member sent which outside share email (called after a send). */
+/** Remembers which member sent an outside share email (called after a send). Never the address. */
 export async function recordShareEmail(
   env: Env,
   messageId: string,
   userId: string,
-  email: string,
   now = Date.now(),
 ): Promise<void> {
   await stmt(
     env.DB,
-    `insert into share_email_messages (message_id, user_id, address_hash, created_at)
-     values (?1, ?2, ?3, ?4) on conflict (message_id) do nothing`,
+    `insert into share_email_messages (message_id, user_id, created_at)
+     values (?1, ?2, ?3) on conflict (message_id) do nothing`,
   )
-    .bind(messageId, userId, await addressKey(email), now)
+    .bind(messageId, userId, now)
     .run();
 }
 
-/** Whether this member's outside share emails are paused now. */
-export async function senderPaused(
+/** When this member's outside share emails are paused until (ms), or null when they are not. */
+export async function pausedUntil(
   env: Env,
   userId: string,
   now = Date.now(),
-): Promise<boolean> {
+): Promise<number | null> {
   const row = await stmt(
     env.DB,
     "select until_at from share_email_pauses where user_id = ?1",
   )
     .bind(userId)
     .first<{ until_at: number }>();
-  return row !== null && row.until_at > now;
+  return row && row.until_at > now ? row.until_at : null;
 }
 
 // What Email Service publishes (see its event-subscriptions reference): the
@@ -61,17 +65,16 @@ const EventSchema = z.object({
   }),
 });
 
-const PAUSING = new Set([
-  "cf.email.sending.message.bounced",
-  "cf.email.sending.message.failed",
-  "cf.email.sending.message.complained",
-]);
+const BOUNCED = "cf.email.sending.message.bounced";
+const COMPLAINED = "cf.email.sending.message.complained";
 
 /**
- * One event. A bounce, a failure or a complaint on a message we sent for a
- * member pauses that member for 7 days (extended, never shortened). Anything
- * else (delivered, deferred, a soft bounce, a message that is not an outside
- * share email) changes nothing. Resolves to whether it paused someone.
+ * One event on a message we sent for a member. A complaint pauses them at
+ * once; a bounce counts only when `terminal` is explicitly true (a missing
+ * field is not a count), and the third within 7 days pauses them. A pause is 7
+ * days, extended and never shortened. Anything else (delivered, deferred,
+ * failed, a soft bounce, a message that is not an outside share email)
+ * changes nothing. Resolves to whether it paused someone.
  */
 export async function handleEmailEvent(
   env: Env,
@@ -79,10 +82,12 @@ export async function handleEmailEvent(
   now = Date.now(),
 ): Promise<boolean> {
   const ev = EventSchema.safeParse(raw);
-  if (!ev.success || !PAUSING.has(ev.data.type)) return false;
-  // A soft bounce (not terminal) is retried by the sender: no pause.
-  if (ev.data.type.endsWith(".bounced") && ev.data.payload.terminal === false)
-    return false;
+  if (!ev.success) return false;
+  const { type } = ev.data;
+  if (type !== BOUNCED && type !== COMPLAINED) return false;
+  // A bounce counts only when it says it is terminal: a soft one is retried by
+  // the sender, and a missing field is not a promise.
+  if (type === BOUNCED && ev.data.payload.terminal !== true) return false;
   const row = await stmt(
     env.DB,
     "select user_id from share_email_messages where message_id = ?1",
@@ -90,7 +95,24 @@ export async function handleEmailEvent(
     .bind(ev.data.payload.messageId)
     .first<{ user_id: string }>();
   if (!row) return false;
-  const kind = ev.data.type.slice(ev.data.type.lastIndexOf(".") + 1);
+  const kind = type === COMPLAINED ? "complained" : "bounced";
+  if (type === BOUNCED) {
+    // Once per message (a redelivered event counts once); then the third
+    // terminal bounce in the window pauses.
+    await stmt(
+      env.DB,
+      "update share_email_messages set bounced_at = ?2 where message_id = ?1 and bounced_at is null",
+    )
+      .bind(ev.data.payload.messageId, now)
+      .run();
+    const n = await stmt(
+      env.DB,
+      "select count(*) as n from share_email_messages where user_id = ?1 and bounced_at > ?2",
+    )
+      .bind(row.user_id, now - SENDER_PAUSE_MS)
+      .first<{ n: number }>();
+    if ((n?.n ?? 0) < BOUNCES_TO_PAUSE) return false;
+  }
   await stmt(
     env.DB,
     `insert into share_email_pauses (user_id, until_at, reason, created_at)
