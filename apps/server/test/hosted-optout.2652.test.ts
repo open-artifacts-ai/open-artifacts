@@ -398,7 +398,13 @@ describe("the transport: the LoginGate", () => {
   });
 
   it("each call times out: a hung gate is no answer; the share is saved, no email, optout_timeout is logged", async () => {
-    const hang = { fetch: () => new Promise<Response>(() => {}) };
+    const signals: AbortSignal[] = [];
+    const hang = {
+      fetch: (req: Request) => {
+        signals.push(req.signal);
+        return new Promise<Response>(() => {});
+      },
+    };
     expect(optoutTimeout.ms).toBe(2500);
     const saved = optoutTimeout.ms;
     optoutTimeout.ms = 30;
@@ -412,6 +418,9 @@ describe("the transport: the LoginGate", () => {
         await expect(via(hang, call)).rejects.toMatchObject({ why: "timeout" });
         expect(Date.now() - t0).toBeLessThan(2000);
       }
+      // The timed-out fetches were aborted, not left running.
+      expect(signals).toHaveLength(2);
+      expect(signals.every((s) => s.aborted)).toBe(true);
       optoutPlatform.impl = gateOptoutPlatform;
       const { m, share } = await world(HOSTED);
       const log = vi.spyOn(console, "log");

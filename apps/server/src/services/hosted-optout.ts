@@ -60,8 +60,11 @@ async function call(env: Env, path: string, h1: string): Promise<unknown> {
     h1,
   });
   const kid = await keyId(await publicFromPkcs8(key));
+  // Aborted when the call times out, so the platform's work stops with it.
+  const abort = new AbortController();
   const req = new Request(`${LOGIN_ORIGIN}${path}`, {
     method: "POST",
+    signal: abort.signal,
     headers: {
       "content-type": "application/json",
       "x-oa-kid": kid,
@@ -77,10 +80,10 @@ async function call(env: Env, path: string, h1: string): Promise<unknown> {
     res = await Promise.race([
       gate.fetch(req),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new OptoutUnavailableError("timeout")),
-          optoutTimeout.ms,
-        );
+        timer = setTimeout(() => {
+          abort.abort();
+          reject(new OptoutUnavailableError("timeout"));
+        }, optoutTimeout.ms);
       }),
     ]);
   } catch (e) {
