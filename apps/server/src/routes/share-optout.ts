@@ -2,14 +2,12 @@ import type { Context } from "hono";
 import { stmt } from "../db/stmt.js";
 import {
   OPTOUT_COPY,
-  OPTOUT_COPY_HOSTED,
   SHARE_OPTOUT_PATH,
   verifyOptoutToken,
 } from "../email/share-optout.js";
 import { fill, oneLine, orgName } from "../email/templates.js";
 import type { AppEnv } from "../http/middleware.js";
 import { escapeHtml } from "../mcp/template.js";
-import { hostedOptoutOn } from "../services/hosted-optout.js";
 import { getSettings } from "../services/members.js";
 import type { AppType } from "./index.js";
 
@@ -44,9 +42,10 @@ export function mountShareOptout(app: AppType): void {
     const t = c.req.query("t") ?? "";
     if (!(await verifyOptoutToken(c.env, t))) return bad(c);
     const v = { org: await org(c) };
-    // The hosted-wide wording while the platform's list is on (#2652): the
-    // per-team wording otherwise.
-    const copy = hostedOptoutOn(c.env) ? OPTOUT_COPY_HOSTED : OPTOUT_COPY;
+    // This page redeems an install token (v1): it only ever stops this
+    // install's emails, so the per-team wording, whatever the platform's
+    // list is doing. The hosted-wide wording is the platform's page's.
+    const copy = OPTOUT_COPY;
     const form = `<form method="post" action="${SHARE_OPTOUT_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(fill(copy.confirmButton, v))}</button></form>`;
     return c.html(
       page(fill(copy.confirmTitle, v), fill(copy.confirmBody, v), form),
@@ -73,10 +72,7 @@ export function mountShareOptout(app: AppType): void {
       .run();
     return c.html(
       page(
-        fill(
-          (hostedOptoutOn(c.env) ? OPTOUT_COPY_HOSTED : OPTOUT_COPY).doneTitle,
-          { org: await org(c) },
-        ),
+        fill(OPTOUT_COPY.doneTitle, { org: await org(c) }),
         OPTOUT_COPY.doneBody,
       ),
       200,

@@ -29,6 +29,9 @@ import { b64urlEncode } from "../util/crypto.js";
 /** The gate forwards only the path; the platform never reads this host. */
 const LOGIN_ORIGIN = "https://login.oa.internal";
 
+/** How long each gate call may take before it counts as no answer (mutable only for tests). */
+export const optoutTimeout = { ms: 2500 };
+
 /** Why the platform could not answer: a fixed category, safe to log. */
 export class OptoutUnavailableError extends Error {
   constructor(public why: string) {
@@ -68,10 +71,23 @@ async function call(env: Env, path: string, h1: string): Promise<unknown> {
     redirect: "manual",
   });
   let res: Response;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    res = await gate.fetch(req);
+    // A hung gate is no answer, so no email (the share is still saved).
+    res = await Promise.race([
+      gate.fetch(req),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new OptoutUnavailableError("timeout")),
+          optoutTimeout.ms,
+        );
+      }),
+    ]);
   } catch (e) {
+    if (e instanceof OptoutUnavailableError) throw e;
     throw new OptoutUnavailableError(isStaleStubError(e) ? "stale" : "network");
+  } finally {
+    clearTimeout(timer);
   }
   if (!res.ok) {
     await res.body?.cancel().catch(() => {});

@@ -21,6 +21,7 @@ import {
   OptoutUnavailableError,
   optoutHash,
   optoutPlatform,
+  optoutTimeout,
 } from "../src/services/hosted-optout.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
@@ -243,39 +244,35 @@ describe("never on self-host, or with the switch off", () => {
   });
 });
 
-describe("the page's wording", () => {
-  it("the per-team wording while the switch is off or on self-host; the hosted-wide wording while it is on", async () => {
+describe("the install's own page", () => {
+  it("an install token (v1) always gets the per-team wording, with the platform's list on or off, hosted or not", async () => {
     const { signOptoutToken } = await import("../src/email/share-optout.js");
     const t = await signOptoutToken(env, uniq("pg", "gmail.com"));
     const path = `/auth/unsubscribe/shares?t=${encodeURIComponent(t)}`;
-    const get = (e: Env) => app.fetch(new Request(`${APP}${path}`), e, ctx);
     const base = direct({}) as Env;
     for (const e of [
       base,
+      { ...base, ...HOSTED } as Env,
       { ...base, ...HOSTED, OPTOUT_PLATFORM: undefined } as Env,
       { ...base, ...HOSTED, HOSTED: undefined } as Env,
     ]) {
-      const html = await (await get(e)).text();
+      const html = await (
+        await app.fetch(new Request(`${APP}${path}`), e, ctx)
+      ).text();
       expect(html).toContain("Stop emails from");
       expect(html).toContain(
         "Other teams on Open Artifacts can still email you.",
       );
+      expect(html).not.toContain("from any team");
+      const done = await (
+        await app.fetch(
+          new Request(`${APP}${path}`, { method: "POST" }),
+          e,
+          ctx,
+        )
+      ).text();
+      expect(done).toContain("You won&#39;t get emails from");
     }
-    const html = await (await get({ ...base, ...HOSTED } as Env)).text();
-    expect(html).toContain("Stop these emails?");
-    expect(html).toContain(
-      "We won&#39;t email you again when someone shares a page with you, from any team on Open Artifacts.",
-    );
-    expect(html).toContain(">Don&#39;t email me again</button>");
-    expect(html).not.toContain("Other teams");
-    const done = await app.fetch(
-      new Request(`${APP}${path}`, { method: "POST" }),
-      { ...base, ...HOSTED } as Env,
-      ctx,
-    );
-    expect(await done.text()).toContain(
-      "You won&#39;t get these emails again.",
-    );
   });
 });
 
@@ -398,6 +395,44 @@ describe("the transport: the LoginGate", () => {
     expect(
       await why(() => via(extra.gate, () => gateOptoutPlatform.mint(e, H1))),
     ).toBe("bad_answer");
+  });
+
+  it("each call times out: a hung gate is no answer; the share is saved, no email, optout_timeout is logged", async () => {
+    const hang = { fetch: () => new Promise<Response>(() => {}) };
+    expect(optoutTimeout.ms).toBe(2500);
+    const saved = optoutTimeout.ms;
+    optoutTimeout.ms = 30;
+    try {
+      const calls: (() => Promise<unknown>)[] = [
+        () => gateOptoutPlatform.check(e, H1),
+        () => gateOptoutPlatform.mint(e, H1),
+      ];
+      for (const call of calls) {
+        const t0 = Date.now();
+        await expect(via(hang, call)).rejects.toMatchObject({ why: "timeout" });
+        expect(Date.now() - t0).toBeLessThan(2000);
+      }
+      optoutPlatform.impl = gateOptoutPlatform;
+      const { m, share } = await world(HOSTED);
+      const log = vi.spyOn(console, "log");
+      const to = uniq("out", "gmail.com");
+      const r = await share(to, { LOGIN: hang });
+      expect(r).toMatchObject({ emailed: false, notEmailed: "skipped" });
+      expect(m.sent.some((x) => x.to === to)).toBe(false);
+      expect(
+        log.mock.calls.some((c) =>
+          String(c[0]).includes('"reason":"optout_timeout"'),
+        ),
+      ).toBe(true);
+      log.mockRestore();
+      expect(
+        await env.DB.prepare("select 1 from shares where email = ?")
+          .bind(to)
+          .first(),
+      ).not.toBeNull();
+    } finally {
+      optoutTimeout.ms = saved;
+    }
   });
 
   it("an end to end share through the fake gate: check, mint, then the email", async () => {

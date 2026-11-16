@@ -381,10 +381,13 @@ async function emailShare(
         optOutUrl = url;
       } catch (e) {
         logWarn("optout_platform_failed", e, { artifactId: artifact.id });
+        const why = e instanceof OptoutUnavailableError ? e.why : "";
         return skip(
-          e instanceof OptoutUnavailableError && e.why === "capped"
+          why === "capped"
             ? "optout_mint_capped"
-            : "optout_unavailable",
+            : why === "timeout"
+              ? "optout_timeout"
+              : "optout_unavailable",
         );
       }
     } else if (outside) {
