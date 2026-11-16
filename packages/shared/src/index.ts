@@ -21,7 +21,6 @@ export * from "./routes.js";
 export * from "./sandbox.js";
 export * from "./schemas.js";
 export * from "./secrets.js";
-export * from "./setup-steps.js";
 export * from "./sniff.js";
 export * from "./text-anchor.js";
 export * from "./tunables.js";
