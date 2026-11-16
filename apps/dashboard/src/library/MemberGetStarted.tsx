@@ -5,7 +5,7 @@
 import { SETUP_STEPS, setupSteps } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import { fiveOf, mySteps, useOwnerName, withLocal } from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
@@ -39,29 +39,21 @@ export const MEMBER_STEPS = {
 const CARD = "rounded-lg border border-border bg-card p-[var(--oa-space-4)]";
 
 /**
- * The card's slot while R.onboarding loads: the card's own frame and five
- * rows (titles and hints, unseen), so it takes the card's height at this
- * width. Reports that height so the card can keep it.
+ * The card's slot while R.onboarding loads: the card's own frame and rows,
+ * unseen, sized for the common case, a new member whose agent isn't
+ * connected yet (step 1 open with the line and Copy). Their card takes the
+ * slot without a jump; a connected member's card is shorter and only closes
+ * the gap.
  */
-function CardSlot({ onHeight }: { onHeight: (h: number) => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (ref.current) onHeight(ref.current.getBoundingClientRect().height);
-  });
+function CardSlot() {
   const rows: [string, string][] = [
-    [MEMBER_STEPS.connect, MEMBER_STEPS.connectHint],
     [MEMBER_STEPS.name, MEMBER_STEPS.nameHint],
     [MEMBER_STEPS.publish, MEMBER_STEPS.publishHint],
     [MEMBER_STEPS.mention, MEMBER_STEPS.mentionHint],
     [MEMBER_STEPS.ask, MEMBER_STEPS.askHint],
   ];
   return (
-    <div
-      ref={ref}
-      data-member-slot=""
-      aria-hidden
-      className={`${CARD} animate-pulse`}
-    >
+    <div data-member-slot="" aria-hidden className={`${CARD} animate-pulse`}>
       <div className="invisible">
         <div className="mb-[var(--oa-space-2)] flex items-baseline gap-[var(--oa-space-2)]">
           <span className="m-0 text-[length:var(--oa-text-md)] font-semibold">
@@ -72,8 +64,12 @@ function CardSlot({ onHeight }: { onHeight: (h: number) => void }) {
           </span>
         </div>
         <ol className="m-0 list-none p-0">
+          <Step n={1} state="cur" title={MEMBER_STEPS.connect}>
+            <AgentSetupBody intro={MEMBER_STEPS.connectHint} />
+            <Waiting>Waiting for your agent…</Waiting>
+          </Step>
           {rows.map(([t, h], i) => (
-            <Step key={t} n={i + 1} state="todo" title={t}>
+            <Step key={t} n={i + 2} state="todo" title={t}>
               <p className="m-0">{h}</p>
             </Step>
           ))}
@@ -109,9 +105,6 @@ export function MemberGetStarted() {
 
   // Steps happen elsewhere (an agent, another tab): re-read until done.
   const qc = useQueryClient();
-  // The held slot's height: the card keeps at least that, so it never shrinks
-  // under the results when it replaces the slot.
-  const [slotH, setSlotH] = useState<number | undefined>();
   useEffect(() => {
     if (!live || all) return;
     const t = setInterval(() => {
@@ -125,7 +118,7 @@ export function MemberGetStarted() {
   // once, below it), so the card never pushes them down when it arrives. A
   // failed fetch, a hidden or finished card: no slot.
   if (member && me?.instance.mcpUrl && onboarding.isPending)
-    return <CardSlot onHeight={setSlotH} />;
+    return <CardSlot />;
   if (!live || all || !me?.instance.mcpUrl) return null;
 
   // Per person (#2632): hidden isn't done, so `completed` stays as it is.
@@ -138,12 +131,7 @@ export function MemberGetStarted() {
   const st = (i: number) => (five[i] ? "done" : cur === i ? "cur" : "todo");
 
   return (
-    <section
-      aria-labelledby="oa-get-started-h"
-      data-member=""
-      className={CARD}
-      style={slotH ? { minHeight: slotH } : undefined}
-    >
+    <section aria-labelledby="oa-get-started-h" data-member="" className={CARD}>
       <div className="mb-[var(--oa-space-2)] flex items-baseline gap-[var(--oa-space-2)]">
         <h2
           id="oa-get-started-h"

@@ -118,6 +118,11 @@ describe("a member's Library card", () => {
     const slot = document.querySelector("[data-member-slot]");
     expect(slot).not.toBeNull();
     expect(slot).toHaveAttribute("aria-hidden", "true");
+    // Sized for a new member: step 1 held open with the line and Copy.
+    expect(slot?.textContent).toContain("Set up Open Artifacts for me: follow");
+    expect(slot?.querySelector('[aria-current="step"]')?.textContent).toContain(
+      "Connect your agent",
+    );
     expect(card()).toBeNull();
     answer();
     await waitFor(() => expect(card()).not.toBeNull());
