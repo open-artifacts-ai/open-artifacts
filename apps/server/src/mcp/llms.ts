@@ -19,7 +19,13 @@ import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
 import { busOn } from "../services/bus.js";
-import { VERSION } from "../version.gen.js";
+import { BUS_PKG, BUS_PKG_WHY, VERSION } from "../version.gen.js";
+import {
+  BUS_CHECK_STOP,
+  type BusPin,
+  busInstallBlock,
+  busNoPin,
+} from "./bus-install.js";
 import { SKILL_PATH, skillEnabled } from "./skill.js";
 import { skillOrigin } from "./skill-common.js";
 
@@ -120,9 +126,15 @@ const setupSteps = (
   origin: string,
   mcpUrl: string,
   skill: boolean,
+  pin: BusPin | null,
+  pinWhy: string,
 ): string[] => [
   `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
-  `**Install the bus.** Run \`npx @open-artifacts/bus install --instance ${origin}\`. The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.${
+  `**Install the bus.** ${
+    pin
+      ? `Run these in a shell, in order. They download one copy of the bus (version ${pin.version}), check it against this instance's pin, and run the installer from that checked copy. Never run \`npx @open-artifacts/bus\` instead: it would download a second copy that nobody checked.\n\n${busInstallBlock(origin, pin)}\n\n${BUS_CHECK_STOP}`
+      : busNoPin(pinWhy)
+  } The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.${
     skill
       ? ` The installer also saves this instance's skill for your harness, so your next sessions have it. Read ${origin}${SKILL_PATH} now and follow it from now on.`
       : ""
@@ -134,11 +146,19 @@ const setupSteps = (
 ];
 const SETUP_FAILURE =
   "If the bus step fails, tell the person: \"Open Artifacts is connected, but the bus isn't, so I won't see your comments unless you tell me. To fix it: <the installer's printed fix>.\"";
-const setupBlock = (origin: string, mcpUrl: string, skill: boolean) =>
+const setupBlock = (
+  origin: string,
+  mcpUrl: string,
+  skill: boolean,
+  pin: BusPin | null,
+  pinWhy: string,
+) =>
   `${SETUP_STEPS_TITLE}\n\n${SETUP_STEPS_INTRO}\n\n${setupSteps(
     origin,
     mcpUrl,
     skill,
+    pin,
+    pinWhy,
   )
     .map((t, i) => `${i + 1}. ${t}`)
     .join("\n")}\n\n${SETUP_FAILURE}\n\n`;
@@ -146,11 +166,21 @@ const setupBlock = (origin: string, mcpUrl: string, skill: boolean) =>
 /** The guide for `host`. `plugin` and `skill` default to the live settings. */
 export function renderLlms(
   host: string,
-  opts: { plugin?: boolean; skill?: boolean; bus?: boolean } = {},
+  opts: {
+    plugin?: boolean;
+    skill?: boolean;
+    bus?: boolean;
+    /** Tests: the release pin; default this build's (null: none). */
+    pin?: BusPin | null;
+    /** Tests: why there is no pin; default this build's. */
+    pinWhy?: string;
+  } = {},
 ): string {
   const plugin = opts.plugin ?? CLAUDE_PLUGIN_ENABLED;
   const skill = opts.skill ?? true;
   const bus = opts.bus ?? false;
+  const pin = opts.pin === undefined ? BUS_PKG : opts.pin;
+  const pinWhy = opts.pinWhy ?? BUS_PKG_WHY;
   const { origin, mcpUrl, tokenFile, clients, tokens } = llmsInputs(host);
   const verifySteps = [
     "List the server's tools. You should see tools such as `publish_artifact` and `list_artifacts`. If the list is empty or you get 401, see Troubleshoot.",
@@ -167,7 +197,7 @@ You are setting up ${PRODUCT_NAME} for the person you're working with. Do every 
 
 Server address (MCP, streamable HTTP): ${mcpUrl}
 
-${bus ? setupBlock(origin, mcpUrl, skill) : ""}## Connect
+${bus ? setupBlock(origin, mcpUrl, skill, pin, pinWhy) : ""}## Connect
 
 Use the section for the client you are running in: you know which one that is. Only if the person asks you to set up a different client, find it with \`which claude codex cursor opencode\`; if none fits, use Generic.
 

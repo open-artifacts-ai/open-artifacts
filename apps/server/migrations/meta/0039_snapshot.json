@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0b85ad41-9054-40da-b37b-f7f30d8e1b3a",
+  "id": "cb789e84-4f4c-4a90-885f-6e1e76d0cddb",
   "prevId": "30ce1b4d-68a4-4c9c-a4ef-ceb672b24653",
   "tables": {
     "agent_grants": {
@@ -1282,144 +1282,6 @@
       },
       "uniqueConstraints": {},
       "checkConstraints": {}
-    },
-    "inbox_items": {
-      "name": "inbox_items",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "level": {
-          "name": "level",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "key": {
-          "name": "key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "artifact_id": {
-          "name": "artifact_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "comment_id": {
-          "name": "comment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "actor": {
-          "name": "actor",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "excerpt": {
-          "name": "excerpt",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "read_at": {
-          "name": "read_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "inbox_items_key_idx": {
-          "name": "inbox_items_key_idx",
-          "columns": ["user_id", "key"],
-          "isUnique": true
-        },
-        "inbox_items_read_idx": {
-          "name": "inbox_items_read_idx",
-          "columns": ["user_id", "read_at"],
-          "isUnique": false
-        },
-        "inbox_items_created_idx": {
-          "name": "inbox_items_created_idx",
-          "columns": ["user_id", "created_at"],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "inbox_items_user_id_users_id_fk": {
-          "name": "inbox_items_user_id_users_id_fk",
-          "tableFrom": "inbox_items",
-          "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "inbox_items_artifact_id_artifacts_id_fk": {
-          "name": "inbox_items_artifact_id_artifacts_id_fk",
-          "tableFrom": "inbox_items",
-          "tableTo": "artifacts",
-          "columnsFrom": ["artifact_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "inbox_items_kind": {
-          "name": "inbox_items_kind",
-          "value": "\"kind\" in ('mention', 'reply', 'comment', 'share', 'decision')"
-        },
-        "inbox_items_level": {
-          "name": "inbox_items_level",
-          "value": "\"level\" in ('needs_you', 'update')"
-        }
-      }
     },
     "login_codes": {
       "name": "login_codes",
@@ -2808,6 +2670,13 @@
         },
         "format": {
           "name": "format",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "doc_save": {
+          "name": "doc_save",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

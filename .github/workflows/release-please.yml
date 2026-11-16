@@ -139,8 +139,12 @@ jobs:
         if: steps.gate.outputs.present == 'true'
         run: cd apps/landing && pnpm exec wrangler deploy
   # Stable releases only; independent of deploy-landing. Never runs from a bare push to main.
+  # #2543: the deploy waits for publish-npm to finish but runs whether it
+  # succeeded or not. The server build pins the bus release in llms.txt: this
+  # release, or the newest older one that verifies (at most 3 back, with a
+  # warning). It fails only if none verifies.
   deploy-prod:
-    needs: [release-please]
+    needs: [release-please, publish-npm]
     outputs:
       installed: ${{ steps.preflight.outputs.installed }}
       # 'true' when the migration guard held the deploy (prod stays on the old version).
@@ -153,6 +157,10 @@ jobs:
       group: prod
       cancel-in-progress: false
     env:
+      # #2543: the build must pin a verified bus release: its own after retries
+      # for registry lag, else the newest older one that verifies (at most 3
+      # back, warns); it fails only if none verifies.
+      BUS_PIN_REQUIRED: "1"
       PROD_NAME: open-artifacts-prod
       PROD_APP_HOST: artifacts.leourbina.com
       PROD_CONTENT_HOST: artifacts-content.leourbina.com
@@ -331,7 +339,7 @@ jobs:
   # The public demo, in parallel with deploy-prod: off until the repository variable
   # DEMO_ENABLED is 'true' (after ops-demo-install has run). Staging credentials only.
   deploy-demo:
-    needs: [release-please]
+    needs: [release-please, publish-npm]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && vars.DEMO_ENABLED == 'true' && needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -340,6 +348,7 @@ jobs:
       group: demo-deploy
       cancel-in-progress: false
     env:
+      BUS_PIN_REQUIRED: "1"
       DEMO_NAME: open-artifacts-demo
       DEMO_APP_HOST: demo.open-artifacts.com
       DEMO_CONTENT_HOST: demo-content.open-artifacts.com
@@ -497,6 +506,13 @@ jobs:
           [ "$root" = "$version" ] || { echo "::error::package.json at $TAG is $root, not $version"; exit 1; }
           npm pkg set "version=$version"
           npm pkg delete private devDependencies
+          # The release commit goes into the attested bytes, so an updater can
+          # require it to equal the Sigstore certificate's commit (#2552). Only
+          # oaBus.commit is written, and it must be this run's own commit.
+          commit=$(git rev-parse HEAD)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::HEAD $commit is not a 40-hex commit"; exit 1; }
+          [ "$commit" = "$GITHUB_SHA" ] || { echo "::error::$TAG is checked out at $commit, not the release commit $GITHUB_SHA"; exit 1; }
+          npm pkg set "oaBus.commit=$commit"
           cp ../../LICENSE LICENSE
           mkdir "$RUNNER_TEMP/npm"
           # prepack bundles dist/ and assets/ at this version.
@@ -507,6 +523,8 @@ jobs:
           echo "$files"
           bad=$(grep -Ev '^package/(package\.json|LICENSE|dist/.+|assets/.+)$' <<< "$files" || true)
           [ -z "$bad" ] || { echo "::error::unexpected files in the tarball: $bad"; exit 1; }
+          # Only regular files and directories: no pax/extended headers or links.
+          node --experimental-strip-types ../../scripts/ci/tar-plain-entries.ts "$tgz"
           for f in package/LICENSE package/dist/index.js; do
             grep -qx "$f" <<< "$files" || { echo "::error::no $f in the tarball"; exit 1; }
           done

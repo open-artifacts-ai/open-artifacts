@@ -7,7 +7,7 @@ import {
   type LucideIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type * as Y from "yjs";
 import { dismissToast } from "../../layout/toast";
 import { colorFor } from "./cursors";
@@ -17,6 +17,7 @@ import {
   type DocUser,
 } from "./extensions";
 import { clearFresh, NEW_DOC_TOAST } from "./fresh";
+import { SelectionComment } from "./SelectionComment";
 import { TitleField } from "./TitleField";
 import { Toolbar } from "./Toolbar";
 import {
@@ -118,6 +119,11 @@ export interface DocEditorProps {
   fullActions?: React.ReactNode;
   /** Made by New doc a moment ago: open with the title selected. */
   fresh?: boolean;
+  /**
+   * "Comment" on a selection (#1100): the selection, quoted, for the
+   * whole-page composer. Absent where the viewer can't comment.
+   */
+  onCommentSelection?: (quote: string) => void;
   /** A test seam: whether the viewer is still signed in. */
   checkAuth?: () => Promise<boolean>;
   /** A test seam: the provider for a room. */
@@ -207,6 +213,7 @@ function Loaded({
   onRename,
   fullActions,
   fresh = false,
+  onCommentSelection,
 }: DocEditorProps & {
   room: NonNullable<ReturnType<typeof useDocRoom>["room"]>;
   snap: DocSnapshot;
@@ -218,6 +225,11 @@ function Loaded({
     [name],
   );
   const page = useRef<HTMLDivElement>(null);
+  // The editor's element, for "Comment" on a selection inside it.
+  const docRoot = useCallback(
+    () => page.current?.querySelector<HTMLElement>(".ProseMirror") ?? null,
+    [],
+  );
   // At the size limit the server refuses edits: read-only until it is under.
   const tooLarge = error === DOC_TOO_LARGE_CODE;
   // Only the server's hello grants editing (#2490): never before it, and a
@@ -344,6 +356,28 @@ function Loaded({
       )}
       <div className="oa-doc-scroll">
         <div ref={page} className="oa-doc-page">
+          {onCommentSelection && (
+            <SelectionComment
+              page={page}
+              root={docRoot}
+              onComment={onCommentSelection}
+              textOf={(s) => {
+                if (!editor || !s.anchorNode || !s.focusNode) return null;
+                try {
+                  const { view } = editor;
+                  const a = view.posAtDOM(s.anchorNode, s.anchorOffset);
+                  const b = view.posAtDOM(s.focusNode, s.focusOffset);
+                  return view.state.doc.textBetween(
+                    Math.min(a, b),
+                    Math.max(a, b),
+                    "\n",
+                  );
+                } catch {
+                  return null;
+                }
+              }}
+            />
+          )}
           <TitleField
             title={title}
             editable={editable}

@@ -168,7 +168,10 @@ describe("layout behaviour", () => {
       ["guest", false],
     ] as const) {
       mount(async () => meAs(role), "/shared");
-      await screen.findAllByRole("link", { name: "Shared with me" });
+      // #2590: a guest's sidebar link reads "Shared with you".
+      await screen.findAllByRole("link", {
+        name: role === "guest" ? "Shared with you" : "Shared with me",
+      });
       expect(!!screen.queryByRole("link", { name: "Usage" })).toBe(usage);
       cleanup();
     }
@@ -176,9 +179,10 @@ describe("layout behaviour", () => {
 
   it("guest at / is sent to /shared", async () => {
     mount(async () => meAs("guest"), "/");
+    // #2590: the guest home is "Shared with you" (no tab strip).
     await waitFor(() =>
       expect(
-        screen.getByRole("tab", { name: "Shared with me", selected: true }),
+        screen.getByRole("heading", { level: 1, name: "Shared with you" }),
       ).toBeInTheDocument(),
     );
   });

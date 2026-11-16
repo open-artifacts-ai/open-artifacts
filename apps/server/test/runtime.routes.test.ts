@@ -628,7 +628,7 @@ describe("shares", () => {
     // A guest with the same share stays view-only (parity 2).
     await api(app, R.shares(id), owner.cookie, {
       method: "PUT",
-      body: { email: guest.email, role: "editor" },
+      body: { email: guest.email, role: "viewer" },
     });
     expect((await put(id, guest, "a", 1)).status).toBe(404);
     const del = await api(app, R.share(id, viewer.email), owner.cookie, {

@@ -31,6 +31,62 @@ async function startMocks() {
   if (docMock === "doc" || docMock === "doc-readonly") {
     const { setMockDoc } = await import("./viewer/doc/docMock");
     setMockDoc(fixtures.artifacts[0]?.id ?? null, docMock === "doc-readonly");
+    // &versions=doc (#1100): the doc's history as the room saves it, one of
+    // each kind: named, automatic (a person's, an agent's), the save before
+    // an agent's edit, and a restore.
+    const docId = fixtures.artifacts[0]?.id;
+    const base = docId ? fixtures.versions[docId]?.[0] : undefined;
+    if (params.get("versions") === "doc" && docId && base) {
+      const ada = {
+        id: base.createdBy.id,
+        name: base.createdBy.name,
+        email: base.createdBy.email,
+      };
+      const maya = {
+        ...ada,
+        id: "MayaChenUser0001",
+        name: "Maya Chen",
+        email: "maya@example.com",
+      };
+      const duck = {
+        name: "OA Product",
+        version: "1.0",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "duck", color: 6 },
+      };
+      const at = (h: number) =>
+        new Date(Date.UTC(2026, 10, 10, 9 + h, 2)).toISOString();
+      const v = (
+        version: number,
+        message: string | null,
+        kind: "auto" | "before_agent" | "named" | "restore",
+        by: typeof ada,
+        agent: typeof duck | null,
+      ) => ({
+        ...structuredClone(base),
+        version,
+        message,
+        docSave: {
+          kind,
+          // Who: the agent about to edit (before_agent), else the author.
+          by: kind === "before_agent" ? duck : (agent ?? by),
+        },
+        createdBy: by,
+        agent,
+        createdAt: at(version),
+      });
+      fixtures.versions[docId] = [
+        v(6, "Restored v2", "restore", maya, null),
+        v(5, null, "auto", ada, duck),
+        v(4, null, "before_agent", maya, null),
+        v(3, "After review", "named", maya, null),
+        v(2, null, "auto", ada, null),
+        v(1, "First draft", "named", ada, duck),
+      ];
+      const a = fixtures.artifacts[0];
+      if (a) a.currentVersion = 6;
+    }
   }
   // ?cap=plan: a capped (read-only) member, as a plan lock reports it.
   if (params.get("cap") === "plan")
@@ -50,13 +106,106 @@ async function startMocks() {
     );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
+  // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);
+  // &sharedBy=none answers null.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/artifacts/:id", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as object;
+        return HttpResponse.json({
+          ...body,
+          sharedBy:
+            params.get("sharedBy") === "none" ? null : { name: "Ada Lovelace" },
+        });
+      }),
+    );
   if (role === "admin" || role === "member" || role === "guest")
     extra.push(
       http.get("*/api/v1/me", () =>
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
+          // #2632: the owner's name (MeSchema instanceOwner).
+          instanceOwner: { name: "Bob Builder" },
         }),
+      ),
+    );
+  // ?mock=members-setup (#2632 slice 2, MemberSchema `setup`): the
+  // Members list in every Setup state, as Design's screen shows it.
+  if (params.get("mock") === "members-setup")
+    extra.push(
+      http.get("*/api/v1/members", ({ request }) => {
+        const status = new URL(request.url).searchParams.get("status");
+        if (status && status !== "active") return HttpResponse.json([]);
+        const day = (n: number) =>
+          new Date(Date.UTC(2026, 10, 16 - n, 10)).toISOString();
+        const me = fixtures.me.user;
+        return HttpResponse.json([
+          {
+            id: me.id,
+            email: me.email,
+            name: me.name,
+            role: "owner",
+            lastSeenAt: day(0),
+            setup: { state: "set", done: 5 },
+          },
+          {
+            id: "m_sam",
+            email: "sam@example.com",
+            name: "Sam Ortiz",
+            role: "member",
+            lastSeenAt: day(0),
+            setup: { state: "partial", done: 3, stalled: "mention" },
+          },
+          {
+            id: "m_priya",
+            email: "priya@example.com",
+            name: "Priya Shah",
+            role: "member",
+            lastSeenAt: day(4),
+            setup: {
+              state: "partial",
+              done: 0,
+              stalled: "agent",
+              remindedAt: day(1),
+            },
+          },
+          {
+            id: "m_jon",
+            email: "jon@example.com",
+            name: "Jon Lee",
+            role: "admin",
+            lastSeenAt: day(1),
+            setup: { state: "set", done: 5 },
+          },
+          {
+            id: "m_dana",
+            email: "dana@example.com",
+            name: null,
+            role: "member",
+            lastSeenAt: null,
+            setup: { state: "invited", done: 0 },
+          },
+          {
+            id: "m_ana",
+            email: "ana@venue.example",
+            name: null,
+            role: "guest",
+            lastSeenAt: day(3),
+          },
+        ]);
+      }),
+    );
+  // #2632: R.onboarding refuses a guest.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json(
+          { error: { code: "forbidden", message: "Forbidden" } },
+          { status: 403 },
+        ),
       ),
     );
   // ?mock=space-manager (with ?hosted=1): the caller is a plain member who manages
@@ -549,12 +698,20 @@ async function startMocks() {
             mentionStalled: params.get("ticks")?.includes("stalled"),
             askAnswered: params.get("ticks")?.includes("ask"),
             opened: params.get("opened") === "1",
+            // #2632: &teammate=1 ticks the optional sixth step.
+            teamStep: params.get("teammate") === "1",
+            invitedBy: "Bob Builder",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
-    commentAsks: params.get("mock") === "asks",
+    // &asks=1: the same asks with another mock (e.g. ?mock=doc, #1100).
+    commentAsks: params.get("mock") === "asks" || params.get("asks") === "1",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
+    // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
+    commentDecisions: params.get("mock") === "decisions",
+    // ?mock=withdrawn (#2511): asks in each withdrawn state.
+    commentWithdrawn: params.get("mock") === "withdrawn",
     // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
     commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
       params.get("passkey") ?? "",
@@ -590,6 +747,14 @@ async function startMocks() {
     commentersSignedIn: params.get("mock") === "signed-out",
     // ?mock=bus (#1293): the bus is on, with machines and agents.
     bus: params.get("mock") === "bus",
+    // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
+    // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
+    forYou:
+      params.get("mock") === "foryou"
+        ? ((["calm", "empty", "back", "error"] as const).find(
+            (v) => v === params.get("foryou"),
+          ) ?? "mixed")
+        : undefined,
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room
@@ -605,6 +770,27 @@ async function startMocks() {
           .__oaDocVersion;
         return HttpResponse.json(v ? { ...body, currentVersion: v } : body);
       }),
+      // e2e (#1100): a doc restore also reaches the local doc room, which
+      // applies it for every open editor, as the real room does.
+      http.post(
+        "*/api/v1/artifacts/:id/doc/versions/:v/restore",
+        async ({ request, params }) => {
+          const res = await getResponse(mainHandlers, request);
+          if (!res?.ok) return res;
+          const { version } = (await res.clone().json()) as {
+            version: number;
+          };
+          const ws =
+            (window as unknown as { __OA_DOC_WS?: string }).__OA_DOC_WS ||
+            import.meta.env.VITE_DOC_WS ||
+            "ws://localhost:1235";
+          await fetch(
+            `${ws.replace(/^ws/, "http")}/restore/${params.v}?version=${version}`,
+            { method: "POST" },
+          ).catch(() => {});
+          return res;
+        },
+      ),
       // e2e (#1100): window.__oaMe401 makes /me answer 401, as once the
       // session has ended, so the doc room's sign-in check sees it.
       http.get("*/api/v1/me", () =>
@@ -617,6 +803,42 @@ async function startMocks() {
       ),
     );
   }
+  // &share=workspace-only (#2590, PROVISIONAL): every share answers that the
+  // address can open it only if it's a Google account.
+  if (params.get("share") === "workspace-only")
+    extra.push(
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          ...body,
+          recipient: { canSignIn: false, reason: "workspace_only" },
+        });
+      }),
+    );
+  // &notEmailed=member_limit|instance_limit|limit (#2620): every share is
+  // saved without an email, for that reason.
+  const notEmailed = params.get("notEmailed");
+  if (notEmailed)
+    extra.push(
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...body, emailed: false, notEmailed });
+      }),
+    );
+  // #2590 G2 (PROVISIONAL): ?glink=1 stands for the oa_glink cookie of a
+  // guest Google turned away (sam@partner.org); without it, /auth/code/link
+  // answers 404.
+  const { codeLinkHandlers } = await import("./mockCodeLink");
+  extra.push(
+    ...codeLinkHandlers(
+      params.get("glink") === "1" ? "sam@partner.org" : null,
+      () => mainHandlers,
+    ),
+  );
   await setupWorker(
     ...extra,
     ...mainHandlers,

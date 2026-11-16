@@ -16,6 +16,7 @@ import { ApiClientError } from "../../api/client";
 import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
+import { type Decision, decisionsOf } from "./decisionsModel";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
 import { lostKey, putLost } from "./lostPosts";
 import {
@@ -30,7 +31,13 @@ import { draftBadge, threadBadge } from "./pinBadge";
 type Bridge = ReturnType<typeof createBridge>;
 
 /** A post that failed after its box had closed: the text to put back and why. `clear` drops it once a box has taken it. */
-export type Lost = { text: string; error: unknown; clear?: () => void };
+export type Lost = {
+  text: string;
+  error: unknown;
+  clear?: () => void;
+  /** Open the box and put the cursor right after this text (a doc's quote, #1100). */
+  focusEnd?: boolean;
+};
 
 export type PinPoint = { x: number; y: number; page?: number };
 /** A comment being started: on selected text, or on a placed pin (the server stamps the pin's contentHash). */
@@ -48,6 +55,12 @@ export type CommentsApi = {
   capped: boolean;
   /** Not signed in: composers ask for a display name. */
   guest: boolean;
+  /**
+   * #2590: a signed-in guest (Me role "guest"), someone outside the team. No
+   * agent mentions or their hint, no Decisions and no Resolve; the server
+   * refuses them anyway.
+   */
+  outsider: boolean;
   artifactId: string;
   /** The version the viewer shows. */
   version: number;
@@ -103,6 +116,14 @@ export type CommentsApi = {
   setDraftText: (text: string) => void;
   showResolved: boolean;
   setShowResolved: (v: boolean) => void;
+  /** #2381: the pane shows the comments, or the decided asks. */
+  view: "comments" | "decisions";
+  setView: (v: "comments" | "decisions") => void;
+  /** Every decided ask of the artifact, newest decision first. */
+  decisions: readonly Decision[];
+  /** The decision whose thread is open in place (its "← Decisions" back row), if any. */
+  openDecision: string | null;
+  setOpenDecision: (threadId: string | null) => void;
   guestName: string;
   setGuestName: (v: string) => void;
   /** Bridge callbacks. Every argument is a hint from page code. */
@@ -179,7 +200,10 @@ export function useCommentsController({
   openSurface,
   besideOk = false,
   viewerName = null,
+  outsider = false,
 }: {
+  /** #2590: the viewer is a signed-in guest (outside the team). */
+  outsider?: boolean;
   /** #2019: the comment box may open beside the flag (not a phone sheet or full screen). */
   besideOk?: boolean;
   /** The signed-in viewer's name, for the initials on the flag being placed. */
@@ -234,6 +258,9 @@ export function useCommentsController({
   // without a frame in between. Cancel drops it at once.
   const [heldQuote, setHeldQuote] = useState<SelectionAnchor | null>(null);
   const [showResolved, setShowResolved] = useState(false);
+  const [view, setView] = useState<"comments" | "decisions">("comments");
+  const [openDecision, setOpenDecision] = useState<string | null>(null);
+  const decisions = useMemo(() => decisionsOf(all ?? []), [all]);
   const [guestName, setGuestName] = useState("");
   const [hello, setHello] = useState(0);
   const [selected, setSelected] = useState(false);
@@ -528,10 +555,12 @@ export function useCommentsController({
       canMention:
         authed &&
         !readOnly &&
+        !outsider &&
         (artifact.can?.edit ??
           (artifact.access === "owner" || artifact.access === "editor")),
       capped: readOnly,
       guest: !authed,
+      outsider,
       artifactId: id,
       version,
       pinFormat,
@@ -589,6 +618,11 @@ export function useCommentsController({
       },
       showResolved,
       setShowResolved,
+      view,
+      setView,
+      decisions,
+      openDecision,
+      setOpenDecision,
       guestName,
       setGuestName,
       onSelect,
@@ -613,6 +647,7 @@ export function useCommentsController({
       artifact.access,
       readOnly,
       authed,
+      outsider,
       id,
       version,
       older,
@@ -634,6 +669,9 @@ export function useCommentsController({
       besideOk,
       draftSeed,
       showResolved,
+      view,
+      decisions,
+      openDecision,
       guestName,
       pinFormat,
       contentHash,

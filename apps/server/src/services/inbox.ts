@@ -17,6 +17,9 @@ import {
   unreadUpdateCount,
   updatesPage,
 } from "./inbox-items.js";
+import { getSettings } from "./members.js";
+import { setUpNoticeKey } from "./onboarding.js";
+import { getUser } from "./users.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
 export const NEEDS_YOU_MAX = 200;
@@ -254,27 +257,83 @@ async function itemsOf(
   });
 }
 
+/** How long a "member is set up" line stays (there is no read state for it yet). */
+const SET_UP_DAYS = 30;
+
+/**
+ * #2632: "{name} is set up in {org}." for each member whose setup finished and
+ * whose inviter (else the owner) is the caller; written once, at that moment.
+ */
+export async function memberSetUpUpdates(
+  env: Env,
+  caller: Me,
+): Promise<InboxItem[]> {
+  const rows = (
+    await env.DB.prepare(
+      "select key, value from settings where substr(key, 1, length(?1)) = ?1 order by cast(value as integer) desc limit 50",
+    )
+      .bind(setUpNoticeKey(caller.user.id, ""))
+      .all<{ key: string; value: string }>()
+  ).results;
+  const since = Date.now() - SET_UP_DAYS * 86_400_000;
+  const fresh = rows
+    .map((r) => ({
+      memberId: r.key.slice(setUpNoticeKey(caller.user.id, "").length),
+      at: Number(r.value),
+    }))
+    .filter((r) => r.at >= since);
+  if (!fresh.length) return [];
+  const org = (await getSettings(env).catch(() => null))?.name ?? "your team";
+  const out: InboxItem[] = [];
+  for (const r of fresh) {
+    const u = await getUser(env, r.memberId);
+    if (!u) continue;
+    out.push({
+      id: `member_set_up:${u.id}`,
+      level: "update",
+      kind: "member_set_up",
+      artifact: null,
+      actor: { kind: "user", id: u.id, name: u.name ?? u.email, me: false },
+      text: `${u.name ?? u.email} is set up in ${org}.`,
+      href: "/settings/members",
+      createdAt: new Date(r.at).toISOString(),
+      readAt: null,
+    });
+  }
+  return out;
+}
+
 /** The whole inbox response: Needs you (asks, then mentions) and one page of Updates. */
 export async function inboxOf(
   env: Env,
   caller: Me,
   cursor?: string,
 ): Promise<Inbox> {
-  const [asks, mentionRows, page, unread] = await Promise.all([
+  const [asks, mentionRows, page, unread, setUp] = await Promise.all([
     needsYou(env, caller),
     unreadMentions(env, caller),
     updatesPage(env, caller, cursor),
     unreadUpdateCount(env, caller),
+    // #2632: synthesized lines (no stored row), on the first page only.
+    cursor
+      ? Promise.resolve([] as InboxItem[])
+      : memberSetUpUpdates(env, caller).catch((e) => {
+          logWarn("inbox_member_set_up_failed", e);
+          return [] as InboxItem[];
+        }),
   ]);
   const list = [...asks, ...(await itemsOf(env, caller, mentionRows))].slice(
     0,
     NEEDS_YOU_MAX,
   );
+  const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
+    (x, y) => y.createdAt.localeCompare(x.createdAt),
+  );
   return {
     needsYou: list,
     later: [],
-    updates: await itemsOf(env, caller, page.rows),
+    updates,
     cursor: page.next,
-    counts: { needsYou: list.length, unreadUpdates: unread },
+    counts: { needsYou: list.length, unreadUpdates: unread + setUp.length },
   };
 }

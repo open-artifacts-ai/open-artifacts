@@ -198,6 +198,9 @@ export async function enforce(
     // restricted members) is 403 space_forbidden, never 404.
     if (p.org === "artifact.create" && capOfCaller(who))
       throw new ApiError("space_forbidden", "Guests can't publish here");
+    // #2632: the checklist is a member's own: a guest is told, not hidden from.
+    if (p.org === "onboarding.own")
+      throw new ApiError("members_only", "The checklist is for members");
     throw notFound();
   }
 }

@@ -16,13 +16,22 @@ import {
   suspendedMember,
 } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { capOf } from "../auth/policy.js";
+import { capOf, isCommenterRole } from "../auth/policy.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
+import {
+  SHARE_ROLE_CASE,
+  shareRoleSql,
+  storedShare,
+} from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
-import { senderName, shareEmail } from "../email/templates.js";
+import {
+  outsideShareEmail,
+  senderName,
+  shareEmail,
+} from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
@@ -33,6 +42,7 @@ import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { recordShareItem } from "./inbox-items.js";
 import { getSettings } from "./members.js";
+import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
@@ -41,10 +51,13 @@ export const MAX_SHARES = 200;
  * What a guest's share comes to, in words. Copy only: access is decided in
  * src/auth. A stored editor gets edit back if they become a member.
  */
+const GUEST_LINE: Record<ShareRole, string> = {
+  viewer: "They're a guest, so they can only view.",
+  commenter: "They're a guest, so they can view and comment.",
+  editor: "They're a guest, so they can only view for now.",
+};
 export const guestShareLine = (s: { role: ShareRole }): string =>
-  s.role === "viewer"
-    ? "They're a guest, so they can only view."
-    : "They're a guest, so they can only view for now.";
+  GUEST_LINE[s.role];
 
 const toShare = (r: {
   email: string;
@@ -72,7 +85,7 @@ export async function listShares(
   const rows = await getDb(env)
     .select({
       email: shares.email,
-      role: shares.role,
+      role: shareRoleSql(),
       createdAt: shares.createdAt,
       orgRole: users.role,
       rm: users.restrictedManual,
@@ -102,7 +115,7 @@ export async function listShares(
     rows.map(async (r) => ({
       ...toShare(r),
       ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
-      ...(viewOnly(r) ? { viewOnly: true } : {}),
+      ...(viewOnly(r) && !isCommenterRole(r.role) ? { viewOnly: true } : {}),
     })),
   );
 }
@@ -131,8 +144,7 @@ const shareAudit = (
     },
   );
 
-const SAME_SHARE =
-  "SELECT email, role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ?";
+const SAME_SHARE = `SELECT email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ? AND can_comment = ?`;
 const IS_USER = "select 1 as x from users where email = ? limit 1";
 // Only a lapsed guest (removed by the last-share cleanup): an admin or
 // directory removal clears guest_lapsed and stays removed (P3 T6).
@@ -164,7 +176,7 @@ export async function putShare(
   env: Env,
   user: Member,
   id: string,
-  s: { email: string; role: ShareRole },
+  s: { email: string; role?: ShareRole },
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<ShareResult> {
   const artifact = await ownerOnly(env, user, id);
@@ -176,6 +188,24 @@ export async function putShare(
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))
     throw new ApiError("bad_request", "Cannot share with yourself");
+  // No role given: a guest comments, anyone else views.
+  const reach = await shareReach(env, email);
+  const guest = await guestRecipients(env)(email, reach.role);
+  // An outsider is never stored as editor: a guest comments at most.
+  const asked = s.role ?? (guest ? "commenter" : "viewer");
+  const role: ShareRole = guest && asked === "editor" ? "commenter" : asked;
+  const stored = storedShare(role);
+  // #2590: with the owner's switch off, no new share to an address outside
+  // the instance (no user row here). A person already in stays shareable.
+  if (
+    outsideAddress(env, email) &&
+    !(await stmt(env.DB, IS_USER).bind(email).first()) &&
+    !(await outsideSharingOn(env))
+  )
+    throw new ApiError(
+      "outside_sharing_off",
+      "Sharing with people outside is off. An owner can turn it on in Settings, Sharing.",
+    );
   const now = Date.now();
   // One atomic statement: a new email is inserted only while under the cap;
   // updating an existing share bypasses it, and the same role is a no-op.
@@ -188,21 +218,21 @@ export async function putShare(
     createdAt: number;
   }>([
     env.DB.prepare(
-      `INSERT INTO shares (artifact_id, email, role, created_by, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5
+      `INSERT INTO shares (artifact_id, email, role, can_comment, created_by, created_at)
+       SELECT ?1, ?2, ?3, ?7, ?4, ?5
        WHERE (SELECT count(*) FROM shares WHERE artifact_id = ?1) < ?6
           OR EXISTS (SELECT 1 FROM shares WHERE artifact_id = ?1 AND email = ?2)
-       ON CONFLICT (artifact_id, email) DO UPDATE SET role = excluded.role
-         WHERE shares.role <> excluded.role
-       RETURNING email, role, created_at AS createdAt`,
-    ).bind(id, email, s.role, user.id, now, MAX_SHARES),
-    shareAudit(env, "artifact.share", user, artifact, { role: s.role }),
+       ON CONFLICT (artifact_id, email) DO UPDATE SET role = excluded.role, can_comment = excluded.can_comment
+         WHERE shares.role <> excluded.role OR shares.can_comment <> excluded.can_comment
+       RETURNING email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt`,
+    ).bind(id, email, stored.role, user.id, now, MAX_SHARES, stored.canComment),
+    shareAudit(env, "artifact.share", user, artifact, { role }),
   ]);
   // No row back: unchanged (already at this role) or refused at the cap.
   const row =
     res?.results[0] ??
     (await stmt(env.DB, SAME_SHARE)
-      .bind(id, email, s.role)
+      .bind(id, email, stored.role, stored.canComment)
       .first<{ email: string; role: string; createdAt: number }>());
   if (!row)
     throw new ApiError(
@@ -214,7 +244,7 @@ export async function putShare(
   // A changed share at viewer is a downgrade from editor: the sockets opened
   // as editor close, and the artifact's DO refuses accepts authorized before
   // it (P3 T7). Not the person's presence: their other artifacts are unaffected.
-  if (res?.results[0] && !created && s.role === "viewer")
+  if (res?.results[0] && !created && role !== "editor")
     await closeRuntimeSockets(env, [id], "share narrowed", ctx);
   // A guest deactivated when their last share went comes back on a new one
   // (same row: their history and name are intact). After the insert, so a
@@ -248,18 +278,46 @@ export async function putShare(
     );
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
-  const reach = await shareReach(env, email);
-  const guest = await guestRecipients(env)(email, reach.role);
   return {
     ...toShare(row),
     ...(guest ? { guest: true } : {}),
-    emailed:
-      created && (await emailShare(env, user, artifact, email, s.role, reach)),
+    ...(await emailed(created, () =>
+      emailShare(env, user, artifact, email, role, reach),
+    )),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
     signInMethods: reach.methods,
+    // The ways in, [] when nothing admits them (#2590).
+    reach: { ways: reach.ways },
   };
 }
+
+/** ShareResult's emailed and, when a limit refused it, notEmailed. */
+async function emailed(
+  created: boolean,
+  send: () => Promise<{
+    emailed: boolean;
+    notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+    limit?: number;
+  }>,
+): Promise<Pick<ShareResult, "emailed" | "notEmailed" | "limit">> {
+  if (!created) return { emailed: false };
+  const r = await send();
+  return {
+    emailed: r.emailed,
+    ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
+    ...(r.limit !== undefined ? { limit: r.limit } : {}),
+  };
+}
+
+/** Outside shares emailed per member per UTC day (#2590). */
+export const OUTSIDE_EMAILS_PER_MEMBER_PER_DAY = 20;
+/**
+ * Outside share emails per instance per UTC day, and during a trial (the
+ * issue gives no numbers: 100 and 20).
+ */
+export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY = 100;
+export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL = 20;
 
 async function emailShare(
   env: Env,
@@ -269,42 +327,110 @@ async function emailShare(
   role: ShareRole,
   /** The methods that admit the recipient and, with none, why (shareReach). */
   reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
-): Promise<boolean> {
-  if (!emailEnabled(env)) return false;
+): Promise<{
+  emailed: boolean;
+  notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+  limit?: number;
+}> {
+  if (!emailEnabled(env)) return { emailed: false };
   try {
     const [member, settings] = await Promise.all([
       stmt(env.DB, IS_USER).bind(email).first(),
       getSettings(env),
     ]);
-    if (member) return false;
-    // No user row here: the level they'll have, as the share rows show it.
-    const viewOnly = await guestRecipients(env)(email, null);
-    return await sendEmail(
+    if (member) return { emailed: false };
+    // An outside address gets the outside email (plain template, a capped
+    // title, no URL-like sender text) on every install. The daily limits are
+    // hosted's: a self-hosted install sends it, without limits. Anyone else (a login domain's address) gets the normal share
+    // email, with its role line, as on main.
+    const outside = outsideAddress(env, email);
+    const hosted = env.HOSTED === "1";
+    // No user row. An outside address (#2590) gets the outside email, under
+    // its own daily limits (apart from the usual ones; the share is saved
+    // whatever they say). Anyone else (an address at a login domain, an
+    // Access install) gets the normal share email, with its role line.
+    const day = new Date().toISOString().slice(0, 10);
+    const trial = planOfMember(user)?.tier === "trial";
+    const outcome: { limited?: boolean; reason?: string } = {};
+    const sent = await sendEmail(
       env,
       user.id,
       email,
       () =>
-        shareEmail({
-          inviter: senderName(user),
-          instance: settings.name,
-          recipient: email,
-          appHost: env.APP_HOST,
-          title: artifact.title,
-          path: viewerPath(artifact.id),
-          format: apiFormat(artifact.format, artifact.doc),
-          role: viewOnly ? "viewer" : role,
-          signIn: reach.methods,
-          cantSignIn: reach.recipient?.reason,
-        }),
+        outside
+          ? outsideShareEmail({
+              inviter: senderName(user),
+              senderEmail: normalizeEmail(user.email) ?? user.email,
+              instance: settings.name,
+              recipient: email,
+              appHost: env.APP_HOST,
+              title: artifact.title,
+              path: viewerPath(artifact.id),
+              signIn: reach.methods,
+              cantSignIn: reach.recipient?.reason,
+            })
+          : shareEmail({
+              inviter: senderName(user),
+              instance: settings.name,
+              recipient: email,
+              appHost: env.APP_HOST,
+              title: artifact.title,
+              path: viewerPath(artifact.id),
+              format: apiFormat(artifact.format, artifact.doc),
+              role,
+              signIn: reach.methods,
+              cantSignIn: reach.recipient?.reason,
+            }),
       {
         kind: "share",
         artifactId: artifact.id,
         instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
+        outcome,
+        extraCaps: !(outside && hosted)
+          ? []
+          : [
+              {
+                cap: [
+                  `email:out:u:${user.id}`,
+                  OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
+                  day,
+                ],
+                reason: "member_limit",
+              },
+              {
+                cap: [
+                  "email:out:*",
+                  trial
+                    ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
+                    : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
+                  day,
+                ],
+                reason: "instance_limit",
+              },
+            ],
       },
     );
+    if (sent) return { emailed: true };
+    if (!outcome.limited) return { emailed: false };
+    // The number a member_limit or instance_limit refusal hit, for the page.
+    if (outcome.reason === "member_limit")
+      return {
+        emailed: false,
+        notEmailed: "member_limit",
+        limit: OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
+      };
+    if (outcome.reason === "instance_limit")
+      return {
+        emailed: false,
+        notEmailed: "instance_limit",
+        limit: trial
+          ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
+          : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
+      };
+    return { emailed: false, notEmailed: "limit" };
   } catch {
-    return false;
+    return { emailed: false };
   }
 }
 
@@ -347,7 +473,7 @@ export async function deleteShare(
 // directory sync added them) keeps their account when their last share goes
 // (review item 18).
 const UNSHARED_GUEST =
-  "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1) AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.user_id = users.id)";
+  "email = ?1 AND role = 'guest' AND invited_at IS NULL AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1) AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.user_id = users.id)";
 const GUEST_ID = "select id from users where email = ? and role = 'guest'";
 const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', guest_lapsed = 1, status_changed_at = ?2,
    session_epoch = session_epoch + 1

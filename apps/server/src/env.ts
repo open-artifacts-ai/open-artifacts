@@ -163,6 +163,12 @@ export interface Env {
   AUTH_DOMAINS?: string;
   /** "member": anyone in AUTH_DOMAINS joins as a member; anything else: invite only. */
   AUTH_DOMAIN_JOIN?: string;
+  /**
+   * Hosted only: "owner" lifts the invite-only force on AUTH_DOMAIN_JOIN
+   * "member". The platform sets it after the owner's proven login-settings
+   * change (#2520); any other value, or none, keeps hosted invite-only.
+   */
+  AUTH_DOMAIN_JOIN_SOURCE?: string;
   /** "on": domain members may sign in with emailed codes (trial; only while Google is off). */
   EMAIL_CODE_DOMAIN?: string;
   GOOGLE_CLIENT_ID?: string;

@@ -3,6 +3,7 @@ import { GOOGLE_AUTHORIZE_URL, GOOGLE_TOKEN_URL } from "@oa/auth-core";
 import { AUTH } from "@oa/shared";
 import { generateKeyPair } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { authConfig } from "../src/auth/config.js";
 import {
   buildAuthorizeRedirect,
   handleCallback,
@@ -10,6 +11,7 @@ import {
 } from "../src/auth/oidc.js";
 import { googleProvider } from "../src/auth/providers/google.js";
 import type { Env } from "../src/env.js";
+import { admit } from "../src/services/identity.js";
 import { CID, direct } from "./auth-helpers.js";
 import { type FakeGoogle, fakeGoogle } from "./fixtures/fake-google.js";
 
@@ -46,6 +48,31 @@ const logs = () => {
   });
   return lines;
 };
+
+/**
+ * Weak evidence outside the login domains (#2590): the provider no longer
+ * throws; it returns the identity bound to its exact address, tenant null,
+ * and admit() refuses it with no session (no_access with no share, needs_code
+ * with one) and creates no row.
+ */
+async function expectBoundRefused(
+  e: Env,
+  b: Awaited<ReturnType<typeof begin>>,
+  code: string,
+  email: string,
+) {
+  const id = await handleCallback(e, googleProvider, callback(b, code));
+  expect(id).toMatchObject({ tenant: null, bound: "email" });
+  expect(await admit(e, authConfig(e), id)).toEqual({
+    ok: false,
+    reason: "no_access",
+  });
+  expect(
+    await env.DB.prepare("select 1 from users where email = ?")
+      .bind(email)
+      .first(),
+  ).toBeNull();
+}
 
 describe("google provider (direct)", () => {
   it("authorize URL: client, redirect, scope, PKCE S256, select_account, hd hint", async () => {
@@ -86,8 +113,6 @@ describe("google provider (direct)", () => {
   });
 
   it.each([
-    [{ hd: "b.com" }, "tenant"],
-    [{ hd: undefined }, "tenant"],
     [{ email_verified: false }, "email_unverified"],
     [{ aud: "other" }, "jwt_verify"],
     [{ azp: "other" }, "azp"],
@@ -100,6 +125,23 @@ describe("google provider (direct)", () => {
       handleCallback(e, googleProvider, callback(b, code)),
     ).rejects.toMatchObject({ code: "unauthorized" });
     expect(lines).toEqual([{ evt: "oidc_fail", stage }]);
+  });
+
+  it("domains set: an unverified Gmail is refused outright", async () => {
+    const e = direct();
+    const b = await begin(e);
+    const code = g.issueCode(
+      {
+        nonce: b.nonce,
+        hd: undefined,
+        email: "me@gmail.com",
+        email_verified: false,
+      },
+      b.challenge,
+    );
+    await expect(
+      handleCallback(e, googleProvider, callback(b, code)),
+    ).rejects.toMatchObject({ code: "unauthorized" });
   });
 
   it("domains set: an hd outside the list is bound to its exact address on strong evidence (#2520)", async () => {
@@ -141,17 +183,11 @@ describe("google provider (direct)", () => {
       "secondary domain of another Workspace",
       { hd: "acme.com", email: "me@sub.acme.com" },
     ],
-    [
-      "unverified Gmail",
-      { hd: undefined, email: "me@gmail.com", email_verified: false },
-    ],
-  ])("domains set: %s is refused", async (_n, claims) => {
+  ])("domains set: %s is bound and refused by admit", async (_n, claims) => {
     const e = direct();
     const b = await begin(e);
     const code = g.issueCode({ nonce: b.nonce, ...claims }, b.challenge);
-    await expect(
-      handleCallback(e, googleProvider, callback(b, code)),
-    ).rejects.toMatchObject({ code: "unauthorized" });
+    await expectBoundRefused(e, b, code, claims.email as string);
   });
 
   it("no domains: no hd hint, no hd check, tenant null, verified email required", async () => {
@@ -182,9 +218,7 @@ describe("google provider (direct)", () => {
       { nonce: b.nonce, hd: undefined, email: "ex@acme.com" },
       b.challenge,
     );
-    await expect(
-      handleCallback(e, googleProvider, callback(b, code)),
-    ).rejects.toMatchObject({ code: "unauthorized" });
+    await expectBoundRefused(e, b, code, "ex@acme.com");
   });
 
   it("no domains: Workspace hd equal to the email's domain is accepted, tenant null", async () => {
@@ -206,9 +240,7 @@ describe("google provider (direct)", () => {
       { nonce: b.nonce, hd: "evil.com", email: "me@acme.com" },
       b.challenge,
     );
-    await expect(
-      handleCallback(e, googleProvider, callback(b, code)),
-    ).rejects.toMatchObject({ code: "unauthorized" });
+    await expectBoundRefused(e, b, code, "me@acme.com");
   });
 
   it("tenant B's token at install A is never a tenant: bound to its address, admit needs an invite (#2520)", async () => {
@@ -221,15 +253,13 @@ describe("google provider (direct)", () => {
     expect(
       await handleCallback(e, googleProvider, callback(b0, ok)),
     ).toMatchObject({ tenant: null, bound: "email", email: "eve@b.com" });
-    // An address that is not B's own domain is refused outright.
+    // An address that is not B's own domain is bound too, and admit() refuses it.
     const b = await begin(e);
     const code = g.issueCode(
       { nonce: b.nonce, hd: "b.com", email: "eve@a.com" },
       b.challenge,
     );
-    await expect(
-      handleCallback(e, googleProvider, callback(b, code)),
-    ).rejects.toMatchObject({ code: "unauthorized" });
+    await expectBoundRefused(e, b, code, "eve@a.com");
   });
 
   it("a token for another flow's nonce is refused", async () => {

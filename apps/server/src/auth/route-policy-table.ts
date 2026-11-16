@@ -78,6 +78,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // same-origin) and the pending code cookie carry the protection.
   "POST /auth/code/request": { public: "code request; login guard, Turnstile" },
   "POST /auth/code/verify": { public: "code verify; login guard" },
+  // #2590 G2: the masked address of the Google account waiting for a code,
+  // read from this browser's own link cookie; nothing without it.
+  "GET /auth/code/link": {
+    public: "masked address from this browser's link cookie",
+  },
   // #1467 comment-email unsubscribe: a signed token (one person, one flag)
   // is the only credential; GET changes nothing.
   "GET /auth/unsubscribe/comments": {
@@ -117,6 +122,12 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The handler requires a manager and 404s for the owner's own link.
   "DELETE /api/v1/members/:id/identities/google": { org: "members.manage" },
   "GET /api/v1/settings": { org: "settings.read" },
+  // #2520: login for invited people. Reach and login settings: owner or admin;
+  // changing them: the owner, and the handler needs a fresh login.
+  "GET /api/v1/members/reach": { org: "members.manage" },
+  "GET /api/v1/settings/login": { org: "members.manage" },
+  "POST /api/v1/settings/login/first-invite-seen": { org: "members.manage" },
+  "PUT /api/v1/settings/login": { org: "login.manage" },
   // P3 T9 spaces API: 404 without the spaces feature. Space routes admit any
   // signed-in caller; the service applies the per-space rule (member, the
   // space's manager, or an org admin; 404 otherwise, never 403 except the
@@ -190,8 +201,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/notices/guest_shares/dismiss": { org: "notices.own" },
   "POST /api/v1/notices/guest_summary/dismiss": { org: "notices.manage" },
   // The first-run checklist's install-wide state: the uncapped org owner.
-  "GET /api/v1/onboarding": { org: "onboarding.manage" },
-  "PUT /api/v1/onboarding": { org: "onboarding.manage" },
+  "GET /api/v1/onboarding": { org: "onboarding.own" },
+  "PUT /api/v1/onboarding": { org: "onboarding.own" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
@@ -248,6 +259,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/events`]: art("events"),
   // #1100: the doc room socket; the handler grants role edit by "publish".
   [`GET ${ARTS}/doc`]: art("events"),
+  // #1100: edit_doc over REST; the service checks "publish" (plan lock, caps).
+  [`POST ${ARTS}/doc/ops`]: art("publish", signedIn),
+  // #1100: save a named doc version and restore one, through the room.
+  [`POST ${ARTS}/doc/versions`]: art("publish", signedIn),
+  [`POST ${ARTS}/doc/versions/:v/restore`]: art("publish", signedIn),
   [`GET ${ARTS}/storage`]: art("storage", { anon401: SAVE }),
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
@@ -279,6 +295,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   ),
   // #2381: the asker's own user takes the decision back (the service).
   [`POST ${ARTS}/comments/:threadId/comments/:commentId/ask/decider`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
+  // #2511: the asker (the asking agent, or the person it acts for) withdraws its ask.
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`]: art(
     "comments.write",
     { anon401: COMMENT },
   ),
@@ -527,6 +548,8 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   search_artifacts: { user: "filtered by listFilterSql" },
   list_versions: art("versions"),
   restore_version: art("restore"),
+  // #1100: offered only while docs are available; the service checks the doc.
+  edit_doc: art("publish"),
   share_artifact: art("share"),
   unshare_artifact: art("unshare"),
   set_visibility: art("visibility"),
@@ -541,6 +564,8 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   list_comments: art("comments.read"),
   add_comment: art("comments.write"),
   resolve_comment: art("comments.write"),
+  withdraw_ask: art("comments.write"),
+  edit_comment: art("comments.write"),
   list_spaces: { user: "the caller's own publishable spaces" },
   // #1372: proposes only (the caller's own hub); offered while the bus is on.
   bus_role_propose: { org: "mcp.connect" },

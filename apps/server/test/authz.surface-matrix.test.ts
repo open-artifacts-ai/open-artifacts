@@ -23,6 +23,11 @@ import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { type AppEnv, readOnlyCap } from "../src/http/middleware.js";
 import worker from "../src/index.js";
 import manifest from "../src/mcp/tool-manifest.json";
+import {
+  DOC_GATED_TOOLS,
+  DOC_SWITCH,
+  docToolOff,
+} from "../src/services/doc-switch.js";
 import { getUser } from "../src/services/users.js";
 import {
   ARTIFACTS,
@@ -72,6 +77,8 @@ let w: World;
 let target: OrgTarget;
 let space: SpaceTarget;
 beforeAll(async () => {
+  // #1100: edit_doc is offered only while docs are available (the world is PLAN paid).
+  DOC_SWITCH.creation = true;
   w = await buildWorld();
   target = {
     spaceId: w.spaces.S,
@@ -118,12 +125,20 @@ const answering = (routes: readonly RouteDef[]) => [
   ),
 ];
 
+// The manifest was generated with the switch as it was at import, before the
+// world opens it.
+const GATED_IN_MANIFEST = DOC_GATED_TOOLS.filter((n) => !docToolOff(n));
+
 describe("coverage (derived from the router and the registries)", () => {
   it("SURFACES cover every artifact entry in ROUTE_POLICY and every MCP tool", () => {
     expect(uncovered(SURFACES, ROUTE_POLICY, TOOL_POLICY)).toEqual([]);
-    expect(manifest.map((t) => t.name).sort()).toEqual(
-      Object.keys(TOOL_POLICY).sort(),
-    );
+    // Doc-gated tools stay out of the public manifest until the doc switch opens (#1100).
+    expect(
+      manifest
+        .map((t) => t.name)
+        .concat(DOC_GATED_TOOLS.filter((n) => !GATED_IN_MANIFEST.includes(n)))
+        .sort(),
+    ).toEqual(Object.keys(TOOL_POLICY).sort());
   });
   it("every mounted app route is listed (artifact surface, instance route or public)", () => {
     const mounted = answering(createApp().routes as RouteDef[]);
@@ -774,6 +789,96 @@ describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
       expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
       expect(code).toBe(0);
       expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, \d+ mismatches$/);
+    },
+    SLOW,
+  );
+});
+
+describe("scripts/authz-probe.ts on an install whose tools/list hides edit_doc", () => {
+  // tools/list without edit_doc. `calls` "unknown": a call to it answers
+  // the unknown-tool error, as a real install without it does; "callable":
+  // calls still reach the tool.
+  const hide =
+    (calls: "unknown" | "callable") =>
+    async (req: Request): Promise<Response> => {
+      const r = (await io.fetch?.(req.clone() as never)) as Response;
+      const body = (await req.clone().text()) || "";
+      if (body.includes('"tools/list"')) {
+        const text = await r.text();
+        const strip = (j: string) => {
+          const m = JSON.parse(j) as {
+            result?: { tools?: { name: string }[] };
+          };
+          if (m.result?.tools)
+            m.result.tools = m.result.tools.filter(
+              (t) => t.name !== "edit_doc",
+            );
+          return JSON.stringify(m);
+        };
+        const out = text.trimStart().startsWith("{")
+          ? strip(text)
+          : text
+              .split("\n")
+              .map((l) =>
+                l.startsWith("data:") ? `data:${strip(l.slice(5))}` : l,
+              )
+              .join("\n");
+        return new Response(out, { status: r.status, headers: r.headers });
+      }
+      if (calls === "unknown" && body.includes('"name":"edit_doc"'))
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32602, message: "Tool edit_doc not found" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      return r;
+    };
+  const run = async (fetch: typeof io.fetch) => {
+    const lines: string[] = [];
+    await main(
+      ["--base", BASE, "--creds", "world.json"],
+      {},
+      {
+        log: (l) => lines.push(l),
+        fetch,
+        only: (n) => n === "mcp edit_doc",
+        readFile: async () =>
+          JSON.stringify({ callers: w.creds, artifacts: w.ids }),
+      },
+    );
+    return lines;
+  };
+
+  it(
+    "hidden and unknown: every caller gets the unknown-tool answer, no mismatch",
+    async () => {
+      const lines = await run(hide("unknown"));
+      expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
+      expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, 0 mismatches$/);
+    },
+    SLOW,
+  );
+
+  it(
+    "hidden but still callable is a mismatch",
+    async () => {
+      const lines = await run(hide("callable"));
+      expect(lines.some((l) => l.startsWith("MISMATCH mcp edit_doc"))).toBe(
+        true,
+      );
+    },
+    SLOW,
+  );
+
+  it(
+    "offered (this world opens the switch): the normal surface runs",
+    async () => {
+      const lines = await run(io.fetch);
+      expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
+      expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, 0 mismatches$/);
     },
     SLOW,
   );

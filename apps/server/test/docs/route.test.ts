@@ -150,7 +150,8 @@ describe("roles by caller", () => {
       const h = await s.hello;
       expect(h).toMatchObject({ type: "hello", role, cap: 2 * 1024 * 1024 });
       expect(h.version).toBeGreaterThanOrEqual(1);
-      expect(h.bytes).toBe(0);
+      // The room seeds itself from the current version ("# Hi").
+      expect(h.bytes).toBeGreaterThan(0);
       // A viewer reads by access, not because the room is full.
       expect(h.reason).toBe(role === "read" ? "access" : undefined);
       s.ws.close();

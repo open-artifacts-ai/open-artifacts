@@ -1,5 +1,156 @@
 # Changelog
 
+## [0.199.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.1...v0.199.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **onboarding:** seed the Welcome after sign-in, not during it ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632)) ([#2667](https://github.com/open-artifacts-ai/open-artifacts/issues/2667)) ([adf3628](https://github.com/open-artifacts-ai/open-artifacts/commit/adf362852cb03079a68661849f3487ce705912d4))
+
+## [0.199.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.0...v0.199.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **bus:** Hermes shows as live from session start and wakes for mail ([#2647](https://github.com/open-artifacts-ai/open-artifacts/issues/2647)) ([#2648](https://github.com/open-artifacts-ai/open-artifacts/issues/2648)) ([d434a84](https://github.com/open-artifacts-ai/open-artifacts/commit/d434a840675c134a5415361f9436b673beb43246))
+
+## [0.199.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.198.0...v0.199.0) (2026-11-16)
+
+
+### Features
+
+* **members:** a Setup column and Copy the setup line ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) slice 2) ([#2638](https://github.com/open-artifacts-ai/open-artifacts/issues/2638)) ([d60657e](https://github.com/open-artifacts-ai/open-artifacts/commit/d60657eae3af618fb06f9b246329764eb171861b))
+
+## [0.198.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.197.0...v0.198.0) (2026-11-16)
+
+
+### Features
+
+* **onboarding:** every member gets their own Welcome and Library card ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) slice 1) ([#2634](https://github.com/open-artifacts-ai/open-artifacts/issues/2634)) ([d0340d0](https://github.com/open-artifacts-ai/open-artifacts/commit/d0340d087cd9fad762414274e5cf7f8d83b6bbf7))
+
+## [0.197.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.196.0...v0.197.0) (2026-11-16)
+
+
+### Features
+
+* **onboarding:** per-person setup state, Welcome and Members setup on the server ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) server) ([#2639](https://github.com/open-artifacts-ai/open-artifacts/issues/2639)) ([8605ba7](https://github.com/open-artifacts-ai/open-artifacts/commit/8605ba75628c3b3f5bb53089cdae24c7bdc606b0))
+
+## [0.196.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.195.0...v0.196.0) (2026-11-16)
+
+
+### Features
+
+* **share:** the Google-account note and why a share wasn't emailed ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2626](https://github.com/open-artifacts-ai/open-artifacts/issues/2626)) ([2bf3a84](https://github.com/open-artifacts-ai/open-artifacts/commit/2bf3a84108f2d3ffbe586108bd8e7989e1d1092e))
+
+## [0.195.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.194.0...v0.195.0) (2026-11-16)
+
+
+### Features
+
+* **sharing:** owner switch for outside sharing, share email limits and content ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2620](https://github.com/open-artifacts-ai/open-artifacts/issues/2620)) ([6eea414](https://github.com/open-artifacts-ai/open-artifacts/commit/6eea414716d21cc7cdd4680626c376d60192fbbe))
+
+## [0.194.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.1...v0.194.0) (2026-11-15)
+
+
+### Features
+
+* **comments:** withdraw, replace and edit ask cards ([#2511](https://github.com/open-artifacts-ai/open-artifacts/issues/2511)) ([#2623](https://github.com/open-artifacts-ai/open-artifacts/issues/2623)) ([0e72325](https://github.com/open-artifacts-ai/open-artifacts/commit/0e72325c9e67a7057be4bdf09b02c0929aa09abb))
+
+## [0.193.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.0...v0.193.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **docs:** old docs give their existing clientIDs to the server ([#2615](https://github.com/open-artifacts-ai/open-artifacts/issues/2615) L2) ([#2617](https://github.com/open-artifacts-ai/open-artifacts/issues/2617)) ([c615f8c](https://github.com/open-artifacts-ai/open-artifacts/commit/c615f8c39baaa75066f03ae9d1dc96c82064f9af))
+
+## [0.193.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.192.0...v0.193.0) (2026-11-15)
+
+
+### Features
+
+* **docs:** Save version, restore, doc version labels, comments on a selection ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2551](https://github.com/open-artifacts-ai/open-artifacts/issues/2551)) ([a4bf39c](https://github.com/open-artifacts-ai/open-artifacts/commit/a4bf39c2304f529d46e797678ddd6bbdb650d674))
+
+## [0.192.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.191.0...v0.192.0) (2026-11-15)
+
+
+### Features
+
+* **share:** someone outside gets Can view or Can comment ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2597](https://github.com/open-artifacts-ai/open-artifacts/issues/2597)) ([5df2ee3](https://github.com/open-artifacts-ai/open-artifacts/commit/5df2ee324356a66f6e700c3c27f2ab1fc38395a6))
+
+
+### Bug Fixes
+
+* **docs:** a room refuses updates for another socket's clientID ([#2177](https://github.com/open-artifacts-ai/open-artifacts/issues/2177)) ([#2572](https://github.com/open-artifacts-ai/open-artifacts/issues/2572)) ([b7563d7](https://github.com/open-artifacts-ai/open-artifacts/commit/b7563d79c90071913d580570ac4d14cdb2c05dc5))
+* **docs:** rate-limit save and restore; restores don't fill the size cap ([#2591](https://github.com/open-artifacts-ai/open-artifacts/issues/2591)) ([#2616](https://github.com/open-artifacts-ai/open-artifacts/issues/2616)) ([d5b29e5](https://github.com/open-artifacts-ai/open-artifacts/commit/d5b29e550a3ea360f619d8a05e733b868e07f866))
+* **docs:** the skill lists edit_doc per install, at serve time ([#2578](https://github.com/open-artifacts-ai/open-artifacts/issues/2578)) ([#2614](https://github.com/open-artifacts-ai/open-artifacts/issues/2614)) ([9ae7051](https://github.com/open-artifacts-ai/open-artifacts/commit/9ae705104222d4e44fa3d0f3e85faf6e9f3a4ebe))
+
+## [0.191.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.190.1...v0.191.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** a weak Google login proves the address with an emailed code ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2604](https://github.com/open-artifacts-ai/open-artifacts/issues/2604)) ([56084e5](https://github.com/open-artifacts-ai/open-artifacts/commit/56084e58014fc997cdccc0ea1f146915e87954e3))
+* **docs:** save a named version and restore through the room ([#2496](https://github.com/open-artifacts-ai/open-artifacts/issues/2496), [#2140](https://github.com/open-artifacts-ai/open-artifacts/issues/2140)) ([#2555](https://github.com/open-artifacts-ai/open-artifacts/issues/2555)) ([a1baf32](https://github.com/open-artifacts-ai/open-artifacts/commit/a1baf32346f583684bc0c6908aeaee948bbb75ad))
+* **sharing:** a commenter role for shares ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2600](https://github.com/open-artifacts-ai/open-artifacts/issues/2600)) ([417e1dd](https://github.com/open-artifacts-ai/open-artifacts/commit/417e1ddbcc26b07e41926015c38f7e6857aa2b2b))
+* **sign-in:** a guest Google turned away gets an emailed code ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2607](https://github.com/open-artifacts-ai/open-artifacts/issues/2607)) ([3d90cb1](https://github.com/open-artifacts-ai/open-artifacts/commit/3d90cb13cbc634aab3f6d943f910df01aeb256f0))
+
+## [0.190.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.190.0...v0.190.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **members:** the invite button waits for login settings; T19 waits for the dialog ([#2605](https://github.com/open-artifacts-ai/open-artifacts/issues/2605)) ([039f9a6](https://github.com/open-artifacts-ai/open-artifacts/commit/039f9a6895e6f860ee4f701ff608d1c1cd75ee3b))
+
+## [0.190.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.189.0...v0.190.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** a person a page is shared with logs in with Google as a guest ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2595](https://github.com/open-artifacts-ai/open-artifacts/issues/2595)) ([d0d0642](https://github.com/open-artifacts-ai/open-artifacts/commit/d0d0642a8976e24d1f14eee159e669fe1556a2f6))
+* **bus:** the updater: switch, self-check and step back ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2573](https://github.com/open-artifacts-ai/open-artifacts/issues/2573)) ([158e11a](https://github.com/open-artifacts-ai/open-artifacts/commit/158e11a206b850ead9b0a62bb218b2763619e5e5))
+* **docs:** edit_doc lets agents edit a doc through the room ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2542](https://github.com/open-artifacts-ai/open-artifacts/issues/2542)) ([529d681](https://github.com/open-artifacts-ai/open-artifacts/commit/529d681262efe5a5d1865497595bf9e33094d95b))
+* **viewer:** the guest bar, Shared with you, and Get your own ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2599](https://github.com/open-artifacts-ai/open-artifacts/issues/2599)) ([838c2cc](https://github.com/open-artifacts-ai/open-artifacts/commit/838c2cc41e60b8c4434fa61f4227555923fbaacb))
+
+## [0.189.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.188.0...v0.189.0) (2026-11-15)
+
+
+### Features
+
+* **auth:** login settings and per-address reach routes ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2545](https://github.com/open-artifacts-ai/open-artifacts/issues/2545)) ([e1d0366](https://github.com/open-artifacts-ai/open-artifacts/commit/e1d036624d30445669c68837e8238dc59bc0f974))
+* **billing:** count members for per-member billing ([#2580](https://github.com/open-artifacts-ai/open-artifacts/issues/2580)) ([#2587](https://github.com/open-artifacts-ai/open-artifacts/issues/2587)) ([4a1744b](https://github.com/open-artifacts-ai/open-artifacts/commit/4a1744ba99cc40f6db9fe074c54d93d20c307263))
+* **setup:** the first install runs only the bytes it checked ([#2543](https://github.com/open-artifacts-ai/open-artifacts/issues/2543)) ([#2586](https://github.com/open-artifacts-ai/open-artifacts/issues/2586)) ([d122e37](https://github.com/open-artifacts-ai/open-artifacts/commit/d122e378901cffa0e67074ea8f47b9784131b5a0))
+
+
+### Bug Fixes
+
+* **comments:** guests count as outside for agent wake-ups ([#2592](https://github.com/open-artifacts-ai/open-artifacts/issues/2592)) ([60fb0fa](https://github.com/open-artifacts-ai/open-artifacts/commit/60fb0fa1585999e35b4d486e8a06fd82d608851e))
+* **dashboard:** no transfer request per departed member on every load ([#2593](https://github.com/open-artifacts-ai/open-artifacts/issues/2593)) ([cc6bd40](https://github.com/open-artifacts-ai/open-artifacts/commit/cc6bd40f4ddc53c8b0f5b23688551d9ae64524d8))
+* **settings:** the turn-off dialog counts members at the domain ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2589](https://github.com/open-artifacts-ai/open-artifacts/issues/2589)) ([3b70b5d](https://github.com/open-artifacts-ai/open-artifacts/commit/3b70b5d52b237c08807477eb41eb7fce3cc548dd))
+
+## [0.188.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.187.0...v0.188.0) (2026-11-15)
+
+
+### Features
+
+* **bus:** update policy, quiet moments and the off switch ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2569](https://github.com/open-artifacts-ai/open-artifacts/issues/2569)) ([57ce574](https://github.com/open-artifacts-ai/open-artifacts/commit/57ce5745e95f9ba1563ab96c04928eca5eb6541a))
+
+## [0.187.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.186.1...v0.187.0) (2026-11-15)
+
+
+### Features
+
+* **audit:** record bus machine approve and revoke ([#2458](https://github.com/open-artifacts-ai/open-artifacts/issues/2458)) ([#2558](https://github.com/open-artifacts-ai/open-artifacts/issues/2558)) ([fa16075](https://github.com/open-artifacts-ai/open-artifacts/commit/fa16075156696691ee5873ac5dcededa70e8b8db))
+* **bus:** fetch, unpack and check the proof of a bus release ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2565](https://github.com/open-artifacts-ai/open-artifacts/issues/2565)) ([dc2d0e5](https://github.com/open-artifacts-ai/open-artifacts/commit/dc2d0e5001a832f9507777cda3854a3421e7d536))
+* **bus:** versioned install folders with a one-step switch ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2556](https://github.com/open-artifacts-ai/open-artifacts/issues/2556)) ([c97c4cc](https://github.com/open-artifacts-ai/open-artifacts/commit/c97c4cc0a449390991d55fb42e30047630e484d2))
+* **comments:** the Decisions tab on the page ([#2381](https://github.com/open-artifacts-ai/open-artifacts/issues/2381) S2) ([#2516](https://github.com/open-artifacts-ai/open-artifacts/issues/2516)) ([20b5450](https://github.com/open-artifacts-ai/open-artifacts/commit/20b54506acb181a5a27e4bb5086c91d5bba06aed))
+* **dashboard:** the bell and For you ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) slice 1) ([#2515](https://github.com/open-artifacts-ai/open-artifacts/issues/2515)) ([9f1d6a7](https://github.com/open-artifacts-ai/open-artifacts/commit/9f1d6a70110f95b85640153939c09f48df7cc679))
+
+
+### Bug Fixes
+
+* **comments:** guard mentions of other people's agents ([#2559](https://github.com/open-artifacts-ai/open-artifacts/issues/2559)) ([#2564](https://github.com/open-artifacts-ai/open-artifacts/issues/2564)) ([f54d720](https://github.com/open-artifacts-ai/open-artifacts/commit/f54d720dc14613ebc3afec0aff4506c603019e75))
+* **setup:** one setup that survives the restart, keeps the skill and starts private ([#2557](https://github.com/open-artifacts-ai/open-artifacts/issues/2557)) ([#2560](https://github.com/open-artifacts-ai/open-artifacts/issues/2560)) ([f777733](https://github.com/open-artifacts-ai/open-artifacts/commit/f7777338e8df9321422f23fccf7d033a6447c7d4))
+
 ## [0.186.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.186.0...v0.186.1) (2026-11-15)
 
 
