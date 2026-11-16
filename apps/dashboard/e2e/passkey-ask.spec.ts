@@ -70,9 +70,10 @@ test("no passkey", async ({ page }) => {
   await stubPasskey(page);
   const card = await open(page, "none");
   await card.locator("[data-option=merge]").click();
-  await expect(card.locator("[data-passkey-error=no_passkey]")).toContainText(
-    "Add a passkey to approve this here",
-  );
+  // #2661: one button to Settings, Security.
+  await expect(
+    card.getByRole("link", { name: "Add a passkey to approve this" }),
+  ).toHaveAttribute("href", "/settings/security");
   await expect(card.locator("[data-option=merge]")).toBeDisabled();
   await expect(card.locator("[data-ask-answer]")).toHaveCount(0);
 });

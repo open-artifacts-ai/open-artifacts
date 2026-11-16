@@ -99,7 +99,7 @@ for (const w of [1280, 390]) {
       const idle = page
         .locator("[data-ask]")
         .filter({ hasText: "Merge the release PR?" });
-      await expect(idle).toContainText("Approving this needs your passkey");
+      await expect(idle).toContainText("High stakes · needs your passkey");
       await none(idle);
       if (OUT) {
         mkdirSync(OUT, { recursive: true });

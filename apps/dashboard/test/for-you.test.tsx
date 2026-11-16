@@ -549,9 +549,9 @@ describe("an ask opened in the panel", () => {
     ).toBeInTheDocument();
   });
 
-  it("a risky ask says it needs a passkey", async () => {
+  it("a high-stakes ask says it needs a passkey (#2661)", async () => {
     const { card } = await openAsk("Merge the release PR?");
-    expect(card).toHaveTextContent("Approving this needs your passkey.");
+    expect(card).toHaveTextContent("High stakes · needs your passkey");
     // A risky ask is its asker's own user's call: no who-line, no weigh-ins.
     expect(card.querySelector("[data-ask-decider]")).toBeNull();
     expect(card).not.toHaveTextContent(/decides|weighed in/);

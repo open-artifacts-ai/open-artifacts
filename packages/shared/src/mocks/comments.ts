@@ -8,6 +8,7 @@ import type { Anchor } from "../anchor.js";
 import {
   AnswerBodySchema,
   type ArtifactAgent,
+  type AskOption,
   anchorInputSchema,
   type Comment,
   type CommentAuthor,
@@ -237,12 +238,17 @@ export function createCommentMock({
     const f = comment("Merge the release PR?", mine());
     f.ask = {
       question: "Merge the release PR?",
+      // #2661: the option carries the mark and this viewer's passkey stamp.
       options: [
-        { id: "merge", label: "Merge it" },
+        {
+          id: "merge",
+          label: "Merge it",
+          highStakes: { reason: "Picking Merge it merges the release PR." },
+          passkey: true,
+        } as AskOption,
         { id: "hold", label: "Hold" },
       ],
       to: [mine()],
-      confirm: "passkey",
       // As the server sends every ask (#2381): the card shows none of it on a risky ask.
       decider: mine(),
       role: "decide",
@@ -253,14 +259,19 @@ export function createCommentMock({
       const x = comment(q, mine());
       x.ask = {
         question: q,
-        options: [
-          { id: "go", label: "Go" },
-          { id: "stop", label: "Stop" },
-        ],
+        // #2661: a verified card's options asked for the passkey (every answer).
+        options: verified
+          ? [
+              { id: "go", label: "Go", passkey: true } as AskOption,
+              { id: "stop", label: "Stop", passkey: true } as AskOption,
+            ]
+          : [
+              { id: "go", label: "Go" },
+              { id: "stop", label: "Stop" },
+            ],
         to: [mine()],
         ...(verified
           ? {
-              confirm: "passkey" as const,
               decider: mine(),
               role: "decide" as const,
               picks: [],
@@ -1212,8 +1223,13 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
+      // #2661: the picked option's own stamp, or a decider's late switch.
       const needsPasskey =
-        c.ask.confirm === "passkey" || pickTimePasskey.has(c.id);
+        (
+          c.ask.options.find((o) => o.id === j.data.optionId) as
+            | { passkey?: boolean }
+            | undefined
+        )?.passkey === true || pickTimePasskey.has(c.id);
       if (needsPasskey) {
         if (!j.data.assertion)
           return err("passkey_required", "This pick needs a passkey");

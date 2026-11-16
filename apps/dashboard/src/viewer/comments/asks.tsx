@@ -26,6 +26,13 @@ import {
   usePasskeyAnswer,
   useTakeBackAsk,
 } from "../../api/comments";
+import {
+  cardMarks,
+  HIGH_STAKES,
+  highStakesOf,
+  needsPasskey,
+  passkeyMissing,
+} from "../../api/highStakes";
 import { AppLink } from "../../library/AppLink";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
@@ -33,7 +40,7 @@ import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
-import { PasskeyBlocked } from "./PasskeyParts";
+import { PasskeyBlocked, PasskeyMissing } from "./PasskeyParts";
 import { passkeyFailure, passkeyLine } from "./passkey";
 
 const MUTED = "text-muted-foreground";
@@ -658,14 +665,19 @@ export function AskBlock({
   const plain = useAnswerAsk(artifactId);
   const passkey = usePasskeyAnswer(artifactId);
   const takeBack = useTakeBackAsk(artifactId);
-  // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
-  // #2381: an ask with no `confirm` mark can still need the decider's own passkey at pick
-  // time (their switches changed after it was posted): a plain pick that comes back
-  // passkey_required switches this ask to the passkey path and asks to pick again, so
-  // the passkey prompt starts from a click (Safari needs the gesture).
-  const [viaPasskey, setViaPasskey] = useState(false);
+  // #2661: only an option the server stamped `passkey` for this viewer picks
+  // through the passkey flow (no optimistic answer); every other option is one
+  // tap. A plain pick that comes back passkey_required (the viewer's setting
+  // changed meanwhile) moves that option to the passkey path and asks to pick
+  // again, so the prompt starts from a click (Safari needs the gesture).
+  const [viaPasskey, setViaPasskey] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [repick, setRepick] = useState(false);
-  const answer = ask?.confirm === "passkey" || viaPasskey ? passkey : plain;
+  // The last pick went through the passkey flow: its failure is a passkey state.
+  const [pkPick, setPkPick] = useState(false);
+  const pkOpt = (o: { id: string }) => needsPasskey(o) || viaPasskey.has(o.id);
+  const answer = { isPending: plain.isPending || passkey.isPending };
   const [lastPick, setLastPick] = useState<string | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
@@ -761,11 +773,15 @@ export function AskBlock({
     );
   }
   const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
-  // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
-  const pk = ask.confirm === "passkey" || viaPasskey;
-  const pkErr = pk && err != null ? passkeyFailure(err) : null;
+  // #2263: a passkey pick is never optimistic; its states live in one slot above the options.
+  const pk = ask.options.some(pkOpt);
+  const pkErr = pk && pkPick && err != null ? passkeyFailure(err) : null;
   const pkLine = pkErr ? passkeyLine(pkErr) : null;
-  const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
+  // #2661: no usable passkey (the server's flag, or the pick's 409): the
+  // passkey options wait; the others are still one tap.
+  const missing = passkeyMissing(ask) || pkErr?.kind === "no_passkey";
+  const blocked = missing || pkErr?.kind === "cooling";
+  const { reasons, markedNeeds, every } = cardMarks(ask);
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
@@ -781,9 +797,9 @@ export function AskBlock({
   const decisionOpt = ask.options[decisionIdx];
   const weighing = ask.role === "weigh";
   const decider = ask.decider;
-  // A risky ask (an action option or a passkey) shows no one else: no who-line,
-  // weigh-ins or take back. It is the asker's own user's call.
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  // A high-stakes ask (or one that needs a passkey) shows no one else: no
+  // who-line, weigh-ins or take back. It is the asker's own user's call.
+  const risky = pk || reasons.length > 0;
   const deciderLine =
     !decider || risky
       ? null
@@ -824,12 +840,10 @@ export function AskBlock({
     >
       {pkLine?.text ?? answerError(err, errCtx)}
     </p>
-  ) : !pickedOpt && !blocked ? (
+  ) : !pickedOpt && !blocked && (repick || every) ? (
     <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
       <KeyRound aria-hidden="true" className="size-3.5" />
-      {repick
-        ? "This now needs your passkey. Pick again."
-        : "Approving this needs your passkey."}
+      {repick ? "This now needs your passkey. Pick again." : HIGH_STAKES.every}
     </p>
   ) : null;
   const recIdx = ask.options.findIndex(
@@ -897,6 +911,25 @@ export function AskBlock({
           <div id={qid} className={`${TXT} font-semibold break-words`}>
             <Markdown body={ask.question} />
           </div>
+          {reasons.length > 0 && (
+            // #2661: the mark, and the asker's reason as their words, never as fact.
+            <div
+              data-high-stakes=""
+              className={`flex flex-col gap-0.5 rounded-md bg-[var(--oa-warning-soft)] px-2 py-1.5 ${TXT}`}
+            >
+              {markedNeeds && (
+                <p className="m-0 flex items-center gap-1.5 font-semibold text-[var(--oa-warning)]">
+                  <KeyRound aria-hidden="true" className="size-3.5 shrink-0" />
+                  {HIGH_STAKES.card}
+                </p>
+              )}
+              {reasons.map((reason) => (
+                <p key={reason} className="m-0 break-words text-foreground">
+                  {HIGH_STAKES.says(c.author.name, reason)}
+                </p>
+              ))}
+            </div>
+          )}
           {deciderLine && decider && (
             <div
               data-ask-decider=""
@@ -970,7 +1003,11 @@ export function AskBlock({
               {slot}
             </div>
           )}
-          {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
+          {missing && !pickedOpt ? (
+            <PasskeyMissing />
+          ) : (
+            pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />
+          )}
           <ul
             ref={opts}
             aria-labelledby={qid}
@@ -995,13 +1032,13 @@ export function AskBlock({
                         : sel
                           ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                           : ""
-                    } ${pk && answer.isPending ? "opacity-60" : ""}`}
+                    } ${pkOpt(o) && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
                       !canAnswer ||
                       answer.isPending ||
                       sel ||
                       (locked && !sel) ||
-                      blocked
+                      (blocked && pkOpt(o))
                     }
                     aria-pressed={sel}
                     data-option={o.id}
@@ -1019,15 +1056,17 @@ export function AskBlock({
                         setRefocus(o.id);
                       };
                       setRepick(false);
-                      answer.mutate(v, {
+                      const viaPk = pkOpt(o);
+                      setPkPick(viaPk);
+                      (viaPk ? passkey : plain).mutate(v, {
                         onError: (e) => {
                           if (
-                            answer === plain &&
+                            !viaPk &&
                             e instanceof ApiClientError &&
                             e.code === "passkey_required"
                           ) {
                             setErr(null);
-                            setViaPasskey(true);
+                            setViaPasskey((s) => new Set(s).add(o.id));
                             setRepick(true);
                             return;
                           }
@@ -1047,6 +1086,14 @@ export function AskBlock({
                     <span className="min-w-0 flex-1 break-words">
                       <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                         <b>{o.label}</b>
+                        {highStakesOf(o) && (
+                          <span
+                            data-high-stakes-option=""
+                            className={`shrink-0 rounded bg-[var(--oa-warning-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-warning)]`}
+                          >
+                            {HIGH_STAKES.option}
+                          </span>
+                        )}
                         {rec && (
                           <span
                             className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
@@ -1061,7 +1108,7 @@ export function AskBlock({
                         </span>
                       )}
                     </span>
-                    {pk && !sel && (
+                    {pkOpt(o) && !sel && (
                       <span
                         data-passkey-hint=""
                         role="img"
@@ -1182,7 +1229,7 @@ export function AskBlock({
               Only the people asked can answer.
             </p>
           )}
-          {err != null && !pk && (
+          {err != null && !pkErr && (
             <p role="alert" className={`${TXT} text-destructive`}>
               {answerError(err, errCtx)}
             </p>

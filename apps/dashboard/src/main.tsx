@@ -839,6 +839,19 @@ async function startMocks() {
       () => mainHandlers,
     ),
   );
+  // ?mock=highstakes&hs=… (#2661, PROVISIONAL api/highStakes.ts): an ask
+  // with the high-stakes mark.
+  if (params.get("mock") === "highstakes")
+    extra.push(
+      ...(await import("./mockHighStakes")).highStakesHandlers(
+        mainHandlers,
+        params,
+        {
+          id: fixtures.me.user.id,
+          name: fixtures.me.user.name ?? fixtures.me.user.email,
+        },
+      ),
+    );
   await setupWorker(
     ...extra,
     ...mainHandlers,

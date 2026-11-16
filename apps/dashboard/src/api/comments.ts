@@ -6,10 +6,7 @@ import {
   COMMENT_BODY_MAX,
   type Comment,
   type CommentList,
-  CommentListSchema,
-  CommentSchema,
   type CommentThread,
-  CommentThreadSchema,
   MENTIONS_MAX,
   type Me,
   type NewThreadBody,
@@ -38,6 +35,13 @@ import {
   type ErrorContext,
   errorCopy,
 } from "./errorCopy";
+// #2661 (PROVISIONAL, api/highStakes.ts): asks with the high-stakes mark.
+import {
+  MarkedCommentSchema,
+  MarkedListSchema,
+  MarkedThreadSchema,
+  needsPasskey,
+} from "./highStakes";
 import { qk } from "./queries";
 
 export const commentsKey = (id: string) => ["comments", id] as const;
@@ -172,7 +176,7 @@ export const useThreads = (id: string, enabled: boolean, guest = false) => {
       ) && n < 2,
     queryFn: ({ signal }) =>
       withAnon(guest, false, (x) =>
-        api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),
+        api.get(`${R.comments(id)}?status=all`, MarkedListSchema, signal, x),
       ),
   });
   const pending = usePending(id);
@@ -430,7 +434,7 @@ export const useCreateThread = (id: string, guest = false) =>
         "POST",
         R.comments(id),
         body,
-        CommentThreadSchema,
+        MarkedThreadSchema,
         undefined,
         x,
       );
@@ -453,7 +457,7 @@ export const useReply = (id: string, guest = false) =>
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
           ...(v.toAsker ? { toAsker: true } : {}),
         },
-        CommentSchema,
+        MarkedCommentSchema,
         undefined,
         x,
       ),
@@ -517,8 +521,8 @@ export const useArtifactAgents = (id: string, enabled: boolean) =>
  * record on the refetch. The card only marks the picked option as sending
  * until then (never "You picked"). A refusal, a 409 included, rolls it back to
  * unanswered, and the settle refetch then shows whoever answered first.
- * Never for an ask with `confirm` (the passkey asks of #2263): a yes that needs
- * the server's verification must not appear before it. The optimistic answer is
+ * Never for an option that needs the passkey (#2661: the server's per-option
+ * stamp): a yes that needs the server's verification must not appear before it. The optimistic answer is
  * never a person's yes (`yes: false`), whatever the server later says.
  */
 export const useAnswerAsk = (id: string) =>
@@ -531,7 +535,7 @@ export const useAnswerAsk = (id: string) =>
         "POST",
         R.commentAnswer(id, v.thread, v.comment),
         { optionId: v.optionId },
-        CommentSchema,
+        MarkedCommentSchema,
         undefined,
         x,
       ),
@@ -545,7 +549,7 @@ export const useAnswerAsk = (id: string) =>
             c.ask.closed ||
             // #2381: a weigh-in is not the decision; it shows when the server confirms.
             c.ask.role === "weigh" ||
-            (c.ask as { confirm?: unknown }).confirm
+            c.ask.options.some((o) => o.id === v.optionId && needsPasskey(o))
               ? c
               : {
                   ...c,
@@ -588,7 +592,7 @@ export const useTakeBackAsk = (id: string) =>
       "POST",
       R.commentAskDecider(id, v.thread, v.comment),
       { takeBack: true },
-      CommentSchema,
+      MarkedCommentSchema,
       undefined,
       x,
     ),
@@ -620,7 +624,7 @@ export const usePasskeyAnswer = (id: string) =>
           optionId: v.optionId,
           assertion,
         },
-        CommentSchema,
+        MarkedCommentSchema,
         undefined,
         x,
       );
@@ -637,7 +641,7 @@ export const useSetThreadStatus = (id: string, guest = false) =>
         "PATCH",
         R.commentThread(id, v.thread),
         { status: v.status },
-        CommentThreadSchema,
+        MarkedThreadSchema,
         undefined,
         x,
       ),
@@ -673,7 +677,7 @@ export const useEditComment = (id: string, guest = false) =>
         "PATCH",
         R.comment(id, v.thread, v.comment),
         { body: v.body },
-        CommentSchema,
+        MarkedCommentSchema,
         undefined,
         x,
       ),
