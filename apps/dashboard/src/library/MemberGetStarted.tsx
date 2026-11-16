@@ -79,6 +79,27 @@ function CardSlot() {
   );
 }
 
+// "No card" for this person, remembered across loads: set once their card is
+// seen hidden or finished, cleared if R.onboarding later says it's open. A
+// load with it set holds no slot, so nothing blank flashes before the answer.
+const NO_CARD = (userId: string) => `oa.onboarding.no-card.${userId}`;
+export const noCardKnown = (userId: string | undefined) => {
+  if (!userId) return false;
+  try {
+    return localStorage.getItem(NO_CARD(userId)) === "1";
+  } catch {
+    return false;
+  }
+};
+const rememberNoCard = (userId: string, gone: boolean) => {
+  try {
+    if (gone) localStorage.setItem(NO_CARD(userId), "1");
+    else localStorage.removeItem(NO_CARD(userId));
+  } catch {
+    // Storage off: the slot shows while loading, as before.
+  }
+};
+
 /** A member: anyone signed in who is neither the owner nor a guest. */
 export const isMember = (role: string | undefined) =>
   role === "member" || role === "admin";
@@ -96,6 +117,13 @@ export function MemberGetStarted() {
   const all = five.every(Boolean);
   // Nothing shows until the server has said the card is still open.
   const live = member && onboarding.isSuccess && !s.hidden && !s.completed;
+
+  // Remember whether this person has a card, for the next load's slot.
+  const gone = s.hidden || s.completed || all;
+  const answered = member && onboarding.isSuccess;
+  useEffect(() => {
+    if (answered && userId) rememberNoCard(userId, gone);
+  }, [answered, userId, gone]);
 
   // Five of five: the server keeps that, so the card stays gone.
   const { mutate: save } = setOnboarding;
@@ -117,7 +145,12 @@ export function MemberGetStarted() {
   // While R.onboarding loads, the card's slot is held (the results render at
   // once, below it), so the card never pushes them down when it arrives. A
   // failed fetch, a hidden or finished card: no slot.
-  if (member && me?.instance.mcpUrl && onboarding.isPending)
+  if (
+    member &&
+    me?.instance.mcpUrl &&
+    onboarding.isPending &&
+    !noCardKnown(userId)
+  )
     return <CardSlot />;
   if (!live || all || !me?.instance.mcpUrl) return null;
 
