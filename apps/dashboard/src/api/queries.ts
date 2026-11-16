@@ -26,6 +26,7 @@ import {
   OAuthClientSchema,
   type Onboarding,
   type OnboardingPatch,
+  OnboardingSchema,
   PageSchema,
   type PublishInput,
   PublishResultSchema,
@@ -79,7 +80,7 @@ import {
   errorLink,
 } from "./errorCopy";
 import { MemberWithSetupSchema } from "./memberSetup";
-import { keepLocal, MyOnboardingSchema } from "./myOnboarding";
+import { keepLocal } from "./myOnboarding";
 
 const failToast = (e: unknown, fallback: string) =>
   toast({
@@ -235,7 +236,7 @@ export const useOnboarding = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: qk.onboarding,
-    queryFn: ({ signal }) => api.get(R.onboarding, MyOnboardingSchema, signal),
+    queryFn: ({ signal }) => api.get(R.onboarding, OnboardingSchema, signal),
   });
 /**
  * PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer.
@@ -246,7 +247,7 @@ export const useSetOnboarding = (member?: { userId: string }) => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (patch: OnboardingPatch) =>
-      api.send("PUT", R.onboarding, patch, MyOnboardingSchema),
+      api.send("PUT", R.onboarding, patch, OnboardingSchema),
     onMutate: (patch) => {
       if (member) keepLocal(member.userId, patch);
       const before = qc.getQueryData<Onboarding>(qk.onboarding);
@@ -551,7 +552,6 @@ export const useDeleteArtifact = (id: string) =>
   );
 export const usePutShare = (id: string) =>
   useInvalidating(
-    // PROVISIONAL (#2590): the wide role, until packages/shared has it.
     (input: ShareInput) =>
       api.send("PUT", R.shares(id), input, ShareResultSchema),
     () => [qk.shares(id)],

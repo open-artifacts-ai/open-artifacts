@@ -31,6 +31,7 @@ import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
 import { inviteAcceptAudit, signInAudit } from "../services/audit.js";
 import { codeEligibility, linkEligibility } from "../services/identity.js";
 import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
+import { seedWelcome } from "../services/onboarding.js";
 import {
   getUserWithEpoch,
   googleLinkStmts,
@@ -404,6 +405,8 @@ async function verifyLink(
     signInAudit(c.env, user.id, "google", undefined),
     stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
   ]);
+  // #2632: a member's own Welcome, once; never throws.
+  await seedWelcome(c.env, user);
   logAuth({ provider: "google", outcome: "ok", uid: user.id });
   const cap = capOfCaller(callerOf(user));
   const res = c.json({
@@ -620,6 +623,8 @@ export function mountCodes(app: AppType): void {
       signInAudit(c.env, user.id, "code", guest ? undefined : domain),
       stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
+    // #2632: a member's own Welcome, once (the email code path too); never throws.
+    await seedWelcome(c.env, user);
     logAuth({
       provider: "code",
       outcome: "ok",

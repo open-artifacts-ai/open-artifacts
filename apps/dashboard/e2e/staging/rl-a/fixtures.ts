@@ -239,13 +239,33 @@ export async function publish(
 export const remember = (by: Person, id: string) => madeHere().push({ by, id });
 
 /**
- * Soft-deletes every artifact this file made, then takes away every space
- * role its people were granted (as an org admin, who may remove any manual
- * member). One already gone (404) is fine.
+ * Artifacts that changed owner (a Transfer): `cleanup` deletes them as their
+ * new owner. Call it once the transfer is done, so a case that fails before
+ * it still deletes them as their maker.
+ */
+export const transferred = (ids: readonly string[], to: Person) => {
+  for (const m of madeHere()) if (ids.includes(m.id)) m.by = to;
+};
+
+/**
+ * Soft-deletes every artifact this file made, as its current owner (its
+ * maker, or the successor `transferred` recorded), then takes away every
+ * space role its people were granted (as an org admin, who may remove any
+ * manual member). A 404 from the owner means it's already gone. Never as the
+ * admin: an admin can't see another person's personal space, so its 404
+ * could hide an artifact that's still there.
  */
 export async function cleanup(): Promise<void> {
   const left = madeHere().splice(0);
   const failed: string[] = [];
+  let adminSession: Promise<{ cookie: string }> | null = null;
+  const admin = () => {
+    adminSession ??= hook<{ cookie: string }>(TEST_HOOKS.session, {
+      email: email("admin"),
+      role: "admin",
+    } satisfies TestSessionInput);
+    return adminSession;
+  };
   for (const { by, id } of left) {
     const res = await api(by, R.artifact(id), { method: "DELETE" }).catch(
       () => null,
@@ -254,10 +274,7 @@ export async function cleanup(): Promise<void> {
   }
   const roles = grantedHere().splice(0);
   if (roles.length) {
-    const { cookie } = await hook<{ cookie: string }>(TEST_HOOKS.session, {
-      email: email("admin"),
-      role: "admin",
-    } satisfies TestSessionInput);
+    const { cookie } = await admin();
     const done = new Set<string>();
     for (const { spaceId, userId } of roles) {
       const key = `${spaceId} ${userId}`;

@@ -1,10 +1,4 @@
 /**
- * PROVISIONAL (#2632): OA Self-Serve's server PR adds setupSteps() to
- * @oa/shared with this same signature and count. Until it lands, this local
- * copy is the one the dashboard calls; swapping in theirs is one import in
- * each caller (library/MemberGetStarted.tsx, viewer/bridge.ts,
- * api/memberSetup.ts).
- *
  * #2632: one person's five setup steps, the one count everyone shows. The
  * member's Library card, their Welcome's "{n} of 5 done" and the server's
  * `setup` on R.members rows (Settings, Members) all call this, so the count

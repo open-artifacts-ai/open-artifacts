@@ -2300,6 +2300,8 @@ function orgProbe(
     if (method === "GET") {
       const r = await send(io, base, p, cred);
       // A 409 is allowed only as member_active (past the transfer guard).
+      // A guest on a member-only read (members_only): seen, refused.
+      if (r.status === 403 && r.code === "members_only") return "deny";
       return classify(route, r, (x) =>
         x.status === 409
           ? okStatus.includes(409) && x.code === "member_active"
@@ -2332,6 +2334,7 @@ function orgProbe(
     });
     // A create by a capped caller: the contract's 403, a refusal.
     if (r.status === 403 && r.code === "space_forbidden") return "deny";
+    if (r.status === 403 && r.code === "members_only") return "deny";
     if (!t.real && !w.refuse && !DENY.has(r.status))
       throw new Unexpected(`${route}: real only (no throwaways): ${r.status}`);
     return classify(route, r, allow);
@@ -2369,8 +2372,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/settings/login/first-invite-seen", org("members.manage")],
   ["PUT /api/v1/settings/login", org("login.manage")],
   ["PATCH /api/v1/settings", org("settings.manage")],
-  ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
-  ["PUT /api/v1/onboarding", org("onboarding.manage")],
+  ["GET /api/v1/onboarding", org("onboarding.own"), [200]],
+  ["PUT /api/v1/onboarding", org("onboarding.own")],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],

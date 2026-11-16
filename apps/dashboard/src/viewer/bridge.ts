@@ -9,6 +9,7 @@ import {
   LIMITS,
   METHOD_CAPABILITY,
   type OnboardingProgress,
+  OnboardingSchema,
   PageSchema,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
@@ -27,11 +28,10 @@ import {
   StorageEntrySchema,
   StorageKeySchema,
   type StorageSetBody,
+  setupSteps,
 } from "@oa/shared";
 import type { z } from "zod";
 import { ApiClientError, api, type RequestExtra } from "../api/client";
-import { MyOnboardingSchema } from "../api/myOnboarding";
-import { setupSteps } from "../api/setupSteps";
 import { isEmbed } from "../embed";
 import {
   isAnonToken,
@@ -453,7 +453,7 @@ export function createBridge(opts: BridgeOptions) {
       case "onboarding.get": {
         const g = opts.onboarding?.();
         if (embed || !(g?.owner || g?.member)) throw forbidden();
-        const o = await http.get(R.onboarding, MyOnboardingSchema);
+        const o = await http.get(R.onboarding, OnboardingSchema);
         if (!o.welcomeId || o.welcomeId !== id) throw forbidden();
         const who: OnboardingProgress["who"] =
           g?.member && !g.owner && g.greet

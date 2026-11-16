@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { setupSteps } from "../src/api/setupSteps";
+import { setupSteps } from "../src/setup-steps.js";
 
 const all = {
   agentConnected: true,

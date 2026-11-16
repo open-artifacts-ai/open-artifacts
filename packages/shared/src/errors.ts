@@ -31,6 +31,7 @@ export const ERROR_CODES = [
   "member_synced",
   "managed_by_org_mapping",
   "owner_only",
+  "members_only",
   "break_glass_required",
   // Publish format guard.
   "unsupported_format",
@@ -156,6 +157,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   managed_by_org_mapping: 409,
   /** Resetting or unlinking an org admin's Google identity: only the org owner may (it signs a peer admin out). */
   owner_only: 403,
+  /** GET or PUT R.onboarding by a guest: the first-run checklist is for members (#2632). */
+  members_only: 403,
   /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
   break_glass_required: 401,
   /** Publish with no `format` whose entry name implies none and whose bytes aren't text (details { path, reason: "no_viewer" }), or any HEIC/HEIF entry (details { path, reason: "heic" }, HEIC_MESSAGE). */
