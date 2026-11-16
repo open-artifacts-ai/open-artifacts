@@ -81,6 +81,17 @@ import {
 import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged } from "./model";
 import { takeNoteQuote, useNoteQuote } from "./noteQuote";
+import {
+  AttachButton,
+  AttachedThumbs,
+  filesOf,
+  hasFiles,
+  PICTURE_WORDS,
+  PictureNotes,
+  UploadStatus,
+  usePictureDrawer,
+} from "./pictures/drawer";
+import { CommentPictures } from "./pictures/view";
 import { besideWidth, placeBeside } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
@@ -437,7 +448,10 @@ function Composer({
   seed,
   onLost,
   collapse = false,
+  pictures = false,
 }: {
+  /** #2508: offer the picture button, paste and drop (members who can comment). */
+  pictures?: boolean;
   /**
    * #2486: an empty box is one line (the field alone) until it is focused,
    * and goes back to one line when focus leaves it still empty.
@@ -492,6 +506,11 @@ function Composer({
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
   const errCtx = useCommentErrorCtx();
+  // #2508: pictures. Guests, outsiders and signed-out visitors get no button.
+  const pics = usePictureDrawer(api.artifactId);
+  const attach =
+    pictures && !guest && !api.outsider && !capped && api.canComment;
+  const [dragging, setDragging] = useState(false);
   const [text, setText] = useState(seed?.text ?? restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [grown, setGrown] = useState(false);
@@ -631,6 +650,20 @@ function Composer({
     keepCardClear(ref.current);
   }, [text]);
   const body = text.trim();
+  // #2508: a picture-only comment is fine unless it mentions an agent: then
+  // it needs words, because a picture alone isn't a request.
+  const withPictures = attach && pics.items.length > 0;
+  const words = (agents ?? []).reduce(
+    (t, a) => removeMention(t, a.name, agents ?? []),
+    body,
+  );
+  const needWords =
+    withPictures &&
+    mentionedKeys(body, agents ?? []).length > 0 &&
+    words.trim() === "";
+  const canSend = withPictures
+    ? (body !== "" || pics.refs.length > 0) && pics.ready && !needWords
+    : body !== "";
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
   useEffect(() => {
@@ -641,7 +674,7 @@ function Composer({
     return () => onDirty?.(false, true);
   }, [body, onDirty]);
   const go = async () => {
-    if (!body || once.current) return;
+    if (!canSend || once.current) return;
     once.current = true;
     setError(null);
     try {
@@ -649,6 +682,7 @@ function Composer({
       const keys = mentionedKeys(body, agents ?? []);
       if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
       const mentions = keys.map((key) => ({ key }));
+      const pictureRefs = withPictures ? pics.refs : [];
       if (instant) {
         // Clear now; the empty box is what stops a double submit, so the next
         // post can start while this one is on its way.
@@ -657,12 +691,17 @@ function Composer({
         setTimeout(() => {
           once.current = false;
         }, 0);
+        const was = withPictures ? pics.take() : [];
         try {
-          await onSubmit(body, { mentions });
+          await onSubmit(body, {
+            mentions,
+            ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
+          });
         } catch (e) {
           // Never lose typed text: it goes back in front of anything typed since.
           if (mounted.current) {
             setText((cur) => (cur.trim() ? `${body}\n${cur}` : body));
+            if (was.length) pics.restore(was);
             setError(e);
           } else onLost?.({ text: body, error: e });
         }
@@ -671,8 +710,10 @@ function Composer({
       setBusy(true);
       await onSubmit(body, {
         mentions,
+        ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
       });
       setText("");
+      if (withPictures) pics.take();
       if (!alwaysOpen) setOpen(false);
     } catch (e) {
       setError(e);
@@ -684,7 +725,12 @@ function Composer({
     }
   };
   // Words, an error or a seed keep the box grown.
-  const shut = collapse && !grown && text === "" && error == null;
+  const shut =
+    collapse &&
+    !grown &&
+    text === "" &&
+    error == null &&
+    pics.items.length === 0;
   // Focus leaving the box (field, hint, button) for somewhere else shrinks it.
   const wrap = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -703,6 +749,7 @@ function Composer({
     onCancel?.();
   };
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: #2508 drop target; the picture button is the keyboard way in.
     <div
       className={
         card && !shut
@@ -712,6 +759,44 @@ function Composer({
       ref={wrap}
       data-oa-composing={composing ? "" : undefined}
       data-collapsed={collapse ? (shut ? "" : undefined) : undefined}
+      onDragEnter={
+        attach
+          ? (e) => {
+              if (hasFiles(e.dataTransfer)) setDragging(true);
+            }
+          : undefined
+      }
+      onDragOver={
+        attach
+          ? (e) => {
+              if (!hasFiles(e.dataTransfer)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
+              setDragging(true);
+            }
+          : undefined
+      }
+      onDragLeave={
+        attach
+          ? (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                setDragging(false);
+            }
+          : undefined
+      }
+      onDrop={
+        attach
+          ? (e) => {
+              const f = filesOf(e.dataTransfer);
+              setDragging(false);
+              if (!f.length) return;
+              e.preventDefault();
+              setOpen(true);
+              setGrown(true);
+              void pics.add(f);
+            }
+          : undefined
+      }
     >
       {quote}
       <div className="relative rounded-md bg-card">
@@ -728,6 +813,16 @@ function Composer({
           rows={1}
           data-oa-field=""
           className={`${CTXT} ${FIELD} relative z-[1] bg-transparent`}
+          onPaste={
+            attach
+              ? (e) => {
+                  const f = filesOf(e.clipboardData);
+                  if (!f.length) return;
+                  e.preventDefault();
+                  void pics.add(f);
+                }
+              : undefined
+          }
           onFocus={() => {
             setOpen(true);
             setGrown(true);
@@ -817,7 +912,17 @@ function Composer({
         {agents && agents.length > 0 && (
           <MentionMirror field={ref} text={text} agents={agents} />
         )}
+        {dragging && (
+          <div
+            data-drop-target=""
+            className={`pointer-events-none absolute inset-0 z-[2] grid place-items-center rounded-md border-2 border-dashed border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] ${CTXT}`}
+          >
+            {PICTURE_WORDS.drop}
+          </div>
+        )}
       </div>
+      {attach && <AttachedThumbs d={pics} />}
+      {attach && <PictureNotes d={pics} needWords={needWords} />}
       {!canMention &&
         !guest &&
         !capped &&
@@ -867,15 +972,19 @@ function Composer({
               className={`flex flex-col gap-2 ${surface}`}
             >
               <div className="flex flex-wrap items-center gap-2">
+                {attach && <AttachButton d={pics} />}
                 {lead}
-                {card && <SendHint id={hintId} />}
+                {attach && <UploadStatus d={pics} />}
+                {card && !(attach && pics.uploading > 0) && (
+                  <SendHint id={hintId} />
+                )}
                 <div className="ml-auto flex items-center gap-2">
                   {extra}
                   {cancelBtn}
                   <Button
                     size="xs"
                     className={`bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]${card ? " h-8 px-4" : ""}`}
-                    disabled={!body || busy}
+                    disabled={!canSend || busy}
                     onClick={() => void go()}
                   >
                     {submit}
@@ -888,9 +997,11 @@ function Composer({
               data-oa-actions=""
               className={`flex flex-wrap items-center gap-2 ${surface}`}
             >
+              {attach && <AttachButton d={pics} />}
+              {attach && <UploadStatus d={pics} />}
               <Button
                 size="xs"
-                disabled={!body || busy}
+                disabled={!canSend || busy}
                 onClick={() => void go()}
               >
                 {submit}
@@ -1201,15 +1312,24 @@ function CommentRow({
             }
           />
         ) : (
-          <div className={`break-words ${CTXT}`} {...roving}>
-            <MentionedText
-              body={c.body}
-              mentions={c.mentions}
-              guest={api.guest}
-              marks={marks}
-              createdAt={c.createdAt}
+          <>
+            {c.body !== "" && (
+              <div className={`break-words ${CTXT}`} {...roving}>
+                <MentionedText
+                  body={c.body}
+                  mentions={c.mentions}
+                  guest={api.guest}
+                  marks={marks}
+                  createdAt={c.createdAt}
+                />
+              </div>
+            )}
+            <CommentPictures
+              artifactId={api.artifactId}
+              c={c}
+              who={{ name: c.author.name, when: versionDate(c.createdAt) }}
             />
-          </div>
+          </>
         )}
         <Delivery
           c={c}
@@ -1595,6 +1715,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               mentionPlaceholder="Reply. Type @ to mention an agent."
               submit="Reply"
               mentionable
+              pictures
               float
               instant
               seed={lostReply.lost}
@@ -1737,6 +1858,7 @@ function NewThread({
         card
         flat={flat}
         actions={ACTIONS_PLAIN}
+        pictures
         quote={
           "pin" in draft ? (
             <p className={`${TXT} font-medium ${MUTED}`}>New comment</p>
@@ -1834,6 +1956,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         buttonsRight
         card
         keepOnEsc
+        pictures
         actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable

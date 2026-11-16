@@ -6,7 +6,6 @@ import {
   COMMENT_BODY_MAX,
   type Comment,
   type CommentList,
-  CommentListSchema,
   CommentSchema,
   type CommentThread,
   CommentThreadSchema,
@@ -32,6 +31,12 @@ import {
   withMintLock,
 } from "../viewer/anonId";
 import { ApiClientError, api, type RequestExtra } from "./client";
+import {
+  PicturedCommentSchema,
+  PicturedListSchema,
+  PicturedThreadSchema,
+  type PictureRef,
+} from "./commentPictures";
 import {
   billingContext,
   cappedCopy,
@@ -172,7 +177,13 @@ export const useThreads = (id: string, enabled: boolean, guest = false) => {
       ) && n < 2,
     queryFn: ({ signal }) =>
       withAnon(guest, false, (x) =>
-        api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),
+        api.get(
+          `${R.comments(id)}?status=all`,
+          // #2508 (PROVISIONAL, api/commentPictures.ts): with `pictures`.
+          PicturedListSchema,
+          signal,
+          x,
+        ),
       ),
   });
   const pending = usePending(id);
@@ -360,6 +371,8 @@ const knownIds = (list: CommentList | undefined) => {
 type NewThreadVars = NewThreadBody & {
   /** The shown version's hash, for a pin's temp anchor. Not sent. */
   contentHash?: string | null;
+  /** #2508 (PROVISIONAL, api/commentPictures.ts): attached pictures. */
+  pictures?: PictureRef[];
 };
 
 /**
@@ -430,14 +443,14 @@ export const useCreateThread = (id: string, guest = false) =>
         "POST",
         R.comments(id),
         body,
-        CommentThreadSchema,
+        PicturedThreadSchema,
         undefined,
         x,
       );
     },
   );
 export const useReply = (id: string, guest = false) =>
-  usePost<ReplyBody & { thread: string }>(
+  usePost<ReplyBody & { thread: string; pictures?: PictureRef[] }>(
     id,
     guest,
     (v) => v.mentions,
@@ -452,8 +465,9 @@ export const useReply = (id: string, guest = false) =>
           ...(v.guestName ? { guestName: v.guestName } : {}),
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
           ...(v.toAsker ? { toAsker: true } : {}),
+          ...(v.pictures?.length ? { pictures: v.pictures } : {}),
         },
-        CommentSchema,
+        PicturedCommentSchema,
         undefined,
         x,
       ),

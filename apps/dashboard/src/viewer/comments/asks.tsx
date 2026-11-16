@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
+import type { PictureRef } from "../../api/commentPictures";
 import {
   answerError,
   useAnswerAsk,
@@ -39,10 +40,15 @@ import { passkeyFailure, passkeyLine } from "./passkey";
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
-export type Extras = { mentions: KeyRef[] };
+export type Extras = {
+  mentions: KeyRef[];
+  /** #2508: the pictures attached in the box (PROVISIONAL, api/commentPictures.ts). */
+  pictures?: PictureRef[];
+};
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
+  ...(x.pictures?.length ? { pictures: x.pictures } : {}),
 });
 
 /** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
