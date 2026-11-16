@@ -242,22 +242,34 @@ export const remember = (by: Person, id: string) => madeHere().push({ by, id });
  * Soft-deletes every artifact this file made, then takes away every space
  * role its people were granted (as an org admin, who may remove any manual
  * member). One already gone (404) is fine.
+ *
+ * An artifact its maker can no longer delete (transferred to a successor, or
+ * the maker removed, as after "Remove someone, Transfer to a successor"):
+ * a 401, 403 or 404 retries once as the org admin, and only then counts as
+ * left. A 404 for the admin too means it's gone.
  */
 export async function cleanup(): Promise<void> {
   const left = madeHere().splice(0);
   const failed: string[] = [];
+  let adminSession: Promise<{ cookie: string }> | null = null;
+  const admin = () => {
+    adminSession ??= hook<{ cookie: string }>(TEST_HOOKS.session, {
+      email: email("admin"),
+      role: "admin",
+    } satisfies TestSessionInput);
+    return adminSession;
+  };
+  const del = (who: Pick<Person, "cookie">, id: string) =>
+    api(who, R.artifact(id), { method: "DELETE" }).catch(() => null);
   for (const { by, id } of left) {
-    const res = await api(by, R.artifact(id), { method: "DELETE" }).catch(
-      () => null,
-    );
+    let res = await del(by, id);
+    if (res && [401, 403, 404].includes(res.status))
+      res = await del(await admin(), id);
     if (!res || (res.status !== 204 && res.status !== 404)) failed.push(id);
   }
   const roles = grantedHere().splice(0);
   if (roles.length) {
-    const { cookie } = await hook<{ cookie: string }>(TEST_HOOKS.session, {
-      email: email("admin"),
-      role: "admin",
-    } satisfies TestSessionInput);
+    const { cookie } = await admin();
     const done = new Set<string>();
     for (const { spaceId, userId } of roles) {
       const key = `${spaceId} ${userId}`;
