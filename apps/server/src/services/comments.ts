@@ -2830,7 +2830,7 @@ export async function addThread(
   );
   // Only the person's own comment counts, never one an agent posted for them.
   if (args[2].kind === "user" && !args[2].agent)
-    await noteCommented(args[0], args[2].id);
+    await noteCommented(args[0], args[2].id, args[1].id);
   // An agent's new thread can never be a reply to a mention.
   if (args[2].kind === "user" && !args[2].agent)
     await noteMentionActivity(
@@ -2861,7 +2861,7 @@ export async function addReply(
     opts,
   );
   if (args[3].kind === "user" && !args[3].agent)
-    await noteCommented(args[0], args[3].id);
+    await noteCommented(args[0], args[3].id, args[1]);
   await noteMentionActivity(
     args[0],
     args[1],

@@ -851,6 +851,11 @@ describe("Google login after erase, and the way back (reset the Google link)", (
     const [id] = await idsAt(email);
     if (!id) throw new Error("no row");
     expect((await remove(id, admin.cookie, D)).status).toBe(204);
+    // #2632: their sign-in seeded a Welcome page, which an erase needs
+    // transferred or deleted first, like any page they own.
+    await env.DB.prepare("delete from artifacts where owner_id = ?1")
+      .bind(id)
+      .run();
     expect((await erase(id, admin.cookie, D)).status).toBe(204);
     return { email, id };
   }
@@ -899,7 +904,8 @@ describe("Google login after erase, and the way back (reset the Google link)", (
         fresh,
         fresh,
       ),
-    ).toBe(0);
+      // Empty but for their own Welcome (#2632).
+    ).toBe(1);
     expect(await userRow(id)).toEqual(after);
   });
 

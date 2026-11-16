@@ -60,6 +60,7 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
+import { invitedByKey } from "./onboarding.js";
 import { OUTSIDE_SHARING_KEY, outsideSharingOn } from "./outside.js";
 import { inviteReach, waysOf } from "./reach.js";
 import {
@@ -451,6 +452,19 @@ async function invited(
   const signInMethods: SignInProvider[] = reach.methods.length
     ? reach.methods
     : ["google"];
+  // #2632: who added them, for their Welcome and the "is set up" line.
+  await stmt(
+    env.DB,
+    `insert into settings (key, value) values (?1, ?2)
+     on conflict (key) do update set value = excluded.value`,
+  )
+    .bind(invitedByKey(row.id), inviter.id)
+    .run()
+    .catch((e) =>
+      logWarn("invited_by_failed", {
+        code: e instanceof Error ? e.name : "error",
+      }),
+    );
   let emailed = false;
   if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))

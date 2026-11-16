@@ -428,7 +428,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const tokens = fresh && !fresh.agentConnected ? [] : f.tokens;
   const clients = fresh ? [] : f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
-  // R.onboarding: install-wide, the owner only (anyone else 404).
+  // R.onboarding: the caller's own (#2632: any non-guest member; a guest gets 403).
   const onboarding: Onboarding = {
     dismissed: false,
     completed: false,
@@ -1533,7 +1533,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return HttpResponse.json(settings());
     }),
     http.get("*/api/v1/onboarding", () =>
-      me.user.role === "owner"
+      me.user.role !== "guest"
         ? HttpResponse.json({
             ...onboarding,
             // As the server answers: the caller's oldest artifact that is not
@@ -1552,10 +1552,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
                   return x ? { id: x.id, title: x.title } : null;
                 })(),
           })
-        : notFound(),
+        : err("members_only", "The checklist is for members"),
     ),
     http.put("*/api/v1/onboarding", async ({ request }) => {
-      if (me.user.role !== "owner") return notFound();
+      if (me.user.role === "guest")
+        return err("members_only", "The checklist is for members");
       const r = await body(request, OnboardingPatchSchema);
       if (r.error) return r.error;
       Object.assign(onboarding, r.data);

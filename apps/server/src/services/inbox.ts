@@ -10,6 +10,9 @@ import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
+import { getSettings } from "./members.js";
+import { setUpNoticeKey } from "./onboarding.js";
+import { getUser } from "./users.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
 export const NEEDS_YOU_MAX = 200;
@@ -190,14 +193,64 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
   return out;
 }
 
-/** The whole inbox response. Later, Updates and the cursor are the next slices. */
+/** How long a "member is set up" line stays (there is no read state for it yet). */
+const SET_UP_DAYS = 30;
+
+/**
+ * #2632: "{name} is set up in {org}." for each member whose setup finished and
+ * whose inviter (else the owner) is the caller; written once, at that moment.
+ */
+export async function memberSetUpUpdates(
+  env: Env,
+  caller: Me,
+): Promise<InboxItem[]> {
+  const rows = (
+    await env.DB.prepare(
+      "select key, value from settings where key like ?1 order by cast(value as integer) desc limit 50",
+    )
+      .bind(`${setUpNoticeKey(caller.user.id, "")}%`)
+      .all<{ key: string; value: string }>()
+  ).results;
+  const since = Date.now() - SET_UP_DAYS * 86_400_000;
+  const fresh = rows
+    .map((r) => ({
+      memberId: r.key.slice(setUpNoticeKey(caller.user.id, "").length),
+      at: Number(r.value),
+    }))
+    .filter((r) => r.at >= since);
+  if (!fresh.length) return [];
+  const org = (await getSettings(env).catch(() => null))?.name ?? "your team";
+  const out: InboxItem[] = [];
+  for (const r of fresh) {
+    const u = await getUser(env, r.memberId);
+    if (!u) continue;
+    out.push({
+      id: `member_set_up:${u.id}`,
+      level: "update",
+      kind: "member_set_up",
+      artifact: null,
+      actor: { kind: "user", id: u.id, name: u.name ?? u.email, me: false },
+      text: `${u.name ?? u.email} is set up in ${org}.`,
+      href: "/settings/members",
+      createdAt: new Date(r.at).toISOString(),
+      readAt: null,
+    });
+  }
+  return out;
+}
+
+/** The whole inbox response. Later and the cursor are the next slices. */
 export async function inboxOf(env: Env, caller: Me): Promise<Inbox> {
   const list = await needsYou(env, caller);
+  const updates = await memberSetUpUpdates(env, caller).catch((e) => {
+    logWarn("inbox_member_set_up_failed", e);
+    return [];
+  });
   return {
     needsYou: list,
     later: [],
-    updates: [],
+    updates,
     cursor: null,
-    counts: { needsYou: list.length, unreadUpdates: 0 },
+    counts: { needsYou: list.length, unreadUpdates: updates.length },
   };
 }

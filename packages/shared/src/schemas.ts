@@ -642,6 +642,19 @@ export const ArtifactPatchSchema = z
   .partial();
 export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
+/** #2632: one person's setup on GET R.members (owners and admins only; never a guest). */
+export const MemberSetupSchema = z.object({
+  /** `set` is sticky (their `completed`); `invited` was added and never signed in. */
+  state: z.enum(["set", "partial", "invited"]),
+  /** Of 5. */
+  done: z.number().int().min(0).max(5),
+  /** The first step not done. */
+  stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
+  /** When the one reminder went out (ISO). */
+  remindedAt: z.string().optional(),
+});
+export type MemberSetup = z.infer<typeof MemberSetupSchema>;
+
 export const MemberSchema = z.object({
   id: z.string(),
   /** A stored value, never input: `removed+<id>@invalid` after a directory deletion or an erase (R.memberErase). */
@@ -670,6 +683,8 @@ export const MemberSchema = z.object({
    * address in the sign-in domains). Absent otherwise. Removal still works.
    */
   directoryManaged: z.boolean().optional(),
+  /** GET R.members, owners and admins only, on every row but a guest's: that person's setup (#2632). */
+  setup: MemberSetupSchema.optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 
@@ -860,6 +875,11 @@ export const MeSchema = z.object({
      */
     billing: PlanViewSchema.optional(),
   }),
+  /** #2632: the instance owner's name, for a guest's "ask {owner}"; null when it can't be read. Optional: older servers omit it. */
+  instanceOwner: z
+    .strictObject({ name: z.string().nullable() })
+    .nullable()
+    .optional(),
   /** The name the user chose (PATCH R.me), or null. */
   displayName: z.string().nullable(),
   /** The IdP's name for the user when it is a real name (not the email's local part), else null. */
@@ -1134,7 +1154,7 @@ export const SettingsSchema = z.object({
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
-/** GET/PUT R.onboarding: the first-run checklist's install-wide state. */
+/** GET/PUT R.onboarding: the caller's own first-run checklist state (#2632: per person, any non-guest member). */
 export const OnboardingSchema = z.strictObject({
   dismissed: z.boolean(),
   completed: z.boolean(),
@@ -1163,6 +1183,13 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
+  /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
+  teamStep: z.boolean().optional(),
+  /** #2632: who added the caller (their name; null when none or unreadable); null when nobody did. */
+  invitedBy: z
+    .strictObject({ name: z.string().nullable() })
+    .nullable()
+    .optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
 
