@@ -212,10 +212,10 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       lead.parentNode.insertBefore(countLine, lead.nextSibling);
     }
     var org = w.org || "";
-    document.getElementById("title").textContent = w.firstName ? M.welcome.replace("{first}", w.firstName) : "Welcome";
-    document.getElementById("lead").textContent = w.inviter ? M.lead.replace("{inviter}", w.inviter).replace("{org}", org) : M.leadNoInviter;
-    document.getElementById("also-hint").textContent = M.alsoHint.replace("{org}", org);
-    document.getElementById("member-done-text").textContent = M.done.replace("{org}", org);
+    document.getElementById("title").textContent = w.firstName ? M.welcome.replace("{first}", function(){ return w.firstName; }) : "Welcome";
+    document.getElementById("lead").textContent = w.inviter ? M.lead.replace("{inviter}", function(){ return w.inviter; }).replace("{org}", function(){ return org; }) : M.leadNoInviter;
+    document.getElementById("also-hint").textContent = M.alsoHint.replace("{org}", function(){ return org; });
+    document.getElementById("member-done-text").textContent = M.done.replace("{org}", function(){ return org; });
     tick(document.querySelector('[data-step="teammate"]'), !!w.teammateCommented);
   }
   function render(p){
@@ -237,8 +237,8 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       a.textContent = p.firstArtifact.title;
       b.appendChild(a);
     }
-    var ml = line(items.mention, !!p.mentionReplied, "Mention your agent", (p.agentName ? nm : "Your agent") + " replied", w ? M.mentionHint : D.mentionHint.replace("{name}", nm));
-    line(items.ask, !!p.askAnswered, "Answer your agent's ask", "Answered", w ? M.askHint : D.askHint.replace("{name}", nm));
+    var ml = line(items.mention, !!p.mentionReplied, "Mention your agent", (p.agentName ? nm : "Your agent") + " replied", w ? M.mentionHint : D.mentionHint.replace("{name}", function(){ return nm; }));
+    line(items.ask, !!p.askAnswered, "Answer your agent's ask", "Answered", w ? M.askHint : D.askHint.replace("{name}", function(){ return nm; }));
     stalled.hidden = !(p.mentionStalled && !p.mentionReplied);
     if (!stalled.hidden) ml.appendChild(stalled);
     var done = !!(p.agentConnected && p.agentNamed && p.firstArtifact && p.mentionReplied && p.askAnswered);
@@ -246,7 +246,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     if (w) {
       memberDone.hidden = !done;
       var n = [p.agentConnected, p.agentNamed, p.firstArtifact, p.mentionReplied, p.askAnswered].filter(Boolean).length;
-      countLine.textContent = M.count.replace("{n}", String(n));
+      countLine.textContent = M.count.replace("{n}", function(){ return String(n); });
     }
     // A member keeps polling for the optional sixth step until it's done too.
     return done && (!w || !!w.teammateCommented);

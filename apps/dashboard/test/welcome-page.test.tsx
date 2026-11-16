@@ -14,6 +14,13 @@ type Progress = {
   mentionReplied?: boolean;
   mentionStalled?: boolean;
   askAnswered?: boolean;
+  who?: {
+    member: true;
+    firstName: string | null;
+    org: string;
+    inviter: string | null;
+    teammateCommented: boolean;
+  };
 };
 let progress: Progress;
 let get: ReturnType<typeof vi.fn>;
@@ -233,6 +240,48 @@ describe("Welcome page", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(writeText.mock.calls[0]?.[0]).toContain("claude mcp add");
     expect(writeText.mock.calls[0]?.[0]).toContain(`${HOST}/mcp`);
+  });
+});
+
+// #2632 (Axe): a name is text. "$&" or "$1" in it is never a replace pattern.
+describe("a member's Welcome", () => {
+  it("puts names in as they are, $& and $1 included", async () => {
+    progress = {
+      agentConnected: false,
+      firstArtifact: null,
+      commented: false,
+      agentNamed: true,
+      agentName: "R$1D2",
+      who: {
+        member: true,
+        firstName: "A$&B",
+        org: "O$'rg",
+        inviter: "I$`nv",
+        teammateCommented: false,
+      },
+    };
+    await load();
+    expect(document.getElementById("title")?.textContent).toBe("Welcome, A$&B");
+    expect(document.getElementById("lead")?.textContent).toBe(
+      "I$`nv added you to O$'rg. Five steps and your agent is working here with you.",
+    );
+    expect(document.getElementById("also-hint")?.textContent).toBe(
+      "See what O$'rg is working on and leave a comment.",
+    );
+    expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
+  });
+
+  it("the owner's page puts the agent's name in as it is", async () => {
+    progress = {
+      agentConnected: false,
+      firstArtifact: null,
+      commented: false,
+      agentNamed: true,
+      agentName: "A$&B",
+    };
+    await load();
+    expect(step("mention").textContent).toContain("pick A$&B.");
+    expect(step("ask").textContent).toContain("question from A$&B.");
   });
 });
 
