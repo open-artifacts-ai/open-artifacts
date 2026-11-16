@@ -253,7 +253,8 @@ Open the page:
 
 --
 
-You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
+You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. Don't email me again:
+{{optOutUrl}}
 `;
 
 const OUTSIDE_HTML = `<!doctype html>
@@ -263,7 +264,7 @@ const OUTSIDE_HTML = `<!doctype html>
 <p style="font-weight:600">{{pageTitle}}</p>
 <p>{{openLine}}</p>
 <p><a href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
-<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
+<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. <a href="{{optOutUrl}}" style="color:#5d636e">Don't email me again</a>.</p>
 </body></html>
 `;
 
@@ -280,6 +281,8 @@ export function outsideShareEmail(
       /** Viewer path on the app host, e.g. `/a/<id>`. */
       path: string;
       senderEmail: string;
+      /** The "Don't email me again" link (email/share-optout.ts). */
+      optOutUrl: string;
     },
 ): EmailContent {
   const { origin, values } = common(p);
@@ -301,7 +304,12 @@ export function outsideShareEmail(
     : oneLine(p.title, OUTSIDE_TITLE_MAX);
   const senderEmail = oneLine(p.senderEmail, 320);
   const sender = urlish(values.inviterName) ? senderEmail : values.inviterName;
-  return render(
+  // The opt-out link is ours: https on the app host, nothing else.
+  const link = new URL(p.optOutUrl);
+  if (link.origin !== origin || link.href.length > URL_MAX)
+    throw new Error("the opt-out link must be https on the app host");
+  const optOut = link.href;
+  const out = render(
     OUTSIDE_HTML,
     OUTSIDE_TXT,
     `{{senderName}} shared "{{pageTitle}}" with you`,
@@ -312,8 +320,17 @@ export function outsideShareEmail(
       pageTitle: title,
       pageUrl: linkOn(origin, p.path),
       openLine,
+      optOutUrl: optOut,
     },
   );
+  // RFC 8058: one-click unsubscribe, the same POST the link's page makes.
+  return {
+    ...out,
+    headers: {
+      "List-Unsubscribe": `<${optOut}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+  };
 }
 
 const CODE_TXT = `Your {{instanceName}} login code is {{code}}
