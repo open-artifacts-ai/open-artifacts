@@ -568,14 +568,16 @@ class Bus:
         except NotOnBus:
             return None
         root = self.state(ref)
+        if isinstance(session_key, str) and session_key and root.session_key != session_key:
+            # Before taking this root's lock: _claim_key takes the old root's, and no thread ever holds
+            # two root locks at once, so two roots claiming each other cannot deadlock.
+            self._claim_key(root, session_key)
         with root.lock:
             root.busy = True
             root.platform = platform or root.platform
             root.woken_at = None  # the turn a wake asked for has started
             root.session_id = session_id
             if isinstance(session_key, str) and session_key:
-                if root.session_key != session_key:
-                    self._claim_key(root, session_key)
                 root.session_key = session_key
             if chat_type is not None:
                 root.chat_type = chat_type
@@ -626,9 +628,12 @@ class Bus:
         with self._lock:
             others = [r for r in self._by_root.values() if r is not root]
         for old in others:
-            if old.session_key == key:
-                old.session_key = None
-                old.chat_type = None
+            with old.lock:
+                held = old.session_key == key
+                if held:
+                    old.session_key = None
+                    old.chat_type = None
+            if held:
                 if self._store is not None:
                     self._store.drop(old.ref)
                 self._spawn(lambda ref=old.ref: self.close(ref))

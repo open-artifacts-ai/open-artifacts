@@ -395,3 +395,26 @@ class RefusedWakeBacksOff(unittest.TestCase):
         clock[0] = 601.0
         e.bus.deliver(support.deliver_frame("mmmmmmmmmmmmmmm3"), link)
         self.assertEqual(len(e.ctx.injected), 2)
+
+
+class ClaimLockOrder(unittest.TestCase):
+    def test_two_roots_claiming_each_others_keys_never_deadlock(self):
+        import threading
+
+        e = Env()
+        e.turn("s1", "telegram", key="k1")
+        e.turn("s2", "telegram", key="k2")
+        done = []
+
+        def swap(sid, key):
+            for _ in range(200):
+                e.bus.turn_start(sid, "telegram", "hi", [{"role": "user", "content": "hi"}], session_key=key)
+
+        ts = [threading.Thread(target=swap, args=("s1", "k2"), daemon=True),
+              threading.Thread(target=swap, args=("s2", "k1"), daemon=True)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+            done.append(not t.is_alive())
+        self.assertEqual(done, [True, True])
