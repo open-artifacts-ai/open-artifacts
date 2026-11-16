@@ -8,6 +8,7 @@ are linked again when the plugin loads in a gateway process.
 
 import json
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -25,6 +26,12 @@ class RootStore:
 
     def _read(self):
         try:
+            # Only our own owner-only regular file: anything else is not ours to trust.
+            st = os.lstat(self.path)
+            if not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077:
+                return {}
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                return {}
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
         except (OSError, ValueError):
@@ -34,11 +41,13 @@ class RootStore:
         return {
             k: v for k, v in data.items()
             if isinstance(k, str) and isinstance(v, dict)
-            and all(isinstance(v.get(f), str) and v[f] for f in ("session_id", "key", "platform"))
+            and all(isinstance(v.get(f), str) and v[f] for f in ("session_id", "key", "platform", "chat_type"))
             and isinstance(v.get("last_turn"), (int, float))
         }
 
     def _write(self, data):
+        if not hasattr(os, "fchmod"):
+            raise OSError("cannot make the file owner-only here")
         d = os.path.dirname(self.path)
         fd, tmp = tempfile.mkstemp(dir=d, prefix=".roots-")
         try:
@@ -53,13 +62,16 @@ class RootStore:
                 pass
             raise
 
-    def upsert(self, root, session_id, key, platform):
+    def upsert(self, root, session_id, key, platform, chat_type):
         """Never raises: a store that cannot be written only costs the restart restore."""
         try:
             with self._lock:
                 data = self._read()
+                # One key is one chat: another root stored under it is the old one.
+                for other in [r for r, e in data.items() if e["key"] == key and r != root]:
+                    del data[other]
                 data[root] = {"session_id": session_id, "key": key, "platform": platform,
-                              "last_turn": self._clock()}
+                              "chat_type": chat_type, "last_turn": self._clock()}
                 if len(data) > MAX_ROOTS:
                     for old in sorted(data, key=lambda r: data[r]["last_turn"])[: len(data) - MAX_ROOTS]:
                         del data[old]

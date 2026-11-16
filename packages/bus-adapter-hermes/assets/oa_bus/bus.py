@@ -207,6 +207,9 @@ class _Root:
         self.shown = {}
         # The gateway's routing key for this root's session, learned in a turn hook; None until then.
         self.session_key = None
+        # "dm" (one person), "shared" (a dm-type chat with no single user), "group", "channel",
+        # "thread"; None when Hermes did not say. Anything but "dm" is not woken unless listed.
+        self.chat_type = None
         # When a wake was last sent and its turn has not started yet.
         self.woken_at = None
 
@@ -216,9 +219,11 @@ class Bus:
 
     def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None,
                  current_session=None, codex_runtime=None, habits_marker=None, title_of=None,
-                 clock=None, store=None, session_exists=None):
+                 clock=None, store=None, session_exists=None, wake_allow=None):
         self._clock = clock or time.monotonic
         self._store = store
+        # The owner's list (plugins.entries.<id>.settings.wake): session keys and platform names.
+        self._wake_allow = wake_allow or (lambda: [])
         self._session_exists = session_exists or (lambda _sid: True)
         self.roots = roots
         # The user-set session title of a root, or None.
@@ -468,6 +473,20 @@ class Bus:
                 return False
         return self._wake(root, text)
 
+    def _may_wake(self, root):
+        """A direct message with one person; else only what the owner listed. An exact key wakes any
+        chat; a platform name wakes known dm or thread chats, never a group or channel. An unknown
+        chat type is woken only by its exact key."""
+        if root.chat_type == "dm":
+            return True
+        try:
+            listed = {x for x in self._wake_allow() if isinstance(x, str)}
+        except Exception:
+            return False
+        if root.session_key in listed:
+            return True
+        return root.chat_type == "thread" and root.platform in listed
+
     def _wake(self, root, text):
         """Starts a turn for a root that is not an idle current CLI: inject_message(session_key=...)
         queues the text on that session (starting a turn when it is idle) in a gateway or TUI host.
@@ -476,7 +495,7 @@ class Bus:
         woken turn's context carries it. False when it is not accepted (then it stays queued)."""
         with root.lock:
             key = root.session_key
-            if not key or root.platform in (None, "cli"):
+            if not key or root.platform in (None, "cli") or not self._may_wake(root):
                 return False
             now = self._clock()
             if root.woken_at is not None and now - root.woken_at < WAKE_HOLD_S:
@@ -506,7 +525,7 @@ class Bus:
         return os.path.isfile(p) and not os.path.islink(p)
 
     def turn_start(self, session_id, platform, user_message=None, conversation_history=None,
-                   session_key=None):
+                   session_key=None, chat_type=None):
         """pre_llm_call: the queued messages as this turn's context, or None.
 
         Hermes drops a hook's context when the turn's real content is not text, and never
@@ -522,9 +541,13 @@ class Bus:
             root.platform = platform or root.platform
             root.woken_at = None  # the turn a wake asked for has started
             if isinstance(session_key, str) and session_key:
+                if root.session_key != session_key:
+                    self._claim_key(root, session_key)
                 root.session_key = session_key
+            if chat_type is not None:
+                root.chat_type = chat_type
             remember = (self._store is not None and root.session_key and root.platform not in (None, "cli"))
-            key_now, platform_now = root.session_key, root.platform
+            key_now, platform_now, type_now = root.session_key, root.platform, root.chat_type
             if platform == "cli":
                 self._cli_root = ref
             out = []
@@ -539,7 +562,7 @@ class Bus:
                 habits = (root.link is not None and not root.link.closed
                           and self._habits_on())
         if remember:
-            self._store.upsert(ref, session_id, key_now, platform_now)
+            self._store.upsert(ref, session_id, key_now, platform_now, type_now or "unknown")
         self.touch(ref)
         # #1822: a hub that was down when the link opened: offer the proof again (rate limited
         # by the link), off this thread, since it waits for the daemon.
@@ -564,6 +587,20 @@ class Bus:
             return
         self.touch(ref)
 
+    def _claim_key(self, root, key):
+        """A session key is one chat. Another root holding it is the old one: it forgets the key, is
+        dropped from the store and closed, and its mail is never injected into this session."""
+        with self._lock:
+            others = [r for r in self._by_root.values() if r is not root]
+        for old in others:
+            if old.session_key == key:
+                old.session_key = None
+                old.chat_type = None
+                if self._store is not None:
+                    self._store.drop(old.ref)
+                self._spawn(lambda ref=old.ref: self.close(ref))
+        return True
+
     def restore(self):
         """At load in a gateway process: links again the roots remembered from before a restart
         (active in the last 7 days, still in Hermes's history), each with its session key, so mail
@@ -583,6 +620,7 @@ class Bus:
                 with root.lock:
                     root.session_key = root.session_key or e["key"]
                     root.platform = root.platform or e["platform"]
+                    root.chat_type = root.chat_type or (None if e["chat_type"] == "unknown" else e["chat_type"])
                 self.touch(ref)
             except Exception:
                 continue

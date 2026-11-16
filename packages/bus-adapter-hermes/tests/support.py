@@ -25,7 +25,11 @@ class FakeCtx:
         self.middleware = {}
         self.injected = []
         self.keys = []
+        self.config = {}
         self.inject_result = inject_result
+
+    def get_config(self, key, default=None):
+        return self.config.get(key, default)
 
     def register_tool(self, name, toolset, schema, handler, **kw):
         self.tools[name] = {"toolset": toolset, "schema": schema, "handler": handler, **kw}

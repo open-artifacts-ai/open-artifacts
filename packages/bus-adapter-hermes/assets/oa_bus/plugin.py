@@ -27,6 +27,22 @@ def _bound_session_key():
         return None
 
 
+def _bound_chat_type():
+    """"dm" for a chat with one person, "shared" for a dm-type chat with no single user, else the
+    gateway's own chat type ("group", "channel", "thread"); None when it cannot be told."""
+    try:
+        from gateway.session_context import get_session_env
+
+        kind = get_session_env("HERMES_SESSION_CHAT_TYPE", "")
+        if not kind:
+            return None
+        if kind == "dm" and not get_session_env("HERMES_SESSION_USER_ID", ""):
+            return "shared"
+        return kind
+    except Exception:
+        return None
+
+
 def _restore_when_live(bus, ready, tries=120, pause=0.5, sleep=time.sleep):
     for _ in range(tries):
         try:
@@ -38,11 +54,21 @@ def _restore_when_live(bus, ready, tries=120, pause=0.5, sleep=time.sleep):
         sleep(pause)
 
 
+def _wake_list(ctx):
+    """plugins.entries.<id>.settings.wake: the owner's list of session keys and platform names."""
+    try:
+        v = ctx.get_config("wake", [])
+    except Exception:
+        return []
+    return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+
+
 def register(ctx, roots=None, bus=None, proof_servers=None, install=None, gateway_ready=None):
     """`proof_servers` (this instance's raw MCP server names) and `install` (what puts the proof
     argument on the wire, see proof.py) are replaced in tests."""
     roots = roots or Roots()
-    bus = bus or Bus(roots, inject=ctx.inject_message, store=RootStore(), session_exists=hermes_session_exists)
+    bus = bus or Bus(roots, inject=ctx.inject_message, store=RootStore(), session_exists=hermes_session_exists,
+                         wake_allow=lambda: _wake_list(ctx))
     tools = Tools(bus)
     mine = proof_servers if proof_servers is not None else _servers()
     put_on_wire = install or _proof.install
@@ -68,7 +94,7 @@ def register(ctx, roots=None, bus=None, proof_servers=None, install=None, gatewa
             except Exception:
                 pass
         return bus.turn_start(session_id, platform, user_message, conversation_history,
-                              session_key=_bound_session_key())
+                              session_key=_bound_session_key(), chat_type=_bound_chat_type())
 
     def on_session_open(session_id=None, **_kw):
         bus.session_open(session_id)

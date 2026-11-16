@@ -40,6 +40,8 @@ export const HERMES_NO_CLI =
  * not a package file, so it never counts toward the hash, and a reinstall keeps it.
  */
 export const HERMES_HABITS_MARKER = "habits.on";
+/** The plugin's own record of the gateway chats it linked: never shipped, hashed or deleted by an upgrade. */
+export const HERMES_ROOTS_FILE = "gateway_roots.json";
 /** Where a copy is built before it moves into plugins/, in the Hermes home. */
 export const HERMES_STAGING = ".oa-bus-staging";
 
@@ -298,7 +300,8 @@ function files(dir: string, rel = ""): string[] {
       name === "__pycache__" ||
       name.startsWith(".") ||
       name.endsWith(".pyc") ||
-      (rel === "" && name === HERMES_HABITS_MARKER)
+      (rel === "" &&
+        (name === HERMES_HABITS_MARKER || name === HERMES_ROOTS_FILE))
     )
       continue;
     const r = rel ? `${rel}/${name}` : name;
@@ -385,6 +388,11 @@ export async function installHermes(
     // The user's yes to the habits lives in the folder being replaced: carry it over.
     const keepHabits =
       state === "stale" && kind(join(dest, HERMES_HABITS_MARKER)) === "file";
+    // The plugin's remembered chats: carried over only as a plain file, and rewritten owner-only.
+    const keepRoots =
+      state === "stale" && kind(join(dest, HERMES_ROOTS_FILE)) === "file"
+        ? readFileSync(join(dest, HERMES_ROOTS_FILE))
+        : undefined;
     const plugins = join(dest, "..");
     mkdirSync(plugins, { recursive: true });
     // Staged outside plugins/ (Hermes loads any folder there with a plugin.yaml),
@@ -414,6 +422,8 @@ export async function installHermes(
       );
       if (keepHabits)
         writeFileSync(join(tmp, HERMES_HABITS_MARKER), HABITS_MARKER_TEXT);
+      if (keepRoots !== undefined)
+        writeFileSync(join(tmp, HERMES_ROOTS_FILE), keepRoots, { mode: 0o600 });
       if (state === "stale") rmSync(dest, { recursive: true, force: true });
       renameSync(tmp, dest);
     } catch (e) {

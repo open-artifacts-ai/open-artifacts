@@ -570,8 +570,9 @@ KEY = "agent:main:telegram:dm:1"
 
 
 class Wake(unittest.TestCase):
-    def chat(self, e, key=KEY, platform="telegram"):
-        e.bus.turn_start("root-1", platform, "hi", [{"role": "user", "content": "hi"}], session_key=key)
+    def chat(self, e, key=KEY, platform="telegram", chat_type="dm"):
+        e.bus.turn_start("root-1", platform, "hi", [{"role": "user", "content": "hi"}], session_key=key,
+                         chat_type=chat_type)
         e.bus.turn_end("root-1")
 
     def test_a_gateway_chat_with_a_known_key_is_woken_and_acked(self):
