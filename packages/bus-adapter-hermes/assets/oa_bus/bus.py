@@ -25,6 +25,8 @@ SELF_TIMEOUT_S = 2.0
 # A wake (a keyed inject_message that starts a turn) holds back further wakes for this root until
 # its turn starts, or this long: mail that arrives meanwhile rides in on that turn's context.
 WAKE_HOLD_S = 60.0
+# After Hermes refuses a wake (no allow_gateway_injection, say) this root is not tried again for this long.
+WAKE_BACKOFF_S = 600.0
 
 
 def slug_of(text, kind="hermes"):
@@ -212,6 +214,10 @@ class _Root:
         self.chat_type = None
         # When a wake was last sent and its turn has not started yet.
         self.woken_at = None
+        # No wake is tried for this root before this time (a refused one).
+        self.wake_off_until = None
+        # The newest session id seen for this root.
+        self.session_id = None
 
 
 class Bus:
@@ -494,9 +500,16 @@ class Bus:
         session. One wake per root at a time: while one is pending, the text stays queued and the
         woken turn's context carries it. False when it is not accepted (then it stays queued)."""
         with root.lock:
-            key = root.session_key
+            key, sid = root.session_key, root.session_id
             if not key or root.platform in (None, "cli") or not self._may_wake(root):
                 return False
+            now = self._clock()
+            if root.wake_off_until is not None and now < root.wake_off_until:
+                return False
+        if sid is not None and not self._session_alive(sid):
+            self._forget(root)
+            return False
+        with root.lock:
             now = self._clock()
             if root.woken_at is not None and now - root.woken_at < WAKE_HOLD_S:
                 return False
@@ -505,10 +518,29 @@ class Bus:
             ok = bool(self._inject(text, session_key=key))
         except Exception:
             ok = False
-        if not ok:
+        if ok:
+            with root.lock:
+                root.wake_off_until = None
+        else:
             with root.lock:
                 root.woken_at = None
+                root.wake_off_until = self._clock() + WAKE_BACKOFF_S
         return ok
+
+    def _session_alive(self, sid):
+        try:
+            return bool(self._session_exists(sid))
+        except Exception:
+            return True
+
+    def _forget(self, root):
+        """The root's session ended (Hermes reset it without a finalize): no key, no stored entry, no link."""
+        with root.lock:
+            root.session_key = None
+            root.chat_type = None
+        if self._store is not None:
+            self._store.drop(root.ref)
+        self.close(root.ref)
 
     def _hand_over(self, root, text):
         """A bus notice: injected when the CLI is idle on this root, else queued for the next turn."""
@@ -540,6 +572,7 @@ class Bus:
             root.busy = True
             root.platform = platform or root.platform
             root.woken_at = None  # the turn a wake asked for has started
+            root.session_id = session_id
             if isinstance(session_key, str) and session_key:
                 if root.session_key != session_key:
                     self._claim_key(root, session_key)
@@ -619,6 +652,7 @@ class Bus:
                 root = self.state(ref)
                 with root.lock:
                     root.session_key = root.session_key or e["key"]
+                    root.session_id = root.session_id or e["session_id"]
                     root.platform = root.platform or e["platform"]
                     root.chat_type = root.chat_type or (None if e["chat_type"] == "unknown" else e["chat_type"])
                 self.touch(ref)

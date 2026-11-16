@@ -303,3 +303,95 @@ class KeyMoves(unittest.TestCase):
         e.bus.deliver(support.deliver_frame("mmmmmmmmmmmmmmm2"), link)
         self.assertEqual(e.ctx.injected, [])  # the old root's mail is not injected into the new session
         self.assertEqual(len(old.queue), 2)
+
+
+class EndedSessions(unittest.TestCase):
+    def fake_hermes(self, rows, lineage=None):
+        import pathlib
+        import sys
+        import types
+
+        home = pathlib.Path(tempfile.mkdtemp())
+        (home / "state.db").write_text("")
+
+        class DB:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def get_session(self, sid):
+                return rows.get(sid)
+
+            def get_compression_lineage(self, sid):
+                return (lineage or {}).get(sid, [sid])
+
+        c = types.ModuleType("hermes_constants")
+        c.get_hermes_home = lambda: home
+        st = types.ModuleType("hermes_state")
+        st.SessionDB = DB
+        saved = {k: sys.modules.get(k) for k in ("hermes_constants", "hermes_state")}
+        sys.modules.update({"hermes_constants": c, "hermes_state": st})
+
+        def undo():
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+        self.addCleanup(undo)
+        from oa_bus import roots
+
+        roots._dbs.clear()
+        self.addCleanup(roots._dbs.clear)
+
+    def test_an_ended_row_is_gone_a_live_one_or_a_rotated_tip_is_not(self):
+        from oa_bus.roots import hermes_session_exists
+
+        self.fake_hermes(
+            {"a": {"ended_at": 5.0}, "b": {"ended_at": None}, "c": {"ended_at": 9.0}, "d": {"ended_at": None}},
+            lineage={"c": ["c", "d"]},
+        )
+        self.assertFalse(hermes_session_exists("a"))
+        self.assertTrue(hermes_session_exists("b"))
+        self.assertTrue(hermes_session_exists("c"))  # rotated: the tip d is live
+        self.assertFalse(hermes_session_exists("missing"))
+
+    def test_restore_drops_an_ended_session(self):
+        e = Env()
+        e.turn()
+        n = Restore().restarted(e)
+        n.exists = False  # ended
+        n.bus.restore()
+        self.assertEqual(n.opened, [])
+        self.assertEqual(n.store.recent(), [])
+
+    def test_a_wake_for_a_session_that_ended_since_is_not_sent_and_the_root_is_dropped(self):
+        e = Env()
+        e.turn()
+        n = Restore().restarted(e)
+        n.bus.restore()
+        n.exists = False  # reset by Hermes later, no finalize
+        link = support.FakeLink(ref="r1", replies={"self": {"type": "agent", "agent": {"name": "a", "global": False}}})
+        n.bus.deliver(support.deliver_frame(M1), link)
+        self.assertEqual(n.ctx.injected, [])
+        self.assertEqual(link.acks, [])
+        self.assertEqual(n.store.recent(), [])
+        self.assertIsNone(n.bus.state("r1").session_key)
+        self.assertEqual(len(n.bus.state("r1").queue), 1)
+
+
+class RefusedWakeBacksOff(unittest.TestCase):
+    def test_after_a_refusal_the_root_is_not_tried_for_ten_minutes(self):
+        e = Env()
+        e.ctx.inject_result = False
+        clock = [0.0]
+        e.bus._clock = lambda: clock[0]
+        e.turn()
+        link = support.FakeLink(ref="r1", replies={"self": {"type": "agent", "agent": {"name": "a", "global": False}}})
+        e.bus.deliver(support.deliver_frame(M1), link)
+        e.bus.deliver(support.deliver_frame("mmmmmmmmmmmmmmm2"), link)
+        self.assertEqual(len(e.ctx.injected), 1)  # the second was not tried
+        self.assertEqual(len(e.bus.state("r1").queue), 2)  # both ride the next turn
+        clock[0] = 601.0
+        e.bus.deliver(support.deliver_frame("mmmmmmmmmmmmmmm3"), link)
+        self.assertEqual(len(e.ctx.injected), 2)
