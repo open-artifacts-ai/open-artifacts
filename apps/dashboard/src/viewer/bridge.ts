@@ -184,8 +184,12 @@ export function createBridge(opts: BridgeOptions) {
   const id = artifact.id; // the only artifact id any route is ever built from
   // Framed, the artifact never learns who is viewing, whatever the caller passed.
   const embed = isEmbed();
-  const viewer = () =>
-    artifact.capabilities.viewer && !embed ? opts.viewer : null;
+  // Exactly { email, name }: the runtime's welcome schema is strict, so any
+  // other field would make it drop the welcome and never get ready (#2644).
+  const viewer = (): Viewer | null =>
+    artifact.capabilities.viewer && !embed && opts.viewer
+      ? { email: opts.viewer.email, name: opts.viewer.name }
+      : null;
   // The anonId header rides only on anonymous calls (viewer null for any
   // reason: signed out, or embed mode) to artifacts that allow anonymous
   // writes; never signed in, never into the frame.
