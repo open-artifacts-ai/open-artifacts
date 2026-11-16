@@ -26,7 +26,6 @@ import {
   OAuthClientSchema,
   type Onboarding,
   type OnboardingPatch,
-  OnboardingSchema,
   PageSchema,
   type PublishInput,
   PublishResultSchema,
@@ -79,6 +78,7 @@ import {
   errorCopy,
   errorLink,
 } from "./errorCopy";
+import { MyOnboardingSchema } from "./myOnboarding";
 
 const failToast = (e: unknown, fallback: string) =>
   toast({
@@ -224,19 +224,19 @@ export const useTokens = (enabled = true) =>
     queryKey: qk.tokens,
     queryFn: ({ signal }) => api.get(R.tokens, z.array(TokenSchema), signal),
   });
-/** The first-run checklist's server state (GET R.onboarding); the owner only. */
+/** The first-run checklist's server state (GET R.onboarding), the caller's own (#2632: every member; a guest gets 403). */
 export const useOnboarding = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: qk.onboarding,
-    queryFn: ({ signal }) => api.get(R.onboarding, OnboardingSchema, signal),
+    queryFn: ({ signal }) => api.get(R.onboarding, MyOnboardingSchema, signal),
   });
 /** PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer. */
 export const useSetOnboarding = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (patch: OnboardingPatch) =>
-      api.send("PUT", R.onboarding, patch, OnboardingSchema),
+      api.send("PUT", R.onboarding, patch, MyOnboardingSchema),
     onMutate: (patch) => {
       const before = qc.getQueryData<Onboarding>(qk.onboarding);
       if (before)

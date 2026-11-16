@@ -121,33 +121,25 @@ async function startMocks() {
         });
       }),
     );
-  // #2632 (PROVISIONAL, library/mySetup.ts): who added them, the owner's
-  // name, and, with ?mock=welcome, the caller's own step times from &ticks=
-  // (and &teammate=1 for the optional sixth step).
-  const ticks = params.get("ticks") ?? "";
-  const stamp = (on: boolean) => (on ? "2026-11-16T10:00:00.000Z" : null);
-  const setupTimes = {
-    connectedAt: stamp(ticks.includes("connect")),
-    namedAt: stamp(ticks.includes("name")),
-    publishedAt: stamp(ticks.includes("publish")),
-    mentionRepliedAt: stamp(ticks.includes("mention")),
-    askAnsweredAt: stamp(ticks.includes("ask")),
-    teammateCommentedAt: stamp(params.get("teammate") === "1"),
-    hiddenAt: null,
-    completedAt: null,
-  };
   if (role === "admin" || role === "member" || role === "guest")
     extra.push(
       http.get("*/api/v1/me", () =>
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
-          invitedBy: { name: "Bob Builder" },
+          // #2632 (PROVISIONAL, api/myOnboarding.ts): the owner's name.
           instanceOwner: { name: "Bob Builder" },
-          ...(role !== "guest" && params.get("mock") === "welcome"
-            ? { setup: setupTimes }
-            : {}),
         }),
+      ),
+    );
+  // #2632: R.onboarding refuses a guest.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json(
+          { error: { code: "forbidden", message: "Forbidden" } },
+          { status: 403 },
+        ),
       ),
     );
   // ?mock=space-manager (with ?hosted=1): the caller is a plain member who manages
@@ -640,6 +632,9 @@ async function startMocks() {
             mentionStalled: params.get("ticks")?.includes("stalled"),
             askAnswered: params.get("ticks")?.includes("ask"),
             opened: params.get("opened") === "1",
+            // #2632 (PROVISIONAL): &teammate=1 ticks the optional sixth step.
+            teamStep: params.get("teammate") === "1",
+            invitedBy: "Bob Builder",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.

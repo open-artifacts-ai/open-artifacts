@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
+import { firstName } from "../api/myOnboarding";
 import {
   qk,
   useArtifact,
@@ -26,10 +27,9 @@ import { isEmbed } from "../embed";
 import { useCpuSignals } from "../layout/cpu";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { isMember } from "../library/MemberGetStarted";
-import { firstName, mySteps, useMeSetup } from "../library/mySetup";
 import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
-import { createBridge, type ScrollPos, type WelcomeWho } from "./bridge";
+import { createBridge, type ScrollPos, type WelcomeGreet } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
 import {
@@ -361,23 +361,20 @@ function Viewer({
   // answers only the owner, and (#2632) a member, on their own Welcome.
   const member = isMember(role);
   const meState = useMe();
-  const setupQ = useMeSetup(member);
-  const who: WelcomeWho | undefined =
+  // The bridge adds the rest (who added them, the sixth step) from R.onboarding.
+  const greet: WelcomeGreet | undefined =
     member && meState.status === "authed"
       ? {
-          member: true,
           firstName: firstName(meState.me.user.name),
           org: meState.me.instance.name,
-          inviter: setupQ.data?.invitedBy?.name ?? null,
-          teammateCommented: mySteps(setupQ.data?.setup, undefined).teammate,
         }
       : undefined;
   const gate = useRef<{
     owner: boolean;
     member: boolean;
-    who?: WelcomeWho;
-  }>({ owner: role === "owner", member, who });
-  gate.current = { owner: role === "owner", member, who };
+    greet?: WelcomeGreet;
+  }>({ owner: role === "owner", member, greet });
+  gate.current = { owner: role === "owner", member, greet };
   const fx = useArtifactSideEffects(
     artifact,
     version,

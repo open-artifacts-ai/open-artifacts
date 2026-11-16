@@ -5,6 +5,7 @@
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { fiveOf, mySteps, useOwnerName } from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
   qk,
@@ -13,7 +14,6 @@ import {
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { AgentSetupBody } from "../settings/AgentSetupCard";
-import { fiveOf, mySteps, useMeSetup } from "./mySetup";
 import { Step, Waiting } from "./steps";
 
 /** The design's words for a member's steps. */
@@ -44,18 +44,12 @@ export function MemberGetStarted() {
   const me = state.status === "authed" ? state.me : null;
   const member = isMember(me?.user.role);
   const onboarding = useOnboarding(member);
-  const setup = useMeSetup(member);
   const setOnboarding = useSetOnboarding();
-  const s = mySteps(setup.data?.setup, onboarding.data);
+  const s = mySteps(onboarding.data);
   const five = fiveOf(s);
   const all = five.every(Boolean);
   // Nothing shows until the server has said the card is still open.
-  const live =
-    member &&
-    onboarding.isSuccess &&
-    !setup.isPending &&
-    !s.hidden &&
-    !s.completed;
+  const live = member && onboarding.isSuccess && !s.hidden && !s.completed;
 
   // Five of five: the server keeps that, so the card stays gone.
   const { mutate: save } = setOnboarding;
@@ -70,14 +64,13 @@ export function MemberGetStarted() {
     const t = setInterval(() => {
       if (document.visibilityState === "hidden") return;
       void qc.invalidateQueries({ queryKey: qk.onboarding });
-      void qc.invalidateQueries({ queryKey: ["me", "setup"] });
     }, BUS_POLL_MS);
     return () => clearInterval(t);
   }, [live, all, qc]);
 
   if (!live || all || !me?.instance.mcpUrl) return null;
 
-  // PROVISIONAL (#2632): the server makes "dismissed" per person for members.
+  // Per person (#2632): hidden isn't done, so `completed` stays as it is.
   const hide = () => save({ dismissed: true });
   const o = onboarding.data;
   const nm = o?.agentName || "your agent";
@@ -155,7 +148,7 @@ export function MemberGetStarted() {
 
 /**
  * The design's line for a guest, where a member would publish. {owner} is
- * the instance owner's name (PROVISIONAL, mySetup.ts).
+ * the instance owner's name (PROVISIONAL, api/myOnboarding.ts).
  */
 export const guestPublish = (owner: string) =>
   `Guests can read and comment. To publish, ask ${owner} to make you a member.`;
@@ -163,9 +156,9 @@ export const guestPublish = (owner: string) =>
 export const OWNER_UNKNOWN = "the owner";
 
 export function GuestPublishNote() {
-  const setup = useMeSetup(true);
-  const owner = setup.data?.instanceOwner?.name?.trim() || OWNER_UNKNOWN;
-  if (setup.isPending) return null;
+  const name = useOwnerName(true);
+  const owner = name.data || OWNER_UNKNOWN;
+  if (name.isPending) return null;
   return (
     <p
       data-guest-publish=""

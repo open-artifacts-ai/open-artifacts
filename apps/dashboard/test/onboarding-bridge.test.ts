@@ -114,16 +114,45 @@ describe("onboarding.get", () => {
   });
 
   // #2632: a member gets their own Welcome, with who it greets.
-  it("answers a member on their Welcome, with who it's for", async () => {
-    const who = {
-      member: true as const,
-      firstName: "Ada",
-      org: "Acme Artifacts",
-      inviter: "Bob Builder",
-      teammateCommented: false,
-    };
-    const r = await ask(art(WELCOME), { owner: false, member: true, who });
-    expect(r).toMatchObject({ ok: true, value: { agentConnected: true, who } });
+  it("answers a member on their own Welcome, with who it greets", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ...PROGRESS,
+            teamStep: true,
+            invitedBy: { name: "Bob Builder" },
+          }),
+          { status: 200 },
+        ),
+    );
+    const r = await ask(art(WELCOME), {
+      owner: false,
+      member: true,
+      greet: { firstName: "Ada", org: "Acme Artifacts" },
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      value: {
+        agentConnected: true,
+        who: {
+          member: true,
+          firstName: "Ada",
+          org: "Acme Artifacts",
+          inviter: "Bob Builder",
+          teammateCommented: true,
+        },
+      },
+    });
+  });
+
+  it("refuses a member on someone else's Welcome", async () => {
+    const r = await ask(art("OtherArtifact0001"), {
+      owner: false,
+      member: true,
+      greet: { firstName: "Ada", org: "Acme Artifacts" },
+    });
+    expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
   });
 
   it("never tells the owner's page who it's for", async () => {

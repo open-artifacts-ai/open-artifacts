@@ -176,6 +176,9 @@ export type MockOptions = {
         mentionStalled?: boolean;
         askAnswered?: boolean;
         opened?: boolean;
+        /** #2632 (PROVISIONAL): the optional sixth step, and who added the caller. */
+        teamStep?: boolean;
+        invitedBy?: string;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
@@ -428,8 +431,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const tokens = fresh && !fresh.agentConnected ? [] : f.tokens;
   const clients = fresh ? [] : f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
-  // R.onboarding: install-wide, the owner only (anyone else 404).
-  const onboarding: Onboarding = {
+  // R.onboarding: the caller's own (#2632: every member; one caller per mock).
+  // teamStep and invitedBy are #2632's PROVISIONAL fields.
+  const onboarding: Onboarding & {
+    teamStep?: boolean;
+    invitedBy?: { name: string | null } | null;
+  } = {
     dismissed: false,
     completed: false,
     welcomeId: null,
@@ -463,6 +470,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       mentionReplied: w.mentionReplied ?? false,
       mentionStalled: w.mentionStalled ?? false,
       askAnswered: w.askAnswered ?? false,
+      teamStep: w.teamStep ?? false,
+      invitedBy: w.invitedBy ? { name: w.invitedBy } : null,
     });
   }
   if (opts.bus) {
