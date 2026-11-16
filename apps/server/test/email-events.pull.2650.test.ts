@@ -3,7 +3,9 @@
 import { env } from "cloudflare:workers";
 import { publicFromPkcs8, verifyRequest } from "@oa/auth-core";
 import {
+  EMAIL_EVENTS_ACK_PATH,
   EMAIL_EVENTS_PULL_PATH,
+  EmailEventsAckBodySchema,
   EmailEventsPullBodySchema,
 } from "@oa/provisioning-contract";
 import { R, ShareResultSchema } from "@oa/shared";
@@ -84,24 +86,44 @@ async function sender(over: Partial<Env> = HOSTED) {
 }
 
 type Seen = { path: string; text: string; kid: string; sig: string };
-/** A fake gate that serves each queued answer once, as the platform serves events once. */
-function gateServing(batches: unknown[], status = 200) {
+/**
+ * A fake gate: a pull serves the next queued batch (and deletes nothing: the
+ * same events come again until acknowledged), an ack records its ids.
+ */
+function gateServing(
+  batches: unknown[],
+  opts: {
+    status?: number;
+    ackStatus?: number;
+    onAck?: () => Promise<void>;
+  } = {},
+) {
   const seen: Seen[] = [];
+  const acks: string[][] = [];
   const gate = {
     async fetch(req: Request): Promise<Response> {
       const text = await req.text();
+      const path = new URL(req.url).pathname;
       seen.push({
-        path: new URL(req.url).pathname,
+        path,
         text,
         kid: req.headers.get("x-oa-kid") ?? "",
         sig: req.headers.get("x-oa-sig") ?? "",
       });
-      return status === 200
-        ? Response.json(batches.shift() ?? { events: [] })
-        : new Response("x", { status });
+      if (path === EMAIL_EVENTS_ACK_PATH) {
+        if (opts.ackStatus)
+          return new Response("x", { status: opts.ackStatus });
+        await opts.onAck?.();
+        const ids = EmailEventsAckBodySchema.parse(JSON.parse(text)).eventIds;
+        acks.push(ids);
+        return Response.json({ acked: ids.length });
+      }
+      if (opts.status && opts.status !== 200)
+        return new Response("x", { status: opts.status });
+      return Response.json(batches.shift() ?? { events: [] });
     },
   };
-  return { gate, seen };
+  return { gate, seen, acks };
 }
 const pull = <T>(gate: unknown, e: Env, f: (e: Env) => Promise<T>) =>
   withBrokerProps({ props: { LOGIN: gate } }, () => f(e));
@@ -114,6 +136,7 @@ const pausedUntil = async (userId: string) =>
       .first<{ until_at: number }>()
   )?.until_at ?? null;
 const ev = (messageId: string, kind: string, bounceType?: string | null) => ({
+  eventId: `ev-${crypto.randomUUID()}`,
   messageId,
   kind,
   ...(bounceType === undefined ? {} : { bounceType }),
@@ -205,7 +228,9 @@ describe("the pull", () => {
     const [id] = await a.sentIds(1);
     const warn = vi.spyOn(console, "warn");
     expect(await pullEmailEvents(a.e)).toBe(0);
-    expect(await pull(gateServing([], 503).gate, a.e, pullEmailEvents)).toBe(0);
+    expect(
+      await pull(gateServing([], { status: 503 }).gate, a.e, pullEmailEvents),
+    ).toBe(0);
     expect(
       await pull(
         gateServing([{ events: [ev(id as string, "complained")], extra: 1 }])
@@ -249,6 +274,142 @@ describe("the pull", () => {
   });
 });
 
+describe("processed, then acknowledged", () => {
+  it("acknowledges every handled event in batches of 100, after it is applied", async () => {
+    const a = await sender();
+    const [id] = await a.sentIds(1);
+    // 250 events: a complaint first, the rest ignorable.
+    const events = [
+      ev(id as string, "complained"),
+      ...Array.from({ length: 249 }, () =>
+        ev("msg-not-ours", "bounced", "hard"),
+      ),
+    ];
+    let pausedAtFirstAck: number | null | undefined;
+    const { gate, seen, acks } = gateServing([{ events }], {
+      async onAck() {
+        pausedAtFirstAck ??= await pausedUntil(a.member.id);
+      },
+    });
+    await pull(gate, a.e, pullEmailEvents);
+    expect(seen.map((x) => x.path)).toEqual([
+      EMAIL_EVENTS_PULL_PATH,
+      EMAIL_EVENTS_ACK_PATH,
+      EMAIL_EVENTS_ACK_PATH,
+      EMAIL_EVENTS_ACK_PATH,
+    ]);
+    expect(acks.map((x) => x.length)).toEqual([100, 100, 50]);
+    expect(acks.flat()).toEqual(events.map((e) => e.eventId));
+    // The pause was written before the first ack went out.
+    expect(pausedAtFirstAck).not.toBeNull();
+    const pub = await publicFromPkcs8(TEST_BROKER_KEY);
+    for (const x of seen.filter((s) => s.path === EMAIL_EVENTS_ACK_PATH)) {
+      expect(
+        await verifyRequest(pub, x.path, x.kid, x.sig ? x.text : "", x.sig),
+      ).toBe(true);
+      expect(Object.keys(JSON.parse(x.text)).sort()).toEqual([
+        "eventIds",
+        "nonce",
+        "ts",
+      ]);
+    }
+  });
+
+  it("an event served again (the ack failed) is a no-op: nothing is applied twice, it is acknowledged again", async () => {
+    const a = await sender();
+    const ids = await a.sentIds(3);
+    const events = ids.map((id) => ev(id, "bounced", "hard"));
+    const first = gateServing([{ events }], { ackStatus: 500 });
+    expect(await pull(first.gate, a.e, pullEmailEvents)).toBe(1);
+    expect(first.acks).toEqual([]);
+    expect(await pausedUntil(a.member.id)).not.toBeNull();
+    const until = await pausedUntil(a.member.id);
+    // Served again: nothing changes, then the ack goes through.
+    const second = gateServing([{ events }]);
+    expect(await pull(second.gate, a.e, pullEmailEvents)).toBe(0);
+    expect(second.acks.flat()).toEqual(events.map((e) => e.eventId));
+    expect(await pausedUntil(a.member.id)).toBe(until);
+    // The bounces were counted once each.
+    expect(
+      (
+        await env.DB.prepare(
+          "select count(*) n from share_email_messages where user_id = ? and bounced_at is not null",
+        )
+          .bind(a.member.id)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(3);
+  });
+
+  it("an event that can't be applied is not acknowledged, so it comes back", async () => {
+    const a = await sender();
+    const [id] = await a.sentIds(1);
+    const bad = ev(id as string, "complained");
+    const ok = ev("msg-not-ours", "complained");
+    const broken = {
+      ...a.e,
+      DB: new Proxy(a.e.DB, {
+        get(t, k) {
+          if (k === "prepare")
+            return (sql: string) => {
+              if (sql.includes("insert into share_email_pauses"))
+                throw new Error("D1 down");
+              return t.prepare(sql);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    } as Env;
+    const g = gateServing([{ events: [bad, ok] }]);
+    await pull(g.gate, broken, pullEmailEvents);
+    expect(g.acks.flat()).toEqual([ok.eventId]);
+    expect(await pausedUntil(a.member.id)).toBeNull();
+    // Served again and applied for real this time.
+    const g2 = gateServing([{ events: [bad, ok] }]);
+    expect(await pull(g2.gate, a.e, pullEmailEvents)).toBe(1);
+    expect(g2.acks.flat()).toEqual([bad.eventId, ok.eventId]);
+    expect(await pausedUntil(a.member.id)).not.toBeNull();
+  });
+
+  it("nothing to acknowledge, nothing sent; a refused ack never throws", async () => {
+    const a = await sender();
+    const none = gateServing([{ events: [] }]);
+    await pull(none.gate, a.e, pullEmailEvents);
+    expect(none.seen.map((x) => x.path)).toEqual([EMAIL_EVENTS_PULL_PATH]);
+    const [id] = await a.sentIds(1);
+    const refused = gateServing(
+      [{ events: [ev(id as string, "complained")] }],
+      {
+        ackStatus: 503,
+      },
+    );
+    expect(await pull(refused.gate, a.e, pullEmailEvents)).toBe(1);
+  });
+
+  it("the sweep drops processed event ids after 30 days", async () => {
+    const { sweepEmailEvents } = await import(
+      "../src/services/email-events.js"
+    );
+    const old = `ev-old-${crypto.randomUUID()}`;
+    const fresh = `ev-fresh-${crypto.randomUUID()}`;
+    await env.DB.prepare(
+      "insert into share_email_events_seen (event_id, created_at) values (?, ?), (?, ?)",
+    )
+      .bind(old, Date.now() - 31 * 86_400_000, fresh, Date.now())
+      .run();
+    await sweepEmailEvents(env, Date.now());
+    const has = async (id: string) =>
+      (await env.DB.prepare(
+        "select 1 from share_email_events_seen where event_id = ?",
+      )
+        .bind(id)
+        .first()) !== null;
+    expect(await has(old)).toBe(false);
+    expect(await has(fresh)).toBe(true);
+  });
+});
+
 describe("the tick", () => {
   const tick = async (e: Env, gate: unknown, cron = DIRECTORY_SYNC_CRON) => {
     const waits: Promise<unknown>[] = [];
@@ -268,7 +429,10 @@ describe("the tick", () => {
       { events: [ev(id as string, "complained")] },
     ]);
     await tick(a.e, gate);
-    expect(seen).toHaveLength(1);
+    expect(seen.map((x) => x.path)).toEqual([
+      EMAIL_EVENTS_PULL_PATH,
+      EMAIL_EVENTS_ACK_PATH,
+    ]);
     expect(await pausedUntil(a.member.id)).not.toBeNull();
   });
 

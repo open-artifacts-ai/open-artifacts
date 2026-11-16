@@ -2,8 +2,12 @@
 // complaint events (#2650). Both repos run this.
 import { describe, expect, it } from "vitest";
 import {
+  EMAIL_EVENTS_ACK_MAX,
+  EMAIL_EVENTS_ACK_PATH,
   EMAIL_EVENTS_PULL_MAX,
   EMAIL_EVENTS_PULL_PATH,
+  EmailEventsAckBodySchema,
+  EmailEventsAckResponseSchema,
   EmailEventsPullBodySchema,
   EmailEventsPullResponseSchema,
 } from "../src/index.js";
@@ -39,9 +43,9 @@ describe("email events pull contract", () => {
   it("the answer: { events: [{ messageId, kind, bounceType? }] }", () => {
     const ok = {
       events: [
-        { messageId: "m1", kind: "bounced", bounceType: "hard" },
-        { messageId: "m2", kind: "complained" },
-        { messageId: "m3", kind: "bounced", bounceType: null },
+        { eventId: "e1", messageId: "m1", kind: "bounced", bounceType: "hard" },
+        { eventId: "e2", messageId: "m2", kind: "complained" },
+        { eventId: "e3", messageId: "m3", kind: "bounced", bounceType: null },
       ],
     };
     expect(EmailEventsPullResponseSchema.parse(ok)).toEqual(ok);
@@ -52,12 +56,24 @@ describe("email events pull contract", () => {
       {},
       { events: "x" },
       { events: [{ kind: "bounced" }] },
-      { events: [{ messageId: "", kind: "bounced" }] },
-      { events: [{ messageId: "m", kind: "" }] },
-      { events: [{ messageId: "m", kind: "bounced", recipient: "a@b.co" }] },
+      { events: [{ messageId: "m", kind: "bounced" }] },
+      { events: [{ eventId: "e", messageId: "", kind: "bounced" }] },
+      { events: [{ eventId: "", messageId: "m", kind: "bounced" }] },
+      { events: [{ eventId: "e", messageId: "m", kind: "" }] },
+      {
+        events: [
+          {
+            eventId: "e",
+            messageId: "m",
+            kind: "bounced",
+            recipient: "a@b.co",
+          },
+        ],
+      },
       { events: [], cursor: "x" },
       {
         events: Array.from({ length: EMAIL_EVENTS_PULL_MAX + 1 }, (_, i) => ({
+          eventId: `e${i}`,
           messageId: `m${i}`,
           kind: "bounced",
         })),
@@ -67,5 +83,41 @@ describe("email events pull contract", () => {
         EmailEventsPullResponseSchema.safeParse(bad).success,
         JSON.stringify(bad),
       ).toBe(false);
+  });
+
+  it("ack: { ts, nonce, eventIds } of 1 to 100, answered { acked }", () => {
+    expect(EMAIL_EVENTS_ACK_PATH).toBe("/email-events/ack");
+    const ok = { ts: 1_794_000_000_000, nonce: NONCE, eventIds: ["e1", "e2"] };
+    expect(EmailEventsAckBodySchema.parse(ok)).toEqual(ok);
+    const full = Array.from(
+      { length: EMAIL_EVENTS_ACK_MAX },
+      (_, i) => `e${i}`,
+    );
+    expect(
+      EmailEventsAckBodySchema.parse({ ...ok, eventIds: full }).eventIds,
+    ).toHaveLength(100);
+    for (const bad of [
+      { ...ok, eventIds: [] },
+      { ...ok, eventIds: [...full, "one-more"] },
+      { ...ok, eventIds: [""] },
+      { ...ok, eventIds: "e1" },
+      { ts: ok.ts, nonce: NONCE },
+      { ...ok, install: "iabc123456789" },
+      { ...ok, nonce: "short" },
+    ])
+      expect(
+        EmailEventsAckBodySchema.safeParse(bad).success,
+        JSON.stringify(bad),
+      ).toBe(false);
+    expect(EmailEventsAckResponseSchema.parse({ acked: 2 })).toEqual({
+      acked: 2,
+    });
+    for (const bad of [
+      {},
+      { acked: -1 },
+      { acked: 1.5 },
+      { acked: 1, more: 1 },
+    ])
+      expect(EmailEventsAckResponseSchema.safeParse(bad).success).toBe(false);
   });
 });

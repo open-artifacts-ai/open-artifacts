@@ -60,6 +60,7 @@ export const SHAPE = {
   creator_months: 5_000, // hosted only: one per creator and UTC month
   settings: 20,
   share_email_messages: 20_000, // #2650: outside share emails of the last 30 days
+  share_email_events_seen: 20_000, // #2650: processed platform event ids of the last 30 days
   share_email_pauses: 20, // #2650: members paused after a bounce or complaint
   audit_events: 1_000_000,
 } as const;
@@ -498,6 +499,10 @@ export const RULES: Record<string, Rule> = {
         bounced_at: c.rand() < 0.01 ? c.time() : null,
       };
     },
+  },
+  share_email_events_seen: {
+    rows: (c) => c.count("share_email_events_seen"),
+    row: (_i, c) => ({ event_id: c.id("ev"), created_at: c.time() }),
   },
   share_email_pauses: {
     rows: (c) => Math.min(c.count("share_email_pauses"), c.users.length),

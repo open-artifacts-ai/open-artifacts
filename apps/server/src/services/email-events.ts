@@ -14,8 +14,11 @@
 // from live events. They must be checked against one real bounce and one real
 // complaint on staging before EMAIL_EVENTS_QUEUE is set anywhere real.
 import {
+  EMAIL_EVENTS_ACK_MAX,
+  EMAIL_EVENTS_ACK_PATH,
   EMAIL_EVENTS_PULL_PATH,
   type EmailEvent,
+  EmailEventsAckResponseSchema,
   EmailEventsPullResponseSchema,
 } from "@oa/provisioning-contract";
 import { z } from "zod";
@@ -158,17 +161,17 @@ const TERMINAL_BOUNCE_TYPES = new Set(["hard", "permanent"]);
 
 /**
  * Hosted: pulls the events the platform holds for this install over the
- * LoginGate (POST /email-events/pull, each served once) and applies them by
- * the same rules as the Queue path: a complaint pauses at once, a bounce
- * counts only when its bounceType is a known terminal one, "failed" and
- * anything else never counts, and only message ids this install recorded
- * matter. Never throws: a gate that can't answer pulls nothing this tick.
- *
- * The platform serves an event once and has no acknowledgement, so each event
- * is applied (and written to D1) one after another as soon as it arrives; an
- * isolate that dies between the pull and the writes loses the unapplied
- * rest. A lost bounce is only a pause that comes later; a lost complaint is
- * the risk, and the platform's own record of it is the backstop.
+ * LoginGate (POST /email-events/pull, which deletes nothing), applies each
+ * once by its eventId, and only then acknowledges them (POST
+ * /email-events/ack, 100 at a time). The same rules as the Queue path: a
+ * complaint pauses at once, a bounce counts only when its bounceType is a
+ * known terminal one, "failed" and anything else never counts, and only message
+ * ids this install recorded matter. An event this install already processed
+ * (its id is in share_email_events_seen) is a no-op, so a failed ack just
+ * means the platform serves it again. An event that could not be applied is not
+ * acknowledged and comes back (the platform keeps it 14 days). Never throws:
+ * a gate that can't answer pulls or acknowledges nothing this tick. Resolves
+ * to how many members were paused.
  */
 export async function pullEmailEvents(env: Env): Promise<number> {
   let events: EmailEvent[];
@@ -185,25 +188,58 @@ export async function pullEmailEvents(env: Env): Promise<number> {
     return 0;
   }
   let paused = 0;
+  const done: string[] = [];
   for (const e of events) {
-    const kind =
-      e.kind === "complained"
-        ? "complained"
-        : e.kind === "bounced"
-          ? "bounced"
-          : null;
-    if (!kind) continue;
     try {
-      if (
-        await applySendingEvent(env, {
-          messageId: e.messageId,
-          kind,
-          terminal: TERMINAL_BOUNCE_TYPES.has(e.bounceType ?? ""),
-        })
+      const seen = await stmt(
+        env.DB,
+        "select 1 as x from share_email_events_seen where event_id = ?1",
       )
-        paused++;
+        .bind(e.eventId)
+        .first();
+      if (!seen) {
+        const kind =
+          e.kind === "complained"
+            ? "complained"
+            : e.kind === "bounced"
+              ? "bounced"
+              : null;
+        if (
+          kind &&
+          (await applySendingEvent(env, {
+            messageId: e.messageId,
+            kind,
+            terminal: TERMINAL_BOUNCE_TYPES.has(e.bounceType ?? ""),
+          }))
+        )
+          paused++;
+        await stmt(
+          env.DB,
+          "insert into share_email_events_seen (event_id, created_at) values (?1, ?2) on conflict (event_id) do nothing",
+        )
+          .bind(e.eventId, Date.now())
+          .run();
+      }
+      done.push(e.eventId);
     } catch (err) {
       logError("email_event_apply_failed", err);
+    }
+  }
+  // Acknowledge what was handled, in batches; a refused batch is retried by
+  // the next pull (served again, then a no-op).
+  for (let i = 0; i < done.length; i += EMAIL_EVENTS_ACK_MAX) {
+    try {
+      const out = EmailEventsAckResponseSchema.safeParse(
+        await loginGateCall(env, EMAIL_EVENTS_ACK_PATH, {
+          eventIds: done.slice(i, i + EMAIL_EVENTS_ACK_MAX),
+        }),
+      );
+      if (!out.success) throw new LoginGateError("bad_answer");
+    } catch (err) {
+      logWarn("email_events_ack_failed", err, {
+        why: err instanceof LoginGateError ? err.why : "error",
+      });
+      break;
     }
   }
   return paused;
@@ -243,5 +279,9 @@ export async function sweepEmailEvents(env: Env, now: number): Promise<void> {
     stmt(env.DB, "delete from share_email_messages where created_at < ?1").bind(
       now - MESSAGE_KEEP_MS,
     ),
+    stmt(
+      env.DB,
+      "delete from share_email_events_seen where created_at < ?1",
+    ).bind(now - MESSAGE_KEEP_MS),
   ]);
 }

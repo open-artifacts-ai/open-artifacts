@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c8a31a86-93ec-4c96-a884-f5b99c1769ea",
+  "id": "ef897281-18d7-4a81-850e-e48f0379af61",
   "prevId": "5c526c81-5a61-4c7e-a2d1-3f25eaef259b",
   "tables": {
     "agent_grants": {
@@ -1793,6 +1793,30 @@
         "value": {
           "name": "value",
           "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "share_email_events_seen": {
+      "name": "share_email_events_seen",
+      "columns": {
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false

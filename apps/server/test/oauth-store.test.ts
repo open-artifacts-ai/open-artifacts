@@ -314,10 +314,11 @@ const robots = (e: unknown) => callWorker(new Request(`${APP}/robots.txt`), e);
 /**
  * Every D1 query of one nightly cron run here (d1 mode, OAuth backlog),
  * cron.ts's day mark included (O1). 19 before #2650; the email-event sweep
- * (sweepEmailEvents) adds 2: its delete of expired share_email_pauses and its
- * delete of old share_email_messages (one D1 batch, counted per statement).
+ * (sweepEmailEvents) adds 3: its deletes of expired share_email_pauses, of old
+ * share_email_messages and of old share_email_events_seen (one D1 batch,
+ * counted per statement).
  */
-const NIGHTLY_QUERIES = 21;
+const NIGHTLY_QUERIES = 22;
 
 /** Another isolate: its own marker check (keyed by the DB binding). */
 const isolate = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>

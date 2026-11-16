@@ -754,6 +754,16 @@ export const shareEmailMessages = sqliteTable("share_email_messages", {
   bouncedAt: integer("bounced_at"),
 });
 
+/**
+ * The platform's event ids this install has already processed (#2650), so an
+ * event served again (an ack that failed) is a no-op. Swept after 30 days; the
+ * platform keeps unacknowledged events 14.
+ */
+export const shareEmailEventsSeen = sqliteTable("share_email_events_seen", {
+  eventId: text("event_id").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
 /** A member whose outside share emails are paused until `untilAt` (ms): a bounce or complaint on one of them (#2650). */
 export const shareEmailPauses = sqliteTable("share_email_pauses", {
   userId: text("user_id").primaryKey(),
