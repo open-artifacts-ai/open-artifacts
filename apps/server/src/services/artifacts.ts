@@ -75,6 +75,7 @@ import {
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { noteInstanceFirst } from "./analytics.js";
 import { audit, userActor } from "./audit.js";
+import { deletePicturesOfArtifact } from "./comment-pictures.js";
 import { restoreDocVersion } from "./doc-edit.js";
 import {
   apiFormat,
@@ -2313,6 +2314,7 @@ async function purgeOne(
     if (!page.truncated) break;
   }
   await destroyRuntime(env, id);
+  await deletePicturesOfArtifact(env, id);
   await env.DB.batch([
     env.DB.prepare("delete from artifact_search where rowid = ?").bind(rid),
     env.DB.prepare("delete from uploads where artifact_id = ?").bind(id),

@@ -11,6 +11,8 @@ import {
   type Comment,
   type CommentAuthor,
   type CommentList,
+  type CommentPicture,
+  type CommentPictureRef,
   isId,
   type KeyRef,
   type MentionDelivery,
@@ -93,6 +95,13 @@ import {
   versionFormat,
 } from "./comment-anchor.js";
 import { emailCommentRecipients } from "./comment-email.js";
+import {
+  bindPictures,
+  claimPictures,
+  deleteCommentPictures,
+  picturesOf,
+  releasePictures,
+} from "./comment-pictures.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
 import {
   addressKey,
@@ -256,7 +265,9 @@ async function call<T>(fn: () => Promise<T>): Promise<T> {
 const stub = (env: Env, artifactId: string) => runtimeStub(env, artifactId);
 
 /** 400 invalid_body: empty after trim, or over 2,000 characters. */
-export function checkBody(body: unknown): string {
+export function checkBody(body: unknown, allowEmpty = false): string {
+  // #2508: a comment with pictures may have no text.
+  if (allowEmpty && typeof body === "string" && body.trim() === "") return "";
   if (!bodyOk(body))
     throw new ApiError(
       "invalid_body",
@@ -624,7 +635,23 @@ async function threadViews(
     out.flatMap((t) => t.comments),
     viewer,
   );
+  await withPictures(
+    env,
+    out.flatMap((t) => t.comments),
+  );
   return out;
+}
+
+/** #2508: each comment's pictures, from their own table (absent when it has none). */
+async function withPictures(env: Env, comments: Comment[]): Promise<void> {
+  const by = await picturesOf(
+    env,
+    comments.map((c) => c.id),
+  );
+  for (const c of comments) {
+    const p: CommentPicture[] | undefined = by.get(c.id);
+    if (p?.length) c.pictures = p;
+  }
 }
 
 /** The users a comment shows by name: its author and, on an ask, who was asked and who answered. */
@@ -987,6 +1014,7 @@ async function commentView(
     await ctxFor(env, ids, hasAgent(c), { comments: [c] }),
   );
   await fillReplacedTitles(env, [out], viewer);
+  await withPictures(env, [out]);
   return out;
 }
 
@@ -1119,6 +1147,8 @@ export type CommentExtras = {
   ask?: AskInput;
   /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
   toAsker?: boolean;
+  /** #2508: pictures to attach (reserved with R.commentPictures): the caller's own, uploaded, unattached, on this artifact. */
+  pictures?: CommentPictureRef[];
 };
 
 /** Who may mention and ask. `moderator`: the owner or an editor. */
@@ -1615,12 +1645,20 @@ async function addThreadInner(
   raw: { anchor: unknown; body: unknown } & CommentExtras,
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
-  const body = checkBody(raw.body);
+  const pics = raw.pictures ?? [];
+  const body = checkBody(raw.body, pics.length > 0);
+  if (pics.length > 0 && (who.kind !== "user" || viewer.guest))
+    throw new ApiError("forbidden", "Log in as a member to add pictures");
   const r0 = await resolveExtras(env, a.id, who, raw, {
     ...opts,
     caller: viewer.caller,
   });
   gateOf(env, who, r0);
+  if (body === "" && (r0.mentions.length > 0 || r0.agents.length > 0))
+    throw new ApiError(
+      "bad_request",
+      "A comment that mentions an agent needs text",
+    );
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -1632,6 +1670,7 @@ async function addThreadInner(
   const page0 =
     // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
     anchor.kind === "note" &&
+    body !== "" &&
     r0.mentions.length === 0 &&
     r0.agents.length === 0 &&
     who.kind === "user" &&
@@ -1674,19 +1713,36 @@ async function addThreadInner(
       : []),
     ...(await authorParticipant(a.id, who)),
   ];
-  const t = await call(() =>
-    stub(env, a.id).commentsAdd({
-      actor: actorOf(who),
-      rate: rateKeyOf(who),
-      counted: true,
-      anchor,
-      version,
-      body,
-      ...(r.extras ? { extras: r.extras } : {}),
-      ...(participants.length ? { participants } : {}),
-    }),
-  );
+  // #2508: the pictures are claimed (yours, uploaded, unused, this page)
+  // before the comment is written, and given back if it never is.
+  const claim =
+    pics.length > 0 && who.kind === "user"
+      ? await claimPictures(env, a.id, who.id, pics)
+      : null;
+  let t: Awaited<ReturnType<ReturnType<typeof stub>["commentsAdd"]>>;
+  try {
+    t = await call(() =>
+      stub(env, a.id).commentsAdd({
+        actor: actorOf(who),
+        rate: rateKeyOf(who),
+        counted: true,
+        anchor,
+        version,
+        body,
+        ...(claim ? { allowEmpty: true } : {}),
+        ...(r.extras ? { extras: r.extras } : {}),
+        ...(participants.length ? { participants } : {}),
+      }),
+    );
+  } catch (e) {
+    if (claim) await releasePictures(env, claim.holder);
+    throw e;
+  }
   const root = t.comments[0];
+  if (claim) {
+    if (root) await bindPictures(env, claim.holder, t.id, root.id);
+    else await releasePictures(env, claim.holder);
+  }
   if (root) opts.written?.(root);
   if (root?.ask)
     await indexAsk(
@@ -1956,7 +2012,10 @@ async function addReplyInner(
   extras: CommentExtras = {},
   opts: ExtrasOpts = {},
 ): Promise<Comment> {
-  const text = checkBody(body);
+  const pics = extras.pictures ?? [];
+  const text = checkBody(body, pics.length > 0);
+  if (pics.length > 0 && (who.kind !== "user" || viewer.guest))
+    throw new ApiError("forbidden", "Log in as a member to add pictures");
   let r: Resolved;
   if (extras.toAsker) {
     // A guest, signed out or not, cannot wake the asking agent.
@@ -1983,20 +2042,38 @@ async function addReplyInner(
     );
   }
   gateOf(env, who, r);
+  if (text === "" && (r.agents.length > 0 || r.mentions.length > 0))
+    throw new ApiError(
+      "bad_request",
+      "A comment that mentions an agent needs text",
+    );
   const participants = [
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),
   ];
-  let c = await call(() =>
-    stub(env, artifactId).commentsReply({
-      threadId,
-      actor: actorOf(who),
-      rate: rateKeyOf(who),
-      body: text,
-      ...(r.extras ? { extras: r.extras } : {}),
-      ...(participants.length ? { participants } : {}),
-    }),
-  );
+  // #2508: claimed before the write, given back if it never happens.
+  const claim =
+    pics.length > 0 && who.kind === "user"
+      ? await claimPictures(env, artifactId, who.id, pics)
+      : null;
+  let c: StoredComment;
+  try {
+    c = await call(() =>
+      stub(env, artifactId).commentsReply({
+        threadId,
+        actor: actorOf(who),
+        rate: rateKeyOf(who),
+        body: text,
+        ...(claim ? { allowEmpty: true } : {}),
+        ...(r.extras ? { extras: r.extras } : {}),
+        ...(participants.length ? { participants } : {}),
+      }),
+    );
+  } catch (e) {
+    if (claim) await releasePictures(env, claim.holder);
+    throw e;
+  }
+  if (claim) await bindPictures(env, claim.holder, threadId, c.id);
   // The thread's bound (one notice per window, a cap in all) left the reply
   // without its mention rows: nobody is told, and the usual follower notice
   // (its own limits) is the only one.
@@ -2812,6 +2889,10 @@ export async function deleteComment(
     }),
   );
   await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
+  // #2508: the comment's pictures go with it (the whole thread's with a root).
+  await deleteCommentPictures(env, threadId, commentId, r?.root === true).catch(
+    (e) => logWarn("comment_pictures_delete_failed", e, { artifactId }),
+  );
 }
 
 /** A new thread; records the commenter for the first-run checklist (#2287). */

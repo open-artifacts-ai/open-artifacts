@@ -239,6 +239,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/shares`]: art("share", signedIn),
   [`PUT ${ARTS}/shares`]: art("share", signedIn),
   [`DELETE ${ARTS}/shares/:email`]: art("unshare", signedIn),
+  // #2508 comment pictures: reserve like writing a comment (the handler adds
+  // signed-in and never a guest); the PUT is signed; the GET reads like the
+  // page's comments, on every request.
+  [`POST ${ARTS}/pictures`]: art("comments.write"),
+  [`PUT ${ARTS}/pictures/:pictureId`]: {
+    signed: "picture reservation signature",
+  },
+  [`GET ${ARTS}/pictures/:pictureId`]: art("comments.read"),
   "POST /api/v1/uploads": { user: "authorizes the target artifact itself" },
   "PUT /api/v1/uploads/:uploadId": { signed: "upload URL signature" },
   "GET /api/v1/search": { user: "search, filtered by listFilterSql" },
