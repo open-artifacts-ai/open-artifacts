@@ -136,6 +136,7 @@ describe("cardMarks", () => {
   it("collects reasons and says what caused a prompt", () => {
     expect(cardMarks({ options: [marked(), ...plainOpts] })).toEqual({
       reasons: [REASON],
+      marked: [{ label: "Send it", reason: REASON }],
       markedNeeds: true,
       every: false,
     });
@@ -146,7 +147,7 @@ describe("cardMarks", () => {
           { id: "b", label: "B", passkey: true },
         ],
       }),
-    ).toEqual({ reasons: [], markedNeeds: false, every: true });
+    ).toEqual({ reasons: [], marked: [], markedNeeds: false, every: true });
     expect(cardMarks({ options: [marked(false)] }).markedNeeds).toBe(false);
   });
   it("the adapter keeps the mark and the stamps", () => {
@@ -235,6 +236,32 @@ describe("the card", () => {
     expect(hs.textContent).not.toContain("needs your passkey");
     expect(hs.textContent).toContain(`OA Bus says: "${REASON}"`);
     expect(el.querySelector("[data-passkey-hint]")).toBeNull();
+  });
+
+  it("two marked options: the asker once, then one line each (Design)", async () => {
+    const el = await card(
+      list([
+        marked(),
+        {
+          id: "tomorrow",
+          label: "Send tomorrow",
+          highStakes: { reason: "It emails all 240 customers at 9:00." },
+          passkey: true,
+        },
+        ...plainOpts,
+      ]),
+    );
+    const hs = el.querySelector("[data-high-stakes]") as HTMLElement;
+    expect(hs.textContent).toContain("OA Bus says:");
+    expect(hs.textContent).not.toContain(`OA Bus says: "`);
+    expect(
+      [...hs.querySelectorAll("[data-high-stakes-reason]")].map(
+        (x) => x.textContent,
+      ),
+    ).toEqual([
+      `Send it: "${REASON}"`,
+      'Send tomorrow: "It emails all 240 customers at 9:00."',
+    ]);
   });
 
   it("a person's own ask: their name on the reason", async () => {

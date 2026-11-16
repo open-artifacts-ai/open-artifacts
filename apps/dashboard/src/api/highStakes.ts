@@ -61,15 +61,19 @@ export const passkeyMissing = (a: object) =>
  */
 export function cardMarks(a: AskLike) {
   const reasons: string[] = [];
+  /** Each marked option, in order: its label and the asker's reason. */
+  const marked: { label: string; reason: string }[] = [];
   let markedNeeds = false;
   let every = false;
   for (const o of a.options) {
     const hs = highStakesOf(o);
+    if (hs)
+      marked.push({ label: (o as { label: string }).label, reason: hs.reason });
     if (hs && !reasons.includes(hs.reason)) reasons.push(hs.reason);
     if (hs && needsPasskey(o)) markedNeeds = true;
     if (!hs && needsPasskey(o)) every = true;
   }
-  return { reasons, markedNeeds, every };
+  return { reasons, marked, markedNeeds, every };
 }
 
 /** OA Product's words (#2661, Strings), word for word. */
@@ -77,6 +81,10 @@ export const HIGH_STAKES = {
   option: "High stakes",
   card: "High stakes · needs your passkey",
   says: (asker: string, reason: string) => `${asker} says: "${reason}"`,
+  /** Design (#2669): more than one marked option names the asker once… */
+  saysLead: (asker: string) => `${asker} says:`,
+  /** …then one line per marked option. */
+  saysFor: (label: string, reason: string) => `${label}: "${reason}"`,
   missing: "Add a passkey to approve this",
   every: "You've chosen to confirm every answer with your passkey.",
 } as const;

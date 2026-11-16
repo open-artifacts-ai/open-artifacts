@@ -781,7 +781,7 @@ export function AskBlock({
   // passkey options wait; the others are still one tap.
   const missing = passkeyMissing(ask) || pkErr?.kind === "no_passkey";
   const blocked = missing || pkErr?.kind === "cooling";
-  const { reasons, markedNeeds, every } = cardMarks(ask);
+  const { reasons, marked, markedNeeds, every } = cardMarks(ask);
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
@@ -923,11 +923,29 @@ export function AskBlock({
                   {HIGH_STAKES.card}
                 </p>
               )}
-              {reasons.map((reason) => (
-                <p key={reason} className="m-0 break-words text-foreground">
-                  {HIGH_STAKES.says(c.author.name, reason)}
+              {marked.length === 1 ? (
+                <p className="m-0 break-words text-foreground">
+                  {HIGH_STAKES.says(c.author.name, marked[0]?.reason ?? "")}
                 </p>
-              ))}
+              ) : (
+                // Design (#2669): the asker's name once, then one line per marked option.
+                <>
+                  <p className="m-0 break-words text-foreground">
+                    {HIGH_STAKES.saysLead(c.author.name)}
+                  </p>
+                  <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
+                    {marked.map((m) => (
+                      <li
+                        key={`${m.label}:${m.reason}`}
+                        data-high-stakes-reason=""
+                        className="break-words text-foreground"
+                      >
+                        {HIGH_STAKES.saysFor(m.label, m.reason)}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </div>
           )}
           {deciderLine && decider && (

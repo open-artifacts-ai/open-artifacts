@@ -110,6 +110,10 @@ for (const scheme of ["light", "dark"] as const)
         info: { outputPath(n: string): string },
         name: string,
       ) => {
+        // The phone sheet is half height: a tall window shows the whole card.
+        if (width === 390)
+          await page.setViewportSize({ width: 390, height: 1600 });
+        await card.scrollIntoViewIfNeeded();
         await settle(page);
         await card.screenshot({
           path: DIR
@@ -188,7 +192,14 @@ for (const scheme of ["light", "dark"] as const)
 
       test("two marked options", async ({ page }, info) => {
         const card = await open(page, "two");
-        await expect(card.locator("[data-high-stakes] p")).toHaveCount(3);
+        // Design (#2669): the asker once, then one line per marked option.
+        await expect(card.locator("[data-high-stakes]")).toContainText(
+          "OA Bus says:",
+        );
+        await expect(card.locator("[data-high-stakes-reason]")).toHaveText([
+          `Send it: "${REASON}"`,
+          'Send tomorrow: "Picking Send tomorrow emails all 240 customers at 9:00."',
+        ]);
         await expect(card.locator("[data-passkey-hint]")).toHaveCount(2);
         await shot(card, page, info, "hs-two");
         await checkAxe(page);
