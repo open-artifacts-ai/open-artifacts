@@ -1,4 +1,4 @@
-// #2590 / #2620 (PROVISIONAL): a share over today's limit for new outside
+// #2590 / #2620: a share over today's limit for new outside
 // addresses is saved, and the notice says so in OA Product's words. Mocked
 // with ?notEmailed=. At 1280 and 390, light and dark, with axe and no
 // sideways scroll. Writes PNGs to SHOTS_DIR when set.

@@ -1,24 +1,10 @@
 // #2590: per-share roles, with "commenter" (Can comment) for people outside
 // the instance. The role is @oa/shared's ShareRole (#2600); this file holds
 // the Share panel's choices, labels, outside-address rules and notes.
-import { ShareResultSchema, type ShareRole } from "@oa/shared";
-import { z } from "zod";
+import type { ShareResult, ShareRole } from "@oa/shared";
 
-/**
- * PROVISIONAL (#2590, until OA Backend's #2620 lands in packages/shared;
- * matches #2620 at f4a162b0): a saved share that sent no email says why.
- * "member_limit" / "instance_limit": over today's limit for new outside
- * addresses, with `limit` the number hit; "limit": the existing
- * per-recipient, per-share or sending cap.
- */
-export const NOT_EMAILED = ["member_limit", "instance_limit", "limit"] as const;
-export type NotEmailed = (typeof NOT_EMAILED)[number];
-export const ShareSavedSchema = ShareResultSchema.extend({
-  notEmailed: z.enum(NOT_EMAILED).optional(),
-  /** With member_limit or instance_limit: the daily number that was hit. */
-  limit: z.number().int().positive().optional(),
-});
-export type ShareSaved = z.infer<typeof ShareSavedSchema>;
+/** Why a saved share sent no email (#2620's ShareResult.notEmailed). */
+export type NotEmailed = NonNullable<ShareResult["notEmailed"]>;
 
 /** OA Product (#2620): over today's limits for new outside addresses; the link to copy stays. */
 /** The member limit when the server doesn't say (#2620's figure). */

@@ -1,7 +1,7 @@
-// #2590 / #2620 (PROVISIONAL until #2620 lands in packages/shared): a saved
+// #2590 / #2620: a saved
 // share that sent no email says why, in OA Product's words. #2620 at
 // f4a162b0 dropped outside_no_unsubscribe: an unknown reason fails the parse.
-import { viewerPath } from "@oa/shared";
+import { ShareResultSchema, viewerPath } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen } from "@testing-library/react";
 import { getResponse, HttpResponse, http } from "msw";
@@ -10,9 +10,7 @@ import {
   instanceLimitLine,
   LIMIT_LINE,
   memberLimitLine,
-  NOT_EMAILED,
   notEmailedLine,
-  ShareSavedSchema,
 } from "../src/viewer/panels/shareRoles";
 import { installHarness, mountHosted } from "./harness";
 
@@ -42,7 +40,11 @@ describe("the lines (OA Product, #2620)", () => {
     );
   });
   it("only #2620's reasons parse (outside_no_unsubscribe is gone)", () => {
-    expect(NOT_EMAILED).toEqual(["member_limit", "instance_limit", "limit"]);
+    expect(ShareResultSchema.shape.notEmailed.unwrap().options).toEqual([
+      "member_limit",
+      "instance_limit",
+      "limit",
+    ]);
     const base = {
       email: "a@b.co",
       role: "viewer",
@@ -50,13 +52,13 @@ describe("the lines (OA Product, #2620)", () => {
       emailed: false,
     };
     expect(
-      ShareSavedSchema.safeParse({
+      ShareResultSchema.safeParse({
         ...base,
         notEmailed: "outside_no_unsubscribe",
       }).success,
     ).toBe(false);
     expect(
-      ShareSavedSchema.safeParse({
+      ShareResultSchema.safeParse({
         ...base,
         notEmailed: "member_limit",
         limit: 20,

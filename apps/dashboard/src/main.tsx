@@ -736,8 +736,8 @@ async function startMocks() {
         });
       }),
     );
-  // &notEmailed=member_limit|instance_limit|limit (#2620,
-  // PROVISIONAL): every share is saved without an email, for that reason.
+  // &notEmailed=member_limit|instance_limit|limit (#2620): every share is
+  // saved without an email, for that reason.
   const notEmailed = params.get("notEmailed");
   if (notEmailed)
     extra.push(

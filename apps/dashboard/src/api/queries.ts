@@ -52,7 +52,6 @@ import {
 } from "@tanstack/react-query";
 import { z } from "zod";
 import { toast } from "../layout/toast";
-import { ShareSavedSchema } from "../viewer/panels/shareRoles";
 import { ApiClientError, api } from "./client";
 import {
   DirectoryGroupSchema,
@@ -540,9 +539,8 @@ export const useDeleteArtifact = (id: string) =>
   );
 export const usePutShare = (id: string) =>
   useInvalidating(
-    // PROVISIONAL (#2620): ShareSavedSchema adds `notEmailed`, until packages/shared has it.
     (input: ShareInput) =>
-      api.send("PUT", R.shares(id), input, ShareSavedSchema),
+      api.send("PUT", R.shares(id), input, ShareResultSchema),
     () => [qk.shares(id)],
   );
 export const useDeleteShare = (id: string) =>
