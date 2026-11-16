@@ -104,6 +104,16 @@ async function startMocks() {
         }),
       ),
     );
+  // &publisher=person (#2610): every version was published by a person (no agent).
+  if (params.get("publisher") === "person")
+    extra.push(
+      http.get("*/api/v1/artifacts/:id/versions", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const list = (await res.json()) as object[];
+        return HttpResponse.json(list.map((v) => ({ ...v, agent: null })));
+      }),
+    );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);

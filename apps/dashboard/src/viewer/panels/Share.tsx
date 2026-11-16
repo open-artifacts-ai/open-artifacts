@@ -71,7 +71,7 @@ const VIS: Visibility[] = ["private", "team", "public"];
  * (OA Product's strings). People read these; the value stays private, team
  * or public. In a space, Restricted names who already has access.
  */
-const ACCESS = (
+export const ACCESS = (
   v: Visibility,
   org: string,
   space: ArtifactSummary["space"],
