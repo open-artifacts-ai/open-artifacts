@@ -7,7 +7,7 @@ import {
   OPTOUT_CHECK_PATH,
   OPTOUT_MINT_PATH,
   OptoutBodySchema,
-} from "@oa/provisioning-contract";
+} from "@oa/provisioning-contract/optouts";
 import { R, ShareResultSchema } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";

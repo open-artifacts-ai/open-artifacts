@@ -17,7 +17,7 @@ import {
   OPTOUT_MINT_PATH,
   OptoutCheckResponseSchema,
   OptoutMintResponseSchema,
-} from "@oa/provisioning-contract";
+} from "@oa/provisioning-contract/optouts";
 import {
   GATE_HEADER,
   isStaleStubError,
