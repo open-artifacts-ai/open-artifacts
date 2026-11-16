@@ -17,7 +17,7 @@ import {
   SHARE_HTML,
   SHARE_TXT,
 } from "./email-templates.js";
-import { OPTOUT_COPY } from "./share-optout.js";
+import { OPTOUT_COPY, OPTOUT_COPY_HOSTED } from "./share-optout.js";
 
 export type EmailContent = {
   subject: string;
@@ -292,8 +292,10 @@ export function outsideShareEmail(
       /** Viewer path on the app host, e.g. `/a/<id>`. */
       path: string;
       senderEmail: string;
-      /** The "Don't email me again" link (email/share-optout.ts). */
+      /** The "Don't email me again" link (email/share-optout.ts), or the platform's page when hostedWide. */
       optOutUrl: string;
+      /** The platform's hosted-wide list is on: its link and its copy. */
+      hostedWide?: boolean;
     },
 ): EmailContent {
   const { origin, values } = common(p);
@@ -315,9 +317,14 @@ export function outsideShareEmail(
     : oneLine(p.title, OUTSIDE_TITLE_MAX);
   const senderEmail = oneLine(p.senderEmail, 320);
   const sender = urlish(values.inviterName) ? senderEmail : values.inviterName;
-  // The opt-out link is ours: https on the app host, nothing else.
+  // The opt-out link is ours: https, and on the app host, except the
+  // platform's own unsubscribe page when its list is on (hostedWide).
   const link = new URL(p.optOutUrl);
-  if (link.origin !== origin || link.href.length > URL_MAX)
+  if (
+    link.protocol !== "https:" ||
+    (!p.hostedWide && link.origin !== origin) ||
+    link.href.length > URL_MAX
+  )
     throw new Error("the opt-out link must be https on the app host");
   const optOut = link.href;
   const out = render(
@@ -332,9 +339,10 @@ export function outsideShareEmail(
       pageUrl: linkOn(origin, p.path),
       openLine,
       optOutUrl: optOut,
-      optOutLabel: fill(OPTOUT_COPY.link, {
-        org: oneLine(orgName(p.instance, p.appHost), 80),
-      }),
+      optOutLabel: fill(
+        (p.hostedWide ? OPTOUT_COPY_HOSTED : OPTOUT_COPY).link,
+        { org: oneLine(orgName(p.instance, p.appHost), 80) },
+      ),
     },
   );
   // RFC 8058: one-click unsubscribe, the same POST the link's page makes.

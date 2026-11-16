@@ -1,20 +1,24 @@
-// #2652: hosted installs ask the platform's opt-out list before an outside
-// share email and report opt-outs to it. Self-host never calls it. Fake platform.
+// #2652: hosted installs ask the platform's hosted-wide opt-out list (through
+// the LoginGate) before an outside share email, fail closed, and link to the
+// platform's page. Self-host never calls it. A fake platform and a fake gate.
 import { env } from "cloudflare:workers";
+import { publicFromPkcs8, verifyRequest } from "@oa/auth-core";
+import {
+  OPTOUT_CHECK_PATH,
+  OPTOUT_MINT_PATH,
+  OptoutBodySchema,
+} from "@oa/provisioning-contract";
 import { R, ShareResultSchema } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
-import {
-  SHARE_OPTOUT_PATH,
-  signOptoutToken,
-  verifyOptoutToken,
-  verifyOptoutTokenFull,
-} from "../src/email/share-optout.js";
+import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { addressHash } from "../src/email/share-optout.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import {
   gateOptoutPlatform,
   type OptoutPlatform,
+  OptoutUnavailableError,
   optoutHash,
   optoutPlatform,
 } from "../src/services/hosted-optout.js";
@@ -25,7 +29,8 @@ import { fetchAndWait, login } from "./helpers.js";
 const app = createApp();
 const APP = "http://app.localhost";
 const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
-const KEY = "platform-wide-optout-key";
+const PAGE = "https://signup.example.test/unsubscribe";
+const TOKEN = (n: number) => `${"T".repeat(30)}${n}.${"m".repeat(43)}`;
 
 const HOSTED: Partial<Env> = {
   HOSTED: "1",
@@ -34,26 +39,24 @@ const HOSTED: Partial<Env> = {
   BROKER_SIGNING_KEY: TEST_BROKER_KEY,
   GOOGLE_CLIENT_SECRET: "",
   OPTOUT_PLATFORM: "on",
-  OPTOUT_HASH_KEY: KEY,
+  OPTOUT_HASH_KEY: "hosted-installs-only-key",
+  OPTOUT_UNSUBSCRIBE_URL: PAGE,
 };
 
-type Calls = { check: string[][]; add: [string, string][] };
+type Calls = { check: string[]; mint: string[] };
 function fake(over: Partial<OptoutPlatform> = {}) {
-  const calls: Calls = { check: [], add: [] };
-  const impl: OptoutPlatform = {
-    async check(_e, hashes) {
-      calls.check.push(hashes);
-      return hashes.map((_, i) => ({
-        optedOut: false,
-        token: `tok${calls.check.length}x${i}`,
-      }));
+  const calls: Calls = { check: [], mint: [] };
+  optoutPlatform.impl = {
+    async check(_e, h1) {
+      calls.check.push(h1);
+      return false;
     },
-    async add(_e, h, token) {
-      calls.add.push([h, token]);
+    async mint(_e, h1) {
+      calls.mint.push(h1);
+      return TOKEN(calls.mint.length);
     },
     ...over,
   };
-  optoutPlatform.impl = impl;
   return calls;
 }
 afterEach(() => {
@@ -66,7 +69,7 @@ async function world(over: Partial<Env>) {
   const o = await login(uniq("own", "a.com"), "member");
   const member = await getUser(env, o.userId);
   if (!member) throw new Error("no user");
-  const share = async (to: string) => {
+  const share = async (to: string, props?: Record<string, unknown>) => {
     const { id } = await publish(
       env,
       member,
@@ -87,45 +90,43 @@ async function world(over: Partial<Env>) {
         body: JSON.stringify({ email: to, role: "viewer" }),
       }),
       e,
+      props,
     );
     expect(r.status).toBe(200);
     return ShareResultSchema.parse(await r.json());
   };
   return { m, e, share };
 }
-const post = (path: string, e: Env) =>
-  app.fetch(new Request(`${APP}${path}`, { method: "POST" }), e, ctx);
-const tokenIn = (mail: { html: string } | undefined) =>
-  decodeURIComponent(
-    /href="[^"]*unsubscribe\/shares\?t=([^"]+)"/.exec(mail?.html ?? "")?.[1] ??
-      "",
-  );
+const links = (html: string | undefined) =>
+  [...(html ?? "").matchAll(/href="([^"]+)"/g)].map((x) => x[1] ?? "");
 
-describe("before an outside share email", () => {
-  it("hosted: the platform is asked with the HMAC, never the address; the token it mints rides in the link", async () => {
+describe("before an outside share email (hosted, the switch on)", () => {
+  it("asks with h1, never the address; mints a token; the link and header are the platform's page; the hosted-wide wording", async () => {
     const calls = fake();
     const { m, e, share } = await world(HOSTED);
     const to = uniq("out", "gmail.com");
     expect(await share(to)).toMatchObject({ emailed: true });
-    const h = await optoutHash(e, to);
-    expect(h).toMatch(/^[0-9a-f]{64}$/);
-    expect(calls.check).toEqual([[h]]);
+    const h1 = await optoutHash(e, to);
+    expect(h1).toMatch(/^[0-9a-f]{64}$/);
+    expect(await optoutHash(e, ` ${to.toUpperCase()} `)).toBe(h1);
+    expect(calls).toEqual({ check: [h1], mint: [h1] });
     expect(JSON.stringify(calls)).not.toContain(to);
-    // Case and padding don't change the key.
-    expect(await optoutHash(e, ` ${to.toUpperCase()} `)).toBe(h);
     const mail = m.sent.find((x) => x.to === to);
-    const t = tokenIn(mail);
-    expect(t.startsWith("v2.")).toBe(true);
-    expect(await verifyOptoutTokenFull(e, t)).toMatchObject({
-      platform: { h, p: "tok1x0" },
-    });
-    expect(await verifyOptoutToken(e, t)).not.toBeNull();
+    const url = `${PAGE}?t=${TOKEN(1)}`;
+    expect(mail?.headers?.["List-Unsubscribe"]).toBe(`<${url}>`);
+    expect(mail?.headers?.["List-Unsubscribe-Post"]).toBe(
+      "List-Unsubscribe=One-Click",
+    );
+    expect(links(mail?.html)[1]).toBe(url);
+    expect(mail?.text).toContain(`Don't email me again:\n${url}`);
+    expect(mail?.html).toContain(">Don&#39;t email me again</a>");
+    expect(mail?.text).not.toContain("Don't email me from");
   });
 
-  it("opted out platform-wide: saved, not emailed, skipped; the log has the reason", async () => {
-    fake({
-      async check(_e, hashes) {
-        return hashes.map(() => ({ optedOut: true, token: "t" }));
+  it("opted out hosted-wide: saved, not emailed, skipped; no token is minted; the log has the reason", async () => {
+    const calls = fake({
+      async check() {
+        return true;
       },
     });
     const { m, share } = await world(HOSTED);
@@ -134,6 +135,7 @@ describe("before an outside share email", () => {
     const r = await share(to);
     expect(r).toMatchObject({ emailed: false, notEmailed: "skipped" });
     expect(JSON.stringify(r)).not.toMatch(/opt/);
+    expect(calls.mint).toEqual([]);
     expect(m.sent.some((x) => x.to === to)).toBe(false);
     expect(
       log.mock.calls.some((c) =>
@@ -148,8 +150,8 @@ describe("before an outside share email", () => {
     ).not.toBeNull();
   });
 
-  it("fails closed: the platform can't answer, or no hash key, or an empty answer: no email", async () => {
-    const reasons: string[] = [];
+  it("fails closed: no answer, a mint over its cap, no hash key, no page URL: no email, the reason in the log", async () => {
+    const seen: string[] = [];
     const log = vi.spyOn(console, "log");
     const fails = async (
       over: Partial<Env>,
@@ -158,148 +160,263 @@ describe("before an outside share email", () => {
       fake(impl);
       const { m, share } = await world({ ...HOSTED, ...over });
       const to = uniq("out", "gmail.com");
-      const r = await share(to);
-      expect(r).toMatchObject({ emailed: false, notEmailed: "skipped" });
+      expect(await share(to)).toMatchObject({
+        emailed: false,
+        notEmailed: "skipped",
+      });
       expect(m.sent.some((x) => x.to === to)).toBe(false);
       for (const c of log.mock.calls) {
-        const j = String(c[0]).match(/"reason":"(optout_[a-z]+)"/);
-        if (j?.[1]) reasons.push(j[1]);
+        const j = String(c[0]).match(/"reason":"(optout_[a-z_]+)"/);
+        if (j?.[1]) seen.push(j[1]);
       }
     };
     await fails(
       {},
       {
         async check() {
-          throw new Error("network");
+          throw new OptoutUnavailableError("network");
         },
       },
     );
     await fails(
       {},
       {
-        async check() {
-          return [];
+        async mint() {
+          throw new OptoutUnavailableError("capped");
         },
       },
     );
     await fails({ OPTOUT_HASH_KEY: undefined });
+    await fails({ OPTOUT_UNSUBSCRIBE_URL: undefined });
+    await fails({ OPTOUT_UNSUBSCRIBE_URL: "http://signup.example.test/u" });
     log.mockRestore();
-    expect(new Set(reasons)).toEqual(
-      new Set(["optout_unavailable", "optout_unconfigured"]),
+    expect(new Set(seen)).toEqual(
+      new Set([
+        "optout_unavailable",
+        "optout_mint_capped",
+        "optout_unconfigured",
+      ]),
     );
   });
 
-  it("the default transport fails closed too: no gate, no email", async () => {
-    optoutPlatform.impl = gateOptoutPlatform;
+  it("an opt-out this install already holds is still honoured, and the platform isn't asked", async () => {
+    const calls = fake();
     const { m, share } = await world(HOSTED);
     const to = uniq("out", "gmail.com");
+    await env.DB.prepare(
+      "insert into email_optouts (address_hash, created_at) values (?, ?)",
+    )
+      .bind(await addressHash(to), Date.now())
+      .run();
     expect(await share(to)).toMatchObject({
       emailed: false,
       notEmailed: "skipped",
     });
+    expect(calls).toEqual({ check: [], mint: [] });
     expect(m.sent.some((x) => x.to === to)).toBe(false);
   });
+});
 
-  it("self-host never calls it, even with the variables set; hosted without the switch neither; an address at a login domain is never asked", async () => {
+describe("never on self-host, or with the switch off", () => {
+  it("self-host and hosted-without-the-switch never call the platform and keep this install's own link and per-team wording; an address at a login domain isn't asked", async () => {
     const calls = fake();
-    const selfHost = await world({ ...HOSTED, HOSTED: undefined });
-    expect(await selfHost.share(uniq("out", "gmail.com"))).toMatchObject({
-      emailed: true,
-    });
+    const self = await world({ ...HOSTED, HOSTED: undefined });
+    const to1 = uniq("out", "gmail.com");
+    expect(await self.share(to1)).toMatchObject({ emailed: true });
     const off = await world({ ...HOSTED, OPTOUT_PLATFORM: undefined });
-    expect(await off.share(uniq("out", "gmail.com"))).toMatchObject({
-      emailed: true,
-    });
+    const to2 = uniq("out", "gmail.com");
+    expect(await off.share(to2)).toMatchObject({ emailed: true });
     const on = await world(HOSTED);
     expect(await on.share(uniq("team", "a.com"))).toMatchObject({
       emailed: true,
     });
-    expect(calls.check).toEqual([]);
-    expect(calls.add).toEqual([]);
-    // The links they sent are v1 tokens: nothing for the platform.
-    const mail = selfHost.m.sent.at(-1);
-    expect(tokenIn(mail).startsWith("v1.")).toBe(true);
+    expect(calls).toEqual({ check: [], mint: [] });
+    for (const [w, to] of [
+      [self, to1],
+      [off, to2],
+    ] as const) {
+      const mail = w.m.sent.find((x) => x.to === to);
+      expect(links(mail?.html)[1]).toContain("/auth/unsubscribe/shares?t=v1.");
+      expect(mail?.text).toContain("Don't email me from");
+      expect(mail?.text).toContain("again:");
+    }
   });
 });
 
-describe("a new opt-out", () => {
-  it("hosted: the POST suppresses here and reports the HMAC and the minted token to the platform", async () => {
-    const calls = fake();
-    const { m, e, share } = await world(HOSTED);
-    const to = uniq("out", "gmail.com");
-    await share(to);
-    const t = tokenIn(m.sent.find((x) => x.to === to));
-    const path = `${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(t)}`;
-    // GET changes nothing, here or at the platform.
-    expect((await app.fetch(new Request(`${APP}${path}`), e, ctx)).status).toBe(
-      200,
+describe("the page's wording", () => {
+  it("the per-team wording while the switch is off or on self-host; the hosted-wide wording while it is on", async () => {
+    const { signOptoutToken } = await import("../src/email/share-optout.js");
+    const t = await signOptoutToken(env, uniq("pg", "gmail.com"));
+    const path = `/auth/unsubscribe/shares?t=${encodeURIComponent(t)}`;
+    const get = (e: Env) => app.fetch(new Request(`${APP}${path}`), e, ctx);
+    const base = direct({}) as Env;
+    for (const e of [
+      base,
+      { ...base, ...HOSTED, OPTOUT_PLATFORM: undefined } as Env,
+      { ...base, ...HOSTED, HOSTED: undefined } as Env,
+    ]) {
+      const html = await (await get(e)).text();
+      expect(html).toContain("Stop emails from");
+      expect(html).toContain(
+        "Other teams on Open Artifacts can still email you.",
+      );
+    }
+    const html = await (await get({ ...base, ...HOSTED } as Env)).text();
+    expect(html).toContain("Stop these emails?");
+    expect(html).toContain(
+      "We won&#39;t email you again when someone shares a page with you, from any team on Open Artifacts.",
     );
-    expect(calls.add).toEqual([]);
-    expect((await post(path, e)).status).toBe(200);
-    expect(calls.add).toEqual([[await optoutHash(e, to), "tok1x0"]]);
-    // Suppressed here too: the next share is skipped without asking again.
-    const again = await share(to);
-    expect(again).toMatchObject({ emailed: false, notEmailed: "skipped" });
+    expect(html).toContain(">Don&#39;t email me again</button>");
+    expect(html).not.toContain("Other teams");
+    const done = await app.fetch(
+      new Request(`${APP}${path}`, { method: "POST" }),
+      { ...base, ...HOSTED } as Env,
+      ctx,
+    );
+    expect(await done.text()).toContain(
+      "You won&#39;t get these emails again.",
+    );
   });
+});
 
-  it("a platform that can't take it is logged; the person still sees done and the local opt-out holds", async () => {
-    fake({
-      async add() {
-        throw new Error("down");
+describe("the transport: the LoginGate", () => {
+  const gateWith = (
+    answer: (path: string, body: unknown) => Response | Promise<Response>,
+  ) => {
+    const seen: {
+      path: string;
+      body: unknown;
+      kid: string;
+      sig: string;
+      text: string;
+    }[] = [];
+    const gate = {
+      async fetch(req: Request): Promise<Response> {
+        const path = new URL(req.url).pathname;
+        const text = await req.text();
+        const body = JSON.parse(text);
+        seen.push({
+          path,
+          body,
+          kid: req.headers.get("x-oa-kid") ?? "",
+          sig: req.headers.get("x-oa-sig") ?? "",
+          text,
+        });
+        return answer(path, body);
       },
-    });
-    const { m, e, share } = await world(HOSTED);
+    };
+    return { gate, seen };
+  };
+  const via = <T>(gate: unknown, f: () => Promise<T>) =>
+    withBrokerProps({ props: { LOGIN: gate } }, f);
+  const e = { ...(env as object), ...HOSTED } as Env;
+  const H1 = "c".repeat(64);
+
+  it("check and mint: a signed { ts, nonce, h1 } body (no install, no address), to the fixed paths, answers parsed", async () => {
+    const { gate, seen } = gateWith((path) =>
+      path === OPTOUT_CHECK_PATH
+        ? Response.json({ optedOut: true })
+        : Response.json({ token: TOKEN(7) }),
+    );
+    expect(await via(gate, () => gateOptoutPlatform.check(e, H1))).toBe(true);
+    expect(await via(gate, () => gateOptoutPlatform.mint(e, H1))).toBe(
+      TOKEN(7),
+    );
+    expect(seen.map((s) => s.path)).toEqual([
+      OPTOUT_CHECK_PATH,
+      OPTOUT_MINT_PATH,
+    ]);
+    const pub = await publicFromPkcs8(TEST_BROKER_KEY);
+    for (const s of seen) {
+      expect(OptoutBodySchema.parse(s.body)).toMatchObject({ h1: H1 });
+      expect(Object.keys(s.body as object).sort()).toEqual([
+        "h1",
+        "nonce",
+        "ts",
+      ]);
+      expect(await verifyRequest(pub, s.path, s.kid, s.text, s.sig)).toBe(true);
+      expect(Math.abs((s.body as { ts: number }).ts - Date.now())).toBeLessThan(
+        60_000,
+      );
+    }
+    // A fresh nonce each call.
+    const [first, second] = seen.map(
+      (s) => (s.body as { nonce: string }).nonce,
+    );
+    expect(first).not.toBe(second);
+  });
+
+  it("fails closed: no gate, no signing key, a refusal, a 429, a server error, a network error, an answer of the wrong shape", async () => {
+    const why = async (f: () => Promise<unknown>) => {
+      try {
+        await f();
+      } catch (x) {
+        expect(x).toBeInstanceOf(OptoutUnavailableError);
+        return (x as OptoutUnavailableError).why;
+      }
+      return "no error";
+    };
+    expect(await why(() => gateOptoutPlatform.check(e, H1))).toBe("no_gate");
+    const ok = gateWith(() => Response.json({ optedOut: false }));
+    expect(
+      await why(() =>
+        via(ok.gate, () =>
+          gateOptoutPlatform.check(
+            { ...e, BROKER_SIGNING_KEY: undefined } as Env,
+            H1,
+          ),
+        ),
+      ),
+    ).toBe("unconfigured");
+    const refused = gateWith(
+      () => new Response("{}", { status: 403, headers: { "x-oa-gate": "1" } }),
+    );
+    expect(
+      await why(() => via(refused.gate, () => gateOptoutPlatform.check(e, H1))),
+    ).toBe("gate_refused");
+    const capped = gateWith(() => new Response("{}", { status: 429 }));
+    expect(
+      await why(() => via(capped.gate, () => gateOptoutPlatform.mint(e, H1))),
+    ).toBe("capped");
+    const down = gateWith(() => new Response("x", { status: 503 }));
+    expect(
+      await why(() => via(down.gate, () => gateOptoutPlatform.check(e, H1))),
+    ).toBe("http_503");
+    const net = {
+      fetch: async () => {
+        throw new Error("socket hang up");
+      },
+    };
+    expect(
+      await why(() => via(net, () => gateOptoutPlatform.check(e, H1))),
+    ).toBe("network");
+    const wrong = gateWith(() => Response.json({ optedOut: "yes" }));
+    expect(
+      await why(() => via(wrong.gate, () => gateOptoutPlatform.check(e, H1))),
+    ).toBe("bad_answer");
+    const extra = gateWith(() => Response.json({ token: TOKEN(1), more: 1 }));
+    expect(
+      await why(() => via(extra.gate, () => gateOptoutPlatform.mint(e, H1))),
+    ).toBe("bad_answer");
+  });
+
+  it("an end to end share through the fake gate: check, mint, then the email", async () => {
+    const { gate, seen } = gateWith((path) =>
+      path === OPTOUT_CHECK_PATH
+        ? Response.json({ optedOut: false })
+        : Response.json({ token: TOKEN(3) }),
+    );
+    optoutPlatform.impl = gateOptoutPlatform;
+    const { m, share } = await world(HOSTED);
     const to = uniq("out", "gmail.com");
-    await share(to);
-    const t = tokenIn(m.sent.find((x) => x.to === to));
-    const r = await post(`${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(t)}`, e);
-    expect(r.status).toBe(200);
-    expect(await r.text()).toContain("You won&#39;t get emails from");
-  });
-
-  it("self-host, or an older v1 link: no platform call", async () => {
-    const calls = fake();
-    const { e } = await world(HOSTED);
-    const v1 = await signOptoutToken(e, uniq("old", "gmail.com"));
-    expect(
-      (await post(`${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(v1)}`, e))
-        .status,
-    ).toBe(200);
-    const v2 = await signOptoutToken(e, uniq("new", "gmail.com"), {
-      h: "hh",
-      p: "pp",
-    });
-    const self = { ...e, HOSTED: undefined } as Env;
-    expect(
-      (await post(`${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(v2)}`, self))
-        .status,
-    ).toBe(200);
-    expect(calls.add).toEqual([]);
-  });
-
-  it("v2 tokens: a tampered platform part or signature is refused", async () => {
-    const t = await signOptoutToken(env, uniq("tam", "gmail.com"), {
-      h: "hh",
-      p: "pp",
-    });
-    const parts = t.split(".");
-    expect(await verifyOptoutToken(env, t)).not.toBeNull();
-    expect(
-      await verifyOptoutToken(
-        env,
-        [...parts.slice(0, 3), "zz", parts[4]].join("."),
-      ),
-    ).toBeNull();
-    expect(
-      await verifyOptoutToken(
-        env,
-        [parts[0], parts[1], "xx", ...parts.slice(3)].join("."),
-      ),
-    ).toBeNull();
-    expect(await verifyOptoutToken(env, `${t}.extra`)).toBeNull();
-    // A v2 token's signature never verifies as a v1.
-    expect(
-      await verifyOptoutToken(env, `v1.${parts[1]}.${parts[4]}`),
-    ).toBeNull();
+    const r = await share(to, { LOGIN: gate });
+    expect(r).toMatchObject({ emailed: true });
+    expect(seen.map((s) => s.path)).toEqual([
+      OPTOUT_CHECK_PATH,
+      OPTOUT_MINT_PATH,
+    ]);
+    expect(m.sent.find((x) => x.to === to)?.headers?.["List-Unsubscribe"]).toBe(
+      `<${PAGE}?t=${TOKEN(3)}>`,
+    );
   });
 });

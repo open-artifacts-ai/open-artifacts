@@ -30,7 +30,6 @@ import { emailEnabled, sendEmail } from "../email/send.js";
 import {
   addressHash,
   optoutUrl,
-  type PlatformOptout,
   signOptoutToken,
 } from "../email/share-optout.js";
 import {
@@ -48,9 +47,10 @@ import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
 import {
   hostedOptoutOn,
-  type OptoutAnswer,
+  OptoutUnavailableError,
   optoutHash,
   optoutPlatform,
+  platformUnsubscribeUrl,
 } from "./hosted-optout.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
@@ -359,30 +359,37 @@ async function emailShare(
       return { emailed: false, notEmailed: "skipped" };
     }
     // Hosted, once the platform has switched it on (#2652): the platform's
-    // list is asked first, and no answer means no email (fail closed). The
-    // per-email token it mints rides in the unsubscribe link.
-    let platform: PlatformOptout | undefined;
-    if (outside && hostedOptoutOn(env)) {
+    // list is the source of truth and is asked before every outside email;
+    // no answer, or a mint refused over its daily cap, means no email (fail
+    // closed). The link is the platform's own unsubscribe page, carrying the
+    // token it minted for this email.
+    let optOutUrl = "";
+    const hostedWide = outside && hostedOptoutOn(env);
+    if (outside && hostedWide) {
       const skip = (reason: string) => {
         logInfo("share_email_skipped", { reason, artifactId: artifact.id });
         return { emailed: false, notEmailed: "skipped" as const };
       };
-      const h = await optoutHash(env, email);
-      if (!h) return skip("optout_unconfigured");
-      let answer: OptoutAnswer | undefined;
+      const h1 = await optoutHash(env, email);
+      if (!h1) return skip("optout_unconfigured");
       try {
-        answer = (await optoutPlatform.impl.check(env, [h]))[0];
+        if (await optoutPlatform.impl.check(env, h1))
+          return skip("platform_opted_out");
+        const token = await optoutPlatform.impl.mint(env, h1);
+        const url = platformUnsubscribeUrl(env, token);
+        if (!url) return skip("optout_unconfigured");
+        optOutUrl = url;
       } catch (e) {
-        logWarn("optout_check_failed", e, { artifactId: artifact.id });
-        return skip("optout_unavailable");
+        logWarn("optout_platform_failed", e, { artifactId: artifact.id });
+        return skip(
+          e instanceof OptoutUnavailableError && e.why === "capped"
+            ? "optout_mint_capped"
+            : "optout_unavailable",
+        );
       }
-      if (!answer) return skip("optout_unavailable");
-      if (answer.optedOut) return skip("platform_opted_out");
-      platform = { h, p: answer.token };
+    } else if (outside) {
+      optOutUrl = optoutUrl(env.APP_HOST, await signOptoutToken(env, email));
     }
-    const optOutUrl = outside
-      ? optoutUrl(env.APP_HOST, await signOptoutToken(env, email, platform))
-      : "";
     const hosted = env.HOSTED === "1";
     // No user row. An outside address (#2590) gets the outside email, under
     // its own daily limits (apart from the usual ones; the share is saved
@@ -408,6 +415,7 @@ async function emailShare(
               signIn: reach.methods,
               cantSignIn: reach.recipient?.reason,
               optOutUrl,
+              hostedWide,
             })
           : shareEmail({
               inviter: senderName(user),

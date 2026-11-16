@@ -2,15 +2,14 @@ import type { Context } from "hono";
 import { stmt } from "../db/stmt.js";
 import {
   OPTOUT_COPY,
+  OPTOUT_COPY_HOSTED,
   SHARE_OPTOUT_PATH,
   verifyOptoutToken,
-  verifyOptoutTokenFull,
 } from "../email/share-optout.js";
 import { fill, oneLine, orgName } from "../email/templates.js";
 import type { AppEnv } from "../http/middleware.js";
-import { logWarn } from "../log.js";
 import { escapeHtml } from "../mcp/template.js";
-import { hostedOptoutOn, optoutPlatform } from "../services/hosted-optout.js";
+import { hostedOptoutOn } from "../services/hosted-optout.js";
 import { getSettings } from "../services/members.js";
 import type { AppType } from "./index.js";
 
@@ -45,13 +44,12 @@ export function mountShareOptout(app: AppType): void {
     const t = c.req.query("t") ?? "";
     if (!(await verifyOptoutToken(c.env, t))) return bad(c);
     const v = { org: await org(c) };
-    const form = `<form method="post" action="${SHARE_OPTOUT_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(fill(OPTOUT_COPY.confirmButton, v))}</button></form>`;
+    // The hosted-wide wording while the platform's list is on (#2652): the
+    // per-team wording otherwise.
+    const copy = hostedOptoutOn(c.env) ? OPTOUT_COPY_HOSTED : OPTOUT_COPY;
+    const form = `<form method="post" action="${SHARE_OPTOUT_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(fill(copy.confirmButton, v))}</button></form>`;
     return c.html(
-      page(
-        fill(OPTOUT_COPY.confirmTitle, v),
-        fill(OPTOUT_COPY.confirmBody, v),
-        form,
-      ),
+      page(fill(copy.confirmTitle, v), fill(copy.confirmBody, v), form),
       200,
       HEADERS,
     );
@@ -65,28 +63,20 @@ export function mountShareOptout(app: AppType): void {
       const v = (form as Record<string, unknown>).t;
       t = typeof v === "string" ? v : "";
     }
-    const tok = await verifyOptoutTokenFull(c.env, t);
-    if (!tok) return bad(c);
+    const hash = await verifyOptoutToken(c.env, t);
+    if (!hash) return bad(c);
     await stmt(
       c.env.DB,
       "insert into email_optouts (address_hash, created_at) values (?1, ?2) on conflict (address_hash) do nothing",
     )
-      .bind(tok.hash, Date.now())
+      .bind(hash, Date.now())
       .run();
-    // Hosted, once the platform has switched it on (#2652): the opt-out goes
-    // on the platform-wide list too, with the token minted for this email. The
-    // install's own suppression above already holds, so a platform that can't
-    // answer is logged, never shown to the person.
-    if (tok.platform && hostedOptoutOn(c.env)) {
-      try {
-        await optoutPlatform.impl.add(c.env, tok.platform.h, tok.platform.p);
-      } catch (e) {
-        logWarn("optout_platform_add_failed", e);
-      }
-    }
     return c.html(
       page(
-        fill(OPTOUT_COPY.doneTitle, { org: await org(c) }),
+        fill(
+          (hostedOptoutOn(c.env) ? OPTOUT_COPY_HOSTED : OPTOUT_COPY).doneTitle,
+          { org: await org(c) },
+        ),
         OPTOUT_COPY.doneBody,
       ),
       200,
