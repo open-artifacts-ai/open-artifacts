@@ -20,7 +20,7 @@ import {
   type EmailEvent,
   EmailEventsAckResponseSchema,
   EmailEventsPullResponseSchema,
-} from "@oa/provisioning-contract";
+} from "@oa/provisioning-contract/email-events";
 import { z } from "zod";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";

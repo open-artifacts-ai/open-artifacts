@@ -7,7 +7,7 @@ import {
   EMAIL_EVENTS_PULL_PATH,
   EmailEventsAckBodySchema,
   EmailEventsPullBodySchema,
-} from "@oa/provisioning-contract";
+} from "@oa/provisioning-contract/email-events";
 import { R, ShareResultSchema } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
