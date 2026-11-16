@@ -27,11 +27,11 @@ import {
   StorageEntrySchema,
   StorageKeySchema,
   type StorageSetBody,
-  setupSteps,
 } from "@oa/shared";
 import type { z } from "zod";
 import { ApiClientError, api, type RequestExtra } from "../api/client";
 import { MyOnboardingSchema } from "../api/myOnboarding";
+import { setupSteps } from "../api/setupSteps";
 import { isEmbed } from "../embed";
 import {
   isAnonToken,

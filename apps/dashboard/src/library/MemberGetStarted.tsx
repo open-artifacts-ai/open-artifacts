@@ -2,7 +2,6 @@
 // the owner, not a guest). The same five steps as the owner's, private to
 // them, with "Hide". Hidden isn't done. Words are the design's ("The words
 // on each screen", artifact wcL5Qbdtme52odvV), word for word.
-import { SETUP_STEPS, setupSteps } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -13,6 +12,7 @@ import {
   useOnboarding,
   useSetOnboarding,
 } from "../api/queries";
+import { SETUP_STEPS, setupSteps } from "../api/setupSteps";
 import { useMe } from "../auth/useMe";
 import { AgentSetupBody } from "../settings/AgentSetupCard";
 import { Step, Waiting } from "./steps";
