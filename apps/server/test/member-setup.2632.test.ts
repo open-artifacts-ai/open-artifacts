@@ -202,6 +202,14 @@ describe("GET R.me instanceOwner", () => {
       .run();
     const me = MeSchema.parse(await (await api(app, R.me, g.cookie)).json());
     expect(me.instanceOwner).toEqual({ name: "Olive Owner" });
+    // Only a guest gets the key.
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    const mine = (await (await api(app, R.me, m.cookie)).json()) as object;
+    expect("instanceOwner" in mine).toBe(false);
+    expect(
+      "instanceOwner" in
+        ((await (await api(app, R.me, o.cookie)).json()) as object),
+    ).toBe(false);
   });
 });
 
