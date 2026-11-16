@@ -79,6 +79,27 @@ def hermes_session_title(root_ref, db=None):
         return None
 
 
+def hermes_session_exists(session_id):
+    """Whether Hermes's history still has this session (read-only SessionDB.get_session).
+
+    True when Hermes cannot be asked (no API here): the caller's own age limit then decides."""
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+    except Exception:
+        return True
+    try:
+        path = get_hermes_home() / "state.db"
+        if not path.exists():
+            return False
+        db = _dbs.get(path)
+        if db is None:
+            db = _dbs[path] = SessionDB(path, read_only=True)
+        return db.get_session(session_id) is not None
+    except Exception:
+        return True
+
+
 class Roots:
     def __init__(self, lineage_root=hermes_lineage_root):
         self._lineage_root = lineage_root

@@ -216,8 +216,10 @@ class Bus:
 
     def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None,
                  current_session=None, codex_runtime=None, habits_marker=None, title_of=None,
-                 clock=None):
+                 clock=None, store=None, session_exists=None):
         self._clock = clock or time.monotonic
+        self._store = store
+        self._session_exists = session_exists or (lambda _sid: True)
         self.roots = roots
         # The user-set session title of a root, or None.
         self._title_of = title_of or hermes_session_title
@@ -521,6 +523,8 @@ class Bus:
             root.woken_at = None  # the turn a wake asked for has started
             if isinstance(session_key, str) and session_key:
                 root.session_key = session_key
+            remember = (self._store is not None and root.session_key and root.platform not in (None, "cli"))
+            key_now, platform_now = root.session_key, root.platform
             if platform == "cli":
                 self._cli_root = ref
             out = []
@@ -534,6 +538,8 @@ class Bus:
                 # the background (touch), so a root's first turn goes without.
                 habits = (root.link is not None and not root.link.closed
                           and self._habits_on())
+        if remember:
+            self._store.upsert(ref, session_id, key_now, platform_now)
         self.touch(ref)
         # #1822: a hub that was down when the link opened: offer the proof again (rate limited
         # by the link), off this thread, since it waits for the daemon.
@@ -558,6 +564,29 @@ class Bus:
             return
         self.touch(ref)
 
+    def restore(self):
+        """At load in a gateway process: links again the roots remembered from before a restart
+        (active in the last 7 days, still in Hermes's history), each with its session key, so mail
+        wakes them without a first turn. Run in the background; never raises."""
+        if self._store is None:
+            return
+        try:
+            entries = self._store.recent()
+        except Exception:
+            return
+        for ref, e in entries:
+            try:
+                if not self._session_exists(e["session_id"]):
+                    self._store.drop(ref)
+                    continue
+                root = self.state(ref)
+                with root.lock:
+                    root.session_key = root.session_key or e["key"]
+                    root.platform = root.platform or e["platform"]
+                self.touch(ref)
+            except Exception:
+                continue
+
     def turn_end(self, session_id):
         """on_session_end: the end of one run_conversation call."""
         try:
@@ -568,14 +597,19 @@ class Bus:
         with root.lock:
             root.busy = False
 
-    def session_finalize(self, session_id):
-        """on_session_finalize: a session closed; None means the whole process is going."""
+    def session_finalize(self, session_id, reason=None):
+        """on_session_finalize: a session closed; None means the whole process is going. A gateway
+        shutdown keeps the remembered root (the chat's session survives the restart); any other end
+        forgets it."""
         if session_id is None:
             self.close_all()
             return
         if self.roots.is_subagent(session_id):
             return
         try:
-            self.close(self.roots.root_of(session_id))
+            ref = self.roots.root_of(session_id)
         except NotOnBus:
             return
+        if self._store is not None and reason != "shutdown":
+            self._store.drop(ref)
+        self.close(ref)

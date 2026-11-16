@@ -2,11 +2,13 @@
 
 import atexit
 import os
+import time
 
 from . import proof as _proof
 
 from .bus import Bus
-from .roots import Roots
+from .roots import Roots, hermes_session_exists
+from .state import RootStore
 from .tools import TOOLS, Tools
 
 
@@ -25,11 +27,22 @@ def _bound_session_key():
         return None
 
 
-def register(ctx, roots=None, bus=None, proof_servers=None, install=None):
+def _restore_when_live(bus, ready, tries=120, pause=0.5, sleep=time.sleep):
+    for _ in range(tries):
+        try:
+            if ready():
+                bus.restore()
+                return
+        except Exception:
+            return
+        sleep(pause)
+
+
+def register(ctx, roots=None, bus=None, proof_servers=None, install=None, gateway_ready=None):
     """`proof_servers` (this instance's raw MCP server names) and `install` (what puts the proof
     argument on the wire, see proof.py) are replaced in tests."""
     roots = roots or Roots()
-    bus = bus or Bus(roots, inject=ctx.inject_message)
+    bus = bus or Bus(roots, inject=ctx.inject_message, store=RootStore(), session_exists=hermes_session_exists)
     tools = Tools(bus)
     mine = proof_servers if proof_servers is not None else _servers()
     put_on_wire = install or _proof.install
@@ -66,8 +79,8 @@ def register(ctx, roots=None, bus=None, proof_servers=None, install=None):
     def on_session_end(session_id=None, **_kw):
         bus.turn_end(session_id)
 
-    def on_session_finalize(session_id=None, **_kw):
-        bus.session_finalize(session_id)
+    def on_session_finalize(session_id=None, reason=None, **_kw):
+        bus.session_finalize(session_id, reason)
 
     def subagent_start(parent_session_id=None, child_session_id=None, **_kw):
         roots.note_subagent(parent_session_id, child_session_id)
@@ -88,6 +101,11 @@ def register(ctx, roots=None, bus=None, proof_servers=None, install=None):
     current = os.environ.get("HERMES_SESSION_ID")
     if current:
         bus._spawn(lambda: bus.session_open(current))
+    # A gateway process: link the chats it served before a restart once the gateway is live (Hermes
+    # publishes its injector then). Nowhere else: a CLI process must not take a gateway's roots.
+    ready = gateway_ready or (lambda: bool(getattr(getattr(ctx, "_manager", None), "has_gateway_message_injector", False)))
+    if gateway_ready is not None or hasattr(ctx, "_manager"):
+        bus._spawn(lambda: _restore_when_live(bus, ready))
     atexit.register(bus.close_all)
     # A reload unloads the plugin without exiting: shut this Bus then, so the next one can take over
     # the proof wiring. An older Hermes has no on_unload.
