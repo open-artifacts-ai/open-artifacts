@@ -55,6 +55,9 @@ for (const scheme of ["light", "dark"] as const)
       test("every Setup state", async ({ page }, info) => {
         await page.goto(URL_);
         await expect(row(page, "Jon Lee").getByText("Set up")).toBeVisible();
+        await expect(
+          row(page, "Ada Lovelace").locator('[data-setup="set"]'),
+        ).toHaveText(/Set up/);
         const sam = row(page, "Sam Ortiz");
         await expect(sam.getByText("3 of 5")).toBeVisible();
         await expect(sam.getByText("no agent reply yet")).toBeVisible();

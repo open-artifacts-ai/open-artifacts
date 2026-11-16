@@ -149,6 +149,7 @@ async function startMocks() {
             name: me.name,
             role: "owner",
             lastSeenAt: day(0),
+            setup: { state: "set", done: 5 },
           },
           {
             id: "m_sam",

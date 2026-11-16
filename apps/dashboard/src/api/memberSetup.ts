@@ -1,9 +1,9 @@
 // #2632 slice 2: each person's setup on Settings, Members (item 5).
 //
 // PROVISIONAL until OA Self-Serve confirms the contract (issue #2632,
-// comment 6904056554, item 4): GET R.members rows gain
-// `setup?: { state, done, stalled?, remindedAt? }`, absent for guests and
-// the owner. This file is the one place that reads it.
+// comment 6904056554, item 4, amended in 6905450077): GET R.members rows
+// gain `setup?: { state, done, stalled?, remindedAt? }`, the owner's too;
+// absent for guests. This file is the one place that reads it.
 import { MemberSchema } from "@oa/shared";
 import { z } from "zod";
 

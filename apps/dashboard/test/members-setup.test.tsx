@@ -18,6 +18,7 @@ const ROWS = [
     name: me.name,
     role: "owner",
     lastSeenAt: null,
+    setup: { state: "set", done: 5 },
   },
   {
     id: "m_sam",
@@ -92,8 +93,8 @@ describe("the Setup column", () => {
       "Setup: Invited",
     );
     expect(cell(await row("ana@venue.example"))?.textContent).toBe("Setup: –");
-    // The owner's row has no setup (absent in the contract).
-    expect(cell(await row("Ada Lovelace"))).toBeNull();
+    // The owner's row carries setup too (the amended contract).
+    expect(cell(await row("Ada Lovelace"))?.textContent).toBe("Setup: Set up");
   });
 
   it("an admin sees it", async () => {
@@ -152,7 +153,7 @@ describe("Copy the setup line", () => {
 describe("memberSetup (PROVISIONAL)", () => {
   it("parses a row with and without setup", () => {
     expect(MemberWithSetupSchema.parse(ROWS[1]).setup?.stalled).toBe("mention");
-    expect(MemberWithSetupSchema.parse(ROWS[0]).setup).toBeUndefined();
+    expect(MemberWithSetupSchema.parse(ROWS[5]).setup).toBeUndefined();
   });
   it("dates read as the screens do", () => {
     expect(shortDate("2026-11-15T10:00:00.000Z")).toBe("15 Nov");
