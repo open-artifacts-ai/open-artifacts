@@ -423,7 +423,7 @@ describe("Settings › Security: passkeys", () => {
       "It's removed after 24 hours, so you can cancel if this wasn't you.",
     );
     // The delayed path drops the immediate-removal line, and is not red.
-    expect(d).not.toHaveTextContent("You won't be able to approve picks");
+    expect(d).not.toHaveTextContent("You won't be able to log in or approve");
     expect(within(d).getByRole("button", { name: "Remove" }).className).toMatch(
       /bg-primary/,
     );
@@ -438,7 +438,9 @@ describe("Settings › Security: passkeys", () => {
     expect(d).not.toHaveTextContent("only passkey");
     // A usable passkey asserts: the removal is immediate, no delay line.
     expect(d).not.toHaveTextContent("removed after 24 hours");
-    expect(d).toHaveTextContent("You won't be able to approve picks with it.");
+    expect(d).toHaveTextContent(
+      "You won't be able to log in or approve high-stakes decisions with it.",
+    );
     expect(within(d).getByRole("button", { name: "Remove" }).className).toMatch(
       /bg-destructive/,
     );

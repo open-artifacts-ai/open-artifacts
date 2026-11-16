@@ -530,7 +530,10 @@ function PasskeyList({
             {reauthPath ? (
               <p>{REMOVAL_DELAY_LINE}</p>
             ) : (
-              <p>You won't be able to approve picks with it.</p>
+              <p>
+                You won't be able to log in or approve high-stakes decisions
+                with it.
+              </p>
             )}
             {keys?.length === 1 && <p>{ONLY_PASSKEY_LINE}</p>}
           </>
