@@ -100,6 +100,8 @@ export const OnboardingProgressSchema = z.strictObject({
       org: z.string().max(200),
       inviter: z.string().max(200).nullable(),
       teammateCommented: z.boolean(),
+      /** setupSteps(onboarding).done: the page shows the shared count. */
+      done: z.number().int().min(0).max(5).optional(),
     })
     .optional(),
 });

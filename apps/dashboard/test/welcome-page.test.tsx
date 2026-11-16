@@ -20,6 +20,7 @@ type Progress = {
     org: string;
     inviter: string | null;
     teammateCommented: boolean;
+    done?: number;
   };
 };
 let progress: Progress;
@@ -268,6 +269,24 @@ describe("a member's Welcome", () => {
     expect(document.getElementById("also-hint")?.textContent).toBe(
       "See what O$'rg is working on and leave a comment.",
     );
+    expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
+  });
+
+  it("shows the shell's shared count when it sends one", async () => {
+    progress = {
+      agentConnected: true,
+      firstArtifact: null,
+      commented: false,
+      who: {
+        member: true,
+        firstName: "Ada",
+        org: "Acme",
+        inviter: null,
+        teammateCommented: false,
+        done: 1,
+      },
+    };
+    await load();
     expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
   });
 

@@ -2,6 +2,7 @@
 // the owner, not a guest). The same five steps as the owner's, private to
 // them, with "Hide". Hidden isn't done. Words are the design's ("The words
 // on each screen", artifact wcL5Qbdtme52odvV), word for word.
+import { SETUP_STEPS, setupSteps } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -76,8 +77,9 @@ export function MemberGetStarted() {
   const hide = () => save({ dismissed: true });
   const o = onboarding.data;
   const nm = o?.agentName || "your agent";
-  const count = five.filter(Boolean).length;
-  const cur = five.indexOf(false);
+  // The one count (packages/shared setupSteps): card, Welcome and Members agree.
+  const { done: count, stalled } = setupSteps(o);
+  const cur = stalled ? SETUP_STEPS.indexOf(stalled) : -1;
   const st = (i: number) => (five[i] ? "done" : cur === i ? "cur" : "todo");
 
   return (
