@@ -132,6 +132,71 @@ async function startMocks() {
         }),
       ),
     );
+  // ?mock=members-setup (#2632 slice 2, PROVISIONAL api/memberSetup.ts): the
+  // Members list in every Setup state, as Design's screen shows it.
+  if (params.get("mock") === "members-setup")
+    extra.push(
+      http.get("*/api/v1/members", ({ request }) => {
+        const status = new URL(request.url).searchParams.get("status");
+        if (status && status !== "active") return HttpResponse.json([]);
+        const day = (n: number) =>
+          new Date(Date.UTC(2026, 10, 16 - n, 10)).toISOString();
+        const me = fixtures.me.user;
+        return HttpResponse.json([
+          {
+            id: me.id,
+            email: me.email,
+            name: me.name,
+            role: "owner",
+            lastSeenAt: day(0),
+          },
+          {
+            id: "m_sam",
+            email: "sam@example.com",
+            name: "Sam Ortiz",
+            role: "member",
+            lastSeenAt: day(0),
+            setup: { state: "partial", done: 3, stalled: "mention" },
+          },
+          {
+            id: "m_priya",
+            email: "priya@example.com",
+            name: "Priya Shah",
+            role: "member",
+            lastSeenAt: day(4),
+            setup: {
+              state: "partial",
+              done: 0,
+              stalled: "agent",
+              remindedAt: day(1),
+            },
+          },
+          {
+            id: "m_jon",
+            email: "jon@example.com",
+            name: "Jon Lee",
+            role: "admin",
+            lastSeenAt: day(1),
+            setup: { state: "set", done: 5 },
+          },
+          {
+            id: "m_dana",
+            email: "dana@example.com",
+            name: null,
+            role: "member",
+            lastSeenAt: null,
+            setup: { state: "invited", done: 0 },
+          },
+          {
+            id: "m_ana",
+            email: "ana@venue.example",
+            name: null,
+            role: "guest",
+            lastSeenAt: day(3),
+          },
+        ]);
+      }),
+    );
   // #2632: R.onboarding refuses a guest.
   if (role === "guest")
     extra.push(
