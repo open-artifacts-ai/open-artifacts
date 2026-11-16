@@ -92,16 +92,27 @@ const png = (name = "shot.png", type = "image/png") =>
 let putFails = 0;
 const uploads = () => [
   http.post(`*${PICTURE_ROUTES.upload(OWNED)}`, async ({ request }) => {
-    const b = (await request.json()) as { type: string };
-    return HttpResponse.json({
-      pictureId: `pic-${b.type}-${Math.random().toString(36).slice(2, 6)}`,
-      url: "http://localhost/__upload/x",
-    });
+    const b = (await request.json()) as { type: string; bytes: number };
+    // Merged A1 contract: no w or h from the client.
+    expect(Object.keys(b).sort()).toEqual(["bytes", "sha256", "type"]);
+    return HttpResponse.json(
+      {
+        pictureId: `pic-${b.type}-${Math.random().toString(36).slice(2, 6)}`,
+        url: "http://localhost/__upload/x",
+      },
+      { status: 201 },
+    );
   }),
   http.put("http://localhost/__upload/x", () =>
     putFails-- > 0
       ? new HttpResponse(null, { status: 500 })
-      : new HttpResponse(null, { status: 200 }),
+      : HttpResponse.json({
+          id: "p",
+          type: "image/png",
+          w: 1600,
+          h: 1000,
+          bytes: 1000,
+        }),
   ),
 ];
 
@@ -279,7 +290,7 @@ describe("in the viewer", () => {
     expect(thumbs).toHaveLength(2);
     const first = thumbs[0] as HTMLElement;
     expect(first.querySelector("img")?.getAttribute("src")).toBe(
-      PICTURE_ROUTES.view(OWNED, "p1", true),
+      PICTURE_ROUTES.view(OWNED, "p1"),
     );
     fireEvent.click(thumbs[0] as HTMLElement);
     const lb = await screen.findByRole("dialog", { name: /1 of 2/ });

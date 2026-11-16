@@ -73,16 +73,15 @@ export function usePictureDrawer(artifactId: string) {
   );
 
   const upload = useCallback(
-    async (key: string, blob: Blob, w: number, h: number) => {
+    async (key: string, blob: Blob) => {
       const ctl = new AbortController();
       live.current.set(key, ctl);
       patch(key, { status: "uploading", progress: 0 });
       try {
+        // The server reads w and h from the file itself.
         const meta = {
           type: blob.type,
           bytes: blob.size,
-          w,
-          h,
           sha256: await sha256(blob),
         };
         const up = await requestUpload(artifactId, meta);
@@ -145,7 +144,7 @@ export function usePictureDrawer(artifactId: string) {
             return;
           }
           patch(key, { blob: s.blob, w: s.w, h: s.h });
-          await upload(key, s.blob, s.w, s.h);
+          await upload(key, s.blob);
         })();
       }
       setNotes(next);
@@ -164,8 +163,7 @@ export function usePictureDrawer(artifactId: string) {
   };
   const retry = () => {
     for (const x of items)
-      if (x.status === "failed" && x.blob && x.w && x.h)
-        void upload(x.key, x.blob, x.w, x.h);
+      if (x.status === "failed" && x.blob) void upload(x.key, x.blob);
   };
   /** After a post: the box starts empty. Returns what was attached, to restore on failure. */
   const take = () => {

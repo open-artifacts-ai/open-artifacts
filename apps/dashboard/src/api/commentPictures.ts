@@ -1,17 +1,20 @@
 // #2508 slice A2: pictures in comments, the drawer.
 //
-// PROVISIONAL (Frontend's proposed contract on #2508, comment 6917536040,
-// for OA Backend to confirm): this file is the one place that knows the
-// routes and shapes, so a change on the server is a change here.
-// 1. POST {commentPictures(id)} { type, bytes, w, h, sha256 } ->
-//    { pictureId, url, expiresAt }; `url` is a signed PUT for the bytes.
-//    Comment rights needed; guests and signed-out visitors get 403.
-//    PNG, JPEG, GIF and WebP, 10 MB each; HEIC answers 400 unsupported_format.
+// PROVISIONAL (OA Backend's merged A1 contract on #2508, comment
+// 6917550703): this file is the one place that knows the routes and shapes,
+// so a change on the server is a change here. R.commentPictures and
+// R.commentPicture are defined here until @oa/shared has them.
+// 1. POST R.commentPictures(id) { type, bytes, sha256? } ->
+//    { pictureId, url, expiresAt }; PUT the bytes to `url`, which answers the
+//    Picture (the server reads w and h from the file). Comment rights
+//    needed; guests and signed-out visitors get 403. PNG, JPEG, GIF and
+//    WebP, 10 MB each; HEIC answers 400 unsupported_format. Unattached
+//    pictures expire after 1 hour.
 // 2. A new thread and a reply take `pictures?: [{ pictureId, alt? }]`, at
 //    most 4. Picture-only is allowed unless it mentions an agent.
 // 3. Comment.pictures?: [{ id, type, w, h, bytes, alt? }].
-// 4. GET {commentPicture(id, pictureId)} serves the bytes (artifact-authz'd),
-//    `?size=thumb` a 112px square for the 56px thumbnail.
+// 4. GET R.commentPicture(id, pictureId) serves the bytes (artifact-authz'd).
+//    No thumbnail size: the browser scales the original.
 import {
   CommentListSchema,
   CommentSchema,
@@ -23,9 +26,11 @@ import { api } from "./client";
 const base = (artifactId: string) =>
   `/api/v1/artifacts/${encodeURIComponent(artifactId)}/comment-pictures`;
 export const PICTURE_ROUTES = {
+  /** R.commentPictures (PROVISIONAL). */
   upload: base,
-  view: (artifactId: string, pictureId: string, thumb = false) =>
-    `${base(artifactId)}/${encodeURIComponent(pictureId)}${thumb ? "?size=thumb" : ""}`,
+  /** R.commentPicture (PROVISIONAL): the original; thumbnails scale it. */
+  view: (artifactId: string, pictureId: string) =>
+    `${base(artifactId)}/${encodeURIComponent(pictureId)}`,
 };
 
 /** Kinds the server takes; the file picker offers only these. */
@@ -79,7 +84,7 @@ export type PictureRef = { pictureId: string; alt?: string };
 /** Step 1: ask for a place to put the bytes. */
 export const requestUpload = (
   artifactId: string,
-  meta: { type: string; bytes: number; w: number; h: number; sha256: string },
+  meta: { type: string; bytes: number; sha256?: string },
 ) => api.send("POST", base(artifactId), meta, PictureUploadSchema);
 
 /** Step 2: PUT the bytes to the signed URL, with progress (0 to 1). */

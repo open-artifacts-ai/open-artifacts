@@ -78,7 +78,7 @@ export function CommentPictures({
         {pics.map((p, i) => (
           <Thumb
             key={p.id}
-            src={PICTURE_ROUTES.view(artifactId, p.id, true)}
+            src={PICTURE_ROUTES.view(artifactId, p.id)}
             label={p.alt || PICTURE_WORDS.open(i + 1, pics.length)}
             onOpen={() => setOpen(i)}
             onGone={() => setGone(true)}

@@ -106,24 +106,23 @@ export function pictureHandlers(
     http.post(
       "*/api/v1/artifacts/:id/comment-pictures",
       async ({ request }) => {
-        const b = (await request.json()) as {
-          type: string;
-          bytes: number;
-          w: number;
-          h: number;
-        };
+        // The server reads w and h from the file; the mock stands in.
+        const b = (await request.json()) as { type: string; bytes: number };
         if (/hei[cf]/i.test(b.type))
           return HttpResponse.json(
             { error: { code: "unsupported_format", message: "HEIC" } },
             { status: 400 },
           );
         const id = `pic_${++n}`;
-        meta.set(id, { id, type: b.type, w: b.w, h: b.h, bytes: b.bytes });
-        return HttpResponse.json({
-          pictureId: id,
-          url: `${location.origin}/__mock-upload/${id}`,
-          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        });
+        meta.set(id, { id, type: b.type, w: 1600, h: 1000, bytes: b.bytes });
+        return HttpResponse.json(
+          {
+            pictureId: id,
+            url: `${location.origin}/__mock-upload/${id}`,
+            expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+          },
+          { status: 201 },
+        );
       },
     ),
     http.put("*/__mock-upload/:pid", async ({ request, params: p }) => {
@@ -132,8 +131,10 @@ export function pictureHandlers(
         failOnce = false;
         return new HttpResponse(null, { status: 500 });
       }
-      bytes.set(String(p.pid), await request.blob());
-      return new HttpResponse(null, { status: 200 });
+      const pid = String(p.pid);
+      bytes.set(pid, await request.blob());
+      // The PUT answers the Picture.
+      return HttpResponse.json(meta.get(pid) ?? null);
     }),
     http.get(
       "*/api/v1/artifacts/:id/comment-pictures/:pid",
