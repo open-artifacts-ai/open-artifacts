@@ -98,6 +98,10 @@ export async function applySendingEvent(
   now = Date.now(),
 ): Promise<boolean> {
   if (ev.kind === "bounced" && !ev.terminal) return false;
+  // A first read that throws (rather than rejects) must reach the caller's
+  // try as an ordinary rejection: without this turn the runtime reports the
+  // rejected promise as unhandled before the caller's await has attached.
+  await null;
   const row = await stmt(
     env.DB,
     "select user_id from share_email_messages where message_id = ?1",
