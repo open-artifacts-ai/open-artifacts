@@ -14,11 +14,17 @@ async function open(page: Page, w: number, theme: "light" | "dark") {
   await page.emulateMedia({ colorScheme: theme });
   await page.setViewportSize({ width: w, height: 800 });
   await page.goto(`/a/${ID}?mock=asks`);
-  await expect(page.locator("[data-asks-for-you]")).toHaveCount(1);
+  // #2622: a phone shows the asks on the gold Comments button, not a pill.
+  await expect(
+    page.locator(w <= 600 ? "[data-asks-gold]" : "[data-asks-for-you]"),
+  ).toHaveCount(1);
 }
 
+// #2622: on a phone, asks waiting turn it into the gold "1 ask for you".
 const commentsButton = (page: Page) =>
-  page.getByRole("button", { name: /^Comments/ });
+  page
+    .getByRole("button", { name: /^Comments/ })
+    .or(page.locator("[data-asks-gold]"));
 const field = (page: Page) =>
   page.getByRole("textbox", { name: "Comment on the whole page" });
 /** The ask Sam Rivera put to the viewer. */

@@ -2539,10 +2539,13 @@ describe("asks for you in the toolbar and header (#1614)", () => {
     expect(screen.queryByText(/for you/)).not.toBeInTheDocument();
   });
 
-  it("says 'No asks for you' once all are answered", async () => {
+  // #2622: "No asks for you" is gone: nothing waiting needs no words.
+  it("says nothing once all are answered", async () => {
     serveThreads(() => [mk("a", true), mk("b", true)]);
     mount(viewerPath(OWNED));
-    expect(await screen.findByText("No asks for you")).toBeInTheDocument();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("No asks for you")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /asks? for you$/ }),
     ).not.toBeInTheDocument();

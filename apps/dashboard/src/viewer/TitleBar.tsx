@@ -15,8 +15,13 @@ import {
   TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { Maximize2, MessageSquare, MessageSquarePlus } from "lucide-react";
+import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
+import {
+  ArrowLeft,
+  Maximize2,
+  MessageSquare,
+  MessageSquarePlus,
+} from "lucide-react";
 import {
   type ReactNode,
   type RefObject,
@@ -37,7 +42,7 @@ import { accessLabel, useCan } from "../auth/permissions";
 import { ForYouBell } from "../foryou/ForYou";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
-import { useNarrow } from "./comments/surfaces";
+import { PHONE_QUERY, useNarrow } from "./comments/surfaces";
 import { VersionsDot } from "./LiveChip";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
 import { fullPath } from "./paths";
@@ -63,6 +68,51 @@ const between = {
   },
   get: () => window.matchMedia?.(BETWEEN).matches ?? false,
 };
+/** #2622: a phone (and narrow windows): the bar is two rows. */
+const phoneQ = {
+  subscribe: (cb: () => void) => {
+    const m = window.matchMedia?.(PHONE_QUERY);
+    m?.addEventListener?.("change", cb);
+    return () => m?.removeEventListener?.("change", cb);
+  },
+  get: () => window.matchMedia?.(PHONE_QUERY).matches ?? false,
+};
+const usePhone = () =>
+  useSyncExternalStore(phoneQ.subscribe, phoneQ.get, () => false);
+
+/** OA Product's words (#2622), word for word. */
+export const PHONE_BAR = {
+  asks: (n: number) => `${n} ask${n === 1 ? "" : "s"}`,
+  asksForYou: (n: number) => `${n} ask${n === 1 ? "" : "s"} for you`,
+  /** Spoken; built from the pill's own text (see the version chip). */
+  oldVersion: (v: number) => `Version ${v}, not the latest`,
+  /** Not in the issue: the back arrow's name. PLACEHOLDER for OA Product. */
+  back: "Back",
+} as const;
+
+/**
+ * #2622: the phone bar's back arrow: where the person came from in the app,
+ * else the Library.
+ */
+function BackArrow() {
+  const router = useRouter();
+  const navigate = useNavigate();
+  const canGoBack = useCanGoBack();
+  return (
+    <button
+      type="button"
+      aria-label={PHONE_BAR.back}
+      data-bar-back=""
+      className="-ml-1.5 grid size-7 flex-none cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring min-[601px]:hidden"
+      onClick={() =>
+        canGoBack ? router.history.back() : void navigate({ to: "/" })
+      }
+    >
+      <ArrowLeft aria-hidden="true" className="size-4" />
+    </button>
+  );
+}
+
 /** Stages the one-row bar gives way in (#2503): Comments to its icon, then the visibility chip, then the pill's "for you". */
 export const BAR_STAGES = 3;
 
@@ -285,6 +335,7 @@ export function TitleBar({
   gone?: boolean;
 }) {
   const narrow = useNarrow();
+  const phone = usePhone();
   const navigate = useNavigate();
   // #2503: the one-row bar gives way in steps before the title drops below ~10 characters.
   const bar = useRef<HTMLDivElement>(null);
@@ -294,6 +345,9 @@ export function TitleBar({
     () => false,
   );
   const pill = comments && asks && asks.count > 0 && !asks.inPanel;
+  // #2622: on a phone the asks waiting turn the Comments button gold instead.
+  const gold = phone && pill && !comments?.selecting ? asks.count : 0;
+  const old = version !== artifact.currentVersion;
   const stage = useBarStage(
     bar,
     inBetween,
@@ -396,10 +450,16 @@ export function TitleBar({
     <div
       ref={bar}
       data-bar-stage={inBetween ? stage : undefined}
-      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 [@media(width>600px)_and_(width<960px)]:flex-nowrap"
+      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] [@media(width<=600px)]:px-4 [@media(width>600px)_and_(width<960px)]:flex-nowrap"
     >
-      <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
-        {iconFormat && <FormatIcon format={iconFormat} />}
+      <div className="flex min-w-0 items-center gap-2 [@media(width<=600px)]:flex-[1_1_100%] [@media(width<=600px)]:[&_h1]:text-[17px]">
+        {/* #2622: on a phone the path row goes; a back arrow leads the title (not for guests or visitors). */}
+        {authed && !outsider && <BackArrow />}
+        {iconFormat && (
+          <span className="contents [@media(width<=600px)]:hidden">
+            <FormatIcon format={iconFormat} />
+          </span>
+        )}
         {canEdit ? (
           <EditableTitle artifact={artifact} />
         ) : (
@@ -407,8 +467,14 @@ export function TitleBar({
         )}
         <VisibilityBadge
           visibility={artifact.visibility}
-          iconOnly={stage >= 2}
+          iconOnly={stage >= 2 || phone}
           org={org}
+        />
+        {/* #2622: room for the publisher's picture (#2610), picture only on a phone. */}
+        <span
+          aria-hidden="true"
+          data-publisher-slot=""
+          className="hidden size-[18px] flex-none [@media(width<=600px)]:inline-block"
         />
         {viewOnly && (
           <TooltipProvider>
@@ -434,8 +500,8 @@ export function TitleBar({
           </span>
         )}
       </div>
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
-        {pill && (
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 [@media(width<=600px)]:flex-[1_1_100%] [@media(width<=600px)]:flex-nowrap [@media(width<=600px)]:gap-1.5 [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
+        {pill && !phone && (
           <ShButton
             variant="outline"
             size="xs"
@@ -449,14 +515,6 @@ export function TitleBar({
             {narrow || stage >= 3 ? "" : " for you"}
           </ShButton>
         )}
-        {comments && asks?.count === 0 && (
-          <span
-            data-asks-none
-            className={`${TXT} whitespace-nowrap text-muted-foreground`}
-          >
-            No asks for you
-          </span>
-        )}
         {comments && (
           <ShButton
             variant="outline"
@@ -464,21 +522,29 @@ export function TitleBar({
             className={
               comments.selecting
                 ? `${BAR} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
-                : `${BAR} ${PRESSED}`
+                : gold
+                  ? // #2622: Design's gold, the same in both themes.
+                    `${BAR} border-[#c9952c] bg-[#e7b44f] font-semibold text-[#2a1c00] hover:bg-[#e7b44f] hover:text-[#2a1c00] dark:border-[#c9952c] dark:bg-[#e7b44f] dark:hover:bg-[#e7b44f]`
+                  : `${BAR} ${PRESSED}`
             }
             aria-label={
               comments.selecting
                 ? narrow
                   ? "Comment"
                   : "Comment on selection"
-                : comments.open > 0
-                  ? `Comments, ${comments.open} open`
-                  : "Comments"
+                : gold
+                  ? PHONE_BAR.asksForYou(gold)
+                  : comments.open > 0
+                    ? `Comments, ${comments.open} open`
+                    : "Comments"
             }
-            aria-expanded={comments.selecting ? undefined : comments.expanded}
+            aria-expanded={
+              comments.selecting || gold ? undefined : comments.expanded
+            }
+            data-asks-gold={gold ? "" : undefined}
             disabled={gone}
             data-oa-keep-selection=""
-            onClick={comments.onClick}
+            onClick={gold && asks ? asks.onClick : comments.onClick}
           >
             {/* A space in the text: the visible label must read "Comments 3", inside the name "Comments, 3 open". */}
             {comments.selecting ? (
@@ -492,13 +558,15 @@ export function TitleBar({
               ) : (
                 "Comment on selection"
               )
+            ) : gold ? (
+              PHONE_BAR.asks(gold)
             ) : (
               // #2503: the first to give way in a tight bar: the icon and count alone; the name stays "Comments, 3 open".
               <span className={stage >= 1 ? "sr-only" : undefined}>
                 Comments
               </span>
             )}{" "}
-            {!comments.selecting && comments.open > 0 && (
+            {!comments.selecting && !gold && comments.open > 0 && (
               <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">
                 {comments.open}
               </span>
@@ -509,17 +577,27 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={BAR}
-            aria-label={`Version: ${label}`}
+            className={`${BAR} ${old ? "[@media(width<=600px)]:border-transparent [@media(width<=600px)]:bg-[var(--oa-warning-soft)] [@media(width<=600px)]:text-[var(--oa-warning)]" : ""}`}
+            // #2622: on a phone an old version is named by its content, so the
+            // visible "v15" sits inside "Version 15, not the latest".
+            aria-label={phone && old ? undefined : `Version: ${label}`}
+            data-version-old={old ? "" : undefined}
             aria-expanded={versionsOpen}
             aria-controls={versionsOpen ? VERSIONS_PANEL_ID : undefined}
             data-versions-chip
             disabled={gone}
             onClick={onVersions}
           >
-            v{version}
+            {phone && old ? (
+              <>
+                <span aria-hidden="true">v{version}</span>
+                <span className="sr-only">{PHONE_BAR.oldVersion(version)}</span>
+              </>
+            ) : (
+              <>v{version}</>
+            )}
             {/* Phones show the number alone. */}
-            {suffix && (
+            {suffix && !(phone && old) && (
               <span className="-ml-1 whitespace-pre max-[960px]:hidden">{` · ${suffix}`}</span>
             )}
             {newer && !gone && <VersionsDot />}
@@ -532,7 +610,7 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={`${BAR} ${authed ? "max-[600px]:hidden" : ""}`}
+            className={`${BAR} ${authed ? "[@media(width<=600px)]:hidden" : ""}`}
             disabled
           >
             {MAXIMIZE}
@@ -543,7 +621,7 @@ export function TitleBar({
             asChild
             variant="outline"
             size="xs"
-            className={`${BAR} text-foreground hover:text-accent-foreground ${authed ? "max-[600px]:hidden" : ""}`}
+            className={`${BAR} text-foreground hover:text-accent-foreground ${authed ? "[@media(width<=600px)]:hidden" : ""}`}
           >
             <a href={full} target="_blank" rel="noopener noreferrer">
               {MAXIMIZE}

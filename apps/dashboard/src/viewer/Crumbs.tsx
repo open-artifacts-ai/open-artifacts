@@ -3,7 +3,8 @@ import { AppLink } from "../library/AppLink";
 /** Wordmark plus breadcrumbs (D4 header). */
 export function Crumbs({ title }: { title: string }) {
   return (
-    <header className="flex h-10 items-center gap-[14px] border-0 border-b border-border bg-[var(--oa-chrome)] px-5">
+    // #2622: no path row on a phone; the title bar's back arrow does its job.
+    <header className="flex h-10 items-center gap-[14px] border-0 border-b border-border bg-[var(--oa-chrome)] px-5 [@media(width<=600px)]:hidden">
       <AppLink
         href="/"
         className="font-semibold whitespace-nowrap text-foreground"
