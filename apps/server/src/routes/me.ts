@@ -17,7 +17,7 @@ import {
   planOfMember,
   requireUser,
 } from "../auth/authz.js";
-import { orgCan } from "../auth/policy.js";
+import { isGuestRole, orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { creatorCount, monthOf } from "../billing/creators.js";
 import { refreshPlan } from "../billing/store.js";
@@ -86,7 +86,7 @@ async function toMe(
     ...profile,
   };
   // #2632: for a guest's "ask {owner} to make you a member"; nobody else gets the key.
-  if (user.role === "guest") me.instanceOwner = await instanceOwnerName(c.env);
+  if (isGuestRole(user.role)) me.instanceOwner = await instanceOwnerName(c.env);
   const who0 = caller(c);
   const cap = capOfCaller(who0);
   // Parity 2: one-time notices of guest shares, Access-only installs only.
