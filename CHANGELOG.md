@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.0...v0.199.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **bus:** Hermes shows as live from session start and wakes for mail ([#2647](https://github.com/open-artifacts-ai/open-artifacts/issues/2647)) ([#2648](https://github.com/open-artifacts-ai/open-artifacts/issues/2648)) ([d434a84](https://github.com/open-artifacts-ai/open-artifacts/commit/d434a840675c134a5415361f9436b673beb43246))
+
 ## [0.199.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.198.0...v0.199.0) (2026-11-16)
 
 
