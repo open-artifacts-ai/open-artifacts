@@ -5,6 +5,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@oa/ui/shadcn";
+import { X } from "lucide-react";
 import {
   type RefObject,
   useEffect,
@@ -89,7 +90,7 @@ const Ghost = ({ a }: { a: ThreadAgent }) => (
   <span className={`${CHIP} ${chipPad(a)}`}>
     <PartyFace p={a} />
     {a.name}
-    {a.canRemove && <span className="inline-block size-[18px]" />}
+    {a.canRemove && <span className="inline-block size-6" />}
   </span>
 );
 
@@ -297,7 +298,7 @@ export function ThreadAgents({
                   <button
                     type="button"
                     aria-label={`Stop notifying ${a.name}`}
-                    className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="inline-flex size-6 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
                     data-agent-x={a.key}
                     aria-disabled={
                       (set.isPending && set.variables?.key === a.key) ||
@@ -308,7 +309,7 @@ export function ThreadAgents({
                         run(a, true);
                     }}
                   >
-                    ×
+                    <X className="size-3" aria-hidden="true" />
                   </button>
                 </Tip>
               </span>

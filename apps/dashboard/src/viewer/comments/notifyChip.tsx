@@ -3,6 +3,7 @@
 // Removing it sends `notifyPageAgent: false`: the thread notifies no agent
 // unless one is @-mentioned. No chip without a pageAgent (a page a person
 // published, a gone agent), for guests and outsiders, or on replies.
+import { X } from "lucide-react";
 import { useState } from "react";
 import { firstOf, NOTIFY, optOut, type PageAgent } from "../../api/pageAgent";
 import { useArtifact } from "../../api/queries";
@@ -55,10 +56,10 @@ export function NotifyChip({
           <button
             type="button"
             aria-label={`Stop notifying ${agent.name}`}
-            className="inline-flex size-[18px] shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
             onClick={onRemove}
           >
-            {NOTIFY.remove}
+            <X className="size-3" aria-hidden="true" />
           </button>
         </Tip>
       </span>

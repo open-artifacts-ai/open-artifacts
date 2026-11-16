@@ -40,8 +40,6 @@ export const NOTIFY = {
   /** A teammate's agent: "{agent} · {person}'s agent". */
   teammate: (agent: string, person: string) => `${agent} · ${person}'s agent`,
   stop: (agent: string) => `Stop notifying ${agent} in this thread`,
-  /** The design's glyph, "Notifying {agent} ✕". */
-  remove: "✕",
 } as const;
 
 /** "Leo" from "Leo Urbina", for "{person}'s agent". */
