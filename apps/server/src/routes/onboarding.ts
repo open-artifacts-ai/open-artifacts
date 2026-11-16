@@ -29,7 +29,7 @@ export function mountOnboarding(app: AppType): void {
   app.get(R.onboarding, async (c) => {
     const user = member(c);
     // The Welcome is seeded after sign-in: a first read waits for it (#2632).
-    await ensureWelcome(c.env, user);
+    await ensureWelcome(c.env, user, capOfCaller(caller(c)) !== null);
     return c.json(await getOnboarding(c.env, user));
   });
 

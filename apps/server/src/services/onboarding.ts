@@ -380,7 +380,11 @@ const WELCOME_WAIT_MAX = 30;
  * publishing, wait for it (about 3 s at most). The claim is atomic, so the
  * Welcome is never seeded twice. Never throws.
  */
-export async function ensureWelcome(env: Env, user: Member): Promise<void> {
+export async function ensureWelcome(
+  env: Env,
+  user: Member,
+  capped = false,
+): Promise<void> {
   if (isGuestRole(user.role)) return;
   try {
     const read = () =>
@@ -388,7 +392,8 @@ export async function ensureWelcome(env: Env, user: Member): Promise<void> {
         .bind(welcomeKey(user.id))
         .first<{ value: string }>();
     let row = await read();
-    if (!row) {
+    // A GET is readable under a cap, and a capped caller must not publish: it never starts a seed.
+    if (!row && !capped) {
       await seedWelcome(env, user);
       row = await read();
     }

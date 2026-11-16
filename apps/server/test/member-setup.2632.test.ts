@@ -531,3 +531,19 @@ describe("the Welcome is there for a read that beats the background seed (#2632)
     expect(got.welcomeId).toBe(page.id);
   });
 });
+
+describe("a capped caller's read publishes nothing (#2632)", () => {
+  it("a restricted member's first GET seeds no Welcome", async () => {
+    const m = await login(`cap-${tag()}@example.com`, "member");
+    await signins(m.userId, 1);
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?1")
+      .bind(m.userId)
+      .run();
+    const r = await api(app, R.onboarding, m.cookie);
+    expect(r.status).toBe(200);
+    expect(
+      ((await r.json()) as { welcomeId: string | null }).welcomeId,
+    ).toBeNull();
+    expect(await seededRows(m.userId)).toBe(0);
+  });
+});
