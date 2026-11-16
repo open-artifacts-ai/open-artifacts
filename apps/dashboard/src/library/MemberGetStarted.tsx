@@ -5,7 +5,7 @@
 import { SETUP_STEPS, setupSteps } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fiveOf, mySteps, useOwnerName, withLocal } from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
@@ -36,6 +36,53 @@ export const MEMBER_STEPS = {
     'No reply yet. Your agent may not be listening. Ask it: "Check the bus."',
 } as const;
 
+const CARD = "rounded-lg border border-border bg-card p-[var(--oa-space-4)]";
+
+/**
+ * The card's slot while R.onboarding loads: the card's own frame and five
+ * rows (titles and hints, unseen), so it takes the card's height at this
+ * width. Reports that height so the card can keep it.
+ */
+function CardSlot({ onHeight }: { onHeight: (h: number) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (ref.current) onHeight(ref.current.getBoundingClientRect().height);
+  });
+  const rows: [string, string][] = [
+    [MEMBER_STEPS.connect, MEMBER_STEPS.connectHint],
+    [MEMBER_STEPS.name, MEMBER_STEPS.nameHint],
+    [MEMBER_STEPS.publish, MEMBER_STEPS.publishHint],
+    [MEMBER_STEPS.mention, MEMBER_STEPS.mentionHint],
+    [MEMBER_STEPS.ask, MEMBER_STEPS.askHint],
+  ];
+  return (
+    <div
+      ref={ref}
+      data-member-slot=""
+      aria-hidden
+      className={`${CARD} animate-pulse`}
+    >
+      <div className="invisible">
+        <div className="mb-[var(--oa-space-2)] flex items-baseline gap-[var(--oa-space-2)]">
+          <span className="m-0 text-[length:var(--oa-text-md)] font-semibold">
+            Get started
+          </span>
+          <span className="ml-auto h-6 text-[length:var(--oa-text-xs)]">
+            Hide
+          </span>
+        </div>
+        <ol className="m-0 list-none p-0">
+          {rows.map(([t, h], i) => (
+            <Step key={t} n={i + 1} state="todo" title={t}>
+              <p className="m-0">{h}</p>
+            </Step>
+          ))}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 /** A member: anyone signed in who is neither the owner nor a guest. */
 export const isMember = (role: string | undefined) =>
   role === "member" || role === "admin";
@@ -62,6 +109,9 @@ export function MemberGetStarted() {
 
   // Steps happen elsewhere (an agent, another tab): re-read until done.
   const qc = useQueryClient();
+  // The held slot's height: the card keeps at least that, so it never shrinks
+  // under the results when it replaces the slot.
+  const [slotH, setSlotH] = useState<number | undefined>();
   useEffect(() => {
     if (!live || all) return;
     const t = setInterval(() => {
@@ -71,6 +121,11 @@ export function MemberGetStarted() {
     return () => clearInterval(t);
   }, [live, all, qc]);
 
+  // While R.onboarding loads, the card's slot is held (the results render at
+  // once, below it), so the card never pushes them down when it arrives. A
+  // failed fetch, a hidden or finished card: no slot.
+  if (member && me?.instance.mcpUrl && onboarding.isPending)
+    return <CardSlot onHeight={setSlotH} />;
   if (!live || all || !me?.instance.mcpUrl) return null;
 
   // Per person (#2632): hidden isn't done, so `completed` stays as it is.
@@ -86,7 +141,8 @@ export function MemberGetStarted() {
     <section
       aria-labelledby="oa-get-started-h"
       data-member=""
-      className="rounded-lg border border-border bg-card p-[var(--oa-space-4)]"
+      className={CARD}
+      style={slotH ? { minHeight: slotH } : undefined}
     >
       <div className="mb-[var(--oa-space-2)] flex items-baseline gap-[var(--oa-space-2)]">
         <h2

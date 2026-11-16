@@ -95,34 +95,36 @@ describe("myOnboarding (the #2639 contract)", () => {
 });
 
 describe("a member's Library card", () => {
-  // The real-server detail spec clicked a thumbnail that the card then moved.
-  it("the results wait for the card's answer: nothing moves under the pointer", async () => {
-    let answer: () => void = () => {};
-    const gate = new Promise<void>((r) => {
-      answer = r;
+  // The results never wait on R.onboarding: the card's slot is held instead.
+  it("the results render before R.onboarding answers, under a held slot", async () => {
+    let answer: (over?: object) => void = () => {};
+    const gate = new Promise<object>((r) => {
+      answer = (over = {}) => r(over);
     });
     mountHosted("/", true, as("member"), [
-      http.get("*/api/v1/onboarding", async () => {
-        await gate;
-        return HttpResponse.json({
+      http.get("*/api/v1/onboarding", async () =>
+        HttpResponse.json({
           dismissed: false,
           completed: false,
           firstArtifact: null,
           agentConnected: true,
-        });
-      }),
+          ...(await gate),
+        }),
+      ),
     ]);
-    await screen.findByRole("status", { name: "Loading artifacts" });
-    await new Promise((r) => setTimeout(r, 300));
-    expect(document.querySelector("article.lib-card")).toBeNull();
-    answer();
-    await waitFor(() => expect(card()).not.toBeNull());
     await waitFor(() =>
       expect(document.querySelector("article.lib-card")).not.toBeNull(),
     );
+    const slot = document.querySelector("[data-member-slot]");
+    expect(slot).not.toBeNull();
+    expect(slot).toHaveAttribute("aria-hidden", "true");
+    expect(card()).toBeNull();
+    answer();
+    await waitFor(() => expect(card()).not.toBeNull());
+    expect(document.querySelector("[data-member-slot]")).toBeNull();
   });
 
-  it("a refused answer (an older server) doesn't hold the results", async () => {
+  it("a failed R.onboarding collapses the slot; the results stay", async () => {
     mountHosted("/", true, as("member"), [
       http.get("*/api/v1/onboarding", () =>
         HttpResponse.json(
@@ -133,6 +135,20 @@ describe("a member's Library card", () => {
     ]);
     await waitFor(() =>
       expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.querySelector("[data-member-slot]")).toBeNull(),
+    );
+    expect(card()).toBeNull();
+  });
+
+  it("a hidden card leaves no slot", async () => {
+    mountHosted("/", true, as("member"), [onboarding({ dismissed: true })]);
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.querySelector("[data-member-slot]")).toBeNull(),
     );
     expect(card()).toBeNull();
   });
