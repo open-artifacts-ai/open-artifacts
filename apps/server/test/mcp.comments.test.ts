@@ -479,7 +479,11 @@ describe("add_comment with an ask (#1535)", () => {
       ask: {
         question: "Merge it?",
         options: [
-          { id: "merge", label: "Merge", action: "merge" },
+          {
+            id: "merge",
+            label: "Merge",
+            highStakes: { reason: "Hard to undo" },
+          },
           { id: "wait", label: "Wait" },
         ],
         to: [{ key: owner.userId }],

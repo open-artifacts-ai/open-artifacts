@@ -71,11 +71,34 @@ export const ASK_ACTIONS = [
 export const AskActionSchema = z.enum(ASK_ACTIONS);
 export type AskAction = z.infer<typeof AskActionSchema>;
 
+export const HIGH_STAKES_REASON_MAX = 200;
+
+/**
+ * #2661: the mark on an option whose pick is hard to undo or reaches other
+ * people. The reason is the asker's own words, plain text (no control
+ * characters or line breaks), shown to the person as the asker's claim and
+ * never as fact. Set when the ask is posted and fixed after.
+ */
+export const HighStakesSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .min(1)
+    .max(HIGH_STAKES_REASON_MAX)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: plain text: no control characters or line breaks
+    .regex(/^[^\u0000-\u001f\u007f]+$/, "The reason is one plain line"),
+});
+export type HighStakes = z.infer<typeof HighStakesSchema>;
+
 export const AskOptionSchema = z.object({
   id: key,
   label: z.string().min(1).max(ASK_LABEL_MAX),
   detail: z.string().max(ASK_DETAIL_MAX).optional(),
-  /** #2263: the risky action this option carries out. Only the author sets it; a pick on an ask whose options name an action the picker's switches cover needs their passkey. */
+  /** #2661: this option is high stakes: a pick on it needs the picker's passkey when their switch is on. Set by the asker when posting; never changes. */
+  highStakes: HighStakesSchema.optional(),
+  /** #2661: on read, this viewer's pick on this option needs their passkey right now (their own settings, read at that moment). Set by the server only. */
+  passkey: z.literal(true).optional(),
+  /** @deprecated #2661: removed. The server neither sends nor accepts it; kept as a type until the app drops it. */
   action: AskActionSchema.optional(),
 });
 export type AskOption = z.infer<typeof AskOptionSchema>;
@@ -90,9 +113,23 @@ const optionRules = <T extends z.ZodType<{ id: string }>>(item: T) =>
     });
 const askOptions = optionRules(AskOptionSchema);
 /** An option as a client sends it: the label is trimmed and must not be blank. */
+const OLD_ACTION_MESSAGE =
+  "`action` is gone: mark the option that does the thing with `highStakes: { reason }` instead";
 const AskInputOptionSchema = AskOptionSchema.extend({
   label: z.string().trim().min(1).max(ASK_LABEL_MAX),
-});
+  // Sent by no one: the server stamps `passkey` for each viewer.
+  passkey: z.unknown().optional(),
+  action: z.unknown().optional(),
+})
+  .refine((o) => o.action === undefined, {
+    message: OLD_ACTION_MESSAGE,
+    path: ["action"],
+  })
+  .refine((o) => o.passkey === undefined, {
+    message:
+      "`passkey` is set by the server: mark the option `highStakes` instead",
+    path: ["passkey"],
+  });
 const askRecommended = z
   .object({ optionId: key, why: z.string().max(ASK_WHY_MAX) })
   .optional();
@@ -178,8 +215,10 @@ export const CommentAskSchema = z
         typed: z.boolean(),
         /** #2381: the decision this one changed: the decider's earlier, different pick. */
         was: z.object({ optionId: key, at: z.string() }).optional(),
-        /** #2263: set by the server when a passkey assertion for this pick verified. */
+        /** #2263: set by the server when a passkey assertion for this pick verified. Never set without one. */
         verified: z.literal("passkey").optional(),
+        /** #2661: a high-stakes pick made while the person's switch was off: their typed pick is the yes, with no passkey. Recorded at answer time; never shown as verified. */
+        passkey: z.literal("off").optional(),
         /**
          * #1797: your user's yes, computed for the caller by the server: typed,
          * picked by the caller's own person, on an ask the caller's own person
@@ -189,7 +228,9 @@ export const CommentAskSchema = z
       })
       .optional(),
     closed: z.boolean(),
-    /** #2263: a pick needs the picker's passkey (POST R.commentAnswerChallenge, then R.commentAnswer with the assertion). Set by the server when the ask is created, from its options' actions and the addressees' switches; never by a client, never removed by an edit. */
+    /** #2661: the viewer has no usable passkey and some option of this ask would need one of theirs ("Add a passkey to approve this"). Stamped for the viewer by the server. */
+    passkeyMissing: z.boolean().optional(),
+    /** @deprecated #2661: removed; the server never sends it. #2263: a pick needs the picker's passkey (POST R.commentAnswerChallenge, then R.commentAnswer with the assertion). Set by the server when the ask is created, from its options' actions and the addressees' switches; never by a client, never removed by an edit. */
     confirm: z.literal("passkey").optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
@@ -326,8 +367,15 @@ export const AskInputSchema = z
      * one is posted.
      */
     replaces: z.union([key, ReplacesRefSchema]).optional(),
+    /** Refused (#2661): `confirm` is gone; the server decides from `highStakes` on an option and each person's settings. */
+    confirm: z.unknown().optional(),
   })
-  .refine(recommendedIsAnOption, recommendedMsg);
+  .refine(recommendedIsAnOption, recommendedMsg)
+  .refine((a) => a.confirm === undefined, {
+    message:
+      "`confirm` is gone: mark the option that does the thing with `highStakes: { reason }`; the server asks each person for their passkey from their own settings",
+    path: ["confirm"],
+  });
 export type AskInput = z.infer<typeof AskInputSchema>;
 
 /** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions: owner and editors only (403 forbidden). */

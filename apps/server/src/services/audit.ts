@@ -257,8 +257,11 @@ export type AskApproval = {
   threadId: string;
   commentId: string;
   optionId: string;
-  action?: string;
+  /** The option picked was marked high stakes (#2661). */
+  highStakes: boolean;
   passkey: boolean;
+  /** A high-stakes pick made while the person's switch was off: no passkey was used, by their choice. */
+  passkeyOff: boolean;
   /** The decision's own time, as the DO stored it: the same decision always carries the same one. */
   decidedAt: string;
   /** Typed by a person in the web app (not an agent or a token). */
@@ -294,8 +297,9 @@ export const askApproveAudit = async (
         threadId: a.threadId,
         commentId: a.commentId,
         optionId: a.optionId,
-        ...(a.action ? { action: a.action } : {}),
+        highStakes: a.highStakes,
         passkey: a.passkey,
+        passkeyOff: a.passkeyOff,
         typed: a.typed,
         askerIsAgent: a.askerIsAgent,
         ...(a.askerAgentId ? { askerAgentId: a.askerAgentId } : {}),

@@ -536,7 +536,7 @@ describe("Axe's checks (#2623)", () => {
       ask: {
         question: "Merge it?",
         options: [
-          { id: "y", label: "Merge", action: "merge" },
+          { id: "y", label: "Merge", highStakes: { reason: "Hard to undo" } },
           { id: "n", label: "No" },
         ],
         to: [{ key: owner.userId }],

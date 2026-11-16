@@ -53,10 +53,8 @@ export const askInfo = (c: StoredComment): AskInfo => ({
   question: c.ask?.question ?? "",
   asker: JSON.stringify(c.author),
   askedAt: c.createdAt,
-  confirm:
-    c.ask?.confirm === "passkey" || c.ask?.options.some((o) => o.action)
-      ? 1
-      : 0,
+  // #2661: an ask with any high-stakes option is the asker's call alone: only its decider has a row.
+  confirm: c.ask?.options.some((o) => o.highStakes) ? 1 : 0,
 });
 
 /**

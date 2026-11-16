@@ -2145,17 +2145,7 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     real: {
       req: () => ({
         path: "",
-        body: {
-          actions: {
-            merge: true,
-            deploy: true,
-            delete: true,
-            share: true,
-            public: true,
-            command: true,
-          },
-          everyPick: false,
-        },
+        body: { highStakes: true, everyAnswer: false, ownRule: "" },
       }),
       allow: ok(200),
     },
@@ -2165,17 +2155,7 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     real: {
       req: () => ({
         path: "",
-        body: {
-          actions: {
-            merge: true,
-            deploy: true,
-            delete: true,
-            share: true,
-            public: true,
-            command: true,
-          },
-          everyPick: false,
-        },
+        body: { highStakes: true, everyAnswer: false, ownRule: "" },
       }),
       allow: code("no_passkey"),
     },

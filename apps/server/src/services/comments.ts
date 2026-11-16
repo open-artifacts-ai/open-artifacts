@@ -116,7 +116,13 @@ import {
   noteMentionReplied,
   pendingFirst,
 } from "./onboarding-firsts.js";
-import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
+import {
+  hasUsablePasskey,
+  pickChallenge,
+  pickNeeds,
+  switchesOf,
+  verifyPick,
+} from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -619,11 +625,9 @@ async function threadViews(
       ? { agents: rows(t).map((p) => threadAgentView(p, viewer, users)) }
       : {}),
   }));
-  await fillReplacedTitles(
-    env,
-    out.flatMap((t) => t.comments),
-    viewer,
-  );
+  const all = out.flatMap((t) => t.comments);
+  await fillReplacedTitles(env, all, viewer);
+  await stampPasskeys(env, all, viewer);
   return out;
 }
 
@@ -658,7 +662,7 @@ const roleOf = (
 ): "decide" | "weigh" | undefined => {
   if (viewer.userId === null || viewer.agent !== undefined) return undefined;
   if ((ask.decider ?? c.author.ref) === viewer.userId) return "decide";
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const risky = ask.options.some((o) => o.highStakes);
   const asked = ask.to.some(
     (p) => (p.kind === "user" ? p.key : p.owner) === viewer.userId,
   );
@@ -873,7 +877,6 @@ const commentOf = (
                 }
               : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
-            ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
             ...(c.ask.replaces ? { replaces: c.ask.replaces } : {}),
             ...(c.ask.replacedBy ? { replacedBy: c.ask.replacedBy } : {}),
             ...(c.ask.withdrawn
@@ -898,13 +901,20 @@ const commentOf = (
                     ...(c.ask.answer.verified
                       ? { verified: c.ask.answer.verified }
                       : {}),
+                    ...(c.ask.answer.passkey
+                      ? { passkey: c.ask.answer.passkey }
+                      : {}),
                     // A replaced ask is never a yes: the newer ask is the question now (#2323).
                     yes:
                       !c.ask.replacedBy &&
                       !c.ask.withdrawn &&
                       viewer.userId !== null &&
-                      (c.ask.confirm !== "passkey" ||
-                        c.ask.answer.verified === "passkey") &&
+                      // #2661: a pick on a high-stakes option is a yes only with a verified passkey, or when the person turned the passkey off.
+                      (!c.ask.options.find(
+                        (o) => o.id === c.ask?.answer?.optionId,
+                      )?.highStakes ||
+                        c.ask.answer.verified === "passkey" ||
+                        c.ask.answer.passkey === "off") &&
                       isTyped(c.ask.answer.by) &&
                       c.ask.answer.by.ref === viewer.userId &&
                       c.author.kind === "user" &&
@@ -987,6 +997,7 @@ async function commentView(
     await ctxFor(env, ids, hasAgent(c), { comments: [c] }),
   );
   await fillReplacedTitles(env, [out], viewer);
+  await stampPasskeys(env, [out], viewer);
   return out;
 }
 
@@ -1280,7 +1291,11 @@ async function resolveExtras(
     throw new ApiError("forbidden", "Log in to ask a question");
   const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
   if (parsed && !parsed.success)
-    throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
+    throw new ApiError(
+      "bad_request",
+      `Invalid ask: ${[...new Set(parsed.error.issues.map((i) => i.message))].join("; ")}`,
+      parsed.error.issues,
+    );
   const askIn = parsed?.success ? parsed.data : undefined;
   const viewerId = who.kind === "user" ? who.id : null;
   const roster = await agentRoster(env, artifactId, viewerId, false);
@@ -1335,14 +1350,14 @@ async function resolveExtras(
     }
     // #2381: who decides. Default: the asker's own user (nothing stored). Naming
     // someone else needs a member who can edit the page, and never on an ask
-    // that names an action; the asker's own user stays on the ask to take it back.
+    // that has a high-stakes option; the asker's own user stays on the ask to take it back.
     let decider: string | undefined;
     const askerId = who.kind === "user" ? who.id : "";
     if (askIn.decider && askIn.decider.key !== askerId) {
-      if (askIn.options.some((o) => o.action))
+      if (askIn.options.some((o) => o.highStakes))
         throw new ApiError(
           "bad_request",
-          "An ask that names an action is decided by you: drop `decider`",
+          "An ask with a high-stakes option is decided by you: drop `decider`",
         );
       const dk = askIn.decider.key;
       const du = isId(dk) ? await getUser(env, dk) : null;
@@ -1362,32 +1377,23 @@ async function resolveExtras(
           `An ask names at most ${ASK_TO_MAX} people, the decider and you included`,
         );
     }
-    // A risky ask goes to the asker's own user only: nobody else's pick or
+    // A high-stakes ask goes to the asker's own user only: nobody else's pick or
     // passkey settings can stand in for theirs.
     if (
-      askIn.options.some((o) => o.action) &&
+      askIn.options.some((o) => o.highStakes) &&
       addressees(to).some((id) => id !== askerId)
     )
       throw new ApiError(
         "bad_request",
-        "An ask that names an action goes to you only: drop the other people",
+        "An ask with a high-stakes option goes to you only: drop the other people",
       );
-    // #2263: the server decides, from the actions the options name and the
-    // switches of the people it reaches and of its decider (#2381: the decider
-    // picks, so their settings count even when they are not in `to`). Whatever
-    // a client sent as `confirm` was stripped by the schema; an edit never
-    // touches the stored mark.
-    const confirm = await confirmFor(
-      env,
-      [...new Set([...addressees(to), decider ?? askerId])].filter(Boolean),
-      askIn.options,
-    );
+    // #2661: the mark is stored as given and never changes (the edit lock). Who
+    // needs a passkey is decided per person at read and answer time, from their own settings.
     ask = {
       question: askIn.question,
-      options: askIn.options,
+      options: askIn.options.map(({ action: _a, passkey: _p, ...o }) => o),
       ...(askIn.recommended ? { recommended: askIn.recommended } : {}),
       to,
-      ...(confirm ? { confirm } : {}),
       ...(decider ? { decider } : {}),
       ...(typeof askIn.replaces === "string"
         ? { replaces: askIn.replaces }
@@ -2085,19 +2091,24 @@ const isAsked = (
     (ask.decider ?? author) === who.id);
 
 /**
- * #2381: the pick needs this person's passkey though the ask carries no
- * `confirm`: they are its decider and their switches cover it now (an ask from
- * before deciders, or a switch turned on after the ask was posted).
+ * #2661: what picking `optionId` needs of this person, from their own settings
+ * now (so a switch turned on or off applies to an ask that is already
+ * waiting): their passkey (every answer, or a high-stakes option and the
+ * switch on), or nothing, with `off` when a high-stakes pick goes without one
+ * because the switch is off.
  */
-const needsOwnPasskey = async (
+const pickRule = async (
   env: Env,
-  ask: { decider?: string; options: { action?: AskOption["action"] }[] },
+  ask: { options: AskOption[] },
+  optionId: string,
   who: CommentWho,
-  author: string,
-): Promise<boolean> =>
-  who.kind === "user" &&
-  deciderOf(ask, author) === who.id &&
-  (await confirmFor(env, [who.id], ask.options)) === "passkey";
+): Promise<{ need: boolean; off: boolean }> => {
+  if (who.kind !== "user") return { need: false, off: false };
+  const marked = ask.options.some(
+    (o) => o.id === optionId && o.highStakes !== undefined,
+  );
+  return pickNeeds(await switchesOf(env, who.id), marked);
+};
 
 /** #2381: the ask's decider: the person the asker named, else the asker's own user. */
 const deciderOf = (ask: { decider?: string }, author: string): string =>
@@ -2135,11 +2146,6 @@ export async function answerChallenge(
     );
   if (!isAsked(ask, who, author))
     throw new ApiError("forbidden", "Only the people asked can answer");
-  if (
-    ask.confirm !== "passkey" &&
-    !(await needsOwnPasskey(env, ask, who, author))
-  )
-    throw new ApiError("bad_request", "This ask does not need a passkey");
   if (status === "resolved")
     throw new ApiError("conflict", "This ask is closed");
   if (ask.replacedBy)
@@ -2150,6 +2156,8 @@ export async function answerChallenge(
   if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
+  if (!(await pickRule(env, ask, optionId, who)).need)
+    throw new ApiError("bad_request", "This pick does not need a passkey");
   if (ask.answer?.optionId === optionId)
     throw new ApiError(
       "already_answered",
@@ -2203,15 +2211,19 @@ export async function answerAsk(
     );
   if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
   let verified: "passkey" | undefined;
-  const needsPasskey =
-    ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));
+  // #2661: from the answering person's own settings, read now.
+  const { need: needsPasskey, off: passkeyOff } = await pickRule(
+    env,
+    ask,
+    optionId,
+    who,
+  );
   // Strangers, closed asks and unknown options fall through to the DO's own
   // refusals (forbidden, conflict, bad_request) without touching a challenge.
   if (
     needsPasskey &&
     isAsked(ask, who, author) &&
     who.kind === "user" &&
-    deciderOf(ask, author) === who.id &&
     status !== "resolved" &&
     ask.options.some((o) => o.id === optionId)
   ) {
@@ -2220,11 +2232,18 @@ export async function answerAsk(
         "passkey_required",
         "This pick needs your passkey, in the web app",
       );
-    if (ask.answer?.optionId === optionId)
+    const mine = [...(ask.history ?? [])]
+      .reverse()
+      .find((p) => p.by.ref === who.id);
+    if (
+      mine?.optionId === optionId &&
+      (deciderOf(ask, author) !== who.id || ask.answer?.optionId === optionId)
+    )
       throw new ApiError(
         "already_answered",
         "This ask is answered with that option",
       );
+    // No usable passkey, or none given: refused, never recorded as verified.
     if (pick.assertion === undefined || pick.assertion === null)
       throw new ApiError("passkey_required", "This pick needs your passkey");
     await verifyPick(
@@ -2252,6 +2271,7 @@ export async function answerAsk(
       canDecide: caps.canDecide,
       guest: caps.guest,
       ...(needsPasskey ? { needsPasskey: true } : {}),
+      ...(passkeyOff ? { passkeyOff: true } : {}),
     }),
   );
   // #2458: a risky decision (a passkey ask, or any option names an action, so
@@ -2265,7 +2285,7 @@ export async function answerAsk(
     decided &&
     stored?.optionId === optionId &&
     who.kind === "user" &&
-    (needsPasskey || ask.options.some((o) => o.action))
+    (needsPasskey || ask.options.some((o) => o.highStakes))
   )
     try {
       const askerAgent = c.author.kind === "user" ? c.author.agent : undefined;
@@ -2274,8 +2294,9 @@ export async function answerAsk(
         threadId,
         commentId,
         optionId,
-        ...(picked?.action ? { action: picked.action } : {}),
+        highStakes: picked?.highStakes !== undefined,
         passkey: stored.verified === "passkey",
+        passkeyOff: stored.passkey === "off",
         decidedAt: stored.at,
         typed: isTyped(stored.by),
         askerIsAgent: askerAgent !== undefined,
@@ -2559,6 +2580,47 @@ async function finishCrossReplace(
       newArtifactId: fresh.artifactId,
     });
     return `The new card is posted, but the old card could not be withdrawn. Call withdraw_ask { id: "${old.artifactId}", threadId: "${old.threadId}", commentId: "${old.commentId}", replacedBy: { artifactId: "${fresh.artifactId}", threadId: "${fresh.threadId}", commentId: "${fresh.commentId}" } } to finish.`;
+  }
+}
+
+/**
+ * #2661: stamps each ask the viewer may pick on with what their own settings
+ * ask of them right now: an option carries `passkey: true` when picking it needs
+ * their passkey, and the ask `passkeyMissing` when they would need one and have
+ * none that can confirm. Read at that moment, so a setting changed since the ask
+ * was posted applies at once. Never for an agent, and never for someone who may
+ * not pick.
+ */
+async function stampPasskeys(
+  env: Env,
+  comments: Comment[],
+  viewer: CommentViewer,
+): Promise<void> {
+  if (viewer.userId === null || viewer.agent !== undefined) return;
+  const mine = comments.filter(
+    (c) =>
+      c.ask &&
+      !c.ask.withdrawn &&
+      !c.ask.replacedBy &&
+      !c.ask.closed &&
+      (Boolean(c.ask.role) || c.ask.to.some((p) => p.me)),
+  );
+  if (mine.length === 0) return;
+  const sw = await switchesOf(env, viewer.userId);
+  let usable: boolean | undefined;
+  for (const c of mine) {
+    const ask = c.ask;
+    if (!ask) continue;
+    let any = false;
+    ask.options = ask.options.map((o) => {
+      if (!pickNeeds(sw, o.highStakes !== undefined).need) return o;
+      any = true;
+      return { ...o, passkey: true as const };
+    });
+    if (any) {
+      usable ??= await hasUsablePasskey(env, viewer.userId as string);
+      if (!usable) ask.passkeyMissing = true;
+    }
   }
 }
 

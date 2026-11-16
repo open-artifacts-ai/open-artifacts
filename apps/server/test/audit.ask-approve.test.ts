@@ -19,7 +19,7 @@ import {
 } from "./passkey-fixtures.js";
 import type { FakeAuthenticator } from "./passkey-helper.js";
 
-// #2458: a risky ask's decision writes one ask.approve row: ids and enums,
+// #2458 (#2661): a high-stakes ask's decision writes one ask.approve row: ids and enums,
 // never the question, an option's text or an address.
 
 const app = createApp();
@@ -27,7 +27,7 @@ type K = { artifactId: string; threadId: string; commentId: string };
 const QUESTION = "Ship the zebra-quartz change?";
 const LABEL = "Merge the zebra-quartz change";
 const OPTS = [
-  { id: "merge", label: LABEL, action: "merge" as const },
+  { id: "merge", label: LABEL, highStakes: { reason: "Hard to undo" } },
   { id: "wait", label: "Not yet" },
 ];
 const PLAIN = [
@@ -68,6 +68,12 @@ beforeAll(async () => {
   alice = await mkUser("aa-alice");
   bob = await mkUser("aa-bob");
   aliceKey = (await addPasskey(app, alice)).a;
+  // Bob has turned the high-stakes switch off: his typed pick is the yes, with no passkey (#2661).
+  await E.DB.prepare(
+    "insert into passkey_settings (user_id, high_stakes, every_pick, own_rule, updated_at) values (?, 0, 0, '', ?)",
+  )
+    .bind(bob.userId, Date.now())
+    .run();
 });
 
 const member = async (u: U) => {
@@ -150,7 +156,7 @@ const passkeyPick = async (k: K, optionId = "merge") => {
 };
 
 describe("ask.approve", () => {
-  it("a passkey decision: who, ids, the option, the action, passkey true; no text", async () => {
+  it("a passkey decision: who, ids, the option, high stakes, passkey true; no text", async () => {
     const k = await ask(alice, OPTS);
     expect((await passkeyPick(k)).status).toBe(200);
     const r = await rows(k);
@@ -167,8 +173,9 @@ describe("ask.approve", () => {
       threadId: k.threadId,
       commentId: k.commentId,
       optionId: "merge",
-      action: "merge",
+      highStakes: true,
       passkey: true,
+      passkeyOff: false,
       typed: true,
       askerIsAgent: false,
     });
@@ -183,7 +190,7 @@ describe("ask.approve", () => {
     expect(await rows(k)).toHaveLength(1);
   });
 
-  it("an action option with no passkey on file: passkey false, by token", async () => {
+  it("a high-stakes pick with the switch off: passkey false, passkeyOff true, by token", async () => {
     const k = await ask(bob, OPTS);
     expect((await answer(k, bob.pat, { optionId: "merge" })).status).toBe(200);
     const [row] = await rows(k);
@@ -192,8 +199,9 @@ describe("ask.approve", () => {
       actor_cred_kind: "pat",
     });
     expect(JSON.parse(row?.detail ?? "")).toMatchObject({
-      action: "merge",
+      highStakes: true,
       passkey: false,
+      passkeyOff: true,
       typed: false,
     });
     // A retried or repeated pick, even concurrent, never writes a second row.
@@ -227,18 +235,18 @@ describe("ask.approve", () => {
   it("changing the decision is a new decision: a second row", async () => {
     const k = await ask(bob, [
       ...OPTS,
-      { id: "deploy", label: "Deploy", action: "deploy" as const },
+      { id: "deploy", label: "Deploy", highStakes: { reason: "Hard to undo" } },
     ]);
     await answer(k, bob.pat, { optionId: "merge" });
     await answer(k, bob.pat, { optionId: "deploy" });
     const r = await rows(k);
-    expect(r.map((x) => JSON.parse(x.detail).action).sort()).toEqual([
+    expect(r.map((x) => JSON.parse(x.detail).optionId).sort()).toEqual([
       "deploy",
       "merge",
     ]);
   });
 
-  it("a plain option on an action ask is logged too, without an action", async () => {
+  it("a plain option on a high-stakes ask is logged too, as not high stakes", async () => {
     const k = await ask(bob, OPTS);
     expect((await answer(k, bob.pat, { optionId: "merge" })).status).toBe(200);
     expect((await answer(k, bob.cookie, { optionId: "wait" })).status).toBe(
@@ -249,8 +257,12 @@ describe("ask.approve", () => {
     const hold = r
       .map((x) => ({ ...x, d: JSON.parse(x.detail) }))
       .find((x) => x.d.optionId === "wait");
-    expect(hold?.d).not.toHaveProperty("action");
-    expect(hold?.d).toMatchObject({ passkey: false, typed: true });
+    expect(hold?.d).toMatchObject({
+      highStakes: false,
+      passkey: false,
+      passkeyOff: false,
+      typed: true,
+    });
     expect(hold?.actor_cred_kind).toBe("session");
   });
 

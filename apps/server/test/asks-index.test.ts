@@ -695,7 +695,7 @@ describe("taking a decision back (#2527)", () => {
       runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
       (_i, state) => {
         state.storage.sql.exec(
-          "update comment_asks set confirm = 'passkey' where comment_id = ?",
+          "update comment_asks set options = json_set(options, '$[0].highStakes', json('{\"reason\":\"Hard to undo\"}')) where comment_id = ?",
           s.cid,
         );
       },

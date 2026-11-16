@@ -2266,10 +2266,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     by: StoredActor;
     optionId: string;
     rate: string;
-    /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
+    /** #2263: the service verified a passkey assertion for this pick. Only ever set after a verified assertion. */
     verified?: "passkey";
-    /** #2381: the caller's own switches ask for a passkey on this ask though it carries no `confirm` (an older ask, or a switch turned on later): a decider's pick needs one. */
+    /** #2661: this pick needs the picker's passkey (their settings, read by the service now): without a verified one it is refused. */
     needsPasskey?: boolean;
+    /** #2661: a high-stakes pick by a decider whose switch is off: recorded on the decision as `passkey: "off"`. */
+    passkeyOff?: boolean;
     /** #2381: the caller may edit the page (a decider must still). */
     canDecide: boolean;
     /** #2381: the caller is a guest-role member (marked on a weigh-in). */
@@ -2298,9 +2300,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (r.ask.withdrawn) fail("withdrawn", "This ask was withdrawn");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
-      // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
-      const risky =
-        r.ask.confirm === "passkey" || r.ask.options.some((o) => o.action);
+      // #2381: a high-stakes ask has no one to weigh in: only its decider (the asker's own user) picks.
+      const risky = r.ask.options.some((o) => o.highStakes);
       if (risky && !isDecider)
         fail(
           "forbidden",
@@ -2311,11 +2312,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "not_decider",
           "You can no longer decide this: you cannot edit the page",
         );
-      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
-      if (r.ask.confirm === "passkey" || (isDecider && a.needsPasskey)) {
+      // #2661: a pick that needs the picker's passkey is recorded only with a verified one, a change included.
+      if (a.needsPasskey) {
         if (a.verified !== "passkey")
           fail("passkey_required", "This pick needs your passkey");
-        if (r.ask.answer?.optionId === a.optionId)
+        if (isDecider && r.ask.answer?.optionId === a.optionId)
           fail("already_answered", "This ask is answered with that option");
       }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
@@ -2331,7 +2332,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
           r.ask.answer?.optionId === a.optionId &&
           (r.ask.answer.by.kind === "user" &&
             r.ask.answer.by.typed === true) === typedNow &&
-          (r.ask.answer.verified ?? null) === (a.verified ?? null)
+          (r.ask.answer.verified ?? null) === (a.verified ?? null) &&
+          (r.ask.answer.passkey ?? null) === (a.passkeyOff ? "off" : null)
         : mine?.optionId === a.optionId;
       const now = this.iso();
       // The cap is for weigh-ins: a decision is never refused by it.
@@ -2364,6 +2366,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
             at: now,
             ...(a.verified === "passkey"
               ? { verified: "passkey" as const }
+              : {}),
+            ...(a.passkeyOff && a.verified !== "passkey"
+              ? { passkey: "off" as const }
               : {}),
           });
       }
@@ -2720,10 +2725,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "already_answered",
           "This card already has an answer, so it can't be edited. Post a new card, and withdraw this one first if it has no decision yet.",
         );
-      if (
-        ask &&
-        (ask.ask.confirm === "passkey" || ask.ask.options.some((o) => o.action))
-      )
+      if (ask?.ask.options.some((o) => o.highStakes))
         fail(
           "conflict",
           "A card that approves an action can't be edited. Withdraw it and post a new card.",

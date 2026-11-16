@@ -1,7 +1,4 @@
 import {
-  ASK_ACTIONS,
-  type AskAction,
-  type AskOption,
   newId,
   PASSKEY_CHALLENGE_TTL_S,
   PASSKEY_COOLING_MS,
@@ -642,58 +639,72 @@ export async function cancelRemoval(
 
 // ------------------------------------------------------------------ settings
 
-type SettingsRow = {
-  ask_merge: number;
-  ask_deploy: number;
-  ask_delete: number;
-  ask_share: number;
-  ask_public: number;
-  ask_command: number;
-  every_pick: number;
-};
+// #2661: a person's passkey settings. `highStakes` (default on): a pick on an
+// option the asker marked high stakes needs their passkey. `everyAnswer`
+// (default off): every answer of theirs does, whatever was marked. `ownRule`:
+// their own words for what else is high stakes, passed to their agents. Read
+// from D1 at answer time and at read time, so a change applies to asks that
+// are already waiting, both ways.
 
-const COLUMN: Record<AskAction, keyof SettingsRow> = {
-  merge: "ask_merge",
-  deploy: "ask_deploy",
-  delete: "ask_delete",
-  share: "ask_share",
-  public: "ask_public",
-  command: "ask_command",
+type SettingsRow = {
+  high_stakes: number;
+  every_pick: number;
+  own_rule: string;
 };
 
 export type Switches = {
-  actions: Record<AskAction, boolean>;
-  everyPick: boolean;
+  highStakes: boolean;
+  everyAnswer: boolean;
+  ownRule: string;
 };
 
 const DEFAULTS: Switches = {
-  actions: {
-    merge: true,
-    deploy: true,
-    delete: true,
-    share: true,
-    public: true,
-    command: true,
-  },
-  everyPick: false,
+  highStakes: true,
+  everyAnswer: false,
+  ownRule: "",
 };
 
 const fromRow = (r: SettingsRow | null): Switches =>
   r
     ? {
-        actions: Object.fromEntries(
-          ASK_ACTIONS.map((a) => [a, a === "command" || r[COLUMN[a]] === 1]),
-        ) as Record<AskAction, boolean>,
-        everyPick: r.every_pick === 1,
+        highStakes: r.high_stakes === 1,
+        everyAnswer: r.every_pick === 1,
+        ownRule: r.own_rule,
       }
-    : { actions: { ...DEFAULTS.actions }, everyPick: false };
+    : { ...DEFAULTS };
 
 export async function switchesOf(env: Env, userId: string): Promise<Switches> {
   return fromRow(
-    await stmt(env.DB, "select * from passkey_settings where user_id = ?1")
+    await stmt(
+      env.DB,
+      "select high_stakes, every_pick, own_rule from passkey_settings where user_id = ?1",
+    )
       .bind(userId)
       .first<SettingsRow>(),
   );
+}
+
+/**
+ * What a pick on an option needs of this person, from their settings now:
+ * `need`: their passkey (every answer, or a marked option and the switch on);
+ * `off`: a marked option while their switch is off (their typed pick is the
+ * yes, recorded as such). `every answer` still asks whatever was marked.
+ */
+export const pickNeeds = (
+  s: Pick<Switches, "highStakes" | "everyAnswer">,
+  highStakes: boolean,
+): { need: boolean; off: boolean } => ({
+  need: s.everyAnswer || (highStakes && s.highStakes),
+  off: highStakes && !s.highStakes && !s.everyAnswer,
+});
+
+/** Whether the person has a passkey that may confirm now. */
+export async function hasUsablePasskey(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  return usable(await rowsOf(env, userId, now), now).length > 0;
 }
 
 export async function getPasskeySettings(
@@ -707,7 +718,6 @@ export async function getPasskeySettings(
   ]);
   return {
     ...s,
-    locked: ["command"],
     hasPasskey: rows.length > 0,
     hasUsablePasskey: usable(rows, now).length > 0,
   };
@@ -715,21 +725,26 @@ export async function getPasskeySettings(
 
 /** The exact change, canonical, as a challenge binding. */
 export const settingsBinding = (s: Switches): string =>
-  `${ASK_ACTIONS.map((a) => `${a}=${s.actions[a] ? 1 : 0}`).join(",")};every=${s.everyPick ? 1 : 0}`;
+  `high=${s.highStakes ? 1 : 0};every=${s.everyAnswer ? 1 : 0};rule=${JSON.stringify(s.ownRule)}`;
 
 const SETTINGS_SCOPE = "settings";
 
-const LOCKED_MESSAGE = "Always on: this runs code on your computer.";
+/** The plain text a person writes as their own rule: no control characters, one line per sentence is fine. */
+const cleanRule = (s: string): string =>
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: strips control characters
+  s.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim();
 
-const wanted = (b: PasskeySettingsPatch): Switches => {
-  if (!b.actions.command)
-    throw new ApiError("bad_request", LOCKED_MESSAGE, { locked: "command" });
-  return { actions: { ...b.actions }, everyPick: b.everyPick };
-};
+const wanted = (b: PasskeySettingsPatch): Switches => ({
+  highStakes: b.highStakes,
+  everyAnswer: b.everyAnswer,
+  ownRule: cleanRule(b.ownRule),
+});
 
-const turnsOff = (from: Switches, to: Switches): string[] => [
-  ...ASK_ACTIONS.filter((a) => from.actions[a] && !to.actions[a]),
-  ...(from.everyPick && !to.everyPick ? ["everyPick"] : []),
+/** What the change turns off or rewrites: the ones that need the passkey. */
+const weakens = (from: Switches, to: Switches): string[] => [
+  ...(from.highStakes && !to.highStakes ? ["highStakes"] : []),
+  ...(from.everyAnswer && !to.everyAnswer ? ["everyAnswer"] : []),
+  ...(from.ownRule !== to.ownRule ? ["ownRule"] : []),
 ];
 
 export async function settingsChallenge(
@@ -757,14 +772,14 @@ export async function putPasskeySettings(
 ): Promise<PasskeySettings> {
   const to = wanted(body);
   const from = await switchesOf(env, userId);
-  const off = turnsOff(from, to);
+  const weaker = weakens(from, to);
   let verified = false;
-  if (off.length > 0) {
+  if (weaker.length > 0) {
     await requireUsable(env, userId, now);
     if (body.assertion === undefined || body.assertion === null)
       throw new ApiError(
         "passkey_required",
-        "Turning a switch off needs your passkey",
+        "Turning this off, or changing your own rule, needs your passkey",
       );
     await verifyForScope(
       env,
@@ -777,28 +792,24 @@ export async function putPasskeySettings(
     );
     verified = true;
   }
-  const on = ASK_ACTIONS.filter((a) => !from.actions[a] && to.actions[a]);
   const changed =
-    off.length > 0 || on.length > 0 || from.everyPick !== to.everyPick;
+    from.highStakes !== to.highStakes ||
+    from.everyAnswer !== to.everyAnswer ||
+    from.ownRule !== to.ownRule;
   if (changed)
     await env.DB.batch([
       stmt(
         env.DB,
-        `insert into passkey_settings (user_id, ask_merge, ask_deploy, ask_delete, ask_share, ask_public, ask_command, every_pick, updated_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)
+        `insert into passkey_settings (user_id, high_stakes, every_pick, own_rule, updated_at)
+         values (?1, ?2, ?3, ?4, ?5)
          on conflict (user_id) do update set
-           ask_merge = excluded.ask_merge, ask_deploy = excluded.ask_deploy,
-           ask_delete = excluded.ask_delete, ask_share = excluded.ask_share,
-           ask_public = excluded.ask_public, ask_command = 1,
-           every_pick = excluded.every_pick, updated_at = excluded.updated_at`,
+           high_stakes = excluded.high_stakes, every_pick = excluded.every_pick,
+           own_rule = excluded.own_rule, updated_at = excluded.updated_at`,
       ).bind(
         userId,
-        to.actions.merge ? 1 : 0,
-        to.actions.deploy ? 1 : 0,
-        to.actions.delete ? 1 : 0,
-        to.actions.share ? 1 : 0,
-        to.actions.public ? 1 : 0,
-        to.everyPick ? 1 : 0,
+        to.highStakes ? 1 : 0,
+        to.everyAnswer ? 1 : 0,
+        to.ownRule,
         now,
       ),
       audit(
@@ -807,12 +818,12 @@ export async function putPasskeySettings(
         { type: "user", id: userId },
         userActor(userId),
         {
+          // The rule's text is the person's own words: never in the log.
           detail: {
-            off,
-            on: [
-              ...on,
-              ...(!from.everyPick && to.everyPick ? ["everyPick"] : []),
-            ],
+            highStakes: to.highStakes,
+            everyAnswer: to.everyAnswer,
+            ruleChanged: from.ownRule !== to.ownRule,
+            weakened: weaker,
             passkeyVerified: verified,
           },
         },
@@ -822,33 +833,6 @@ export async function putPasskeySettings(
 }
 
 // ------------------------------------------------------------------ asks
-
-/**
- * `confirm` for a new ask: "passkey" when any of the people it reaches has a
- * passkey and their switches cover an action its options name (or "every
- * pick" is on). A member with no passkey cannot confirm, so their switches do
- * not apply until they add one (the Settings switches are disabled then).
- */
-export async function confirmFor(
-  env: Env,
-  addressees: string[],
-  options: Pick<AskOption, "action">[],
-): Promise<"passkey" | undefined> {
-  const named = new Set(options.flatMap((o) => (o.action ? [o.action] : [])));
-  if (addressees.length === 0) return undefined;
-  const ids = JSON.stringify(addressees);
-  const { results } = await stmt(
-    env.DB,
-    "select distinct user_id from passkeys where user_id in (select value from json_each(?1)) and (removal_at is null or removal_at > ?2)",
-  )
-    .bind(ids, Date.now())
-    .all<{ user_id: string }>();
-  for (const { user_id } of results) {
-    const s = await switchesOf(env, user_id);
-    if (s.everyPick || [...named].some((a) => s.actions[a])) return "passkey";
-  }
-  return undefined;
-}
 
 /** The ask a pick or challenge is for: its binding is the option. */
 export const pickScope = (artifactId: string, commentId: string) =>

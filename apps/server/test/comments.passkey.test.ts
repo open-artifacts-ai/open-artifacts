@@ -21,14 +21,16 @@ import {
 } from "./passkey-fixtures.js";
 import type { FakeAuthenticator } from "./passkey-helper.js";
 
-// #2263 B: a pick on an ask the server marked confirm "passkey" needs the
-// picker's passkey; a token or MCP grant never carries one.
+// #2263, reworked by #2661: a pick on a high-stakes option needs the picker's
+// passkey when their switch is on (or "every answer" is); a token or MCP grant
+// never carries one. The server decides per person, from their own settings,
+// at read and answer time.
 
 const app = createApp();
 type K = { artifactId: string; threadId: string; commentId: string };
 const NOTE = { kind: "note" };
 const OPTS = [
-  { id: "merge", label: "Merge it", action: "merge" as const },
+  { id: "merge", label: "Merge it", highStakes: { reason: "Hard to undo" } },
   { id: "wait", label: "Not yet" },
 ];
 
@@ -148,75 +150,168 @@ const read = async (k: K, auth = alice.cookie) => {
 };
 const settings = (u: U, body: object) =>
   api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
+const ALL_ON = { highStakes: true, everyAnswer: false, ownRule: "" };
 
-describe("the server marks asks confirm: passkey", () => {
-  it("from the actions the options name, for a member with a passkey", async () => {
+const withMark = (id: string, label: string, reason = "Hard to undo") => ({
+  id,
+  label,
+  highStakes: { reason },
+});
+const PLAIN = [
+  { id: "a", label: "A" },
+  { id: "b", label: "B" },
+];
+/** Two marked options: each pick needs the passkey. */
+const TWO = [withMark("merge", "Merge it"), withMark("wait", "Wait")];
+const optionOf = (c: Comment, id: string) =>
+  c.ask?.options.find((o) => o.id === id);
+
+describe("the server stamps each viewer (#2661)", () => {
+  it("a marked option carries the reason; only the viewer's own switches add `passkey`", async () => {
     const k = await ask(alice);
-    expect(k.comment.ask?.confirm).toBe("passkey");
-    expect((await read(k)).ask?.confirm).toBe("passkey");
+    const got = await read(k);
+    expect(optionOf(got, "merge")).toMatchObject({
+      highStakes: { reason: "Hard to undo" },
+      passkey: true,
+    });
+    // "No" is one tap: unmarked options never ask unless every answer is on.
+    expect(optionOf(got, "wait")?.passkey).toBeUndefined();
+    expect(got.ask?.passkeyMissing).toBeUndefined();
+    // The ask is not marked for anyone else by the server: no `confirm`.
+    expect((got.ask as { confirm?: unknown }).confirm).toBeUndefined();
   });
 
-  it("not for an option with no action, nor for a member with no passkey", async () => {
-    expect(
-      (
-        await ask(alice, [
-          { id: "a", label: "A" },
-          { id: "b", label: "B" },
-        ])
-      ).comment.ask?.confirm,
-    ).toBeUndefined();
-    expect((await ask(bob)).comment.ask?.confirm).toBeUndefined();
+  it("a viewer with no passkey sees passkeyMissing on a marked ask, and none on a plain one", async () => {
+    const k = await ask(bob);
+    const got = await read(k, bob.cookie);
+    expect(optionOf(got, "merge")?.passkey).toBe(true);
+    expect(got.ask?.passkeyMissing).toBe(true);
+    const plain = await ask(bob, PLAIN);
+    const p = await read(plain, bob.cookie);
+    expect(p.ask?.passkeyMissing).toBeUndefined();
+    expect(p.ask?.options.some((o) => o.passkey)).toBe(false);
   });
 
-  it("ignores a confirm the client sends", async () => {
-    const k = await ask(bob, OPTS, { confirm: "passkey" });
-    expect(k.comment.ask?.confirm).toBeUndefined();
-  });
-
-  it("follows the switches: an action off is unmarked, every pick marks any ask", async () => {
-    const u = await mkUser("pk-sw");
+  it("every answer asks for every option, whatever was marked, and the mark can only add a prompt", async () => {
+    const u = await mkUser("pk-every");
     const { a } = await addPasskey(app, u);
-    const on = {
-      merge: true,
-      deploy: true,
-      delete: true,
-      share: true,
-      public: true,
-      command: true,
-    };
-    const plain = [
-      { id: "a", label: "A" },
-      { id: "b", label: "B" },
-    ];
-    expect((await ask(u, plain)).comment.ask?.confirm).toBeUndefined();
-    expect((await settings(u, { actions: on, everyPick: true })).status).toBe(
+    expect((await settings(u, { ...ALL_ON, everyAnswer: true })).status).toBe(
       200,
     );
-    expect((await ask(u, plain)).comment.ask?.confirm).toBe("passkey");
-    // Off needs an assertion bound to that exact change.
-    const body = { actions: { ...on, merge: false }, everyPick: false };
+    const k = await ask(u, OPTS);
+    const got = await read(k, u.cookie);
+    expect(got.ask?.options.every((o) => o.passkey === true)).toBe(true);
+    // An ask with no mark at all asks for it too.
+    const plain = await read(await ask(u, PLAIN), u.cookie);
+    expect(plain.ask?.options.every((o) => o.passkey === true)).toBe(true);
+    // Turning it off needs the passkey, bound to that change.
+    const off = { ...ALL_ON, everyAnswer: false };
     const c = (await (
       await api(app, R.passkeySettingsChallenge, u.cookie, {
         method: "POST",
-        body,
+        body: off,
       })
     ).json()) as PasskeyChallenge;
     expect(
-      (await settings(u, { ...body, assertion: await assertFor(a, c) })).status,
+      (await settings(u, { ...off, assertion: await assertFor(a, c) })).status,
     ).toBe(200);
-    expect((await ask(u, OPTS)).comment.ask?.confirm).toBeUndefined();
-    // Run a command is always on.
-    expect(
-      (
-        await ask(u, [
-          { id: "r", label: "Run", action: "command" },
-          { id: "n", label: "No" },
-        ])
-      ).comment.ask?.confirm,
-    ).toBe("passkey");
   });
 
-  it("an edit is refused (#2511: withdraw and post a new card) and leaves the mark", async () => {
+  it("a flipped switch applies to an ask already waiting, both ways", async () => {
+    const u = await mkUser("pk-flip");
+    const { a } = await addPasskey(app, u);
+    const k = await ask(u, OPTS);
+    expect(optionOf(await read(k, u.cookie), "merge")?.passkey).toBe(true);
+    // Off (with the passkey): the same card no longer asks, and the pick is
+    // recorded as made with the switch off, never as verified.
+    const off = { ...ALL_ON, highStakes: false };
+    const c = (await (
+      await api(app, R.passkeySettingsChallenge, u.cookie, {
+        method: "POST",
+        body: off,
+      })
+    ).json()) as PasskeyChallenge;
+    expect(
+      (await settings(u, { ...off, assertion: await assertFor(a, c) })).status,
+    ).toBe(200);
+    const waiting = await read(k, u.cookie);
+    expect(optionOf(waiting, "merge")?.passkey).toBeUndefined();
+    expect(waiting.ask?.passkeyMissing).toBeUndefined();
+    // On again (needs nothing): it asks again, and a bare pick is refused.
+    expect((await settings(u, ALL_ON)).status).toBe(200);
+    expect(optionOf(await read(k, u.cookie), "merge")?.passkey).toBe(true);
+    const refused = await answer(k, u.cookie, { optionId: "merge" });
+    expect(refused.status).toBe(403);
+    expect((await errOf(refused)).code).toBe("passkey_required");
+  });
+
+  it("a high-stakes pick with the switch off records passkey: 'off', never verified", async () => {
+    const u = await mkUser("pk-off");
+    const { a } = await addPasskey(app, u);
+    const off = { ...ALL_ON, highStakes: false };
+    const c = (await (
+      await api(app, R.passkeySettingsChallenge, u.cookie, {
+        method: "POST",
+        body: off,
+      })
+    ).json()) as PasskeyChallenge;
+    expect(
+      (await settings(u, { ...off, assertion: await assertFor(a, c) })).status,
+    ).toBe(200);
+    const k = await ask(u, OPTS);
+    const r = await answer(k, u.cookie, { optionId: "merge" });
+    expect(r.status).toBe(200);
+    const got = (await r.json()) as Comment;
+    expect(got.ask?.answer).toMatchObject({
+      optionId: "merge",
+      passkey: "off",
+    });
+    expect(got.ask?.answer?.verified).toBeUndefined();
+    // A plain option records neither.
+    const p = await ask(u, [withMark("m", "Merge"), { id: "w", label: "No" }]);
+    const plain = (await (
+      await answer(p, u.cookie, { optionId: "w" })
+    ).json()) as Comment;
+    expect(plain.ask?.answer?.passkey).toBeUndefined();
+    expect(plain.ask?.answer?.verified).toBeUndefined();
+  });
+
+  it("refuses the old fields on input (400, naming highStakes)", async () => {
+    for (const extra of [
+      { confirm: "passkey" },
+      {
+        options: [
+          { id: "m", label: "Merge", action: "merge" },
+          { id: "n", label: "No" },
+        ],
+      },
+      {
+        options: [
+          { id: "m", label: "Merge", passkey: true },
+          { id: "n", label: "No" },
+        ],
+      },
+    ])
+      await expect(ask(alice, PLAIN, extra)).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringContaining("highStakes"),
+      });
+  });
+
+  it("requires a plain reason of at most 200 characters", async () => {
+    for (const reason of ["", "x".repeat(201), "two\nlines"])
+      await expect(
+        ask(alice, [withMark("m", "Merge", reason), { id: "n", label: "No" }]),
+      ).rejects.toMatchObject({ code: "bad_request" });
+    await expect(
+      ask(alice, [
+        { id: "m", label: "Merge", highStakes: {} },
+        { id: "n", label: "No" },
+      ]),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("an edit is refused (withdraw and post a new card), so the mark can't be changed", async () => {
     const k = await ask(alice);
     const r = await api(
       app,
@@ -228,7 +323,9 @@ describe("the server marks asks confirm: passkey", () => {
       },
     );
     expect(r.status).toBe(409);
-    expect((await read(k)).ask?.confirm).toBe("passkey");
+    expect(optionOf(await read(k), "merge")?.highStakes?.reason).toBe(
+      "Hard to undo",
+    );
   });
 });
 
@@ -246,7 +343,6 @@ describe("POST answer/challenge", () => {
     const u = await mkUser("pk-none");
     const { passkey } = await addPasskey(app, u);
     const k = await ask(u);
-    expect(k.comment.ask?.confirm).toBe("passkey");
     await E.DB.prepare("delete from passkeys where id = ?")
       .bind(passkey.id)
       .run();
@@ -277,8 +373,10 @@ describe("POST answer/challenge", () => {
     expect((await challenge(k, bob.cookie)).status).toBe(403);
   });
 
-  it("400 for an ask that needs no passkey and for an unknown option", async () => {
-    expect((await challenge(await ask(bob), bob.cookie)).status).toBe(400);
+  it("400 for a pick that needs no passkey and for an unknown option", async () => {
+    expect(
+      (await challenge(await ask(bob, PLAIN), bob.cookie, "a")).status,
+    ).toBe(400);
     expect(
       (await challenge(await ask(alice), alice.cookie, "nope")).status,
     ).toBe(400);
@@ -313,9 +411,9 @@ describe("POST answer/challenge", () => {
   });
 });
 
-describe("POST answer on a confirm ask", () => {
+describe("POST answer on a high-stakes option", () => {
   it("changing a verified answer needs a new assertion", async () => {
-    const k = await ask(alice);
+    const k = await ask(alice, TWO);
     const c1 = (await (
       await challenge(k, alice.cookie)
     ).json()) as PasskeyChallenge;
@@ -480,7 +578,7 @@ describe("POST answer on a confirm ask", () => {
   });
 
   it("400 passkey_failed when the challenge was issued for another option", async () => {
-    const k = await ask(alice);
+    const k = await ask(alice, TWO);
     const c = (await (
       await challenge(k, alice.cookie, "wait")
     ).json()) as PasskeyChallenge;
@@ -583,8 +681,8 @@ describe("POST answer on a confirm ask", () => {
   });
 
   it("a plain ask is answered by a token as before", async () => {
-    const k = await ask(bob);
-    const r = await answer(k, bob.pat, { optionId: "merge" });
+    const k = await ask(bob, PLAIN);
+    const r = await answer(k, bob.pat, { optionId: "a" });
     expect(r.status).toBe(200);
     expect(((await r.json()) as Comment).ask?.answer?.verified).toBeUndefined();
   });
@@ -605,16 +703,7 @@ describe("the decider's own passkey settings (#2381)", () => {
     { id: "a", label: "A" },
     { id: "b", label: "B" },
   ];
-  const on = {
-    merge: true,
-    deploy: true,
-    delete: true,
-    share: true,
-    public: true,
-    command: true,
-  };
-
-  it("an ask with an action goes to its asker only: asking someone else is refused", async () => {
+  it("an ask with a high-stakes option goes to its asker only: asking someone else is refused", async () => {
     const a = await mkUser("pk-dec-a");
     await addPasskey(app, a);
     await expect(ask(bob, OPTS, {}, a)).rejects.toMatchObject({
@@ -625,24 +714,22 @@ describe("the decider's own passkey settings (#2381)", () => {
   it("every pick: the asker's passkey is asked for though only someone else is addressed", async () => {
     const a = await mkUser("pk-dec-b");
     await addPasskey(app, a);
-    expect((await settings(a, { actions: on, everyPick: true })).status).toBe(
+    expect((await settings(a, { ...ALL_ON, everyAnswer: true })).status).toBe(
       200,
     );
     const k = await ask(bob, plain, {}, a);
-    expect(k.comment.ask?.confirm).toBe("passkey");
-    // The decider (the asker) cannot pick without it; the addressee cannot weigh in on it.
+    // The decider (the asker) cannot pick without it; the addressee's own switches are what govern their weigh-in.
     const r = await answer(k, a.cookie, { optionId: "a" });
     expect(r.status).toBe(403);
     expect((await errOf(r)).code).toBe("passkey_required");
-    expect((await answer(k, bob.cookie, { optionId: "a" })).status).toBe(403);
+    expect((await answer(k, bob.cookie, { optionId: "a" })).status).toBe(200);
   });
 
   it("a switch turned on after the ask, or an older ask: the decider's pick still needs the passkey", async () => {
     const a = await mkUser("pk-dec-c");
     const { a: key } = await addPasskey(app, a);
     const k = await ask(bob, plain, {}, a);
-    expect(k.comment.ask?.confirm).toBeUndefined();
-    expect((await settings(a, { actions: on, everyPick: true })).status).toBe(
+    expect((await settings(a, { ...ALL_ON, everyAnswer: true })).status).toBe(
       200,
     );
     const r = await answer(k, a.cookie, { optionId: "a" });

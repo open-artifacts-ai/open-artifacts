@@ -1,10 +1,10 @@
 import {
   ASK_ACTIONS,
   type AskAction,
+  type LegacyPasskeySettings,
+  LegacyPasskeySettingsSchema,
   type Passkey,
   PasskeySchema,
-  type PasskeySettings,
-  PasskeySettingsSchema,
   R,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
@@ -141,7 +141,7 @@ function SecurityBody() {
   const settings = useQuery({
     queryKey: qkSettings,
     queryFn: ({ signal }) =>
-      api.get(R.passkeySettings, PasskeySettingsSchema, signal),
+      api.get(R.passkeySettings, LegacyPasskeySettingsSchema, signal),
   });
   const refresh = () =>
     Promise.all([
@@ -537,7 +537,7 @@ function Switches({
   settings,
   failed,
 }: {
-  settings: PasskeySettings | undefined;
+  settings: LegacyPasskeySettings | undefined;
   failed: boolean;
 }) {
   const qc = useQueryClient();
@@ -560,7 +560,7 @@ function Switches({
       const current = await qc.fetchQuery({
         queryKey: qkSettings,
         queryFn: ({ signal }) =>
-          api.get(R.passkeySettings, PasskeySettingsSchema, signal),
+          api.get(R.passkeySettings, LegacyPasskeySettingsSchema, signal),
         staleTime: 0,
       });
       const body = {
@@ -570,13 +570,13 @@ function Switches({
         },
         everyPick: key === "everyPick" ? next : current.everyPick,
       };
-      let saved: PasskeySettings;
+      let saved: LegacyPasskeySettings;
       if (next) {
         saved = await api.send(
           "PATCH",
           R.passkeySettings,
           body,
-          PasskeySettingsSchema,
+          LegacyPasskeySettingsSchema,
         );
       } else {
         setNote({ key, text: WAITING, error: false });
@@ -591,7 +591,7 @@ function Switches({
           "PATCH",
           R.passkeySettings,
           { ...body, assertion },
-          PasskeySettingsSchema,
+          LegacyPasskeySettingsSchema,
         );
       }
       qc.setQueryData(qkSettings, saved);

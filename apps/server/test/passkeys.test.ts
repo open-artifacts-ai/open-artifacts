@@ -13,7 +13,7 @@ import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { passkeyRemovedEmail } from "../src/email/templates.js";
 import type { Env } from "../src/env.js";
 import { appOrigin } from "../src/http/errors.js";
-import { confirmFor } from "../src/services/passkeys.js";
+import { hasUsablePasskey } from "../src/services/passkeys.js";
 import { api, errOf, login } from "./helpers.js";
 import { FakeAuthenticator } from "./passkey-helper.js";
 
@@ -106,24 +106,11 @@ const assertFor = async (
     ...extra,
   });
 
-const ALL_ON = {
-  actions: {
-    merge: true,
-    deploy: true,
-    delete: true,
-    share: true,
-    public: true,
-    command: true,
-  },
-  everyPick: false,
-};
-const off = (...names: string[]) => ({
-  ...ALL_ON,
-  actions: {
-    ...ALL_ON.actions,
-    ...Object.fromEntries(names.map((n) => [n, false])),
-  },
-});
+const ALL_ON = { highStakes: true, everyAnswer: false, ownRule: "" };
+/** Turns the high-stakes switch off: needs the passkey. */
+const HS_OFF = { ...ALL_ON, highStakes: false };
+/** Changes the person's own rule: needs the passkey. */
+const RULE = { ...ALL_ON, ownRule: "anything that emails a customer" };
 
 const auditOf = async (userId: string, action: string) =>
   (
@@ -261,9 +248,7 @@ describe("removing a passkey", () => {
     // It is still there, marked, and still marks new asks.
     const list = await json<Passkey[]>(await api(app, R.passkeys, u.cookie));
     expect(list[0]?.removesAt).toBe(removesAt);
-    expect(await confirmFor(E, [u.userId], [{ action: "merge" }])).toBe(
-      "passkey",
-    );
+    expect(await hasUsablePasskey(E, u.userId)).toBe(true);
     // A second request does not move the time.
     const again = await api(app, R.passkey(passkey.id), u.fresh, {
       method: "DELETE",
@@ -309,9 +294,7 @@ describe("removing a passkey", () => {
     expect(await json<Passkey[]>(await api(app, R.passkeys, u.cookie))).toEqual(
       [],
     );
-    expect(await confirmFor(E, [u.userId], [{ action: "merge" }])).toBe(
-      undefined,
-    );
+    expect(await hasUsablePasskey(E, u.userId)).toBe(false);
   });
 
   it("an assertion removes it at once", async () => {
@@ -351,102 +334,100 @@ describe("removing a passkey", () => {
 });
 
 describe("the passkey settings", () => {
-  it("defaults to every action on and every pick off, with command locked", async () => {
+  it("defaults to high stakes on and every answer off, with no rule", async () => {
     const u = await mk("set");
     const s = await json<PasskeySettings>(
       await api(app, R.passkeySettings, u.cookie),
     );
-    expect(s).toMatchObject({
+    expect(s).toEqual({
       ...ALL_ON,
-      locked: ["command"],
       hasPasskey: false,
+      hasUsablePasskey: false,
     });
   });
 
-  it("refuses to turn run-a-command off", async () => {
-    const u = await mk("set-cmd");
-    const r = await api(app, R.passkeySettings, u.cookie, {
+  it("refuses the old six-switch body and a rule over 500 characters (400)", async () => {
+    const u = await mk("set-old");
+    const old = await api(app, R.passkeySettings, u.cookie, {
       method: "PATCH",
-      body: off("command"),
+      body: { actions: { merge: true }, everyPick: false },
     });
-    expect(r.status).toBe(400);
-    expect((await errOf(r)).message).toContain("Always on");
-    expect(
-      (
-        await api(app, R.passkeySettingsChallenge, u.cookie, {
-          method: "POST",
-          body: off("command"),
-        })
-      ).status,
-    ).toBe(400);
+    expect(old.status).toBe(400);
+    const long = await api(app, R.passkeySettings, u.cookie, {
+      method: "PATCH",
+      body: { ...ALL_ON, ownRule: "x".repeat(501) },
+    });
+    expect(long.status).toBe(400);
   });
 
-  it("turning a switch on needs nothing, and an unchanged PUT writes nothing", async () => {
+  it("turning every answer on needs nothing, and an unchanged PUT writes nothing", async () => {
     const u = await mk("set-on");
     const r = await api(app, R.passkeySettings, u.cookie, {
       method: "PATCH",
-      body: { ...ALL_ON, everyPick: true },
+      body: { ...ALL_ON, everyAnswer: true },
     });
     expect(r.status).toBe(200);
-    expect((await json<PasskeySettings>(r)).everyPick).toBe(true);
+    expect((await json<PasskeySettings>(r)).everyAnswer).toBe(true);
     expect((await auditOf(u.userId, "passkey.settings"))[0]).toMatchObject({
-      off: [],
+      everyAnswer: true,
+      weakened: [],
       passkeyVerified: false,
     });
     const same = await api(app, R.passkeySettings, u.cookie, {
       method: "PATCH",
-      body: { ...ALL_ON, everyPick: true },
+      body: { ...ALL_ON, everyAnswer: true },
     });
     expect(same.status).toBe(200);
     expect((await auditOf(u.userId, "passkey.settings")).length).toBe(1);
   });
 
-  it("turning one off: no passkey, cooling passkey, then no assertion", async () => {
+  it("turning it off: no passkey, cooling passkey, then no assertion", async () => {
     const u = await mk("set-off");
     const put = (body: object) =>
       api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
-    const none = await put(off("merge"));
+    const none = await put(HS_OFF);
     expect(none.status).toBe(409);
     expect((await errOf(none)).code).toBe("no_passkey");
     const { a } = await addPasskey(u, u.fresh, false);
-    const cooling = await put(off("merge"));
+    const cooling = await put(HS_OFF);
     expect(cooling.status).toBe(409);
     expect((await errOf(cooling)).code).toBe("passkey_cooling");
     await E.DB.prepare("update passkeys set created_at = ? where user_id = ?")
       .bind(Date.now() - 2 * DAY, u.userId)
       .run();
-    const missing = await put(off("merge"));
+    const missing = await put(HS_OFF);
     expect(missing.status).toBe(403);
     expect((await errOf(missing)).code).toBe("passkey_required");
     // An assertion for a different change fails; the right one works once.
     const wrong = await json<PasskeyChallenge>(
-      await get(u, off("deploy"), R.passkeySettingsChallenge),
+      await get(u, RULE, R.passkeySettingsChallenge),
     );
     const bad = await put({
-      ...off("merge"),
+      ...HS_OFF,
       assertion: await assertFor(a, wrong),
     });
     expect(bad.status).toBe(400);
     expect((await errOf(bad)).code).toBe("passkey_failed");
     const c = await json<PasskeyChallenge>(
-      await get(u, off("merge"), R.passkeySettingsChallenge),
+      await get(u, HS_OFF, R.passkeySettingsChallenge),
     );
     const assertion = await assertFor(a, c);
-    const ok = await put({ ...off("merge"), assertion });
+    const ok = await put({ ...HS_OFF, assertion });
     expect(ok.status).toBe(200);
-    expect((await json<PasskeySettings>(ok)).actions.merge).toBe(false);
+    expect((await json<PasskeySettings>(ok)).highStakes).toBe(false);
     expect((await auditOf(u.userId, "passkey.settings"))[0]).toMatchObject({
-      off: ["merge"],
+      highStakes: false,
+      weakened: ["highStakes"],
       passkeyVerified: true,
     });
     // The same assertion again: the challenge is spent.
-    const reuse = await put({ ...off("merge", "share"), assertion });
+    const reuse = await put({ ...{ ...HS_OFF, ownRule: "x" }, assertion });
     expect(reuse.status).toBe(410);
     expect((await errOf(reuse)).code).toBe("challenge_expired");
     expect(
       (await json<PasskeySettings>(await api(app, R.passkeySettings, u.cookie)))
-        .actions.share,
-    ).toBe(true);
+        .ownRule,
+    ).toBe("");
   });
 
   it("refuses a malformed assertion before verifying (400 bad_request)", async () => {
@@ -489,7 +470,7 @@ describe("the passkey settings", () => {
     ]) {
       const r = await api(app, R.passkeySettings, u.cookie, {
         method: "PATCH",
-        body: { ...off("merge"), assertion },
+        body: { ...HS_OFF, assertion },
       });
       expect(r.status).toBe(400);
       expect((await errOf(r)).code).toBe("bad_request");
@@ -514,7 +495,7 @@ describe("challenges", () => {
   it("expire, and a new one voids the old", async () => {
     const u = await mk("ch");
     const { a } = await addPasskey(u);
-    const body = off("deploy");
+    const body = RULE;
     const first = await json<PasskeyChallenge>(
       await get(u, body, R.passkeySettingsChallenge),
     );
@@ -547,7 +528,7 @@ describe("challenges", () => {
     await addPasskey(u);
     let last = 0;
     for (let i = 0; i < 12 && last !== 429; i++)
-      last = (await get(u, off("deploy"), R.passkeySettingsChallenge)).status;
+      last = (await get(u, RULE, R.passkeySettingsChallenge)).status;
     expect(last).toBe(429);
   });
 });
@@ -574,13 +555,13 @@ describe("a failed check burns the challenge", () => {
     const u = await mk("burn");
     const { a } = await addPasskey(u);
     const c = await json<PasskeyChallenge>(
-      await get(u, off("deploy"), R.passkeySettingsChallenge),
+      await get(u, RULE, R.passkeySettingsChallenge),
     );
     const assertion = await assertFor(a, c);
     const patch = (body: object) =>
       api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
-    expect((await patch({ ...off("merge"), assertion })).status).toBe(400);
-    expect((await patch({ ...off("deploy"), assertion })).status).toBe(410);
+    expect((await patch({ ...HS_OFF, assertion })).status).toBe(400);
+    expect((await patch({ ...RULE, assertion })).status).toBe(410);
   });
 });
 

@@ -1,6 +1,6 @@
 // #2263: Settings › Security, passkeys and the "ask for a passkey" switches.
 
-import type { PasskeySettings } from "@oa/shared";
+import type { LegacyPasskeySettings } from "@oa/shared";
 import { R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -47,7 +47,7 @@ const use = (state: "none" | "cooling" | "usable" | "pending") =>
 const err = (code: string, status: number, details?: unknown) =>
   HttpResponse.json({ error: { code, message: code, details } }, { status });
 
-const base: PasskeySettings = {
+const base: LegacyPasskeySettings = {
   actions: {
     merge: true,
     deploy: true,
@@ -63,7 +63,7 @@ const base: PasskeySettings = {
 };
 
 /** A settings server of our own, to see exactly what the page sends. */
-function settingsServer(initial: PasskeySettings, put?: () => Response) {
+function settingsServer(initial: LegacyPasskeySettings, put?: () => Response) {
   let s = initial;
   const puts: unknown[] = [];
   const challenges: unknown[] = [];
@@ -81,7 +81,7 @@ function settingsServer(initial: PasskeySettings, put?: () => Response) {
     }),
     http.patch(`*${R.passkeySettings}`, async ({ request }) => {
       const b = (await request.json()) as {
-        actions: PasskeySettings["actions"];
+        actions: LegacyPasskeySettings["actions"];
         everyPick: boolean;
       };
       puts.push(b);

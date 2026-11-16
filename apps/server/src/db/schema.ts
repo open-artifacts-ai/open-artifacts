@@ -609,8 +609,11 @@ export const pickAssertions = sqliteTable(
   ],
 );
 
-// #2263 a member's "ask for a passkey to approve" switches. No row: the
-// defaults (every action on, every pick off). ask_command is always 1.
+// #2263, reworked by #2661: a member's passkey switches. high_stakes (default
+// on), every_pick (the "every answer" switch, default off) and own_rule (the
+// person's own words). No row: those defaults. The six ask_* columns are the
+// old per-action switches: no longer read or written, kept so the table is
+// never rebuilt.
 export const passkeySettings = sqliteTable("passkey_settings", {
   userId: text("user_id")
     .primaryKey()
@@ -623,6 +626,8 @@ export const passkeySettings = sqliteTable("passkey_settings", {
   askCommand: integer("ask_command").notNull().default(1),
   everyPick: integer("every_pick").notNull().default(0),
   updatedAt: integer("updated_at").notNull(),
+  highStakes: integer("high_stakes").notNull().default(1),
+  ownRule: text("own_rule").notNull().default(""),
 });
 
 export const tokens = sqliteTable("tokens", {

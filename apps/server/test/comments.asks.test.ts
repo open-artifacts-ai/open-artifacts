@@ -835,7 +835,11 @@ describe("deciders (#2381)", () => {
         decider: { key: editor.userId },
         recommended: undefined,
         options: [
-          { id: "merge", label: "Merge", action: "merge" },
+          {
+            id: "merge",
+            label: "Merge",
+            highStakes: { reason: "Hard to undo" },
+          },
           { id: "wait", label: "Wait" },
         ],
       }),
@@ -868,7 +872,11 @@ describe("deciders (#2381)", () => {
     const risky = {
       recommended: undefined,
       options: [
-        { id: "merge", label: "Merge it", action: "merge" },
+        {
+          id: "merge",
+          label: "Merge it",
+          highStakes: { reason: "Hard to undo" },
+        },
         { id: "wait", label: "Not yet" },
       ],
     };
@@ -877,6 +885,12 @@ describe("deciders (#2381)", () => {
     ).rejects.toMatchObject({ code: "bad_request" });
     const t = await ask(s.id, [owner.userId], risky);
     const cid = cidOf(t);
+    // The owner has turned the high-stakes switch off: their typed pick is the yes (#2661).
+    await E.DB.prepare(
+      "insert or replace into passkey_settings (user_id, high_stakes, every_pick, own_rule, updated_at) values (?, 0, 0, '', ?)",
+    )
+      .bind(owner.userId, Date.now())
+      .run();
     const w = await answer(s.id, t.id, cid, viewer, "merge");
     expect(w.status).toBe(403);
     const asView = await listAsk(s.id, viewer, cid);

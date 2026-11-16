@@ -140,11 +140,11 @@ export type StoredAsk = {
     optionId: string;
     by: StoredActor;
     at: string;
-    /** #2263: a passkey assertion for this pick verified. Set by the server only. */
+    /** #2263: a passkey assertion for this pick verified. Set by the server only, and never without one. */
     verified?: "passkey";
+    /** #2661: a pick on a high-stakes option made while the decider's switch was off. Recorded at answer time. */
+    passkey?: "off";
   };
-  /** #2263: a pick needs the picker's passkey. Set by the server when the ask is created; never changes. */
-  confirm?: "passkey";
   /** #2381: the user id who decides when the asker named someone else; absent: the asker's own user. Taking the decision back clears it. */
   decider?: string;
   /** #2323: the comment id of the ask this one replaces. */
@@ -427,7 +427,10 @@ const withLegacy = (
 
 const askOf = (r: AskRow): StoredAsk => ({
   question: r.question,
-  options: JSON.parse(r.options) as AskOption[],
+  // An option stored before #2661 may carry an `action`: it is no longer a thing.
+  options: (JSON.parse(r.options) as (AskOption & { action?: unknown })[]).map(
+    ({ action: _gone, ...o }) => o,
+  ),
   ...(r.recommended
     ? {
         recommended: JSON.parse(r.recommended) as {
@@ -437,7 +440,6 @@ const askOf = (r: AskRow): StoredAsk => ({
       }
     : {}),
   to: JSON.parse(r.addressees) as StoredParty[],
-  ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.decider ? { decider: r.decider } : {}),
   ...(r.replaces ? { replaces: r.replaces } : {}),
   ...(r.withdrawn
@@ -663,15 +665,14 @@ export function insertExtras(
   if (x.ask?.replaces) checkReplaces(sql, commentId, x.ask.replaces);
   if (x.ask)
     sql.exec(
-      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees, confirm, decider, replaces)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees, decider, replaces)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
       commentId,
       threadId,
       x.ask.question,
       JSON.stringify(x.ask.options),
       x.ask.recommended ? JSON.stringify(x.ask.recommended) : null,
       JSON.stringify(x.ask.to),
-      x.ask.confirm === "passkey" ? "passkey" : null,
       x.ask.decider ?? null,
       x.ask.replaces ?? null,
     );

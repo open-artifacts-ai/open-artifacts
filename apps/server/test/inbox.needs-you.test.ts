@@ -230,7 +230,7 @@ describe("GET R.meInbox: Needs you", () => {
       );
     await at("plain old", OPTS);
     await at("merge it?", [
-      { id: "y", label: "Merge", action: "merge" },
+      { id: "y", label: "Merge", highStakes: { reason: "Hard to undo" } },
       { id: "n", label: "No" },
     ]);
     await at("plain newer", OPTS);

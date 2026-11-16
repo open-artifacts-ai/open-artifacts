@@ -13,10 +13,10 @@ import type { ErrorCode } from "../errors.js";
 import { PASSKEY_COOLING_MS } from "../passkeys.js";
 import { R } from "../routes.js";
 import {
+  type LegacyPasskeySettings,
+  LegacyPasskeySettingsPatchSchema,
   type Passkey,
   PasskeyRegisterBodySchema,
-  type PasskeySettings,
-  PasskeySettingsPatchSchema,
 } from "../schemas.js";
 
 export type PasskeyMockState = "none" | "cooling" | "usable" | "pending";
@@ -93,7 +93,7 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
   let everyPick = false;
   let n = 0;
 
-  const settings = (): PasskeySettings => ({
+  const settings = (): LegacyPasskeySettings => ({
     actions,
     everyPick,
     locked: ["command"],
@@ -130,12 +130,12 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
     http.get(`*${R.passkeys}`, () => HttpResponse.json(keys)),
     http.get(`*${R.passkeySettings}`, () => HttpResponse.json(settings())),
     http.post(`*${R.passkeySettingsChallenge}`, async ({ request }) => {
-      const r = await d.body(request, PasskeySettingsPatchSchema);
+      const r = await d.body(request, LegacyPasskeySettingsPatchSchema);
       if (r.error) return r.error;
       return refuse() ?? HttpResponse.json(assertOptions());
     }),
     http.patch(`*${R.passkeySettings}`, async ({ request }) => {
-      const r = await d.body(request, PasskeySettingsPatchSchema);
+      const r = await d.body(request, LegacyPasskeySettingsPatchSchema);
       if (r.error) return r.error;
       const next = r.data.actions as typeof actions;
       if (!next.command)

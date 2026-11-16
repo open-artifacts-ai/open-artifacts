@@ -1751,28 +1751,50 @@ const PasskeySwitches = z.strictObject({
   command: z.boolean(),
 });
 
-/** PATCH R.passkeySettings and POST R.passkeySettingsChallenge: the full new state. */
+export const PASSKEY_OWN_RULE_MAX = 500;
+
+/** PATCH R.passkeySettings and POST R.passkeySettingsChallenge: the full new state (#2661). */
 export const PasskeySettingsPatchSchema = z.strictObject({
-  /** One switch per action: on asks for a passkey. `command` is locked on (false is 400). */
-  actions: PasskeySwitches,
-  /** Ask for a passkey on every pick, whatever it names. */
-  everyPick: z.boolean(),
-  /** Required (PATCH only) when this turns any switch off. */
+  /** Ask for the passkey when a pick is on an option marked high stakes. */
+  highStakes: z.boolean(),
+  /** Ask for the passkey on every answer, whatever was marked. */
+  everyAnswer: z.boolean(),
+  /** The person's own words for what else is high stakes; passed to their agents as their rule. */
+  ownRule: z.string().trim().max(PASSKEY_OWN_RULE_MAX),
+  /** Required (PATCH only) when this turns `highStakes` or `everyAnswer` off, or changes `ownRule`. */
   assertion: PasskeyAssertionSchema.optional(),
 });
 export type PasskeySettingsPatch = z.infer<typeof PasskeySettingsPatchSchema>;
 
 export const PasskeySettingsSchema = z.object({
-  actions: PasskeySwitches,
-  everyPick: z.boolean(),
-  /** Switches that can not be turned off. */
-  locked: z.array(z.literal("command")),
+  highStakes: z.boolean(),
+  everyAnswer: z.boolean(),
+  ownRule: z.string(),
   /** False: the switches show but can not be used ("Add a passkey to use these"). */
   hasPasskey: z.boolean(),
   /** True once a passkey is old enough to confirm. */
   hasUsablePasskey: z.boolean(),
 });
 export type PasskeySettings = z.infer<typeof PasskeySettingsSchema>;
+
+/** @deprecated #2661: the six-switch shape the app's Settings still reads until it moves to PasskeySettings; the server no longer serves it. */
+export const LegacyPasskeySettingsPatchSchema = z.strictObject({
+  actions: PasskeySwitches,
+  everyPick: z.boolean(),
+  assertion: PasskeyAssertionSchema.optional(),
+});
+export type LegacyPasskeySettingsPatch = z.infer<
+  typeof LegacyPasskeySettingsPatchSchema
+>;
+/** @deprecated #2661: see LegacyPasskeySettingsPatchSchema. */
+export const LegacyPasskeySettingsSchema = z.object({
+  actions: PasskeySwitches,
+  everyPick: z.boolean(),
+  locked: z.array(z.literal("command")),
+  hasPasskey: z.boolean(),
+  hasUsablePasskey: z.boolean(),
+});
+export type LegacyPasskeySettings = z.infer<typeof LegacyPasskeySettingsSchema>;
 
 /** The WebAuthn options JSON a challenge route returns. */
 export const PasskeyChallengeSchema = z.object({
