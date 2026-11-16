@@ -4,12 +4,14 @@
 // 6905450077, confirmed by OA Self-Serve in 6909830141): GET R.members rows
 // gain `setup?: { state, done, stalled?, remindedAt? }`, the owner's too,
 // and only when the caller is an owner or admin; never for guests. `done`
-// and `stalled` are the server's setupSteps(onboarding) (@oa/shared, the
+// and `stalled` are the server's setupSteps(onboarding) (api/setupSteps.ts
+// here, PROVISIONAL until @oa/shared has it; the
 // count the card and Welcome show); `state: "set"` is sticky from the
 // person's `completed`. Field names stay PROVISIONAL until the server ships.
 // This file is the one place that reads it.
-import { MemberSchema, SETUP_STEPS } from "@oa/shared";
+import { MemberSchema } from "@oa/shared";
 import { z } from "zod";
+import { SETUP_STEPS } from "./setupSteps";
 
 export const MemberSetupSchema = z.object({
   state: z.enum(["set", "partial", "invited"]),
