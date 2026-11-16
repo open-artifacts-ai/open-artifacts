@@ -468,3 +468,66 @@ describe("the checklist write is refused to a capped caller (#2632)", () => {
     expect((await api(app, R.onboarding, g.cookie)).status).toBe(403);
   });
 });
+
+describe("the Welcome is there for a read that beats the background seed (#2632)", () => {
+  const mkMember = async () => {
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await signins(m.userId, 1);
+    return m;
+  };
+
+  it("a read racing the background seed gets a welcomeId, and one Welcome exists", async () => {
+    const m = await mkMember();
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    const bg = seedWelcome(env, u);
+    const got = (await (await api(app, R.onboarding, m.cookie)).json()) as {
+      welcomeId: string | null;
+    };
+    await bg;
+    expect(got.welcomeId).not.toBeNull();
+    expect(await seededRows(m.userId)).toBe(1);
+  });
+
+  it("a read before any background seed seeds it itself, once", async () => {
+    const m = await mkMember();
+    const first = (await (await api(app, R.onboarding, m.cookie)).json()) as {
+      welcomeId: string | null;
+    };
+    expect(first.welcomeId).not.toBeNull();
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    await seedWelcome(env, u);
+    expect(await seededRows(m.userId)).toBe(1);
+  });
+
+  it("a read that finds the claim in flight waits for the page", async () => {
+    const m = await mkMember();
+    await env.DB.prepare("insert into settings (key, value) values (?1, ?2)")
+      .bind(
+        `onboarding:welcome:${m.userId}`,
+        JSON.stringify({ userId: m.userId, artifactId: "" }),
+      )
+      .run();
+    const read = api(app, R.onboarding, m.cookie);
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    const page = await publish(
+      env as unknown as Env,
+      u,
+      { title: "Welcome", format: "html", content: "<p>hi</p>" },
+      null,
+      undefined,
+      "create",
+      { noCreator: true },
+    );
+    await env.DB.prepare("update settings set value = ?2 where key = ?1")
+      .bind(
+        `onboarding:welcome:${m.userId}`,
+        JSON.stringify({ userId: m.userId, artifactId: page.id }),
+      )
+      .run();
+    const got = (await (await read).json()) as { welcomeId: string | null };
+    expect(got.welcomeId).toBe(page.id);
+  });
+});

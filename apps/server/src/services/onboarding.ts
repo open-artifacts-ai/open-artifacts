@@ -369,6 +369,43 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
   }
 }
 
+const WELCOME_WAIT_STEP_MS = 100;
+const WELCOME_WAIT_MAX = 30;
+
+/**
+ * #2632: the Welcome is seeded after sign-in answers, so a read that gets
+ * there first must still find it. When no claim exists for the person yet,
+ * seed here through the same claim-then-publish path (a no-op unless this is
+ * their first sign-in); when the background run holds the claim and is still
+ * publishing, wait for it (about 3 s at most). The claim is atomic, so the
+ * Welcome is never seeded twice. Never throws.
+ */
+export async function ensureWelcome(env: Env, user: Member): Promise<void> {
+  if (isGuestRole(user.role)) return;
+  try {
+    const read = () =>
+      stmt(env.DB, "select value from settings where key = ?1")
+        .bind(welcomeKey(user.id))
+        .first<{ value: string }>();
+    let row = await read();
+    if (!row) {
+      await seedWelcome(env, user);
+      row = await read();
+    }
+    for (let i = 0; i < WELCOME_WAIT_MAX; i++) {
+      const w = parseWelcome(row?.value);
+      // In flight: claimed for this person, the page not recorded yet.
+      if (!w || w.userId !== user.id || w.artifactId !== "") return;
+      await new Promise((r) => setTimeout(r, WELCOME_WAIT_STEP_MS));
+      row = await read();
+    }
+  } catch (e) {
+    logWarn("welcome_ensure_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
+}
+
 /**
  * Turns on the flags in `patch`, for `user` only. When their `completed` is
  * written for the first time, whoever added them (else the owner) gets one

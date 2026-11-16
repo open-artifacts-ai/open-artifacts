@@ -43,6 +43,13 @@ describe("R.onboarding", () => {
   it("starts empty, and the owner's dismissal persists", async () => {
     await clear();
     const o = await login(`own-${tag()}@example.com`, "owner");
+    // An established person (earlier sign-ins): a read seeds no Welcome (#2632).
+    for (let i = 0; i < 2; i++)
+      await env.DB.prepare(
+        "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id) values (?1, ?2, 'user', ?3, 'auth.signin', 'user', ?3)",
+      )
+        .bind(newId(), Date.now(), o.userId)
+        .run();
     expect((await get(o.cookie)).body).toEqual({
       dismissed: false,
       completed: false,

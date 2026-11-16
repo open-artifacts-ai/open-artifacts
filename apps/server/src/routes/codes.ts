@@ -28,10 +28,10 @@ import { requireTurnstile } from "../auth/turnstile.js";
 import { stmt } from "../db/stmt.js";
 import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
+import { seedWelcomeAfter } from "../http/seed-welcome.js";
 import { inviteAcceptAudit, signInAudit } from "../services/audit.js";
 import { codeEligibility, linkEligibility } from "../services/identity.js";
 import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
-import { seedWelcome } from "../services/onboarding.js";
 import {
   getUserWithEpoch,
   googleLinkStmts,
@@ -406,7 +406,7 @@ async function verifyLink(
     stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
   ]);
   // #2632: a member's own Welcome, once; never throws.
-  await seedWelcome(c.env, user);
+  await seedWelcomeAfter(c, user);
   logAuth({ provider: "google", outcome: "ok", uid: user.id });
   const cap = capOfCaller(callerOf(user));
   const res = c.json({
@@ -624,7 +624,7 @@ export function mountCodes(app: AppType): void {
       stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
     // #2632: a member's own Welcome, once (the email code path too); never throws.
-    await seedWelcome(c.env, user);
+    await seedWelcomeAfter(c, user);
     logAuth({
       provider: "code",
       outcome: "ok",
