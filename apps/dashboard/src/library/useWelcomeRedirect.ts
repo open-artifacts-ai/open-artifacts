@@ -1,4 +1,5 @@
-// #2287: the first time the owner lands on the Library with a Welcome artifact
+// #2287: the first time the owner (and, #2632, a member: everyone but a
+// guest) lands on the Library with a Welcome artifact
 // the server seeded, open it instead, once. A deleted or unreadable Welcome
 // (the server may also have cleared welcomeId) breaks nothing: the Library stays.
 import { ArtifactSummarySchema, R } from "@oa/shared";
@@ -8,13 +9,17 @@ import { useEffect } from "react";
 import { api } from "../api/client";
 import { qk, useOnboarding, useSetOnboarding } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { isMember } from "./MemberGetStarted";
 
 /** Ids already handled in this page load, whatever the server says: never twice. */
 const handled = new Set<string>();
 
 export function useWelcomeRedirect(enabled: boolean) {
   const state = useMe();
-  const owner = state.status === "authed" && state.me.user.role === "owner";
+  // #2632: every member gets their own Welcome, as the owner does.
+  const owner =
+    state.status === "authed" &&
+    (state.me.user.role === "owner" || isMember(state.me.user.role));
   const onboarding = useOnboarding(enabled && owner);
   const { mutate: save } = useSetOnboarding();
   const qc = useQueryClient();

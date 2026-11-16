@@ -41,7 +41,12 @@ const send = (data: unknown) => {
   win.dispatchEvent(ev);
 };
 const flush = () => new Promise((r) => setTimeout(r, 0));
-const ask = async (artifact: ArtifactSummary, gate: { owner: boolean }) => {
+const ask = async (
+  artifact: ArtifactSummary,
+  gate: ReturnType<
+    NonNullable<Parameters<typeof createBridge>[0]["onboarding"]>
+  >,
+) => {
   live.push(
     createBridge({
       iframe: asFrame(frame),
@@ -106,6 +111,25 @@ describe("onboarding.get", () => {
     const r = await ask(art(WELCOME), { owner: false });
     expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #2632: a member gets their own Welcome, with who it greets.
+  it("answers a member on their Welcome, with who it's for", async () => {
+    const who = {
+      member: true as const,
+      firstName: "Ada",
+      org: "Acme Artifacts",
+      inviter: "Bob Builder",
+      teammateCommented: false,
+    };
+    const r = await ask(art(WELCOME), { owner: false, member: true, who });
+    expect(r).toMatchObject({ ok: true, value: { agentConnected: true, who } });
+  });
+
+  it("never tells the owner's page who it's for", async () => {
+    const r = await ask(art(WELCOME), { owner: true });
+    expect(r.ok).toBe(true);
+    expect(r.value.who).toBeUndefined();
   });
 
   it("refuses when no Welcome was seeded", async () => {

@@ -8,6 +8,7 @@ import {
   type ErrorCode,
   LIMITS,
   METHOD_CAPABILITY,
+  type OnboardingProgress,
   OnboardingSchema,
   PageSchema,
   PROTOCOL_COMMENT_CLEAR,
@@ -42,6 +43,9 @@ import {
 import { frameLoad, loadArtifactFrame } from "./frame";
 import { clampRetryHint } from "./liveEvents";
 
+/** #2632: who a member's Welcome is for (the shell reads it from /me). */
+export type WelcomeWho = NonNullable<OnboardingProgress["who"]>;
+
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
 
@@ -60,7 +64,15 @@ export interface BridgeOptions {
    * the bridge reads R.onboarding itself and checks its `welcomeId` against
    * this artifact's id, so no state from elsewhere has to be loaded first.
    */
-  onboarding?: () => { owner: boolean };
+  onboarding?: () => {
+    owner: boolean;
+    /**
+     * #2632: a member (not a guest) gets their own Welcome too: answered as
+     * the owner is, with who is asking, so the page can greet them.
+     */
+    member?: boolean;
+    who?: WelcomeWho;
+  };
   theme: Theme;
   onPdfText: (text: string) => void;
   onThumb: (blob: Blob) => void;
@@ -438,10 +450,12 @@ export function createBridge(opts: BridgeOptions) {
       case "viewer.get":
         return viewer();
       case "onboarding.get": {
-        if (embed || !opts.onboarding?.().owner) throw forbidden();
+        const g = opts.onboarding?.();
+        if (embed || !(g?.owner || g?.member)) throw forbidden();
         const o = await http.get(R.onboarding, OnboardingSchema);
         if (!o.welcomeId || o.welcomeId !== id) throw forbidden();
         return {
+          ...(g?.member && g.who ? { who: g.who } : {}),
           agentConnected: o.agentConnected === true,
           firstArtifact: o.firstArtifact ?? null,
           commented: o.commented === true,
