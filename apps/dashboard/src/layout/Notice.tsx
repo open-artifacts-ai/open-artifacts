@@ -33,7 +33,7 @@ export function Notice({
   onDismiss?: () => void;
 }) {
   return (
-    <Alert variant={tone} size={compact ? "sm" : "default"}>
+    <Alert variant={tone} size={compact ? "sm" : "default"} data-tone={tone}>
       {icon}
       {title && <AlertTitle>{title}</AlertTitle>}
       {children && (

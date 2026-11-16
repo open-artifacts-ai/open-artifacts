@@ -54,11 +54,15 @@ import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
 import {
+  type NotEmailed,
+  notEmailedLine,
   OUTSIDER_DEFAULT,
   outsideAddress,
   outsideLine,
   roleLabel,
   roleOptions,
+  WORKSPACE_ONLY_ADMIN,
+  workspaceOnlyNote,
 } from "./shareRoles";
 
 const VIS: Visibility[] = ["private", "team", "public"];
@@ -253,6 +257,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     emailed: boolean;
     /** Set when they can't sign in yet: the box warns instead. */
     recipient?: ShareRecipient;
+    /** PROVISIONAL (#2620): why no email went, when the server says. */
+    notEmailed?: NotEmailed;
+    /** The day's limit, with a limit reason (PROVISIONAL, #2620). */
+    limit?: number;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
     /** The role picked: a guest's row corrects Editor, once, just after. */
@@ -347,6 +355,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               email: e,
               emailed: r.emailed,
               recipient: r.recipient,
+              ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
+              ...(r.limit !== undefined ? { limit: r.limit } : {}),
               with: signInWith(r.signInMethods),
               role: r.role,
             });
@@ -537,7 +547,29 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       )}
 
       <section>
-        {shared?.recipient ? (
+        {shared?.recipient?.reason === "workspace_only" ? (
+          // #2590: a note, not a warning: the share is saved and works if
+          // the address is a Google account; the link is worth sending.
+          <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+            <Notice
+              tone="info"
+              title={`Shared with ${shared.email}`}
+              onDismiss={() => setShared(null)}
+            >
+              <p>{workspaceOnlyNote(shared.email)}</p>
+              {isOrgAdmin(me) && (
+                <p>
+                  {WORKSPACE_ONLY_ADMIN.before}
+                  <AppLink href="/settings/login" className="underline">
+                    {WORKSPACE_ONLY_ADMIN.link}
+                  </AppLink>
+                  {WORKSPACE_ONLY_ADMIN.after}
+                </p>
+              )}
+              <CopyLink link={link} label="Artifact link" />
+            </Notice>
+          </div>
+        ) : shared?.recipient ? (
           // They can't sign in yet: one warning box, and no link that won't work for them.
           <div className="mb-[var(--oa-space-4)]">
             <Notice
@@ -548,7 +580,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <p>
                 <RecipientLine
                   email={shared.email}
-                  reason={shared.recipient.reason}
+                  reason={shared.recipient.reason as ShareRecipient["reason"]}
                   admin={isOrgAdmin(me)}
                   domains={domains}
                 />
@@ -559,20 +591,23 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           shared && (
             <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
               <Notice
-                tone="success"
+                // Amber when no email went for a reason the server named (#2620).
+                tone={shared.notEmailed ? "warning" : "success"}
                 title={`Shared with ${shared.email}`}
                 onDismiss={() => setShared(null)}
               >
-                <p>
-                  {shared.emailed
-                    ? shared.with
-                      ? `We emailed them a link. They'll log in with ${shared.with}.`
-                      : "We emailed them a link. They'll log in with a one-time code."
-                    : artifact.visibility === "public"
-                      ? "Send them this link. They can open it without logging in."
-                      : shared.with
-                        ? `Send them this link. They'll log in with ${shared.with}.`
-                        : "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact."}
+                <p data-share-sent="">
+                  {shared.notEmailed
+                    ? notEmailedLine(shared.notEmailed, install, shared.limit)
+                    : shared.emailed
+                      ? shared.with
+                        ? `We emailed them a link. They'll log in with ${shared.with}.`
+                        : "We emailed them a link. They'll log in with a one-time code."
+                      : artifact.visibility === "public"
+                        ? "Send them this link. They can open it without logging in."
+                        : shared.with
+                          ? `Send them this link. They'll log in with ${shared.with}.`
+                          : "Send them this link. They'll log in with a one-time code sent to that address, then see the artifact."}
                 </p>
                 {/* emailed:false with email on is not a failure here: members and
                   re-shares are never emailed, so there's no "didn't send" line. */}

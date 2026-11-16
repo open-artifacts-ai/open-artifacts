@@ -737,6 +737,32 @@ async function startMocks() {
       ),
     );
   }
+  // &share=workspace-only (#2590, PROVISIONAL): every share answers that the
+  // address can open it only if it's a Google account.
+  if (params.get("share") === "workspace-only")
+    extra.push(
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          ...body,
+          recipient: { canSignIn: false, reason: "workspace_only" },
+        });
+      }),
+    );
+  // &notEmailed=member_limit|instance_limit|limit (#2620): every share is
+  // saved without an email, for that reason.
+  const notEmailed = params.get("notEmailed");
+  if (notEmailed)
+    extra.push(
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...body, emailed: false, notEmailed });
+      }),
+    );
   // #2590 G2 (PROVISIONAL): ?glink=1 stands for the oa_glink cookie of a
   // guest Google turned away (sam@partner.org); without it, /auth/code/link
   // answers 404.

@@ -1,7 +1,41 @@
 // #2590: per-share roles, with "commenter" (Can comment) for people outside
 // the instance. The role is @oa/shared's ShareRole (#2600); this file holds
-// only the Share panel's choices, labels and outside-address rules.
-import type { ShareRole } from "@oa/shared";
+// the Share panel's choices, labels, outside-address rules and notes.
+import type { ShareResult, ShareRole } from "@oa/shared";
+
+/** Why a saved share sent no email (#2620's ShareResult.notEmailed). */
+export type NotEmailed = NonNullable<ShareResult["notEmailed"]>;
+
+/** OA Product (#2620): over today's limits for new outside addresses; the link to copy stays. */
+/** The member limit when the server doesn't say (#2620's figure). */
+export const MEMBER_LIMIT_FALLBACK = 20;
+export const memberLimitLine = (org: string, limit = MEMBER_LIMIT_FALLBACK) =>
+  `We didn't email them: you've reached today's limit of ${limit} new people outside ${org}. Copy the link and send it yourself.`;
+export const instanceLimitLine = (org: string) =>
+  `We didn't email them: ${org} has reached today's limit for new people outside. Copy the link and send it yourself.`;
+/** OA Product: the generic `limit` (a recipient, share or sending cap we can't tell apart). */
+export const LIMIT_LINE =
+  "We didn't email them this time. Copy the link and send it yourself.";
+/** The line for a share that sent no email, by the server's reason. */
+export function notEmailedLine(
+  reason: NotEmailed,
+  org: string,
+  limit?: number,
+): string {
+  if (reason === "member_limit") return memberLimitLine(org, limit);
+  if (reason === "instance_limit") return instanceLimitLine(org);
+  return LIMIT_LINE;
+}
+
+/** OA Product (#2590): the note for a workspace_only share. */
+export const workspaceOnlyNote = (email: string) =>
+  `${email} can open this only if that address is a Google account. If it isn't, share with their Gmail or Google Workspace address.`;
+/** OA Product (#2590): what owners and admins also see; "Settings, Login" links there. */
+export const WORKSPACE_ONLY_ADMIN = {
+  before: "Or turn on login codes in ",
+  link: "Settings, Login",
+  after: ".",
+};
 
 type Option = { value: ShareRole; label: string };
 /** A member's choices, as before. */

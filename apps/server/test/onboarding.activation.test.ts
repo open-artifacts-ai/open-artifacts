@@ -164,7 +164,12 @@ beforeAll(async () => {
 beforeEach(clear);
 
 const state = async (userId = owner.userId) =>
-  OnboardingSchema.parse(await getOnboarding(E as Env, userId));
+  OnboardingSchema.parse(
+    await getOnboarding(E as Env, {
+      id: userId,
+      role: userId === owner.userId ? "owner" : "member",
+    }),
+  );
 
 describe("tick 2: the owner's agent is named", () => {
   it("is off until noted, then on, with the first time kept and no text stored", async () => {
@@ -182,9 +187,11 @@ describe("tick 2: the owner's agent is named", () => {
     for (const r of await rows()) expect(r.value).toMatch(/^\d+$/);
   });
 
-  it("is recorded for the instance owner only", async () => {
-    expect(await noteAgentNamed(E, member.userId)).toBe(false);
-    expect(await rows()).toEqual([]);
+  it("is recorded per person for any member (#2632), never a guest", async () => {
+    expect(await noteAgentNamed(E, member.userId)).toBe(true);
+    expect((await rows()).map((r) => r.key)).toEqual([namedKey(member.userId)]);
+    const g = await login(`guest-${tag}@example.com`, "guest");
+    expect(await noteAgentNamed(E, g.userId)).toBe(false);
   });
 
   it("the name reads null (the page says 'your agent') until a name exists", async () => {
@@ -333,17 +340,17 @@ describe("tick 4: an own agent replied to the owner's mention", () => {
     const c = counting();
     const reply = (who: never) =>
       addReply(c.env, artifactId, t.id, who, viewer(owner.userId), "x");
-    // Not the instance owner: a member's agent.
+    // A member's agent (#2632: members count too): one read, and no mention of theirs to answer.
     await reply(mcpWho(member.userId, "id-ns-member-Codex"));
-    expect(c.reads()).toBe(0);
-    expect(await row(mentionRepliedKey(member.userId))).toBeNull();
-    // The owner's agent: one read, and it records.
-    await reply(mcpWho(owner.userId));
     expect(c.reads()).toBe(1);
+    expect(await row(mentionRepliedKey(member.userId))).toBeNull();
+    // The owner's agent: one more read, and it records.
+    await reply(mcpWho(owner.userId));
+    expect(c.reads()).toBe(2);
     expect(await row(mentionRepliedKey(owner.userId))).not.toBeNull();
     // Recorded: no read, on every later reply.
     await reply(mcpWho(owner.userId));
-    expect(c.reads()).toBe(1);
+    expect(c.reads()).toBe(2);
   });
 
   it("an agent's new thread (even with a mention) reads nothing and ticks nothing", async () => {
@@ -398,7 +405,10 @@ describe("tick 4: an own agent replied to the owner's mention", () => {
       { anchor: NOTE, body: "hey", mentions: [{ key: claude }] },
       { moderator: true },
     );
-    expect(await rows()).toEqual([]);
+    // Only the member's own team step (a comment on the owner's page): nothing for the owner.
+    expect((await rows()).map((r) => r.key)).toEqual([
+      `onboarding:teamstep:${member.userId}`,
+    ]);
   });
 });
 
