@@ -73,17 +73,27 @@ export function ForYouPrefs() {
   );
 }
 
-/** Save the whole prefs, in the browser's zone ("morning" and quiet hours are in it). */
+/**
+ * What a save sends: the whole prefs, in the browser's zone ("morning" and
+ * quiet hours are in it). Design (#2674): while quiet hours wait under
+ * "Coming later", they are never sent on.
+ */
+export const prefsToSave = (
+  next: NotificationPrefs,
+  live = INTERRUPTS_LIVE,
+): NotificationPrefs => ({
+  ...next,
+  quietHours: live ? next.quietHours : null,
+  timeZone: browserTimeZone(),
+});
+
 function useSave() {
   const save = useSavePrefs();
   return (next: NotificationPrefs) =>
-    save.mutate(
-      { ...next, timeZone: browserTimeZone() },
-      {
-        onError: () =>
-          toast({ title: "Couldn't save. Try again.", tone: "danger" }),
-      },
-    );
+    save.mutate(prefsToSave(next), {
+      onError: () =>
+        toast({ title: "Couldn't save. Try again.", tone: "danger" }),
+    });
 }
 
 function Levels({ prefs }: { prefs: NotificationPrefs }) {
@@ -171,7 +181,9 @@ export const INTERRUPTS_LIVE = false;
 function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
   const save = useSave();
   const live = INTERRUPTS_LIVE;
-  const quiet = prefs.quietHours;
+  // Design (#2674): while "Coming later" is on, quiet hours are drawn off,
+  // whatever the server stored.
+  const quiet = live ? prefs.quietHours : null;
   const end = quiet?.end ?? QUIET_DEFAULT.end;
   return (
     <section

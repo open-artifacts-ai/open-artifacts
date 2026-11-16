@@ -3,7 +3,7 @@ import { R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { thisBrowser } from "../src/settings/ForYouPrefs";
+import { prefsToSave, thisBrowser } from "../src/settings/ForYouPrefs";
 import { calls, events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -40,9 +40,10 @@ describe("For you settings", () => {
     expect(
       screen.getByRole("switch", { name: "Updates in this browser" }),
     ).toBeDisabled();
+    // Design (#2674): drawn off while "Coming later", though the server has them on.
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toHaveAttribute(
       "aria-checked",
-      "true",
+      "false",
     );
     expect(screen.getByText(/away until 07:30/)).toBeInTheDocument();
     expect(
@@ -112,6 +113,23 @@ describe("For you settings", () => {
     fireEvent.click(needs);
     expect(puts).toEqual([]);
     expect(ask).not.toHaveBeenCalled();
+  });
+});
+
+describe("quiet hours while Coming later (#2674)", () => {
+  const prefs = {
+    needsYou: { browser: false },
+    quietHours: { start: "22:00", end: "07:30" },
+  } as unknown as Parameters<typeof prefsToSave>[0];
+  it("a save never sends them on", () => {
+    expect(prefsToSave(prefs).quietHours).toBeNull();
+    expect(prefsToSave(prefs, false).quietHours).toBeNull();
+  });
+  it("once live, they are sent as set", () => {
+    expect(prefsToSave(prefs, true).quietHours).toEqual({
+      start: "22:00",
+      end: "07:30",
+    });
   });
 });
 
