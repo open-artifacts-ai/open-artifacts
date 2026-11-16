@@ -122,6 +122,11 @@ describe("the opt-out page", () => {
     // The POST (the button, or RFC 8058 one-click with the token in the URL).
     const p = await hit("POST", path);
     expect(p.status).toBe(200);
+    const done = await p.text();
+    expect(done).toContain("You won&#39;t get these emails again.");
+    expect(done).toContain(
+      "Pages shared with you still open when you log in. We just won&#39;t email you about them.",
+    );
     expect(await suppressed(email)).toBe(true);
     expect((await hit("POST", path)).status).toBe(200);
     expect(
@@ -144,10 +149,15 @@ describe("the opt-out page", () => {
         n: number;
       }>()
     )?.n;
-    for (const method of ["GET", "POST"])
-      expect(
-        (await hit(method, `${SHARE_OPTOUT_PATH}?t=${forged}`)).status,
-      ).toBe(400);
+    for (const method of ["GET", "POST"]) {
+      const r = await hit(method, `${SHARE_OPTOUT_PATH}?t=${forged}`);
+      expect(r.status).toBe(400);
+      const body = await r.text();
+      expect(body).toContain("This link is not valid");
+      expect(body).toContain(
+        "This link doesn&#39;t work. Open the most recent email from us and use the link there.",
+      );
+    }
     expect((await hit("POST", SHARE_OPTOUT_PATH)).status).toBe(400);
     expect(await suppressed(email)).toBe(false);
     expect(

@@ -65,7 +65,8 @@ export const OPTOUT_COPY = {
   confirmButton: "Don't email me again",
   doneTitle: "You won't get these emails again.",
   doneBody:
-    "Pages shared with you will still open when you log in; we just won't email you about them.",
+    "Pages shared with you still open when you log in. We just won't email you about them.",
   badTitle: "This link is not valid",
-  badBody: "The link is invalid or damaged.",
+  badBody:
+    "This link doesn't work. Open the most recent email from us and use the link there.",
 } as const;
