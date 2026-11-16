@@ -31,8 +31,10 @@ type Row = {
   id: string;
   setup?: { state: string; done: number; stalled?: string };
 };
-const list = async (cookie: string) =>
-  (await (await api(app, R.members, cookie)).json()) as Row[];
+const list = async (cookie: string, status?: string) =>
+  (await (
+    await api(app, status ? `${R.members}?status=${status}` : R.members, cookie)
+  ).json()) as Row[];
 const seen = (id: string) =>
   env.DB.prepare("update users set last_seen_at = ?2 where id = ?1")
     .bind(id, Date.now())
@@ -325,5 +327,144 @@ describe("erasing a removed member whose only artifact is their seeded Welcome",
       method: "POST",
     });
     expect(r.status).toBe(409);
+  });
+});
+
+describe("only an untouched seeded Welcome is taken along on erase (#2632)", () => {
+  async function seeded() {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await signins(m.userId, 1);
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    await seedWelcome(env, u);
+    const id = (
+      await env.DB.prepare(
+        "select id from artifacts where owner_id = ?1 and title = 'Welcome'",
+      )
+        .bind(m.userId)
+        .first<{ id: string }>()
+    )?.id as string;
+    return { o, m, u, id };
+  }
+  const gone = async (id: string) =>
+    !(await env.DB.prepare("select 1 from artifacts where id = ?1")
+      .bind(id)
+      .first());
+  const remove = (o: { cookie: string }, uid: string) =>
+    api(app, R.member(uid), o.cookie, { method: "DELETE" });
+  const erase = (o: { cookie: string }, uid: string) =>
+    api(app, R.memberErase(uid), o.cookie, { method: "POST" });
+
+  it("a second version blocks the erase and is not deleted", async () => {
+    const { o, m, u, id } = await seeded();
+    await publish(
+      env as unknown as Env,
+      u,
+      { id, content: "<p>edited</p>", format: "html" },
+      null,
+    );
+    await remove(o, m.userId);
+    expect((await erase(o, m.userId)).status).toBe(409);
+    expect(await gone(id)).toBe(false);
+  });
+
+  it("a comment blocks the erase and is not deleted", async () => {
+    const { o, m, id } = await seeded();
+    const c = await api(app, R.comments(id), m.cookie, {
+      method: "POST",
+      body: { anchor: { kind: "note" }, body: "note to self" },
+    });
+    expect(c.status).toBeLessThan(300);
+    await remove(o, m.userId);
+    expect((await erase(o, m.userId)).status).toBe(409);
+    expect(await gone(id)).toBe(false);
+  });
+
+  it("a share blocks it too", async () => {
+    const { o, m, id } = await seeded();
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?1, 'x@example.com', 'viewer', ?2, 1)",
+    )
+      .bind(id, m.userId)
+      .run();
+    await remove(o, m.userId);
+    expect((await erase(o, m.userId)).status).toBe(409);
+  });
+
+  it("an untouched one is not in the transfer summary or the transferable flag; a touched one is", async () => {
+    const { o, m, u, id } = await seeded();
+    await remove(o, m.userId);
+    const sum = async () =>
+      (await (await api(app, R.memberTransfer(m.userId), o.cookie)).json()) as {
+        live: number;
+        deleted: number;
+      };
+    expect(await sum()).toMatchObject({ live: 0, deleted: 0 });
+    const row = async () =>
+      (await list(o.cookie, "removed")).find((r) => r.id === m.userId) as
+        | (Row & { transferable?: boolean })
+        | undefined;
+    expect((await row())?.transferable).toBeUndefined();
+    await publish(
+      env as unknown as Env,
+      u,
+      { id, content: "<p>edited</p>", format: "html" },
+      null,
+    );
+    expect((await sum()).live).toBe(1);
+    expect((await row())?.transferable).toBe(true);
+  });
+});
+
+describe("the checklist write is refused to a capped caller (#2632)", () => {
+  it("an uncapped token writes; a restricted member's and a guest's do not, and nothing is written", async () => {
+    const { createPat } = await import("../src/auth/pat.js");
+    const ok = await login(`ok-${tag()}@example.com`, "member");
+    const okTok = (await createPat(env, ok.userId, "t")).token;
+    expect(
+      (
+        await api(app, R.onboarding, okTok, {
+          method: "PUT",
+          body: { dismissed: true },
+        })
+      ).status,
+    ).toBe(200);
+    const m = await login(`res-${tag()}@example.com`, "member");
+    const mTok = (await createPat(env, m.userId, "t")).token;
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?1")
+      .bind(m.userId)
+      .run();
+    const g = await login(`gst-${tag()}@example.com`, "guest");
+    const gTok = (await createPat(env, g.userId, "t")).token;
+    for (const [id, tok] of [
+      [m.userId, mTok],
+      [g.userId, gTok],
+    ] as const) {
+      const r = await api(app, R.onboarding, tok, {
+        method: "PUT",
+        body: { dismissed: true },
+      });
+      // Refused whichever way the cap or the role says no (a guest holds no token at all).
+      expect([401, 403, 404]).toContain(r.status);
+      expect(
+        await env.DB.prepare("select 1 from settings where key = ?1")
+          .bind(`onboarding:dismissed:${id}`)
+          .first(),
+      ).toBeNull();
+    }
+    // A restricted member's browser session still reads, and cannot write; a guest is told it is for members.
+    expect((await api(app, R.onboarding, m.cookie)).status).toBe(200);
+    const w = await api(app, R.onboarding, m.cookie, {
+      method: "PUT",
+      body: { dismissed: true },
+    });
+    expect([403, 404]).toContain(w.status);
+    expect(
+      await env.DB.prepare("select 1 from settings where key = ?1")
+        .bind(`onboarding:dismissed:${m.userId}`)
+        .first(),
+    ).toBeNull();
+    expect((await api(app, R.onboarding, g.cookie)).status).toBe(403);
   });
 });

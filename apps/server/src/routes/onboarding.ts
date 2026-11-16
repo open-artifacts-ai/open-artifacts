@@ -11,7 +11,12 @@ import type { AppType } from "./index.js";
 /** The caller's own checklist (#2632): any non-guest member; a guest gets 403. */
 function member(c: Context<AppEnv>) {
   const user = requireUser(c);
-  if (!orgCan(user, "onboarding.own", { cap: capOfCaller(caller(c)) }))
+  if (
+    !orgCan(user, "onboarding.own", {
+      cap: capOfCaller(caller(c)),
+      read: c.req.method === "GET",
+    })
+  )
     throw new ApiError("members_only", "The checklist is for members");
   return user;
 }

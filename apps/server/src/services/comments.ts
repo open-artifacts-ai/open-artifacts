@@ -107,7 +107,7 @@ import {
   OWN_AGENTS_ONLY,
   TOO_MANY_MENTIONS,
 } from "./mention-guards.js";
-import { noteCommented } from "./onboarding.js";
+import { markWelcomeTouched, noteCommented } from "./onboarding.js";
 import {
   mentionedKey,
   mentionRepliedKey,
@@ -2828,6 +2828,8 @@ export async function addThread(
     args[4],
     opts,
   );
+  // A thread on someone's seeded Welcome: it is no longer untouched (#2632).
+  await markWelcomeTouched(args[0], args[1].id);
   // Only the person's own comment counts, never one an agent posted for them.
   if (args[2].kind === "user" && !args[2].agent)
     await noteCommented(args[0], args[2].id, args[1].id);

@@ -543,9 +543,12 @@ export function orgCan(
     // One's own guest-share notice (parity 2): a restricted member still
     // owns the artifacts it lists.
     case "notices.own":
-    // One's own first-run checklist (R.onboarding, #2632).
-    case "onboarding.own":
       return TEAM_ROLES.includes(m.role);
+    // One's own first-run checklist (R.onboarding, #2632): owners, admins and
+    // members read it under any cap (a restricted member, a plan lock, a code
+    // session), but write it only uncapped. A guest never has one.
+    case "onboarding.own":
+      return TEAM_ROLES.includes(m.role) && (opts.read === true || !capped);
     case "directory.manage":
     // Disconnect: owner only too (the route also needs a cookie session).
     case "directory.disconnect":

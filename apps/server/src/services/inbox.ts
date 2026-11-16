@@ -206,9 +206,9 @@ export async function memberSetUpUpdates(
 ): Promise<InboxItem[]> {
   const rows = (
     await env.DB.prepare(
-      "select key, value from settings where key like ?1 order by cast(value as integer) desc limit 50",
+      "select key, value from settings where substr(key, 1, length(?1)) = ?1 order by cast(value as integer) desc limit 50",
     )
-      .bind(`${setUpNoticeKey(caller.user.id, "")}%`)
+      .bind(setUpNoticeKey(caller.user.id, ""))
       .all<{ key: string; value: string }>()
   ).results;
   const since = Date.now() - SET_UP_DAYS * 86_400_000;

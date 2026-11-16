@@ -46,6 +46,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
+import { untouchedWelcomeSql } from "../onboarding/untouched.js";
 import {
   closeRuntimeSockets,
   MAX_CLOSE,
@@ -86,8 +87,8 @@ const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifact
  * services/spaces.ts), on the same indexes, as an exists per row.
  */
 const TRANSFERABLE_SQL = `(users.status <> 'active' and (
-  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null)
-  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id)))`;
+  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null and not ${untouchedWelcomeSql("a")})
+  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id and not ${untouchedWelcomeSql("a")})))`;
 
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
 /** A stored status; anything unknown reads as suspended (fail closed). */

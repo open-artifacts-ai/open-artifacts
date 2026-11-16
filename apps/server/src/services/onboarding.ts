@@ -17,6 +17,11 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { appOrigin } from "../http/errors.js";
 import { logWarn } from "../log.js";
+import {
+  TOUCHED_PREFIX,
+  untouchedWelcomeSql,
+  WELCOME_PREFIX,
+} from "../onboarding/untouched.js";
 import { WELCOME_TITLE, welcomeHtml } from "../onboarding/welcome.js";
 import { publish, purgeNow } from "./artifacts.js";
 import { busView } from "./bus.js";
@@ -61,7 +66,7 @@ export const setUpNoticeKey = (recipientId: string, memberId: string) =>
 export const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
 /** A seeded Welcome (anyone's, the owner's legacy row included) is not the person's work either. */
 const NOT_A_WELCOME = `id not in (select coalesce(json_extract(value, '$.artifactId'), '') from settings
-    where key = '${WELCOME_KEY}' or key like '${WELCOME_KEY}:%')`;
+    where key = '${WELCOME_KEY}' or substr(key, 1, ${WELCOME_KEY.length + 1}) = '${WELCOME_KEY}:')`;
 
 /** One row per user who has posted a comment (any thread or reply). */
 export const commentedKey = (userId: string) =>
@@ -442,10 +447,12 @@ async function markCompleted(
 }
 
 /**
- * Erasing a removed person takes their seeded Welcome with them (it is not
- * their work, so it must not block the erase). Only that page: anything else
- * they own still has to be transferred first. Never throws.
+ * Erasing a removed person takes their untouched seeded Welcome with them (it
+ * is not their work, so it must not block the erase). A Welcome that was
+ * edited, shared or commented on is theirs like any page: it blocks until
+ * transferred or deleted. Never throws.
  */
+
 export async function purgeSeededWelcome(
   env: Env,
   userId: string,
@@ -456,9 +463,11 @@ export async function purgeSeededWelcome(
       .first<{ value: string }>();
     const w = parseWelcome(row?.value);
     if (!w || w.userId !== userId || !w.artifactId) return;
+    // Only an untouched one (version 1, private, no share, no comment): the
+    // rest is their work, and erase waits for it to be transferred or deleted.
     const own = await stmt(
       env.DB,
-      "select 1 as x from artifacts where id = ?1 and owner_id = ?2",
+      `select 1 as x from artifacts a where a.id = ?1 and a.owner_id = ?2 and ${untouchedWelcomeSql("a")}`,
     )
       .bind(w.artifactId, userId)
       .first();
@@ -487,7 +496,7 @@ export async function memberSetups(
   const [settings, agents, owners] = await env.DB.batch([
     stmt(
       env.DB,
-      `select key, value from settings where key like 'onboarding:%'`,
+      `select key, value from settings where substr(key, 1, 11) = 'onboarding:'`,
     ),
     stmt(
       env.DB,
@@ -528,4 +537,32 @@ export async function memberSetups(
     });
   }
   return out;
+}
+
+/**
+ * A comment thread was added to `artifactId`: if it is somebody's seeded
+ * Welcome, remember it is no longer untouched (the thread lives in the page's
+ * own store, which SQL cannot see). Never throws.
+ */
+export async function markWelcomeTouched(
+  env: Env,
+  artifactId: string,
+): Promise<void> {
+  try {
+    await stmt(
+      env.DB,
+      `insert into settings (key, value)
+       select '${TOUCHED_PREFIX}' || a.id, ?2 from artifacts a
+       where a.id = ?1 and exists (select 1 from settings s
+         where s.key = '${WELCOME_PREFIX}' || a.owner_id
+           and json_extract(s.value, '$.artifactId') = a.id)
+       on conflict (key) do nothing`,
+    )
+      .bind(artifactId, String(Date.now()))
+      .run();
+  } catch (e) {
+    logWarn("welcome_touched_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
 }
