@@ -1,5 +1,5 @@
-// #2632 slice 2: Settings, Members, the Setup column (PROVISIONAL
-// api/memberSetup.ts) in every state, and "Copy the setup line". At 1280 and
+// #2632 slice 2: Settings, Members, the Setup column (MemberSchema `setup`,
+// #2639) in every state, and "Copy the setup line". At 1280 and
 // 390, light and dark, with axe and no sideways scroll at 390. PNGs to
 // SHOTS_DIR when set.
 import { createRequire } from "node:module";

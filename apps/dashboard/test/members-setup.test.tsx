@@ -1,11 +1,11 @@
-// #2632 slice 2: the Setup column on Settings, Members (PROVISIONAL
-// api/memberSetup.ts) and "Copy the setup line".
-import { type Me, R } from "@oa/shared";
+// #2632 slice 2: the Setup column on Settings, Members (MemberSchema
+// `setup`, #2639) and "Copy the setup line".
+import { type Me, MemberSchema, R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { MemberWithSetupSchema, shortDate } from "../src/api/memberSetup";
+import { shortDate } from "../src/api/memberSetup";
 import { findVisibleToast, installHarness, mountHosted } from "./harness";
 
 installHarness();
@@ -150,10 +150,10 @@ describe("Copy the setup line", () => {
   });
 });
 
-describe("memberSetup (PROVISIONAL)", () => {
+describe("memberSetup (#2639's MemberSchema)", () => {
   it("parses a row with and without setup", () => {
-    expect(MemberWithSetupSchema.parse(ROWS[1]).setup?.stalled).toBe("mention");
-    expect(MemberWithSetupSchema.parse(ROWS[5]).setup).toBeUndefined();
+    expect(MemberSchema.parse(ROWS[1]).setup?.stalled).toBe("mention");
+    expect(MemberSchema.parse(ROWS[5]).setup).toBeUndefined();
   });
   it("dates read as the screens do", () => {
     expect(shortDate("2026-11-15T10:00:00.000Z")).toBe("15 Nov");

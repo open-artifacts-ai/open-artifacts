@@ -26,7 +26,7 @@ import { ApiClientError } from "../api/client";
 import { hasFeature } from "../api/contract";
 import { billingContext, errorCopy } from "../api/errorCopy";
 import { useLoginSettings } from "../api/loginSettings";
-import { type MemberWithSetup, SETUP, shortDate } from "../api/memberSetup";
+import { SETUP, shortDate } from "../api/memberSetup";
 import {
   useInviteMember,
   useMembers,
@@ -348,11 +348,11 @@ const ROW_SETUP =
   "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_156px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px] max-[600px]:gap-y-[2px]";
 
 /**
- * #2632: one person's setup (PROVISIONAL, api/memberSetup.ts). Green "Set up"
+ * #2632: one person's setup (MemberSchema `setup`). Green "Set up"
  * for five of five, else the count and the step holding it up, "Invited"
  * before a first login, a dash for guests (no line on a phone).
  */
-function SetupCell({ m }: { m: MemberWithSetup }) {
+function SetupCell({ m }: { m: Member }) {
   const label = <span className="sr-only">{SETUP.heading}: </span>;
   if (m.role === "guest")
     return (
@@ -436,7 +436,7 @@ function Row({
   staff?: boolean;
   /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
   frozen: boolean;
-  m: MemberWithSetup;
+  m: Member;
   you: boolean;
   /** The spaces feature: only the copy names spaces (parity 1 ungates the rest). */
   spaces: boolean;

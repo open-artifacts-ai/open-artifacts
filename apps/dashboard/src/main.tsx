@@ -132,7 +132,7 @@ async function startMocks() {
         }),
       ),
     );
-  // ?mock=members-setup (#2632 slice 2, PROVISIONAL api/memberSetup.ts): the
+  // ?mock=members-setup (#2632 slice 2, MemberSchema `setup`): the
   // Members list in every Setup state, as Design's screen shows it.
   if (params.get("mock") === "members-setup")
     extra.push(

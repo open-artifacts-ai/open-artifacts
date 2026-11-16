@@ -79,7 +79,6 @@ import {
   errorCopy,
   errorLink,
 } from "./errorCopy";
-import { MemberWithSetupSchema } from "./memberSetup";
 import { keepLocal } from "./myOnboarding";
 
 const failToast = (e: unknown, fallback: string) =>
@@ -218,12 +217,7 @@ export const useMembers = (status?: string, enabled = true) =>
     enabled,
     queryKey: qk.memberList(status),
     queryFn: ({ signal }) =>
-      api.get(
-        withQuery(R.members, { status }),
-        // #2632: rows carry the PROVISIONAL `setup` (api/memberSetup.ts).
-        z.array(MemberWithSetupSchema),
-        signal,
-      ),
+      api.get(withQuery(R.members, { status }), z.array(MemberSchema), signal),
   });
 export const useTokens = (enabled = true) =>
   useQuery({
