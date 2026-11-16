@@ -1168,13 +1168,16 @@ describe("DocEditor", () => {
         await screen.findByRole("toolbar");
         expect(leave()).toBe(false);
         act(() => f.close(4401));
+        // Refused before the fake's 200 ms reconnect can run (#2671: a sleep
+        // here raced it on a slow runner, and the reconnect delivered).
+        f.refuse = true;
         // Written while the socket is down: unsent.
         act(() => {
           f.doc.getText("t").insert(0, "offline");
         });
-        await new Promise((r) => setTimeout(r, 150));
-        f.refuse = true;
         await waitFor(() => expect(f.connects).toBe(2), { timeout: 2000 });
+        // The refused reconnect delivered nothing.
+        expect(f.server?.getText("t").toString()).toBe("");
         act(() => f.close(1006));
         const alert = await screen.findByRole("alert");
         expect(alert).toHaveTextContent(
