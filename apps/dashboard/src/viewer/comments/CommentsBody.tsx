@@ -81,6 +81,7 @@ import {
 import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged } from "./model";
 import { takeNoteQuote, useNoteQuote } from "./noteQuote";
+import { NotifyChip, usePageAgentChip } from "./notifyChip";
 import { besideWidth, placeBeside } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
@@ -1714,6 +1715,8 @@ function NewThread({
   flat?: boolean;
 }) {
   const create = useCreateThread(api.artifactId, api.guest);
+  // #2610: the page's agent this thread will notify, removable.
+  const notify = usePageAgentChip(api);
   const last = useRef("");
   const lastDraft = useRef<NonNullable<typeof api.draft> | null>(null);
   const draft = api.draft;
@@ -1744,7 +1747,13 @@ function NewThread({
             <QuoteBar>{draft.anchor.exact}</QuoteBar>
           )
         }
-        lead={api.guest ? <SignInLink /> : undefined}
+        lead={
+          api.guest ? (
+            <SignInLink />
+          ) : notify.shown ? (
+            <NotifyChip agent={notify.shown} onRemove={notify.remove} />
+          ) : undefined
+        }
         mentionable
         instant
         seed={api.draftSeed}
@@ -1767,6 +1776,7 @@ function NewThread({
             body,
             ...extrasBody(x),
             ...guest,
+            ...notify.body,
             contentHash: api.contentHash,
           });
           // The thread shows at once, so the draft closes now. Keep the quote
@@ -1788,6 +1798,7 @@ function NewThread({
                       anchor: { kind: "note" },
                       body: last.current || api.draftSeed?.text || "",
                       ...guest,
+                      ...notify.body,
                     })
                     .then(
                       () => api.cancelDraft(true),
@@ -1823,6 +1834,8 @@ function NoteComposer({ api }: { api: CommentsApi }) {
     [quote, api.artifactId],
   );
   const compact = useContext(Compact);
+  // #2610: the page's agent this thread will notify, removable.
+  const notify = usePageAgentChip(api);
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -1835,7 +1848,13 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         card
         keepOnEsc
         actions={ACTIONS_PLAIN}
-        lead={api.guest ? <SignInLink /> : undefined}
+        lead={
+          api.guest ? (
+            <SignInLink />
+          ) : notify.shown ? (
+            <NotifyChip agent={notify.shown} onRemove={notify.remove} />
+          ) : undefined
+        }
         mentionable
         instant
         collapse={compact}
@@ -1843,11 +1862,15 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         onLost={lost.onLost}
         onSubmit={(body, x) => {
           lost.clear();
+          const optOut = notify.body;
+          // The next thread starts with the chip again.
+          notify.reset();
           return create.mutateAsync({
             anchor: { kind: "note" },
             body,
             ...extrasBody(x),
             ...(api.guest ? { guestName: api.guestName.trim() } : {}),
+            ...optOut,
           });
         }}
       />

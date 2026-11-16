@@ -23,7 +23,7 @@ import type { CommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
 const GAP = 6;
-const CHIP =
+export const CHIP =
   "inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-background pl-1 text-foreground";
 
 /** What a chip says: face, name, and (when the caller may remove) the ×. */
