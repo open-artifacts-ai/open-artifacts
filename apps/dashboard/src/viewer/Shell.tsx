@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
+import { firstName } from "../api/myOnboarding";
 import {
   qk,
   useArtifact,
@@ -25,9 +26,10 @@ import { useMe } from "../auth/useMe";
 import { isEmbed } from "../embed";
 import { useCpuSignals } from "../layout/cpu";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { isMember } from "../library/MemberGetStarted";
 import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
-import { createBridge, type ScrollPos } from "./bridge";
+import { createBridge, type ScrollPos, type WelcomeGreet } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
 import {
@@ -356,9 +358,18 @@ function Viewer({
   const latest = useRef({ artifact, viewer, theme });
   latest.current = { artifact, viewer, theme };
   // #2287: the Welcome page may ask how far the checklist is; the bridge
-  // answers only the owner, and only on the Welcome artifact.
-  const gate = useRef({ owner: role === "owner" });
-  gate.current = { owner: role === "owner" };
+  // answers only the owner, and (#2632) a member, on their own Welcome.
+  const member = isMember(role);
+  // From the props the shell already has (no fetch of its own): the bridge
+  // adds the rest (who added them, the sixth step) from R.onboarding.
+  const greet: WelcomeGreet | undefined =
+    member && viewer ? { firstName: firstName(viewer.name), org } : undefined;
+  const gate = useRef<{
+    owner: boolean;
+    member: boolean;
+    greet?: WelcomeGreet;
+  }>({ owner: role === "owner", member, greet });
+  gate.current = { owner: role === "owner", member, greet };
   const fx = useArtifactSideEffects(
     artifact,
     version,

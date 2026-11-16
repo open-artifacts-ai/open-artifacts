@@ -127,7 +127,19 @@ async function startMocks() {
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
+          // #2632: the owner's name (MeSchema instanceOwner).
+          instanceOwner: { name: "Bob Builder" },
         }),
+      ),
+    );
+  // #2632: R.onboarding refuses a guest.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json(
+          { error: { code: "forbidden", message: "Forbidden" } },
+          { status: 403 },
+        ),
       ),
     );
   // ?mock=space-manager (with ?hosted=1): the caller is a plain member who manages
@@ -620,6 +632,9 @@ async function startMocks() {
             mentionStalled: params.get("ticks")?.includes("stalled"),
             askAnswered: params.get("ticks")?.includes("ask"),
             opened: params.get("opened") === "1",
+            // #2632: &teammate=1 ticks the optional sixth step.
+            teamStep: params.get("teammate") === "1",
+            invitedBy: "Bob Builder",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
