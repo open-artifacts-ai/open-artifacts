@@ -42,7 +42,11 @@ const mkDoc = () =>
     body: { title: "p", format: "doc", content: "# P\n" },
   });
 const me = async () =>
-  (await (await api(app, R.me, owner.cookie)).json()) as { docs?: string };
+  (
+    (await (await api(app, R.me, owner.cookie)).json()) as {
+      instance: { docs?: string };
+    }
+  ).instance;
 
 describe("docCreationOpen", () => {
   it("is off without the switch or the var, on with either", () => {
