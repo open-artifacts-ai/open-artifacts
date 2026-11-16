@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.197.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.196.0...v0.197.0) (2026-11-16)
+
+
+### Features
+
+* **onboarding:** per-person setup state, Welcome and Members setup on the server ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) server) ([#2639](https://github.com/open-artifacts-ai/open-artifacts/issues/2639)) ([8605ba7](https://github.com/open-artifacts-ai/open-artifacts/commit/8605ba75628c3b3f5bb53089cdae24c7bdc606b0))
+
 ## [0.196.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.195.0...v0.196.0) (2026-11-16)
 
 
