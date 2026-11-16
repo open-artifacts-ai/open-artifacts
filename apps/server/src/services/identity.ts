@@ -18,6 +18,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, inviteAcceptAudit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
+import { outsiderLoginOff } from "./outside.js";
 import { googleLinkStmts, toMember } from "./users.js";
 
 // Admission and account linking for direct sign-in (P2). identities
@@ -165,7 +166,11 @@ export async function admit(
   if (linked) {
     if (linked.status !== "active") return { ok: false, reason: "removed" };
     // A guest a share made, with no share left: no way in (#2590).
-    if (await unsharedGuest(env, linked))
+    if (
+      (await unsharedGuest(env, linked)) ||
+      (isGuestRole(linked.role as Role) &&
+        (await outsiderLoginOff(env, linked.id, linked.email)))
+    )
       return { ok: false, reason: "no_access" };
     return admitted(
       await touch(env, await followDrift(env, linked, email, id), id, now),
@@ -181,7 +186,12 @@ export async function admit(
   if (existing && existing.status !== "active")
     return { ok: false, reason: "removed" };
   if (existing?.subject) return { ok: false, reason: "identity_conflict" };
-  if (existing && (await unsharedGuest(env, existing)))
+  if (
+    existing &&
+    ((await unsharedGuest(env, existing)) ||
+      (isGuestRole(existing.role as Role) &&
+        (await outsiderLoginOff(env, existing.id, existing.email))))
+  )
     return { ok: false, reason: "no_access" };
   if (existing) {
     // A pending invite (invited_at set, never signed in) lapses; a re-invite
@@ -215,6 +225,9 @@ export async function admit(
   let role: Role = isOwner ? "owner" : "member";
   if (!existing && (id.bound || !googleNewRowOk(cfg, isOwner))) {
     if (!(await stmt(env.DB, SHARED).bind(email).first()))
+      return { ok: false, reason: "no_access" };
+    // The owner's switch (#2590): off ends share-made guests' logins.
+    if (await outsiderLoginOff(env, null, email))
       return { ok: false, reason: "no_access" };
     if (!googleEvidenceStrong(email, true, id.hd ?? id.tenant))
       return { ok: false, reason: "needs_code" };
@@ -319,9 +332,16 @@ export async function codeEligibility(
   // The same lapse as a Google sign-in (#2520): no code for an expired invite.
   if (row && row.status === "active" && inviteLapsed(row, Date.now()))
     return { kind: "none", reason: "invite_expired" };
-  return codeRule(cfg, email, row, async () =>
+  const rule = await codeRule(cfg, email, row, async () =>
     Boolean(await stmt(env.DB, SHARED).bind(email).first()),
   );
+  // The owner's switch (#2590): off ends share-made guests' logins by code too.
+  if (
+    rule.kind === "guest" &&
+    (await outsiderLoginOff(env, rule.userId, email))
+  )
+    return { kind: "none" };
+  return rule;
 }
 
 /**
@@ -342,7 +362,8 @@ export async function linkEligibility(
     .bind(email)
     .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
   if (!row) {
-    return (await stmt(env.DB, SHARED).bind(email).first())
+    return (await stmt(env.DB, SHARED).bind(email).first()) &&
+      !(await outsiderLoginOff(env, null, email))
       ? { kind: "guest", userId: null }
       : { kind: "none" };
   }
@@ -351,9 +372,11 @@ export async function linkEligibility(
     return { kind: "none", reason: "invite_expired" };
   if (await unsharedGuest(env, { id: row.id, role: row.role }))
     return { kind: "none" };
-  return isGuestRole(row.role)
-    ? { kind: "guest", userId: row.id }
-    : { kind: "member", userId: row.id, role: row.role };
+  if (isGuestRole(row.role)) {
+    if (await outsiderLoginOff(env, row.id, email)) return { kind: "none" };
+    return { kind: "guest", userId: row.id };
+  }
+  return { kind: "member", userId: row.id, role: row.role };
 }
 
 /** The user row codeRule reads: role, status, and whether any identity is linked. */

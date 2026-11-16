@@ -39,6 +39,8 @@ export const ERROR_CODES = [
   "invite_unreachable",
   // Member restore (parity 1).
   "member_removed",
+  // Sharing outside the instance (#2590).
+  "outside_sharing_off",
   "directory_managed",
   "guest_lapsed",
   // Member erase (#1204).
@@ -79,6 +81,7 @@ export const ERROR_CODES = [
   "already_decided",
   "already_replaced",
   "replaced",
+  "withdrawn",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -165,6 +168,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   invite_unreachable: 400,
   /** POST R.members (invite) for an address whose member was removed; details MemberRemovedDetails { userId }: offer R.memberRestore(userId). Nothing is created. */
   member_removed: 409,
+  /** PUT R.shares with an address outside the instance while Settings.outsideSharing is off (#2590). Nothing is shared. */
+  outside_sharing_off: 403,
   /** POST R.memberRestore(id) on a member the directory removed while Google sync is on (sync would remove them again), or POST R.members (invite) for that member's address: sync revives them when their Workspace account is restored. Nothing is created. */
   directory_managed: 409,
   /** POST R.memberRestore(id) on a lapsed guest, or POST R.members (invite) for a lapsed guest's address (removed when their last share went): a new share brings them back instead. */
@@ -225,6 +230,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   already_replaced: 409,
   /** #2323: the ask was replaced by a newer one, so it takes no more picks. */
   replaced: 409,
+  /** #2511: the ask was withdrawn, so it takes no more picks. */
+  withdrawn: 409,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */

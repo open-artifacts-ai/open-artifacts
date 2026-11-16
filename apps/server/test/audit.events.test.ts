@@ -7,6 +7,7 @@ import { createPat } from "../src/auth/pat.js";
 import { grantTargetId } from "../src/mcp/oauth.js";
 import { auditText } from "../src/services/audit.js";
 import { admit } from "../src/services/identity.js";
+import { outsideSharingOn } from "../src/services/outside.js";
 import { upsertOnLogin } from "../src/services/users.js";
 import { direct, seedUser, uniq } from "./auth-helpers.js";
 import { api, login } from "./helpers.js";
@@ -402,6 +403,9 @@ describe("invites", () => {
 describe("instance settings", () => {
   it("records the keys that changed with old and new values", async () => {
     const name = `Name ${crypto.randomUUID().slice(0, 8)}`;
+    // The first read of outsideSharing stores its default with a system
+    // settings.change row (#2590): store it first, so only this PATCH counts.
+    await outsideSharingOn(env);
     const before = await total("settings.change");
     const r = await api(app, R.settings, owner.cookie, {
       method: "PATCH",

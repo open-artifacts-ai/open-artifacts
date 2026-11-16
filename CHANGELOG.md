@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.194.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.1...v0.194.0) (2026-11-15)
+
+
+### Features
+
+* **comments:** withdraw, replace and edit ask cards ([#2511](https://github.com/open-artifacts-ai/open-artifacts/issues/2511)) ([#2623](https://github.com/open-artifacts-ai/open-artifacts/issues/2623)) ([0e72325](https://github.com/open-artifacts-ai/open-artifacts/commit/0e72325c9e67a7057be4bdf09b02c0929aa09abb))
+
+## [0.193.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.0...v0.193.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **docs:** old docs give their existing clientIDs to the server ([#2615](https://github.com/open-artifacts-ai/open-artifacts/issues/2615) L2) ([#2617](https://github.com/open-artifacts-ai/open-artifacts/issues/2617)) ([c615f8c](https://github.com/open-artifacts-ai/open-artifacts/commit/c615f8c39baaa75066f03ae9d1dc96c82064f9af))
+
+## [0.193.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.192.0...v0.193.0) (2026-11-15)
+
+
+### Features
+
+* **docs:** Save version, restore, doc version labels, comments on a selection ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2551](https://github.com/open-artifacts-ai/open-artifacts/issues/2551)) ([a4bf39c](https://github.com/open-artifacts-ai/open-artifacts/commit/a4bf39c2304f529d46e797678ddd6bbdb650d674))
+
 ## [0.192.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.191.0...v0.192.0) (2026-11-15)
 
 

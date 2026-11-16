@@ -27,7 +27,11 @@ import {
 } from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
-import { senderName, shareEmail } from "../email/templates.js";
+import {
+  outsideShareEmail,
+  senderName,
+  shareEmail,
+} from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
@@ -37,6 +41,7 @@ import { audit, userActor } from "./audit.js";
 import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
+import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
@@ -189,6 +194,17 @@ export async function putShare(
   const asked = s.role ?? (guest ? "commenter" : "viewer");
   const role: ShareRole = guest && asked === "editor" ? "commenter" : asked;
   const stored = storedShare(role);
+  // #2590: with the owner's switch off, no new share to an address outside
+  // the instance (no user row here). A person already in stays shareable.
+  if (
+    outsideAddress(env, email) &&
+    !(await stmt(env.DB, IS_USER).bind(email).first()) &&
+    !(await outsideSharingOn(env))
+  )
+    throw new ApiError(
+      "outside_sharing_off",
+      "Sharing with people outside is off. An owner can turn it on in Settings, Sharing.",
+    );
   const now = Date.now();
   // One atomic statement: a new email is inserted only while under the cap;
   // updating an existing share bypasses it, and the same role is a no-op.
@@ -251,8 +267,9 @@ export async function putShare(
   return {
     ...toShare(row),
     ...(guest ? { guest: true } : {}),
-    emailed:
-      created && (await emailShare(env, user, artifact, email, role, reach)),
+    ...(await emailed(created, () =>
+      emailShare(env, user, artifact, email, role, reach),
+    )),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
     signInMethods: reach.methods,
@@ -260,6 +277,33 @@ export async function putShare(
     reach: { ways: reach.ways },
   };
 }
+
+/** ShareResult's emailed and, when a limit refused it, notEmailed. */
+async function emailed(
+  created: boolean,
+  send: () => Promise<{
+    emailed: boolean;
+    notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+    limit?: number;
+  }>,
+): Promise<Pick<ShareResult, "emailed" | "notEmailed" | "limit">> {
+  if (!created) return { emailed: false };
+  const r = await send();
+  return {
+    emailed: r.emailed,
+    ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
+    ...(r.limit !== undefined ? { limit: r.limit } : {}),
+  };
+}
+
+/** Outside shares emailed per member per UTC day (#2590). */
+export const OUTSIDE_EMAILS_PER_MEMBER_PER_DAY = 20;
+/**
+ * Outside share emails per instance per UTC day, and during a trial (the
+ * issue gives no numbers: 100 and 20).
+ */
+export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY = 100;
+export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL = 20;
 
 async function emailShare(
   env: Env,
@@ -269,40 +313,110 @@ async function emailShare(
   role: ShareRole,
   /** The methods that admit the recipient and, with none, why (shareReach). */
   reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
-): Promise<boolean> {
-  if (!emailEnabled(env)) return false;
+): Promise<{
+  emailed: boolean;
+  notEmailed?: NonNullable<ShareResult["notEmailed"]>;
+  limit?: number;
+}> {
+  if (!emailEnabled(env)) return { emailed: false };
   try {
     const [member, settings] = await Promise.all([
       stmt(env.DB, IS_USER).bind(email).first(),
       getSettings(env),
     ]);
-    if (member) return false;
-    return await sendEmail(
+    if (member) return { emailed: false };
+    // An outside address gets the outside email (plain template, a capped
+    // title, no URL-like sender text) on every install. The daily limits are
+    // hosted's: a self-hosted install sends it, without limits. Anyone else (a login domain's address) gets the normal share
+    // email, with its role line, as on main.
+    const outside = outsideAddress(env, email);
+    const hosted = env.HOSTED === "1";
+    // No user row. An outside address (#2590) gets the outside email, under
+    // its own daily limits (apart from the usual ones; the share is saved
+    // whatever they say). Anyone else (an address at a login domain, an
+    // Access install) gets the normal share email, with its role line.
+    const day = new Date().toISOString().slice(0, 10);
+    const trial = planOfMember(user)?.tier === "trial";
+    const outcome: { limited?: boolean; reason?: string } = {};
+    const sent = await sendEmail(
       env,
       user.id,
       email,
       () =>
-        shareEmail({
-          inviter: senderName(user),
-          instance: settings.name,
-          recipient: email,
-          appHost: env.APP_HOST,
-          title: artifact.title,
-          path: viewerPath(artifact.id),
-          format: apiFormat(artifact.format, artifact.doc),
-          role,
-          signIn: reach.methods,
-          cantSignIn: reach.recipient?.reason,
-        }),
+        outside
+          ? outsideShareEmail({
+              inviter: senderName(user),
+              senderEmail: normalizeEmail(user.email) ?? user.email,
+              instance: settings.name,
+              recipient: email,
+              appHost: env.APP_HOST,
+              title: artifact.title,
+              path: viewerPath(artifact.id),
+              signIn: reach.methods,
+              cantSignIn: reach.recipient?.reason,
+            })
+          : shareEmail({
+              inviter: senderName(user),
+              instance: settings.name,
+              recipient: email,
+              appHost: env.APP_HOST,
+              title: artifact.title,
+              path: viewerPath(artifact.id),
+              format: apiFormat(artifact.format, artifact.doc),
+              role,
+              signIn: reach.methods,
+              cantSignIn: reach.recipient?.reason,
+            }),
       {
         kind: "share",
         artifactId: artifact.id,
         instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
+        outcome,
+        extraCaps: !(outside && hosted)
+          ? []
+          : [
+              {
+                cap: [
+                  `email:out:u:${user.id}`,
+                  OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
+                  day,
+                ],
+                reason: "member_limit",
+              },
+              {
+                cap: [
+                  "email:out:*",
+                  trial
+                    ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
+                    : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
+                  day,
+                ],
+                reason: "instance_limit",
+              },
+            ],
       },
     );
+    if (sent) return { emailed: true };
+    if (!outcome.limited) return { emailed: false };
+    // The number a member_limit or instance_limit refusal hit, for the page.
+    if (outcome.reason === "member_limit")
+      return {
+        emailed: false,
+        notEmailed: "member_limit",
+        limit: OUTSIDE_EMAILS_PER_MEMBER_PER_DAY,
+      };
+    if (outcome.reason === "instance_limit")
+      return {
+        emailed: false,
+        notEmailed: "instance_limit",
+        limit: trial
+          ? OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL
+          : OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY,
+      };
+    return { emailed: false, notEmailed: "limit" };
   } catch {
-    return false;
+    return { emailed: false };
   }
 }
 

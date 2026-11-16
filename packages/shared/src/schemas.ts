@@ -321,6 +321,9 @@ export const PublishToolInputSchema = PublishShape.superRefine(
 );
 /** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
 export const DOCS_NEED_PAID_MESSAGE =
+  "Collaborative docs need Cloudflare's Workers Paid plan. The person who runs this instance turns on Workers Paid in their Cloudflare account, then runs setup again with --upgrade --plan paid.";
+/** The library's empty state on a self-host without Workers Paid (#2100). */
+export const DOCS_NEED_PAID_EMPTY_MESSAGE =
   "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
 /**
  * PublishToolInputSchema without the doc format: tools/list and the skill list
@@ -334,6 +337,15 @@ export const PublishToolInputNoDocSchema = publishShape(
   z.enum(STORED_FORMATS, {
     error: (iss) =>
       iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
+  }) as unknown as typeof FormatSchema,
+).superRefine(refinePublish(true));
+/**
+ * ...and the same for an install where creation is on but docs need Workers
+ * Paid: format "doc" is refused with the next step (#2100).
+ */
+export const PublishToolInputNeedPaidSchema = publishShape(
+  z.enum(STORED_FORMATS, {
+    error: (iss) => (iss.input === "doc" ? DOCS_NEED_PAID_MESSAGE : undefined),
   }) as unknown as typeof FormatSchema,
 ).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
@@ -592,6 +604,15 @@ export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
 export const ShareResultSchema = ShareSchema.extend({
   /** True if a notification email went to a non-member (best effort). */
   emailed: z.boolean(),
+  /**
+   * Why no email went out when a limit refused it (the share is saved
+   * either way, #2590): member_limit (this member's outside addresses for
+   * the day), instance_limit (the instance's daily outside emails, lower in
+   * a trial), limit (the existing per-recipient, per-share or sending cap).
+   */
+  notEmailed: z.enum(["member_limit", "instance_limit", "limit"]).optional(),
+  /** With notEmailed member_limit or instance_limit: the daily number that was hit (20, 100, or the trial figure). */
+  limit: z.number().int().positive().optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
   recipient: ShareRecipientSchema.optional(),
   /**
@@ -1102,6 +1123,14 @@ export const SettingsSchema = z.object({
    * owner, admin); audited settings.space_manager_mappings.
    */
   spaceManagerMappings: z.boolean().optional(),
+  /**
+   * #2590: members may share pages with people outside the instance. Default
+   * on, except on the hosted Business tier (off). Only the owner changes it
+   * (PATCH, audited settings.change); off refuses new outside shares
+   * (403 outside_sharing_off) and ends share-made guests' logins. Always in
+   * GET, the effective value.
+   */
+  outsideSharing: z.boolean().optional(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 

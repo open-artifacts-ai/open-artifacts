@@ -1195,20 +1195,24 @@ describe("Decisions data (#2381 S2, #2323)", () => {
   it("a replaced ask takes no more picks (409 replaced) and never reads as a yes", async () => {
     const s = await setup();
     const old = await ask(s.id, [viewer.userId]);
-    // Answered as the asker's own user in the browser: a yes, until it is replaced.
-    await answer(s.id, old.id, cidOf(old), owner, "wide");
-    expect((await listAsk(s.id, owner, cidOf(old)))?.answer?.yes).toBe(true);
     await ask(s.id, [viewer.userId], { replaces: cidOf(old) });
-    expect((await listAsk(s.id, owner, cidOf(old)))?.answer?.yes).toBe(false);
     // A stale card cannot pick on it, as the decider or as someone weighing in.
     for (const u of [owner, viewer]) {
       const r = await answer(s.id, old.id, cidOf(old), u, "compact");
       expect(r.status).toBe(409);
       expect((await errOf(r)).code).toBe("replaced");
     }
-    expect((await listAsk(s.id, owner, cidOf(old)))?.answer?.optionId).toBe(
-      "wide",
-    );
+    expect((await listAsk(s.id, owner, cidOf(old)))?.answer).toBeUndefined();
+  });
+
+  it("an answered ask can't be replaced (#2511): its pick is the record", async () => {
+    const s = await setup();
+    const old = await ask(s.id, [viewer.userId]);
+    await answer(s.id, old.id, cidOf(old), owner, "wide");
+    await expect(
+      ask(s.id, [viewer.userId], { replaces: cidOf(old) }),
+    ).rejects.toMatchObject({ code: "already_answered" });
+    expect((await listAsk(s.id, owner, cidOf(old)))?.answer?.yes).toBe(true);
   });
 
   it("replaces is refused for another artifact's ask, a plain comment, another asker's ask", async () => {
@@ -1376,13 +1380,9 @@ describe("Decisions data (#2381 S2, #2323)", () => {
   it("a signed-out reader of a public page sees replaces and was like any other field", async () => {
     const s = await setup({ visibility: "public" });
     const old = await ask(s.id, [viewer.userId]);
-    // Decided and changed first: a replaced ask takes no more picks.
-    await answer(s.id, old.id, cidOf(old), owner, "wide");
-    await answer(s.id, old.id, cidOf(old), owner, "compact");
     const fresh = await ask(s.id, [viewer.userId], { replaces: cidOf(old) });
     const out = await listAsk(s.id, null, cidOf(old));
     expect(out?.replacedBy).toBe(cidOf(fresh));
-    expect(out?.answer?.was?.optionId).toBe("wide");
     expect(out?.role).toBeUndefined();
   });
 });

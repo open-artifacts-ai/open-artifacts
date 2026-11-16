@@ -33,7 +33,7 @@ create index if not exists comments_thread on comments (thread_id, created_at);
 create table if not exists comment_asks (
   comment_id text primary key, thread_id text not null, question text not null,
   options text not null, recommended text, addressees text not null, answer text,
-  confirm text, decider text, replaces text
+  confirm text, decider text, replaces text, withdrawn text
 );
 create index if not exists comment_asks_thread on comment_asks (thread_id);
 create table if not exists comment_ask_picks (
@@ -151,6 +151,12 @@ export type StoredAsk = {
   replaces?: string;
   /** #2323: the comment id of the ask that replaces this one (read from the other row, never stored here). */
   replacedBy?: string;
+  /** #2511: withdrawn by its asker before any decision. `replacedBy` names the card that replaces it on another artifact. */
+  withdrawn?: {
+    at: string;
+    by: StoredActor;
+    replacedBy?: { artifactId: string; threadId: string; commentId: string };
+  };
   /** #2381: every pick in order, append-only (a change is a new entry); a legacy ask's lone answer reads as one. */
   history?: StoredPick[];
   /** The thread is resolved. */
@@ -181,7 +187,10 @@ export type StoredComment = {
 /** What a new comment carries besides its text (#1535). */
 export type StoredAgent = Extract<StoredParty, { kind: "agent" }>;
 export type NewExtras = {
-  ask?: Omit<StoredAsk, "answer" | "closed" | "history" | "replacedBy">;
+  ask?: Omit<
+    StoredAsk,
+    "answer" | "closed" | "history" | "replacedBy" | "withdrawn"
+  >;
   mentions?: StoredAgent[];
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
@@ -367,6 +376,7 @@ type AskRow = {
   confirm: string | null;
   decider: string | null;
   replaces: string | null;
+  withdrawn: string | null;
   status: string;
 };
 type TargetRow = {
@@ -430,6 +440,13 @@ const askOf = (r: AskRow): StoredAsk => ({
   ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.decider ? { decider: r.decider } : {}),
   ...(r.replaces ? { replaces: r.replaces } : {}),
+  ...(r.withdrawn
+    ? {
+        withdrawn: JSON.parse(r.withdrawn) as NonNullable<
+          StoredAsk["withdrawn"]
+        >,
+      }
+    : {}),
   ...(r.answer
     ? { answer: JSON.parse(r.answer) as NonNullable<StoredAsk["answer"]> }
     : {}),
@@ -446,7 +463,7 @@ function attachExtras(
   const ids = JSON.stringify(threadIds);
   const byId = new Map(comments.map((c) => [c.id, c]));
   for (const r of sql.exec<AskRow>(
-    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, t.status
+    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, a.withdrawn, t.status
      from comment_asks a join comment_threads t on t.id = a.thread_id
      where a.thread_id in (select value from json_each(?))`,
     ids,
@@ -537,8 +554,8 @@ function checkReplaces(sql: SqlStorage, commentId: string, old: string): void {
   };
   if (old === commentId) refuse("bad_request", "An ask cannot replace itself");
   const row = sql
-    .exec<{ author: string }>(
-      "select c.author as author from comment_asks a join comments c on c.id = a.comment_id where a.comment_id = ?",
+    .exec<{ author: string; answer: string | null; withdrawn: string | null }>(
+      "select c.author as author, a.answer as answer, a.withdrawn as withdrawn from comment_asks a join comments c on c.id = a.comment_id where a.comment_id = ?",
       old,
     )
     .toArray()[0];
@@ -564,6 +581,76 @@ function checkReplaces(sql: SqlStorage, commentId: string, old: string): void {
     )
     .one().n;
   if (taken > 0) refuse("already_replaced", "That ask is already replaced");
+  // #2511: an answered card's pick is the record; a withdrawn one is already gone.
+  if ((row as { answer: string | null }).answer || hasDecision(sql, old))
+    refuse(
+      "already_answered",
+      "That ask is answered: post a new ask instead of replacing it",
+    );
+  if ((row as { withdrawn: string | null }).withdrawn)
+    refuse("withdrawn", "That ask was withdrawn");
+}
+
+/** Whether the ask has a decision (a pick made as its decider, or a stored answer). */
+function hasDecision(sql: SqlStorage, commentId: string): boolean {
+  return (
+    sql
+      .exec<{ n: number }>(
+        "select count(*) as n from comment_ask_picks where comment_id = ? and decision = 1",
+        commentId,
+      )
+      .one().n > 0
+  );
+}
+
+/**
+ * #2511: withdraws the ask on `commentId` (its asker's check is the service's).
+ * Refused 409 `already_answered` once it has a decision. Idempotent: a repeat
+ * returns the same state, and a repeat that names the card that replaces it
+ * fills that in (the retry of a cross-page replace); a different one is
+ * `already_replaced`. Returns whether anything changed.
+ */
+export function withdrawAsk(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  by: StoredActor,
+  now: string,
+  replacedBy?: { artifactId: string; threadId: string; commentId: string },
+): boolean {
+  const r = askRow(sql, threadId, commentId);
+  if (!r) throw new Error("oa:not_found:Not found");
+  const w = r.ask.withdrawn;
+  if (w) {
+    const have = w.replacedBy;
+    if (!replacedBy) return false;
+    if (
+      have &&
+      (have.artifactId !== replacedBy.artifactId ||
+        have.threadId !== replacedBy.threadId ||
+        have.commentId !== replacedBy.commentId)
+    )
+      throw new Error("oa:already_replaced:That ask is already replaced");
+    if (have) return false;
+    sql.exec(
+      "update comment_asks set withdrawn = ? where comment_id = ?",
+      JSON.stringify({ ...w, replacedBy }),
+      commentId,
+    );
+    return true;
+  }
+  if (r.ask.answer || hasDecision(sql, commentId))
+    throw new Error(
+      "oa:already_answered:That ask is answered: post a new ask instead of withdrawing it",
+    );
+  if (r.ask.replacedBy)
+    throw new Error("oa:already_replaced:That ask is already replaced");
+  sql.exec(
+    "update comment_asks set withdrawn = ? where comment_id = ?",
+    JSON.stringify({ at: now, by, ...(replacedBy ? { replacedBy } : {}) }),
+    commentId,
+  );
+  return true;
 }
 
 /** Stores the ask and mentions of a new comment, in the caller's transaction. */
@@ -1167,7 +1254,7 @@ export function askRow(
 ): { ask: StoredAsk; status: string; author: string; legacy: boolean } | null {
   const r = sql
     .exec<AskRow & { status: string; author: string }>(
-      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, t.status, c.author
+      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, a.withdrawn, t.status, c.author
        from comment_asks a join comment_threads t on t.id = a.thread_id join comments c on c.id = a.comment_id
        where a.comment_id = ? and a.thread_id = ?`,
       commentId,

@@ -20,6 +20,7 @@ import {
   listAudit,
 } from "../src/services/audit.js";
 import { admit, resetIdentity } from "../src/services/identity.js";
+import { outsideSharingOn } from "../src/services/outside.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 import { api, login } from "./helpers.js";
 
@@ -57,6 +58,9 @@ let member: { cookie: string; userId: string };
 let guest: { cookie: string; userId: string };
 
 beforeAll(async () => {
+  // The first read of the outsideSharing setting stores its default with a
+  // system settings.change row (#2590): store it before any test counts rows.
+  await outsideSharingOn(env);
   owner = await login(uniq("owner"), "owner");
   admin = await login(uniq("admin"), "admin");
   member = await login(uniq("member"));

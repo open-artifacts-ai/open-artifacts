@@ -329,6 +329,11 @@ function expected(
 }
 
 beforeAll(async () => {
+  // This matrix is about payment plans, not the owner's outside-sharing
+  // switch (#2590, off by default on Business): the switch is on throughout.
+  await env.DB.prepare(
+    "insert into settings (key, value) values ('outside_sharing', 'true') on conflict (key) do update set value = 'true'",
+  ).run();
   pinMiddayUtc();
   await clearBilling();
   await cachePlan(ROWS.none);
@@ -388,6 +393,9 @@ beforeAll(async () => {
 afterAll(async () => {
   vi.useRealTimers();
   await clearBilling();
+  await env.DB.prepare(
+    "delete from settings where key = 'outside_sharing'",
+  ).run();
 });
 
 describe.each(["none", "solo", "readOnly"] as const)("plan %s", (state) => {

@@ -308,6 +308,9 @@ export const R = {
   /** POST TakeBackBody { takeBack: true } -> Comment (#2381). Only the ask's own asker (the person the asking agent acts for) while someone else decides; 409 already_decided / conflict once closed. */
   commentAskDecider: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/ask/decider`,
+  /** POST WithdrawBody { replacedBy? } -> Comment (#2511). The ask's own asker (the asking agent, or the person it acts for) while it has no decision; 409 already_answered once decided; 409 already_replaced when another card replaced it. Idempotent; a retry with replacedBy finishes a cross-page replace. */
+  commentWithdraw: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/withdraw`,
   /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */
   artifactAgents: (id: string) => `${A}/${seg(id)}/agents`,
   /** GET Upgrade: websocket; frames are DataChange */

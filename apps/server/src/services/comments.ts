@@ -14,6 +14,7 @@ import {
   isId,
   type KeyRef,
   type MentionDelivery,
+  type ReplacesRef,
   type CommentThread as Thread,
   type ThreadAgent,
 } from "@oa/shared";
@@ -21,6 +22,7 @@ import { canConnect } from "../auth/agents.js";
 import {
   type ArtifactRow,
   accessLevel,
+  type Caller,
   callerOf,
   meetsLevel,
 } from "../auth/authz.js";
@@ -70,7 +72,7 @@ import {
   indexWeighed,
   reconcileAsks,
 } from "./asks.js";
-import { askApproveAudit } from "./audit.js";
+import { askApproveAudit, audit, userActor } from "./audit.js";
 import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
 import {
   type AskerAddress,
@@ -168,6 +170,11 @@ export type CommentViewer = {
    * for a person. An agent sees `answer.yes` only on an ask it posted itself.
    */
   agent?: AgentAttr | null;
+  /**
+   * #2511: the request's own caller (its cap included), for the checks that
+   * reach another artifact. Absent (a test, a job): the user's own, as loaded.
+   */
+  caller?: Caller;
 };
 
 /** #2224: the viewer may take an answer on this ask as its yes: not an agent, or the agent that posted it. */
@@ -599,7 +606,7 @@ async function threadViews(
       agents: threads.flatMap(rows),
     },
   );
-  return threads.map((t) => ({
+  const out: Thread[] = threads.map((t) => ({
     id: t.id,
     anchor: t.anchor,
     version: t.version,
@@ -612,6 +619,12 @@ async function threadViews(
       ? { agents: rows(t).map((p) => threadAgentView(p, viewer, users)) }
       : {}),
   }));
+  await fillReplacedTitles(
+    env,
+    out.flatMap((t) => t.comments),
+    viewer,
+  );
+  return out;
 }
 
 /** The users a comment shows by name: its author and, on an ask, who was asked and who answered. */
@@ -863,6 +876,16 @@ const commentOf = (
             ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
             ...(c.ask.replaces ? { replaces: c.ask.replaces } : {}),
             ...(c.ask.replacedBy ? { replacedBy: c.ask.replacedBy } : {}),
+            ...(c.ask.withdrawn
+              ? {
+                  withdrawn: {
+                    at: c.ask.withdrawn.at,
+                    ...(c.ask.withdrawn.replacedBy
+                      ? { replacedBy: { ...c.ask.withdrawn.replacedBy } }
+                      : {}),
+                  },
+                }
+              : {}),
             ...deciderFields(c, c.ask, viewer, users),
             ...(c.ask.answer
               ? {
@@ -878,6 +901,7 @@ const commentOf = (
                     // A replaced ask is never a yes: the newer ask is the question now (#2323).
                     yes:
                       !c.ask.replacedBy &&
+                      !c.ask.withdrawn &&
                       viewer.userId !== null &&
                       (c.ask.confirm !== "passkey" ||
                         c.ask.answer.verified === "passkey") &&
@@ -957,11 +981,13 @@ async function commentView(
 ): Promise<Comment> {
   const ids = new Set<string>();
   userIds(c, ids);
-  return commentOf(
+  const out = commentOf(
     c,
     viewer,
     await ctxFor(env, ids, hasAgent(c), { comments: [c] }),
   );
+  await fillReplacedTitles(env, [out], viewer);
+  return out;
 }
 
 // -------------------------------------------------------------------- reads
@@ -1102,6 +1128,8 @@ export type ExtrasOpts = {
   after?: Announce;
   /** #2478: called with the comment as stored (its mention rows included), before the view is built. */
   written?: (c: StoredComment) => void;
+  /** #2511: the request's own caller, for a replacement on another artifact. */
+  caller?: Caller;
 };
 
 type Resolved = {
@@ -1118,6 +1146,8 @@ type Resolved = {
   notice?: string;
   /** #2559: this comment's draw on the mention limits (one sender slot per comment). */
   gate?: MentionGate;
+  /** #2511: an ask on another artifact this comment's ask replaces; it is withdrawn once this one is posted. */
+  crossReplace?: ReplacesRef;
 };
 
 /** The comment's mention-limit gate: made once per comment, by its author. */
@@ -1285,6 +1315,7 @@ async function resolveExtras(
   for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
     mentioned.push(await agentOf(key));
   let ask: NewExtras["ask"];
+  let crossReplace: ReplacesRef | undefined;
   const asked: RosterAgent[] = [];
   if (askIn) {
     const to: StoredParty[] = [];
@@ -1358,8 +1389,20 @@ async function resolveExtras(
       to,
       ...(confirm ? { confirm } : {}),
       ...(decider ? { decider } : {}),
-      ...(askIn.replaces ? { replaces: askIn.replaces } : {}),
+      ...(typeof askIn.replaces === "string"
+        ? { replaces: askIn.replaces }
+        : askIn.replaces && askIn.replaces.artifactId === artifactId
+          ? { replaces: askIn.replaces.commentId }
+          : {}),
     };
+    if (
+      askIn.replaces &&
+      typeof askIn.replaces !== "string" &&
+      askIn.replaces.artifactId !== artifactId
+    ) {
+      await checkCrossReplace(env, who, askIn.replaces, opts.caller);
+      crossReplace = askIn.replaces;
+    }
   }
   const agents = new Map<string, Resolved["agents"][number]>();
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
@@ -1413,6 +1456,7 @@ async function resolveExtras(
     })),
     ...(notice ? { notice } : {}),
     ...(gate ? { gate } : {}),
+    ...(crossReplace ? { crossReplace } : {}),
   };
 }
 
@@ -1572,7 +1616,10 @@ async function addThreadInner(
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
   const body = checkBody(raw.body);
-  const r0 = await resolveExtras(env, a.id, who, raw, opts);
+  const r0 = await resolveExtras(env, a.id, who, raw, {
+    ...opts,
+    caller: viewer.caller,
+  });
   gateOf(env, who, r0);
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
@@ -1651,6 +1698,16 @@ async function addThreadInner(
       root.ask.decider ?? root.author.ref,
       askInfo(root),
     );
+  // #2511: a replaced ask leaves the index; one on another page is withdrawn now.
+  if (root?.ask?.replaces)
+    await indexDeleted(env, a.id, t.id, root.ask.replaces, false);
+  let crossNotice: string | undefined;
+  if (root?.ask && r.crossReplace)
+    crossNotice = await finishCrossReplace(env, who, viewer, r.crossReplace, {
+      artifactId: a.id,
+      threadId: t.id,
+      commentId: root.id,
+    });
   if (root && (r.agents.length > 0 || r.mentions.length > 0)) {
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
@@ -1659,7 +1716,8 @@ async function addThreadInner(
   await emailPeople(env, a.id, t.id, root, false, opts.after);
   const view = (await threadViews(env, a.id, [t], viewer))[0] as Thread;
   const first = view.comments[0];
-  if (r.notice && first) view.comments[0] = { ...first, notice: r.notice };
+  const note = r.notice ?? crossNotice;
+  if (note && first) view.comments[0] = { ...first, notice: note };
   return view;
 }
 
@@ -1918,7 +1976,10 @@ async function addReplyInner(
     // come first here (parallel, bounded: about one LINK_LOOKUP_MS).
     r = await withIdentities(
       env,
-      await resolveExtras(env, artifactId, who, extras, opts),
+      await resolveExtras(env, artifactId, who, extras, {
+        ...opts,
+        caller: viewer.caller,
+      }),
     );
   }
   gateOf(env, who, r);
@@ -1952,6 +2013,16 @@ async function addReplyInner(
       c.ask.decider ?? c.author.ref,
       askInfo(c),
     );
+  if (c.ask?.replaces)
+    await indexDeleted(env, artifactId, threadId, c.ask.replaces, false);
+  if (c.ask && r.crossReplace) {
+    const n = await finishCrossReplace(env, who, viewer, r.crossReplace, {
+      artifactId,
+      threadId,
+      commentId: c.id,
+    });
+    if (n) r = { ...r, notice: n };
+  }
   const row = await stmt(
     env.DB,
     "select current_version as v from artifacts where id = ?",
@@ -2076,6 +2147,7 @@ export async function answerChallenge(
       "replaced",
       "A newer ask replaced this one: pick on that",
     );
+  if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
   if (!ask.options.some((o) => o.id === optionId))
     throw new ApiError("bad_request", "Unknown option");
   if (ask.answer?.optionId === optionId)
@@ -2129,6 +2201,7 @@ export async function answerAsk(
       "replaced",
       "A newer ask replaced this one: pick on that",
     );
+  if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
   let verified: "passkey" | undefined;
   const needsPasskey =
     ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));
@@ -2324,6 +2397,199 @@ export async function artifactAgents(
     }));
 }
 
+// ------------------------------------------------------------ withdraw (#2511)
+
+/** The viewer an ask's author is compared with: a typed person is the person, a token is an agent. */
+const askerViewer = (who: CommentWho): Pick<CommentViewer, "agent"> => ({
+  agent:
+    who.kind === "user" && who.typed !== true ? (who.agent ?? null) : undefined,
+});
+
+/** Whether `who` is the asker of the ask on `c`: the same person, and the same agent when an agent posted it. */
+const isAsker = (c: StoredComment, who: CommentWho): boolean =>
+  who.kind === "user" &&
+  c.author.kind === "user" &&
+  c.author.ref === who.id &&
+  askedByViewer(c, askerViewer(who) as CommentViewer);
+
+const WITHDRAW_FORBIDDEN =
+  "Only the person who asked, or the agent that asked, can withdraw it";
+
+/** The stored ask comment, 404 when there is none. */
+async function askComment(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+): Promise<StoredComment> {
+  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+  const c = t.comments.find((x) => x.id === commentId);
+  if (!c?.ask) throw new ApiError("not_found", "Not found");
+  return c;
+}
+
+/**
+ * #2511: `replaces` names an ask on another artifact. The caller must be that
+ * ask's own asker and may edit that page; it must have no decision yet.
+ * Checked before the new ask is written, so a refusal writes nothing.
+ */
+async function checkCrossReplace(
+  env: Env,
+  who: CommentWho,
+  ref: ReplacesRef,
+  /** The request's own caller (its cap and narrowing); absent: the user's own, as loaded. */
+  request?: Caller,
+  /** Only "same asker, page editable" (the card a withdraw names as its replacement): a pick on it is no reason to leave the old card up. */
+  lenient = false,
+): Promise<void> {
+  const refuse = () =>
+    new ApiError(
+      "bad_request",
+      "`replaces` must be an ask you posted yourself, on a page you can edit",
+    );
+  if (who.kind !== "user" || (await isGuestMember(env, who.id))) throw refuse();
+  const user = await getUser(env, who.id);
+  const access = user
+    ? await accessLevel(env, request ?? callerOf(user), ref.artifactId)
+    : null;
+  if (!access || !meetsLevel(access.level, "editor")) throw refuse();
+  let c: StoredComment;
+  try {
+    c = await askComment(env, ref.artifactId, ref.threadId, ref.commentId);
+  } catch {
+    throw refuse();
+  }
+  if (!isAsker(c, who)) throw refuse();
+  if (lenient) return;
+  if (c.ask?.answer || c.ask?.history?.some((p) => p.decision))
+    throw new ApiError(
+      "already_answered",
+      "That ask is answered: post a new ask instead of replacing it",
+    );
+  if (c.ask?.withdrawn?.replacedBy || c.ask?.replacedBy)
+    throw new ApiError("already_replaced", "That ask is already replaced");
+}
+
+/**
+ * Withdraws the ask on `commentId`: its asker only (the asking agent, or the
+ * person it acts for), while it has no decision. It stays in the thread, takes
+ * no picks (409 withdrawn), and leaves the asks index and the inbox. Nobody is
+ * told. Idempotent; a repeat that names `replacedBy` finishes a cross-page
+ * replace. 403 for a guest.
+ */
+export async function withdrawAsk(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+  viewer: CommentViewer,
+  replacedBy?: ReplacesRef,
+): Promise<Comment> {
+  if (who.kind !== "user" || (await isGuestMember(env, who.id)))
+    throw new ApiError("forbidden", WITHDRAW_FORBIDDEN);
+  const c = await askComment(env, artifactId, threadId, commentId);
+  if (!isAsker(c, who)) throw new ApiError("forbidden", WITHDRAW_FORBIDDEN);
+  // The card it was replaced by must be one the same asker posted, on a page
+  // the caller can edit. Not the full replace check: a pick on the new card
+  // (or another card replacing it) does not keep the old one standing.
+  if (replacedBy)
+    await checkCrossReplace(env, who, replacedBy, viewer.caller, true);
+  const out = await call(() =>
+    stub(env, artifactId).commentsWithdraw({
+      threadId,
+      commentId,
+      by: actorOf(who),
+      rate: rateKeyOf(who),
+      ...(replacedBy ? { replacedBy } : {}),
+    }),
+  );
+  if (out.changed) {
+    await indexDeleted(env, artifactId, threadId, commentId, false);
+    try {
+      await env.DB.batch([
+        audit(
+          env,
+          replacedBy ? "ask.replace" : "ask.withdraw",
+          { type: "ask", id: commentId },
+          userActor(who.id),
+          {
+            detail: {
+              artifactId,
+              threadId,
+              commentId,
+              ...(replacedBy ? { replacedBy } : {}),
+            },
+          },
+        ),
+      ]);
+    } catch (e) {
+      logWarn("ask_withdraw_audit_failed", e, { artifactId });
+    }
+  }
+  return commentView(env, out.comment, viewer);
+}
+
+/**
+ * After the new ask is posted: withdraws the old one on the other artifact.
+ * Never throws; a failure is the notice for the response, and withdraw_ask
+ * with `replacedBy` completes it (a retry is idempotent).
+ */
+async function finishCrossReplace(
+  env: Env,
+  who: CommentWho,
+  viewer: CommentViewer,
+  old: ReplacesRef,
+  fresh: ReplacesRef,
+): Promise<string | undefined> {
+  try {
+    await withdrawAsk(
+      env,
+      old.artifactId,
+      old.threadId,
+      old.commentId,
+      who,
+      viewer,
+      fresh,
+    );
+    return undefined;
+  } catch (e) {
+    logWarn("ask_replace_incomplete", e, {
+      artifactId: old.artifactId,
+      newArtifactId: fresh.artifactId,
+    });
+    return `The new card is posted, but the old card could not be withdrawn. Call withdraw_ask { id: "${old.artifactId}", threadId: "${old.threadId}", commentId: "${old.commentId}", replacedBy: { artifactId: "${fresh.artifactId}", threadId: "${fresh.threadId}", commentId: "${fresh.commentId}" } } to finish.`;
+  }
+}
+
+/**
+ * Fills the title of the page a withdrawn card was replaced on, only where the
+ * viewer can open it (never leaks a title).
+ */
+async function fillReplacedTitles(
+  env: Env,
+  comments: Comment[],
+  viewer: CommentViewer,
+): Promise<void> {
+  const refs = comments.flatMap((c) =>
+    c.ask?.withdrawn?.replacedBy ? [c.ask.withdrawn.replacedBy] : [],
+  );
+  if (refs.length === 0 || viewer.userId === null) return;
+  const user = await getUser(env, viewer.userId);
+  if (!user) return;
+  // The request's own caller (its cap included), never a fresh uncapped one.
+  const caller = viewer.caller ?? callerOf(user);
+  const titles = new Map<string, string | null>();
+  for (const r of refs) {
+    if (!titles.has(r.artifactId)) {
+      const a = await accessLevel(env, caller, r.artifactId);
+      titles.set(r.artifactId, a ? a.artifact.title : null);
+    }
+    const title = titles.get(r.artifactId);
+    if (title) r.title = title;
+  }
+}
+
 /** Resolve or reopen. */
 export async function setStatus(
   env: Env,
@@ -2487,9 +2753,27 @@ export async function editComment(
   who: CommentWho,
   viewer: CommentViewer,
   body: unknown,
+  /** #2511: edit_comment over MCP: an agent edits only its own comment. REST keeps its rules. */
+  ownOnly = false,
 ): Promise<Comment> {
   const text = checkBody(body);
   const a = actorOf(who);
+  // A token without an agent identity (viewer.agent is null) skips this check
+  // and falls back to the DO's own rule: only the comment's author (the same
+  // person) edits it.
+  if (ownOnly && viewer.agent) {
+    const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+    const own = t.comments.find((x) => x.id === commentId);
+    if (
+      own &&
+      !(
+        own.author.kind === "user" &&
+        own.author.agent &&
+        askedByViewer(own, viewer)
+      )
+    )
+      throw new ApiError("forbidden", "Only the author can edit a comment");
+  }
   const c = await call(() =>
     stub(env, artifactId).commentsEdit({
       threadId,

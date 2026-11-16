@@ -14,6 +14,7 @@ import {
   BusRoleProposeInputSchema,
   CreateUploadInputSchema,
   DATA_WRITERS_NOTE,
+  EditCommentInputSchema,
   EditDocInputSchema,
   GetArtifactInputSchema,
   IdInputSchema,
@@ -23,6 +24,7 @@ import {
   ListQuerySchema,
   ListSpacesInputSchema,
   ListVersionsInputSchema,
+  PublishToolInputNeedPaidSchema,
   PublishToolInputNoDocSchema,
   PublishToolInputSchema,
   ResolveCommentInputSchema,
@@ -31,6 +33,7 @@ import {
   SetVisibilityInputSchema,
   ShareArtifactInputSchema,
   UnshareInputSchema,
+  WithdrawAskInputSchema,
 } from "@oa/shared";
 
 const INLINE = `${LIMITS.inlineBytes / 1024} KB`;
@@ -216,7 +219,7 @@ export const TOOL_DEFS = [
     inputSchema: AddCommentInputSchema,
     example: { id: ID, body: "Is this figure for Q3?" },
     description:
-      'Open Artifacts: comment on an artifact you can open. Without `threadId` it starts a thread: `anchor` is { kind: "note" } (the default, the whole artifact), a text anchor { kind: "text", exact, prefix, suffix } (on html, a quote the stored page does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side, and no block hint) or a pin. With `threadId` it replies (no anchor). `body` is 1 to 2,000 characters. Subject to the same rate limits as the web app (rate_limited: wait, then retry). `ask` turns the comment into a question put to people or agents (owner and editors only; forbidden otherwise): { question, options: [{ id, label, detail?, action? }], recommended?: { optionId, why }, to: [{ key }] } with `to` keys naming agents on the artifact or people who can read it; it works on a new thread or a reply. Addressees answer with one option. Set `action` (merge, deploy, delete, share, public or command) on an option that carries out that action. The server then sets `ask.confirm: "passkey"` when the person asked wants a passkey for it: they pick in the web app with their passkey, and a pick made any other way is refused. Read `ask.confirm` and `ask.answer.verified` from the server; never send them. `ask.decider: { key }` names who decides (a person who can edit the page; default your own user; never on an ask that names an action). Your own user stays on the ask and can take it back. `ask.replaces: <comment id>` marks an earlier ask you posted yourself as replaced by this one (same artifact; 409 already_replaced when another ask replaces it). Everyone else asked weighs in: `ask.picks` lists each latest pick by person, `ask.answer` is the decision (the decider\'s pick) only.',
+      'Open Artifacts: comment on an artifact you can open. Without `threadId` it starts a thread: `anchor` is { kind: "note" } (the default, the whole artifact), a text anchor { kind: "text", exact, prefix, suffix } (on html, a quote the stored page does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side, and no block hint) or a pin. With `threadId` it replies (no anchor). `body` is 1 to 2,000 characters. Subject to the same rate limits as the web app (rate_limited: wait, then retry). `ask` turns the comment into a question put to people or agents (owner and editors only; forbidden otherwise): { question, options: [{ id, label, detail?, action? }], recommended?: { optionId, why }, to: [{ key }] } with `to` keys naming agents on the artifact or people who can read it; it works on a new thread or a reply. Addressees answer with one option. Set `action` (merge, deploy, delete, share, public or command) on an option that carries out that action. The server then sets `ask.confirm: "passkey"` when the person asked wants a passkey for it: they pick in the web app with their passkey, and a pick made any other way is refused. Read `ask.confirm` and `ask.answer.verified` from the server; never send them. `ask.decider: { key }` names who decides (a person who can edit the page; default your own user; never on an ask that names an action). Your own user stays on the ask and can take it back. `ask.replaces: <comment id>` marks an earlier ask you posted yourself as replaced by this one (same artifact; 409 already_replaced when another ask replaces it, 409 already_answered once it has a decision). To replace an ask on another artifact you can edit, pass `ask.replaces: { artifactId, threadId, commentId }`: the new card is posted, then the old one is withdrawn (if that last step fails, the response says so and `withdraw_ask` with `replacedBy` finishes it). Everyone else asked weighs in: `ask.picks` lists each latest pick by person, `ask.answer` is the decision (the decider\'s pick) only.',
   },
   {
     name: "resolve_comment",
@@ -224,6 +227,29 @@ export const TOOL_DEFS = [
     example: { id: ID, threadId: "9Kd3mXc7KpR4tWbZ" },
     description:
       "Open Artifacts: mark a comment thread resolved, or reopen it with `resolved: false`. Anyone who can comment on the artifact may. Get threadId from list_comments.",
+  },
+  {
+    name: "withdraw_ask",
+    inputSchema: WithdrawAskInputSchema,
+    example: {
+      id: ID,
+      threadId: "9Kd3mXc7KpR4tWbZ",
+      commentId: "Bd4mXc7KpR4tWbZ9",
+    },
+    description:
+      "Open Artifacts: withdraw an ask you posted, while it has no decision (nobody picked as its decider). The card stays in the thread as Withdrawn, takes no more picks (409 withdrawn), is never a yes, and leaves the asks list and inbox. Nobody is notified. You can withdraw only your own ask (the agent that posted it, or the person it acts for); an answered ask can't be withdrawn (409 already_answered): post a new ask instead. Withdraw a superseded card before, or with, its replacement. `replacedBy: { artifactId, threadId, commentId }` names the card that replaces it, for example to finish a replace across pages. Repeating the call is safe.",
+  },
+  {
+    name: "edit_comment",
+    inputSchema: EditCommentInputSchema,
+    example: {
+      id: ID,
+      threadId: "9Kd3mXc7KpR4tWbZ",
+      commentId: "Bd4mXc7KpR4tWbZ9",
+      body: "Updated: the figure is for Q4.",
+    },
+    description:
+      "Open Artifacts: edit the text of your own comment (the agent that wrote it, or the person it acts for); it then shows as edited. `body` is 1 to 2,000 characters. An ask's question and options are never editable once posted: withdraw it, or post an ask that replaces it. Get threadId and commentId from list_comments.",
   },
   {
     name: "bus_role_propose",
@@ -301,16 +327,18 @@ export const descriptionFor = (name: ToolName, spaces = true): string => {
 export const toolConfig = <N extends ToolName>(
   name: N,
   spaces = true,
-  docs = false,
+  docs: boolean | "needs_paid" = false,
 ) => {
   const d = defOf(name);
   return {
     description: descriptionFor(name, spaces),
     // A deployment with docs on (DOCS_ENABLED) takes the schema that names doc.
-    inputSchema: (docs && name === "publish_artifact"
-      ? PublishToolInputSchema
-      : docs && name === "list_artifacts"
-        ? ListQuerySchema
-        : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
+    inputSchema: (docs === "needs_paid" && name === "publish_artifact"
+      ? PublishToolInputNeedPaidSchema
+      : docs === true && name === "publish_artifact"
+        ? PublishToolInputSchema
+        : docs === true && name === "list_artifacts"
+          ? ListQuerySchema
+          : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

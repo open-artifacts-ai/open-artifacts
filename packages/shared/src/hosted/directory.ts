@@ -276,6 +276,8 @@ export const AuditActionSchema = z.enum([
   "settings.change",
   "audit.export",
   "ask.approve",
+  "ask.withdraw",
+  "ask.replace",
   "plan.change",
   "plan.payment_failed",
   "plan.cancel",
