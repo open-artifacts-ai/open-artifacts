@@ -13,10 +13,16 @@
 // documentation (payload.messageId, payload.terminal, the type names), not
 // from live events. They must be checked against one real bounce and one real
 // complaint on staging before EMAIL_EVENTS_QUEUE is set anywhere real.
+import {
+  EMAIL_EVENTS_PULL_PATH,
+  type EmailEvent,
+  EmailEventsPullResponseSchema,
+} from "@oa/provisioning-contract";
 import { z } from "zod";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { logError, logInfo } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
+import { LoginGateError, loginGateCall } from "./login-gate.js";
 
 export const SENDER_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Terminal bounces within SENDER_PAUSE_MS that pause a member. */
@@ -65,45 +71,45 @@ const EventSchema = z.object({
   }),
 });
 
+/** What an event comes down to, whichever way it arrived. */
+export type SendingEvent = {
+  messageId: string;
+  kind: "bounced" | "complained";
+  /** A bounce says so explicitly: only then does it count. */
+  terminal: boolean;
+};
+
 const BOUNCED = "cf.email.sending.message.bounced";
 const COMPLAINED = "cf.email.sending.message.complained";
 
 /**
  * One event on a message we sent for a member. A complaint pauses them at
- * once; a bounce counts only when `terminal` is explicitly true (a missing
- * field is not a count), and the third within 7 days pauses them. A pause is 7
- * days, extended and never shortened. Anything else (delivered, deferred,
- * failed, a soft bounce, a message that is not an outside share email)
- * changes nothing. Resolves to whether it paused someone.
+ * once; a bounce counts only when it is explicitly terminal (a missing field
+ * is not a count), and the third within 7 days pauses them. A pause is 7
+ * days, extended and never shortened. Only message ids this install recorded
+ * count; anything else changes nothing. Resolves to whether it paused someone.
  */
-export async function handleEmailEvent(
+export async function applySendingEvent(
   env: Env,
-  raw: unknown,
+  ev: SendingEvent,
   now = Date.now(),
 ): Promise<boolean> {
-  const ev = EventSchema.safeParse(raw);
-  if (!ev.success) return false;
-  const { type } = ev.data;
-  if (type !== BOUNCED && type !== COMPLAINED) return false;
-  // A bounce counts only when it says it is terminal: a soft one is retried by
-  // the sender, and a missing field is not a promise.
-  if (type === BOUNCED && ev.data.payload.terminal !== true) return false;
+  if (ev.kind === "bounced" && !ev.terminal) return false;
   const row = await stmt(
     env.DB,
     "select user_id from share_email_messages where message_id = ?1",
   )
-    .bind(ev.data.payload.messageId)
+    .bind(ev.messageId)
     .first<{ user_id: string }>();
   if (!row) return false;
-  const kind = type === COMPLAINED ? "complained" : "bounced";
-  if (type === BOUNCED) {
+  if (ev.kind === "bounced") {
     // Once per message (a redelivered event counts once); then the third
     // terminal bounce in the window pauses.
     await stmt(
       env.DB,
       "update share_email_messages set bounced_at = ?2 where message_id = ?1 and bounced_at is null",
     )
-      .bind(ev.data.payload.messageId, now)
+      .bind(ev.messageId, now)
       .run();
     const n = await stmt(
       env.DB,
@@ -120,10 +126,87 @@ export async function handleEmailEvent(
      on conflict (user_id) do update set
        until_at = max(until_at, excluded.until_at), reason = excluded.reason`,
   )
-    .bind(row.user_id, now + SENDER_PAUSE_MS, kind, now)
+    .bind(row.user_id, now + SENDER_PAUSE_MS, ev.kind, now)
     .run();
-  logInfo("sender_paused", { userId: row.user_id, reason: kind });
+  logInfo("sender_paused", { userId: row.user_id, reason: ev.kind });
   return true;
+}
+
+/** One Queue message (Email Service's own event shape): complaints, and bounces that say terminal: true. */
+export async function handleEmailEvent(
+  env: Env,
+  raw: unknown,
+  now = Date.now(),
+): Promise<boolean> {
+  const ev = EventSchema.safeParse(raw);
+  if (!ev.success) return false;
+  const { type } = ev.data;
+  if (type !== BOUNCED && type !== COMPLAINED) return false;
+  return applySendingEvent(
+    env,
+    {
+      messageId: ev.data.payload.messageId,
+      kind: type === COMPLAINED ? "complained" : "bounced",
+      terminal: ev.data.payload.terminal === true,
+    },
+    now,
+  );
+}
+
+/** The bounce types the platform may report that end a delivery for good. Anything else, or none, is not terminal. */
+const TERMINAL_BOUNCE_TYPES = new Set(["hard", "permanent"]);
+
+/**
+ * Hosted: pulls the events the platform holds for this install over the
+ * LoginGate (POST /email-events/pull, each served once) and applies them by
+ * the same rules as the Queue path: a complaint pauses at once, a bounce
+ * counts only when its bounceType is a known terminal one, "failed" and
+ * anything else never counts, and only message ids this install recorded
+ * matter. Never throws: a gate that can't answer pulls nothing this tick.
+ *
+ * The platform serves an event once and has no acknowledgement, so each event
+ * is applied (and written to D1) one after another as soon as it arrives; an
+ * isolate that dies between the pull and the writes loses the unapplied
+ * rest. A lost bounce is only a pause that comes later; a lost complaint is
+ * the risk, and the platform's own record of it is the backstop.
+ */
+export async function pullEmailEvents(env: Env): Promise<number> {
+  let events: EmailEvent[];
+  try {
+    const out = EmailEventsPullResponseSchema.safeParse(
+      await loginGateCall(env, EMAIL_EVENTS_PULL_PATH),
+    );
+    if (!out.success) throw new LoginGateError("bad_answer");
+    events = out.data.events;
+  } catch (e) {
+    logWarn("email_events_pull_failed", e, {
+      why: e instanceof LoginGateError ? e.why : "error",
+    });
+    return 0;
+  }
+  let paused = 0;
+  for (const e of events) {
+    const kind =
+      e.kind === "complained"
+        ? "complained"
+        : e.kind === "bounced"
+          ? "bounced"
+          : null;
+    if (!kind) continue;
+    try {
+      if (
+        await applySendingEvent(env, {
+          messageId: e.messageId,
+          kind,
+          terminal: TERMINAL_BOUNCE_TYPES.has(e.bounceType ?? ""),
+        })
+      )
+        paused++;
+    } catch (err) {
+      logError("email_event_apply_failed", err);
+    }
+  }
+  return paused;
 }
 
 /**

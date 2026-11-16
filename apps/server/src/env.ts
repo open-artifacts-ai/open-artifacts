@@ -40,6 +40,12 @@ export interface Env {
    */
   EMAIL_EVENTS_QUEUE?: string;
   /**
+   * "on": this hosted install pulls bounce and complaint events from the
+   * platform over the LoginGate on its frequent system tick (#2650), instead of
+   * a Queue consumer. Off by default; self-host never reads it.
+   */
+  EMAIL_EVENTS_PULL?: string;
+  /**
    * One DirectorySync DO per install (directory/sync-do.ts): Google polling,
    * reconcile and queued access jobs. Unbound, directory sync never runs.
    */

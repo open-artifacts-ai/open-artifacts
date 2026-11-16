@@ -21,7 +21,7 @@ import {
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
-import { sweepEmailEvents } from "./services/email-events.js";
+import { pullEmailEvents, sweepEmailEvents } from "./services/email-events.js";
 import { checkLatestRelease } from "./services/release.js";
 import { directoryMode } from "./services/spaces.js";
 import { clearSuspended, markSuspended } from "./services/suspend.js";
@@ -159,6 +159,12 @@ async function run(
       // frozen), so its alarm stops too, and nothing is minted. Nothing is
       // disconnected or deleted: the binding and the synced rows stay, and
       // sync resumes with the tier.
+      // Hosted, once switched on: pull the bounce and complaint events the
+      // platform holds for this install (#2650). Never throws.
+      if (env.HOSTED === "1" && env.EMAIL_EVENTS_PULL === "on")
+        ctx.waitUntil(
+          pullEmailEvents(env).catch((e) => logError("cron_task_failed", e)),
+        );
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });
