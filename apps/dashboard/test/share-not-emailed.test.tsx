@@ -6,6 +6,7 @@ import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen } from "@testing-library/react";
 import { getResponse, HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
+import { ShareResultLocalSchema } from "../src/api/queries";
 import {
   instanceLimitLine,
   LIMIT_LINE,
@@ -79,6 +80,23 @@ describe("the lines (OA Product, #2620)", () => {
     );
     expect(LIMIT_LINE).toBe(notEmailedLine("limit", "Acme"));
   });
+  it("#2649 skipped: the neutral line, word for word, and never why", () => {
+    expect(notEmailedLine("skipped", "Acme")).toBe(
+      "We didn't email them this time. Copy the link and send it yourself.",
+    );
+    expect(notEmailedLine("skipped", "Acme", 20)).toBe(LIMIT_LINE);
+  });
+  it("#2649 skipped parses (PROVISIONAL, locally until @oa/shared has it)", () => {
+    expect(
+      ShareResultLocalSchema.safeParse({
+        email: "a@b.co",
+        role: "viewer",
+        createdAt: "x",
+        emailed: false,
+        notEmailed: "skipped",
+      }).success,
+    ).toBe(true);
+  });
   it("instance_limit", () => {
     const line =
       "We didn't email them: Acme has reached today's limit for new people outside. Copy the link and send it yourself.";
@@ -144,6 +162,10 @@ describe("in the Share panel, after saving", () => {
     ],
     [
       "limit",
+      /^We didn't email them this time\. Copy the link and send it yourself\.$/,
+    ],
+    [
+      "skipped",
       /^We didn't email them this time\. Copy the link and send it yourself\.$/,
     ],
   ])("%s says so, and the link to copy stays", async (reason, line) => {

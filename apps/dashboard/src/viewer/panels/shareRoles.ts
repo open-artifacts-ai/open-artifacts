@@ -1,10 +1,11 @@
 // #2590: per-share roles, with "commenter" (Can comment) for people outside
 // the instance. The role is @oa/shared's ShareRole (#2600); this file holds
 // the Share panel's choices, labels, outside-address rules and notes.
-import type { ShareResult, ShareRole } from "@oa/shared";
+import type { ShareRole } from "@oa/shared";
+import type { ShareResultLocal } from "../../api/queries";
 
-/** Why a saved share sent no email (#2620's ShareResult.notEmailed). */
-export type NotEmailed = NonNullable<ShareResult["notEmailed"]>;
+/** Why a saved share sent no email (ShareResult.notEmailed, with #2649's "skipped"). */
+export type NotEmailed = NonNullable<ShareResultLocal["notEmailed"]>;
 
 /** OA Product (#2620): over today's limits for new outside addresses; the link to copy stays. */
 /** The member limit when the server doesn't say (#2620's figure). */
@@ -13,7 +14,10 @@ export const memberLimitLine = (org: string, limit = MEMBER_LIMIT_FALLBACK) =>
   `We didn't email them: you've reached today's limit of ${limit} new people outside ${org}. Copy the link and send it yourself.`;
 export const instanceLimitLine = (org: string) =>
   `We didn't email them: ${org} has reached today's limit for new people outside. Copy the link and send it yourself.`;
-/** OA Product: the generic `limit` (a recipient, share or sending cap we can't tell apart). */
+/**
+ * OA Product: the generic `limit` (a recipient, share or sending cap we can't
+ * tell apart), and #2649's `skipped`, whose reason is private: never say why.
+ */
 export const LIMIT_LINE =
   "We didn't email them this time. Copy the link and send it yourself.";
 /** The line for a share that sent no email, by the server's reason. */
@@ -24,6 +28,7 @@ export function notEmailedLine(
 ): string {
   if (reason === "member_limit") return memberLimitLine(org, limit);
   if (reason === "instance_limit") return instanceLimitLine(org);
+  // "limit" and "skipped": the neutral line.
   return LIMIT_LINE;
 }
 

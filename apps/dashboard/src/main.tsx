@@ -803,7 +803,7 @@ async function startMocks() {
       ),
     );
   }
-  // &share=workspace-only (#2590, PROVISIONAL): every share answers that the
+  // &share=workspace-only (#2590): every share answers that the
   // address can open it only if it's a Google account.
   if (params.get("share") === "workspace-only")
     extra.push(
@@ -817,7 +817,7 @@ async function startMocks() {
         });
       }),
     );
-  // &notEmailed=member_limit|instance_limit|limit (#2620): every share is
+  // &notEmailed=member_limit|instance_limit|limit|skipped (#2620, #2649): every share is
   // saved without an email, for that reason.
   const notEmailed = params.get("notEmailed");
   if (notEmailed)

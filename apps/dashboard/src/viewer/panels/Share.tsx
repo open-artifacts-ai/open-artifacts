@@ -257,9 +257,9 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     emailed: boolean;
     /** Set when they can't sign in yet: the box warns instead. */
     recipient?: ShareRecipient;
-    /** PROVISIONAL (#2620): why no email went, when the server says. */
+    /** Why no email went, when the server says (#2620). */
     notEmailed?: NotEmailed;
-    /** The day's limit, with a limit reason (PROVISIONAL, #2620). */
+    /** The day's limit, with a limit reason (#2620). */
     limit?: number;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
