@@ -62,7 +62,9 @@ for (const width of [1280, 390])
         "In the app",
         "This browser",
       ]);
-      await expect(levels).toContainText("Asks, approvals, a stuck agent");
+      await expect(levels).toContainText(
+        "Asks for you, and an agent that's stuck",
+      );
       await expect(levels).not.toContainText("failed payment");
       await expect(
         page.getByRole("switch", { name: "Needs you in this browser" }),
@@ -81,7 +83,7 @@ for (const width of [1280, 390])
       ).toHaveText("07:30");
       await expect(
         page.getByRole("combobox", { name: "Interrupt me for" }),
-      ).toHaveText("Waiting asks and approvals");
+      ).toHaveText("Asks waiting for you");
       await expect(
         page.getByRole("combobox", { name: "On lock screens" }),
       ).toHaveText("Hide details");

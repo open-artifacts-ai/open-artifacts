@@ -114,7 +114,7 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             <th scope="row" className={`${td} text-left font-normal`}>
               <b className="font-semibold">Needs you</b>
               <small className={sub}>
-                Asks, approvals, a stuck agent
+                Asks for you, and an agent that's stuck
               </small>
             </th>
             <td className={td}>Always</td>
@@ -223,7 +223,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
             label="Interrupt me for"
             value={prefs.browserAllAsks ? "all" : "waiting"}
             options={[
-              { value: "waiting", label: "Waiting asks and approvals" },
+              { value: "waiting", label: "Asks waiting for you" },
               { value: "all", label: "Every ask put to me" },
             ]}
             onChange={(v) => save({ ...prefs, browserAllAsks: v === "all" })}

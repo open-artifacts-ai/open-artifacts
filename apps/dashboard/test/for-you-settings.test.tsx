@@ -4,13 +4,7 @@ import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { thisBrowser } from "../src/settings/ForYouPrefs";
-import {
-  calls,
-  events,
-  installHarness,
-  mount,
-  server,
-} from "./harness";
+import { calls, events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
@@ -53,7 +47,7 @@ describe("For you settings", () => {
     expect(screen.getByText(/away until 07:30/)).toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "Interrupt me for" }),
-    ).toHaveTextContent("Waiting asks and approvals");
+    ).toHaveTextContent("Asks waiting for you");
     expect(
       screen.getByRole("combobox", { name: "On lock screens" }),
     ).toHaveTextContent("Hide details");
