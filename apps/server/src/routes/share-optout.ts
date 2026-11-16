@@ -4,10 +4,13 @@ import {
   OPTOUT_COPY,
   SHARE_OPTOUT_PATH,
   verifyOptoutToken,
+  verifyOptoutTokenFull,
 } from "../email/share-optout.js";
 import { fill, oneLine, orgName } from "../email/templates.js";
 import type { AppEnv } from "../http/middleware.js";
+import { logWarn } from "../log.js";
 import { escapeHtml } from "../mcp/template.js";
+import { hostedOptoutOn, optoutPlatform } from "../services/hosted-optout.js";
 import { getSettings } from "../services/members.js";
 import type { AppType } from "./index.js";
 
@@ -62,14 +65,25 @@ export function mountShareOptout(app: AppType): void {
       const v = (form as Record<string, unknown>).t;
       t = typeof v === "string" ? v : "";
     }
-    const hash = await verifyOptoutToken(c.env, t);
-    if (!hash) return bad(c);
+    const tok = await verifyOptoutTokenFull(c.env, t);
+    if (!tok) return bad(c);
     await stmt(
       c.env.DB,
       "insert into email_optouts (address_hash, created_at) values (?1, ?2) on conflict (address_hash) do nothing",
     )
-      .bind(hash, Date.now())
+      .bind(tok.hash, Date.now())
       .run();
+    // Hosted, once the platform has switched it on (#2652): the opt-out goes
+    // on the platform-wide list too, with the token minted for this email. The
+    // install's own suppression above already holds, so a platform that can't
+    // answer is logged, never shown to the person.
+    if (tok.platform && hostedOptoutOn(c.env)) {
+      try {
+        await optoutPlatform.impl.add(c.env, tok.platform.h, tok.platform.p);
+      } catch (e) {
+        logWarn("optout_platform_add_failed", e);
+      }
+    }
     return c.html(
       page(
         fill(OPTOUT_COPY.doneTitle, { org: await org(c) }),

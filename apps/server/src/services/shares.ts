@@ -30,6 +30,7 @@ import { emailEnabled, sendEmail } from "../email/send.js";
 import {
   addressHash,
   optoutUrl,
+  type PlatformOptout,
   signOptoutToken,
 } from "../email/share-optout.js";
 import {
@@ -45,6 +46,12 @@ import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
+import {
+  hostedOptoutOn,
+  type OptoutAnswer,
+  optoutHash,
+  optoutPlatform,
+} from "./hosted-optout.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
@@ -351,8 +358,30 @@ async function emailShare(
       });
       return { emailed: false, notEmailed: "skipped" };
     }
+    // Hosted, once the platform has switched it on (#2652): the platform's
+    // list is asked first, and no answer means no email (fail closed). The
+    // per-email token it mints rides in the unsubscribe link.
+    let platform: PlatformOptout | undefined;
+    if (outside && hostedOptoutOn(env)) {
+      const skip = (reason: string) => {
+        logInfo("share_email_skipped", { reason, artifactId: artifact.id });
+        return { emailed: false, notEmailed: "skipped" as const };
+      };
+      const h = await optoutHash(env, email);
+      if (!h) return skip("optout_unconfigured");
+      let answer: OptoutAnswer | undefined;
+      try {
+        answer = (await optoutPlatform.impl.check(env, [h]))[0];
+      } catch (e) {
+        logWarn("optout_check_failed", e, { artifactId: artifact.id });
+        return skip("optout_unavailable");
+      }
+      if (!answer) return skip("optout_unavailable");
+      if (answer.optedOut) return skip("platform_opted_out");
+      platform = { h, p: answer.token };
+    }
     const optOutUrl = outside
-      ? optoutUrl(env.APP_HOST, await signOptoutToken(env, email))
+      ? optoutUrl(env.APP_HOST, await signOptoutToken(env, email, platform))
       : "";
     const hosted = env.HOSTED === "1";
     // No user row. An outside address (#2590) gets the outside email, under

@@ -33,6 +33,15 @@ export interface Env {
    */
   USER_PRESENCE?: DurableObjectNamespace<UserPresence>;
   /**
+   * "on": this hosted install asks the platform's opt-out list before it
+   * emails an outside address, and reports opt-outs to it (#2652). The
+   * platform sets it once its routes are live; unset, hosted behaves as before.
+   * Self-host never reads it.
+   */
+  OPTOUT_PLATFORM?: string;
+  /** Secret, the same on every hosted install: the key of HMAC(key, address), what the install sends the platform instead of an address (#2652). */
+  OPTOUT_HASH_KEY?: string;
+  /**
    * One DirectorySync DO per install (directory/sync-do.ts): Google polling,
    * reconcile and queued access jobs. Unbound, directory sync never runs.
    */
