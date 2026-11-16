@@ -171,6 +171,23 @@ for (const width of [1280, 390])
     });
   }
 
+test("a signed-out visitor never gets an email: with no name the line is hidden", async ({
+  page,
+}) => {
+  const versions = page.waitForResponse((r) =>
+    /\/api\/v1\/artifacts\/[^/]+\/versions/.test(r.url()),
+  );
+  await page.goto(`/a/${LANDING}?mock=signed-out&publisher=noname`);
+  await versions;
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Landing page" }),
+  ).toBeVisible();
+  await expect(line(page)).toHaveCount(0);
+  await expect(page.locator("[data-publisher-sheet]")).toHaveCount(0);
+  await expect(page.getByText(/ada@example\.com|^ada\b/)).toHaveCount(0);
+  expect(await page.locator("body").innerText()).not.toContain("@example.com");
+});
+
 test("under 960px, the title and the access chip open the same sheet", async ({
   page,
 }) => {

@@ -20,22 +20,52 @@ export type Publisher = {
 };
 
 /**
+ * A signed-out visitor's name for the person: the real name only, never an
+ * email (OA Axe). The server sends the name or null; a name that is an
+ * address is treated as null too.
+ */
+const signedOutName = (u: UserRef) => {
+  const name = u.name?.trim();
+  return name && !name.includes("@") ? name : null;
+};
+
+/**
  * The publisher as the viewer may see it. Guests and signed-out visitors see
  * the person only: never the agent's name or picture, whatever the server sent.
+ * A signed-out visitor never gets an email: with no real name there is no
+ * publisher to show (null), and the line is hidden.
  */
+type VersionWho = {
+  agent: AgentRef | null;
+  createdBy: UserRef;
+  version: number;
+  createdAt: string;
+};
+type Viewer = { outsider: boolean; meId: string | null };
 export function publisherFor(
-  info: {
-    agent: AgentRef | null;
-    createdBy: UserRef;
-    version: number;
-    createdAt: string;
-  },
-  viewer: { outsider: boolean; meId: string | null },
+  info: VersionWho,
+  viewer: Viewer & { signedOut?: false },
   currentVersion: number,
-): Publisher {
+): Publisher;
+export function publisherFor(
+  info: VersionWho,
+  viewer: Viewer & { signedOut: boolean },
+  currentVersion: number,
+): Publisher | null;
+export function publisherFor(
+  info: VersionWho,
+  viewer: Viewer & { signedOut?: boolean },
+  currentVersion: number,
+): Publisher | null {
+  let person = info.createdBy;
+  if (viewer.signedOut) {
+    const name = signedOutName(person);
+    if (!name) return null;
+    person = { id: person.id, name, email: null };
+  }
   return {
-    agent: viewer.outsider ? null : info.agent,
-    person: info.createdBy,
+    agent: viewer.outsider || viewer.signedOut ? null : info.agent,
+    person,
     mine: viewer.meId !== null && viewer.meId === info.createdBy.id,
     version: info.version,
     current: info.version === currentVersion,

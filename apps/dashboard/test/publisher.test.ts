@@ -113,3 +113,36 @@ describe("the sheet", () => {
     ]);
   });
 });
+
+describe("a signed-out visitor never gets an email (OA Axe, #2644)", () => {
+  const signedOut = { outsider: true, meId: null, signedOut: true };
+  it("with a real name: the name only, nowhere an email", () => {
+    const p = publisherFor(info, signedOut, 12);
+    expect(p?.agent).toBeNull();
+    expect(p?.person.email).toBeNull();
+    const all = [
+      fullLine(p!, NOW),
+      ...sheetLines(p!, NOW),
+      ...lineParts(p!, 0, NOW),
+      ...lineParts(p!, 2, NOW),
+    ].join(" ");
+    expect(all).toContain("Leo Urbina");
+    expect(all).not.toContain("@");
+  });
+  it.each([null, "", "  ", "leo@example.com"])(
+    "with name %j: no publisher, so the line is hidden",
+    (name) => {
+      expect(
+        publisherFor({ ...info, createdBy: { ...leo, name } }, signedOut, 12),
+      ).toBeNull();
+    },
+  );
+  it("a guest with no name still gets the line (signed in)", () => {
+    const p = publisherFor(
+      { ...info, createdBy: { ...leo, name: null } },
+      { outsider: true, meId: "u-ada" },
+      12,
+    );
+    expect(p).not.toBeNull();
+  });
+});

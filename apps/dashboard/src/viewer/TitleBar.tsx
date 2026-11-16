@@ -338,7 +338,8 @@ export function TitleBar({
     ? publisherFor(
         info,
         // Guests and signed-out visitors: the person only, never the agent.
-        { outsider: outsider || !authed, meId },
+        // Signed out: the real name or nothing, never an email (OA Axe).
+        { outsider: outsider || !authed, meId, signedOut: !authed },
         artifact.currentVersion,
       )
     : null;
