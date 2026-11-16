@@ -369,6 +369,16 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
   }
 }
 
+const signInCount = async (env: Env, userId: string): Promise<number> =>
+  (
+    await stmt(
+      env.DB,
+      "select count(*) as n from audit_events where action = 'auth.signin' and target_id = ?1",
+    )
+      .bind(userId)
+      .first<{ n: number }>()
+  )?.n ?? 0;
+
 const WELCOME_WAIT_STEP_MS = 100;
 const WELCOME_WAIT_MAX = 30;
 
@@ -393,7 +403,9 @@ export async function ensureWelcome(
         .first<{ value: string }>();
     let row = await read();
     // A GET is readable under a cap, and a capped caller must not publish: it never starts a seed.
-    if (!row && !capped) {
+    // And only after a real first sign-in (exactly one on record): a login with no
+    // sign-in row (a test hook, a token) is never seeded by a read.
+    if (!row && !capped && (await signInCount(env, user.id)) === 1) {
       await seedWelcome(env, user);
       row = await read();
     }

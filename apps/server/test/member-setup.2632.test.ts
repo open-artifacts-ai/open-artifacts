@@ -470,6 +470,15 @@ describe("the checklist write is refused to a capped caller (#2632)", () => {
 });
 
 describe("the Welcome is there for a read that beats the background seed (#2632)", () => {
+  it("a login with no sign-in row gets no Welcome from a read", async () => {
+    const m = await login(`hook-${tag()}@example.com`, "member");
+    const got = (await (await api(app, R.onboarding, m.cookie)).json()) as {
+      welcomeId: string | null;
+    };
+    expect(got.welcomeId).toBeNull();
+    expect(await seededRows(m.userId)).toBe(0);
+  });
+
   const mkMember = async () => {
     const m = await login(`mem-${tag()}@example.com`, "member");
     await signins(m.userId, 1);
