@@ -14,6 +14,7 @@ import {
   RUN_VERSION_KEY,
   STOPPED_AFTER_MS,
 } from "../../src/bus/updates.js";
+import { VERSION } from "../../src/version.gen.js";
 import { api } from "../helpers.js";
 import {
   type Daemon,
@@ -403,13 +404,22 @@ describe("PUT R.busRunVersion: the owner names it (#2552)", () => {
   it("newer than this server: refused, nothing stored", async () => {
     await setNamed(null);
     const owner = await member("owner");
-    for (const v of ["99.0.0", "0.186.1", "0.187.0", "1.0.0"]) {
+    // Versions past this server, whatever version it is built as.
+    const [maj, min, pat] = (VERSION.split(/[-+]/)[0] ?? "0.0.0")
+      .split(".")
+      .map(Number) as [number, number, number];
+    for (const v of [
+      "99.0.0",
+      `${maj}.${min + 1}.0`,
+      `${maj}.${min}.${pat + 1}`,
+      `${maj + 1}.0.0`,
+    ]) {
       const r = await put(owner.cookie, { version: v });
       expect(r.status, v).toBe(409);
       expect(await r.text()).toContain("ahead_of_server");
     }
     expect(await stored()).toBeNull();
-    expect((await put(owner.cookie, { version: "0.186.0" })).status).toBe(204);
+    expect((await put(owner.cookie, { version: "0.150.0" })).status).toBe(204);
     await setNamed(null);
   });
 
