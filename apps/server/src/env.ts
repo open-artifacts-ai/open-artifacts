@@ -33,6 +33,13 @@ export interface Env {
    */
   USER_PRESENCE?: DurableObjectNamespace<UserPresence>;
   /**
+   * The name of the Queue Cloudflare Email Service publishes sending events
+   * to (message.bounced, message.failed, message.complained), when the
+   * platform has bound this Worker as its consumer (#2650). Unset: the queue
+   * handler ignores any batch and nothing changes (self-host).
+   */
+  EMAIL_EVENTS_QUEUE?: string;
+  /**
    * One DirectorySync DO per install (directory/sync-do.ts): Google polling,
    * reconcile and queued access jobs. Unbound, directory sync never runs.
    */

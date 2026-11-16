@@ -59,6 +59,8 @@ export const SHAPE = {
   counters: 5_000,
   creator_months: 5_000, // hosted only: one per creator and UTC month
   settings: 20,
+  share_email_messages: 20_000, // #2650: outside share emails of the last 30 days
+  share_email_pauses: 20, // #2650: members paused after a bounce or complaint
   audit_events: 1_000_000,
 } as const;
 
@@ -481,6 +483,32 @@ export const RULES: Record<string, Rule> = {
         created_at: c.time(),
         consumed: c.rand() < 0.95 ? 1 : 0,
         received_at: c.rand() < 0.97 ? c.time() : null,
+      };
+    },
+  },
+  share_email_messages: {
+    rows: (c) => c.count("share_email_messages"),
+    row(i, c) {
+      const u = c.users[i % c.users.length];
+      if (!u) return null;
+      return {
+        message_id: c.id("msg"),
+        user_id: u.id,
+        address_hash: i.toString(16).padStart(64, "0"),
+        created_at: c.time(),
+      };
+    },
+  },
+  share_email_pauses: {
+    rows: (c) => Math.min(c.count("share_email_pauses"), c.users.length),
+    row(i, c) {
+      const u = c.users[i];
+      if (!u) return null;
+      return {
+        user_id: u.id,
+        until_at: c.time(),
+        reason: c.pick(["bounced", "failed", "complained"]),
+        created_at: c.time(),
       };
     },
   },

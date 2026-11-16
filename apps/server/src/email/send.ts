@@ -268,7 +268,7 @@ export async function sendEmail(
      */
     instance: string | null | undefined;
     /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. */
-    outcome?: { limited?: boolean; reason?: string };
+    outcome?: { limited?: boolean; reason?: string; messageId?: string };
     /** Caps taken before the usual ones (outside shares, #2590), each with the reason it reports. */
     extraCaps?: { cap: Cap; reason: string }[];
   },
@@ -342,6 +342,7 @@ export async function sendEmail(
         timer = setTimeout(() => reject(new EmailTimeout()), EMAIL_TIMEOUT_MS);
       }),
     ]);
+    if (opts.outcome) opts.outcome.messageId = messageId;
     console.log(
       JSON.stringify({ evt: "email_sent", kind: opts.kind, messageId }),
     );

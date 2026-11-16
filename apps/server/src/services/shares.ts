@@ -39,6 +39,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { apiFormat } from "./doc-format.js";
+import { recordShareEmail, senderPaused } from "./email-events.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
@@ -335,6 +336,16 @@ async function emailShare(
     // its own daily limits (apart from the usual ones; the share is saved
     // whatever they say). Anyone else (an address at a login domain, an
     // Access install) gets the normal share email, with its role line.
+    // A bounce or complaint on this member's earlier outside share email
+    // pauses them for 7 days (#2650): the share is saved, nothing is sent, and
+    // the sharer is told only "skipped".
+    if (outside && (await senderPaused(env, user.id))) {
+      logInfo("share_email_skipped", {
+        reason: "sender_paused",
+        artifactId: artifact.id,
+      });
+      return { emailed: false, notEmailed: "skipped" };
+    }
     const day = new Date().toISOString().slice(0, 10);
     const trial = planOfMember(user)?.tier === "trial";
     const outcome: { limited?: boolean; reason?: string } = {};
@@ -397,7 +408,14 @@ async function emailShare(
             ],
       },
     );
-    if (sent) return { emailed: true };
+    if (sent) {
+      // Which member sent it, so a bounce or complaint can pause them.
+      if (outside && outcome.messageId)
+        await recordShareEmail(env, outcome.messageId, user.id, email).catch(
+          (e) => logWarn("share_email_record_failed", e),
+        );
+      return { emailed: true };
+    }
     if (!outcome.limited) return { emailed: false };
     // The number a member_limit or instance_limit refusal hit, for the page.
     if (outcome.reason === "member_limit")
