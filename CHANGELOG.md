@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.195.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.194.0...v0.195.0) (2026-11-16)
+
+
+### Features
+
+* **sharing:** owner switch for outside sharing, share email limits and content ([#2590](https://github.com/open-artifacts-ai/open-artifacts/issues/2590)) ([#2620](https://github.com/open-artifacts-ai/open-artifacts/issues/2620)) ([6eea414](https://github.com/open-artifacts-ai/open-artifacts/commit/6eea414716d21cc7cdd4680626c376d60192fbbe))
+
 ## [0.194.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.193.1...v0.194.0) (2026-11-15)
 
 
