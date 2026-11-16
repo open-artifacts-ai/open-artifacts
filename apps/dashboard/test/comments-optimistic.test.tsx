@@ -396,13 +396,17 @@ describe("picking an option on an ask shows at once", () => {
     expect(within(c).queryByText(/picked B/)).toBeNull();
   });
 
-  it("an ask with confirm is never optimistic (the cache stays as the server has it)", async () => {
-    // The schema does not carry `confirm` yet (#2263), so seed the cache directly.
+  // #2661: the server stamps `passkey` on the options whose pick needs it.
+  const stamped = {
+    options: [
+      { id: "a", label: "List only", passkey: true },
+      { id: "b", label: "Side by side" },
+    ],
+  };
+  it("a pick that needs the passkey is never optimistic (the cache stays as the server has it)", async () => {
+    // Seeded straight into the cache, as the server's stamp would arrive.
     const qc = new QueryClient();
-    qc.setQueryData(
-      commentsKey(OWNED),
-      list([ask(undefined, { confirm: "passkey" })]),
-    );
+    qc.setQueryData(commentsKey(OWNED), list([ask(undefined, stamped)]));
     server.use(
       http.post(answerPath, async () => {
         await delay(300);
@@ -424,6 +428,35 @@ describe("picking an option on an ask shows at once", () => {
     await waitFor(() => expect(result.current.isPending).toBe(true));
     const cached = qc.getQueryData<CommentList>(commentsKey(OWNED));
     expect(cached?.threads[0]?.comments[0]?.ask?.answer).toBeUndefined();
+  });
+
+  it("an option on the same ask that needs no passkey still shows at once", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(commentsKey(OWNED), list([ask(undefined, stamped)]));
+    server.use(
+      http.post(answerPath, async () => {
+        await delay(300);
+        return HttpResponse.json({});
+      }),
+    );
+    const { result } = renderHook(() => useAnswerAsk(OWNED), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      ),
+    });
+    act(() => {
+      result.current.mutate({
+        thread: "t-ask",
+        comment: "c-ask",
+        optionId: "b",
+      });
+    });
+    await waitFor(() =>
+      expect(
+        qc.getQueryData<CommentList>(commentsKey(OWNED))?.threads[0]
+          ?.comments[0]?.ask?.answer?.optionId,
+      ).toBe("b"),
+    );
   });
 });
 
