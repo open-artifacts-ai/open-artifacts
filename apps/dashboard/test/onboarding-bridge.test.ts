@@ -1,6 +1,6 @@
 // #2287: the shell answers onboarding.get only for the Welcome artifact and
 // only for its owner. Anything else is forbidden, with no request made.
-import { type ArtifactSummary, R } from "@oa/shared";
+import { type ArtifactSummary, R, setupSteps } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridge } from "../src/viewer/bridge";
 import { asFrame, FakeFrame, stamped } from "./fake-frame";
@@ -144,6 +144,8 @@ describe("onboarding.get", () => {
         },
       },
     });
+    // The shared count (#2632), the same the card and Members show.
+    expect(r.value.who.done).toBe(setupSteps(PROGRESS).done);
   });
 
   it("refuses a member on someone else's Welcome", async () => {

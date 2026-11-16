@@ -27,6 +27,7 @@ import {
   StorageEntrySchema,
   StorageKeySchema,
   type StorageSetBody,
+  setupSteps,
 } from "@oa/shared";
 import type { z } from "zod";
 import { ApiClientError, api, type RequestExtra } from "../api/client";
@@ -462,6 +463,7 @@ export function createBridge(opts: BridgeOptions) {
                 org: g.greet.org,
                 inviter: o.invitedBy?.name ?? null,
                 teammateCommented: o.teamStep === true,
+                done: setupSteps(o).done,
               }
             : undefined;
         return {
