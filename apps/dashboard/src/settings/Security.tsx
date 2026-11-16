@@ -48,6 +48,8 @@ export const OWN_RULE_PLACEHOLDER =
 export const OWN_RULE_HELP =
   "Your agents are told this. Changing these needs your passkey.";
 export const NO_PASSKEY_LINE = "Add a passkey to use these.";
+export const ONLY_PASSKEY_LINE =
+  "This is your only passkey. Without one, you can't approve high-stakes decisions here until you add another.";
 export const WAITING = "Waiting for your passkey…";
 
 // Adding a passkey needs a fresh sign-in: the server answers 401
@@ -518,12 +520,7 @@ function PasskeyList({
             ) : (
               <p>You won't be able to approve picks with it.</p>
             )}
-            {keys?.length === 1 && (
-              <p>
-                It's your only passkey. Without one, approve risky actions in
-                your agent's terminal.
-              </p>
-            )}
+            {keys?.length === 1 && <p>{ONLY_PASSKEY_LINE}</p>}
           </>
         }
         confirm="Remove"

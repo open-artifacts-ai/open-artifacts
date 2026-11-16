@@ -385,7 +385,7 @@ describe("Settings › Security: passkeys", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove This laptop" }));
     const d = await screen.findByRole("alertdialog");
     expect(d).toHaveTextContent(
-      "It's your only passkey. Without one, approve risky actions in your agent's terminal.",
+      "This is your only passkey. Without one, you can't approve high-stakes decisions here until you add another.",
     );
     // No usable passkey: the re-auth path, so the 24 hour delay is said too.
     expect(d).toHaveTextContent(
