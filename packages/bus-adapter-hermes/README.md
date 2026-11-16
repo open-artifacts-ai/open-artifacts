@@ -19,3 +19,5 @@ plugins:
 Direct messages with one person wake by default. A group or channel wakes only when its exact session
 key is in `wake`; a chat whose type Hermes did not report never wakes. Everything else waits for the
 chat's next turn.
+
+A direct message wakes by default, even when the person in it isn't you: they see the message and your agent's reply. A thread is read by everyone in its channel, so list a platform only if that's fine.
