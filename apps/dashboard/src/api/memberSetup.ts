@@ -1,18 +1,22 @@
 // #2632 slice 2: each person's setup on Settings, Members (item 5).
 //
-// PROVISIONAL until OA Self-Serve confirms the contract (issue #2632,
-// comment 6904056554, item 4, amended in 6905450077): GET R.members rows
-// gain `setup?: { state, done, stalled?, remindedAt? }`, the owner's too;
-// absent for guests. This file is the one place that reads it.
-import { MemberSchema } from "@oa/shared";
+// The contract (issue #2632: comment 6904056554 item 4, amended in
+// 6905450077, confirmed by OA Self-Serve in 6909830141): GET R.members rows
+// gain `setup?: { state, done, stalled?, remindedAt? }`, the owner's too,
+// and only when the caller is an owner or admin; never for guests. `done`
+// and `stalled` are the server's setupSteps(onboarding) (@oa/shared, the
+// count the card and Welcome show); `state: "set"` is sticky from the
+// person's `completed`. Field names stay PROVISIONAL until the server ships.
+// This file is the one place that reads it.
+import { MemberSchema, SETUP_STEPS } from "@oa/shared";
 import { z } from "zod";
 
 export const MemberSetupSchema = z.object({
   state: z.enum(["set", "partial", "invited"]),
   /** Of 5. */
   done: z.number().int().min(0).max(5),
-  /** The first step not done. */
-  stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
+  /** The first step not done: the server's setupSteps(onboarding).stalled. */
+  stalled: z.enum(SETUP_STEPS).optional(),
   /** When the one reminder went out (ISO). */
   remindedAt: z.string().optional(),
 });
