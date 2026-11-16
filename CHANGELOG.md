@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.198.0...v0.199.0) (2026-11-16)
+
+
+### Features
+
+* **members:** a Setup column and Copy the setup line ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) slice 2) ([#2638](https://github.com/open-artifacts-ai/open-artifacts/issues/2638)) ([d60657e](https://github.com/open-artifacts-ai/open-artifacts/commit/d60657eae3af618fb06f9b246329764eb171861b))
+
 ## [0.198.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.197.0...v0.198.0) (2026-11-16)
 
 
