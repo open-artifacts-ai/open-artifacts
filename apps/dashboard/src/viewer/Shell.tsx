@@ -360,15 +360,10 @@ function Viewer({
   // #2287: the Welcome page may ask how far the checklist is; the bridge
   // answers only the owner, and (#2632) a member, on their own Welcome.
   const member = isMember(role);
-  const meState = useMe();
-  // The bridge adds the rest (who added them, the sixth step) from R.onboarding.
+  // From the props the shell already has (no fetch of its own): the bridge
+  // adds the rest (who added them, the sixth step) from R.onboarding.
   const greet: WelcomeGreet | undefined =
-    member && meState.status === "authed"
-      ? {
-          firstName: firstName(meState.me.user.name),
-          org: meState.me.instance.name,
-        }
-      : undefined;
+    member && viewer ? { firstName: firstName(viewer.name), org } : undefined;
   const gate = useRef<{
     owner: boolean;
     member: boolean;

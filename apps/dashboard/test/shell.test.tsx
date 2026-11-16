@@ -3,7 +3,7 @@ import { fixtures } from "@oa/shared/mocks";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { installHarness, mount, server } from "./harness";
+import { calls, installHarness, mount, server } from "./harness";
 
 const dispose = vi.fn();
 const createBridge = vi.fn(() => ({
@@ -97,6 +97,21 @@ describe("viewer shell", () => {
       "href",
       `${viewerPath(PUBLIC)}/full`,
     );
+  });
+
+  // #2634: a signed-out viewer reads /auth/providers once, and never
+  // R.onboarding; nothing in the shell loops refetching them.
+  it("a signed-out viewer: at most one /auth/providers, no onboarding", async () => {
+    const gets = calls("GET");
+    anonymous();
+    mount(viewerPath(PUBLIC));
+    await frame();
+    await screen.findByRole("link", { name: "Log in" });
+    await act(() => new Promise((r) => setTimeout(r, 500)));
+    expect(
+      gets.filter((c) => c.path === "/auth/providers").length,
+    ).toBeLessThanOrEqual(1);
+    expect(gets.filter((c) => c.path === "/api/v1/onboarding")).toHaveLength(0);
   });
 
   it("anonymous visitor: owner and authors with no name and no email render fine", async () => {
