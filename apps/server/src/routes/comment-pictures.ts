@@ -29,11 +29,12 @@ const SERVED = {
 export function mountCommentPictures(app: AppType): void {
   app.post(PICTURES, async (c) => {
     const { id } = await open(c, "comments.write");
+    const input = await jsonBody(c, CommentPictureReserveSchema);
     const user = c.var.user;
-    // Guests and signed-out visitors can't add pictures (yet).
+    // Guests and signed-out visitors can't add pictures (yet). After the body
+    // check, so every caller the policy admits answers a bad body the same.
     if (!user || isGuestRole(user.role))
       throw new ApiError("forbidden", "Log in as a member to add pictures");
-    const input = await jsonBody(c, CommentPictureReserveSchema);
     return c.json(await reservePicture(c.env, user, id, input), 201);
   });
 
@@ -53,7 +54,10 @@ export function mountCommentPictures(app: AppType): void {
   app.get(PICTURE, async (c) => {
     const { id } = await open(c, "comments.read");
     const pictureId = c.req.param("pictureId") ?? "";
-    if (!isId(pictureId)) throw new ApiError("not_found", "Not found");
+    // A malformed id is a 400 (so access shows in the answer); a well-formed
+    // one that is unknown, foreign or unusable is a 404.
+    if (!isId(pictureId))
+      throw new ApiError("bad_request", "Invalid pictureId");
     const hit = await getPicture(c.env, id, pictureId, c.var.user?.id ?? null);
     if (!hit) throw new ApiError("not_found", "Not found");
     return new Response(hit.body, {

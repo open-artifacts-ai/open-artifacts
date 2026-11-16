@@ -1077,6 +1077,32 @@ export const SURFACES: readonly Surface[] = [
       (r) => r.status === 400,
     ),
   ),
+  // #2508 comment pictures: the reservation is a comment write (the handler
+  // adds signed-in and never a guest, after the body check, so an empty body is
+  // a 400 for every caller the policy admits); the GET reads like the
+  // comments. The signed PUT is listed with the other signed routes.
+  rest(
+    "comment picture reserve",
+    "comments.write",
+    [`POST ${ARTS}/pictures`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/pictures`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comment picture read",
+    "comments.read",
+    [`GET ${ARTS}/pictures/:pictureId`],
+    exact(
+      "GET",
+      (id) => `${A(id)}/pictures/${BAD}`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "comments thread status",
     "comments.write",
@@ -2541,6 +2567,7 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "ALL /__test/*",
   "POST /__oa/oauth-store/copy",
   "PUT /api/v1/uploads/:uploadId",
+  "PUT /api/v1/artifacts/:id/pictures/:pictureId",
   "GET /oauth/authorize",
   "POST /oauth/authorize",
   // #1291: the bus device flow and approval page (the handlers check the

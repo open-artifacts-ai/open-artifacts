@@ -204,6 +204,8 @@ export async function putPicture(
     .bind(pictureId, artifactId)
     .first<Row>();
   if (!row) throw notFound();
+  if (row.received_at !== null)
+    throw new ApiError("conflict", "This picture was already uploaded.");
   const len = req.headers.get("content-length");
   if (!req.body || len === null || Number(len) !== row.bytes)
     throw new ApiError(
