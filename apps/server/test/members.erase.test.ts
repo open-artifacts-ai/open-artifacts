@@ -844,6 +844,22 @@ describe("Google login after erase, and the way back (reset the Google link)", (
   const resetLink = (id: string, who: U) =>
     call(D, R.memberIdentity(id, "google"), who.cookie, { method: "DELETE" });
 
+  it("a newly signed-in Google member gets one Welcome, at that first sign-in only (#2632)", async () => {
+    const g = await fakeGoogle();
+    const email = uniq("wl-g", "a.com").toLowerCase();
+    expect(await googleSignIn(g, email)).toBe(true);
+    const [id] = await idsAt(email);
+    const welcomes = () =>
+      count(
+        "select count(*) n from artifacts where owner_id = ? and title = 'Welcome'",
+        id ?? "",
+      );
+    expect(await welcomes()).toBe(1);
+    // Their own sign-ins afterwards never seed another.
+    expect(await googleSignIn(g, email)).toBe(true);
+    expect(await welcomes()).toBe(1);
+  });
+
   /** A person who signed in with Google, then was removed and erased. */
   async function erasedGoogleUser(g: FakeGoogle) {
     const email = uniq("er-g", "a.com").toLowerCase();
@@ -851,11 +867,6 @@ describe("Google login after erase, and the way back (reset the Google link)", (
     const [id] = await idsAt(email);
     if (!id) throw new Error("no row");
     expect((await remove(id, admin.cookie, D)).status).toBe(204);
-    // #2632: their sign-in seeded a Welcome page, which an erase needs
-    // transferred or deleted first, like any page they own.
-    await env.DB.prepare("delete from artifacts where owner_id = ?1")
-      .bind(id)
-      .run();
     expect((await erase(id, admin.cookie, D)).status).toBe(204);
     return { email, id };
   }
@@ -904,7 +915,7 @@ describe("Google login after erase, and the way back (reset the Google link)", (
         fresh,
         fresh,
       ),
-      // Empty but for their own Welcome (#2632).
+      // Empty but for their own Welcome, seeded at their first sign-in (#2632).
     ).toBe(1);
     expect(await userRow(id)).toEqual(after);
   });

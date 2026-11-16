@@ -18,7 +18,7 @@ import type { Env } from "../env.js";
 import { appOrigin } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import { WELCOME_TITLE, welcomeHtml } from "../onboarding/welcome.js";
-import { publish } from "./artifacts.js";
+import { publish, purgeNow } from "./artifacts.js";
 import { busView } from "./bus.js";
 import {
   askAnsweredKey,
@@ -288,11 +288,12 @@ export async function noteCommented(
  * person, on every sign-in path, hosted or not. The per-person settings row
  * is claimed first (insert-or-nothing), so a second sign-in, a race, or a
  * delete of Welcome never seeds again. A failed publish releases the claim so
- * the next sign-in retries. The "fresh instance" check applies to the first
- * person only: an instance that already has any artifact row (deleted ones
- * too) before anyone was seeded is not fresh, and that person's claim is kept
- * as "skipped" (no user, no artifact) so Welcome never appears later; every
- * later member gets theirs. Never throws: sign-in must not block.
+ * the next sign-in retries. Only at a person's real first sign-in (no earlier
+ * auth.signin on record, nothing owned), so an upgrade never seeds long-time
+ * members. The "fresh instance" check applies to the owner: on an instance
+ * that already has any artifact row (deleted ones too) their claim is kept as
+ * "skipped" (no user, no artifact) so Welcome never appears later; every
+ * member gets theirs. Never throws: sign-in must not block.
  */
 export async function seedWelcome(env: Env, user: Member): Promise<void> {
   if (isGuestRole(user.role)) return;
@@ -304,13 +305,25 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
       env.DB,
       `insert into settings (key, value)
        select ?1, case
-         when exists (select 1 from settings where key = ?4 or key like ?5) then ?3
-         when exists (select 1 from artifacts where not ${SELF_TEST}) then ?2
+         when ?7 = 1 and exists (select 1 from artifacts where not ${SELF_TEST}) then ?2
          else ?3 end
        where not exists (select 1 from settings where key = ?4 and json_extract(value, '$.userId') = ?6)
+         -- Only at the person's real first sign-in: this one is the first auth.signin
+         -- on record (written with the sign-in itself), and they own nothing yet.
+         and (select count(*) from audit_events where action = 'auth.signin' and target_id = ?6) <= 1
+         and (?7 = 1 or not exists (select 1 from artifacts where owner_id = ?6 and not ${SELF_TEST}))
+         and ?5 is not null
        on conflict (key) do nothing`,
     )
-      .bind(key, skipped, seeded, WELCOME_KEY, `${WELCOME_KEY}:%`, user.id)
+      .bind(
+        key,
+        skipped,
+        seeded,
+        WELCOME_KEY,
+        "",
+        user.id,
+        isInstanceOwner(user) ? 1 : 0,
+      )
       .run();
     if (!claim.meta.changes) return;
     const held = await stmt(env.DB, "select value from settings where key = ?1")
@@ -318,8 +331,6 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
       .first<{ value: string }>();
     if (parseWelcome(held?.value)?.userId !== user.id) return;
     let id: string;
-    // Publishing a Welcome is not the person's own work: it never makes them a billed creator.
-    const t0 = Date.now();
     try {
       id = (
         await publish(
@@ -334,6 +345,7 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
           null,
           undefined,
           "create",
+          { noCreator: true },
         )
       ).id;
     } catch (e) {
@@ -341,14 +353,6 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
       await stmt(env.DB, "delete from settings where key = ?1").bind(key).run();
       throw e;
     }
-    if (!isInstanceOwner(user))
-      await stmt(
-        env.DB,
-        "delete from creator_months where user_id = ?1 and first_at >= ?2",
-      )
-        .bind(user.id, t0)
-        .run()
-        .catch(() => undefined);
     // Published: keep the claim whatever happens (a retry would seed twice).
     await stmt(env.DB, "update settings set value = ?2 where key = ?1")
       .bind(key, JSON.stringify({ userId: user.id, artifactId: id }))
@@ -432,6 +436,35 @@ async function markCompleted(
       .run();
   } catch (e) {
     logWarn("member_set_up_notice_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
+}
+
+/**
+ * Erasing a removed person takes their seeded Welcome with them (it is not
+ * their work, so it must not block the erase). Only that page: anything else
+ * they own still has to be transferred first. Never throws.
+ */
+export async function purgeSeededWelcome(
+  env: Env,
+  userId: string,
+): Promise<void> {
+  try {
+    const row = await stmt(env.DB, "select value from settings where key = ?1")
+      .bind(welcomeKey(userId))
+      .first<{ value: string }>();
+    const w = parseWelcome(row?.value);
+    if (!w || w.userId !== userId || !w.artifactId) return;
+    const own = await stmt(
+      env.DB,
+      "select 1 as x from artifacts where id = ?1 and owner_id = ?2",
+    )
+      .bind(w.artifactId, userId)
+      .first();
+    if (own) await purgeNow(env, w.artifactId);
+  } catch (e) {
+    logWarn("welcome_purge_failed", {
       code: e instanceof Error ? e.name : "error",
     });
   }

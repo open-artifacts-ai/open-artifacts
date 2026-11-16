@@ -60,7 +60,7 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
-import { invitedByKey } from "./onboarding.js";
+import { invitedByKey, purgeSeededWelcome } from "./onboarding.js";
 import { OUTSIDE_SHARING_KEY, outsideSharingOn } from "./outside.js";
 import { inviteReach, waysOf } from "./reach.js";
 import {
@@ -1074,6 +1074,7 @@ export async function eraseMember(
     throw active();
   // Idempotent, and a retry also finishes a hub wipe that failed (#1291).
   if (row.erasedAt !== null) return wipeUserBus(env, id);
+  await purgeSeededWelcome(env, id);
   await checkNothingLeft(env, id);
   const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
   const out = await env.DB.batch([

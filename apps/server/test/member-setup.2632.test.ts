@@ -4,11 +4,17 @@ import { env } from "cloudflare:workers";
 import { type Inbox, MeSchema, newId, R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { withBrokerProps } from "../src/auth/broker-transport.js";
+import type { Env } from "../src/env.js";
+import { publish } from "../src/services/artifacts.js";
+import { seedWelcome } from "../src/services/onboarding.js";
 import {
   askAnsweredKey,
   mentionRepliedKey,
   namedKey,
 } from "../src/services/onboarding-firsts.js";
+import { getUser } from "../src/services/users.js";
+import { TEST_BROKER_KEY } from "./auth-helpers.js";
 import { api, login } from "./helpers.js";
 
 const app = createApp();
@@ -196,5 +202,120 @@ describe("GET R.me instanceOwner", () => {
       .run();
     const me = MeSchema.parse(await (await api(app, R.me, g.cookie)).json());
     expect(me.instanceOwner).toEqual({ name: "Olive Owner" });
+  });
+});
+
+const HB = {
+  ...(env as object),
+  HOSTED: "1",
+  INSTALL_ID: "ibilltest2632",
+  BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+  TIER: undefined,
+} as unknown as Env;
+const creatorRows = (id: string) =>
+  env.DB.prepare("select count(*) n from creator_months where user_id = ?1")
+    .bind(id)
+    .first<{ n: number }>()
+    .then((r) => r?.n ?? 0);
+const seededRows = (id: string) =>
+  env.DB.prepare(
+    "select count(*) n from artifacts where owner_id = ?1 and title = 'Welcome'",
+  )
+    .bind(id)
+    .first<{ n: number }>()
+    .then((r) => r?.n ?? 0);
+const signins = (id: string, n: number) =>
+  Promise.all(
+    Array.from({ length: n }, () =>
+      env.DB.prepare(
+        "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id) values (?1, ?2, 'user', ?3, 'auth.signin', 'user', ?3)",
+      )
+        .bind(newId(), Date.now(), id)
+        .run(),
+    ),
+  );
+
+describe("seeding is for a person's first sign-in only", () => {
+  it("the seeded Welcome records no creator row; their next real publish does", async () => {
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await signins(m.userId, 1);
+    const u = await getUser(HB, m.userId);
+    if (!u) throw new Error("no user");
+    // Billing is on (the gate is bound): a real publish counts, the Welcome doesn't.
+    const gate = {
+      BILLING: { fetch: async () => new Response("nf", { status: 404 }) },
+    };
+    await withBrokerProps({ props: gate }, async () => {
+      await seedWelcome(HB, u);
+      expect(await seededRows(m.userId)).toBe(1);
+      expect(await creatorRows(m.userId)).toBe(0);
+      await publish(
+        HB,
+        u,
+        { title: "mine", format: "html", content: "<p>x</p>" },
+        null,
+      );
+      expect(await creatorRows(m.userId)).toBe(1);
+    });
+  });
+
+  it("an existing member with artifacts, or with earlier sign-ins, is never seeded", async () => {
+    const a = await login(`old-${tag()}@example.com`, "member");
+    await api(app, R.artifacts, a.cookie, {
+      method: "POST",
+      body: { title: "old", format: "html", content: "<p>x</p>" },
+    });
+    await signins(a.userId, 1);
+    const b = await login(`back-${tag()}@example.com`, "member");
+    await signins(b.userId, 3);
+    for (const x of [a, b]) {
+      const u = await getUser(env, x.userId);
+      if (!u) throw new Error("no user");
+      await seedWelcome(env, u);
+    }
+    expect(await seededRows(a.userId)).toBe(0);
+    expect(await seededRows(b.userId)).toBe(0);
+    // The next newly invited member still gets theirs.
+    const c = await login(`new-${tag()}@example.com`, "member");
+    await signins(c.userId, 1);
+    const cu = await getUser(env, c.userId);
+    if (!cu) throw new Error("no user");
+    await seedWelcome(env, cu);
+    expect(await seededRows(c.userId)).toBe(1);
+  });
+});
+
+describe("erasing a removed member whose only artifact is their seeded Welcome", () => {
+  it("works and takes the Welcome with them", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await signins(m.userId, 1);
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    await seedWelcome(env, u);
+    expect(await seededRows(m.userId)).toBe(1);
+    expect(
+      (await api(app, R.member(m.userId), o.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+    const r = await api(app, R.memberErase(m.userId), o.cookie, {
+      method: "POST",
+    });
+    expect(r.status).toBe(204);
+    expect(await seededRows(m.userId)).toBe(0);
+  });
+
+  it("a page of their own still blocks it", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await api(app, R.artifacts, m.cookie, {
+      method: "POST",
+      body: { title: "mine", format: "html", content: "<p>x</p>" },
+    });
+    await api(app, R.member(m.userId), o.cookie, { method: "DELETE" });
+    const r = await api(app, R.memberErase(m.userId), o.cookie, {
+      method: "POST",
+    });
+    expect(r.status).toBe(409);
   });
 });

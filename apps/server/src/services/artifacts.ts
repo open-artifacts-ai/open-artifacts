@@ -210,6 +210,8 @@ export async function publish(
   agent: AgentAttr | null,
   ctx?: Ctx,
   mode: PublishMode = "any",
+  /** `noCreator`: the page is not the person's own work (the seeded Welcome), so no creator row is written. */
+  opts: { noCreator?: boolean } = {},
 ): Promise<PublishResult> {
   // Under a suspension nothing becomes public: create and new version alike.
   refuseSuspendedPublic(user, input.visibility);
@@ -559,7 +561,7 @@ export async function publish(
   // Hosted billing: the publisher is this month's creator once the version
   // row exists (an agent's publish counts for its owner). restoreVersion
   // never writes one.
-  const creator = creatorStmt(env, user.id, id, now);
+  const creator = opts.noCreator ? null : creatorStmt(env, user.id, id, now);
   if (creator) stmts.push(creator);
   if (!create && (input.title !== undefined || input.description !== undefined))
     stmts.push(syncTitleStmt(env, id));
@@ -2327,6 +2329,29 @@ async function purgeOne(
     ),
   ]);
   return true;
+}
+
+/**
+ * Hard-deletes one artifact now, with its files and runtime (erasing a person
+ * takes their seeded Welcome with them). True when it is gone.
+ */
+export async function purgeNow(env: Env, id: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "select rowid as rid from artifacts where id = ?",
+  )
+    .bind(id)
+    .first<{ rid: number }>();
+  if (!row) return true;
+  const now = Date.now();
+  await env.DB.prepare(
+    "update artifacts set deleted_at = coalesce(deleted_at, ?1) where id = ?2",
+  )
+    .bind(now, id)
+    .run();
+  return purgeOne(env, id, row.rid, now + 1, {
+    deletes: PURGE_R2_DELETES,
+    listed: PURGE_KEYS_LISTED,
+  });
 }
 
 async function destroyRuntime(env: Env, id: string): Promise<void> {
