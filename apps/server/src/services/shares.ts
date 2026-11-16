@@ -348,7 +348,8 @@ async function emailShare(
     }
     const day = new Date().toISOString().slice(0, 10);
     const trial = planOfMember(user)?.tier === "trial";
-    const outcome: { limited?: boolean; reason?: string } = {};
+    const outcome: { limited?: boolean; reason?: string; messageId?: string } =
+      {};
     const sent = await sendEmail(
       env,
       user.id,
