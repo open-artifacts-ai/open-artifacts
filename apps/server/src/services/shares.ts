@@ -339,8 +339,18 @@ async function emailShare(
     // "Don't email me again": an address that opted out gets no outside share
     // email (#2590). Across hosted would be a call to the platform here.
     const optOutHash = outside ? await addressHash(email) : null;
-    if (optOutHash && (await stmt(env.DB, OPTED_OUT).bind(optOutHash).first()))
-      return { emailed: false, notEmailed: "recipient_opted_out" };
+    if (
+      optOutHash &&
+      (await stmt(env.DB, OPTED_OUT).bind(optOutHash).first())
+    ) {
+      // The sharer is not told a recipient opted out (that choice is the
+      // recipient's): the result says "skipped"; the log has the reason.
+      logInfo("share_email_skipped", {
+        reason: "recipient_opted_out",
+        artifactId: artifact.id,
+      });
+      return { emailed: false, notEmailed: "skipped" };
+    }
     const optOutUrl = outside
       ? optoutUrl(env.APP_HOST, await signOptoutToken(env, email))
       : "";

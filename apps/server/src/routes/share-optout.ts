@@ -2,11 +2,14 @@ import type { Context } from "hono";
 import { stmt } from "../db/stmt.js";
 import {
   OPTOUT_COPY,
+  orgName,
   SHARE_OPTOUT_PATH,
   verifyOptoutToken,
 } from "../email/share-optout.js";
+import { fill, oneLine } from "../email/templates.js";
 import type { AppEnv } from "../http/middleware.js";
 import { escapeHtml } from "../mcp/template.js";
+import { getSettings } from "../services/members.js";
 import type { AppType } from "./index.js";
 
 // #2590 "Don't email me again" in the outside share email. The token names
@@ -26,6 +29,12 @@ const HEADERS = {
 const page = (title: string, body: string, form = "") =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(title)}</title><style>body{font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem}button{font:inherit;padding:.5rem 1rem}</style></head><body><h1>${escapeHtml(title)}</h1>${body ? `<p>${escapeHtml(body)}</p>` : ""}${form}</body></html>`;
 
+/** The install's name for the page's words (its host without one). */
+async function org(c: Context<AppEnv>): Promise<string> {
+  const name = (await getSettings(c.env).catch(() => null))?.name;
+  return oneLine(orgName(name, c.env.APP_HOST), 80);
+}
+
 const bad = (c: Context<AppEnv>) =>
   c.html(page(OPTOUT_COPY.badTitle, OPTOUT_COPY.badBody), 400, HEADERS);
 
@@ -33,9 +42,14 @@ export function mountShareOptout(app: AppType): void {
   app.get(SHARE_OPTOUT_PATH, async (c) => {
     const t = c.req.query("t") ?? "";
     if (!(await verifyOptoutToken(c.env, t))) return bad(c);
-    const form = `<form method="post" action="${SHARE_OPTOUT_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(OPTOUT_COPY.confirmButton)}</button></form>`;
+    const v = { org: await org(c) };
+    const form = `<form method="post" action="${SHARE_OPTOUT_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(fill(OPTOUT_COPY.confirmButton, v))}</button></form>`;
     return c.html(
-      page(OPTOUT_COPY.confirmTitle, OPTOUT_COPY.confirmBody, form),
+      page(
+        fill(OPTOUT_COPY.confirmTitle, v),
+        fill(OPTOUT_COPY.confirmBody, v),
+        form,
+      ),
       200,
       HEADERS,
     );
@@ -58,7 +72,10 @@ export function mountShareOptout(app: AppType): void {
       .bind(hash, Date.now())
       .run();
     return c.html(
-      page(OPTOUT_COPY.doneTitle, OPTOUT_COPY.doneBody),
+      page(
+        fill(OPTOUT_COPY.doneTitle, { org: await org(c) }),
+        OPTOUT_COPY.doneBody,
+      ),
       200,
       HEADERS,
     );

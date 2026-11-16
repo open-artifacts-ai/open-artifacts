@@ -82,7 +82,9 @@ describe("the outside share email", () => {
     expect(links[1]).toMatch(
       new RegExp(`^https://${env.APP_HOST}/auth/unsubscribe/shares\\?t=`),
     );
-    expect(mail?.html).toContain(">Don't email me again</a>");
+    expect(mail?.html).toContain(
+      ">Don&#39;t email me from Open Artifacts again</a>",
+    );
   });
 
   it("hosted: the limits still apply, and a refused email is reported with its number", async () => {

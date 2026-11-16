@@ -17,6 +17,7 @@ import {
   SHARE_HTML,
   SHARE_TXT,
 } from "./email-templates.js";
+import { OPTOUT_COPY, orgName } from "./share-optout.js";
 
 export type EmailContent = {
   subject: string;
@@ -253,7 +254,7 @@ Open the page:
 
 --
 
-You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. Don't email me again:
+You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. {{optOutLabel}}:
 {{optOutUrl}}
 `;
 
@@ -264,7 +265,7 @@ const OUTSIDE_HTML = `<!doctype html>
 <p style="font-weight:600">{{pageTitle}}</p>
 <p>{{openLine}}</p>
 <p><a href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
-<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. <a href="{{optOutUrl}}" style="color:#5d636e">Don't email me again</a>.</p>
+<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. <a href="{{optOutUrl}}" style="color:#5d636e">{{optOutLabel}}</a></p>
 </body></html>
 `;
 
@@ -321,6 +322,9 @@ export function outsideShareEmail(
       pageUrl: linkOn(origin, p.path),
       openLine,
       optOutUrl: optOut,
+      optOutLabel: fill(OPTOUT_COPY.link, {
+        org: oneLine(orgName(p.instance, p.appHost), 80),
+      }),
     },
   );
   // RFC 8058: one-click unsubscribe, the same POST the link's page makes.

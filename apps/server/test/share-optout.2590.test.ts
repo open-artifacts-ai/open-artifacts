@@ -1,7 +1,7 @@
 // #2590: "Don't email me again" in the outside share email.
 import { env } from "cloudflare:workers";
 import { R, ShareResultSchema } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import {
   addressHash,
@@ -114,6 +114,11 @@ describe("the opt-out page", () => {
     expect(g.status).toBe(200);
     const html = await g.text();
     expect(html).toContain('<form method="post"');
+    expect(html).toContain("Stop emails from Open Artifacts?");
+    expect(html).toContain(
+      "We won&#39;t email you again when someone at Open Artifacts shares a page with you. Other teams on Open Artifacts can still email you.",
+    );
+    expect(html).toContain(">Stop emails from Open Artifacts</button>");
     expect(html.match(/<button/g)).toHaveLength(1);
     expect(await suppressed(email)).toBe(false);
     // A scanner prefetching again: still nothing.
@@ -123,7 +128,9 @@ describe("the opt-out page", () => {
     const p = await hit("POST", path);
     expect(p.status).toBe(200);
     const done = await p.text();
-    expect(done).toContain("You won&#39;t get these emails again.");
+    expect(done).toContain(
+      "You won&#39;t get emails from Open Artifacts again.",
+    );
     expect(done).toContain(
       "Pages shared with you still open when you log in. We just won&#39;t email you about them.",
     );
@@ -184,6 +191,10 @@ describe("the email and the opt-out", () => {
     const url = unsub.slice(1, -1);
     // The header's URL is the footer link, and the token names this address.
     expect(mail?.html).toContain(`href="${url.replace(/&/g, "&amp;")}"`);
+    expect(mail?.html).toContain(
+      ">Don&#39;t email me from Open Artifacts again</a>",
+    );
+    expect(mail?.text).toContain("Don't email me from Open Artifacts again:");
     expect(await verifyOptoutToken(env, tokenOf(url))).toBe(
       await addressHash(to),
     );
@@ -192,10 +203,19 @@ describe("the email and the opt-out", () => {
     expect(
       (await hit("POST", new URL(url).pathname + new URL(url).search)).status,
     ).toBe(200);
+    const log = vi.spyOn(console, "log");
     const again = await share(to);
+    // The sharer is told "skipped", never why; the log has the reason.
+    expect(JSON.stringify(again)).not.toContain("opted");
+    expect(
+      log.mock.calls.some((c) =>
+        String(c[0]).includes('"reason":"recipient_opted_out"'),
+      ),
+    ).toBe(true);
+    log.mockRestore();
     expect(again).toMatchObject({
       emailed: false,
-      notEmailed: "recipient_opted_out",
+      notEmailed: "skipped",
     });
     expect(m.sent.filter((x) => x.to === to)).toHaveLength(1);
     // Another address is not affected.
@@ -213,7 +233,7 @@ describe("the email and the opt-out", () => {
     );
     expect(await share(to)).toMatchObject({
       emailed: false,
-      notEmailed: "recipient_opted_out",
+      notEmailed: "skipped",
     });
   });
 });

@@ -56,17 +56,24 @@ export async function verifyOptoutToken(
 export const optoutUrl = (appHost: string, token: string): string =>
   `https://${appHost}${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(token)}`;
 
-/** Product's wording (one place); OA Product confirms. */
+/**
+ * OA Product's wording (one place). {org} is the instance's name (its host
+ * when it has none): the opt-out covers this install only.
+ */
 export const OPTOUT_COPY = {
-  link: "Don't email me again",
-  confirmTitle: "Stop these emails?",
+  link: "Don't email me from {{org}} again",
+  confirmTitle: "Stop emails from {{org}}?",
   confirmBody:
-    "We won't send you any more emails when someone shares a page with you.",
-  confirmButton: "Don't email me again",
-  doneTitle: "You won't get these emails again.",
+    "We won't email you again when someone at {{org}} shares a page with you. Other teams on Open Artifacts can still email you.",
+  confirmButton: "Stop emails from {{org}}",
+  doneTitle: "You won't get emails from {{org}} again.",
   doneBody:
     "Pages shared with you still open when you log in. We just won't email you about them.",
   badTitle: "This link is not valid",
   badBody:
     "This link doesn't work. Open the most recent email from us and use the link there.",
 } as const;
+
+/** The name shown for the install: its display name, else its host. */
+export const orgName = (name: string | null | undefined, host: string) =>
+  name?.trim() || host;
