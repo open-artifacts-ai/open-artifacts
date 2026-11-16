@@ -127,7 +127,7 @@ async function startMocks() {
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
-          // #2632 (PROVISIONAL, api/myOnboarding.ts): the owner's name.
+          // #2632: the owner's name (MeSchema instanceOwner).
           instanceOwner: { name: "Bob Builder" },
         }),
       ),
@@ -632,7 +632,7 @@ async function startMocks() {
             mentionStalled: params.get("ticks")?.includes("stalled"),
             askAnswered: params.get("ticks")?.includes("ask"),
             opened: params.get("opened") === "1",
-            // #2632 (PROVISIONAL): &teammate=1 ticks the optional sixth step.
+            // #2632: &teammate=1 ticks the optional sixth step.
             teamStep: params.get("teammate") === "1",
             invitedBy: "Bob Builder",
           }

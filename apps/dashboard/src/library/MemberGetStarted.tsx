@@ -2,6 +2,7 @@
 // the owner, not a guest). The same five steps as the owner's, private to
 // them, with "Hide". Hidden isn't done. Words are the design's ("The words
 // on each screen", artifact wcL5Qbdtme52odvV), word for word.
+import { SETUP_STEPS, setupSteps } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -12,7 +13,6 @@ import {
   useOnboarding,
   useSetOnboarding,
 } from "../api/queries";
-import { SETUP_STEPS, setupSteps } from "../api/setupSteps";
 import { useMe } from "../auth/useMe";
 import { AgentSetupBody } from "../settings/AgentSetupCard";
 import { Step, Waiting } from "./steps";
@@ -152,7 +152,7 @@ export function MemberGetStarted() {
 
 /**
  * The design's line for a guest, where a member would publish. {owner} is
- * the instance owner's name (PROVISIONAL, api/myOnboarding.ts).
+ * the instance owner's name (GET /me `instanceOwner`).
  */
 export const guestPublish = (owner: string) =>
   `Guests can read and comment. To publish, ask ${owner} to make you a member.`;
@@ -160,9 +160,9 @@ export const guestPublish = (owner: string) =>
 export const OWNER_UNKNOWN = "an owner";
 
 export function GuestPublishNote() {
-  const name = useOwnerName(true);
-  const owner = name.data || OWNER_UNKNOWN;
-  if (name.isPending) return null;
+  const name = useOwnerName();
+  const owner = name.name || OWNER_UNKNOWN;
+  if (name.pending) return null;
   return (
     <p
       data-guest-publish=""

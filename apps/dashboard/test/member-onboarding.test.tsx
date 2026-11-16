@@ -1,16 +1,10 @@
-// #2632 (member onboarding, slice 1): the PROVISIONAL adapter
-// (api/myOnboarding.ts), a member's Library card (five steps, Hide; hidden
+// #2632 (member onboarding, slice 1): the adapter (api/myOnboarding.ts), a member's Library card (five steps, Hide; hidden
 // isn't done), and a guest's note where a member would publish.
-import type { Me } from "@oa/shared";
+import { type Me, OnboardingSchema } from "@oa/shared";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  firstName,
-  fiveOf,
-  MyOnboardingSchema,
-  mySteps,
-} from "../src/api/myOnboarding";
+import { firstName, fiveOf, mySteps } from "../src/api/myOnboarding";
 import { calls, installHarness, mountHosted, page } from "./harness";
 
 installHarness();
@@ -57,7 +51,7 @@ const refusedPut = () =>
 const card = () => document.querySelector("section[data-member]");
 const empty = () => http.get("*/api/v1/artifacts", () => page([], null));
 
-describe("myOnboarding (the PROVISIONAL contract)", () => {
+describe("myOnboarding (the #2639 contract)", () => {
   it("reads the caller's own steps from R.onboarding", () => {
     const s = mySteps({
       dismissed: false,
@@ -80,7 +74,7 @@ describe("myOnboarding (the PROVISIONAL contract)", () => {
 
   it("parses teamStep and invitedBy; an older server's answer still parses", () => {
     expect(
-      MyOnboardingSchema.parse({
+      OnboardingSchema.parse({
         dismissed: false,
         completed: false,
         teamStep: false,
@@ -88,7 +82,7 @@ describe("myOnboarding (the PROVISIONAL contract)", () => {
       }).invitedBy?.name,
     ).toBe("Bob Builder");
     expect(
-      MyOnboardingSchema.safeParse({ dismissed: false, completed: false })
+      OnboardingSchema.safeParse({ dismissed: false, completed: false })
         .success,
     ).toBe(true);
   });
@@ -101,6 +95,48 @@ describe("myOnboarding (the PROVISIONAL contract)", () => {
 });
 
 describe("a member's Library card", () => {
+  // The real-server detail spec clicked a thumbnail that the card then moved.
+  it("the results wait for the card's answer: nothing moves under the pointer", async () => {
+    let answer: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      answer = r;
+    });
+    mountHosted("/", true, as("member"), [
+      http.get("*/api/v1/onboarding", async () => {
+        await gate;
+        return HttpResponse.json({
+          dismissed: false,
+          completed: false,
+          firstArtifact: null,
+          agentConnected: true,
+        });
+      }),
+    ]);
+    await screen.findByRole("status", { name: "Loading artifacts" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(document.querySelector("article.lib-card")).toBeNull();
+    answer();
+    await waitFor(() => expect(card()).not.toBeNull());
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+  });
+
+  it("a refused answer (an older server) doesn't hold the results", async () => {
+    mountHosted("/", true, as("member"), [
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    ]);
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    expect(card()).toBeNull();
+  });
+
   it("shows the same five steps with the design's words, and Hide", async () => {
     mountHosted("/", true, as("member"), [onboarding(), empty()]);
     await waitFor(() => expect(card()).not.toBeNull());

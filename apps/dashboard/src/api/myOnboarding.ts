@@ -1,52 +1,20 @@
-// #2632 (member onboarding): the one place that reads the PROVISIONAL parts
-// of the contract Frontend proposed on the issue (comment 6904056554), until
-// OA Self-Serve confirms them:
-//
-// - GET R.onboarding answers every member, per caller (same shape; dismissed
-//   and completed per person), plus `teamStep`. A guest gets 403.
-// - Not in that contract yet: `invitedBy` on R.onboarding (a member's Welcome
-//   names who added them) and `instanceOwner` on GET /me (a guest's "ask
-//   {owner}"). Both are optional here; without them the page says less.
-//
-// The queries (api/queries.ts) and the bridge (viewer/bridge.ts) parse
-// R.onboarding with MyOnboardingSchema, so a renamed field is a change here.
-import {
-  type Onboarding,
-  type OnboardingPatch,
-  OnboardingSchema,
-  R,
-} from "@oa/shared";
-import { useQuery } from "@tanstack/react-query";
-import { z } from "zod";
-import { api } from "./client";
+// #2632 (member onboarding): the caller's own R.onboarding (per person for
+// any non-guest member; a guest gets 403), now in @oa/shared's
+// OnboardingSchema (#2639: teamStep, invitedBy) and MeSchema
+// (instanceOwner). This file keeps the derived steps and the session-local
+// copy of a refused save.
+import type { Onboarding, OnboardingPatch } from "@oa/shared";
+import { useMe } from "../auth/useMe";
 
-/** R.onboarding with the PROVISIONAL fields (strict, as OnboardingSchema is). */
-export const MyOnboardingSchema = OnboardingSchema.extend({
-  /** PROVISIONAL: commented on a teammate's page (the optional sixth step). */
-  teamStep: z.boolean().optional(),
-  /** PROVISIONAL, not in the contract: who added the caller. */
-  invitedBy: z
-    .strictObject({ name: z.string().nullable() })
-    .nullable()
-    .optional(),
-});
-export type MyOnboarding = z.infer<typeof MyOnboardingSchema>;
-
-/** PROVISIONAL, not in the contract: the instance owner's name, from /me. */
-const OwnerNameSchema = z.object({
-  instanceOwner: z
-    .object({ name: z.string().nullable() })
-    .nullable()
-    .optional(),
-});
-export function useOwnerName(enabled = true) {
-  return useQuery({
-    enabled,
-    queryKey: ["me", "instanceOwner"],
-    queryFn: ({ signal }) => api.get(R.me, OwnerNameSchema, signal),
-    select: (d) => d.instanceOwner?.name?.trim() || null,
-    staleTime: 60_000,
-  });
+/** The instance owner's name (GET /me `instanceOwner`), for a guest's note. */
+export function useOwnerName(): { pending: boolean; name: string | null } {
+  const me = useMe();
+  if (me.status === "loading") return { pending: true, name: null };
+  return {
+    pending: false,
+    name:
+      me.status === "authed" ? me.me.instanceOwner?.name?.trim() || null : null,
+  };
 }
 
 export type MySteps = {
@@ -62,9 +30,7 @@ export type MySteps = {
 };
 
 /** The caller's own steps, from their R.onboarding. */
-export const mySteps = (
-  o: (Onboarding & { teamStep?: boolean }) | undefined,
-): MySteps => ({
+export const mySteps = (o: Onboarding | undefined): MySteps => ({
   connected: o?.agentConnected === true,
   named: o?.agentNamed === true,
   published: !!o?.firstArtifact,

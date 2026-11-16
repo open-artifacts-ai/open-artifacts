@@ -11,7 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
-import { qk, useOAuthClients, useTokens } from "../api/queries";
+import { qk, useOAuthClients, useOnboarding, useTokens } from "../api/queries";
 import { useFrozen, useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
@@ -33,7 +33,11 @@ import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
 import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
-import { GuestPublishNote, MemberGetStarted } from "./MemberGetStarted";
+import {
+  GuestPublishNote,
+  isMember,
+  MemberGetStarted,
+} from "./MemberGetStarted";
 import {
   AGENT_LINE,
   DocsGate,
@@ -243,6 +247,17 @@ export function Library({ scope }: { scope: Scope }) {
   const sentinel = useSentinel(q);
 
   const filtered = Boolean(s.format || agent || agentVia || filter);
+  // #2632: a member's own card sits above the results. The results wait for
+  // their R.onboarding answer (it comes with the list), so the card never
+  // pops in above cards already on screen and moves them under the pointer.
+  const memberCard =
+    me.status === "authed" &&
+    isMember(me.me.user.role) &&
+    !filtered &&
+    !space &&
+    scope === "all" &&
+    !showRevoked;
+  const cardPending = useOnboarding(memberCard).isPending && memberCard;
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
@@ -358,7 +373,7 @@ export function Library({ scope }: { scope: Scope }) {
           </Button>
         </div>
       )}
-      {q.isPending && !q.isError && (
+      {(q.isPending || (cardPending && q.isSuccess)) && !q.isError && (
         <div
           className={view === "grid" ? GRID : LIST}
           role="status"
@@ -374,7 +389,7 @@ export function Library({ scope }: { scope: Scope }) {
           ))}
         </div>
       )}
-      {q.isSuccess && items.length === 0 && (
+      {q.isSuccess && !cardPending && items.length === 0 && (
         <Empty
           icon={<LibraryIcon />}
           title={
@@ -402,7 +417,7 @@ export function Library({ scope }: { scope: Scope }) {
           action={filtered ? undefined : emptyAction}
         />
       )}
-      {items.length > 0 && (
+      {items.length > 0 && !cardPending && (
         <div className={view === "grid" ? GRID : LIST}>
           {items.map((a) =>
             view === "grid" ? (
