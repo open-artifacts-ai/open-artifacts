@@ -115,6 +115,13 @@ export interface Env {
    */
   ANON_WRITES_PER_MIN?: string;
   /**
+   * Staging only: "1" opens doc creation as if DOC_SWITCH.creation were true
+   * (docCreationOpen), so docs can be tried before the switch ships. Never set
+   * it in a prod config or a template (scripts/check-staging-config.test.ts
+   * fails if one does). docsAvailable's paid-plan rule still applies.
+   */
+  DOCS_PREVIEW?: string;
+  /**
    * Per-doc data limit in bytes (dataLimits; empty or unset: the plan's
    * default). Clamped to 256 KB on Free, 1920 KB on Paid.
    */

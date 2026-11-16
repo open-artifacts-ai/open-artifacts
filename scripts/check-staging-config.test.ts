@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -319,4 +319,38 @@ describe("DocRoom (#1100 tag v5, ships unbound; the doc route binds DOC_ROOM lat
           );
     });
   }
+});
+
+describe("DOCS_PREVIEW is staging only (#docs-preview)", () => {
+  // The var opens doc creation (docCreationOpen); only the staging config may
+  // set it. Every other deploy config, template and setup step must not.
+  const files = [
+    "apps/server/wrangler.template.jsonc",
+    "apps/server/wrangler.test.jsonc",
+    "apps/auth-broker/wrangler.jsonc",
+    "apps/directory-broker/wrangler.jsonc",
+    "apps/landing/wrangler.jsonc",
+    "apps/demo-ops/wrangler.jsonc",
+  ];
+  for (const f of files)
+    it(`${f} does not set DOCS_PREVIEW`, () => {
+      expect(readFileSync(join(root, f), "utf8")).not.toContain("DOCS_PREVIEW");
+    });
+  it("the self-host setup writes no DOCS_PREVIEW", () => {
+    const dir = join(root, "scripts/setup/src");
+    const walk = (d: string): string[] =>
+      readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory()
+          ? walk(join(d, e.name))
+          : e.name.endsWith(".ts")
+            ? [join(d, e.name)]
+            : [],
+      );
+    for (const f of walk(dir))
+      expect(readFileSync(f, "utf8"), f).not.toContain("DOCS_PREVIEW");
+  });
+  it("only the staging config may set it (and with the value 1)", () => {
+    const v = env.vars?.DOCS_PREVIEW;
+    expect(v === undefined || v === "1").toBe(true);
+  });
 });

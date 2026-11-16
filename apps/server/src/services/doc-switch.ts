@@ -8,6 +8,14 @@
 export const DOC_SWITCH: { creation: boolean } = { creation: false };
 
 /**
+ * Whether doc creation is open for this deployment: DOC_SWITCH.creation, or
+ * the staging-only DOCS_PREVIEW=1 (never set in a prod config; a test fails
+ * if one does). Every reader of the switch goes through here. No imports.
+ */
+export const docCreationOpen = (env: { DOCS_PREVIEW?: string }): boolean =>
+  DOC_SWITCH.creation || env.DOCS_PREVIEW === "1";
+
+/**
  * Tools that exist (TOOL_DEFS, TOOL_POLICY) but are offered, written into the
  * manifest and described in the skill only while DOC_SWITCH.creation is open.
  * Every generator and every tool-set test reads this one list.
