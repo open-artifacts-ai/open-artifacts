@@ -139,7 +139,7 @@ export function Lightbox({
         showCloseButton={false}
         aria-describedby={undefined}
         data-lightbox=""
-        className="top-0 left-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 bg-black/85 p-0 text-white shadow-none sm:max-w-none"
+        className="top-0 left-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 bg-black/90 p-0 text-white shadow-none sm:max-w-none"
         onKeyDown={(e) => {
           if (n < 2) return;
           if (e.key === "ArrowRight") go(1);
@@ -163,7 +163,7 @@ export function Lightbox({
         {/* A click on the space around the picture closes, as a click outside. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: a pointer shortcut; Esc and Close are the keyboard ways out. */}
         <div
-          className="flex min-h-0 flex-1 items-center justify-center gap-3 px-3.5 py-1.5"
+          className="flex min-h-0 flex-1 items-center justify-center gap-3 px-3.5 py-1.5 max-[600px]:px-0"
           onClick={(e) => e.target === e.currentTarget && onClose()}
           role="presentation"
         >
@@ -171,7 +171,7 @@ export function Lightbox({
             <button
               type="button"
               aria-label={PICTURE_WORDS.previous}
-              className={nav}
+              className={`${nav} max-[600px]:hidden`}
               onClick={() => go(-1)}
             >
               <ChevronLeft className="size-4" aria-hidden="true" />
@@ -187,18 +187,42 @@ export function Lightbox({
             <button
               type="button"
               aria-label={PICTURE_WORDS.next}
-              className={nav}
+              className={`${nav} max-[600px]:hidden`}
               onClick={() => go(1)}
             >
               <ChevronRight className="size-4" aria-hidden="true" />
             </button>
           )}
         </div>
-        <p
-          className={`m-0 min-h-[1lh] px-3.5 pt-2.5 pb-3.5 text-center text-white/85 ${TXT}`}
-        >
-          {p.alt ?? ""}
-        </p>
+        {/* On a phone the picture takes the full width; Previous and Next
+            sit in this bar, beside the caption. */}
+        <div className="flex items-center gap-3 px-3.5 pt-2.5 pb-3.5">
+          {n > 1 && (
+            <button
+              type="button"
+              aria-label={PICTURE_WORDS.previous}
+              className={`${nav} min-[601px]:hidden`}
+              onClick={() => go(-1)}
+            >
+              <ChevronLeft className="size-4" aria-hidden="true" />
+            </button>
+          )}
+          <p
+            className={`m-0 min-h-[1lh] min-w-0 flex-1 text-center text-white/85 ${TXT}`}
+          >
+            {p.alt ?? ""}
+          </p>
+          {n > 1 && (
+            <button
+              type="button"
+              aria-label={PICTURE_WORDS.next}
+              className={`${nav} min-[601px]:hidden`}
+              onClick={() => go(1)}
+            >
+              <ChevronRight className="size-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

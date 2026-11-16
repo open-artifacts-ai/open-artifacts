@@ -196,10 +196,13 @@ for (const scheme of ["light", "dark"] as const)
           card.locator('[data-attached-picture="failed"]'),
         ).toHaveCount(1);
         await expect(
-          card.getByText("Didn't upload", { exact: true }),
+          card.getByText(
+            "1 picture didn't upload. Try again, or remove it to send.",
+          ),
         ).toBeVisible();
+        // Design: the tile shows an icon, not words over the remove button.
         await expect(
-          card.getByText(/One picture didn't upload\./),
+          card.locator('[data-attached-picture="failed"] svg').first(),
         ).toBeVisible();
         await shot(page, info, `pictures-error-${scheme}-${width}.png`);
         await checkAxe(page);
@@ -306,6 +309,14 @@ for (const scheme of ["light", "dark"] as const)
         await shot(page, info, `pictures-lightbox-${scheme}-${width}.png`);
         await checkAxe(page);
         await noSideways(page);
+        // A phone: the picture is full width; Previous and Next sit in the bottom bar.
+        if (width === 390) {
+          const img = lb.locator("img");
+          expect((await img.boundingBox())?.width).toBeGreaterThanOrEqual(388);
+          await expect(
+            lb.getByRole("button", { name: "Next picture" }),
+          ).toBeVisible();
+        }
         await page.keyboard.press("ArrowRight");
         await expect(lb.getByText(/2 of 2/)).toBeVisible();
         await page.keyboard.press("Escape");

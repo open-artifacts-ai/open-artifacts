@@ -4,6 +4,7 @@ import { fixtures } from "@oa/shared/mocks";
 import {
   act,
   fireEvent,
+  render,
   renderHook,
   screen,
   waitFor,
@@ -18,6 +19,7 @@ import {
 } from "../src/api/commentPictures";
 import {
   PICTURE_WORDS,
+  PictureNotes,
   usePictureDrawer,
 } from "../src/viewer/comments/pictures/drawer";
 import { fitSide, isHeic } from "../src/viewer/comments/pictures/shrink";
@@ -184,11 +186,33 @@ describe("the drawer", () => {
     expect(result.current.items).toHaveLength(0);
   });
 
-  it("other kinds are ignored", async () => {
+  it("another kind of file is refused out loud, never silently", async () => {
     const { result } = renderHook(() => usePictureDrawer(OWNED));
-    await act(() => result.current.add([png("a.txt", "text/plain")]));
+    await act(() => result.current.add([png("notes.pdf", "application/pdf")]));
     expect(result.current.items).toHaveLength(0);
-    expect(result.current.notes).toEqual([]);
+    expect(result.current.notes).toEqual([
+      "Only pictures can go in a comment: PNG, JPEG, GIF or WebP.",
+    ]);
+  });
+
+  it("failed uploads: one, then two, in Product's words", async () => {
+    server.use(...uploads());
+    putFails = 2;
+    const { result } = renderHook(() => usePictureDrawer(OWNED));
+    await act(() => result.current.add([png("a.png")]));
+    await waitFor(() => expect(result.current.failed).toBe(1));
+    const one = render(<PictureNotes d={result.current} needWords={false} />);
+    expect(one.container.textContent).toBe(
+      "1 picture didn't upload. Try again, or remove it to send.",
+    );
+    one.unmount();
+    await act(() => result.current.add([png("b.png")]));
+    await waitFor(() => expect(result.current.failed).toBe(2));
+    const two = render(<PictureNotes d={result.current} needWords={false} />);
+    expect(two.container.textContent).toBe(
+      "2 pictures didn't upload. Try again, or remove them to send.",
+    );
+    expect(two.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 });
 
@@ -215,6 +239,10 @@ describe("in the viewer", () => {
         card.querySelector('[data-attached-picture="done"]'),
       ).not.toBeNull(),
     );
+    // The remove button names the file.
+    expect(
+      within(card).getByRole("button", { name: "Remove picture shot.png" }),
+    ).toBeTruthy();
     // A picture alone is enough.
     const send = within(card).getByRole("button", { name: "Comment" });
     expect(send).toBeEnabled();

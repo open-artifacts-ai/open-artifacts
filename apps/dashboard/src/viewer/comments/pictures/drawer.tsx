@@ -2,7 +2,7 @@
 // drop), up to 4, shrunk and stripped in the browser, with 56px thumbnails,
 // remove, progress and errors. Words are OA Product's and OA Design's
 // (screens v7, tab 1 and "Attaching"), word for word.
-import { X } from "lucide-react";
+import { TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PICTURE_BYTES_MAX,
@@ -19,10 +19,16 @@ export const PICTURE_WORDS = {
   drop: "Drop to attach",
   uploading: (i: number, n: number) => `Uploading ${i} of ${n}…`,
   didntUpload: "Didn't upload",
-  /** "Try again" is the button inside it. */
-  failedBefore: "One picture didn't upload. ",
+  /** OA Product: "Try again" is the button inside it. */
+  failed: (n: number) =>
+    n === 1
+      ? (["1 picture didn't upload. ", ", or remove it to send."] as const)
+      : ([
+          `${n} pictures didn't upload. `,
+          ", or remove them to send.",
+        ] as const),
   tryAgain: "Try again",
-  failedAfter: " or remove it to send.",
+  notPicture: "Only pictures can go in a comment: PNG, JPEG, GIF or WebP.",
   tooBig: (name: string, mb: number) =>
     `"${name}" is ${mb} MB. The limit is 10 MB a picture.`,
   tooMany: "4 pictures is the most one comment holds. The fifth wasn't added.",
@@ -32,7 +38,8 @@ export const PICTURE_WORDS = {
   openOriginal: "Open original",
   close: "Close",
   /** PLACEHOLDER (#2508, for OA Product): names for controls with no words in the design. */
-  remove: "Remove picture",
+  remove: (name?: string) =>
+    name ? `Remove picture ${name}` : "Remove picture",
   open: (i: number, n: number) => `Picture ${i} of ${n}`,
   previous: "Previous picture",
   next: "Next picture",
@@ -111,7 +118,12 @@ export function usePictureDrawer(artifactId: string) {
           if (!next.includes(PICTURE_WORDS.heic)) next.push(PICTURE_WORDS.heic);
           continue;
         }
-        if (!isPictureType(f.type)) continue;
+        // OA Product: never ignored silently.
+        if (!isPictureType(f.type)) {
+          if (!next.includes(PICTURE_WORDS.notPicture))
+            next.push(PICTURE_WORDS.notPicture);
+          continue;
+        }
         if (room <= 0) {
           if (!next.includes(PICTURE_WORDS.tooMany))
             next.push(PICTURE_WORDS.tooMany);
@@ -195,11 +207,9 @@ export function usePictureDrawer(artifactId: string) {
 }
 export type PictureDrawer = ReturnType<typeof usePictureDrawer>;
 
-/** Image files from a paste or a drop. */
+/** The files in a paste or a drop (the drawer refuses what isn't a picture). */
 export const filesOf = (dt: DataTransfer | null): File[] =>
-  dt
-    ? [...dt.files].filter((f) => f.type.startsWith("image/") || isHeic(f))
-    : [];
+  dt ? [...dt.files] : [];
 export const hasFiles = (dt: DataTransfer | null) =>
   !!dt && [...dt.types].includes("Files");
 
@@ -233,13 +243,15 @@ export function AttachedThumbs({ d }: { d: PictureDrawer }) {
             />
           )}
           {x.status === "failed" && (
-            <span className="absolute inset-0 grid place-items-center p-0.5 text-center text-[11px] leading-tight font-semibold text-destructive [overflow-wrap:normal] [word-break:keep-all]">
-              {PICTURE_WORDS.didntUpload}
+            // Design: an icon on the tile; the red line below has the words.
+            <span className="absolute inset-0 grid place-items-center text-destructive">
+              <TriangleAlert className="size-5" aria-hidden="true" />
+              <span className="sr-only">{PICTURE_WORDS.didntUpload}</span>
             </span>
           )}
           <button
             type="button"
-            aria-label={PICTURE_WORDS.remove}
+            aria-label={PICTURE_WORDS.remove(x.name)}
             onClick={() => d.remove(x.key)}
             className="absolute top-0 right-0 grid size-6 cursor-pointer place-items-center rounded-full border-0 bg-transparent p-0"
           >
@@ -282,7 +294,7 @@ export function PictureNotes({
           className={`m-0 rounded-md bg-[var(--oa-danger-soft)] px-2.5 py-1.5 text-destructive ${TXT}`}
           data-picture-note=""
         >
-          {PICTURE_WORDS.failedBefore}
+          {PICTURE_WORDS.failed(d.failed)[0]}
           <button
             type="button"
             onClick={d.retry}
@@ -290,7 +302,7 @@ export function PictureNotes({
           >
             {PICTURE_WORDS.tryAgain}
           </button>
-          {PICTURE_WORDS.failedAfter}
+          {PICTURE_WORDS.failed(d.failed)[1]}
         </p>
       )}
       {needWords && (
