@@ -140,6 +140,15 @@ for (const width of [1280, 390])
       await axe(page);
       await noSidewaysScroll(page);
       await shot(page, `p4-guest-${width}-${theme}`);
+      // The sheet: the person, and no "See all versions" (a guest can't open Versions).
+      await named(page).click();
+      await expect(
+        page.locator("[data-publisher-sheet] [data-published-by]"),
+      ).toHaveText("Published by Bob Builder");
+      await expect(
+        page.getByRole("button", { name: "See all versions" }),
+      ).toHaveCount(0);
+      await shot(page, `p4-guest-sheet-${width}-${theme}`);
     });
 
     test(`a signed-out visitor sees the person only, not a button, at ${width} ${theme}`, async ({

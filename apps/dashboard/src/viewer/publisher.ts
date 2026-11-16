@@ -43,32 +43,12 @@ export function publisherFor(
   };
 }
 
-const MIN = 60_000;
-const HOUR = 60 * MIN;
-const DAY = 24 * HOUR;
-
-/** "just now", "20 min ago", "2 h ago", "yesterday", then "3 Nov". */
-export function shortAgo(iso: string, now = Date.now()): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "";
-  const ms = Math.max(0, now - t);
-  if (ms < MIN) return "just now";
-  if (ms < HOUR) return `${Math.floor(ms / MIN)} min ago`;
-  if (ms < DAY) return `${Math.floor(ms / HOUR)} h ago`;
-  if (ms < 2 * DAY) return "yesterday";
-  return shortDate(iso);
-}
-
-/** "3 Nov". */
-export const shortDate = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-
 /** "Leo's agent", or "your agent". */
 const whoseShort = (p: Publisher) =>
   p.mine ? "your agent" : `${personFirst(p.person)}'s agent`;
-/** "Leo Urbina's agent", or "your agent". */
+/** The sheet's line starts with it: "Leo Urbina's agent", or "Your agent". */
 const whoseLong = (p: Publisher) =>
-  p.mine ? "your agent" : `${personName(p.person)}'s agent`;
+  p.mine ? "Your agent" : `${personName(p.person)}'s agent`;
 
 /** The line's name: the agent, or the person who published. */
 export const publisherName = (p: Publisher) =>
@@ -85,9 +65,9 @@ export function lineParts(
   now = Date.now(),
 ): string[] {
   if (stage >= 3) return [];
-  const when = p.current
-    ? shortAgo(p.createdAt, now)
-    : `v${p.version} · ${shortDate(p.createdAt)}`;
+  // One time form in the line and the sheet: the relative one (Design).
+  const ago = relativeTime(p.createdAt, now);
+  const when = p.current ? ago : `v${p.version} · ${ago}`;
   const parts = [publisherName(p)];
   if (p.agent && stage < 2) parts.push(whoseShort(p));
   if (stage < 1) parts.push(when);

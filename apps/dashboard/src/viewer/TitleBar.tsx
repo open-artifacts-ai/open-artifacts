@@ -490,6 +490,7 @@ export function TitleBar({
             org={org}
             open={sheet}
             onOpenChange={setSheet}
+            canSeeVersions={authed && !outsider}
             onVersions={() => {
               if (!versionsOpen) onVersions();
             }}

@@ -68,6 +68,10 @@ describe("a guest, with the agent absent from the response", () => {
     expect(sheet.closest("[data-publisher-sheet]")).not.toHaveTextContent(
       /agent|Claude Code/,
     );
+    // A guest can't open Versions: no way in from the sheet.
+    expect(
+      screen.queryByRole("button", { name: "See all versions" }),
+    ).toBeNull();
   });
 
   it("the Versions panel's rows name the person only", async () => {
@@ -86,14 +90,16 @@ describe("a guest, with the agent absent from the response", () => {
 });
 
 describe("a member, where the server sends the agent", () => {
-  it("the title bar names the agent and whose it is", async () => {
+  it("the title bar names the agent and whose it is; the sheet leads to Versions", async () => {
     mount(viewerPath(DRAFT));
+    const picture = await screen.findByRole(
+      "button",
+      { name: /^Published by Claude Code, Bob's agent, / },
+      { timeout: FIRST_LOAD_MS },
+    );
+    fireEvent.click(picture);
     expect(
-      await screen.findByRole(
-        "button",
-        { name: /^Published by Claude Code, Bob's agent, / },
-        { timeout: FIRST_LOAD_MS },
-      ),
+      await screen.findByRole("button", { name: "See all versions" }),
     ).toBeInTheDocument();
   });
 });

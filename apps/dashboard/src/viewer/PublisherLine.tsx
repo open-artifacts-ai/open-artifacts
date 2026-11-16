@@ -108,7 +108,15 @@ export function usePublisherStage(
   return pictureOnly ? 3 : stage;
 }
 
+/** On a phone the picture is 18px, a person's initials and an agent's tile alike (Design). */
+const PHONE_18 =
+  "contents max-[600px]:[&>[data-avatar]]:size-[18px] max-[600px]:[&>[data-avatar]]:text-[8.5px]";
+
 function Face({ p }: { p: Publisher }) {
+  return <span className={PHONE_18}>{face(p)}</span>;
+}
+
+function face(p: Publisher) {
   return p.agent ? (
     <AuthorFace
       small
@@ -162,7 +170,10 @@ export function PublisherLine({
   open,
   onOpenChange,
   onVersions,
+  canSeeVersions,
 }: {
+  /** Guests and signed-out visitors can't open Versions: no "See all versions". */
+  canSeeVersions: boolean;
   p: Publisher;
   stage: 0 | 1 | 2 | 3;
   signedIn: boolean;
@@ -252,17 +263,19 @@ export function PublisherLine({
             </small>
           </div>
         </div>
-        <ShButton
-          variant="link"
-          size="sm"
-          className="mt-2 h-auto p-0"
-          onClick={() => {
-            onOpenChange(false);
-            onVersions();
-          }}
-        >
-          See all versions
-        </ShButton>
+        {canSeeVersions && (
+          <ShButton
+            variant="link"
+            size="sm"
+            className="mt-2 h-auto p-0"
+            onClick={() => {
+              onOpenChange(false);
+              onVersions();
+            }}
+          >
+            See all versions
+          </ShButton>
+        )}
       </PopoverContent>
     </Popover>
   );
