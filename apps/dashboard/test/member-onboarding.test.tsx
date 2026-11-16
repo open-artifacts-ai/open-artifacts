@@ -1,6 +1,7 @@
 // #2632 (member onboarding, slice 1): the adapter (api/myOnboarding.ts), a member's Library card (five steps, Hide; hidden
 // isn't done), and a guest's note where a member would publish.
 import { type Me, OnboardingSchema } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -9,7 +10,10 @@ import { calls, installHarness, mountHosted, page } from "./harness";
 
 installHarness();
 // Each test is its own session.
-beforeEach(() => sessionStorage.clear());
+beforeEach(() => {
+  sessionStorage.clear();
+  localStorage.clear();
+});
 
 const onboarding = (over: object = {}) =>
   http.get("*/api/v1/onboarding", () =>
@@ -145,6 +149,65 @@ describe("a member's Library card", () => {
       expect(document.querySelector("[data-member-slot]")).toBeNull(),
     );
     expect(card()).toBeNull();
+  });
+
+  // Design: after Hide or done, a later load holds no slot (no blank flash).
+  const slotOnSecondLoad = async (over: object) => {
+    const userId = fixtures.me.user.id;
+    // First load: the card is hidden or finished, and that's remembered.
+    mountHosted("/", true, as("member"), [onboarding(over)]);
+    await waitFor(() =>
+      expect(localStorage.getItem(`oa.onboarding.no-card.${userId}`)).toBe("1"),
+    );
+    cleanup();
+    // Second load, R.onboarding not answered yet: no slot.
+    let answer: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      answer = r;
+    });
+    mountHosted("/", true, as("member"), [
+      http.get("*/api/v1/onboarding", async () => {
+        await gate;
+        return HttpResponse.json({
+          dismissed: false,
+          completed: false,
+          firstArtifact: null,
+          agentConnected: true,
+          ...over,
+        });
+      }),
+    ]);
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    expect(document.querySelector("[data-member-slot]")).toBeNull();
+    answer();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(card()).toBeNull();
+  };
+
+  it("a second load after Hide holds no slot", async () => {
+    await slotOnSecondLoad({ dismissed: true });
+  });
+
+  it("a second load after done holds no slot", async () => {
+    await slotOnSecondLoad({ completed: true });
+  });
+
+  it("Hide is remembered at once; a reopened card clears it", async () => {
+    const userId = fixtures.me.user.id;
+    const key = `oa.onboarding.no-card.${userId}`;
+    mountHosted("/", true, as("member"), [onboarding(), put(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    expect(localStorage.getItem(key)).toBeNull();
+    (await screen.findByRole("button", { name: "Hide" })).click();
+    await waitFor(() => expect(localStorage.getItem(key)).toBe("1"));
+    cleanup();
+    sessionStorage.clear();
+    // The server says the card is open again: the memory goes.
+    mountHosted("/", true, as("member"), [onboarding(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    expect(localStorage.getItem(key)).toBeNull();
   });
 
   it("a hidden card leaves no slot", async () => {
