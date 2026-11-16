@@ -65,6 +65,9 @@ async function expectDetail(
 
 /** The element's box once it's on screen and scrolled into view (retried: the list may re-render as it settles). */
 async function inView(l: Locator) {
+  // A member's Get started slot (#2632) settles first: the card that
+  // replaces it can be shorter and move the results up.
+  await expect(l.page().locator("[data-member-slot]")).toHaveCount(0);
   let box: { x: number; y: number; width: number; height: number } | null =
     null;
   await expect(async () => {
