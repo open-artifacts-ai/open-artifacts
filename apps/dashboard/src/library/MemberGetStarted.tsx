@@ -5,7 +5,7 @@
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { fiveOf, mySteps, useOwnerName } from "../api/myOnboarding";
+import { fiveOf, mySteps, useOwnerName, withLocal } from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
   qk,
@@ -44,8 +44,10 @@ export function MemberGetStarted() {
   const me = state.status === "authed" ? state.me : null;
   const member = isMember(me?.user.role);
   const onboarding = useOnboarding(member);
-  const setOnboarding = useSetOnboarding();
-  const s = mySteps(onboarding.data);
+  const userId = me?.user.id;
+  const setOnboarding = useSetOnboarding(userId ? { userId } : undefined);
+  // A refused save (today's server) still holds for this session.
+  const s = mySteps(withLocal(onboarding.data, userId));
   const five = fiveOf(s);
   const all = five.every(Boolean);
   // Nothing shows until the server has said the card is still open.

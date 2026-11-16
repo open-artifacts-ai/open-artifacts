@@ -10,7 +10,12 @@
 //
 // The queries (api/queries.ts) and the bridge (viewer/bridge.ts) parse
 // R.onboarding with MyOnboardingSchema, so a renamed field is a change here.
-import { type Onboarding, OnboardingSchema, R } from "@oa/shared";
+import {
+  type Onboarding,
+  type OnboardingPatch,
+  OnboardingSchema,
+  R,
+} from "@oa/shared";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import { api } from "./client";
@@ -82,3 +87,31 @@ export const fiveOf = (s: MySteps) => [
 /** First word of a display name, for "Welcome, {first name}". */
 export const firstName = (name: string | null | undefined) =>
   name?.trim().split(/\s+/)[0] || null;
+
+/**
+ * A member's own Hide, done and first open, kept for this tab's session.
+ * Today's server answers a member's PUT with 403 (not saved), and the owner's
+ * install-wide state must never change for them; this is what stays.
+ */
+const LOCAL = (userId: string) => `oa.onboarding.mine.${userId}`;
+export function readLocal(userId: string | undefined): OnboardingPatch {
+  if (!userId) return {};
+  try {
+    return JSON.parse(sessionStorage.getItem(LOCAL(userId)) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+export function keepLocal(userId: string, patch: OnboardingPatch) {
+  const next = { ...readLocal(userId), ...patch };
+  try {
+    sessionStorage.setItem(LOCAL(userId), JSON.stringify(next));
+  } catch {
+    // No storage: the cache's optimistic answer holds until the next read.
+  }
+}
+/** The server's answer with the session's own changes on top. */
+export const withLocal = <T extends object>(
+  o: T | undefined,
+  userId: string | undefined,
+): T | undefined => (o && userId ? { ...o, ...readLocal(userId) } : o);

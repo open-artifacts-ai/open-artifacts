@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { api } from "../api/client";
+import { withLocal } from "../api/myOnboarding";
 import { qk, useOnboarding, useSetOnboarding } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { isMember } from "./MemberGetStarted";
@@ -20,12 +21,19 @@ export function useWelcomeRedirect(enabled: boolean) {
   const owner =
     state.status === "authed" &&
     (state.me.user.role === "owner" || isMember(state.me.user.role));
+  const memberId =
+    state.status === "authed" && isMember(state.me.user.role)
+      ? state.me.user.id
+      : undefined;
   const onboarding = useOnboarding(enabled && owner);
-  const { mutate: save } = useSetOnboarding();
+  // A member's save may be refused today (403): kept for the session instead.
+  const { mutate: save } = useSetOnboarding(
+    memberId ? { userId: memberId } : undefined,
+  );
   const qc = useQueryClient();
   const navigate = useNavigate();
   const router = useRouter();
-  const o = onboarding.data;
+  const o = withLocal(onboarding.data, memberId);
   const welcomeId = o?.welcomeId;
   const unopened = o?.welcomeOpened === false;
   useEffect(() => {

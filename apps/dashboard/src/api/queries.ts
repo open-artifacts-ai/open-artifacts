@@ -78,7 +78,7 @@ import {
   errorCopy,
   errorLink,
 } from "./errorCopy";
-import { MyOnboardingSchema } from "./myOnboarding";
+import { keepLocal, MyOnboardingSchema } from "./myOnboarding";
 
 const failToast = (e: unknown, fallback: string) =>
   toast({
@@ -231,19 +231,25 @@ export const useOnboarding = (enabled = true) =>
     queryKey: qk.onboarding,
     queryFn: ({ signal }) => api.get(R.onboarding, MyOnboardingSchema, signal),
   });
-/** PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer. */
-export const useSetOnboarding = () => {
+/**
+ * PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer.
+ * #2632: `member` saves a member's own; today's server refuses that with 403,
+ * which is "not saved": no error, the change stays for this session.
+ */
+export const useSetOnboarding = (member?: { userId: string }) => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (patch: OnboardingPatch) =>
       api.send("PUT", R.onboarding, patch, MyOnboardingSchema),
     onMutate: (patch) => {
+      if (member) keepLocal(member.userId, patch);
       const before = qc.getQueryData<Onboarding>(qk.onboarding);
       if (before)
         qc.setQueryData<Onboarding>(qk.onboarding, { ...before, ...patch });
       return { before };
     },
     onError: (e, _p, ctx) => {
+      if (member && e instanceof ApiClientError && e.status === 403) return;
       if (ctx?.before) qc.setQueryData(qk.onboarding, ctx.before);
       failToast(e, "Couldn't save that.");
     },
