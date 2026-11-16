@@ -26,6 +26,7 @@ import { ApiClientError } from "../api/client";
 import { hasFeature } from "../api/contract";
 import { billingContext, errorCopy } from "../api/errorCopy";
 import { useLoginSettings } from "../api/loginSettings";
+import { SETUP, shortDate } from "../api/memberSetup";
 import {
   useInviteMember,
   useMembers,
@@ -53,6 +54,7 @@ import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
+import { setupPrompt } from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
 import {
@@ -341,6 +343,56 @@ const lastSeen = (iso: string | null) => {
 /** Who, role, last seen, action; at <= 600px, who and role, then the rest. */
 const ROW =
   "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px]";
+/** #2632: owners and admins see a Setup column after the role. */
+const ROW_SETUP =
+  "grid min-h-[52px] grid-cols-[minmax(0,1fr)_112px_156px_136px_72px] items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] max-[600px]:grid-cols-[minmax(0,1fr)_112px] max-[600px]:gap-y-[2px]";
+
+/**
+ * #2632: one person's setup (MemberSchema `setup`). Green "Set up"
+ * for five of five, else the count and the step holding it up, "Invited"
+ * before a first login, a dash for guests (no line on a phone).
+ */
+function SetupCell({ m }: { m: Member }) {
+  const label = <span className="sr-only">{SETUP.heading}: </span>;
+  if (m.role === "guest")
+    return (
+      <span
+        data-setup="guest"
+        className="text-[length:var(--oa-text-sm)] text-muted-foreground max-[600px]:hidden"
+      >
+        {label}
+        {SETUP.guest}
+      </span>
+    );
+  const s = m.setup;
+  if (!s) return <span className="max-[600px]:hidden" />;
+  const reminded = s.remindedAt ? shortDate(s.remindedAt) : null;
+  return (
+    <span
+      data-setup={s.state}
+      className="flex min-w-0 flex-col text-[length:var(--oa-text-sm)] max-[600px]:col-span-2 max-[600px]:mt-[6px]"
+    >
+      {label}
+      {s.state === "set" ? (
+        <span className="font-medium text-[var(--oa-success)]">
+          {SETUP.set}
+        </span>
+      ) : s.state === "invited" ? (
+        <span className="text-muted-foreground">{SETUP.invited}</span>
+      ) : (
+        <>
+          <span className="font-medium">{SETUP.of(s.done)}</span>
+          {s.stalled && (
+            <small className="text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]">
+              {SETUP.stalled[s.stalled]}
+            </small>
+          )}
+        </>
+      )}
+      {reminded && <small className={muted}>{SETUP.reminded(reminded)}</small>}
+    </span>
+  );
+}
 
 /** The Restricted badge: warning-soft, unlike the neutral role badges. */
 const RESTRICTED_BADGE =
@@ -378,7 +430,10 @@ function Row({
   spaces,
   owner,
   frozen,
+  staff = false,
 }: {
+  /** #2632: the viewer is an owner or admin: the Setup column shows. */
+  staff?: boolean;
   /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
   frozen: boolean;
   m: Member;
@@ -412,8 +467,23 @@ function Row({
     m.role === "member" && (m.status ?? "active") === "active";
   const address = secondLine(m);
   const first = personFirst(m);
+  // #2632: for someone not set up, the line to pass on yourself.
+  const copyLine =
+    staff && (m.setup?.state === "partial" || m.setup?.state === "invited");
+  const copySetup = () => {
+    const failed = () =>
+      toast({
+        title: "Couldn't copy",
+        description: "Select it and copy it yourself.",
+        tone: "danger",
+      });
+    if (!navigator.clipboard) return failed();
+    navigator.clipboard
+      .writeText(setupPrompt())
+      .then(() => toast({ title: SETUP.copied(first) }), failed);
+  };
   return (
-    <li className={ROW}>
+    <li className={staff ? ROW_SETUP : ROW}>
       <div className="flex min-w-0 items-center gap-[10px]">
         <UserAvatar name={m.name} email={m.email} />
         <div className="min-w-0">
@@ -458,6 +528,7 @@ function Row({
           }}
         />
       )}
+      {staff && <SetupCell m={m} />}
       {/* Labelled inline: there is no column header at any width. */}
       <span className={muted}>
         {why && (
@@ -482,7 +553,9 @@ function Row({
             <Button
               variant="ghost"
               size="sm"
-              className="justify-self-end"
+              className={
+                staff ? "justify-self-end max-[600px]:h-6" : "justify-self-end"
+              }
               disabled={frozen}
               aria-label={`More for ${label}`}
             >
@@ -503,6 +576,11 @@ function Row({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
+            {copyLine && (
+              <DropdownMenuItem onSelect={copySetup}>
+                {SETUP.copyLine}
+              </DropdownMenuItem>
+            )}
             {m.personalArtifacts && (
               <DropdownMenuItem onSelect={() => setMoving(true)}>
                 Transfer their artifacts
@@ -786,6 +864,7 @@ export function Members() {
                     spaces={spaces}
                     owner={owner}
                     frozen={frozen}
+                    staff={admin}
                   />
                 ))}
               </ul>
