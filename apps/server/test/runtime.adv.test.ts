@@ -248,7 +248,7 @@ describe("B12 adversarial scan", () => {
       const body = JSON.stringify({ choice: "A", pad: "x".repeat(25_000) });
       for (let k = 0; k < 2000; k++)
         st.storage.sql.exec(
-          "insert into docs values ('v', ?, ?, ?, '2026-01-01T00:00:00.000Z', 'u:1')",
+          "insert into docs (collection, id, data, size, updated_at, updated_by) values ('v', ?, ?, ?, '2026-01-01T00:00:00.000Z', 'u:1')",
           `d${k}`,
           body,
           body.length,

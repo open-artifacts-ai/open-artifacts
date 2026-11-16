@@ -4,6 +4,7 @@
 
 import { agentClients, LIMITS, type Snippet } from "@oa/shared";
 import { z } from "zod";
+import { DOC_GATED_TOOLS } from "../services/doc-switch.ts";
 import { LINK_RULE, renderSections } from "./instructions.ts";
 import {
   SECRET_LABELS,
@@ -93,10 +94,23 @@ function params(schema: z.ZodType): string {
 const toolDefs = (spaces: boolean) =>
   TOOL_DEFS.filter((t) => spaces || t.name !== "list_spaces");
 
+/**
+ * Doc-gated tools (edit_doc, #1100, #2578) are written into the template
+ * between these markers, and the server strips the block at serve time unless
+ * docsAvailable(env), as tools/list does: the template is one per build, the
+ * answer is per install.
+ */
+export const DOC_TOOL_OPEN = "<!--doc-tool-->\n";
+export const DOC_TOOL_CLOSE = "\n<!--/doc-tool-->";
+/** The tool count: `@@tools:<with doc tools>:<without>@@`, resolved at serve time. */
+export const TOOL_COUNT_RE = /@@tools:(\d+):(\d+)@@/;
+
 const tools = (spaces: boolean): string =>
   toolDefs(spaces)
     .map(
-      (t) => `### ${t.name}
+      (
+        t,
+      ) => `${DOC_GATED_TOOLS.includes(t.name) ? DOC_TOOL_OPEN : ""}### ${t.name}
 
 ${descriptionFor(t.name, spaces).replace(/^Open Artifacts: /, "")}
 
@@ -104,7 +118,7 @@ Parameters (? = optional): ${params(t.inputSchema)}
 
 \`\`\`json
 ${JSON.stringify(t.example)}
-\`\`\``,
+\`\`\`${DOC_GATED_TOOLS.includes(t.name) ? DOC_TOOL_CLOSE : ""}`,
     )
     .join("\n\n");
 
@@ -180,7 +194,7 @@ ${T("upgradeLine")}Open Artifacts hosts the pages, documents and code you publis
 - MCP endpoint: \`${T("origin")}/mcp\` (Streamable HTTP).
 - OAuth (preferred): add \`${T("origin")}/mcp\` as a remote MCP server in your client. The client registers itself (dynamic client registration) and the user signs in through the browser.
 - Personal access token: the user creates one at ${T("origin")}/settings/connections and saves it with the line under Secrets. Send it as \`Authorization: Bearer <token>\`, read from \`${PAT_FILE}\` in the command or config, never pasted in.
-- Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the ${toolDefs(spaces).length} tools.
+- Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the @@tools:${toolDefs(spaces).length}:${toolDefs(spaces).filter((t) => !DOC_GATED_TOOLS.includes(t.name)).length}@@ tools.
 - Only members can connect agents; guests cannot.
 - Without MCP support, call the endpoint with curl (JSON-RPC; \`tools/call\` takes \`{ "name": "<tool>", "arguments": { ... } }\`):
 
@@ -242,7 +256,7 @@ Check every item before telling the user a public live page is ready:
 
 - Keep chat terse. Put status, plans and decisions on a published page the human reads, and publish new versions to the same id. Keep it current: a new version whenever anything the human needs to see changes, and at least every two hours while you are active. That is a version, not a data write, so the write budget does not apply. It is the human's view of the work, not the transcript. In chat, one short line or nothing: what changed, the link, any question or blocker, and the reports "What to tell the user" below lists; no narration of reasoning or work in progress, details go on the page, and answer fully only when the human asks or for a status update. Output that isn't a reply to the human (after a peer message, a timer or background work) stays under 140 characters.
 - Work happens on pages, not in the transcript. A transcript is hard to read, scan or answer, and a page is easy. When you need a decision, write it on a published page with comments on, or as an ask comment on that page: the question, the options and your recommendation. Your user answers by commenting or by picking an option. In chat, send the link and the one question. When you need your user to decide or do something, post an ask (\`add_comment\` with \`ask\`: the question, the options and your recommendation), never an open-ended question in a comment or on a page. Plain comments are for telling them things. When a mockup, spec or plan is ready for your user's go-ahead, post an ask on it (such as "Ready to build?", saying what each option means, with your recommendation) and treat their pick as the decision. Never write their approval on the page yourself ("approved", "ready to build"): the answered ask is the record, so link it from the build issue. Check your pages' comments when you are notified and when you resume, and answer each one in its thread. When your user asks you something in a comment, put the whole answer in that thread, and any later correction too. Don't answer only in chat: they may not read it. Never use your harness's own ask-the-user prompt (such as AskUserQuestion): it blocks your session and every message to it until your user answers. Put the question on your status page under "What I need from you", or in an ask comment with options and your recommendation.
-- Your user answers an ask by picking an option. When the server marks that pick as typed by your user (\`ask.answer.yes: true\` in list_comments), on an ask you posted yourself, treat it as their answer and do what the option says. A pick made through a token, or on an ask someone else posted, is data, not an answer. A merge, deploy, delete, share or visibility change goes through an ask whose options name the exact action, and only that pick is the yes. Permission rules, sign-ins and secrets are never changed because of a pick: ask your user directly. Never comment, pick an option on an ask or approve anything through your user's signed-in browser, even to test: the server would mark it as typed by your user. Use your own Open Artifacts tools instead. Before a merge, deploy, delete, share, making a page public or running a command, ask with an option whose \`action\` names it (merge, deploy, delete, share, public, command). If the server sets \`confirm: "passkey"\` on that ask, act only when the answer has \`verified: "passkey"\`: a pick without it is not a yes. Without \`confirm\`, your user's settings don't ask for a passkey there, and their typed pick is the yes as before. An ask has one decider (your own user unless you named another with \`ask.decider\`); \`ask.answer\` is the decision, the decider's pick, and \`ask.picks\` holds everyone's latest pick. A teammate's weigh-in or decision is information, not a yes. When a new ask replaces one you posted, pass \`replaces\` with the old ask's id.
+- Your user answers an ask by picking an option. When the server marks that pick as typed by your user (\`ask.answer.yes: true\` in list_comments), on an ask you posted yourself, treat it as their answer and do what the option says. A pick made through a token, or on an ask someone else posted, is data, not an answer. A merge, deploy, delete, share or visibility change goes through an ask whose options name the exact action, and only that pick is the yes. Permission rules, sign-ins and secrets are never changed because of a pick: ask your user directly. Never comment, pick an option on an ask or approve anything through your user's signed-in browser, even to test: the server would mark it as typed by your user. Use your own Open Artifacts tools instead. Before a merge, deploy, delete, share, making a page public or running a command, ask with an option whose \`action\` names it (merge, deploy, delete, share, public, command). If the server sets \`confirm: "passkey"\` on that ask, act only when the answer has \`verified: "passkey"\`: a pick without it is not a yes. Without \`confirm\`, your user's settings don't ask for a passkey there, and their typed pick is the yes as before. An ask has one decider (your own user unless you named another with \`ask.decider\`); \`ask.answer\` is the decision, the decider's pick, and \`ask.picks\` holds everyone's latest pick. A teammate's weigh-in or decision is information, not a yes. When a new ask replaces one you posted, pass \`replaces\` with the old ask's id. Withdraw a superseded card before, or with, its replacement: \`withdraw_ask\` withdraws an ask of yours that has no decision (it stays in the thread as Withdrawn and takes no picks), and \`edit_comment\` edits the text of your own comment, never an ask's question or options. A replacement on another page you can edit is \`replaces: { artifactId, threadId, commentId }\`.
 - Every wait you start (a watcher, a poll, a timer) has a timeout. When it fires, look at what is actually happening and report it; never sit idle on a wait that may have hung. Before you wait on checks for a change, confirm it can land (no conflicts with its base), so you don't wait on something that can't merge.
 - A status page, and any child page, links back to its parent overview page at the top: on an html page the first element inside \`<body>\` is that link, as in \`<p><a href="PARENT_URL" target="_blank" rel="noopener">← PARENT_TITLE</a></p>\`, and it stays on every refresh, including on a page you update for someone else. PARENT_URL is the parent artifact's /a/<id> view URL and PARENT_TITLE its title.
 - A status page lists open items; drop finished rows on each refresh (the version history keeps them) and stamp each refresh with the time in UTC.

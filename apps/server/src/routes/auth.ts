@@ -44,6 +44,7 @@ import {
   upsertOnLogin,
   upsertWithRole,
 } from "../services/users.js";
+import { linkSetCookie } from "./codes.js";
 import type { AppType } from "./index.js";
 
 const redirect = (location: string, cookies: string[]) => {
@@ -183,6 +184,8 @@ export function mountAuth(app: AppType): void {
         logAuth({ provider: "access", outcome: "refused", stage: "no_access" });
         return refuse(next);
       }
+      // #2632: a member's own Welcome, once (Access sign-in too); never throws.
+      await seedWelcome(c.env, user);
       const now = Date.now();
       const sess = sessionCookie(
         await signSession(c.env, user.id, now, {
@@ -286,9 +289,28 @@ export function mountAuth(app: AppType): void {
       if (!r.ok) {
         logOidcFail(r.reason);
         logAuth({ provider: "google", outcome: "refused", stage: r.reason });
+        // Weak evidence (#2590 G2): where codes are on, keep the verified
+        // Google account in this browser so a code to this exact address can
+        // link it; the sign-in page then asks for that code. Codes off: the
+        // refusal stays needs_code, nothing is sent.
+        if (r.reason === "needs_code") {
+          const link = await linkSetCookie(c, {
+            sub: id.subject,
+            email: id.email,
+            hd: id.hd ?? id.tenant ?? null,
+            name: id.name,
+          });
+          if (link)
+            return redirect(
+              `${SIGN_IN_PAGE}?error=needs_code&next=${encodeURIComponent(
+                id.next,
+              )}&link=1`,
+              [...clear, link],
+            );
+        }
         return toSignIn(r.reason, id.next, clear, "google");
       }
-      // #2287: a hosted instance's first owner gets the Welcome; never throws.
+      // #2287, #2632: every member's own Welcome, once; never throws.
       await seedWelcome(c.env, r.user);
       try {
         await onGoogleSignIn(c.env, r.user);
@@ -345,6 +367,7 @@ export function mountAuth(app: AppType): void {
         await signSession(c.env, r.user.id, now, {
           provider: "google",
           tenant: id.tenant ?? undefined,
+          hd: id.hd ?? id.tenant ?? undefined,
           epoch: row.sessionEpoch,
           ...(authAt !== undefined ? { authAt } : {}),
         }),

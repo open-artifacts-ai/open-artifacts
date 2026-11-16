@@ -414,6 +414,26 @@ describe("systemService: systemd", () => {
     ]);
   });
 
+  it("doctor's problems: a launcher owned by another user is flagged, whatever the deps' uid (#2552)", async () => {
+    const { d, home } = deps("linux");
+    const mine = process.getuid?.() ?? 0;
+    const s = systemService({ ...d, uid: 7, ownerUid: () => mine });
+    await s.ensure();
+    const open = () =>
+      (s.problems?.() ?? []).filter((p) => p.kind === "rescue-open");
+    // The fake launchd uid (7) is not who owns the file: still fine.
+    expect(open()).toEqual([]);
+    const other = systemService({ ...d, ownerUid: () => mine + 1 });
+    expect(
+      (other.problems?.() ?? []).filter((p) => p.kind === "rescue-open"),
+    ).toEqual([{ kind: "rescue-open", path: join(home, "rescue") }]);
+    // No uid to compare (win32): only the mode counts.
+    const none = systemService({ ...d, ownerUid: () => undefined });
+    expect(
+      (none.problems?.() ?? []).filter((p) => p.kind === "rescue-open"),
+    ).toEqual([]);
+  });
+
   it("writes the unit, reloads, enables and restarts it", async () => {
     const { d, calls, userHome, home } = deps("linux");
     const s = systemService(d);

@@ -31,6 +31,7 @@ export const ERROR_CODES = [
   "member_synced",
   "managed_by_org_mapping",
   "owner_only",
+  "members_only",
   "break_glass_required",
   // Publish format guard.
   "unsupported_format",
@@ -39,6 +40,8 @@ export const ERROR_CODES = [
   "invite_unreachable",
   // Member restore (parity 1).
   "member_removed",
+  // Sharing outside the instance (#2590).
+  "outside_sharing_off",
   "directory_managed",
   "guest_lapsed",
   // Member erase (#1204).
@@ -79,6 +82,7 @@ export const ERROR_CODES = [
   "already_decided",
   "already_replaced",
   "replaced",
+  "withdrawn",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
@@ -88,6 +92,8 @@ export const ERROR_CODES = [
   "use_edit_doc",
   // Collaborative docs (#1100): a self-host needs Workers Paid for docs.
   "docs_need_paid",
+  // Collaborative docs (#1100): docs are not available on this instance yet.
+  "docs_unavailable",
   // Login settings (#2520): PUT R.settings/login.
   "domain_unproven",
   "apply_pending",
@@ -151,6 +157,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   managed_by_org_mapping: 409,
   /** Resetting or unlinking an org admin's Google identity: only the org owner may (it signs a peer admin out). */
   owner_only: 403,
+  /** GET or PUT R.onboarding by a guest: the first-run checklist is for members (#2632). */
+  members_only: 403,
   /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
   break_glass_required: 401,
   /** Publish with no `format` whose entry name implies none and whose bytes aren't text (details { path, reason: "no_viewer" }), or any HEIC/HEIF entry (details { path, reason: "heic" }, HEIC_MESSAGE). */
@@ -163,6 +171,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   invite_unreachable: 400,
   /** POST R.members (invite) for an address whose member was removed; details MemberRemovedDetails { userId }: offer R.memberRestore(userId). Nothing is created. */
   member_removed: 409,
+  /** PUT R.shares with an address outside the instance while Settings.outsideSharing is off (#2590). Nothing is shared. */
+  outside_sharing_off: 403,
   /** POST R.memberRestore(id) on a member the directory removed while Google sync is on (sync would remove them again), or POST R.members (invite) for that member's address: sync revives them when their Workspace account is restored. Nothing is created. */
   directory_managed: 409,
   /** POST R.memberRestore(id) on a lapsed guest, or POST R.members (invite) for a lapsed guest's address (removed when their last share went): a new share brings them back instead. */
@@ -223,6 +233,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   already_replaced: 409,
   /** #2323: the ask was replaced by a newer one, so it takes no more picks. */
   replaced: 409,
+  /** #2511: the ask was withdrawn, so it takes no more picks. */
+  withdrawn: 409,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */
@@ -233,6 +245,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   use_edit_doc: 400,
   /** Publishing format "doc" on a self-host whose PLAN is not paid (#1100). Nothing is published. */
   docs_need_paid: 400,
+  /** Docs are not available on this instance yet (#1100): creating or changing one is refused with the next step. Nothing is published. */
+  docs_unavailable: 400,
   /** PUT settings/login (#2520): the owner's login doesn't prove that domain is their Google Workspace's; details DomainUnprovenDetails. */
   domain_unproven: 403,
   /** PUT settings/login (#2520): refused, an earlier change is still being applied (a hosted redeploy, about a minute). */

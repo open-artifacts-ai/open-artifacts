@@ -355,12 +355,8 @@ describe("POST R.memberRestore(id): behaviour", () => {
         method: "POST",
         body: { email, role: "member" },
       });
-      expect(inv.status).toBe(409);
-      expect(await errOf(inv)).toMatchObject({
-        code: "member_removed",
-        details: { userId: u.userId },
-      });
-      expect((await restore(u.userId, admin.cookie, e)).status).toBe(200);
+      // #2520: an invite restores the removed person as a fresh invite.
+      expect(inv.status).toBe(200);
       expect(await row(u.userId)).toMatchObject({
         status: "active",
         bySync: 0,
@@ -694,7 +690,7 @@ describe("invite of a removed address", () => {
     ["Access", OFF],
     ["direct", direct()],
   ] as const)(
-    "%s: 409 member_removed with { userId }; nothing created",
+    "%s: restores them as a fresh invite (200, same row, invited_at set)",
     async (_, e) => {
       const u = await removed();
       const email = (
@@ -706,12 +702,21 @@ describe("invite of a removed address", () => {
         method: "POST",
         body: { email, role: "member" },
       });
-      expect(r.status).toBe(409);
-      expect(await errOf(r)).toMatchObject({
-        code: "member_removed",
-        details: { userId: u.userId },
-      });
-      expect((await row(u.userId))?.status).toBe("removed");
+      expect(r.status).toBe(200);
+      expect(MemberSchema.parse(await r.json()).id).toBe(u.userId);
+      expect((await row(u.userId))?.status).toBe("active");
+      const inv = await env.DB.prepare(
+        "select invited_at as at from users where id = ?",
+      )
+        .bind(u.userId)
+        .first<{ at: number | null }>();
+      expect(inv?.at).not.toBeNull();
+      const audits = await env.DB.prepare(
+        "select count(*) as n from audit_events where action = 'invite.create' and target_id = ?",
+      )
+        .bind(u.userId)
+        .first<{ n: number }>();
+      expect(audits?.n).toBe(1);
     },
   );
 
@@ -748,7 +753,7 @@ describe("invite of a removed address", () => {
     },
   );
 
-  it("a directory removal's address under Google sync → 409 directory_managed (no Restore offered); member_removed when sync is off; nothing created", async () => {
+  it("a directory removal's address under Google sync → 409 directory_managed (no Restore offered); an invite restores them when sync is off", async () => {
     await connectWorkspace();
     const u = await login(uniq("rs-inv-dir", "a.com"), "member");
     await setUserStatus(
@@ -775,14 +780,10 @@ describe("invite of a removed address", () => {
     expect(body.code).toBe("directory_managed");
     expect(body.details).toBeUndefined();
     const off = await invite(OFF);
-    expect(off.status).toBe(409);
-    expect(await errOf(off)).toMatchObject({
-      code: "member_removed",
-      details: { userId: u.userId },
-    });
+    expect(off.status).toBe(200);
     expect(await row(u.userId)).toMatchObject({
-      status: "removed",
-      bySync: 1,
+      status: "active",
+      bySync: 0,
     });
   });
 

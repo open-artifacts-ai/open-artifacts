@@ -397,6 +397,10 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
+          # The job runs in a container as root, and checkout only trusts the
+          # workspace in a temporary HOME, so without this every git command here
+          # fails "dubious ownership" and the step quietly says full CI (#264).
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           rel=false
           if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
             && git show "$BASE_SHA:scripts/ci/release-only.ts" > "$RUNNER_TEMP/release-only.ts" 2> /dev/null \

@@ -15,6 +15,7 @@ import {
 import { orgCan } from "../auth/policy.js";
 import { creatorCount, monthOf, sendUsage } from "../billing/creators.js";
 import { billingActive } from "../billing/plan.js";
+import { memberCount } from "../billing/seats.js";
 import {
   BillingUnavailableError,
   billingCall,
@@ -75,18 +76,36 @@ async function stripeUrl(
 ): Promise<BillingUrl> {
   // One `now` for both tries: the same signed body (billing's session key
   // includes ts), so a retry finds the request Stripe was still running.
-  const now = Date.now();
+  let now = Date.now();
   const call = () => billingCall(c.env, path, fields, now);
   try {
     let answer: unknown;
     try {
-      answer = await call();
+      try {
+        answer = await call();
+      } catch (e) {
+        // Billing's 503 retry (Stripe 409, the same request in progress): one
+        // more try after a short backoff, then billing_unavailable.
+        if (!(e instanceof BillingUnavailableError) || e.why !== "retry")
+          throw e;
+        await billingRetry.wait(billingRetry.backoffMs);
+        answer = await call();
+      }
     } catch (e) {
-      // Billing's 503 retry (Stripe 409, the same request in progress): one
-      // more try after a short backoff, then billing_unavailable.
-      if (!(e instanceof BillingUnavailableError) || e.why !== "retry") throw e;
-      await billingRetry.wait(billingRetry.backoffMs);
-      answer = await call();
+      // Billing from before #2580 refuses a key it does not know (400
+      // bad_body): once more without `members`, with a fresh ts.
+      if (
+        !(e instanceof BillingUnavailableError) ||
+        e.why !== "http_400" ||
+        e.code !== "bad_body" ||
+        !("members" in fields)
+      )
+        throw e;
+      logWarn("billing_checkout_members_refused", undefined, { route: path });
+      const { members: _members, ...rest } = fields;
+      const sameNow = now;
+      now = Math.max(Date.now(), sameNow + 1);
+      answer = await billingCall(c.env, path, rest, now);
     }
     const r = UrlAnswerSchema.safeParse(answer);
     if (!r.success) throw new BillingUnavailableError("bad_answer");
@@ -134,32 +153,37 @@ export function mountBilling(app: AppType): void {
           "Solo can only be bought on a Solo or trial instance",
         );
     }
-    // Monthly Team and Business bill per creator (#2123): the subscription
-    // starts at this instance's own creator count for the current UTC month
-    // (billing bills at least 1). Counted here, never taken from the body
-    // (the strict schema refuses a creators field). A yearly plan prepays
-    // seats instead.
+    // Team and Business bill per member (#2580): a monthly subscription
+    // starts at this instance's own counts (members and creators: billing
+    // picks one by its own flag). A yearly one sends the client's seats
+    // unchanged, plus members; billing applies members only when per-member
+    // is on. Counted here, never from the body (billing bills at least 1).
+    let members: number | undefined;
     let creators: number | undefined;
-    if (tier !== "solo" && interval !== "year") {
+    if (tier !== "solo") {
       try {
-        creators = await creatorCount(c.env, monthOf(Date.now()));
+        const n = await memberCount(c.env);
+        members = n;
+        if (interval !== "year") {
+          creators = await creatorCount(c.env, monthOf(Date.now()));
+        }
       } catch (e) {
         logWarn("billing_url_failed", e, {
           route: CHECKOUT_PATH,
-          why: "creators",
+          why: "members",
         });
         throw unavailable();
       }
     }
     // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
-    // interval (month or year; required for solo) and seats (yearly team or
-    // business), both forwarded unchanged, and creators (monthly team or
-    // business).
+    // interval (month or year; required for solo), seats (yearly team or
+    // business), members (team or business) and creators (monthly team or business).
     return c.json(
       await stripeUrl(c, CHECKOUT_PATH, {
         plan: tier,
         ...(interval ? { interval } : {}),
         ...(seats !== undefined ? { seats } : {}),
+        ...(members !== undefined ? { members } : {}),
         ...(creators !== undefined ? { creators } : {}),
       }),
     );

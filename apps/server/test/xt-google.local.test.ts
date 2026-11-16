@@ -139,7 +139,8 @@ describe("login ID-token cases across installs (fake Google)", () => {
     const email = uniq("eve", B.domain);
     await cross(
       { aud: CID_B, azp: CID_B, hd: A.domain, email, sub: `sub-${email}` },
-      "tenant",
+      // Weak evidence for that address: bound, then refused by admit (#2590).
+      "no_access",
     );
   });
 
@@ -147,7 +148,7 @@ describe("login ID-token cases across installs (fake Google)", () => {
     const email = uniq("eve", B.domain);
     await cross(
       { aud: CID_B, azp: CID_B, hd: undefined, email, sub: `sub-${email}` },
-      "tenant",
+      "no_access",
     );
   });
 

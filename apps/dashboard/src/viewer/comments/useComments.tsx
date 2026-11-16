@@ -31,7 +31,13 @@ import { draftBadge, threadBadge } from "./pinBadge";
 type Bridge = ReturnType<typeof createBridge>;
 
 /** A post that failed after its box had closed: the text to put back and why. `clear` drops it once a box has taken it. */
-export type Lost = { text: string; error: unknown; clear?: () => void };
+export type Lost = {
+  text: string;
+  error: unknown;
+  clear?: () => void;
+  /** Open the box and put the cursor right after this text (a doc's quote, #1100). */
+  focusEnd?: boolean;
+};
 
 export type PinPoint = { x: number; y: number; page?: number };
 /** A comment being started: on selected text, or on a placed pin (the server stamps the pin's contentHash). */
@@ -49,6 +55,12 @@ export type CommentsApi = {
   capped: boolean;
   /** Not signed in: composers ask for a display name. */
   guest: boolean;
+  /**
+   * #2590: a signed-in guest (Me role "guest"), someone outside the team. No
+   * agent mentions or their hint, no Decisions and no Resolve; the server
+   * refuses them anyway.
+   */
+  outsider: boolean;
   artifactId: string;
   /** The version the viewer shows. */
   version: number;
@@ -188,7 +200,10 @@ export function useCommentsController({
   openSurface,
   besideOk = false,
   viewerName = null,
+  outsider = false,
 }: {
+  /** #2590: the viewer is a signed-in guest (outside the team). */
+  outsider?: boolean;
   /** #2019: the comment box may open beside the flag (not a phone sheet or full screen). */
   besideOk?: boolean;
   /** The signed-in viewer's name, for the initials on the flag being placed. */
@@ -540,10 +555,12 @@ export function useCommentsController({
       canMention:
         authed &&
         !readOnly &&
+        !outsider &&
         (artifact.can?.edit ??
           (artifact.access === "owner" || artifact.access === "editor")),
       capped: readOnly,
       guest: !authed,
+      outsider,
       artifactId: id,
       version,
       pinFormat,
@@ -630,6 +647,7 @@ export function useCommentsController({
       artifact.access,
       readOnly,
       authed,
+      outsider,
       id,
       version,
       older,

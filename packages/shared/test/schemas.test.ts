@@ -327,7 +327,10 @@ describe("fix round 3", () => {
     expect(
       m.MemberInviteSchema.safeParse({ email: "a@b.co", role: "guest" })
         .success,
-    ).toBe(false);
+    ).toBe(true); // #2520: a guest invite
+    expect(m.MemberPatchSchema.safeParse({ role: "guest" }).success).toBe(
+      false,
+    );
     expect(m.MemberPatchSchema.safeParse({ role: "member" }).success).toBe(
       true,
     );

@@ -681,16 +681,19 @@ describe("races: each rule is re-checked inside the batch", () => {
     expect(await erasedAudits(u.userId)).toHaveLength(1);
   });
 
-  it("an invite of the address before erase is 409 member_removed; after erase it makes a new person with nothing of theirs", async () => {
+  it("an invite of the address before erase restores them; after erase it makes a new person with nothing of theirs", async () => {
     const u = await fullyLoaded();
     const invite = () =>
       call(OFF, R.members, admin.cookie, {
         method: "POST",
         body: { email: u.email, role: "member" },
       });
+    // #2520: before erase an invite restores them; remove them again to erase.
     const first = await invite();
-    expect(first.status).toBe(409);
-    expect((await errOf(first)).code).toBe("member_removed");
+    expect(first.status).toBe(200);
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(u.userId)
+      .run();
     expect((await erase(u.userId, admin.cookie)).status).toBe(204);
     const second = await invite();
     expect(second.status).toBe(201);
@@ -841,6 +844,22 @@ describe("Google login after erase, and the way back (reset the Google link)", (
   const resetLink = (id: string, who: U) =>
     call(D, R.memberIdentity(id, "google"), who.cookie, { method: "DELETE" });
 
+  it("a newly signed-in Google member gets one Welcome, at that first sign-in only (#2632)", async () => {
+    const g = await fakeGoogle();
+    const email = uniq("wl-g", "a.com").toLowerCase();
+    expect(await googleSignIn(g, email)).toBe(true);
+    const [id] = await idsAt(email);
+    const welcomes = () =>
+      count(
+        "select count(*) n from artifacts where owner_id = ? and title = 'Welcome'",
+        id ?? "",
+      );
+    expect(await welcomes()).toBe(1);
+    // Their own sign-ins afterwards never seed another.
+    expect(await googleSignIn(g, email)).toBe(true);
+    expect(await welcomes()).toBe(1);
+  });
+
   /** A person who signed in with Google, then was removed and erased. */
   async function erasedGoogleUser(g: FakeGoogle) {
     const email = uniq("er-g", "a.com").toLowerCase();
@@ -896,7 +915,8 @@ describe("Google login after erase, and the way back (reset the Google link)", (
         fresh,
         fresh,
       ),
-    ).toBe(0);
+      // Empty but for their own Welcome, seeded at their first sign-in (#2632).
+    ).toBe(1);
     expect(await userRow(id)).toEqual(after);
   });
 

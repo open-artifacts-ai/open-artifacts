@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ff7cd0f2-328d-4fba-825d-e3bc6dc213cd",
-  "prevId": "30ce1b4d-68a4-4c9c-a4ef-ceb672b24653",
+  "id": "5c526c81-5a61-4c7e-a2d1-3f25eaef259b",
+  "prevId": "cb789e84-4f4c-4a90-885f-6e1e76d0cddb",
   "tables": {
     "agent_grants": {
       "name": "agent_grants",
@@ -663,104 +663,6 @@
           "columnsFrom": ["user_id"],
           "columnsTo": ["id"],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "bus_machine_updates": {
-      "name": "bus_machine_updates",
-      "columns": {
-        "machine_id": {
-          "name": "machine_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "event": {
-          "name": "event",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "from_version": {
-          "name": "from_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "to_version": {
-          "name": "to_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "detail": {
-          "name": "detail",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "rescue_version": {
-          "name": "rescue_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "reported_at": {
-          "name": "reported_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "switching_at": {
-          "name": "switching_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "last_hello_at": {
-          "name": "last_hello_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "stopped_at": {
-          "name": "stopped_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "bus_machine_updates_machine_id_bus_machines_id_fk": {
-          "name": "bus_machine_updates_machine_id_bus_machines_id_fk",
-          "tableFrom": "bus_machine_updates",
-          "tableTo": "bus_machines",
-          "columnsFrom": ["machine_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -1979,6 +1881,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "can_comment": {
+          "name": "can_comment",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
         "created_by": {
           "name": "created_by",
           "type": "text",
@@ -2768,6 +2678,13 @@
         },
         "format": {
           "name": "format",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "doc_save": {
+          "name": "doc_save",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

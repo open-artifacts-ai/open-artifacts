@@ -118,6 +118,21 @@ const members: Member[] = [
 ];
 
 /** #2287: the seeded Welcome artifact's id, in the mocks' `welcome` option. */
+/** #2632: a members row's `setup`, as the server would answer an owner or admin (none for a guest). */
+export function mockSetup(m: { role: string; lastSeenAt: string | null }):
+  | {
+      state: "set" | "partial" | "invited";
+      done: number;
+      stalled?: "agent" | "artifact";
+    }
+  | undefined {
+  if (m.role === "guest") return undefined;
+  if (m.role === "owner") return { state: "set", done: 5 };
+  if (m.lastSeenAt === null)
+    return { state: "invited", done: 0, stalled: "agent" };
+  return { state: "partial", done: 2, stalled: "artifact" };
+}
+
 export const WELCOME_MOCK_ID = "WmCnEfGhJk4mNpQr";
 
 /** The Welcome artifact, its one version and its html (the page the server seeds). */
