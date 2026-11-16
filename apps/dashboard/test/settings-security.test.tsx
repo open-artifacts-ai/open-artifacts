@@ -1,12 +1,12 @@
-// #2263: Settings › Security, passkeys and the "ask for a passkey" switches.
+// #2263: Settings › Security, passkeys; #2661: a passkey on high-stakes decisions.
 
-import type { PasskeySettings } from "@oa/shared";
 import { R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as webauthn from "../src/auth/webauthn";
+import type { PasskeySettings } from "../src/settings/passkeySettings";
 import { calls, installHarness, mount, server } from "./harness";
 
 installHarness();
@@ -48,19 +48,12 @@ const err = (code: string, status: number, details?: unknown) =>
   HttpResponse.json({ error: { code, message: code, details } }, { status });
 
 const base: PasskeySettings = {
-  actions: {
-    merge: true,
-    deploy: true,
-    delete: true,
-    share: true,
-    public: true,
-    command: true,
-  },
-  everyPick: false,
-  locked: ["command"],
+  highStakes: true,
+  everyAnswer: false,
+  ownRule: "",
   hasPasskey: true,
-  hasUsablePasskey: true,
 };
+type Body = Pick<PasskeySettings, "highStakes" | "everyAnswer" | "ownRule">;
 
 /** A settings server of our own, to see exactly what the page sends. */
 function settingsServer(initial: PasskeySettings, put?: () => Response) {
@@ -80,20 +73,25 @@ function settingsServer(initial: PasskeySettings, put?: () => Response) {
       });
     }),
     http.patch(`*${R.passkeySettings}`, async ({ request }) => {
-      const b = (await request.json()) as {
-        actions: PasskeySettings["actions"];
-        everyPick: boolean;
-      };
+      const b = (await request.json()) as Body;
       puts.push(b);
       const bad = put?.();
       if (bad) return bad;
-      s = { ...s, actions: b.actions, everyPick: b.everyPick };
+      s = {
+        ...s,
+        highStakes: b.highStakes,
+        everyAnswer: b.everyAnswer,
+        ownRule: b.ownRule,
+      };
       return HttpResponse.json(s);
     }),
   );
   return { puts, challenges };
 }
 
+const HIGH = "Ask for my passkey on high-stakes decisions";
+const EVERY = "Ask on every answer";
+const RULE = "Also treat as high stakes:";
 const sw = (name: string) => screen.findByRole("switch", { name });
 /** A switch once the settings have loaded (it is disabled until then). */
 const live = async (name: string) => {
@@ -101,8 +99,14 @@ const live = async (name: string) => {
   await waitFor(() => expect(s).toBeEnabled());
   return s;
 };
+/** The rule field once the settings have loaded. */
+const ruleField = async () => {
+  const f = await screen.findByLabelText(RULE);
+  await waitFor(() => expect(f).toBeEnabled());
+  return f as HTMLTextAreaElement;
+};
 
-describe("Settings › Security: passkey switches", () => {
+describe("Settings › Security: a passkey on high-stakes decisions (#2661)", () => {
   it("is a Settings tab", async () => {
     use("usable");
     mount("/settings/security");
@@ -111,92 +115,199 @@ describe("Settings › Security: passkey switches", () => {
     ).toHaveAttribute("aria-current", "page");
   });
 
-  it("with no passkey, shows the switches disabled and says to add one", async () => {
+  it("shows OA Product's words, word for word, and the mock's defaults", async () => {
+    use("usable");
+    mount("/settings/security");
+    expect(
+      await screen.findByRole("heading", {
+        name: "Passkey for high-stakes decisions",
+      }),
+    ).toBeVisible();
+    const high = await live(HIGH);
+    expect(high).toHaveAttribute("aria-checked", "true");
+    expect(high).toHaveAccessibleDescription(
+      "When an agent or a person marks a decision as high stakes, approving it needs your passkey. Saying no never does.",
+    );
+    expect(await live(EVERY)).toHaveAttribute("aria-checked", "false");
+    const rule = await ruleField();
+    expect(rule).toHaveAttribute(
+      "placeholder",
+      "For example: anything that emails a customer",
+    );
+    expect(rule).toHaveAttribute("maxlength", "500");
+    expect(rule).toHaveAccessibleDescription(
+      "Your agents are told this. Changing these needs your passkey.",
+    );
+  });
+
+  it("no developer words: the six per-action switches are gone", async () => {
+    use("usable");
+    mount("/settings/security");
+    await live(HIGH);
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+    const text = document.body.textContent ?? "";
+    for (const w of [
+      /\bmerge\b/i,
+      /\bdeploy\b/i,
+      /run a command/i,
+      /make public/i,
+      /every pick/i,
+      /\bcode\b/i,
+    ])
+      expect(text).not.toMatch(w);
+  });
+
+  it("with no passkey, the switches and the field are disabled and say to add one", async () => {
     use("none");
     mount("/settings/security");
-    const merge = await sw("Merge");
     await screen.findByText("Add a passkey to use these.");
-    for (const n of [
-      "Merge",
-      "Deploy",
-      "Delete",
-      "Share",
-      "Make public",
-      "Every pick",
-    ])
-      expect(await sw(n)).toBeDisabled();
-    expect(merge).toHaveAccessibleDescription("Add a passkey to use these.");
+    for (const n of [HIGH, EVERY]) {
+      const s = await sw(n);
+      expect(s).toBeDisabled();
+      expect(s).toHaveAccessibleDescription(/Add a passkey to use these\.$/);
+    }
+    expect(await screen.findByLabelText(RULE)).toBeDisabled();
     expect(screen.getByText("No passkeys yet.")).toBeInTheDocument();
   });
 
-  it("locks 'Run a command' on", async () => {
-    use("usable");
+  it.each([
+    [HIGH, { ...base, highStakes: false }, { highStakes: true }],
+    [EVERY, base, { everyAnswer: true }],
+  ])(
+    "turning %s on PATCHes straight away, with no passkey",
+    async (name, start, change) => {
+      const { puts, challenges } = settingsServer(start);
+      mount("/settings/security");
+      const s = await live(name);
+      expect(s).toHaveAttribute("aria-checked", "false");
+      fireEvent.click(s);
+      await waitFor(() => expect(s).toHaveAttribute("aria-checked", "true"));
+      expect(puts).toEqual([
+        {
+          highStakes: start.highStakes,
+          everyAnswer: start.everyAnswer,
+          ownRule: "",
+          ...change,
+        },
+      ]);
+      expect(challenges).toEqual([]);
+      expect(get).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [HIGH, base, { highStakes: false }],
+    [EVERY, { ...base, everyAnswer: true }, { everyAnswer: false }],
+  ])(
+    "turning %s off: a challenge for the same body, the passkey, then PATCH with the assertion",
+    async (name, start, change) => {
+      const { puts, challenges } = settingsServer(start);
+      mount("/settings/security");
+      const s = await live(name);
+      fireEvent.click(s);
+      // Not optimistic: still on until the server says so.
+      expect(s).toHaveAttribute("aria-checked", "true");
+      await waitFor(() => expect(s).toHaveAttribute("aria-checked", "false"));
+      const body = {
+        highStakes: start.highStakes,
+        everyAnswer: start.everyAnswer,
+        ownRule: "",
+        ...change,
+      };
+      expect(challenges).toEqual([body]);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(puts).toEqual([{ ...body, assertion: ASSERTION }]);
+      expect(s).toHaveFocus();
+    },
+  );
+
+  it("changing the rule needs the passkey; it is saved trimmed", async () => {
+    const { puts, challenges } = settingsServer(base);
     mount("/settings/security");
-    const cmd = await sw("Run a command");
-    expect(cmd).toBeDisabled();
-    expect(cmd).toHaveAttribute("aria-checked", "true");
-    expect(cmd).toHaveAccessibleDescription(
-      "Always on: this runs code on your computer.",
+    const rule = await ruleField();
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    fireEvent.change(rule, {
+      target: { value: "  anything that emails a customer " },
+    });
+    expect(save).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(save);
+    const body = {
+      highStakes: true,
+      everyAnswer: false,
+      ownRule: "anything that emails a customer",
+    };
+    await waitFor(() =>
+      expect(puts).toEqual([{ ...body, assertion: ASSERTION }]),
+    );
+    expect(challenges).toEqual([body]);
+    await waitFor(() => expect(rule.value).toBe(body.ownRule));
+    expect(save).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("clearing the rule needs the passkey too", async () => {
+    const { puts } = settingsServer({ ...base, ownRule: "anything legal" });
+    mount("/settings/security");
+    const rule = await ruleField();
+    await waitFor(() => expect(rule.value).toBe("anything legal"));
+    fireEvent.change(rule, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(puts).toEqual([
+        {
+          highStakes: true,
+          everyAnswer: false,
+          ownRule: "",
+          assertion: ASSERTION,
+        },
+      ]),
     );
   });
 
-  it("turning a switch on PUTs straight away, with no assertion", async () => {
-    const { puts, challenges } = settingsServer({
-      ...base,
-      actions: { ...base.actions, merge: false },
-    });
+  it("an unchanged rule (only spaces added) saves nothing", async () => {
+    const { puts } = settingsServer({ ...base, ownRule: "x" });
     mount("/settings/security");
-    const merge = await live("Merge");
-    expect(merge).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(merge);
-    await waitFor(() => expect(merge).toHaveAttribute("aria-checked", "true"));
-    expect(puts).toEqual([{ actions: base.actions, everyPick: false }]);
-    expect(challenges).toEqual([]);
+    const rule = await ruleField();
+    await waitFor(() => expect(rule.value).toBe("x"));
+    fireEvent.change(rule, { target: { value: " x " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(puts).toEqual([]);
     expect(get).not.toHaveBeenCalled();
   });
 
-  it("turning one off asks the server for a challenge, gets a passkey, then PUTs with the assertion", async () => {
-    const { puts, challenges } = settingsServer(base);
-    mount("/settings/security");
-    const deploy = await live("Deploy");
-    fireEvent.click(deploy);
-    // Not optimistic: still on until the server says so.
-    expect(deploy).toHaveAttribute("aria-checked", "true");
-    await waitFor(() =>
-      expect(deploy).toHaveAttribute("aria-checked", "false"),
-    );
-    const body = {
-      actions: { ...base.actions, deploy: false },
-      everyPick: false,
-    };
-    expect(challenges).toEqual([body]);
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(puts).toEqual([{ ...body, assertion: ASSERTION }]);
-    expect(deploy).toHaveFocus();
-  });
-
-  it("shows 'Waiting for your passkey…' while the prompt is open", async () => {
+  it("shows 'Waiting for your passkey…' under the switch while the prompt is open", async () => {
     settingsServer(base);
     get.mockReturnValue(new Promise(() => {}));
     mount("/settings/security");
-    fireEvent.click(await live("Share"));
+    fireEvent.click(await live(HIGH));
     const line = await screen.findByText("Waiting for your passkey…");
     expect(line).toBeVisible();
-    // Directly under the switch that caused it.
-    expect(line.parentElement).toContainElement(await sw("Share"));
-    expect(await sw("Share")).toHaveAttribute("aria-checked", "true");
+    expect(line.parentElement).toContainElement(await sw(HIGH));
+    expect(await sw(HIGH)).toHaveAttribute("aria-checked", "true");
   });
 
   it("a cancelled prompt leaves the switch on and says nothing was changed", async () => {
     const { puts } = settingsServer(base);
     get.mockRejectedValue(new DOMException("no", "NotAllowedError"));
     mount("/settings/security");
-    const del = await live("Delete");
-    fireEvent.click(del);
+    const high = await live(HIGH);
+    fireEvent.click(high);
     expect(await screen.findByText("Nothing was changed.")).toBeVisible();
-    expect(del).toHaveAttribute("aria-checked", "true");
+    expect(high).toHaveAttribute("aria-checked", "true");
     expect(puts).toEqual([]);
-    expect(del).toHaveFocus();
+    expect(high).toHaveFocus();
+  });
+
+  it("a cancelled prompt on the rule keeps what was typed", async () => {
+    const { puts } = settingsServer(base);
+    get.mockRejectedValue(new DOMException("no", "NotAllowedError"));
+    mount("/settings/security");
+    const rule = await ruleField();
+    fireEvent.change(rule, { target: { value: "anything legal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Nothing was changed.")).toBeVisible();
+    expect(rule.value).toBe("anything legal");
+    expect(puts).toEqual([]);
   });
 
   it("a cooling passkey says when it can approve, and nothing changed", async () => {
@@ -208,7 +319,7 @@ describe("Settings › Security: passkey switches", () => {
       ),
     );
     mount("/settings/security");
-    const m = await live("Merge");
+    const m = await live(HIGH);
     fireEvent.click(m);
     const line = await screen.findByText(/Your new passkey can approve from/);
     expect(line).toHaveTextContent(webauthn.coolingTime(until));
@@ -225,9 +336,34 @@ describe("Settings › Security: passkey switches", () => {
   ])("%s ends with 'Nothing was changed.'", async (code, status) => {
     settingsServer(base, () => err(code, status));
     mount("/settings/security");
-    fireEvent.click(await live("Merge"));
+    fireEvent.click(await live(HIGH));
     expect(await screen.findByText(/Nothing was changed\.$/)).toBeVisible();
-    expect(await sw("Merge")).toHaveAttribute("aria-checked", "true");
+    expect(await sw(HIGH)).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("the mock: off or a new rule without an assertion is passkey_required; on is not", async () => {
+    use("usable");
+    const patch = (b: object) =>
+      fetch(R.passkeySettings, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "X-OA-Request": "1" },
+        body: JSON.stringify(b),
+      });
+    const on = { highStakes: true, everyAnswer: true, ownRule: "" };
+    const first = await patch(on);
+    expect(first.status, await first.clone().text()).toBe(200);
+    for (const b of [
+      { ...on, everyAnswer: false },
+      { ...on, highStakes: false },
+      { ...on, ownRule: "x" },
+    ]) {
+      const r = await patch(b);
+      expect(r.status).toBe(403);
+      expect(await r.json()).toMatchObject({
+        error: { code: "passkey_required" },
+      });
+    }
+    expect((await patch({ ...on, ownRule: "x".repeat(501) })).status).toBe(400);
   });
 });
 
@@ -663,23 +799,17 @@ describe("Settings › Security: stale state, return from login, pending removal
   it("builds a switch change from the server's state, not the cached one", async () => {
     const s = settingsServer(base);
     mount("/settings/security");
-    const merge = await live("Merge");
-    // Another tab turned Share off... and back: the server now differs from the cache.
+    const high = await live(HIGH);
+    // Another tab set a rule: the server now differs from the cache.
     server.use(
       http.get(`*${R.passkeySettings}`, () =>
-        HttpResponse.json({
-          ...base,
-          actions: { ...base.actions, share: false },
-        }),
+        HttpResponse.json({ ...base, ownRule: "anything legal" }),
       ),
     );
-    fireEvent.click(merge);
+    fireEvent.click(high);
     await waitFor(() => expect(s.puts.length).toBe(1));
     expect(s.challenges).toEqual([
-      {
-        actions: { ...base.actions, share: false, merge: false },
-        everyPick: false,
-      },
+      { highStakes: false, everyAnswer: false, ownRule: "anything legal" },
     ]);
   });
 

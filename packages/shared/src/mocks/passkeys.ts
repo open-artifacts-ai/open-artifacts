@@ -8,16 +8,26 @@
  * credential (no cryptography), so a virtual authenticator is enough.
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
-import type { z } from "zod";
+import { z } from "zod";
 import type { ErrorCode } from "../errors.js";
 import { PASSKEY_COOLING_MS } from "../passkeys.js";
 import { R } from "../routes.js";
 import {
   type Passkey,
+  PasskeyAssertionSchema,
   PasskeyRegisterBodySchema,
-  type PasskeySettings,
-  PasskeySettingsPatchSchema,
 } from "../schemas.js";
+
+/**
+ * PROVISIONAL (#2661): the settings in the shape pinned on #2661, until
+ * schemas.ts has it. The six per-action switches are gone.
+ */
+const SettingsPatch = z.strictObject({
+  highStakes: z.boolean(),
+  everyAnswer: z.boolean(),
+  ownRule: z.string().max(500),
+  assertion: PasskeyAssertionSchema.optional(),
+});
 
 export type PasskeyMockState = "none" | "cooling" | "usable" | "pending";
 
@@ -82,21 +92,16 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
               row("pk_a", "MacBook", 3 * 24 * HOUR, 24 * HOUR),
               row("pk_b", "Phone", 3 * 24 * HOUR, null),
             ];
-  let actions = {
-    merge: true,
-    deploy: true,
-    delete: true,
-    share: true,
-    public: true,
-    command: true,
-  };
-  let everyPick = false;
+  // #2661: everyone with a passkey starts with high stakes on, every answer off.
+  let highStakes = true;
+  let everyAnswer = false;
+  let ownRule = "";
   let n = 0;
 
-  const settings = (): PasskeySettings => ({
-    actions,
-    everyPick,
-    locked: ["command"],
+  const settings = () => ({
+    highStakes,
+    everyAnswer,
+    ownRule,
     hasPasskey: keys.length > 0,
     hasUsablePasskey: keys.some((k) => k.usable),
   });
@@ -130,32 +135,27 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
     http.get(`*${R.passkeys}`, () => HttpResponse.json(keys)),
     http.get(`*${R.passkeySettings}`, () => HttpResponse.json(settings())),
     http.post(`*${R.passkeySettingsChallenge}`, async ({ request }) => {
-      const r = await d.body(request, PasskeySettingsPatchSchema);
+      const r = await d.body(request, SettingsPatch);
       if (r.error) return r.error;
       return refuse() ?? HttpResponse.json(assertOptions());
     }),
     http.patch(`*${R.passkeySettings}`, async ({ request }) => {
-      const r = await d.body(request, PasskeySettingsPatchSchema);
+      const r = await d.body(request, SettingsPatch);
       if (r.error) return r.error;
-      const next = r.data.actions as typeof actions;
-      if (!next.command)
-        return d.err(
-          "bad_request",
-          "Always on: this runs code on your computer.",
-        );
+      // Turning a switch off or changing the rule needs the passkey.
       const off =
-        (Object.keys(actions) as (keyof typeof actions)[]).some(
-          (k) => actions[k] && !next[k],
-        ) ||
-        (everyPick && !r.data.everyPick);
+        (highStakes && !r.data.highStakes) ||
+        (everyAnswer && !r.data.everyAnswer) ||
+        ownRule !== r.data.ownRule;
       if (off) {
         const no = refuse();
         if (no) return no;
         if (!r.data.assertion)
           return d.err("passkey_required", "Confirm with your passkey.");
       }
-      actions = next;
-      everyPick = r.data.everyPick;
+      highStakes = r.data.highStakes;
+      everyAnswer = r.data.everyAnswer;
+      ownRule = r.data.ownRule;
       return HttpResponse.json(settings());
     }),
     http.post(`*${R.passkeyRegisterChallenge}`, () => {

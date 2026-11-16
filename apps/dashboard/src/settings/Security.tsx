@@ -1,13 +1,5 @@
-import {
-  ASK_ACTIONS,
-  type AskAction,
-  type Passkey,
-  PasskeySchema,
-  type PasskeySettings,
-  PasskeySettingsSchema,
-  R,
-} from "@oa/shared";
-import { Button } from "@oa/ui/shadcn";
+import { type Passkey, PasskeySchema, R } from "@oa/shared";
+import { Button, Label, Textarea } from "@oa/ui/shadcn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +17,13 @@ import {
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { ConfirmDialog } from "./ConfirmDialog";
+import {
+  getPasskeySettings,
+  OWN_RULE_MAX,
+  type PasskeySettings,
+  type PasskeySettingsBody,
+  savePasskeySettings,
+} from "./passkeySettings";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard } from "./ui";
 
@@ -37,19 +36,18 @@ const ChallengeSchema = z.object({
 const qkPasskeys = ["passkeys"] as const;
 const qkSettings = ["passkeys", "settings"] as const;
 
-export const SWITCH_LABELS: Record<AskAction | "everyPick", string> = {
-  merge: "Merge",
-  deploy: "Deploy",
-  delete: "Delete",
-  share: "Share",
-  public: "Make public",
-  command: "Run a command",
-  everyPick: "Every pick",
-};
+// OA Product's words (#2661).
+export const HIGH_STAKES_HEADING = "Passkey for high-stakes decisions";
+export const HIGH_STAKES_SWITCH = "Ask for my passkey on high-stakes decisions";
+export const HIGH_STAKES_HELP =
+  "When an agent or a person marks a decision as high stakes, approving it needs your passkey. Saying no never does.";
+export const EVERY_ANSWER_SWITCH = "Ask on every answer";
+export const OWN_RULE_LABEL = "Also treat as high stakes:";
+export const OWN_RULE_PLACEHOLDER =
+  "For example: anything that emails a customer";
+export const OWN_RULE_HELP =
+  "Your agents are told this. Changing these needs your passkey.";
 export const NO_PASSKEY_LINE = "Add a passkey to use these.";
-export const COMMAND_LOCKED_LINE =
-  "Always on: this runs code on your computer.";
-export const EVERY_PICK_LINE = "Any answer to an ask, not just risky ones.";
 export const WAITING = "Waiting for your passkey…";
 
 // Adding a passkey needs a fresh sign-in: the server answers 401
@@ -140,8 +138,7 @@ function SecurityBody() {
   });
   const settings = useQuery({
     queryKey: qkSettings,
-    queryFn: ({ signal }) =>
-      api.get(R.passkeySettings, PasskeySettingsSchema, signal),
+    queryFn: ({ signal }) => getPasskeySettings(signal),
   });
   const refresh = () =>
     Promise.all([
@@ -156,7 +153,14 @@ function SecurityBody() {
         failed={keys.isError}
         refresh={refresh}
       />
-      <Switches settings={settings.data} failed={settings.isError} />
+      <HighStakes
+        settings={settings.data}
+        failed={settings.isError}
+        hasPasskey={
+          settings.data?.hasPasskey ??
+          (keys.data ? keys.data.length > 0 : undefined)
+        }
+      />
     </div>
   );
 }
@@ -533,146 +537,170 @@ function PasskeyList({
   );
 }
 
-function Switches({
+type Row = "highStakes" | "everyAnswer" | "ownRule";
+const bodyOf = (s: PasskeySettings): PasskeySettingsBody => ({
+  highStakes: s.highStakes,
+  everyAnswer: s.everyAnswer,
+  ownRule: s.ownRule,
+});
+
+/** Passkey for high-stakes decisions (#2661): two switches and the person's own rule. */
+function HighStakes({
   settings,
   failed,
+  hasPasskey,
 }: {
   settings: PasskeySettings | undefined;
   failed: boolean;
+  hasPasskey: boolean | undefined;
 }) {
   const qc = useQueryClient();
-  const [busy, setBusy] = useState<string | null>(null);
-  // Shown directly under the row (`key`) that caused it.
+  const [busy, setBusy] = useState<Row | null>(null);
+  // Shown directly under the row that caused it.
   const [note, setNote] = useState<{
-    key: string;
+    row: Row;
     text: string;
     error: boolean;
   } | null>(null);
-  const none = settings ? !settings.hasPasskey : true;
+  // null: not edited, so the field reads through from the server.
+  const [draft, setDraft] = useState<string | null>(null);
+  const none = hasPasskey === false;
+  const off = !settings || none;
+  const rule = draft ?? settings?.ownRule ?? "";
+  const ruleDirty = settings !== undefined && rule.trim() !== settings.ownRule;
 
-  async function change(key: AskAction | "everyPick", next: boolean) {
+  async function change(row: Row, patch: Partial<PasskeySettingsBody>) {
     if (!settings || busy) return;
-    setBusy(key);
+    setBusy(row);
     setNote(null);
     try {
       // Build the change from the server's state now, so an assertion never
-      // binds switches the member did not see.
-      const current = await qc.fetchQuery({
-        queryKey: qkSettings,
-        queryFn: ({ signal }) =>
-          api.get(R.passkeySettings, PasskeySettingsSchema, signal),
-        staleTime: 0,
-      });
-      const body = {
-        actions: {
-          ...current.actions,
-          ...(key === "everyPick" ? {} : { [key]: next }),
-        },
-        everyPick: key === "everyPick" ? next : current.everyPick,
-      };
-      let saved: PasskeySettings;
-      if (next) {
-        saved = await api.send(
-          "PATCH",
-          R.passkeySettings,
-          body,
-          PasskeySettingsSchema,
-        );
-      } else {
-        setNote({ key, text: WAITING, error: false });
-        const ch = await api.send(
-          "POST",
-          R.passkeySettingsChallenge,
-          body,
-          ChallengeSchema,
-        );
-        const assertion = await getAssertion(ch.options);
-        saved = await api.send(
-          "PATCH",
-          R.passkeySettings,
-          { ...body, assertion },
-          PasskeySettingsSchema,
-        );
-      }
+      // binds settings the person did not see.
+      const current = bodyOf(
+        await qc.fetchQuery({
+          queryKey: qkSettings,
+          queryFn: ({ signal }) => getPasskeySettings(signal),
+          staleTime: 0,
+        }),
+      );
+      const saved = await savePasskeySettings(
+        current,
+        { ...current, ...patch },
+        () => setNote({ row, text: WAITING, error: false }),
+      );
       qc.setQueryData(qkSettings, saved);
+      if (row === "ownRule") setDraft(null);
       setNote(null);
     } catch (e) {
-      setNote({ key, text: failureLine(e, "changed"), error: true });
+      setNote({ row, text: failureLine(e, "changed"), error: true });
       void qc.invalidateQueries({ queryKey: qkSettings });
     } finally {
       setBusy(null);
-      document
-        .getElementById(`oa-passkey-switch-${key}`)
-        ?.focus({ preventScroll: true });
+      if (row !== "ownRule")
+        document
+          .getElementById(`oa-passkey-switch-${row}`)
+          ?.focus({ preventScroll: true });
     }
   }
 
-  const rows = [...ASK_ACTIONS, "everyPick" as const];
+  const noteFor = (row: Row) =>
+    note?.row === row && (
+      <p
+        role={note.error ? "alert" : "status"}
+        className={`m-0 ${note.error ? errorText : muted}`}
+      >
+        {note.text}
+      </p>
+    );
+  const switchRow = (
+    row: "highStakes" | "everyAnswer",
+    label: string,
+    help?: { id: string; text: string },
+  ) => (
+    <div className="grid gap-[var(--oa-space-2)]">
+      <div className="flex items-center justify-between gap-[var(--oa-space-3)]">
+        <div className="min-w-0">
+          <b className="block text-[length:var(--oa-text-sm)] font-medium">
+            {label}
+          </b>
+          {help && (
+            <small id={help.id} className={`block ${muted}`}>
+              {help.text}
+            </small>
+          )}
+        </div>
+        <Switch
+          id={`oa-passkey-switch-${row}`}
+          label={label}
+          describedBy={
+            [help?.id, none && "oa-passkey-none"].filter(Boolean).join(" ") ||
+            undefined
+          }
+          checked={settings?.[row] ?? false}
+          disabled={off}
+          onChange={(next) => void change(row, { [row]: next })}
+        />
+      </div>
+      {noteFor(row)}
+    </div>
+  );
+
   return (
-    <SettingsCard
-      id="oa-passkey-asks"
-      title="Ask for a passkey to approve"
-      subtitle="Approving these needs your passkey. Turning one off needs it too."
-    >
+    <SettingsCard id="oa-passkey-asks" title={HIGH_STAKES_HEADING}>
       {failed && <p className={errorText}>Couldn't load these settings.</p>}
       {none && settings && (
         <p id="oa-passkey-none" className={`m-0 ${muted}`}>
           {NO_PASSKEY_LINE}
         </p>
       )}
-      {rows.map((key) => {
-        const locked = key === "command";
-        const on =
-          settings === undefined
-            ? false
-            : key === "everyPick"
-              ? settings.everyPick
-              : settings.actions[key];
-        const hint = locked
-          ? "oa-passkey-locked"
-          : none
-            ? "oa-passkey-none"
-            : key === "everyPick"
-              ? "oa-passkey-every"
-              : undefined;
-        return (
-          <div key={key} className="grid gap-[var(--oa-space-2)]">
-            <div className="flex items-center justify-between gap-[var(--oa-space-3)]">
-              <div>
-                <b className="block text-[length:var(--oa-text-sm)] font-medium">
-                  {SWITCH_LABELS[key]}
-                </b>
-                {locked && (
-                  <small id="oa-passkey-locked" className={`block ${muted}`}>
-                    {COMMAND_LOCKED_LINE}
-                  </small>
-                )}
-                {key === "everyPick" && (
-                  <small id="oa-passkey-every" className={`block ${muted}`}>
-                    {EVERY_PICK_LINE}
-                  </small>
-                )}
-              </div>
-              <Switch
-                id={`oa-passkey-switch-${key}`}
-                label={SWITCH_LABELS[key]}
-                describedBy={hint}
-                checked={locked ? true : on}
-                disabled={!settings || none || locked}
-                onChange={(next) => void change(key, next)}
-              />
-            </div>
-            {note?.key === key && (
-              <p
-                role={note.error ? "alert" : "status"}
-                className={`m-0 ${note.error ? errorText : muted}`}
-              >
-                {note.text}
-              </p>
-            )}
-          </div>
-        );
+      {switchRow("highStakes", HIGH_STAKES_SWITCH, {
+        id: "oa-passkey-high-help",
+        text: HIGH_STAKES_HELP,
       })}
+      {switchRow("everyAnswer", EVERY_ANSWER_SWITCH)}
+      <form
+        className="grid gap-[var(--oa-space-2)]"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (off || !ruleDirty) return;
+          void change("ownRule", { ownRule: rule.trim() });
+        }}
+      >
+        <Label htmlFor="oa-passkey-rule">{OWN_RULE_LABEL}</Label>
+        <Textarea
+          id="oa-passkey-rule"
+          value={rule}
+          rows={2}
+          maxLength={OWN_RULE_MAX}
+          placeholder={OWN_RULE_PLACEHOLDER}
+          disabled={off}
+          aria-describedby={
+            none
+              ? "oa-passkey-rule-help oa-passkey-none"
+              : "oa-passkey-rule-help"
+          }
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (note?.row === "ownRule") setNote(null);
+          }}
+        />
+        <div className="flex items-start justify-between gap-[var(--oa-space-3)]">
+          <small id="oa-passkey-rule-help" className={`block ${muted}`}>
+            {OWN_RULE_HELP}
+          </small>
+          <Button
+            type="submit"
+            size="sm"
+            variant="outline"
+            aria-disabled={!ruleDirty || busy !== null || off || undefined}
+            aria-busy={busy === "ownRule" || undefined}
+            className="flex-none aria-disabled:opacity-50"
+          >
+            Save
+          </Button>
+        </div>
+        {noteFor("ownRule")}
+      </form>
     </SettingsCard>
   );
 }

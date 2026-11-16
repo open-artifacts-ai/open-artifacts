@@ -1,9 +1,33 @@
 // #2263: Settings › Security at 1280 and 390, light and dark, in the three
-// passkey states of the mock API. Shots only when SECURITY_SHOTS_DIR is set.
+// passkey states of the mock API; #2661: a passkey on high-stakes decisions,
+// with axe. Shots only when SECURITY_SHOTS_DIR is set.
 // A virtual authenticator (CDP) stands in for the device, in these tests only.
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { expect, type Page, test } from "@playwright/test";
+
+const AXE = createRequire(import.meta.url).resolve("axe-core/axe.min.js", {
+  paths: [new URL("../../../packages/ui", import.meta.url).pathname],
+});
+/** Serious and critical axe violations, by rule id. */
+const axeRun = async (page: Page): Promise<string[]> => {
+  await page.addScriptTag({ path: AXE });
+  return page.evaluate(async () => {
+    // @ts-expect-error injected
+    const r = await axe.run(document, { resultTypes: ["violations"] });
+    return r.violations
+      .filter(
+        (x: { impact: string }) =>
+          x.impact === "serious" || x.impact === "critical",
+      )
+      .map((x: { id: string }) => x.id);
+  });
+};
+
+const HIGH = "Ask for my passkey on high-stakes decisions";
+const EVERY = "Ask on every answer";
+const RULE = "Also treat as high stakes:";
 
 const OUT = process.env.SECURITY_SHOTS_DIR;
 
@@ -66,23 +90,23 @@ for (const scheme of ["light", "dark"] as const)
         test(`${s.n}`, async ({ page }) => {
           await page.goto(`/settings/security?mock=${s.mock}`);
           await expect(
-            page.getByRole("heading", { name: "Ask for a passkey to approve" }),
+            page.getByRole("heading", {
+              name: "Passkey for high-stakes decisions",
+            }),
           ).toBeVisible();
-          const merge = page.getByRole("switch", { name: "Merge" });
+          const high = page.getByRole("switch", { name: HIGH });
           if (s.n === "no-passkey") {
-            await expect(merge).toBeDisabled();
+            await expect(high).toBeDisabled();
+            await expect(page.getByLabel(RULE)).toBeDisabled();
             await expect(
               page.getByText("Add a passkey to use these."),
             ).toBeVisible();
           } else {
-            await expect(merge).toBeEnabled();
+            await expect(high).toBeEnabled();
+            await expect(high).toHaveAttribute("aria-checked", "true");
           }
-          await expect(
-            page.getByRole("switch", { name: "Run a command" }),
-          ).toBeDisabled();
-          await expect(
-            page.getByText("Always on: this runs code on your computer."),
-          ).toBeVisible();
+          await expect(page.getByRole("switch")).toHaveCount(2);
+          expect(await axeRun(page)).toEqual([]);
           if (s.n === "cooling")
             await expect(page.getByText(/Can approve from /)).toBeVisible();
           if (s.n === "pending")
@@ -124,14 +148,52 @@ for (const scheme of ["light", "dark"] as const)
         await expect(page.getByText("Passkey", { exact: true })).toBeVisible();
         await shot(page, `added-${scheme}-${width}`);
 
-        const deploy = page.getByRole("switch", { name: "Deploy" });
-        await expect(deploy).toBeEnabled();
-        await deploy.click();
-        await expect(deploy).toHaveAttribute("aria-checked", "false");
-        await expect(deploy).toBeFocused();
+        const high = page.getByRole("switch", { name: HIGH });
+        await expect(high).toBeEnabled();
+        await high.click();
+        await expect(high).toHaveAttribute("aria-checked", "false");
+        await expect(high).toBeFocused();
         await shot(page, `switch-off-${scheme}-${width}`);
-        await deploy.click(); // on again: no passkey needed
-        await expect(deploy).toHaveAttribute("aria-checked", "true");
+        await high.click(); // on again: no passkey needed
+        await expect(high).toHaveAttribute("aria-checked", "true");
+      });
+
+      test("every answer on, then a rule typed and saved with the passkey", async ({
+        page,
+      }) => {
+        await authenticator(page);
+        await page.goto("/settings/security?mock=passkey-usable");
+        const every = page.getByRole("switch", { name: EVERY });
+        await expect(every).toBeEnabled();
+        await every.click(); // on: no passkey needed
+        await expect(every).toHaveAttribute("aria-checked", "true");
+        await shot(page, `every-answer-on-${scheme}-${width}`);
+        const rule = page.getByLabel(RULE);
+        await rule.fill("anything that emails a customer or a partner");
+        expect(await axeRun(page)).toEqual([]);
+        await shot(page, `rule-typed-${scheme}-${width}`);
+        await page.getByRole("button", { name: "Save" }).click();
+        await expect(
+          page.getByRole("button", { name: "Save" }),
+        ).toHaveAttribute("aria-disabled", "true");
+        await expect(rule).toHaveValue(
+          "anything that emails a customer or a partner",
+        );
+      });
+
+      test("the passkey prompt on turning a switch off", async ({ page }) => {
+        // The prompt stays open (a stand-in for the device asking).
+        await page.addInitScript(() => {
+          navigator.credentials.get = () => new Promise(() => {});
+        });
+        await page.goto("/settings/security?mock=passkey-usable");
+        const high = page.getByRole("switch", { name: HIGH });
+        await expect(high).toBeEnabled();
+        await high.click();
+        await expect(page.getByText("Waiting for your passkey…")).toBeVisible();
+        await expect(high).toHaveAttribute("aria-checked", "true");
+        expect(await axeRun(page)).toEqual([]);
+        await shot(page, `prompt-on-off-${scheme}-${width}`);
       });
 
       test("remove a passkey with its confirm", async ({ page }) => {
@@ -176,9 +238,9 @@ for (const scheme of ["light", "dark"] as const)
         }) => {
           await stub(page, "hang");
           await page.goto("/settings/security?mock=passkey-usable");
-          const deploy = page.getByRole("switch", { name: "Deploy" });
-          await expect(deploy).toBeEnabled();
-          await deploy.click();
+          const high = page.getByRole("switch", { name: HIGH });
+          await expect(high).toBeEnabled();
+          await high.click();
           await expect(
             page.getByText("Waiting for your passkey…"),
           ).toBeVisible();
@@ -190,9 +252,9 @@ for (const scheme of ["light", "dark"] as const)
         }) => {
           await stub(page, "cancel");
           await page.goto("/settings/security?mock=passkey-usable");
-          const deploy = page.getByRole("switch", { name: "Deploy" });
-          await expect(deploy).toBeEnabled();
-          await deploy.click();
+          const high = page.getByRole("switch", { name: HIGH });
+          await expect(high).toBeEnabled();
+          await high.click();
           await expect(page.getByText("Nothing was changed.")).toBeVisible();
           await shot(page, `switch-error-${scheme}-390`);
         });
