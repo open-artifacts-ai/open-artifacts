@@ -296,6 +296,8 @@ test("an admin never sees another person's personal space", async ({
 test("Remove someone with personal artifacts: Departed lists them, and Transfer gives them to a successor", async ({
   browser,
 }) => {
+  // Three sessions, two publishes and about 14 slow UI steps: past 60 s on staging.
+  test.slow();
   const admin = await person(browser, "admin", "admin");
   const heir = await person(browser, "heir", "member");
   const gone = await person(browser, "gone", "member");
