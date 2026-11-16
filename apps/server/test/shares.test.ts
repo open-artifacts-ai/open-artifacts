@@ -61,8 +61,9 @@ describe("GET R.shares marks guests, who can only view", () => {
       await (await api(app, R.shares(id), owner.cookie)).json(),
     );
     const of = (e: string) => rows.find((r) => r.email === e);
-    expect(of(g.email)).toMatchObject({ role: "editor", guest: true });
-    expect(of(fresh)).toMatchObject({ role: "editor", guest: true });
+    // An outsider is never stored as editor (#2590): clamped to commenter.
+    expect(of(g.email)).toMatchObject({ role: "commenter", guest: true });
+    expect(of(fresh)).toMatchObject({ role: "commenter", guest: true });
     expect(of(member.email)?.role).toBe("editor");
     expect(of(member.email)).not.toHaveProperty("guest");
   });
@@ -72,7 +73,8 @@ describe("GET R.shares: viewOnly from the access cap, never why", () => {
   it.each([
     ["a manually restricted member", "member", "restricted_manual", true],
     ["a member in a restricted group", "member", "restricted_sync", true],
-    ["a guest", "guest", null, true],
+    // A guest is clamped to commenter (#2590), who can comment: not view-only.
+    ["a guest", "guest", null, false],
     ["an uncapped member", "member", null, false],
   ] as const)("%s", async (_who, role, flag, viewOnly) => {
     const id = await pub();
@@ -88,7 +90,7 @@ describe("GET R.shares: viewOnly from the access cap, never why", () => {
     const row = ShareSchema.array()
       .parse(JSON.parse(raw))
       .find((r) => r.email === u.email);
-    expect(row?.role).toBe("editor");
+    expect(row?.role).toBe(role === "guest" ? "commenter" : "editor");
     if (viewOnly) expect(row).toMatchObject({ viewOnly: true });
     else expect(row).not.toHaveProperty("viewOnly");
     expect(raw).not.toContain("restrict");
@@ -171,12 +173,12 @@ describe("shares", () => {
     const id = await pub();
     const e = `Bob-${tag}@X.com`;
     await put(id, owner, e, "viewer");
-    await put(id, owner, e.toLowerCase(), "editor");
+    await put(id, owner, e.toLowerCase(), "commenter");
     const list = (await (
       await api(app, R.shares(id), owner.cookie)
     ).json()) as { email: string; role: string }[];
     expect(list).toEqual([
-      expect.objectContaining({ email: e.toLowerCase(), role: "editor" }),
+      expect.objectContaining({ email: e.toLowerCase(), role: "commenter" }),
     ]);
     expect((await del(id, owner, e.toUpperCase())).status).toBe(204);
   });

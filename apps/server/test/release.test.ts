@@ -383,6 +383,10 @@ describe("Me.instance.update visibility", () => {
     const body = (await (
       await api(app, R.settings, u.cookie)
     ).json()) as object;
-    expect(Object.keys(body).sort()).toEqual(["defaultVisibility", "name"]);
+    expect(Object.keys(body).sort()).toEqual([
+      "defaultVisibility",
+      "name",
+      "outsideSharing",
+    ]);
   });
 });

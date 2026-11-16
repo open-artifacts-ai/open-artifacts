@@ -48,9 +48,10 @@ const nav = () => screen.queryByRole("navigation", { name: "Primary" });
 const link = (name: string) => screen.queryByRole("link", { name });
 
 describe("AppLayout", () => {
-  it("guest sees only Shared with me", async () => {
+  it("guest sees only Shared with you", async () => {
     await mount("guest");
-    await screen.findAllByRole("link", { name: "Shared with me" });
+    // #2590: a guest's home is "Shared with you".
+    await screen.findAllByRole("link", { name: "Shared with you" });
     expect(link("Team")).toBeNull();
     expect(link("Settings")).toBeNull();
     expect(link("Usage")).toBeNull();

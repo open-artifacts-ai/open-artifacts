@@ -84,6 +84,14 @@
     "description": "Mark a comment thread resolved, or reopen it."
   },
   {
+    "name": "withdraw_ask",
+    "description": "Withdraw an ask you posted, while it has no decision."
+  },
+  {
+    "name": "edit_comment",
+    "description": "Edit the text of your own comment."
+  },
+  {
     "name": "list_spaces",
     "description": "Open Artifacts: List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId."
   }

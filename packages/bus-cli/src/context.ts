@@ -29,7 +29,9 @@ import { detectStyle, type Env, type Stream, type Style } from "./term.ts";
 /** What doctor reports about an installed service that still runs. */
 export type ServiceProblem =
   | { kind: "node-missing"; node: string }
-  | { kind: "linger-off" };
+  | { kind: "linger-off" }
+  | { kind: "rescue-missing"; path: string }
+  | { kind: "rescue-open"; path: string };
 
 /**
  * The OS service that keeps the daemon running: launchd or systemd --user

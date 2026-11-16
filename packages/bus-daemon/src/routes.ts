@@ -56,6 +56,10 @@ const unrefTimer: Timer = (ms, fn) => {
  */
 export class Pending {
   #byHubId = new Map<string, Waiter>();
+  /** Requests still waiting for the hub's answer. */
+  get size(): number {
+    return this.#byHubId.size;
+  }
   constructor(
     private readonly timeoutMs = 10_000,
     /**

@@ -184,8 +184,9 @@ export const googleProvider: OidcProvider = {
       );
       // No domains: any hd, and the address counts only on the no-domain rule.
       if (g.domains.length === 0) {
-        if (!noDomainIdentityOk(id.email, id.hd))
-          throw new GoogleTokenError("tenant");
+        // Weak evidence is not refused here: admit() decides (an existing
+        // row or a share recipient gets needs_code), and a bound identity
+        // never creates a row or the owner (#2590).
         return {
           provider: "google",
           subject: id.sub,
@@ -193,6 +194,9 @@ export const googleProvider: OidcProvider = {
           name: id.name,
           tenant: null,
           hd: id.hd,
+          ...(noDomainIdentityOk(id.email, id.hd)
+            ? {}
+            : { bound: "email" as const }),
           authTime: id.authTime,
         };
       }
@@ -201,8 +205,8 @@ export const googleProvider: OidcProvider = {
       // only on strong evidence for its exact address, bound to an existing
       // row (#2520); the verified token's hd decides, never the address.
       const inList = inDomains(g.domains, id.hd);
-      if (!inList && !googleEvidenceStrong(id.email, true, id.hd))
-        throw new GoogleTokenError("tenant");
+      // Weak evidence outside the list flows to admit() too (#2590): it is
+      // bound to an existing row or a share, and refused with needs_code.
       return {
         provider: "google",
         subject: id.sub,

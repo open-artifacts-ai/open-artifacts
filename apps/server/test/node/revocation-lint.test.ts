@@ -41,6 +41,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   "services/members.ts:setUserStatus": "user",
   // A role change ends their sessions; sockets were authorized under the old role.
   "services/members.ts:patchMember": "user",
+  // #2590: turning outside sharing off bumps share-made guests' session_epoch
+  // (ending their sessions) and closes their live sockets (revokeUsersLive).
+  "services/members.ts:patchSettings": "user",
   // A guest's last share went: the guest is deactivated.
   "services/shares.ts:removeGuestIfUnshared": "user",
   // owner_only identity reset: sessions, PATs and grants revoked.
@@ -116,6 +119,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
  * to close. Each entry says why; a stale entry fails the test below.
  */
 const WIDENS: Readonly<Record<string, string>> = {
+  // #2520: the invite box's preview reads whether the address belongs to a
+  // removed person (status = 'removed' in a select); it writes nothing.
+  "services/login.ts:reachFor": "a read: the removed-address preview",
   // Sign-in: the role is computed in SQL from the row's current role (guest
   // becomes member, every other role kept), or owner for OWNER_EMAIL while
   // no owner exists. It never writes back an earlier read, so it can't undo
@@ -171,6 +177,8 @@ const WIDENS: Readonly<Record<string, string>> = {
     "a reach proposal's status, not access",
   "bus/reach-proposals.ts:decideReachProposal":
     "a reach proposal's status, not access",
+  // #2580: a read; its restricted_* = 0 is a filter, nothing is written.
+  "billing/seats.ts:memberCount": "only reads, shrinks no access",
   "bus/reach-proposals.ts:expireReachProposalsOfMachine":
     "a reach proposal's status, not access",
 };

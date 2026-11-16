@@ -102,13 +102,22 @@ function FullRoute() {
 
 /** `/sign-in`: the SPA owns the chooser and the code forms. */
 function SignInRoute() {
-  const { error, next, method, via } = useSearch({ strict: false }) as {
+  const { error, next, method, via, link } = useSearch({ strict: false }) as {
     error?: string;
     next?: string;
     method?: string;
     via?: "access" | "google";
+    link?: string;
   };
-  return <SignIn error={error} next={next} method={method} via={via} />;
+  return (
+    <SignIn
+      error={error}
+      next={next}
+      method={method}
+      via={via}
+      link={link === "1"}
+    />
+  );
 }
 
 function DiffRoute() {
@@ -338,11 +347,15 @@ const routeTree = root.addChildren([
       const method = s.method === "code" ? "code" : undefined;
       // Which sign-in refused a no_access (#799); anything else is dropped.
       const via = s.via === "access" || s.via === "google" ? s.via : undefined;
+      // #2590 G2: link=1 (the server holds a refused guest's address);
+      // anything else is dropped. Never an address in the URL.
+      const link = s.link === "1" || s.link === 1 ? "1" : undefined;
       return {
         ...(error !== undefined && { error }),
         ...(next && { next }),
         ...(method && { method }),
         ...(via && { via }),
+        ...(link && { link }),
       };
     },
     component: SignInRoute,

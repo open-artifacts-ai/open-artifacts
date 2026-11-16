@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "bc33514c-828d-4f40-a428-fee0ad87c086",
+  "id": "cb789e84-4f4c-4a90-885f-6e1e76d0cddb",
   "prevId": "30ce1b4d-68a4-4c9c-a4ef-ceb672b24653",
   "tables": {
     "agent_grants": {
@@ -721,14 +721,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "setup_pending": {
-          "name": "setup_pending",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
         }
       },
       "indexes": {
@@ -2678,6 +2670,13 @@
         },
         "format": {
           "name": "format",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "doc_save": {
+          "name": "doc_save",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

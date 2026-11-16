@@ -227,6 +227,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
   const problems = ctx.service.problems?.() ?? [];
   for (const p of problems)
     if (p.kind === "node-missing") fail(c.serviceNodeMissing(p.node));
+    else if (p.kind === "rescue-missing") fail(c.rescueMissing(p.path));
+    else if (p.kind === "rescue-open") fail(c.rescueOpen(p.path));
     else warn(c.lingerOff());
   // A node that is there but no longer starts (ICU gone after a brew upgrade).
   if (!problems.some((p) => p.kind === "node-missing")) {

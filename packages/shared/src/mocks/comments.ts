@@ -115,6 +115,10 @@ type Deps = {
   seedAsk?: boolean;
   /** #2381: also seed asks in each decider state on "Landing page" (Weigh in, Decide, decided, bars, take back). */
   seedDeciders?: boolean;
+  /** #2381 S2: also seed decided asks on "Landing page" (resolved, replaced, passkey-verified, changed) for the Decisions tab. */
+  seedDecisions?: boolean;
+  /** #2511: also seed asks in each withdrawn state on "Landing page" (open, withdrawn, replaced below, replaced on another page). */
+  seedWithdrawn?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
   /**
@@ -128,7 +132,12 @@ type Deps = {
   seedMarkdown?: boolean;
   /** #2019: pins on the "Landing page" image (or pdf): a person, a linked agent, an unlinked agent and a resolved one. */
   seedPins?: "image" | "pdf";
+  /** #2512: seed For you's waiting ask (FOR_YOU_ASK) on "Landing page", from OA Manager to the caller. */
+  seedForYou?: boolean;
 };
+
+/** #2512: the ids of the ask For you's mock opens in its panel. */
+export const FOR_YOU_ASK = { thread: "fyAskThread1", comment: "fyAskComment1" };
 
 const iso = () => new Date().toISOString();
 
@@ -145,14 +154,19 @@ export function createCommentMock({
   contentHash,
   seedAsk,
   seedDeciders,
+  seedDecisions,
+  seedWithdrawn,
   seedAgents,
   passkeyMode,
   seedMarkdown,
   seedPins,
+  seedForYou,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
   asksForYou: (id: string) => number;
+  /** Whether that thread's ask still waits for the caller's answer. */
+  askOpen: (id: string, thread: string) => boolean;
 } {
   const threads = new Map<string, CommentThread[]>();
   /** Comment ids of asks with no `confirm` whose decider's switches ask for a passkey at pick time (#2381). */
@@ -450,6 +464,261 @@ export function createCommentMock({
         picks: [],
       });
     }
+    // #2511: one card per withdrawn state, as the viewer sees it.
+    const withdrawnAsks: CommentThread[] = [];
+    if (seedWithdrawn) {
+      const agent: CommentAuthor = {
+        kind: "agent",
+        name: "Maya's Claude",
+        for: "Maya Chen",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const ago = (m: number) =>
+        new Date(Date.now() - m * 60_000).toISOString();
+      const OPTS3 = [
+        { id: "a", label: "A: three columns" },
+        { id: "b", label: "B: two columns" },
+      ];
+      const add = (
+        q: string,
+        minutes: number,
+        ask: Partial<NonNullable<Comment["ask"]>> = {},
+      ) => {
+        const c = comment(q, agent);
+        c.createdAt = ago(minutes);
+        c.ask = {
+          question: q,
+          options: OPTS3,
+          to: [mine()],
+          closed: false,
+          picks: [],
+          ...ask,
+        };
+        withdrawnAsks.push({
+          id: newId(),
+          anchor: { kind: "note" },
+          version: 1,
+          status: "open",
+          resolvedBy: null,
+          resolvedAt: null,
+          createdAt: c.createdAt,
+          comments: [c],
+        });
+        return c;
+      };
+      // Sorted by time, so the live card (28 minutes ago) sits right after the draft it replaced (30).
+      const fresh = add("Which pricing table goes on the page?", 28);
+      add("Which pricing table? (first draft)", 40, {
+        withdrawn: { at: ago(35) },
+      });
+      add("Which pricing table? (second draft)", 30, {
+        withdrawn: { at: ago(12) },
+        replacedBy: fresh.id,
+      });
+      add("Which hero image goes on the launch post?", 20, {
+        withdrawn: {
+          at: ago(15),
+          replacedBy: {
+            artifactId: "Ab3dEfGhJk4mNpQr",
+            threadId: "Th4dEfGhJk4mNpQr",
+            commentId: "Cm4dEfGhJk4mNpQr",
+            title: "Launch post",
+          },
+        },
+      });
+      // Replaced on a page this viewer can't open: no title.
+      add("Which footer goes on the docs?", 25, {
+        withdrawn: {
+          at: ago(18),
+          replacedBy: {
+            artifactId: "Zz9dEfGhJk4mNpQr",
+            threadId: "Th9dEfGhJk4mNpQr",
+            commentId: "Cm9dEfGhJk4mNpQr",
+          },
+        },
+      });
+    }
+    // #2381 S2: decided asks for the Decisions tab.
+    const decided: CommentThread[] = [];
+    if (seedDecisions) {
+      const person = (id: string, name: string): CommentAuthor => ({
+        kind: "user",
+        id,
+        name,
+        me: false,
+      });
+      const maya = person("maya", "Maya Chen");
+      const priya = person("priya", "Priya Nair");
+      const sam = person("sam", "Sam Rivera");
+      const agent: CommentAuthor = {
+        kind: "agent",
+        name: "Maya's Claude",
+        for: "Maya Chen",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const ago = (h: number) =>
+        new Date(Date.now() - h * 3_600_000).toISOString();
+      const thread = (
+        c: Comment,
+        status: "open" | "resolved" = "open",
+      ): CommentThread => ({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status,
+        resolvedBy: status === "resolved" ? maya : null,
+        resolvedAt: status === "resolved" ? ago(1) : null,
+        createdAt: c.createdAt,
+        comments: [c],
+      });
+      const decide = (
+        q: string,
+        options: { id: string; label: string }[],
+        pick: string,
+        hoursAgo: number,
+        extra: Partial<NonNullable<Comment["ask"]>> = {},
+        by: CommentAuthor = maya,
+        weigh: { by: CommentAuthor; optionId: string }[] = [],
+      ) => {
+        const c = comment(q, agent);
+        c.ask = {
+          question: q,
+          options,
+          to: [maya, priya, sam],
+          decider: by,
+          closed: false,
+          answer: {
+            optionId: pick,
+            by,
+            at: ago(hoursAgo),
+            typed: true,
+            yes: false,
+          },
+          picks: [
+            ...weigh.map((w) => ({
+              by: w.by,
+              optionId: w.optionId,
+              at: ago(hoursAgo + 1),
+              typed: true,
+            })),
+            { by, optionId: pick, at: ago(hoursAgo), typed: true },
+          ],
+          ...extra,
+        };
+        return c;
+      };
+      const PRICE = [
+        { id: "a", label: "A: three columns" },
+        { id: "b", label: "B: two columns" },
+      ];
+      const price = decide(
+        "Which pricing table goes on the landing page?",
+        PRICE,
+        "b",
+        2,
+        {},
+        maya,
+        [
+          { by: sam, optionId: "b" },
+          { by: priya, optionId: "a" },
+        ],
+      );
+      const email = decide(
+        "What do we call the weekly email?",
+        [
+          { id: "a", label: "The Changelog" },
+          { id: "b", label: "Shipped" },
+        ],
+        "a",
+        30,
+        {},
+        maya,
+        [{ by: sam, optionId: "a" }],
+      );
+      const hero = decide(
+        "Which hero image goes on the launch post?",
+        [
+          { id: "a", label: "The dashboard" },
+          { id: "b", label: "The comment thread" },
+        ],
+        "b",
+        50,
+      );
+      const oldPlan = decide(
+        "Monthly or yearly shown first on the pricing table?",
+        [
+          { id: "m", label: "Monthly first" },
+          { id: "y", label: "Yearly first" },
+        ],
+        "m",
+        80,
+      );
+      const newPlan = decide(
+        "Yearly or monthly first, now that the discount is live?",
+        [
+          { id: "m", label: "Monthly first" },
+          { id: "y", label: "Yearly first" },
+        ],
+        "y",
+        4,
+        { replaces: oldPlan.id },
+      );
+      oldPlan.ask = {
+        ...(oldPlan.ask as NonNullable<Comment["ask"]>),
+        replacedBy: newPlan.id,
+      };
+      const verified = decide(
+        "Deploy v0.171 to production?",
+        [
+          { id: "go", label: "Deploy it" },
+          { id: "hold", label: "Hold" },
+        ],
+        "go",
+        6,
+        { confirm: "passkey" },
+        mine(),
+      );
+      (verified.ask as NonNullable<Comment["ask"]>).answer = {
+        ...(verified.ask?.answer as NonNullable<
+          NonNullable<Comment["ask"]>["answer"]
+        >),
+        verified: "passkey",
+        yes: true,
+      };
+      const changed = decide(
+        "Welcome artifact or checklist for new members?",
+        [
+          { id: "w", label: "Welcome artifact" },
+          { id: "c", label: "Checklist" },
+        ],
+        "w",
+        3,
+        {},
+        maya,
+        [{ by: priya, optionId: "c" }],
+      );
+      (changed.ask as NonNullable<Comment["ask"]>).answer = {
+        ...(changed.ask?.answer as NonNullable<
+          NonNullable<Comment["ask"]>["answer"]
+        >),
+        was: { optionId: "c", at: ago(40) },
+      };
+      decided.push(
+        thread(price),
+        thread(email, "resolved"),
+        thread(hero),
+        thread(oldPlan),
+        thread(newPlan),
+        thread(verified),
+        thread(changed),
+      );
+    }
     const faces: CommentThread[] = [];
     if (seedAgents) {
       const agent = (linked: boolean): CommentAuthor => ({
@@ -744,7 +1013,49 @@ export function createCommentMock({
           comments: [c],
         });
     }
+    const forYou: CommentThread[] = [];
+    if (seedForYou) {
+      const manager: CommentAuthor = {
+        kind: "agent",
+        name: "OA Manager",
+        for: me.user.name ?? me.user.email,
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "owl", color: 4 },
+        me: false,
+      };
+      const c = comment(
+        "The build matches the reference. The bus section isn't in it yet.",
+        manager,
+      );
+      c.id = FOR_YOU_ASK.comment;
+      c.createdAt = new Date(Date.now() - 4 * 60_000).toISOString();
+      c.ask = {
+        question: "Ship the landing with the waitlist?",
+        options: [
+          {
+            id: "ship",
+            label: "Yes, ship it",
+            detail: "It goes live today; the bus section follows.",
+          },
+          { id: "hold", label: "Hold until the bus section is in" },
+        ],
+        to: [mine()],
+        closed: false,
+      };
+      forYou.push({
+        id: FOR_YOU_ASK.thread,
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: c.createdAt,
+        comments: [c],
+      });
+    }
     return [
+      ...forYou,
       {
         id: newId(),
         anchor: {
@@ -773,6 +1084,8 @@ export function createCommentMock({
       },
       ...asked,
       ...deciderAsks,
+      ...withdrawnAsks,
+      ...decided,
       ...faces,
     ];
   };
@@ -1121,8 +1434,14 @@ export function createCommentMock({
     }),
   ];
   const comments = (id: string) => list(id).flatMap((t) => t.comments);
+  const waits = (t: CommentThread) =>
+    t.status === "open" &&
+    t.comments.some(
+      (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+    );
   return {
     handlers,
+    askOpen: (id, thread) => list(id).some((t) => t.id === thread && waits(t)),
     asksForYou: (id) =>
       list(id).filter(
         (t) =>

@@ -40,6 +40,8 @@ const released = (id: string, name: string | null) => ({
   role: "member" as const,
   lastSeenAt: null,
   status: "removed" as const,
+  // The server marks a departed member with artifacts left.
+  transferable: true,
 });
 /** No name of their own: the server's name falls back to the address. */
 const nameless = (id: string) => released(id, `removed+${id}@invalid`);
@@ -74,6 +76,7 @@ it("one released row parses, and doesn't take the Departed list down", async () 
     role: "member" as const,
     lastSeenAt: null,
     status: "removed" as const,
+    transferable: true,
   };
   mountHosted("/settings/members", true, undefined, [
     http.get(`*${R.members}`, ({ request }) =>

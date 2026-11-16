@@ -48,8 +48,13 @@ export const useDeparted = (me: Me | null | undefined) => {
   const on = seesDeparted(me);
   const list = useMembers("suspended,removed", on);
   const owner = me?.user.role === "owner" && me.auth?.cap == null;
+  // Only those the list marks transferable (artifacts left, trash included):
+  // never one summary request per departed member on every load.
   const gone = on
-    ? (list.data ?? []).filter(isGone).filter((m) => !ownerOnlySource(m, owner))
+    ? (list.data ?? [])
+        .filter(isGone)
+        .filter((m) => m.transferable === true)
+        .filter((m) => !ownerOnlySource(m, owner))
     : [];
   const summaries = useQueries({
     queries: gone.map((m) => ({

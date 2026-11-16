@@ -194,7 +194,8 @@ describe("Get started checklist", () => {
     expect(screen.getByText("1 of 5")).toBeInTheDocument();
   });
 
-  it("is not shown to invited members", async () => {
+  // #2632: a member gets their own card (MemberGetStarted), never the owner's.
+  it("an invited member gets their own card, not the owner's", async () => {
     mountHosted(
       "/",
       true,
@@ -202,7 +203,9 @@ describe("Get started checklist", () => {
       [...none(), ...noTokens()],
     );
     await screen.findByText("No artifacts yet");
-    expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
+    const card = await screen.findByRole("region", { name: "Get started" });
+    expect(card).toHaveAttribute("data-member");
+    expect(screen.queryByText("Invite your team")).toBeNull();
   });
 
   describe("the five steps (#2478)", () => {

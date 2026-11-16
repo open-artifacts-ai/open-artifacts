@@ -62,6 +62,7 @@ import { spaceSelfAddEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
+import { untouchedWelcomeSql } from "../onboarding/untouched.js";
 import {
   closeRuntimeSockets,
   MAX_CLOSE,
@@ -279,7 +280,7 @@ const viewCols = (c: Caller) => ({
         and not exists (select 1 from org_group_mappings ogm join directory_members dm
           on dm.group_id = ogm.group_id and dm.user_id = sm.user_id))
       + ${EVERY_MEMBER_COUNT} else 1 end`,
-  artifactCount: sql<number>`(select count(*) from artifacts a where a.space_id = ${spaces.id} and a.deleted_at is null)`,
+  artifactCount: sql<number>`(select count(*) from artifacts a where a.space_id = ${spaces.id} and a.deleted_at is null and not ${sql.raw(untouchedWelcomeSql("a"))})`,
   smm: sql<string | null>`(select value from settings where key = ${SMM_KEY})`,
 });
 type ViewRow = {
@@ -2017,11 +2018,12 @@ export async function transferArtifact(
 // A departed person's artifacts: their personal space, live (on
 // artifacts_space_live_idx) and trash (on artifacts_owner_deleted_idx; a
 // personal space's artifacts are its owner's).
+// #2632: an untouched seeded Welcome is not theirs to transfer (erase takes it along).
 const DEPARTED_COUNTS = `select
-    (select count(*) from artifacts where space_id = ?1 and deleted_at is null) as live,
-    (select count(*) from artifacts where owner_id = ?1 and deleted_at is not null and space_id = ?1) as deleted`;
-const DEPARTED_PAGE = `select id, visibility from artifacts where space_id = ?1 and deleted_at is null
-  union all select id, visibility from artifacts where owner_id = ?1 and deleted_at is not null and space_id = ?1
+    (select count(*) from artifacts a where a.space_id = ?1 and a.deleted_at is null and not ${untouchedWelcomeSql("a")}) as live,
+    (select count(*) from artifacts a where a.owner_id = ?1 and a.deleted_at is not null and a.space_id = ?1 and not ${untouchedWelcomeSql("a")}) as deleted`;
+const DEPARTED_PAGE = `select a.id, a.visibility from artifacts a where a.space_id = ?1 and a.deleted_at is null and not ${untouchedWelcomeSql("a")}
+  union all select a.id, a.visibility from artifacts a where a.owner_id = ?1 and a.deleted_at is not null and a.space_id = ?1 and not ${untouchedWelcomeSql("a")}
   limit ?2`;
 type Counts = { live: number; deleted: number };
 

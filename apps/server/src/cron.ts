@@ -3,6 +3,7 @@ import { sweepLoginCodes } from "./auth/codes.js";
 import { usageTick } from "./billing/creators.js";
 import { planNow, withPlanScope } from "./billing/features.js";
 import { billingActive } from "./billing/plan.js";
+import { reportSeats } from "./billing/seats.js";
 import { billingTick } from "./billing/store.js";
 import { stmt } from "./db/stmt.js";
 import { disconnectDirectory } from "./directory/connect.js";
@@ -145,6 +146,10 @@ async function run(
             const now = Date.now();
             await billingTick(env, now);
             await usageTick(env, now);
+            // Member count (#2580): sent when it moved (directory sync runs
+            // in a DO with no billing gate, so its changes land on this
+            // tick) and at least daily.
+            await reportSeats(env, now, true);
           })().catch((e) => logError("cron_task_failed", e)),
         );
       // Hosted billing: no directory sync while team features are locked

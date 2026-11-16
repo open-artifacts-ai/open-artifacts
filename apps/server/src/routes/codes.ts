@@ -29,9 +29,14 @@ import { stmt } from "../db/stmt.js";
 import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
 import { inviteAcceptAudit, signInAudit } from "../services/audit.js";
-import { codeEligibility } from "../services/identity.js";
+import { codeEligibility, linkEligibility } from "../services/identity.js";
 import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
-import { getUserWithEpoch, insertUser } from "../services/users.js";
+import { seedWelcome } from "../services/onboarding.js";
+import {
+  getUserWithEpoch,
+  googleLinkStmts,
+  insertUser,
+} from "../services/users.js";
 import { forgetTestOtp, noteTestOtp } from "../test-hooks/index.js";
 import {
   b64urlDecode,
@@ -74,7 +79,21 @@ type Pending = {
   next: string;
   exp: number;
   f: number;
+  /** 1: this request was made to link a Google account (see the link cookie). */
+  lk?: 1;
 };
+
+/**
+ * The Google link, in this browser only (#2590 G2): a first Google login that
+ * admit() refused with needs_code (weak evidence for its address). { ek, ee,
+ * exp, k }: `ee` seals { s: sub, e: email, h: hd, n: name } (AES-GCM, `ek`
+ * as AAD). A code requested for exactly this address, and verified, links
+ * `s` to the row (or makes the guest row) and signs in with Google. Same
+ * signing key and lifetime as the pending code; a cookie, so another browser
+ * can't use it.
+ */
+type Link = { ek: string; ee: string; exp: number; k: "gl" };
+type LinkValue = { s: string; e: string; h: string | null; n: string | null };
 
 const aesKey = async (c: Context<AppEnv>) =>
   crypto.subtle.importKey(
@@ -119,6 +138,8 @@ async function openEmail(c: Context<AppEnv>, p: Pending) {
 
 const cookieName = (c: Context<AppEnv>) =>
   c.env.ENVIRONMENT === "dev" ? "oa_code" : "__Host-oa_code";
+const linkCookieName = (c: Context<AppEnv>) =>
+  c.env.ENVIRONMENT === "dev" ? "oa_glink" : "__Host-oa_glink";
 const cookieAttrs = (c: Context<AppEnv>) =>
   c.env.ENVIRONMENT === "dev"
     ? "HttpOnly; SameSite=Lax; Path=/"
@@ -161,6 +182,78 @@ async function readPending(c: Context<AppEnv>): Promise<Pending | null> {
     )
       return null;
     return p as Pending;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Set-Cookie line for a Google link (the Google callback sets it before
+ * sending the person to ask for a code), or null where codes can't run.
+ */
+export async function linkSetCookie(
+  c: Context<AppEnv>,
+  v: { sub: string; email: string; hd: string | null; name: string | null },
+): Promise<string | null> {
+  const cfg = authConfig(c.env);
+  if (!cfg.emailCodes) return null;
+  const email = normalizeEmail(v.email);
+  if (!email) return null;
+  try {
+    const ek = await emailKey(c.env, email);
+    const body: LinkValue = { s: v.sub, e: email, h: v.hd, n: v.name };
+    const p: Link = {
+      ek,
+      ee: await sealEmail(c, JSON.stringify(body), ek),
+      exp: Date.now() + CODE_POLICY.ttlSec * 1000,
+      k: "gl",
+    };
+    const val = b64urlEncode(utf8Encoder.encode(JSON.stringify(p)));
+    const sig = await hmacSign(await codesKey(c.env, "oa:glink-cookie"), val);
+    if (val.length + 1 + sig.length > MAX_COOKIE_LEN) return null;
+    const maxAge = CODE_POLICY.ttlSec;
+    return `${linkCookieName(c)}=${val}.${sig}; ${cookieAttrs(c)}; Max-Age=${maxAge}`;
+  } catch {
+    return null;
+  }
+}
+const clearLink = (c: Context<AppEnv>) =>
+  `${linkCookieName(c)}=; ${cookieAttrs(c)}; Max-Age=0`;
+
+async function readLink(c: Context<AppEnv>): Promise<LinkValue | null> {
+  const raw = getCookie(c, linkCookieName(c));
+  if (!raw || raw.length > MAX_COOKIE_LEN) return null;
+  const [v, sig, extra] = raw.split(".");
+  if (!v || !sig || extra !== undefined) return null;
+  try {
+    if (!(await hmacVerify(await codesKey(c.env, "oa:glink-cookie"), v, sig)))
+      return null;
+    const bytes = b64urlDecode(v);
+    if (!bytes) return null;
+    const p = JSON.parse(utf8Decoder.decode(bytes)) as Partial<Link>;
+    if (
+      p.k !== "gl" ||
+      typeof p.ek !== "string" ||
+      typeof p.ee !== "string" ||
+      typeof p.exp !== "number" ||
+      Date.now() > p.exp
+    )
+      return null;
+    const json = await openEmail(c, {
+      ek: p.ek,
+      ee: p.ee,
+    } as Pending);
+    if (!json) return null;
+    const out = JSON.parse(json) as Partial<LinkValue>;
+    if (typeof out.s !== "string" || typeof out.e !== "string") return null;
+    // The sealed address must be the one this key was made for.
+    if (p.ek !== (await emailKey(c.env, out.e))) return null;
+    return {
+      s: out.s,
+      e: out.e,
+      h: typeof out.h === "string" ? out.h : null,
+      n: typeof out.n === "string" ? out.n : null,
+    };
   } catch {
     return null;
   }
@@ -253,14 +346,112 @@ async function ensureUser(
   return row?.id ?? null;
 }
 
+/**
+ * The verified code of a Google link: makes the guest row for a share
+ * recipient with none, links the Google sub to the row (googleLinkStmts), and
+ * signs in with Google as the row's own role. Null when it can't be linked
+ * (no eligibility now, or the sub is another person's): the caller refuses.
+ * Later logins go straight in by subject.
+ */
+async function verifyLink(
+  c: Context<AppEnv>,
+  p: Pending,
+  email: string,
+  link: LinkValue,
+): Promise<Response | null> {
+  let elig = await linkEligibility(c.env, email);
+  if (elig.kind === "none") return null;
+  if (elig.userId === null) {
+    if (!(await ensureUser(c, email, "guest"))) return null;
+    elig = await linkEligibility(c.env, email);
+    if (elig.kind === "none" || elig.userId === null) return null;
+  }
+  const now = Date.now();
+  // invite.accept goes first: it reads last_seen_at while still null, and the
+  // link statements set it (as admit does).
+  const results = await c.env.DB.batch<{
+    id: string;
+    status: string;
+    subject: string | null;
+  }>([
+    inviteAcceptAudit(c.env, elig.userId),
+    ...googleLinkStmts(c.env, {
+      email,
+      name: link.n,
+      role: elig.kind === "guest" ? "guest" : "member",
+      subject: link.s,
+      tenant: "",
+      now,
+    }),
+  ]);
+  const linked = results[3]?.results[0];
+  if (!linked || linked.status !== "active" || linked.subject !== link.s)
+    return null;
+  const row = await getUserWithEpoch(c.env, linked.id);
+  if (!row) return null;
+  const user: Member = row.user;
+  const sess = await signSession(c.env, user.id, now, {
+    provider: "google",
+    epoch: row.sessionEpoch,
+    ...(link.h ? { hd: link.h } : {}),
+    // A code was just typed: a forced re-authentication, as a code login is.
+    authAt: now,
+  });
+  const out = await c.env.DB.batch([
+    stmt(c.env.DB, "update users set last_seen_at = ?1 where id = ?2").bind(
+      now,
+      user.id,
+    ),
+    signInAudit(c.env, user.id, "google", undefined),
+    stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
+  ]);
+  // #2632: a member's own Welcome, once; never throws.
+  await seedWelcome(c.env, user);
+  logAuth({ provider: "google", outcome: "ok", uid: user.id });
+  const cap = capOfCaller(callerOf(user));
+  const res = c.json({
+    next: p.next,
+    user: hostedFields(
+      user,
+      out[2]?.results[0] as Parameters<typeof hostedFields>[1],
+    ),
+    readOnly: cap !== null,
+  });
+  res.headers.append("set-cookie", clearPending(c));
+  res.headers.append("set-cookie", clearLink(c));
+  if (forgetOtp) await forgetOtp(c.env, email, p.ek);
+  res.headers.append("set-cookie", sessionCookie(sess, c.env));
+  res.headers.set("cache-control", "no-store");
+  return res;
+}
+
 export function mountCodes(app: AppType): void {
+  // The masked address for the sign-in page (#2590 G2), from this browser's
+  // own link cookie only.
+  app.get(AUTH.codeLink, async (c) => {
+    requireCodes(c);
+    const link = await readLink(c);
+    if (!link) throw new ApiError("not_found", "Not found");
+    const res = c.json({ maskedEmail: mask(link.e) });
+    res.headers.set("cache-control", "no-store");
+    return res;
+  });
+
   app.post(AUTH.codeRequest, async (c) => {
     guard(c);
     const cfg = requireCodes(c);
     const parsed = CodeRequestSchema.safeParse(
       await c.req.json().catch(() => null),
     );
-    const email = parsed.success ? normalizeEmail(parsed.data.email) : null;
+    // { link: true }: the address is the one in this browser's own link cookie.
+    const link =
+      parsed.success && "link" in parsed.data ? await readLink(c) : null;
+    const linking = link !== null;
+    const email = !parsed.success
+      ? null
+      : "link" in parsed.data
+        ? (link?.e ?? null)
+        : normalizeEmail(parsed.data.email);
     if (!parsed.success || !email)
       throw new ApiError("bad_request", "Invalid email", { field: "email" });
     const ip = clientIp(c);
@@ -299,6 +490,7 @@ export function mountCodes(app: AppType): void {
       next: next.length > MAX_PENDING_NEXT ? "/" : next,
       exp: Date.now() + CODE_POLICY.ttlSec * 1000,
       f: 0,
+      ...(linking ? { lk: 1 as const } : {}),
     };
     // Test builds, TEST_DOMAIN only: "pending" before the 202, so the
     // otp/latest hook never reads an older request's outcome for this one.
@@ -306,13 +498,20 @@ export function mountCodes(app: AppType): void {
     // Eligibility, the row and the email happen after the response, so its
     // timing says nothing about the address. A throw is the "error" outcome:
     // its class only, never the message (it may carry the address).
-    const work = deliverCode(c.env, cfg, email, ek, rid, ip).catch(
-      async (e: unknown) => {
-        logCodeSend("error", errorClass(e));
-        if (noteOtp) await noteOtp(c.env, email, ek, "error");
-        return null;
-      },
-    );
+    const work = deliverCode(
+      c.env,
+      cfg,
+      email,
+      ek,
+      rid,
+      ip,
+      Date.now(),
+      linking,
+    ).catch(async (e: unknown) => {
+      logCodeSend("error", errorClass(e));
+      if (noteOtp) await noteOtp(c.env, email, ek, "error");
+      return null;
+    });
     const ctx = execCtx(c);
     if (ctx) ctx.waitUntil(work);
     else await work;
@@ -357,6 +556,23 @@ export function mountCodes(app: AppType): void {
     if ("ipLocked" in r) {
       logAuth({ provider: "code", outcome: "refused", stage: "ip_locked" });
       return rateLimited(r.ipLocked, "ip");
+    }
+    // A code requested to link a Google account (#2590 G2), verified in the
+    // same browser that holds the link: link it, or refuse like a bad code.
+    const link = r.ok && p.lk === 1 ? await readLink(c) : null;
+    if (link && link.e === email) {
+      const done = await verifyLink(c, p, email, link);
+      if (done) return done;
+      const f = p.f + 1;
+      const left = Math.max(0, CODE_POLICY.maxAttempts - f);
+      if (left === 0)
+        return unauthorized({ reason: "expired" }, [
+          clearPending(c),
+          clearLink(c),
+        ]);
+      return unauthorized({ reason: "invalid_code", attemptsLeft: left }, [
+        await pendingCookie(c, { ...p, f }),
+      ]);
     }
     const first = r.ok ? await codeEligibility(c.env, cfg, email) : null;
     // A new address gets its row now; role and link are then read again, so
@@ -407,6 +623,8 @@ export function mountCodes(app: AppType): void {
       signInAudit(c.env, user.id, "code", guest ? undefined : domain),
       stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
+    // #2632: a member's own Welcome, once (the email code path too); never throws.
+    await seedWelcome(c.env, user);
     logAuth({
       provider: "code",
       outcome: "ok",
