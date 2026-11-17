@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.7](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.6...v0.199.7) (2026-11-17)
+
+
+### Bug Fixes
+
+* **viewer:** a guest with a Can comment share can comment ([#2702](https://github.com/open-artifacts-ai/open-artifacts/issues/2702)) ([#2703](https://github.com/open-artifacts-ai/open-artifacts/issues/2703)) ([8555a53](https://github.com/open-artifacts-ai/open-artifacts/commit/8555a532796d784f89f65934b6b14bebb975a066))
+
 ## [0.199.6](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.5...v0.199.6) (2026-11-17)
 
 
