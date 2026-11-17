@@ -39,6 +39,13 @@ const hello = (f: HTMLIFrameElement, nonce: string | undefined) => {
 /** The frame's load event for the shell's own src assignment. */
 const loaded = (f: HTMLIFrameElement) => fireEvent.load(f);
 
+const reloaded = (old: HTMLIFrameElement) =>
+  waitFor(() => {
+    const f = document.querySelector("iframe");
+    if (!f || f === old || !f.src) throw new Error("not reloaded");
+    return f;
+  });
+
 describe("viewer shell: per-load nonce", () => {
   it("Reload loads a fresh frame with a fresh nonce; its bridge answers after load", async () => {
     mount(viewerPath(OWNED));
@@ -103,25 +110,40 @@ describe("viewer shell: per-load nonce", () => {
     expect(document.querySelector("iframe")).toBe(f);
   });
 
-  it("a renavigation after the signed URL expired reloads with a fresh URL, once (#2686)", async () => {
+  it("a renavigation after the frozen URL expired reloads with a newly fetched URL, even while the shell's own URL is fresh (#2686)", async () => {
     mount(viewerPath(OWNED));
     const first = await frame();
     const n1 = nonceOf(first);
     loaded(first);
+    // The hook refetches before expiry: the shell's own URL is fresh again
+    // while the one the frame holds (frozen at its first load) is long dead.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 700_000);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await new Promise((r) => setTimeout(r, 100));
     loaded(first); // the frame asks for its expired URL on its own
     vi.useRealTimers();
-    const second = await waitFor(() => {
-      const f = document.querySelector("iframe");
-      if (!f || f === first || !f.src) throw new Error("not reloaded");
-      return f;
-    });
-    const n2 = nonceOf(second);
-    expect(n2).not.toBe(n1);
+    const second = await reloaded(first);
+    expect(nonceOf(second)).not.toBe(n1);
     loaded(second); // Reload's own load is expected: no further reload
     await new Promise((r) => setTimeout(r, 50));
     expect(document.querySelector("iframe")).toBe(second);
-    expect(hello(second, n2)).toContain("welcome");
+    expect(hello(second, nonceOf(second))).toContain("welcome");
+  });
+
+  it("a second renavigation after expiry, with the bridge already disposed, reloads too (#2686)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    loaded(first); // first renavigation, URL still fresh: bridge disposed, no reload
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(first);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 700_000);
+    loaded(first);
+    vi.useRealTimers();
+    await reloaded(first);
   });
 });

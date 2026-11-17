@@ -1,4 +1,4 @@
-import { type ArtifactSummary, LIMITS, type Me, viewerPath } from "@oa/shared";
+import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -406,6 +406,12 @@ function Viewer({
   const slowTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const dismissed = useRef(false);
   const reloading = useRef(false);
+  const goneRef = useRef(gone);
+  goneRef.current = gone;
+  const srcRef = useRef<string | null>(null);
+  const reloadRef = useRef<(force: boolean) => void>(() => {});
+  const urlStaleRef = useRef(content.urlStale);
+  urlStaleRef.current = content.urlStale;
   const [slow, setSlow] = useState(false);
   const [reloads, setReloads] = useState(0);
   const [frame, setFrame] = useState<{ key: number; src: string | null }>({
@@ -491,18 +497,11 @@ function Viewer({
     if (isDoc) cbs.current.onReady?.();
   }, [isDoc]);
   const renavigated = useRef(false);
-  // When the frame last loaded what the shell gave it; the signed URL it was
-  // given dates from then. The refs are set each render, so a renavigation
-  // handler that stays the same function (the bridge is rebuilt when it
-  // changes) still sees the latest.
-  const loadedAt = useRef(0);
-  const goneRef = useRef(gone);
-  goneRef.current = gone;
-  const reloadRef = useRef<() => void>(() => {});
-  const freshRef = useRef(content.fresh);
-  freshRef.current = content.fresh;
   const [renav, setRenav] = useState(false);
   const onRenavigated = useCallback(() => {
+    // A reload is already replacing this frame (onFrameLoad's expiry recovery
+    // runs just before the bridge reports the same load): nothing to flag.
+    if (reloading.current) return;
     renavigated.current = true;
     // The viewer followed a link inside the artifact.
     touch();
@@ -510,17 +509,6 @@ function Viewer({
     clearTimeout(slowTimer.current);
     setSlow(false);
     setRenav(live);
-    // #2686: a frame that went back to its entry on its own (tab restore, a
-    // page reloading itself) asked for the signed URL it was first given. Past
-    // its lifetime the content host answers with an expiry page, so start over
-    // from a fresh one. Reload's own load is expected, never a renavigation;
-    // `reloading` stops a second reload while one is in flight.
-    const age = loadedAt.current ? Date.now() - loadedAt.current : 0;
-    if (
-      !goneRef.current &&
-      (age > (LIMITS.signedUrlTtlSec - 60) * 1000 || !freshRef.current())
-    )
-      reloadRef.current();
   }, [live, touch]);
   const frameKey = frame.key;
   const onHello = useCallback(() => {
@@ -536,14 +524,27 @@ function Viewer({
       // No src prop, so a new frame first loads about:blank, before the bridge
       // calls loadArtifactFrame. That load isn't the artifact: it must neither
       // freeze the content URL nor arm the slow timer.
-      if (!frameLoad(e.currentTarget)) return;
+      const fl = frameLoad(e.currentTarget);
+      if (!fl) return;
+      // #2686: a load the shell didn't start (React's onLoad runs before the
+      // bridge consumes `expected`, so ours still reads true here), by a frame
+      // whose signed URL has expired: the content host would answer with an
+      // expiry page. Start over from a fresh URL. Every renavigation gets this
+      // check, not only the first (the bridge is gone after that one).
+      if (
+        !fl.expected &&
+        !goneRef.current &&
+        urlStaleRef.current(srcRef.current)
+      ) {
+        reloadRef.current(true);
+        return;
+      }
       setPaintedKey(frameKey);
       if (renavigated.current) {
         setRenav(live);
         return;
       }
       contentLoaded();
-      loadedAt.current = Date.now();
       cbs.current.onReady?.();
       reloading.current = false;
       clearTimeout(slowTimer.current);
@@ -555,7 +556,7 @@ function Viewer({
     [contentLoaded, live, frameKey],
   );
   useEffect(() => () => clearTimeout(slowTimer.current), []);
-  const reload = () => {
+  const reloadWith = (force: boolean) => {
     if (reloading.current) return;
     reloading.current = true;
     helloSeen.current = false;
@@ -567,19 +568,22 @@ function Viewer({
     renavigated.current = false;
     setRenav(false);
     setReloads((r) => r + 1);
-    const ready = content.fresh()
-      ? Promise.resolve(content.current)
-      : content.refresh();
+    const ready =
+      !force && content.fresh()
+        ? Promise.resolve(content.current)
+        : content.refresh();
     void ready.then((u) =>
       setFrame((f) => ({ key: f.key + 1, src: safeContentUrl(u) ?? f.src })),
     );
   };
-
-  reloadRef.current = reload;
+  const reload = () => reloadWith(false);
 
   // Every intentional load (first load, a refreshed URL before the first load,
   // Reload) gets a fresh bridge, which loads the frame with a fresh nonce.
   const src = frame.src ?? url;
+  // Read by onFrameLoad (declared earlier); set each render.
+  srcRef.current = src;
+  reloadRef.current = reloadWith;
   useEffect(() => {
     if (!el || !src || gone) return;
     const b = createBridge({

@@ -50,7 +50,8 @@ function takeEarly(id: string, v: number): Promise<ContentUrl | null> | null {
  * `url` follows refreshes only until the iframe fires `onLoad`; after that it is
  * frozen so a refresh never reloads the loaded document. `current` always follows
  * refreshes (for links opened outside the iframe); `fresh()` says whether it is
- * still inside its lifetime and `refresh()` fetches a new one.
+ * still inside its lifetime, `urlStale(u)` whether an earlier one (the frozen
+ * one) is not and `refresh()` fetches a new one.
  * `notFound` stops retrying; other errors are in `error` (retried unless 4xx/quota).
  */
 export function useContentUrl(id: string, v: number, stopped = false) {
@@ -64,6 +65,8 @@ export function useContentUrl(id: string, v: number, stopped = false) {
   const [error, setError] = useState<unknown>(null);
   const [refreshing, setRefreshing] = useState(false);
   const ctl = useRef<Control | null>(null);
+  // Each URL handed out, with when its lifetime (less the refresh margin) ends.
+  const deadlines = useRef(new Map<string, number>());
 
   useEffect(() => {
     let dead = false;
@@ -71,6 +74,7 @@ export function useContentUrl(id: string, v: number, stopped = false) {
     let pending: Promise<string | null> | null = null;
     let fetchedAt = 0;
     let lifetime = 0;
+    deadlines.current.clear();
     setFresh(null);
     setLoaded(null);
     setNotFound(false);
@@ -98,6 +102,9 @@ export function useContentUrl(id: string, v: number, stopped = false) {
               : Number.isFinite(Date.parse(c.expiresAt))
                 ? (LIMITS.signedUrlTtlSec - 60) * 1000
                 : RETRY_MS;
+          // The same URL again keeps its first deadline: it was minted then.
+          if (!deadlines.current.has(c.url))
+            deadlines.current.set(c.url, fetchedAt + lifetime);
           setFresh(c);
           setError(null);
           reportApiSuccess(client);
@@ -142,6 +149,11 @@ export function useContentUrl(id: string, v: number, stopped = false) {
     [fresh],
   );
   const isFresh = useCallback(() => !!ctl.current && !ctl.current.stale(), []);
+  /** Whether `url`, a URL this hook handed out, is past its lifetime (unknown: no). */
+  const urlStale = useCallback((url: string | null) => {
+    const d = url ? deadlines.current.get(url) : undefined;
+    return d !== undefined && Date.now() > d;
+  }, []);
   const refresh = useCallback(async () => {
     const c = ctl.current;
     if (!c) return null;
@@ -159,6 +171,7 @@ export function useContentUrl(id: string, v: number, stopped = false) {
     notFound,
     error,
     fresh: isFresh,
+    urlStale,
     refresh,
     refreshing,
   };
