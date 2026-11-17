@@ -229,33 +229,13 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Pull requests run two shards (free plan, 20 concurrent jobs; #965);
-    // the merge queue and a dispatch keep four, the full proof before main.
-    // Resolves `<event check> && a || b` for an event (a literal stays as is).
-    const PR = "github.event_name == 'pull_request'";
-    const forEvent = (expr: string, pr: boolean): string => {
-      if (/^\d+$/.test(expr)) return expr;
-      const body = /^\$\{\{ (.*) \}\}$/.exec(expr)?.[1] ?? expr;
-      const m = new RegExp(
-        `^(?:fromJSON)?\\(?${PR} && ('[^']*'|\\d+) \\|\\| ('[^']*'|\\d+)\\)?$`,
-      ).exec(body);
-      if (!m) throw new Error(`unexpected expression: ${expr}`);
-      return ((pr ? m[1] : m[2]) as string).replace(/^'|'$/g, "");
-    };
-    const events = [
-      { pr: true, shards: [1, 2], of: 2, timeout: 25 },
-      { pr: false, shards: [1, 2, 3, 4], of: 4, timeout: 15 },
-    ];
-    for (const e of events) {
-      expect(JSON.parse(forEvent(job.strategy.matrix.shard, e.pr))).toEqual(
-        e.shards,
-      );
-      const env = /^\$\{\{ matrix\.shard \}\}\/(\$\{\{ .* \}\})$/.exec(
-        job.env.E2E_SHARD,
-      );
-      expect(Number(forEvent(env?.[1] as string, e.pr))).toBe(e.of);
-      expect(Number(forEvent(job["timeout-minutes"], e.pr))).toBe(e.timeout);
-    }
+    // Four shards on every event: since the 180-job plan (2026-11-16) a pull
+    // request no longer saves concurrency with two, and two set its wait.
+    const SHARDS = [1, 2, 3, 4];
+    expect(job.strategy.matrix.shard).toEqual(SHARDS);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
+    expect(job["timeout-minutes"]).toBe(15);
     expect(job.strategy["fail-fast"]).toBe(false);
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
@@ -300,25 +280,21 @@ describe("ci.yml", () => {
     ]);
     expect(uploads[1].if).toBe("failure()");
     // The spaces suite (one spec, its own server) runs whole in exactly one
-    // shard per event: 2 of two on a pull request, 3 of four in the queue.
-    // The unsharded ui and landing checks in shard 1 only.
-    const shardsRunning = (name: string, pr: boolean, all: number[]) => {
+    // shard, 3 of four. The unsharded ui and landing checks in shard 1 only.
+    const shardsRunning = (name: string) => {
       const step = steps.find(
         (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
       );
       const cond = step.if as string;
-      const picks = [...cond.matchAll(/matrix\.shard == (\d+|\([^)]*\))/g)].map(
-        (m) => Number(forEvent(m[1] as string, pr)),
+      const picks = [...cond.matchAll(/matrix\.shard == (\S+)/g)].map((m) =>
+        Number(m[1]),
       );
       expect(picks).toHaveLength(1);
-      return all.filter((n) => picks.includes(n));
+      return SHARDS.filter((n) => picks.includes(n));
     };
-    for (const e of events) {
-      expect(shardsRunning("spaces", e.pr, e.shards)).toEqual([e.pr ? 2 : 3]);
-      for (const name of ["ui", "landing"]) {
-        expect(shardsRunning(name, e.pr, e.shards)).toEqual([1]);
-      }
-    }
+    expect(shardsRunning("spaces")).toEqual([3]);
+    for (const name of ["ui", "landing"])
+      expect(shardsRunning(name)).toEqual([1]);
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");
