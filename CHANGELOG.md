@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.4](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.3...v0.199.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* **viewer:** recover a frame whose signed URL expired ([#2686](https://github.com/open-artifacts-ai/open-artifacts/issues/2686)) ([#2690](https://github.com/open-artifacts-ai/open-artifacts/issues/2690)) ([de02318](https://github.com/open-artifacts-ai/open-artifacts/commit/de02318bb878ba9a6c3d99ec6a8dc4d99017cd1e))
+
 ## [0.199.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.2...v0.199.3) (2026-11-16)
 
 
