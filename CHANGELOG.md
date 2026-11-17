@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.199.4](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.3...v0.199.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* **viewer:** recover a frame whose signed URL expired ([#2686](https://github.com/open-artifacts-ai/open-artifacts/issues/2686)) ([#2690](https://github.com/open-artifacts-ai/open-artifacts/issues/2690)) ([de02318](https://github.com/open-artifacts-ai/open-artifacts/commit/de02318bb878ba9a6c3d99ec6a8dc4d99017cd1e))
+
+## [0.199.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.2...v0.199.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **t19:** erase each run's people on rl-a, and old runs' leftovers ([#2680](https://github.com/open-artifacts-ai/open-artifacts/issues/2680)) ([#2683](https://github.com/open-artifacts-ai/open-artifacts/issues/2683)) ([8f9d84c](https://github.com/open-artifacts-ai/open-artifacts/commit/8f9d84ce8a4d4c95a573bf441a97f600b94c0337))
+
+## [0.199.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.1...v0.199.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **onboarding:** seed the Welcome after sign-in, not during it ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632)) ([#2667](https://github.com/open-artifacts-ai/open-artifacts/issues/2667)) ([adf3628](https://github.com/open-artifacts-ai/open-artifacts/commit/adf362852cb03079a68661849f3487ce705912d4))
+
+## [0.199.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.0...v0.199.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **bus:** Hermes shows as live from session start and wakes for mail ([#2647](https://github.com/open-artifacts-ai/open-artifacts/issues/2647)) ([#2648](https://github.com/open-artifacts-ai/open-artifacts/issues/2648)) ([d434a84](https://github.com/open-artifacts-ai/open-artifacts/commit/d434a840675c134a5415361f9436b673beb43246))
+
+## [0.199.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.198.0...v0.199.0) (2026-11-16)
+
+
+### Features
+
+* **members:** a Setup column and Copy the setup line ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) slice 2) ([#2638](https://github.com/open-artifacts-ai/open-artifacts/issues/2638)) ([d60657e](https://github.com/open-artifacts-ai/open-artifacts/commit/d60657eae3af618fb06f9b246329764eb171861b))
+
+## [0.198.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.197.0...v0.198.0) (2026-11-16)
+
+
+### Features
+
+* **onboarding:** every member gets their own Welcome and Library card ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) slice 1) ([#2634](https://github.com/open-artifacts-ai/open-artifacts/issues/2634)) ([d0340d0](https://github.com/open-artifacts-ai/open-artifacts/commit/d0340d087cd9fad762414274e5cf7f8d83b6bbf7))
+
 ## [0.197.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.196.0...v0.197.0) (2026-11-16)
 
 

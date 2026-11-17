@@ -564,3 +564,99 @@ class Habits(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+KEY = "agent:main:telegram:dm:1"
+
+
+class Wake(unittest.TestCase):
+    def chat(self, e, key=KEY, platform="telegram", chat_type="dm"):
+        e.bus.turn_start("root-1", platform, "hi", [{"role": "user", "content": "hi"}], session_key=key,
+                         chat_type=chat_type)
+        e.bus.turn_end("root-1")
+
+    def test_a_gateway_chat_with_a_known_key_is_woken_and_acked(self):
+        e = Env()
+        link = e.link()
+        self.chat(e)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        self.assertEqual(len(e.ctx.injected), 1)
+        self.assertEqual(e.ctx.keys, [KEY])
+        self.assertEqual(link.acks, [M1])
+        self.assertEqual(e.queue(), [])
+
+    def test_a_refused_wake_leaves_it_queued_and_unacked_and_frees_the_root(self):
+        e = Env(inject_result=False)
+        link = e.link()
+        self.chat(e)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        self.assertEqual(len(e.queue()), 1)
+        self.assertEqual(link.acks, [])
+        self.assertIsNone(e.bus.state("root-1").woken_at)
+
+    def test_an_older_hermes_without_session_key_leaves_it_queued(self):
+        e = Env(inject=lambda text: True)  # no session_key parameter
+        link = e.link()
+        self.chat(e)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        self.assertEqual(len(e.queue()), 1)
+        self.assertEqual(link.acks, [])
+
+    def test_no_key_means_no_wake(self):
+        e = Env()
+        link = e.link()
+        self.chat(e, key=None)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        self.assertEqual(e.ctx.injected, [])
+        self.assertEqual(len(e.queue()), 1)
+
+    def test_a_cli_root_is_never_woken_by_key(self):
+        e = Env()
+        link = e.link()
+        e.current = "root-2"  # the CLI is on another session
+        self.chat(e, platform="cli")
+        e.bus.deliver(support.deliver_frame(M1), link)
+        self.assertEqual(e.ctx.injected, [])
+        self.assertEqual(len(e.queue()), 1)
+
+    def test_one_wake_at_a_time_the_next_message_rides_the_woken_turn(self):
+        e = Env()
+        link = e.link()
+        self.chat(e)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        e.bus.deliver(support.deliver_frame(M2), link)
+        self.assertEqual(len(e.ctx.injected), 1)
+        self.assertEqual(len(e.queue()), 1)
+        self.assertEqual(link.acks, [M1])
+        out = e.turn("root-1", "telegram", "woken")
+        self.assertIn("<cross-session-message", out["context"])
+        self.assertEqual(link.acks, [M1, M2])
+        self.assertIsNone(e.bus.state("root-1").woken_at)
+
+    def test_a_wake_that_never_turns_into_a_turn_expires(self):
+        now = [0.0]
+        e = Env()
+        e.bus._clock = lambda: now[0]
+        link = e.link()
+        self.chat(e)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        now[0] = 61.0
+        e.bus.deliver(support.deliver_frame(M2), link)
+        self.assertEqual(len(e.ctx.injected), 2)
+        self.assertEqual(link.acks, [M1, M2])
+
+    def test_a_redelivery_is_never_woken_twice(self):
+        e = Env()
+        link = e.link()
+        self.chat(e)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        e.bus.deliver(support.deliver_frame(M1), link)
+        self.assertEqual(len(e.ctx.injected), 1)
+        self.assertEqual(link.acks, [M1, M1])
+
+    def test_a_bus_notice_wakes_too(self):
+        e = Env()
+        e.link()
+        self.chat(e)
+        e.bus._on_notice(e.bus.state("root-1").link, "expired")
+        self.assertEqual(e.ctx.keys, [KEY])

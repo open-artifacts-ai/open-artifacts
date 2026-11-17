@@ -1,6 +1,6 @@
 // #2287: the shell answers onboarding.get only for the Welcome artifact and
 // only for its owner. Anything else is forbidden, with no request made.
-import { type ArtifactSummary, R } from "@oa/shared";
+import { type ArtifactSummary, R, setupSteps } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridge } from "../src/viewer/bridge";
 import { asFrame, FakeFrame, stamped } from "./fake-frame";
@@ -41,7 +41,12 @@ const send = (data: unknown) => {
   win.dispatchEvent(ev);
 };
 const flush = () => new Promise((r) => setTimeout(r, 0));
-const ask = async (artifact: ArtifactSummary, gate: { owner: boolean }) => {
+const ask = async (
+  artifact: ArtifactSummary,
+  gate: ReturnType<
+    NonNullable<Parameters<typeof createBridge>[0]["onboarding"]>
+  >,
+) => {
   live.push(
     createBridge({
       iframe: asFrame(frame),
@@ -106,6 +111,56 @@ describe("onboarding.get", () => {
     const r = await ask(art(WELCOME), { owner: false });
     expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #2632: a member gets their own Welcome, with who it greets.
+  it("answers a member on their own Welcome, with who it greets", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ...PROGRESS,
+            teamStep: true,
+            invitedBy: { name: "Bob Builder" },
+          }),
+          { status: 200 },
+        ),
+    );
+    const r = await ask(art(WELCOME), {
+      owner: false,
+      member: true,
+      greet: { firstName: "Ada", org: "Acme Artifacts" },
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      value: {
+        agentConnected: true,
+        who: {
+          member: true,
+          firstName: "Ada",
+          org: "Acme Artifacts",
+          inviter: "Bob Builder",
+          teammateCommented: true,
+        },
+      },
+    });
+    // The shared count (#2632), the same the card and Members show.
+    expect(r.value.who.done).toBe(setupSteps(PROGRESS).done);
+  });
+
+  it("refuses a member on someone else's Welcome", async () => {
+    const r = await ask(art("OtherArtifact0001"), {
+      owner: false,
+      member: true,
+      greet: { firstName: "Ada", org: "Acme Artifacts" },
+    });
+    expect(r).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("never tells the owner's page who it's for", async () => {
+    const r = await ask(art(WELCOME), { owner: true });
+    expect(r.ok).toBe(true);
+    expect(r.value.who).toBeUndefined();
   });
 
   it("refuses when no Welcome was seeded", async () => {

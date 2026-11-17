@@ -89,6 +89,21 @@ export const OnboardingProgressSchema = z.strictObject({
   mentionReplied: z.boolean().optional(),
   mentionStalled: z.boolean().optional(),
   askAnswered: z.boolean().optional(),
+  /**
+   * #2632: on a member's own Welcome (never the owner's): who it greets.
+   * Absent from an older shell: the page reads as the owner's.
+   */
+  who: z
+    .strictObject({
+      member: z.literal(true),
+      firstName: z.string().max(200).nullable(),
+      org: z.string().max(200),
+      inviter: z.string().max(200).nullable(),
+      teammateCommented: z.boolean(),
+      /** setupSteps(onboarding).done: the page shows the shared count. */
+      done: z.number().int().min(0).max(5).optional(),
+    })
+    .optional(),
 });
 export type OnboardingProgress = z.infer<typeof OnboardingProgressSchema>;
 

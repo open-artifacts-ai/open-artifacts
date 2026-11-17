@@ -8,6 +8,7 @@ import {
   type ErrorCode,
   LIMITS,
   METHOD_CAPABILITY,
+  type OnboardingProgress,
   OnboardingSchema,
   PageSchema,
   PROTOCOL_COMMENT_CLEAR,
@@ -27,6 +28,7 @@ import {
   StorageEntrySchema,
   StorageKeySchema,
   type StorageSetBody,
+  setupSteps,
 } from "@oa/shared";
 import type { z } from "zod";
 import { ApiClientError, api, type RequestExtra } from "../api/client";
@@ -41,6 +43,9 @@ import {
 } from "./anonId";
 import { frameLoad, loadArtifactFrame } from "./frame";
 import { clampRetryHint } from "./liveEvents";
+
+/** #2632: what the shell knows of a member, for their Welcome's greeting. */
+export type WelcomeGreet = { firstName: string | null; org: string };
 
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
@@ -60,7 +65,15 @@ export interface BridgeOptions {
    * the bridge reads R.onboarding itself and checks its `welcomeId` against
    * this artifact's id, so no state from elsewhere has to be loaded first.
    */
-  onboarding?: () => { owner: boolean };
+  onboarding?: () => {
+    owner: boolean;
+    /**
+     * #2632: a member (not a guest) gets their own Welcome too: R.onboarding
+     * is per caller, so its welcomeId is theirs. The answer says who it greets.
+     */
+    member?: boolean;
+    greet?: WelcomeGreet;
+  };
   theme: Theme;
   onPdfText: (text: string) => void;
   onThumb: (blob: Blob) => void;
@@ -438,10 +451,23 @@ export function createBridge(opts: BridgeOptions) {
       case "viewer.get":
         return viewer();
       case "onboarding.get": {
-        if (embed || !opts.onboarding?.().owner) throw forbidden();
+        const g = opts.onboarding?.();
+        if (embed || !(g?.owner || g?.member)) throw forbidden();
         const o = await http.get(R.onboarding, OnboardingSchema);
         if (!o.welcomeId || o.welcomeId !== id) throw forbidden();
+        const who: OnboardingProgress["who"] =
+          g?.member && !g.owner && g.greet
+            ? {
+                member: true,
+                firstName: g.greet.firstName,
+                org: g.greet.org,
+                inviter: o.invitedBy?.name ?? null,
+                teammateCommented: o.teamStep === true,
+                done: setupSteps(o).done,
+              }
+            : undefined;
         return {
+          ...(who ? { who } : {}),
           agentConnected: o.agentConnected === true,
           firstArtifact: o.firstArtifact ?? null,
           commented: o.commented === true,

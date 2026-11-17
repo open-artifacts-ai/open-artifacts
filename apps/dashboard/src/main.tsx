@@ -127,7 +127,85 @@ async function startMocks() {
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
+          // #2632: the owner's name (MeSchema instanceOwner).
+          instanceOwner: { name: "Bob Builder" },
         }),
+      ),
+    );
+  // ?mock=members-setup (#2632 slice 2, MemberSchema `setup`): the
+  // Members list in every Setup state, as Design's screen shows it.
+  if (params.get("mock") === "members-setup")
+    extra.push(
+      http.get("*/api/v1/members", ({ request }) => {
+        const status = new URL(request.url).searchParams.get("status");
+        if (status && status !== "active") return HttpResponse.json([]);
+        const day = (n: number) =>
+          new Date(Date.UTC(2026, 10, 16 - n, 10)).toISOString();
+        const me = fixtures.me.user;
+        return HttpResponse.json([
+          {
+            id: me.id,
+            email: me.email,
+            name: me.name,
+            role: "owner",
+            lastSeenAt: day(0),
+            setup: { state: "set", done: 5 },
+          },
+          {
+            id: "m_sam",
+            email: "sam@example.com",
+            name: "Sam Ortiz",
+            role: "member",
+            lastSeenAt: day(0),
+            setup: { state: "partial", done: 3, stalled: "mention" },
+          },
+          {
+            id: "m_priya",
+            email: "priya@example.com",
+            name: "Priya Shah",
+            role: "member",
+            lastSeenAt: day(4),
+            setup: {
+              state: "partial",
+              done: 0,
+              stalled: "agent",
+              remindedAt: day(1),
+            },
+          },
+          {
+            id: "m_jon",
+            email: "jon@example.com",
+            name: "Jon Lee",
+            role: "admin",
+            lastSeenAt: day(1),
+            setup: { state: "set", done: 5 },
+          },
+          {
+            id: "m_dana",
+            email: "dana@example.com",
+            name: null,
+            role: "member",
+            lastSeenAt: null,
+            setup: { state: "invited", done: 0 },
+          },
+          {
+            id: "m_ana",
+            email: "ana@venue.example",
+            name: null,
+            role: "guest",
+            lastSeenAt: day(3),
+          },
+        ]);
+      }),
+    );
+  // #2632: R.onboarding refuses a guest.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json(
+          { error: { code: "forbidden", message: "Forbidden" } },
+          { status: 403 },
+        ),
       ),
     );
   // ?mock=space-manager (with ?hosted=1): the caller is a plain member who manages
@@ -620,6 +698,9 @@ async function startMocks() {
             mentionStalled: params.get("ticks")?.includes("stalled"),
             askAnswered: params.get("ticks")?.includes("ask"),
             opened: params.get("opened") === "1",
+            // #2632: &teammate=1 ticks the optional sixth step.
+            teamStep: params.get("teammate") === "1",
+            invitedBy: "Bob Builder",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
