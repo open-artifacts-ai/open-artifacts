@@ -8,6 +8,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { createPat } from "../../src/auth/pat.js";
+import { DOC_SWITCH } from "../../src/services/doc-switch.js";
 import { connect, E } from "../mcp-helpers.js";
 import { daemon, machine, member } from "./helpers.js";
 
@@ -37,7 +38,15 @@ describe("/mcp is unchanged by the bus", () => {
     const pat = (await createPat(env, u.userId, "agent")).token;
     const off = await surface(pat, E({ BUS_HUB: undefined }));
     const on = await surface(pat, E());
-    const hosted = await surface(pat, E({ HOSTED: "1" }));
+    // Hosted also has docs (#1100: edit_doc, format doc), which is not the
+    // bus; compare with the doc switch closed.
+    DOC_SWITCH.creation = false;
+    let hosted: Awaited<ReturnType<typeof surface>>;
+    try {
+      hosted = await surface(pat, E({ HOSTED: "1" }));
+    } finally {
+      DOC_SWITCH.creation = true;
+    }
     expect(on.without).toBe(off.tools);
     expect(on.names.filter((n) => !off.names.includes(n))).toEqual([
       "bus_role_propose",
