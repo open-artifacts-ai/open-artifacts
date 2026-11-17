@@ -415,41 +415,57 @@ jobs:
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      # Pull requests only: skip the browser suites when the diff reaches
+      # none of the packages they drive (the shard then passes in about a
+      # minute). The decision is made inside the job, never by a job `if:`,
+      # so `e2e` still reports; the merge queue always runs them whole, and
+      # any error or a missing output runs them. Like test-affected.sh, the
+      # script is the PR head's copy: it can narrow only this PR's check.
+      - id: e2e
+        name: Does this pull request reach the browser suites?
         if: ${{ steps.ro.outputs.release_only != 'true' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci/e2e-affected.sh
+      - name: browser suites not affected
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run == 'false' }}
+        run: |
+          echo "no browser-suite package is affected by this pull request: skipped (the merge queue runs them whole)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - id: pw
         run: bash scripts/ci/e2e.sh version
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - id: install
         run: bash scripts/ci/e2e.sh install
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - run: bash scripts/ci/e2e.sh hosts
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - name: Mock suite
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
         run: bash scripts/ci/e2e.sh mock
       # Runs even when the mock suite failed (not when the browsers didn't install).
       - name: Real-server suite (local wrangler dev)
-        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh real
       # One spec on its own server: whole, in exactly one shard (shard 3, the
       # lightest real share; shard 1 carries ui and landing).
       - name: Real-server suite with spaces on (local wrangler dev)
-        if: ${{ !cancelled() && matrix.shard == 3 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 3 && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh spaces
       # Not sharded (about a minute together): shard 1 only.
       - name: UI real-browser checks (axe contrast, focus)
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh ui
       - name: Landing real-browser checks (no horizontal overflow)
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
-      - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
+      - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: blob-report-${{ matrix.shard }}
