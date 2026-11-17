@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.6](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.5...v0.199.6) (2026-11-17)
+
+
+### Bug Fixes
+
+* **bus:** say which Claude sessions are not linked, and why ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2698](https://github.com/open-artifacts-ai/open-artifacts/issues/2698)) ([3d26c48](https://github.com/open-artifacts-ai/open-artifacts/commit/3d26c48beaa0e1e941059d16e3a25041e65b862c))
+
 ## [0.199.5](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.4...v0.199.5) (2026-11-17)
 
 
