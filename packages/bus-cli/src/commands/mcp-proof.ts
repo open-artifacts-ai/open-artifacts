@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, readlinkSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
+import { createEventLog } from "@oa/bus-daemon";
 import { daemonLinkProof, systemTool } from "@oa/bus-ipc";
 import { LINK_PROOF_HEADER } from "@oa/bus-protocol";
 import { type Ctx, say } from "../context.ts";
+import { UNBOUND_EVENT } from "../steps/claude-sessions.ts";
 
 /** What the helper reads from the process table and the daemon; tests bring their own. */
 export type ProofDeps = {
@@ -87,7 +89,9 @@ function tokenOf(file: string | undefined): string | undefined {
  * and prints the proof header. With `--token-file` it also prints what the
  * entry's old helper printed, the Authorization line. It never prints
  * Authorization for an OAuth entry: Claude would stop using its own sign-in.
- * Any problem prints only what the entry printed before and exits 0.
+ * Any problem prints only what the entry printed before and exits 0 (Claude
+ * must still connect), and adds one line with the cause to the bus event log
+ * (#2688), so doctor can say why a session is unlinked. No secret goes in it.
  */
 export async function mcpProof(
   opts: { tokenFile?: string },
@@ -103,14 +107,25 @@ export async function mcpProof(
   const headers: Record<string, string> = {};
   const token = tokenOf(opts.tokenFile);
   if (token) headers.Authorization = `Bearer ${token}`;
+  let why: string | undefined;
   try {
     const claude = findClaude(deps.ppid, deps.proc);
-    if (claude !== undefined) {
+    if (claude === undefined) why = "no_claude_ancestor";
+    else {
       const proof = deps.random().toString("base64url");
       const hash = createHash("sha256").update(proof).digest("hex");
       if (await deps.link(claude, hash)) headers[LINK_PROOF_HEADER] = proof;
+      else why = "no_live_record";
     }
-  } catch {}
+  } catch {
+    why = "daemon_unreachable";
+  }
+  if (why !== undefined)
+    try {
+      const events = createEventLog(join(ctx.home, "logs", "events.log"));
+      events(UNBOUND_EVENT, { reason: why });
+      await events.flush();
+    } catch {}
   say(ctx, JSON.stringify(headers));
   return 0;
 }

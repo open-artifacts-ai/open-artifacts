@@ -12,6 +12,7 @@ import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
 import { readRecord as readClaudePluginsRecord } from "../steps/claude-plugins.ts";
 import { claudeConfigFile, proofState } from "../steps/claude-proof.ts";
+import { sessionChecks } from "../steps/claude-sessions.ts";
 import { openclawPluginDir, openclawPluginState } from "../steps/openclaw.ts";
 import { habitsLine } from "./habits.ts";
 import { rosters } from "./install.ts";
@@ -212,6 +213,12 @@ export async function status(ctx: Ctx): Promise<number> {
     return 1;
   }
   if (st.namespaces.length > 0) say(ctx, "", rosters(ctx, st.namespaces));
+  // #2688: live Claude sessions with no link, each with its likely cause.
+  for (const chk of sessionChecks(ctx, st)) {
+    const ls = c.check(chk.level, chk.head, chk.notes);
+    if (chk.level === "fail") sayErr(ctx, ls);
+    else if (chk.level !== "warn") say(ctx, ls);
+  }
   const late = [...(st.late ?? [])].sort((a, b) => b.at - a.at);
   if (late.length > 0)
     say(ctx, "", [
