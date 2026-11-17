@@ -40,7 +40,11 @@ import {
   cmpVersion,
   MIN_CLAUDE,
 } from "../steps/claude-plugins.ts";
-import { claudeProofChecks, lastAutoFix } from "../steps/claude-proof-check.ts";
+import {
+  claudeProofChecks,
+  lastAutoFix,
+  safeText,
+} from "../steps/claude-proof-check.ts";
 import {
   codexConfig,
   codexHome,
@@ -347,7 +351,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
       if (gone) fail(c.opencodeProxyMissing(gone.name, gone.missing));
       if (hub !== undefined)
         for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
-          if (k.harness === "OpenCode") warn([`OpenCode: ${k.note}`]);
+          if (k.harness === "OpenCode")
+            warn([`OpenCode: ${safeText(k.note, 400)}`]);
     }
     if (h === "codex") {
       codexChecks(ctx, { pass, warn });
@@ -360,7 +365,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
       if (gone) fail(c.codexProxyMissing(gone.name, gone.missing));
       if (hub !== undefined)
         for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
-          if (k.harness === "Codex") warn([`Codex: ${k.note}`]);
+          if (k.harness === "Codex") warn([`Codex: ${safeText(k.note, 400)}`]);
     }
     if (h === "openclaw") say(ctx, c.openclawDmNote());
   }
