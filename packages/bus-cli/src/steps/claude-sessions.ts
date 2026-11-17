@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { StatusReply } from "@oa/bus-ipc";
 import { type Ctx, tilde } from "../context.ts";
 import { claudeConfigFile } from "./claude-proof.ts";
+import { safeText } from "./claude-proof-check.ts";
 
 /**
  * #2688: which live Claude sessions are not linked, and why. A session is
@@ -21,12 +22,6 @@ export type Line = {
   level: "pass" | "fail" | "warn" | "info";
   head: string;
   notes: string[];
-};
-
-/** Text from a session file, a config or a newer daemon, safe to print: no control, format or line-separator characters, and bounded. */
-export const safeText = (s: string, max = 200): string => {
-  const t = s.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, "?");
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
 
 /** A hub address as its origin (ws as http); undefined when it is not a URL. */
@@ -157,7 +152,7 @@ export function sessionChecks(
     for (const s of bad)
       out.push({
         level: "fail",
-        head: `Claude Code: the session ${safeText(s.name)} in ${safeText(tilde(ctx, s.cwd))} is not linked.`,
+        head: `Claude Code: the session ${safeText(s.name, 200)} in ${safeText(tilde(ctx, s.cwd), 200)} is not linked.`,
         notes: [
           `What it posts can't be tied to it. Likely cause: ${s.cause === undefined ? CAUSE.no_helper_call : (CAUSE[s.cause] ?? `the daemon reports ${safeText(s.cause, 60)}`)}.`,
           `Fix: restart the session; if it stays unlinked, start the bus in that folder, or update the daemon (${ctx.busCmd} install)`,
