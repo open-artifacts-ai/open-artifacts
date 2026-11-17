@@ -43,7 +43,26 @@ export type PlanText = PlanWords & {
    * for every install) leaves it unset and keeps the spaces lines.
    */
   spaces?: boolean;
+  /**
+   * The doc entry (#1100): true shows it, false leaves it out. The skill
+   * (built once for every install) leaves it unset and wraps it in
+   * DOC_TEXT markers that the server strips unless docsAvailable(env).
+   */
+  docs?: boolean;
 };
+
+/** Inline markers around doc text in the skill template, stripped per install. */
+export const DOC_TEXT_OPEN = "<!--doc-text-->";
+export const DOC_TEXT_CLOSE = "<!--/doc-text-->";
+
+const DOC_FORMAT = `- doc: a page people and agents edit together, live (a collaborative doc). Create it with publish_artifact { title, format: "doc", content: <Markdown> }. To change it, use edit_doc with small anchored operations; a whole-content publish to a doc is refused with use_edit_doc. restore_version on a doc applies the old version as one live edit.`;
+
+const docFormat = (p: PlanText): string =>
+  p.docs === true
+    ? `\n${DOC_FORMAT}`
+    : p.docs === false
+      ? ""
+      : `${DOC_TEXT_OPEN}\n${DOC_FORMAT}${DOC_TEXT_CLOSE}`;
 
 /** Bytes as "N MB" when a whole MB, else as formatKb ("N KB", or exact bytes). */
 export const sizeText = (b: number): string =>
@@ -79,14 +98,16 @@ export type Section = { title: string; body: (p: PlanText) => string };
 export const SECTIONS = {
   formats: {
     title: "Formats",
-    body: () => `- html: a web page or a small site. Scripts run in a sandboxed iframe on a separate origin.
+    body: (
+      p,
+    ) => `- html: a web page or a small site. Scripts run in a sandboxed iframe on a separate origin.
 - markdown: rendered with code highlighting and mermaid diagrams.
 - code: one source file shown with syntax highlighting; set language (for example "python").
 - pdf: an uploaded PDF document.
 - image: one PNG, JPEG, GIF, WebP or SVG image, shown as is. An image artifact is that one file; to combine images with text, publish html.
 - If format is omitted it is inferred from the entry file's extension: .html, .md, .pdf, .png, .jpg, .jpeg, .gif, .webp, .svg, or a known text file (source code, .txt, .csv, .log, config) as code. Any other name (LICENSE, .gitignore) publishes as code when the file is UTF-8 text; anything else (an archive) is refused with unsupported_format. HEIC photos are refused with unsupported_format: save them as JPEG first.
 - The entry's content must fit its format: code, markdown and html are UTF-8 text, a pdf starts with %PDF, an image starts with its extension's signature (an .svg is UTF-8 text with an <svg> root), and an upload's contentType must match the image's extension. A mismatch is refused with binary_entry.
-- Search matches an image by its title and description, never its content.`,
+- Search matches an image by its title and description, never its content.${docFormat(p)}`,
   },
   publishing: {
     title: "Publishing",
@@ -218,13 +239,14 @@ export function INSTRUCTIONS(
   skillUrl?: string,
   docBytes: number = dataDocLimit(plan),
   spaces = true,
+  docs = false,
 ): string {
-  const key = `${plan}|${docBytes}|${spaces ? 1 : 0}|${skillUrl ?? ""}`;
+  const key = `${plan}|${docBytes}|${spaces ? 1 : 0}|${docs ? "d" : ""}|${skillUrl ?? ""}`;
   let s = memo.get(key);
   if (s === undefined) {
     s = `Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data.
 
-${renderSections({ ...planText(plan, docBytes), spaces }, (t) => t)}
+${renderSections({ ...planText(plan, docBytes), spaces, docs }, (t) => t)}
 ${skillUrl ? `\nFull guide: ${skillUrl}\n` : ""}`;
     memo.set(key, s);
   }

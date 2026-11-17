@@ -921,3 +921,63 @@ describe("edit_doc in the skill is per install (#2578)", () => {
     });
   });
 });
+
+describe("the doc entry in the instructions and the skill is per install (#1100)", () => {
+  const DOC = 'format: "doc"';
+  const parts = ["edit_doc", "use_edit_doc", "applies the old version"];
+  const open = async <T>(f: () => Promise<T>): Promise<T> => {
+    DOC_SWITCH.creation = true;
+    try {
+      return await f();
+    } finally {
+      DOC_SWITCH.creation = false;
+    }
+  };
+
+  it("shows it when docs are available and leaves it out otherwise", async () => {
+    await open(async () => {
+      const on = E({ PLAN: "paid", HOSTED: "" });
+      const off = E({ PLAN: "free", HOSTED: "" });
+      const md = await skill(on);
+      expect(docsAvailable(on)).toBe(true);
+      expect(md).toContain(DOC);
+      for (const t of parts) expect(md).toContain(t);
+      expect(md).not.toContain("doc-text");
+      expect(INSTRUCTIONS("paid", undefined, undefined, true, true)).toContain(
+        DOC,
+      );
+      const none = await skill(off);
+      expect(docsAvailable(off)).toBe(false);
+      expect(none).not.toContain(DOC);
+      expect(none).not.toContain("use_edit_doc");
+      expect(none).not.toContain("doc-text");
+    });
+    // Switch closed: not available even on a paid install.
+    const paid = E({ PLAN: "paid", HOSTED: "" });
+    expect(docsAvailable(paid)).toBe(false);
+    expect(await skill(paid)).not.toContain(DOC);
+    expect(INSTRUCTIONS("paid")).not.toContain(DOC);
+    expect(
+      INSTRUCTIONS("paid", undefined, undefined, true, false),
+    ).not.toContain("edit_doc");
+  });
+
+  it("the server instructions follow the install over MCP", async () => {
+    await open(async () => {
+      for (const [over, want] of [
+        [{ PLAN: "paid", HOSTED: "" }, true],
+        [{ PLAN: "free", HOSTED: "" }, false],
+      ] as const) {
+        const u = await login(
+          `ins-doc-${newId().slice(0, 6).toLowerCase()}@x.com`,
+        );
+        const c = await connect((await createPat(env, u.userId, "s")).token, {
+          env: E(over),
+        });
+        const ins = c.getInstructions() ?? "";
+        await c.close();
+        expect(ins.includes(DOC)).toBe(want);
+      }
+    });
+  });
+});

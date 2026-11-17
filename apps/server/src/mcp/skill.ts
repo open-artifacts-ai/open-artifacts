@@ -16,7 +16,7 @@ import type { AppEnv } from "../http/middleware.js";
 import { busOn } from "../services/bus.js";
 import { docsAvailable } from "../services/docs-available.js";
 import { VERSION } from "../version.gen.js";
-import { planText } from "./instructions.js";
+import { DOC_TEXT_CLOSE, DOC_TEXT_OPEN, planText } from "./instructions.js";
 import {
   SKILL_HASH,
   SKILL_HASH_NO_SPACES,
@@ -45,6 +45,12 @@ type SkillEnv = Pick<
   | "FEATURES"
 >;
 
+/** Doc text (the doc format entry) in the template, cut with the tool. */
+const DOC_TEXT_RE = new RegExp(
+  `${DOC_TEXT_OPEN}[\\s\\S]*?${DOC_TEXT_CLOSE}`,
+  "g",
+);
+
 /**
  * The doc-gated tool section (edit_doc) and the tool count, per install: kept
  * only when docsAvailable(env), as tools/list offers the tool (#2578).
@@ -56,12 +62,16 @@ export const applyDocTools = (md: string, docs: boolean): string => {
   if (docs)
     return withMarks
       .replaceAll(DOC_TOOL_OPEN, "")
-      .replaceAll(DOC_TOOL_CLOSE, "");
+      .replaceAll(DOC_TOOL_CLOSE, "")
+      .replaceAll(DOC_TEXT_OPEN, "")
+      .replaceAll(DOC_TEXT_CLOSE, "");
   const a = withMarks.indexOf(`\n\n${DOC_TOOL_OPEN}`);
   const b = withMarks.indexOf(DOC_TOOL_CLOSE);
-  return a < 0 || b < a
-    ? withMarks
-    : withMarks.slice(0, a) + withMarks.slice(b + DOC_TOOL_CLOSE.length);
+  const cut =
+    a < 0 || b < a
+      ? withMarks
+      : withMarks.slice(0, a) + withMarks.slice(b + DOC_TOOL_CLOSE.length);
+  return cut.replace(DOC_TEXT_RE, "");
 };
 
 /**
