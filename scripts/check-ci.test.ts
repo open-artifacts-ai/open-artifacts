@@ -280,8 +280,27 @@ describe("ci.yml", () => {
     // A mock failure must not skip the real suite; a failed browser install must.
     expect(steps[order[2] as number].id).toBe("install");
     expect(steps[order[5] as number].if).toMatch(
-      /^\$\{\{ !cancelled\(\) && steps\.ro\.outputs\.release_only != 'true' && steps\.install\.outcome == 'success' \}\}$/,
+      /^\$\{\{ !cancelled\(\) && steps\.ro\.outputs\.release_only != 'true' && steps\.e2e\.outputs\.run != 'false' && steps\.install\.outcome == 'success' \}\}$/,
     );
+    // Pull requests may skip the browser suites, decided inside the job by
+    // e2e-affected.sh: every step after it runs unless it said exactly
+    // run=false, so a missing output or an error runs them.
+    const pick = steps.findIndex((s) => s.id === "e2e");
+    expect(steps[pick].run).toBe("bash scripts/ci/e2e-affected.sh");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(steps[pick].env.BASE_SHA).toBe("${{ github.event.pull_request.base.sha }}");
+    expect(pick).toBeLessThan(at("pnpm install --frozen-lockfile"));
+    for (const st of steps.slice(pick + 1)) {
+      const cond = String(st.if ?? "");
+      if (cond === "failure()") continue;
+      if (st.name === "browser suites not affected") {
+        expect(cond).toContain("steps.e2e.outputs.run == 'false'");
+        continue;
+      }
+      expect(cond, st.name ?? st.run ?? st.uses).toContain(
+        "steps.e2e.outputs.run != 'false'",
+      );
+    }
     // No browser cache and no --with-deps: the image already has both.
     expect(
       steps.some((s) => (s.with?.path ?? "").includes("ms-playwright")),

@@ -284,3 +284,66 @@ describe("test-affected.sh", () => {
     ]);
   });
 });
+
+describe("e2e-affected.sh", () => {
+  const listed = (names: string[]) =>
+    `case " $* " in *" ls "*) echo '${JSON.stringify(names.map((name) => ({ name })))}' ;; esac`;
+  const run = (env: Record<string, string>, pnpm = listed([])) => {
+    const sb = sandbox({ pnpm });
+    const out = join(sb.dir, "out");
+    // Every input explicit: the job running this test sets BASE_SHA (and the
+    // event), which must never leak in.
+    const r = sb.run(["bash", script("e2e-affected.sh")], {
+      env: {
+        GITHUB_EVENT_NAME: "",
+        BASE_SHA: "",
+        GITHUB_STEP_SUMMARY: "",
+        GITHUB_OUTPUT: out,
+        ...env,
+      },
+    });
+    let o = "";
+    try {
+      o = readFileSync(out, "utf8");
+    } catch {}
+    return { ...r, outputs: o.trim() };
+  };
+  const pr = { GITHUB_EVENT_NAME: "pull_request", BASE_SHA: "HEAD" };
+  it("anything but a pull request runs the browser suites", () => {
+    for (const e of ["merge_group", "push", "schedule", "workflow_dispatch", ""])
+      expect(run({ GITHUB_EVENT_NAME: e, BASE_SHA: "HEAD" }).outputs, e).toBe(
+        "run=true",
+      );
+  });
+  it("a pull request with no base, a scope error or a pnpm error runs them", () => {
+    expect(run({ GITHUB_EVENT_NAME: "pull_request" }).outputs).toBe("run=true");
+    const bad = run({ ...pr, BASE_SHA: "not-a-commit" });
+    expect(bad.outputs).toBe("run=true");
+    expect(bad.out).toContain("the scope check failed");
+    expect(run(pr, "exit 1").outputs).toBe("run=true");
+    expect(run(pr, 'case " $* " in *" ls "*) echo "{nope" ;; esac').outputs).toBe(
+      "run=true",
+    );
+    expect(run(pr, `case " $* " in *" ls "*) echo '{"name":"x"}' ;; esac`).outputs).toBe(
+      "run=true",
+    );
+  });
+  it("a pull request that affects a browser-suite package, or the root package, runs them", () => {
+    for (const p of [
+      "@oa/dashboard",
+      "@oa/server",
+      "@oa/ui",
+      "@oa/landing",
+      "open-artifacts",
+    ])
+      expect(run(pr, listed(["@oa/bus-cli", p])).outputs, p).toBe("run=true");
+  });
+  it("a pull request that reaches none of them skips them, and says so", () => {
+    for (const names of [[], ["@open-artifacts/bus", "@oa/bus-daemon"]]) {
+      const r = run(pr, listed(names));
+      expect(r.code).toBe(0);
+      expect(r.outputs, names.join(",")).toBe("run=false");
+      expect(r.out).toContain("no browser-suite package is affected");
+    }
+  });
+});
