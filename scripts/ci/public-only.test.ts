@@ -237,19 +237,14 @@ describe("private-paths.txt", () => {
 
 describe("ci.yml public-only job", () => {
   const w = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"));
-  it("runs the script and is required", () => {
+  it("runs the fast guard, not the full suite", () => {
     const job = w.jobs["public-only"];
     expect(job).toBeDefined();
     expect(job["continue-on-error"]).toBeUndefined();
-    expect(JSON.stringify(job.steps)).toContain(
-      "bash scripts/ci/public-only.sh",
-    );
-  });
-  it("a failing run fails the check", () => {
-    const step = w.jobs["public-only"].steps.find((s: { run?: string }) =>
-      s.run?.includes("bash scripts/ci/public-only.sh"),
-    );
-    expect(step.run).toBe("bash scripts/ci/public-only.sh");
+    expect(job["timeout-minutes"]).toBe(5);
+    expect(job.if).toBeUndefined();
+    const runs = job.steps.map((s: { run?: string }) => s.run).filter(Boolean);
+    expect(runs).toEqual(["bash scripts/ci/public-only-guard.sh"]);
   });
   it("leaves every required job blocking", () => {
     for (const j of [
