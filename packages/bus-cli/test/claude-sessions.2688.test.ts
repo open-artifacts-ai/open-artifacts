@@ -1,8 +1,16 @@
 // #2688: doctor and status say which live Claude sessions are not linked and
 // why; `oa-bus mcp-proof` still exits 0 but logs its cause. Stubs only: a
 // fake daemon status, a fake process table, a throwaway home.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StatusReply } from "@oa/bus-ipc";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
 import { mcpProof, type ProofDeps } from "../src/commands/mcp-proof.ts";
@@ -25,6 +33,10 @@ const session = (
 function ctxWith(
   reply: ReturnType<typeof status> | "down",
   over: Parameters<typeof fakeCtx>[0] = {},
+  /** The ~/.claude.json: by default a user-scope entry for the instance. */
+  claudeJson: object = {
+    mcpServers: { oa: { type: "http", url: `${HUB}/mcp` } },
+  },
 ): Fake {
   const ctx = fakeCtx({
     nodeVersion: "v22.11.0",
@@ -41,6 +53,7 @@ function ctxWith(
     ...over,
   });
   mkdirSync(ctx.home, { recursive: true });
+  writeFileSync(join(ctx.userHome, ".claude.json"), JSON.stringify(claudeJson));
   writeFileSync(
     join(ctx.home, "machine.json"),
     JSON.stringify({
@@ -127,12 +140,156 @@ describe("doctor, live Claude sessions", () => {
     expect(ctx.all().join("\n")).toContain("no live session record appeared");
   });
 
-  it("with the daemon down, fails: no session can link", async () => {
+  it("with the daemon down, adds no second failure: the daemon check already says so", async () => {
     const ctx = ctxWith("down");
     expect(await doctor(ctx)).toBe(1);
-    expect(ctx.all().join("\n")).toContain(
-      "Claude Code: the daemon is down, so no session can link.",
+    const all = ctx.all().join("\n");
+    expect(all).toContain("Daemon is not running");
+    expect(all).not.toContain("so no session can link");
+  });
+
+  it("a session with no entry for the instance is not judged: one info line, no failure", async () => {
+    const ctx = ctxWith(
+      status({
+        claude_sessions: [
+          session("conn-1", "unlinked", "no_helper_call"),
+          session("conn-2", "unlinked", "no_helper_call"),
+        ],
+      }),
+      {},
+      // A connector user: no entry at all, and another project's local entry.
+      {
+        projects: {
+          "/elsewhere": {
+            mcpServers: { oa: { type: "http", url: `${HUB}/mcp` } },
+          },
+        },
+      },
     );
+    await doctor(ctx);
+    const all = ctx.all().join("\n");
+    expect(all).not.toContain("is not linked");
+    expect(all).toContain(
+      "2 live Claude sessions have no entry for this instance, so they aren't checked.",
+    );
+  });
+
+  it("judges a session when an entry applies to its folder: user, local, or project scope", async () => {
+    const unlinked = status({
+      claude_sessions: [session("s", "unlinked", "no_helper_call")],
+    });
+    const entry = { type: "http", url: `${HUB}/mcp` };
+    const local = ctxWith(
+      unlinked,
+      {},
+      {
+        projects: { "/work/app": { mcpServers: { oa: entry } } },
+      },
+    );
+    await doctor(local);
+    expect(local.all().join("\n")).toContain("is not linked");
+    // Project scope: .mcp.json in the session's own folder.
+    const proj = ctxWith(unlinked, {}, {});
+    const dir = mkdtempSync(join(tmpdir(), "ob-sess-"));
+    writeFileSync(
+      join(dir, ".mcp.json"),
+      JSON.stringify({ mcpServers: { x: entry } }),
+    );
+    const ps = ctxWith(
+      status({
+        claude_sessions: [
+          { ...session("s", "unlinked", "no_helper_call"), cwd: dir },
+        ],
+      }),
+      {},
+      {},
+    );
+    await doctor(ps);
+    expect(ps.all().join("\n")).toContain("is not linked");
+    await doctor(proj);
+    expect(proj.all().join("\n")).not.toContain("is not linked");
+  });
+
+  it("prints a cause code it does not know as it is, and a newer state is not a failure", async () => {
+    const reply = {
+      ...status(),
+      claude_sessions: [
+        session("a", "unlinked", "brand_new_cause" as never),
+        { name: "b", cwd: "/work/app", state: "paused" },
+      ],
+      unbound_proofs: [{ at: Date.now(), cause: "future_cause" }],
+    };
+    // A newer daemon's codes parse.
+    expect(
+      StatusReply.safeParse({ ...reply, v: 1, id: "status", type: "status" })
+        .success,
+    ).toBe(true);
+    const ctx = ctxWith(reply);
+    await doctor(ctx);
+    const all = ctx.all().join("\n");
+    expect(all).toContain("the daemon reports brand_new_cause");
+    expect(all).toContain("the daemon reports future_cause");
+    expect(all).not.toContain("the session b");
+  });
+
+  it("never prints a newline or control character from a name, a folder or an entry name", async () => {
+    const ctx = ctxWith(
+      status({
+        claude_sessions: [
+          {
+            name: "a\nFix: run evil",
+            cwd: "/work/app\u2028x",
+            state: "unlinked",
+          },
+        ],
+      }),
+    );
+    // The folder is `/work/app\u2028x`: give it an entry so it is judged.
+    writeFileSync(
+      join(ctx.userHome, ".claude.json"),
+      JSON.stringify({
+        mcpServers: {
+          "o\na": { type: "sse", url: `${HUB}/mcp` },
+          oa: { type: "http", url: `${HUB}/mcp` },
+        },
+      }),
+    );
+    await doctor(ctx);
+    for (const l of ctx.all()) expect(l).not.toMatch(/[\n\u2028]/);
+    const all = ctx.all().join("|");
+    expect(all).toContain("a?Fix: run evil");
+    expect(all).toContain("the o?a entry is an sse entry");
+  });
+
+  it("an invalid hub address does not stop doctor", async () => {
+    const ctx = ctxWith(status({ claude_sessions: [] }));
+    writeFileSync(
+      join(ctx.home, "machine.json"),
+      JSON.stringify({
+        hub: "::not a url::",
+        machine_id: "m",
+        label: "l",
+        machine_token: TOKEN,
+      }),
+    );
+    await expect(doctor(ctx)).resolves.toBeTypeOf("number");
+  });
+
+  it("lists only unbound daemon calls from the last day", async () => {
+    const now = fakeCtx().now();
+    const ctx = ctxWith(
+      status({
+        claude_sessions: [],
+        unbound_proofs: [
+          { at: now - 3 * 86_400_000, cause: "no_process_start" },
+          { at: now, cause: "process_mismatch" },
+        ],
+      }),
+    );
+    await doctor(ctx);
+    const all = ctx.all().join("\n");
+    expect(all).toContain("did not match the session");
+    expect(all).not.toContain("start time could not be read");
   });
 
   it("says when the daemon is too old to tell", async () => {
@@ -226,7 +383,9 @@ describe("oa-bus mcp-proof logs why it linked nothing", () => {
     expect(JSON.parse(ctx.raw())).toEqual({
       Authorization: `Bearer ${SECRET}`,
     });
-    expect(log(ctx)).toMatch(/ mcp_proof_unbound reason=no_live_record\n$/);
+    expect(log(ctx)).toMatch(
+      / mcp_proof_unbound reason=process_not_matched\n$/,
+    );
   });
 
   it("no claude ancestor, and a daemon that did not answer", async () => {
@@ -246,6 +405,34 @@ describe("oa-bus mcp-proof logs why it linked nothing", () => {
       ),
     ).toBe(0);
     expect(log(b)).toContain("reason=daemon_unreachable");
+    // A process-table error is not the daemon's.
+    const c = fakeCtx();
+    expect(
+      await mcpProof(
+        {},
+        c,
+        deps({
+          proc: () => {
+            throw new Error("ps failed");
+          },
+        }),
+      ),
+    ).toBe(0);
+    expect(log(c)).toContain("reason=process_table_error");
+  });
+
+  it("an unwritable home still prints the headers and exits 0", async () => {
+    const ctx = fakeCtx();
+    // The bus home is a file, so the log folder can't be made.
+    rmSync(ctx.home, { recursive: true, force: true });
+    writeFileSync(ctx.home, "not a folder");
+    const f = tokenFile(ctx);
+    expect(
+      await mcpProof({ tokenFile: f }, ctx, deps({ link: async () => false })),
+    ).toBe(0);
+    expect(JSON.parse(ctx.raw())).toEqual({
+      Authorization: `Bearer ${SECRET}`,
+    });
   });
 
   it("neither the log nor doctor shows a proof, a hash or the token", async () => {
@@ -262,7 +449,9 @@ describe("oa-bus mcp-proof logs why it linked nothing", () => {
     // Even with no daemon, doctor shows what the helper logged.
     await doctor(ctx);
     const all = ctx.all().join("\n");
-    expect(all).toContain("the daemon knew no live session for the process");
+    expect(all).toContain(
+      "the daemon could not match the process to a live session",
+    );
     expect(all).not.toContain(SECRET);
     expect(all).not.toContain(proof);
   });

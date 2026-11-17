@@ -1771,6 +1771,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // `oa-bus status` and install's "Daemon running": one roster per namespace
     // this machine's open sessions are in (or only the cwd's).
     onStatus: async (req) => {
+      // Expired proofs are counted now, not only at the next sync tick.
+      claimProofs();
       let only: string | undefined;
       if (req.cwd && isAbsolute(req.cwd)) {
         try {

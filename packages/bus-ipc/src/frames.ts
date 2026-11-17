@@ -546,12 +546,10 @@ export const StatusReply = z.object({
       z.object({
         name: z.string(),
         cwd: z.string(),
-        /** `starting`: seen only moments ago, so its helper may not have run yet. */
-        state: z.enum(["linked", "unlinked", "starting"]),
+        /** `linked`, `unlinked`, or `starting` (seen only moments ago, so its helper may not have run yet). Strings, so a newer daemon's new value still parses. */
+        state: z.string(),
         /** Why an `unlinked` session is: the helper never called, or its proof expired or was refused. */
-        cause: z
-          .enum(["no_helper_call", "proof_timed_out", "proof_refused"])
-          .optional(),
+        cause: z.string().optional(),
       }),
     )
     .optional(),
@@ -560,11 +558,7 @@ export const StatusReply = z.object({
     .array(
       z.object({
         at: z.number(),
-        cause: z.enum([
-          "no_live_record",
-          "process_mismatch",
-          "no_process_start",
-        ]),
+        cause: z.string(),
       }),
     )
     .optional(),

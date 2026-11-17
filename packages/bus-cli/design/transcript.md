@@ -641,21 +641,19 @@ oa-bus 0.1.0
 [[danger]]×[[/danger]]  Hub not reachable at bus.example.com  [[muted]]ECONNREFUSED[[/muted]]
    Check your network, then run npx @open-artifacts/bus doctor again.
 [[success]]✓[[/success]]  Claude Code wired
-[[danger]]×[[/danger]]  Claude Code: the daemon is down, so no session can link.
-   Fix: run npx @open-artifacts/bus to start it, then restart the session
 [[warning]]![[/warning]]  OpenCode 1.4.2 is too old for the plugin (needs 2.0.0 or newer)
    Run opencode upgrade, then npx @open-artifacts/bus install again.
 [[danger]]×[[/danger]]  Pi is not wired
    Run npx @open-artifacts/bus to wire it.
 
-[[muted]]4 failed, 1 warning, 3 passed.[[/muted]]
+[[muted]]3 failed, 1 warning, 3 passed.[[/muted]]
 ```
 
 Check lines and their failures:
 - Claude Code sessions (#2688): when every live Claude session is linked, `✓`. Each
   live session with no link is a `×` naming it and its folder, with the likely cause
-  and the fix. With the daemon down: `×  Claude Code: the daemon is down, so no
-  session can link.`
+  and the fix, when an entry for this hub applies to that session; a session reaching it
+  another way is not judged. With the daemon down, the daemon check above already fails.
 - Node: `✓  Node 22.11.0`. Below 22: `×  Node 20.9.0 is too old (needs 22 or newer)`,
   then `   Install Node 22 or newer, then run npx @open-artifacts/bus doctor again.`
 - Credentials: missing is `×  No credentials at ~/.oa-bus/machine.json` then

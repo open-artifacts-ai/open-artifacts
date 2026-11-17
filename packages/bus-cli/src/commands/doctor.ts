@@ -40,6 +40,7 @@ import {
   MIN_CLAUDE,
 } from "../steps/claude-plugins.ts";
 import {
+  hubOrigin,
   sessionChecks,
   sseCheck,
   sseEntries,
@@ -325,13 +326,14 @@ export async function doctor(ctx: Ctx): Promise<number> {
       else if (plugins) pass(c.pluginsDoctor());
       // #2688: which live sessions are not linked, and why; and an sse entry, which can't link.
       if (hub !== undefined)
-        for (const name of sseEntries(ctx, new URL(hub).origin)) {
+        for (const name of sseEntries(ctx, hubOrigin(hub) ?? "")) {
           const k = sseCheck(ctx, name);
           warn(c.check(k.level, k.head, k.notes));
         }
       for (const chk of sessionChecks(
         ctx,
         probe.state === "up" ? probe.st : undefined,
+        hub,
       )) {
         const ls = c.check(chk.level, chk.head, chk.notes);
         if (chk.level === "pass") pass(ls[0] as string);

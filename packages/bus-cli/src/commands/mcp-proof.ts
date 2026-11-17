@@ -9,6 +9,9 @@ import { LINK_PROOF_HEADER } from "@oa/bus-protocol";
 import { type Ctx, say } from "../context.ts";
 import { UNBOUND_EVENT } from "../steps/claude-sessions.ts";
 
+/** The most the helper waits for its log line. */
+const LOG_WAIT_MS = 300;
+
 /** What the helper reads from the process table and the daemon; tests bring their own. */
 export type ProofDeps = {
   /** A process's parent and executable name; null when it cannot be read. */
@@ -108,24 +111,35 @@ export async function mcpProof(
   const token = tokenOf(opts.tokenFile);
   if (token) headers.Authorization = `Bearer ${token}`;
   let why: string | undefined;
+  let claude: number | undefined;
   try {
-    const claude = findClaude(deps.ppid, deps.proc);
+    claude = findClaude(deps.ppid, deps.proc);
     if (claude === undefined) why = "no_claude_ancestor";
-    else {
+  } catch {
+    why = "process_table_error";
+  }
+  if (claude !== undefined)
+    try {
       const proof = deps.random().toString("base64url");
       const hash = createHash("sha256").update(proof).digest("hex");
+      // The daemon answers false only for a pid it could not match to a live
+      // record by start time (it holds a proof that has no record yet).
       if (await deps.link(claude, hash)) headers[LINK_PROOF_HEADER] = proof;
-      else why = "no_live_record";
+      else why = "process_not_matched";
+    } catch {
+      why = "daemon_unreachable";
     }
-  } catch {
-    why = "daemon_unreachable";
-  }
+  // Claude's connect comes first: the headers go out before the log is touched.
+  say(ctx, JSON.stringify(headers));
   if (why !== undefined)
     try {
       const events = createEventLog(join(ctx.home, "logs", "events.log"));
       events(UNBOUND_EVENT, { reason: why });
-      await events.flush();
+      // Bounded: a slow disk never holds the helper up.
+      await Promise.race([
+        events.flush(),
+        new Promise((r) => setTimeout(r, LOG_WAIT_MS).unref()),
+      ]);
     } catch {}
-  say(ctx, JSON.stringify(headers));
   return 0;
 }

@@ -214,7 +214,7 @@ export async function status(ctx: Ctx): Promise<number> {
   }
   if (st.namespaces.length > 0) say(ctx, "", rosters(ctx, st.namespaces));
   // #2688: live Claude sessions with no link, each with its likely cause.
-  for (const chk of sessionChecks(ctx, st)) {
+  for (const chk of sessionChecks(ctx, st, m.hub)) {
     const ls = c.check(chk.level, chk.head, chk.notes);
     if (chk.level === "fail") sayErr(ctx, ls);
     else if (chk.level !== "warn") say(ctx, ls);
