@@ -22,11 +22,31 @@ export type ProofCheck = {
 
 const DAY_MS = 86_400_000;
 
+/**
+ * Text from a config file a repo or another tool controls (an entry name, a
+ * project path) is never printed raw: control and format characters (newline,
+ * ESC, bidi marks) become "?", so it can't forge a line such as "Fix: ...".
+ */
+export const safeText = (s: string, max = 80): string => {
+  const t = s.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, "?");
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+
+/** An entry's address as origin and path only: no userinfo, query or fragment (they may hold a token). */
+export const safeUrl = (u: string): string => {
+  try {
+    const x = new URL(u);
+    return safeText(`${x.origin}${x.pathname}`, 120);
+  } catch {
+    return "an address that can't be read";
+  }
+};
+
 const where = (ctx: Ctx, e: Pick<EntryState, "scope" | "project">) =>
   e.scope === "project"
     ? "project scope, .mcp.json in this folder"
     : e.scope === "local"
-      ? `local scope, project ${tilde(ctx, e.project ?? "")}`
+      ? `local scope, project ${safeText(tilde(ctx, e.project ?? ""), 120)}`
       : "user scope";
 
 /**
@@ -55,7 +75,7 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
   const out: ProofCheck[] = [];
   const install = `run ${ctx.busCmd} install`;
   for (const e of r.entries) {
-    const at = `the ${e.name} entry (${where(ctx, e)})`;
+    const at = `the ${safeText(e.name)} entry (${where(ctx, e)})`;
     if (e.scope === "project") {
       out.push(
         e.state === "helper" && e.trusted !== false
@@ -96,7 +116,7 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
       out.push({
         level: "warn",
         lines: [
-          `Claude Code: ${at} has the helper of another bus (${e.owner === undefined ? "the default home" : tilde(ctx, e.owner)}), so this bus left it alone.`,
+          `Claude Code: ${at} has the helper of another bus (${e.owner === undefined ? "the default home" : safeText(tilde(ctx, e.owner), 120)}), so this bus left it alone.`,
           "  An entry links one bus; use another entry for this one.",
         ],
       });
@@ -158,7 +178,7 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
     out.push({
       level: "warn",
       lines: [
-        `Claude Code: the ${e.name} entry (${e.scope} scope) points at ${e.url}, not ${origin}/mcp, so it can't be linked.`,
+        `Claude Code: the ${safeText(e.name)} entry (${e.scope} scope) points at ${safeUrl(e.url)}, not ${origin}/mcp, so it can't be linked.`,
       ],
     });
   return out;
@@ -188,5 +208,5 @@ export function lastAutoFix(ctx: Ctx): string | undefined {
   const t = Date.parse(last.at);
   if (!(ctx.now() - t < 7 * DAY_MS)) return undefined;
   const run = hits.filter((h) => Math.abs(Date.parse(h.at) - t) < 60_000);
-  return `Claude Code: the last automatic fix (${last.at.slice(0, 16).replace("T", " ")} UTC) added the helper to ${run.map((h) => `${h.name} (${h.scope} scope)`).join(", ")}.`;
+  return `Claude Code: the last automatic fix (${last.at.slice(0, 16).replace("T", " ")} UTC) added the helper to ${run.map((h) => `${safeText(h.name)} (${safeText(h.scope, 20)} scope)`).join(", ")}.`;
 }

