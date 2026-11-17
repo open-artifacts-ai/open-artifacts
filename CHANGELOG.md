@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.199.5](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.4...v0.199.5) (2026-11-17)
+
+
+### Bug Fixes
+
+* **bus:** link the instance's Claude entry at every scope, and say when it can't ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2694](https://github.com/open-artifacts-ai/open-artifacts/issues/2694)) ([2c6f7f5](https://github.com/open-artifacts-ai/open-artifacts/commit/2c6f7f54aff613a0be079c6c775dd0d3dc708776))
+
 ## [0.199.4](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.3...v0.199.4) (2026-11-17)
 
 
