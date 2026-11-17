@@ -41,7 +41,7 @@ async function threadOf<T>(p: Promise<T>): Promise<T> {
  */
 const UNLINKED_ASK = {
   answerDelivery: "none",
-  note: "This connection is not linked to a bus session, so the answer won't be sent to you. Check the thread with list_comments, and tell the person to let you know when they answer.",
+  note: "This request wasn't verified as coming from a bus session, so the answer won't be sent to you over the bus. Check the thread with list_comments, and ask the person to tell you when they answer.",
 } as const;
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -51,6 +51,9 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   /** The extra result fields when `ask` was posted by a connection the answer can't reach. */
   const unlinkedAsk = (ask: unknown) =>
     ask && !t.agentNow()?.identity ? UNLINKED_ASK : {};
+  /** The same note on the text line, for clients that show only `content`. */
+  const withNote = (line: string, ask: unknown) =>
+    ask && !t.agentNow()?.identity ? `${line} ${UNLINKED_ASK.note}` : line;
 
   /** The REST gate: access for `action`, then comments on (403 comments_off). */
   async function open(id: string, action: "comments.read" | "comments.write") {
@@ -118,11 +121,14 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             opts,
           ),
         );
-        return ok(`Replied in thread ${i.threadId} on ${i.id}.`, {
-          threadId: i.threadId,
-          comment,
-          ...unlinkedAsk(i.ask),
-        });
+        return ok(
+          withNote(`Replied in thread ${i.threadId} on ${i.id}.`, i.ask),
+          {
+            threadId: i.threadId,
+            comment,
+            ...unlinkedAsk(i.ask),
+          },
+        );
       }
       const thread = await addThread(
         env,
@@ -136,7 +142,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         },
         opts,
       );
-      return ok(`Started thread ${thread.id} on ${i.id}.`, {
+      return ok(withNote(`Started thread ${thread.id} on ${i.id}.`, i.ask), {
         thread,
         ...unlinkedAsk(i.ask),
       });

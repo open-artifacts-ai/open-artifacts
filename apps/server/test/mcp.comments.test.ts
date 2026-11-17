@@ -387,8 +387,23 @@ describe("add_comment with an ask (#1535)", () => {
       }),
     );
     expect(asked.answerDelivery).toBe("none");
-    expect(asked.note).toContain("not linked to a bus session");
+    expect(asked.note).toContain(
+      "wasn't verified as coming from a bus session",
+    );
     expect(asked.note).toContain("list_comments");
+    const tid = (await tool(owner.client, "list_comments", { id }))
+      .structuredContent as CommentList;
+    const threadId = tid.threads[0]?.id ?? "";
+    const replied = await tool(owner.client, "add_comment", {
+      id,
+      threadId,
+      body: "And this?",
+      ask: ASK([reader.userId]),
+    });
+    expect(sc<{ answerDelivery?: string }>(replied).answerDelivery).toBe(
+      "none",
+    );
+    expect(textOf(replied)).toContain("list_comments");
     const plain = sc<Record<string, unknown>>(
       await tool(owner.client, "add_comment", { id, body: "Just a note" }),
     );
