@@ -93,4 +93,35 @@ describe("viewer shell: per-load nonce", () => {
     loaded(f); // the artifact navigated its own frame
     expect(hello(f, n)).toEqual([]);
   });
+
+  it("a renavigation while the signed URL is fresh keeps the frame (#2686)", async () => {
+    mount(viewerPath(OWNED));
+    const f = await frame();
+    loaded(f);
+    loaded(f); // the artifact navigated its own frame
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(f);
+  });
+
+  it("a renavigation after the signed URL expired reloads with a fresh URL, once (#2686)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    const n1 = nonceOf(first);
+    loaded(first);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 700_000);
+    loaded(first); // the frame asks for its expired URL on its own
+    vi.useRealTimers();
+    const second = await waitFor(() => {
+      const f = document.querySelector("iframe");
+      if (!f || f === first || !f.src) throw new Error("not reloaded");
+      return f;
+    });
+    const n2 = nonceOf(second);
+    expect(n2).not.toBe(n1);
+    loaded(second); // Reload's own load is expected: no further reload
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(second);
+    expect(hello(second, n2)).toContain("welcome");
+  });
 });

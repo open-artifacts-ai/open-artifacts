@@ -1,4 +1,4 @@
-import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
+import { type ArtifactSummary, LIMITS, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -491,6 +491,16 @@ function Viewer({
     if (isDoc) cbs.current.onReady?.();
   }, [isDoc]);
   const renavigated = useRef(false);
+  // When the frame last loaded what the shell gave it; the signed URL it was
+  // given dates from then. The refs are set each render, so a renavigation
+  // handler that stays the same function (the bridge is rebuilt when it
+  // changes) still sees the latest.
+  const loadedAt = useRef(0);
+  const goneRef = useRef(gone);
+  goneRef.current = gone;
+  const reloadRef = useRef<() => void>(() => {});
+  const freshRef = useRef(content.fresh);
+  freshRef.current = content.fresh;
   const [renav, setRenav] = useState(false);
   const onRenavigated = useCallback(() => {
     renavigated.current = true;
@@ -500,6 +510,17 @@ function Viewer({
     clearTimeout(slowTimer.current);
     setSlow(false);
     setRenav(live);
+    // #2686: a frame that went back to its entry on its own (tab restore, a
+    // page reloading itself) asked for the signed URL it was first given. Past
+    // its lifetime the content host answers with an expiry page, so start over
+    // from a fresh one. Reload's own load is expected, never a renavigation;
+    // `reloading` stops a second reload while one is in flight.
+    const age = loadedAt.current ? Date.now() - loadedAt.current : 0;
+    if (
+      !goneRef.current &&
+      (age > (LIMITS.signedUrlTtlSec - 60) * 1000 || !freshRef.current())
+    )
+      reloadRef.current();
   }, [live, touch]);
   const frameKey = frame.key;
   const onHello = useCallback(() => {
@@ -522,6 +543,7 @@ function Viewer({
         return;
       }
       contentLoaded();
+      loadedAt.current = Date.now();
       cbs.current.onReady?.();
       reloading.current = false;
       clearTimeout(slowTimer.current);
@@ -552,6 +574,8 @@ function Viewer({
       setFrame((f) => ({ key: f.key + 1, src: safeContentUrl(u) ?? f.src })),
     );
   };
+
+  reloadRef.current = reload;
 
   // Every intentional load (first load, a refreshed URL before the first load,
   // Reload) gets a fresh bridge, which loads the frame with a fresh nonce.
