@@ -35,10 +35,22 @@ async function threadOf<T>(p: Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * #2688: an ask's answer notice goes only to the agent's own bus session (#2224).
+ * A connection with no bus identity (unlinked) gets none, so say so in the result.
+ */
+const UNLINKED_ASK = {
+  answerDelivery: "none",
+  note: "This connection is not linked to a bus session, so the answer won't be sent to you. Check the thread with list_comments, and tell the person to let you know when they answer.",
+} as const;
+
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   const { env, caller } = t;
+  /** The extra result fields when `ask` was posted by a connection the answer can't reach. */
+  const unlinkedAsk = (ask: unknown) =>
+    ask && !t.agentNow()?.identity ? UNLINKED_ASK : {};
 
   /** The REST gate: access for `action`, then comments on (403 comments_off). */
   async function open(id: string, action: "comments.read" | "comments.write") {
@@ -109,6 +121,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         return ok(`Replied in thread ${i.threadId} on ${i.id}.`, {
           threadId: i.threadId,
           comment,
+          ...unlinkedAsk(i.ask),
         });
       }
       const thread = await addThread(
@@ -123,7 +136,10 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         },
         opts,
       );
-      return ok(`Started thread ${thread.id} on ${i.id}.`, { thread });
+      return ok(`Started thread ${thread.id} on ${i.id}.`, {
+        thread,
+        ...unlinkedAsk(i.ask),
+      });
     }),
   );
 

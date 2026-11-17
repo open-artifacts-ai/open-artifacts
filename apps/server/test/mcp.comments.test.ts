@@ -373,6 +373,29 @@ describe("add_comment with an ask (#1535)", () => {
     expect(answered.status).toBe(200);
   });
 
+  it("an unlinked connection's ask says its answer won't reach it (#2688); a non-ask comment does not", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    const asked = sc<{ answerDelivery?: string; note?: string }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "Which layout?",
+        ask: ASK([reader.userId]),
+      }),
+    );
+    expect(asked.answerDelivery).toBe("none");
+    expect(asked.note).toContain("not linked to a bus session");
+    expect(asked.note).toContain("list_comments");
+    const plain = sc<Record<string, unknown>>(
+      await tool(owner.client, "add_comment", { id, body: "Just a note" }),
+    );
+    expect(plain).not.toHaveProperty("answerDelivery");
+    expect(plain).not.toHaveProperty("note");
+  });
+
   it("an ask on a reply works", async () => {
     const id = await pub();
     await putShare(E, owner.member, id, {

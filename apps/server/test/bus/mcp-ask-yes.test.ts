@@ -89,6 +89,8 @@ describe("answer.yes over MCP (#2224)", () => {
       },
     });
     expect(made.isError, JSON.stringify(made.content)).toBeFalsy();
+    // #2688: a linked asker gets no warning.
+    expect(made.structuredContent).not.toHaveProperty("answerDelivery");
     const t = (
       made.structuredContent as {
         thread: { id: string; comments: { id: string }[] };
