@@ -254,17 +254,17 @@ describe("oa-bus status, Claude entry", () => {
 
   it("says whether the entry has the helper", async () => {
     expect(await line(mine, true, true)).toEqual([
-      "Claude Code: this entry is set up to show as this session on pages.",
+      "Claude Code: the open-artifacts entry (user scope) shows as this session on pages.",
     ]);
     expect(await line(mine, true)).toEqual([
-      `Claude Code: run ${BUS_CMD} install to set this entry up to show as this session on pages.`,
+      "Claude Code: the open-artifacts entry (user scope) has no session helper, so what it posts can't be tied to this session.",
     ]);
     expect(await line(undefined, true)).toEqual([]);
   });
 
   it("an old daemon says to update", async () => {
     expect(await line(mine, false, true)).toEqual([
-      "Claude Code: update the daemon so this entry can show as this session on pages.",
+      "Claude Code: update the daemon so these entries can show as this session on pages.",
     ]);
   });
 });

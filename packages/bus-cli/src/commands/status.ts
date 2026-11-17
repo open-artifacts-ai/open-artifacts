@@ -11,7 +11,7 @@ import {
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
 import { readRecord as readClaudePluginsRecord } from "../steps/claude-plugins.ts";
-import { claudeConfigFile, proofState } from "../steps/claude-proof.ts";
+import { claudeProofChecks } from "../steps/claude-proof-check.ts";
 import { openclawPluginDir, openclawPluginState } from "../steps/openclaw.ts";
 import { habitsLine } from "./habits.ts";
 import { rosters } from "./install.ts";
@@ -121,30 +121,20 @@ export const updateTarget = async (
 };
 
 /**
- * #1822: whether this machine's Claude entry for the instance has the proof
- * helper, so it is set up to show as the session on pages (the daemon
- * supporting link is not proof that a session is bound). Nothing when there is no
- * such entry.
+ * #1822, #2688: whether the instance's Claude entries have the proof helper,
+ * so they show as this session on pages. The same check as doctor's; nothing
+ * when there is no entry (doctor warns about that).
  */
-const proofLine = (
-  ctx: Ctx,
-  hub: string,
-  daemonKnows: boolean,
-): string | undefined => {
-  let origin: string;
-  try {
-    origin = new URL(hub).origin;
-  } catch {
-    return undefined;
-  }
-  const state = proofState(claudeConfigFile(ctx.userHome, ctx.env), origin);
-  if (state === "none") return undefined;
-  if (state === "missing")
-    return `Claude Code: run ${ctx.busCmd} install to set this entry up to show as this session on pages.`;
-  return daemonKnows
-    ? "Claude Code: this entry is set up to show as this session on pages."
-    : "Claude Code: update the daemon so this entry can show as this session on pages.";
-};
+const proofLines = (ctx: Ctx, hub: string, daemonKnows: boolean): string[] =>
+  claudeProofChecks(ctx, hub)
+    .filter((c) => !(c.level === "warn" && c.lines[0]?.includes("no entry")))
+    .flatMap((c) =>
+      c.level === "pass" && !daemonKnows
+        ? [
+            "Claude Code: update the daemon so these entries can show as this session on pages.",
+          ]
+        : c.lines,
+    );
 
 /**
  * Transcript state 7. Read-only; never prints the token. Exit 0 only when
@@ -195,8 +185,8 @@ export async function status(ctx: Ctx): Promise<number> {
   // From the install record only: status never starts Claude Code.
   if (readClaudePluginsRecord(ctx.home)?.plugins?.length)
     say(ctx, c.pluginsStatus());
-  const proof = proofLine(ctx, m.hub, st.link === true);
-  if (proof) say(ctx, proof);
+  const proof = [...new Set(proofLines(ctx, m.hub, st.link === true))];
+  if (proof.length) say(ctx, proof);
   // Static text, only where the plugin is installed: nothing in OpenClaw's config is read.
   const ocState = openclawPluginState(
     openclawPluginDir(ctx.userHome, ctx.env),

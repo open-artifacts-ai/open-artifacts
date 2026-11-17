@@ -84,6 +84,7 @@ import {
   installEntry as installOcEntry,
   type OcEntryIo,
   OPENCODE_ENTRY_FILE,
+  skippedNotes as ocSkippedNotes,
   proxyEntries,
   proxyProgramMissing,
   restoreEntry as restoreOcEntry,
@@ -487,13 +488,10 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
 function claudeProof(deps: AdapterDeps, notes: string[]) {
   if (deps.hub === undefined) return;
   try {
-    const note = installProof(
-      proofIo(deps),
-      deps.hub,
-      deps.busBin,
-      movedHome(deps),
+    notes.push(
+      ...installProof(proofIo(deps), deps.hub, deps.busBin, movedHome(deps))
+        .notes,
     );
-    if (note) notes.push(note);
   } catch (e) {
     notes.push(
       `could not add the proof helper to the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
@@ -638,9 +636,11 @@ function ompOrigin(deps: AdapterDeps, notes: string[]) {
   }
 }
 
-const proofIo = (deps: AdapterDeps): ProofIo => ({
-  file: paths(deps).claude,
-  record: paths(deps).record,
+const proofIo = (
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env">,
+): ProofIo => ({
+  file: paths(deps as AdapterDeps).claude,
+  record: paths(deps as AdapterDeps).record,
   write: writeAtomic,
 });
 
@@ -1269,4 +1269,59 @@ export function codexProxyProblem(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read-only: the Codex and OpenCode entries for the instance that the proxy
+ * swap left as they are (OAuth or another sign-in the proxy can't pass on), so
+ * those sessions don't show as themselves on pages.
+ */
+export function skippedProxyEntries(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env"> & { hub: string },
+): { harness: "Codex" | "OpenCode"; note: string }[] {
+  const out: { harness: "Codex" | "OpenCode"; note: string }[] = [];
+  const d = { ...deps, busBin: [] as string[] } as AdapterDeps;
+  const p = paths(d);
+  try {
+    if (present(p.codex)) {
+      const pending = pendingCxEntry(cxEntryIo(d), deps.hub);
+      if (pending && "note" in pending)
+        out.push({ harness: "Codex", note: pending.note });
+    }
+  } catch {}
+  try {
+    for (const note of ocSkippedNotes(
+      p.opencodeConfigs.filter(present),
+      readJsonc,
+      deps.hub,
+    ))
+      out.push({ harness: "OpenCode", note });
+  } catch {}
+  return out;
+}
+
+/**
+ * #2688: on daemon start, adds or refreshes oa-bus's own helper on the
+ * instance's Claude entries (user and local scope). It touches no other key or
+ * entry, writes nothing when nothing changes, and skips a write when the
+ * file changed since it was read. Never throws; `onWrite` hears each entry
+ * (name and scope, never a value).
+ */
+export function reapplyClaudeProof(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "busBin"> & {
+    hub: string;
+  },
+  onWrite: (entry: { entry: string; scope: string }) => void,
+): void {
+  try {
+    if (deps.busBin.length === 0) return;
+    const r = installProof(
+      proofIo(deps),
+      deps.hub,
+      deps.busBin,
+      movedHome(deps),
+      { guard: true },
+    );
+    for (const c of r.changed) onWrite(c);
+  } catch {}
 }
