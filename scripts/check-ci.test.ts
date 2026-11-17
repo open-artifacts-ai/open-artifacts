@@ -288,7 +288,9 @@ describe("ci.yml", () => {
     const pick = steps.findIndex((s) => s.id === "e2e");
     expect(steps[pick].run).toBe("bash scripts/ci/e2e-affected.sh");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(steps[pick].env.BASE_SHA).toBe("${{ github.event.pull_request.base.sha }}");
+    expect(steps[pick].env.BASE_SHA).toBe(
+      "${{ github.event.pull_request.base.sha }}",
+    );
     expect(pick).toBeLessThan(at("pnpm install --frozen-lockfile"));
     for (const st of steps.slice(pick + 1)) {
       const cond = String(st.if ?? "");

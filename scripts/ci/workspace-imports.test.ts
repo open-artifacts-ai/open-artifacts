@@ -310,7 +310,13 @@ describe("e2e-affected.sh", () => {
   };
   const pr = { GITHUB_EVENT_NAME: "pull_request", BASE_SHA: "HEAD" };
   it("anything but a pull request runs the browser suites", () => {
-    for (const e of ["merge_group", "push", "schedule", "workflow_dispatch", ""])
+    for (const e of [
+      "merge_group",
+      "push",
+      "schedule",
+      "workflow_dispatch",
+      "",
+    ])
       expect(run({ GITHUB_EVENT_NAME: e, BASE_SHA: "HEAD" }).outputs, e).toBe(
         "run=true",
       );
@@ -321,12 +327,12 @@ describe("e2e-affected.sh", () => {
     expect(bad.outputs).toBe("run=true");
     expect(bad.out).toContain("the scope check failed");
     expect(run(pr, "exit 1").outputs).toBe("run=true");
-    expect(run(pr, 'case " $* " in *" ls "*) echo "{nope" ;; esac').outputs).toBe(
-      "run=true",
-    );
-    expect(run(pr, `case " $* " in *" ls "*) echo '{"name":"x"}' ;; esac`).outputs).toBe(
-      "run=true",
-    );
+    expect(
+      run(pr, 'case " $* " in *" ls "*) echo "{nope" ;; esac').outputs,
+    ).toBe("run=true");
+    expect(
+      run(pr, `case " $* " in *" ls "*) echo '{"name":"x"}' ;; esac`).outputs,
+    ).toBe("run=true");
   });
   it("a pull request that affects a browser-suite package, or the root package, runs them", () => {
     for (const p of [
