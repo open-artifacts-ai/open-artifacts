@@ -1,5 +1,5 @@
 import { lstatSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   type Doc,
   jsoncValue,
@@ -54,6 +54,23 @@ export function proofHelper(
 /** Whether `helper` is one of ours. */
 export const isProofHelper = (helper: unknown): boolean =>
   typeof helper === "string" && / mcp-proof( |$)/.test(helper);
+
+/**
+ * The bus home a helper of ours runs for: its `OA_BUS_HOME`, or undefined for
+ * the default home. Two buses on one hub each write their own, so a helper is
+ * only ever adopted, refreshed or undone by the bus whose home it names.
+ */
+export function helperHome(helper: string): string | undefined {
+  const m = /(?:^|[ {])OA_BUS_HOME=('(?:[^']|'\\'')*'|\S+)/.exec(helper)?.[1];
+  if (m === undefined) return undefined;
+  return resolve(
+    m.startsWith("'") ? m.slice(1, -1).replaceAll("'\\''", "'") : m,
+  );
+}
+
+/** Whether `helper` (one of ours) runs for the bus at `busHome` (undefined: the default home). */
+const ownedBy = (helper: string, busHome: string | undefined): boolean =>
+  helperHome(helper) === (busHome === undefined ? undefined : resolve(busHome));
 
 const isRecord = (v: unknown): v is Doc =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -258,8 +275,13 @@ export function installProof(
   const out: ProofResult = { notes: [], changed: [] };
   const read = io.read ?? readText;
   const text = read(io.file);
-  if (text === "") return out;
   const { rest, proofs, config } = readRecord(io.record);
+  if (text === "") {
+    // Recorded even before the file exists, so a later one is picked up.
+    if (!opts.guard && config !== io.file)
+      writeRecord(io, rest, proofs, io.file);
+    return out;
+  }
   const records = [...proofs];
   let next = text;
   for (const f of findEntries(parseJsonc(text, io.file), origin)) {
@@ -267,6 +289,16 @@ export function installProof(
     const rec = records[at];
     const cur = f.entry.headersHelper;
     let original: string | null;
+    if (
+      typeof cur === "string" &&
+      isProofHelper(cur) &&
+      !ownedBy(cur, busHome)
+    ) {
+      out.notes.push(
+        `left the headersHelper of ${f.name} (${f.scope} scope) in ${io.file} as it is: it belongs to the bus at ${helperHome(cur) ?? "the default home"}`,
+      );
+      continue;
+    }
     if (isProofHelper(cur) && rec) original = rec.original;
     else if (isProofHelper(cur) && !opts.guard && typeof cur === "string")
       original = adoptedOriginal(cur);
@@ -312,7 +344,7 @@ export function installProof(
 }
 
 /** Puts every entry back as it was before `installProof`, in the file each was recorded in; false when there was nothing to undo. */
-export function uninstallProof(io: ProofIo): boolean {
+export function uninstallProof(io: ProofIo, busHome?: string): boolean {
   const { rest, proofs, config } = readRecord(io.record);
   if (proofs.length === 0) {
     if (config) writeRecord(io, rest, [], undefined);
@@ -342,7 +374,12 @@ export function uninstallProof(io: ProofIo): boolean {
       cur = undefined;
     }
     // Only our own helper is taken back: anything else is the user's since.
-    if (!isProofHelper(cur)) continue;
+    if (
+      typeof cur !== "string" ||
+      !isProofHelper(cur) ||
+      !ownedBy(cur, busHome)
+    )
+      continue;
     t.text =
       proof.original === null
         ? removeJsoncValue(t.text, path)
@@ -359,7 +396,9 @@ export type EntryState = {
   name: string;
   scope: Scope | "project";
   project?: string;
-  state: "helper" | "missing" | "foreign" | "unrecorded";
+  state: "helper" | "missing" | "foreign" | "unrecorded" | "other-bus";
+  /** For `other-bus`: the home that owns the helper; undefined is the default home. */
+  owner?: string;
   /** Whether Claude trusts the folder, when its config says; undefined when it can't be read. */
   trusted?: boolean;
 };
@@ -380,19 +419,13 @@ const stateOf = (helper: unknown): "helper" | "missing" | "foreign" =>
       : "foreign";
 
 /**
- * Claude's trust flag for a folder or the nearest parent that has one:
- * true when any has it accepted, false when one says it was not, else unknown.
+ * Claude's trust flag for exactly this folder. A parent's does not count
+ * (Claude lists it under "Trust that doesn't count"). Undefined when the config doesn't say.
  */
 function trustOf(doc: Doc, dir: string): boolean | undefined {
-  if (!isRecord(doc.projects)) return undefined;
-  let seen: boolean | undefined;
-  for (let d = dir; ; d = dirname(d)) {
-    const p = doc.projects[d];
-    const t = isRecord(p) ? p.hasTrustDialogAccepted : undefined;
-    if (t === true) return true;
-    if (t === false) seen = false;
-    if (dirname(d) === d) return seen;
-  }
+  const p = isRecord(doc.projects) ? doc.projects[dir] : undefined;
+  const t = isRecord(p) ? p.hasTrustDialogAccepted : undefined;
+  return typeof t === "boolean" ? t : undefined;
 }
 
 /**
@@ -405,7 +438,13 @@ function trustOf(doc: Doc, dir: string): boolean | undefined {
 export function proofReport(
   file: string,
   origin: string,
-  opts: { projectFile?: string; cwd?: string; recorded?: ProofRecord[] } = {},
+  opts: {
+    projectFile?: string;
+    cwd?: string;
+    recorded?: ProofRecord[];
+    /** This bus's home when it is not the default one. */
+    busHome?: string;
+  } = {},
 ): ProofReport {
   const report: ProofReport = { entries: [], elsewhere: [], symlink: false };
   const read = (path: string): Doc | undefined => {
@@ -428,11 +467,24 @@ export function proofReport(
         opts.recorded === undefined ||
         recordOf(opts.recorded, file, f.name, f.project) >= 0;
       const trusted = trustOf(doc, f.project ?? "");
+      const mine =
+        typeof f.entry.headersHelper !== "string" ||
+        !isProofHelper(f.entry.headersHelper) ||
+        ownedBy(f.entry.headersHelper, opts.busHome);
+      const owner =
+        typeof f.entry.headersHelper === "string"
+          ? helperHome(f.entry.headersHelper)
+          : undefined;
       report.entries.push({
         name: f.name,
         scope: f.scope,
         ...(f.project === undefined ? {} : { project: f.project }),
-        state: base === "helper" && !known ? "unrecorded" : base,
+        state: !mine
+          ? "other-bus"
+          : base === "helper" && !known
+            ? "unrecorded"
+            : base,
+        ...(!mine && owner !== undefined ? { owner } : {}),
         ...(f.scope === "local" && trusted !== undefined ? { trusted } : {}),
       });
       if (f.scope === "local" && f.project === opts.cwd) localNames.add(f.name);

@@ -4,6 +4,7 @@
 import { EventEmitter } from "node:events";
 import {
   copyFileSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,15 +15,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setStaged, writeState } from "@oa/bus-daemon";
 import { describe, expect, it, vi } from "vitest";
 import { daemon } from "../src/commands/daemon.ts";
 import { doctor } from "../src/commands/doctor.ts";
+import { update } from "../src/commands/update.ts";
 import {
   type AdapterDeps,
   installAdapters,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
 import { installProof, isProofHelper } from "../src/steps/claude-proof.ts";
+import { claudeProofChecks } from "../src/steps/claude-proof-check.ts";
 import { fakeCtx, TOKEN } from "./fake.ts";
 
 const HUB = "https://oa.example.com";
@@ -428,6 +432,8 @@ describe("doctor, Claude entries (#2688)", () => {
       expect.stringMatching(
         /^ {2}Fix: remove that headersHelper from the entry in .*\.claude\.json, then run .* install$/,
       ),
+      "Claude Code: automatic linking is off for this bus.",
+      "  Fix: run npx @open-artifacts/bus install once to turn it on",
     ]);
   });
 
@@ -510,6 +516,8 @@ describe("doctor, Claude entries (#2688)", () => {
     expect(before).toEqual([
       "Claude Code: the open-artifacts entry (user scope) has the helper, but was set up by another bus or an older install.",
       "  Fix: run npx @open-artifacts/bus install to adopt it",
+      "Claude Code: automatic linking is off for this bus.",
+      "  Fix: run npx @open-artifacts/bus install once to turn it on",
     ]);
     await installAdapters(s.deps);
     expect((await lines(s))[0]).toContain("shows as this session");
@@ -606,5 +614,169 @@ describe("doctor, Codex and OpenCode entries the proxy swap skipped", () => {
     const all = ctx.all().join("\n");
     expect(all).toContain("Codex: left the oa-codex entry");
     expect(all).toContain("OpenCode: left the oa-oc entry");
+  });
+});
+
+describe("two buses on one hub (#2688)", () => {
+  it("each leaves the other's helper alone: no flip on daemon start, and each uninstall touches only its own", async () => {
+    const s = setup();
+    const original = s.text();
+    const alt = join(s.h, "alt");
+    const altDeps: AdapterDeps = { ...s.deps, busHome: alt };
+    await installAdapters(s.deps);
+    const main = s.text();
+    const r = await installAdapters(altDeps);
+    // Alt finds main's helper on the entry and leaves it.
+    expect(JSON.stringify(r.notes)).toContain("belongs to the bus at");
+    expect(s.text()).toBe(main);
+    // Each daemon start: the unattended path changes nothing on the other's helper.
+    const altIo = {
+      file: s.file,
+      record: join(alt, "install.json"),
+      write: () => {
+        throw new Error("alt wrote");
+      },
+    };
+    expect(
+      installProof(altIo, HUB, [BIN], alt, { guard: true }).changed,
+    ).toEqual([]);
+    expect(s.text()).toBe(main);
+    // Alt's uninstall does not strip main's helper.
+    await uninstallAdapters(altDeps);
+    expect(s.text()).toBe(main);
+    await uninstallAdapters(s.deps);
+    expect(s.text()).toBe(original);
+  });
+
+  it("doctor names the home that owns the helper", async () => {
+    const s = setup();
+    await installAdapters(s.deps);
+    const alt = join(s.h, "alt");
+    const ctx = fakeCtx({ userHome: s.h, home: alt, env: {} });
+    const out = claudeProofChecks(ctx, HUB);
+    expect(out[0]?.lines[0]).toContain(
+      "has the helper of another bus (the default home), so this bus left it alone.",
+    );
+    // From the default bus the same entries pass.
+    expect(
+      claudeProofChecks(
+        fakeCtx({ userHome: s.h, home: join(s.h, ".oa-bus"), env: {} }),
+        HUB,
+      )[0]?.level,
+    ).toBe("pass");
+  });
+});
+
+describe("trust, symlinks and existing installs (#2688)", () => {
+  it("a parent folder's trust does not count; only the exact folder", async () => {
+    const s = setup(
+      claudeJson({
+        projects: {
+          "/work": { hasTrustDialogAccepted: true },
+          [PROJ_A]: {
+            hasTrustDialogAccepted: false,
+            mcpServers: { oa: http() },
+          },
+          [PROJ_B]: { mcpServers: { late: http() } },
+        },
+      }),
+    );
+    await installAdapters(s.deps);
+    const ctx = fakeCtx({ userHome: s.h, home: join(s.h, ".oa-bus"), env: {} });
+    const out = claudeProofChecks(ctx, HUB);
+    expect(out.map((c) => c.level)).toContain("warn");
+    expect(out.flatMap((c) => c.lines).join("\n")).toContain(
+      "the oa entry (local scope, project /work/a) has the helper, but Claude doesn't trust that folder",
+    );
+  });
+
+  it("install writes through a symlinked ~/.claude.json and keeps the link", async () => {
+    const s = setup(null);
+    const real = join(s.h, "real.json");
+    writeFileSync(real, claudeJson());
+    symlinkSync(real, s.file);
+    await installAdapters(s.deps);
+    expect(lstatSync(s.file).isSymbolicLink()).toBe(true);
+    expect(readFileSync(real, "utf8")).toContain("mcp-proof");
+  });
+
+  it("records the config file even before it exists, so a later file is picked up by the daemon", async () => {
+    const s = setup(null);
+    await installAdapters(s.deps);
+    expect(
+      JSON.parse(readFileSync(join(s.h, ".oa-bus/install.json"), "utf8"))
+        .claudeConfig,
+    ).toBe(s.file);
+    writeFileSync(s.file, claudeJson());
+    const ctx = fakeCtx({
+      userHome: s.h,
+      home: join(s.h, ".oa-bus"),
+      env: {},
+      service: {
+        ensure: async () => ({}),
+        remove: async () => ({}),
+        cli: () => [BIN],
+        argv: () => [BIN],
+      },
+    });
+    writeFileSync(
+      join(ctx.home, "machine.json"),
+      JSON.stringify({
+        hub: HUB,
+        machine_id: "m",
+        label: "l",
+        machine_token: TOKEN,
+      }),
+    );
+    const signals = new EventEmitter() as never;
+    const run = vi.fn(async () => ({ stop: async () => {} }) as never);
+    const done = daemon(ctx, run as never, signals);
+    await vi.waitFor(() => expect(run).toHaveBeenCalled());
+    (signals as unknown as EventEmitter).emit("SIGTERM");
+    await done;
+    expect(s.read().mcpServers["open-artifacts"].headersHelper).toBe(
+      `${BIN} mcp-proof`,
+    );
+  });
+
+  it("oa-bus update records the config and links an install made before it was recorded", async () => {
+    const s = setup();
+    const ctx = fakeCtx(
+      {
+        userHome: s.h,
+        home: join(s.h, ".oa-bus"),
+        env: {},
+        which: (c) => c === "claude",
+        service: {
+          ensure: async () => ({}),
+          remove: async () => ({}),
+          cli: () => [BIN],
+          argv: () => [BIN],
+        },
+      },
+      true,
+    );
+    mkdirSync(ctx.home, { recursive: true });
+    writeState(ctx.home, { armed: true });
+    setStaged(ctx.home, "1.6.0", 1);
+    ctx.stdinIsTTY = true;
+    ctx.readLine = vi.fn(async () => "yes");
+    writeFileSync(
+      join(ctx.home, "machine.json"),
+      JSON.stringify({
+        hub: HUB,
+        machine_id: "m",
+        label: "l",
+        machine_token: TOKEN,
+      }),
+    );
+    expect(await update(ctx, async () => true)).toBe(0);
+    expect(
+      JSON.parse(readFileSync(join(ctx.home, "install.json"), "utf8"))
+        .claudeConfig,
+    ).toBe(s.file);
+    expect(s.read().mcpServers["open-artifacts"].headersHelper).toBe(
+      `${BIN} mcp-proof`,
+    );
   });
 });

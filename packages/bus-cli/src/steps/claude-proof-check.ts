@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, tilde } from "../context.ts";
 import { originOf } from "../machine.ts";
 import {
@@ -8,6 +9,7 @@ import {
   proofReport,
   readRecord,
 } from "./claude-proof.ts";
+import { isDefaultHome } from "./service.ts";
 
 /** The event the daemon logs for each entry it gave the helper (name and scope only). */
 export const PROOF_EVENT = "claude_proof_applied";
@@ -48,6 +50,7 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
     projectFile: join(ctx.cwd, ".mcp.json"),
     cwd: ctx.cwd,
     recorded: rec.proofs,
+    ...(isDefaultHome(ctx.home, ctx.userHome) ? {} : { busHome: ctx.home }),
   });
   const out: ProofCheck[] = [];
   const install = `run ${ctx.busCmd} install`;
@@ -89,6 +92,14 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
               lines: [`Claude Code: ${at} shows as this session on pages.`],
             },
       );
+    else if (e.state === "other-bus")
+      out.push({
+        level: "warn",
+        lines: [
+          `Claude Code: ${at} has the helper of another bus (${e.owner === undefined ? "the default home" : tilde(ctx, e.owner)}), so this bus left it alone.`,
+          "  An entry links one bus; use another entry for this one.",
+        ],
+      });
     else if (e.state === "unrecorded")
       out.push({
         level: "warn",
@@ -114,6 +125,19 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
         ],
       });
   }
+  // Existing installs: nothing was recorded, so the daemon has no file to keep linked.
+  if (
+    rec.config === undefined &&
+    wiredTo(ctx) &&
+    r.entries.some((e) => e.scope !== "project")
+  )
+    out.push({
+      level: "warn",
+      lines: [
+        "Claude Code: automatic linking is off for this bus.",
+        `  Fix: ${install} once to turn it on`,
+      ],
+    });
   if (r.symlink)
     out.push({
       level: "warn",

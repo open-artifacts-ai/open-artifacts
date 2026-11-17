@@ -41,6 +41,7 @@ import {
   claudeConfigFile,
   installProof,
   type ProofIo,
+  readRecord as readProofRecord,
   uninstallProof,
 } from "./claude-proof.ts";
 import {
@@ -903,7 +904,7 @@ const uninstall: Record<Harness, Step> = {
   async claude(deps, notes) {
     // The user's entry goes back first; it is not the oa_bus entry below.
     try {
-      uninstallProof(proofIo(deps));
+      uninstallProof(proofIo(deps), movedHome(deps));
     } catch (e) {
       notes.push(
         `could not take the proof helper off the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
@@ -1325,5 +1326,23 @@ export function reapplyClaudeProof(
       { guard: true },
     );
     for (const c of r.changed) onWrite(c);
+  } catch {}
+}
+
+/**
+ * #2688: for an install made before the config file was recorded, `oa-bus
+ * update` records it and links the entries the way install does (this shell's
+ * environment). Never throws; nothing is touched when a config is recorded.
+ */
+export function recordClaudeProof(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "busBin"> & {
+    hub: string;
+  },
+): void {
+  try {
+    if (deps.busBin.length === 0) return;
+    const io = proofIo(deps);
+    if (readProofRecord(io.record).config !== undefined) return;
+    installProof(io, deps.hub, deps.busBin, movedHome(deps));
   } catch {}
 }

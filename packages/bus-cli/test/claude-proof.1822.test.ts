@@ -258,6 +258,7 @@ describe("oa-bus status, Claude entry", () => {
     ]);
     expect(await line(mine, true)).toEqual([
       "Claude Code: the open-artifacts entry (user scope) has no session helper, so what it posts can't be tied to this session.",
+      "Claude Code: automatic linking is off for this bus.",
     ]);
     expect(await line(undefined, true)).toEqual([]);
   });
