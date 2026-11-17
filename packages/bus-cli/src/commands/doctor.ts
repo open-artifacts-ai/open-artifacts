@@ -46,6 +46,12 @@ import {
   safeText,
 } from "../steps/claude-proof-check.ts";
 import {
+  hubOrigin,
+  sessionChecks,
+  sseCheck,
+  sseEntries,
+} from "../steps/claude-sessions.ts";
+import {
   codexConfig,
   codexHome,
   findCodexBin,
@@ -339,6 +345,23 @@ export async function doctor(ctx: Ctx): Promise<number> {
           else fail(chk.lines);
         const fixed = lastAutoFix(ctx);
         if (fixed) say(ctx, fixed);
+      }
+      // #2688: which live sessions are not linked, and why; and an sse entry, which can't link.
+      if (hub !== undefined)
+        for (const name of sseEntries(ctx, hubOrigin(hub) ?? "")) {
+          const k = sseCheck(ctx, name);
+          warn(c.check(k.level, k.head, k.notes));
+        }
+      for (const chk of sessionChecks(
+        ctx,
+        probe.state === "up" ? probe.st : undefined,
+        hub,
+      )) {
+        const ls = c.check(chk.level, chk.head, chk.notes);
+        if (chk.level === "pass") pass(ls[0] as string);
+        else if (chk.level === "warn") warn(ls);
+        else if (chk.level === "info") say(ctx, ls);
+        else fail(ls);
       }
     }
     if (h === "opencode") {

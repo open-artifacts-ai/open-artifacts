@@ -660,6 +660,10 @@ Check lines and their failures:
   entry, an entry whose folder Claude does not trust, or one set up by another bus. With
   no entry at all it says `No Claude Code entry for <host>.` and a line under it, plain and
   not counted.
+- Claude Code sessions (#2688): when every live Claude session is linked, `✓`. Each
+  live session with no link is a `×` naming it and its folder, with the likely cause
+  and the fix, when an entry for this hub applies to that session; a session reaching it
+  another way is not judged. With the daemon down, the daemon check above already fails.
 - Node: `✓  Node 22.11.0`. Below 22: `×  Node 20.9.0 is too old (needs 22 or newer)`,
   then `   Install Node 22 or newer, then run npx @open-artifacts/bus doctor again.`
 - Credentials: missing is `×  No credentials at ~/.oa-bus/machine.json` then

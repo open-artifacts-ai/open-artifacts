@@ -206,6 +206,10 @@ const LIMITED_RETRY_MS = 5 * 60_000;
 /** #1822: how long and how many proofs wait for a record that does not exist yet. */
 const PENDING_PROOF_MS = 60_000;
 const PENDING_PROOF_MAX = 64;
+/** #2688: a Claude session seen this recently may not have run its helper yet. */
+const LINK_GRACE_MS = 2 * 60_000;
+/** #2688: how many recent unbound proof calls the daemon keeps (causes only). */
+const UNBOUND_PROOFS_MAX = 10;
 /** How far back `oa-bus status` lists late deliveries. */
 const LATE_WINDOW_MS = 60 * 60_000;
 /**
@@ -1119,17 +1123,50 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     number,
     { procStart: string; hash: string; at: number }
   >();
+  /**
+   * #2688: why a pid's proof did not link its session, and the last few
+   * `mcp-proof` calls that bound nothing. Causes and times only: never a proof,
+   * a hash or a header.
+   */
+  const proofIssues = new Map<number, "proof_timed_out" | "proof_refused">();
+  const unboundProofs: {
+    at: number;
+    cause: "no_live_record" | "process_mismatch" | "no_process_start";
+  }[] = [];
+  const noteUnbound = (
+    cause: (typeof unboundProofs)[number]["cause"],
+    pid?: number,
+  ) => {
+    unboundProofs.push({ at: Date.now(), cause });
+    while (unboundProofs.length > UNBOUND_PROOFS_MAX) unboundProofs.shift();
+    if (pid !== undefined && cause !== "no_process_start") {
+      proofIssues.delete(pid);
+      proofIssues.set(
+        pid,
+        cause === "no_live_record" ? "proof_timed_out" : "proof_refused",
+      );
+      while (proofIssues.size > PENDING_PROOF_MAX) {
+        const oldest = proofIssues.keys().next().value;
+        if (oldest === undefined) break;
+        proofIssues.delete(oldest);
+      }
+    }
+  };
   const claimProofs = () => {
     if (pendingProofs.size === 0) return;
     const now = Date.now();
     for (const [pid, p] of pendingProofs)
-      if (now - p.at > PENDING_PROOF_MS) pendingProofs.delete(pid);
+      if (now - p.at > PENDING_PROOF_MS) {
+        pendingProofs.delete(pid);
+        noteUnbound("no_live_record", pid);
+      }
     for (const rec of agents.all()) {
       if (rec.kind !== "claude-code" || !rec.live || rec.pid === undefined)
         continue;
       const p = pendingProofs.get(rec.pid);
       if (!p || p.procStart !== rec.procStart) continue;
       pendingProofs.delete(rec.pid);
+      proofIssues.delete(rec.pid);
       rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
       persistLinks();
       sendLink(rec, p.hash);
@@ -1691,7 +1728,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
-      if (start === null || start === undefined) return { bound: false };
+      if (start === null || start === undefined) {
+        noteUnbound("no_process_start");
+        return { bound: false };
+      }
       const find = () =>
         agents
           .all()
@@ -1703,7 +1743,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         rec = find();
       }
       if (rec && rec.procStart !== undefined) {
-        if (rec.procStart !== start) return { bound: false };
+        if (rec.procStart !== start) {
+          noteUnbound("process_mismatch", req.pid);
+          return { bound: false };
+        }
+        proofIssues.delete(req.pid);
         rec.linkHashes = withLinkHash(rec.linkHashes, req.hash);
         persistLinks();
         sendLink(rec, req.hash);
@@ -1727,6 +1771,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // `oa-bus status` and install's "Daemon running": one roster per namespace
     // this machine's open sessions are in (or only the cwd's).
     onStatus: async (req) => {
+      // Expired proofs are counted now, not only at the next sync tick.
+      claimProofs();
       let only: string | undefined;
       if (req.cwd && isAbsolute(req.cwd)) {
         try {
@@ -1801,6 +1847,30 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ? {}
           : { hub_since: hubDroppedAt }),
         link: true,
+        claude_sessions: live
+          .filter((a) => a.kind === "claude-code")
+          .map((a) => {
+            const linked = (a.linkHashes?.length ?? 0) > 0;
+            const young =
+              Date.now() - (agents.firstSeen(a.ref) ?? 0) < LINK_GRACE_MS;
+            const state = linked
+              ? ("linked" as const)
+              : young
+                ? ("starting" as const)
+                : ("unlinked" as const);
+            return {
+              name: stripTerminalControls(a.busName),
+              cwd: stripTerminalControls(a.cwd),
+              state,
+              ...(state === "unlinked"
+                ? {
+                    cause:
+                      proofIssues.get(a.pid) ?? ("no_helper_call" as const),
+                  }
+                : {}),
+            };
+          }),
+        unbound_proofs: unboundProofs.map((u) => ({ ...u })),
         ...(hubVersion === undefined ? {} : { hub_version: hubVersion }),
         ...(only === undefined ? {} : { namespace: only }),
         namespaces,
