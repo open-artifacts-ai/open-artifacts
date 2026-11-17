@@ -1,5 +1,5 @@
-// #2276: on a phone (640px and under) the doc toolbar sits at the bottom of the
-// screen, above the on-screen keyboard. The keyboard is emulated by a fake
+// #2276: on a phone (600px and under) the doc toolbar shows only with the keyboard open, at
+// the bottom of the screen above it. The keyboard is emulated by a fake
 // visualViewport the test shrinks (Chromium has no real one).
 import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
@@ -54,33 +54,34 @@ for (const scheme of ["light", "dark"] as const) {
   test.describe(`phone ${scheme}`, () => {
     test.use({ colorScheme: scheme, viewport: { width: 390, height: 800 } });
 
-    test("the toolbar is at the bottom, then above the keyboard", async ({
+    test("the toolbar is hidden, then rides above the keyboard", async ({
       page,
     }) => {
       await page.goto(`/a/${LANDING}?mock=doc`);
-      await expect(bar(page)).toBeVisible();
       await expect(page.locator(".ProseMirror")).toBeVisible();
-      // At the bottom of the screen, below the text.
-      expect(await bottomEdge(page)).toBeCloseTo(800, 0);
-      const text = await page.locator(".ProseMirror").boundingBox();
-      const top = (await bar(page).boundingBox())?.y ?? 0;
-      expect(top).toBeGreaterThan((text?.y ?? 0) + 100);
-      await shot(page, `doc-phone-toolbar-${scheme}-390.png`);
+      // No keyboard: no bar.
+      await expect(bar(page)).toBeHidden();
+      await shot(page, `doc-phone-toolbar-hidden-${scheme}-390.png`);
 
-      // The keyboard opens: the bar rides on top of it.
+      // The keyboard opens: the bar rides on top of it, buttons 44px.
       await keyboard(page, KEYBOARD);
+      await expect(bar(page)).toBeVisible();
       await expect.poll(() => bottomEdge(page)).toBeCloseTo(800 - KEYBOARD, 0);
+      const btn = await bar(page).getByRole("button").first().boundingBox();
+      expect(btn?.height).toBeGreaterThanOrEqual(44);
+      expect(btn?.width).toBeGreaterThanOrEqual(44);
       await shot(page, `doc-phone-toolbar-keyboard-${scheme}-390.png`);
 
-      // And comes back down when it closes.
+      // And goes away when it closes.
       await keyboard(page, 0);
-      await expect.poll(() => bottomEdge(page)).toBeCloseTo(800, 0);
+      await expect(bar(page)).toBeHidden();
     });
 
     test("a fade marks the cut right edge until the bar is scrolled to the end", async ({
       page,
     }) => {
       await page.goto(`/a/${LANDING}?mock=doc`);
+      await keyboard(page, KEYBOARD);
       await expect(bar(page)).toBeVisible();
       const fade = page.locator(".oa-doc-fade");
       const opacity = () =>
@@ -111,6 +112,7 @@ for (const scheme of ["light", "dark"] as const) {
 
     test("the last line can scroll clear of the bar", async ({ page }) => {
       await page.goto(`/a/${LANDING}?mock=doc`);
+      await keyboard(page, KEYBOARD);
       await expect(bar(page)).toBeVisible();
       const scroll = page.locator(".oa-doc-scroll");
       await scroll.evaluate((el) => {

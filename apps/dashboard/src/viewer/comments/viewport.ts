@@ -101,3 +101,11 @@ export function trackViewportVar(): () => void {
     root.style.removeProperty("--oa-kb");
   };
 }
+
+/**
+ * #2276: on a phone the doc toolbar shows only while the keyboard is open. A
+ * browser without a visual viewport cannot tell, so there it stays shown.
+ */
+export function phoneToolbarHidden(keyboardOpen: boolean): boolean {
+  return !!window.visualViewport && !keyboardOpen;
+}
