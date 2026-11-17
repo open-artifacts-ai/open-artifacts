@@ -68,3 +68,4 @@ export function useBusCmd(ctx: Ctx): void {
   ctx.busCmd = cmd;
   ctx.copy = copyFor(ctx, cmd);
 }
+// proof PR for #2709: a bus-only change; close without merging
