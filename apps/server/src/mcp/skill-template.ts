@@ -194,6 +194,7 @@ ${T("upgradeLine")}Open Artifacts hosts the pages, documents and code you publis
 - MCP endpoint: \`${T("origin")}/mcp\` (Streamable HTTP).
 - OAuth (preferred): add \`${T("origin")}/mcp\` as a remote MCP server in your client. The client registers itself (dynamic client registration) and the user signs in through the browser.
 - Personal access token: the user creates one at ${T("origin")}/settings/connections and saves it with the line under Secrets. Send it as \`Authorization: Bearer <token>\`, read from \`${PAT_FILE}\` in the command or config, never pasted in.
+- Scripts set their own User-Agent (for example \`open-artifacts-script/1\`): some hosts refuse a library's default one, such as Python urllib's, with a bare 403 before the token is checked.
 - Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the @@tools:${toolDefs(spaces).length}:${toolDefs(spaces).filter((t) => !DOC_GATED_TOOLS.includes(t.name)).length}@@ tools.
 - Only members can connect agents; guests cannot.
 - Without MCP support, call the endpoint with curl (JSON-RPC; \`tools/call\` takes \`{ "name": "<tool>", "arguments": { ... } }\`):
