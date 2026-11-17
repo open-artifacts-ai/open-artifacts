@@ -75,17 +75,6 @@ const execWith = (version = "2.0.32", restart = 0) =>
           : { code: 0, stdout: "", stderr: "" },
   );
 /** Wires every harness into the fake homes, as install would. */
-/** Doctor's lines without the #2688 "no Claude entry" warning and the summary line, which counts it. */
-const noClaudeEntryWarning = (lines: string[]) =>
-  lines.filter(
-    (l) =>
-      !l.startsWith("Claude Code: no entry for ") &&
-      !l.startsWith("  If you use Claude Code with it") &&
-      !isSummary(l),
-  );
-const isSummary = (l: string) => / failed, | warnings?, |checks passed/.test(l);
-const withoutSummary = (lines: string[]) => lines.filter((l) => !isSummary(l));
-
 async function wire(ctx: Fake, which = ALL) {
   await installAdapters({
     home: ctx.userHome,
@@ -874,9 +863,9 @@ describe("doctor: transcript state 8", () => {
     vi.mocked(ctx.exec).mockClear();
     expect(await doctor(ctx)).toBe(0);
     // The habits line is the user's choice, not a check: habits.test.ts owns it.
-    expect(
-      noClaudeEntryWarning(ctx.all().filter((l) => !l.startsWith("Habits:"))),
-    ).toEqual(withoutSummary(blocks[0] as string[]));
+    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
+      blocks[0],
+    );
     expect(readdirSync(ctx.home)).toEqual(before);
     for (const [cmd, args] of vi.mocked(ctx.exec).mock.calls)
       expect([cmd, ...args]).toEqual(["opencode", "--version"]);
@@ -894,9 +883,9 @@ describe("doctor: transcript state 8", () => {
     approve(ctx);
     await wire(ctx, (c) => c === "claude");
     expect(await doctor(ctx)).toBe(1);
-    expect(
-      noClaudeEntryWarning(ctx.all().filter((l) => !l.startsWith("Habits:"))),
-    ).toEqual(withoutSummary(blocks[1] as string[]));
+    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
+      blocks[1],
+    );
   });
 
   it("each check's failure line", async () => {
@@ -1043,9 +1032,9 @@ describe("doctor: transcript state 8", () => {
         "   Set isolatePeerMachines to false in ~/.claude/settings.json.",
       ]),
     );
-    // No service: the daemon line is the second warning; the third is no Claude entry (#2688).
+    // No service: the daemon line is the second warning.
     expect(ctx.all().at(-1)).toBe(
-      "[[muted]]1 failed, 3 warnings, 3 passed.[[/muted]]",
+      "[[muted]]1 failed, 2 warnings, 3 passed.[[/muted]]",
     );
   });
 

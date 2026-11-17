@@ -1310,13 +1310,15 @@ export function skippedProxyEntries(
 export function reapplyClaudeProof(
   deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "busBin"> & {
     hub: string;
+    /** The Claude config install recorded: the only file this edits. */
+    config: string;
   },
   onWrite: (entry: { entry: string; scope: string }) => void,
 ): void {
   try {
     if (deps.busBin.length === 0) return;
     const r = installProof(
-      proofIo(deps),
+      { ...proofIo(deps), file: deps.config },
       deps.hub,
       deps.busBin,
       movedHome(deps),

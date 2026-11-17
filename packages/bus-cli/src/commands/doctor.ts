@@ -331,6 +331,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
         for (const chk of claudeProofChecks(ctx, hub))
           if (chk.level === "pass") pass(chk.lines[0] as string);
           else if (chk.level === "warn") warn(chk.lines);
+          else if (chk.level === "info") say(ctx, chk.lines);
           else fail(chk.lines);
         const fixed = lastAutoFix(ctx);
         if (fixed) say(ctx, fixed);

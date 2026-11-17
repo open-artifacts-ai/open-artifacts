@@ -127,7 +127,7 @@ export const updateTarget = async (
  */
 const proofLines = (ctx: Ctx, hub: string, daemonKnows: boolean): string[] =>
   claudeProofChecks(ctx, hub)
-    .filter((c) => !(c.level === "warn" && c.lines[0]?.includes("no entry")))
+    .filter((c) => c.level !== "info")
     .flatMap((c) =>
       c.level === "pass" && !daemonKnows
         ? [

@@ -623,6 +623,8 @@ oa-bus 0.1.0
 [[success]]✓[[/success]]  Hub reachable at bus.example.com
 [[success]]✓[[/success]]  Claude Code wired
 [[success]]✓[[/success]]  Claude Code accepts messages from other machines
+No Claude Code entry for bus.example.com.
+   Agents using a connector or another client aren't checked.
 [[success]]✓[[/success]]  OpenCode 2.0.32 wired
 [[success]]✓[[/success]]  Pi wired
 
@@ -641,6 +643,8 @@ oa-bus 0.1.0
 [[danger]]×[[/danger]]  Hub not reachable at bus.example.com  [[muted]]ECONNREFUSED[[/muted]]
    Check your network, then run npx @open-artifacts/bus doctor again.
 [[success]]✓[[/success]]  Claude Code wired
+No Claude Code entry for bus.example.com.
+   Agents using a connector or another client aren't checked.
 [[warning]]![[/warning]]  OpenCode 1.4.2 is too old for the plugin (needs 2.0.0 or newer)
    Run opencode upgrade, then npx @open-artifacts/bus install again.
 [[danger]]×[[/danger]]  Pi is not wired
@@ -650,6 +654,12 @@ oa-bus 0.1.0
 ```
 
 Check lines and their failures:
+- Claude Code entries (#2688): one line per Claude Code entry for this hub, at user,
+  local and project scope. `✓` when it has the helper that ties its calls to this
+  session; `×` with `   Fix: ...` when it has none or another helper; `!` for a project
+  entry, an entry whose folder Claude does not trust, or one set up by another bus. With
+  no entry at all it says `No Claude Code entry for <host>.` and a line under it, plain and
+  not counted.
 - Node: `✓  Node 22.11.0`. Below 22: `×  Node 20.9.0 is too old (needs 22 or newer)`,
   then `   Install Node 22 or newer, then run npx @open-artifacts/bus doctor again.`
 - Credentials: missing is `×  No credentials at ~/.oa-bus/machine.json` then

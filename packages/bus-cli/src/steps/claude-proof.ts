@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   type Doc,
   jsoncValue,
@@ -130,17 +130,21 @@ export function findElsewhere(doc: Doc, origin: string): Found[] {
 }
 
 export type ProofRecord = {
+  /** The Claude config the entry is in; an older record has none and means the install's own file. */
+  file?: string;
   entry: string;
   /** The project folder of a local-scope entry; none for user scope. */
   project?: string;
   original: string | null;
 };
 export type ProofIo = {
-  /** The Claude config (`~/.claude.json`). */
+  /** The Claude config (`~/.claude.json`, or under CLAUDE_CONFIG_DIR). */
   file: string;
   /** The install record file, which holds the rest of install's state. */
   record: string;
   write: (path: string, data: string, mode?: number) => void;
+  /** Reads a file's text ("" when missing); the write guard reads the Claude config again through it. */
+  read?: (path: string) => string;
 };
 
 const readText = (path: string): string => {
@@ -156,37 +160,73 @@ const asRecord = (p: unknown): ProofRecord | undefined =>
   isRecord(p) &&
   typeof p.entry === "string" &&
   (p.project === undefined || typeof p.project === "string") &&
+  (p.file === undefined || typeof p.file === "string") &&
   (typeof p.original === "string" || p.original === null)
     ? {
+        ...(typeof p.file === "string" ? { file: p.file } : {}),
         entry: p.entry,
         ...(typeof p.project === "string" ? { project: p.project } : {}),
         original: p.original,
       }
     : undefined;
 
-/** The record holds a list; an earlier install's single user-scope object reads as a list of one. */
-function readRecord(path: string): { rest: Doc; proofs: ProofRecord[] } {
+/**
+ * The install record's Claude part: the config file install used (`config`,
+ * which the daemon edits and no other) and each entry it gave the helper.
+ * An earlier install's single user-scope object reads as a list of one.
+ */
+export function readRecord(path: string): {
+  rest: Doc;
+  proofs: ProofRecord[];
+  config?: string;
+} {
   try {
     const v: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (isRecord(v)) {
-      const { claudeProof, ...rest } = v;
+      const { claudeProof, claudeConfig, ...rest } = v;
       const list = Array.isArray(claudeProof) ? claudeProof : [claudeProof];
       return {
         rest,
         proofs: list.map(asRecord).filter((r): r is ProofRecord => !!r),
+        ...(typeof claudeConfig === "string" ? { config: claudeConfig } : {}),
       };
     }
   } catch {}
   return { rest: {}, proofs: [] };
 }
 
-function writeRecord(io: ProofIo, rest: Doc, proofs: ProofRecord[]) {
-  const out = proofs.length ? { ...rest, claudeProof: proofs } : rest;
+function writeRecord(
+  io: ProofIo,
+  rest: Doc,
+  proofs: ProofRecord[],
+  config: string | undefined,
+) {
+  const out = {
+    ...rest,
+    ...(config ? { claudeConfig: config } : {}),
+    ...(proofs.length ? { claudeProof: proofs } : {}),
+  };
   io.write(io.record, `${JSON.stringify(out, null, 2)}\n`, 0o600);
 }
 
-const same = (r: ProofRecord, name: string, project?: string) =>
-  r.entry === name && r.project === project;
+const recordOf = (
+  proofs: ProofRecord[],
+  file: string,
+  name: string,
+  project?: string,
+) =>
+  proofs.findIndex(
+    (r) =>
+      (r.file ?? file) === file && r.entry === name && r.project === project,
+  );
+
+/** The token form's original, rebuilt from our own helper's `--token-file` (an adopted entry). */
+const adoptedOriginal = (helper: string): string | null => {
+  const f = /^T=\$\(cat (.+?)\) && \{ /.exec(helper)?.[1];
+  return f
+    ? `T=$(cat ${f}) && printf '{"Authorization":"Bearer %s"}' "$T"`
+    : null;
+};
 
 export type Applied = { entry: string; scope: Scope };
 export type ProofResult = {
@@ -194,16 +234,19 @@ export type ProofResult = {
   notes: string[];
   /** The entries that were written. */
   changed: Applied[];
-  /** The file changed between the read and the write, so nothing was written (guard only). */
+  /** Nothing was written: the file changed between the read and the write, or it is a symlink (guard only). */
   skipped?: true;
 };
 
 /**
- * Adds the helper to every entry for the instance (user scope and each local
- * scope), keeping a token entry's Authorization. Someone else's helper is
- * left alone, with a note. Running again changes nothing and writes nothing.
- * With `guard`, the file is read again just before the write and nothing is
- * written if it changed meanwhile: Claude rewrites it while it runs.
+ * Adds the helper to every entry for the instance in `io.file` (user scope and
+ * each local scope), keeping a token entry's Authorization. Someone else's
+ * helper is left alone, with a note. Running again changes nothing and writes
+ * nothing. The file is recorded, so uninstall and the daemon use exactly it.
+ * With `guard` (the unattended daemon): our own helper on an entry with no
+ * record is not adopted, a symlinked file is not written, and the file is read
+ * again just before the write, nothing written if it changed meanwhile:
+ * Claude rewrites it while it runs.
  */
 export function installProof(
   io: ProofIo,
@@ -213,16 +256,20 @@ export function installProof(
   opts: { guard?: boolean } = {},
 ): ProofResult {
   const out: ProofResult = { notes: [], changed: [] };
-  const text = readText(io.file);
+  const read = io.read ?? readText;
+  const text = read(io.file);
   if (text === "") return out;
-  const { rest, proofs } = readRecord(io.record);
+  const { rest, proofs, config } = readRecord(io.record);
   const records = [...proofs];
   let next = text;
   for (const f of findEntries(parseJsonc(text, io.file), origin)) {
-    const rec = records.find((r) => same(r, f.name, f.project));
+    const at = recordOf(records, io.file, f.name, f.project);
+    const rec = records[at];
     const cur = f.entry.headersHelper;
     let original: string | null;
     if (isProofHelper(cur) && rec) original = rec.original;
+    else if (isProofHelper(cur) && !opts.guard && typeof cur === "string")
+      original = adoptedOriginal(cur);
     else if (isProofHelper(cur)) continue;
     else if (cur === undefined) original = null;
     else if (typeof cur === "string" && TOKEN_HELPER.test(cur)) original = cur;
@@ -238,8 +285,8 @@ export function installProof(
       ...(busHome ? { busHome } : {}),
     });
     if (cur === helper && rec) continue;
-    const at = records.findIndex((r) => same(r, f.name, f.project));
     const made: ProofRecord = {
+      file: io.file,
       entry: f.name,
       ...(f.project === undefined ? {} : { project: f.project }),
       original,
@@ -249,22 +296,38 @@ export function installProof(
     next = setJsoncValue(next, [...f.path, "headersHelper"], helper);
     out.changed.push({ entry: f.name, scope: f.scope });
   }
-  if (out.changed.length === 0) return out;
-  if (opts.guard && readText(io.file) !== text)
-    return { notes: out.notes, changed: [], skipped: true };
-  writeRecord(io, rest, records);
-  io.write(io.file, next);
+  const recorded = config === io.file;
+  if (out.changed.length === 0 && (recorded || opts.guard)) return out;
+  if (opts.guard) {
+    let link = false;
+    try {
+      link = lstatSync(io.file).isSymbolicLink();
+    } catch {}
+    if (link || read(io.file) !== text)
+      return { notes: out.notes, changed: [], skipped: true };
+  }
+  writeRecord(io, rest, records, io.file);
+  if (out.changed.length > 0) io.write(io.file, next);
   return out;
 }
 
-/** Puts every entry back as it was before `installProof`; false when there was nothing to undo. */
+/** Puts every entry back as it was before `installProof`, in the file each was recorded in; false when there was nothing to undo. */
 export function uninstallProof(io: ProofIo): boolean {
-  const { rest, proofs } = readRecord(io.record);
-  if (proofs.length === 0) return false;
-  let text = readText(io.file);
-  const before = text;
+  const { rest, proofs, config } = readRecord(io.record);
+  if (proofs.length === 0) {
+    if (config) writeRecord(io, rest, [], undefined);
+    return false;
+  }
+  const texts = new Map<string, { before: string; text: string }>();
   let undone = false;
   for (const proof of proofs) {
+    const file = proof.file ?? io.file;
+    let t = texts.get(file);
+    if (!t) {
+      const before = (io.read ?? readText)(file);
+      t = { before, text: before };
+      texts.set(file, t);
+    }
     const path = [
       ...(proof.project === undefined
         ? ["mcpServers"]
@@ -274,20 +337,21 @@ export function uninstallProof(io: ProofIo): boolean {
     ];
     let cur: unknown;
     try {
-      cur = text === "" ? undefined : jsoncValue(text, path);
+      cur = t.text === "" ? undefined : jsoncValue(t.text, path);
     } catch {
       cur = undefined;
     }
     // Only our own helper is taken back: anything else is the user's since.
     if (!isProofHelper(cur)) continue;
-    text =
+    t.text =
       proof.original === null
-        ? removeJsoncValue(text, path)
-        : setJsoncValue(text, path, proof.original);
+        ? removeJsoncValue(t.text, path)
+        : setJsoncValue(t.text, path, proof.original);
     undone = true;
   }
-  if (text !== before) io.write(io.file, text);
-  writeRecord(io, rest, []);
+  for (const [file, t] of texts)
+    if (t.text !== t.before) io.write(file, t.text);
+  writeRecord(io, rest, [], undefined);
   return undone;
 }
 
@@ -295,16 +359,20 @@ export type EntryState = {
   name: string;
   scope: Scope | "project";
   project?: string;
-  state: "helper" | "missing" | "foreign";
+  state: "helper" | "missing" | "foreign" | "unrecorded";
+  /** Whether Claude trusts the folder, when its config says; undefined when it can't be read. */
+  trusted?: boolean;
 };
 
 export type ProofReport = {
   entries: EntryState[];
   /** Same host, different address. */
   elsewhere: { name: string; scope: Scope | "project"; url: string }[];
+  /** The Claude config is a symlink, which the daemon never writes through. */
+  symlink: boolean;
 };
 
-const stateOf = (helper: unknown): EntryState["state"] =>
+const stateOf = (helper: unknown): "helper" | "missing" | "foreign" =>
   helper === undefined
     ? "missing"
     : isProofHelper(helper)
@@ -312,15 +380,34 @@ const stateOf = (helper: unknown): EntryState["state"] =>
       : "foreign";
 
 /**
+ * Claude's trust flag for a folder or the nearest parent that has one:
+ * true when any has it accepted, false when one says it was not, else unknown.
+ */
+function trustOf(doc: Doc, dir: string): boolean | undefined {
+  if (!isRecord(doc.projects)) return undefined;
+  let seen: boolean | undefined;
+  for (let d = dir; ; d = dirname(d)) {
+    const p = doc.projects[d];
+    const t = isRecord(p) ? p.hasTrustDialogAccepted : undefined;
+    if (t === true) return true;
+    if (t === false) seen = false;
+    if (dirname(d) === d) return seen;
+  }
+}
+
+/**
  * Read-only: every Claude entry for the instance, at user and local scope in
  * `file` and project scope in `projectFile` (the current folder's `.mcp.json`).
+ * A project entry that a same-name local entry for `cwd` shadows is left out.
+ * `recorded` is what install recorded: an entry with our helper that is not in
+ * it was set up by another bus or an older install.
  */
 export function proofReport(
   file: string,
   origin: string,
-  projectFile?: string,
+  opts: { projectFile?: string; cwd?: string; recorded?: ProofRecord[] } = {},
 ): ProofReport {
-  const report: ProofReport = { entries: [], elsewhere: [] };
+  const report: ProofReport = { entries: [], elsewhere: [], symlink: false };
   const read = (path: string): Doc | undefined => {
     try {
       const text = readText(path);
@@ -330,14 +417,26 @@ export function proofReport(
     }
   };
   const doc = read(file);
+  try {
+    report.symlink = lstatSync(file).isSymbolicLink();
+  } catch {}
+  const localNames = new Set<string>();
   if (doc) {
-    for (const f of findEntries(doc, origin))
+    for (const f of findEntries(doc, origin)) {
+      const base = stateOf(f.entry.headersHelper);
+      const known =
+        opts.recorded === undefined ||
+        recordOf(opts.recorded, file, f.name, f.project) >= 0;
+      const trusted = trustOf(doc, f.project ?? "");
       report.entries.push({
         name: f.name,
         scope: f.scope,
         ...(f.project === undefined ? {} : { project: f.project }),
-        state: stateOf(f.entry.headersHelper),
+        state: base === "helper" && !known ? "unrecorded" : base,
+        ...(f.scope === "local" && trusted !== undefined ? { trusted } : {}),
       });
+      if (f.scope === "local" && f.project === opts.cwd) localNames.add(f.name);
+    }
     for (const f of findElsewhere(doc, origin))
       report.elsewhere.push({
         name: f.name,
@@ -345,17 +444,22 @@ export function proofReport(
         url: String(f.entry.url),
       });
   }
-  const proj = projectFile === undefined ? undefined : read(projectFile);
+  const proj =
+    opts.projectFile === undefined ? undefined : read(opts.projectFile);
   if (proj && isRecord(proj.mcpServers))
     for (const [name, entry] of Object.entries(proj.mcpServers)) {
       if (!isRecord(entry)) continue;
-      if (isInstanceEntry(entry, origin))
+      if (isInstanceEntry(entry, origin)) {
+        if (localNames.has(name)) continue;
+        const trusted =
+          doc && opts.cwd !== undefined ? trustOf(doc, opts.cwd) : undefined;
         report.entries.push({
           name,
           scope: "project",
           state: stateOf(entry.headersHelper),
+          ...(trusted === undefined ? {} : { trusted }),
         });
-      else if (typeof entry.url === "string") {
+      } else if (typeof entry.url === "string") {
         try {
           if (new URL(entry.url).hostname === new URL(origin).hostname)
             report.elsewhere.push({ name, scope: "project", url: entry.url });

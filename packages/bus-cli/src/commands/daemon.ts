@@ -8,9 +8,11 @@ import {
   runDaemon,
   START_ERROR_CODES,
 } from "@oa/bus-daemon";
+import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, sayErr } from "../context.ts";
-import { readMachine } from "../machine.ts";
+import { originOf, readMachine } from "../machine.ts";
 import { reapplyClaudeProof } from "../steps/adapters.ts";
+import { readRecord } from "../steps/claude-proof.ts";
 import { PROOF_EVENT } from "../steps/claude-proof-check.ts";
 import { REVOKED_EXIT } from "../steps/service.ts";
 
@@ -50,15 +52,19 @@ export async function daemon(
   // Always on: ~/.oa-bus/logs/events.log (the service owns daemon.log's fd); `oa-bus logs` shows both.
   const events = createEventLog(join(ctx.home, "logs", "events.log"));
   // #2688: an update restarts the daemon, so this also runs after `oa-bus update`.
-  const argv = ctx.service.argv?.() ?? [];
-  if (m.state === "ok")
+  // Only for a bus the harness configs name, and only in the Claude config
+  // file install recorded: another bus, or a config nothing was recorded for,
+  // is never touched.
+  const config = readRecord(join(ctx.home, "install.json")).config;
+  if (m.state === "ok" && config !== undefined && wiredTo(ctx))
     reapplyClaudeProof(
       {
         home: ctx.userHome,
         busHome: ctx.home,
         env: ctx.env,
-        busBin: argv,
-        hub: m.hub,
+        busBin: ctx.service.argv?.() ?? [],
+        hub: originOf(m.hub),
+        config,
       },
       (c) => events(PROOF_EVENT, { name: c.entry, kind: c.scope }),
     );

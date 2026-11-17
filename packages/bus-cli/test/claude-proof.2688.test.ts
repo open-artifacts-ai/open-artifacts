@@ -3,10 +3,13 @@
 // can't be linked. Everything runs in a throwaway home with stubbed exec.
 import { EventEmitter } from "node:events";
 import {
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +22,7 @@ import {
   installAdapters,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
-import { isProofHelper } from "../src/steps/claude-proof.ts";
+import { installProof, isProofHelper } from "../src/steps/claude-proof.ts";
 import { fakeCtx, TOKEN } from "./fake.ts";
 
 const HUB = "https://oa.example.com";
@@ -242,6 +245,113 @@ describe("daemon start re-applies the helper", () => {
     expect(doc.projects[PROJ_A].mcpServers.mine.headersHelper).toBe("my-own");
   });
 
+  it("edits only the Claude config install recorded, not a stale ~/.claude.json, and uninstall restores the token helper", async () => {
+    const s = setup(null);
+    const cfgDir = join(s.h, "cfg");
+    mkdirSync(cfgDir, { recursive: true });
+    const real = join(cfgDir, ".claude.json");
+    const tok = (name: string) =>
+      JSON.stringify({
+        mcpServers: {
+          [name]: http(undefined, { headersHelper: TOKEN_HELPER }),
+        },
+      });
+    writeFileSync(real, tok("open-artifacts"));
+    // A stale file under the home, with the same entry name.
+    writeFileSync(s.file, tok("open-artifacts"));
+    const deps = { ...s.deps, env: { CLAUDE_CONFIG_DIR: cfgDir } };
+    await installAdapters(deps);
+    expect(readFileSync(real, "utf8")).toContain("mcp-proof --token-file");
+    expect(readFileSync(s.file, "utf8")).toBe(tok("open-artifacts"));
+    // The daemon's own environment has no CLAUDE_CONFIG_DIR.
+    await start(ctxFor(s));
+    expect(readFileSync(s.file, "utf8")).toBe(tok("open-artifacts"));
+    await uninstallAdapters(deps);
+    expect(readFileSync(real, "utf8")).toBe(tok("open-artifacts"));
+    expect(readFileSync(s.file, "utf8")).toBe(tok("open-artifacts"));
+  });
+
+  it("does nothing for a bus home the harness configs don't name, even with a copied record", async () => {
+    const s = setup();
+    await installAdapters(s.deps);
+    const doc = s.read();
+    doc.projects[PROJ_B].mcpServers.late = http();
+    writeFileSync(s.file, JSON.stringify(doc, null, 2));
+    const other = join(s.h, "other-bus");
+    mkdirSync(other, { recursive: true });
+    copyFileSync(
+      join(s.h, ".oa-bus/install.json"),
+      join(other, "install.json"),
+    );
+    const ctx = ctxFor(s);
+    ctx.home = other;
+    writeFileSync(
+      join(other, "machine.json"),
+      readFileSync(join(s.h, ".oa-bus/machine.json")),
+    );
+    const bytes = s.text();
+    await start(ctx);
+    expect(s.text()).toBe(bytes);
+  });
+
+  it("uses the hub's origin when machine.json holds a non-bare address", async () => {
+    const s = setup();
+    await installAdapters(s.deps);
+    const doc = s.read();
+    doc.projects[PROJ_B].mcpServers.late = http();
+    writeFileSync(s.file, JSON.stringify(doc, null, 2));
+    const ctx = ctxFor(s);
+    writeFileSync(
+      join(ctx.home, "machine.json"),
+      JSON.stringify({
+        hub: "wss://oa.example.com/bus/ws?x=1",
+        machine_id: "m",
+        label: "l",
+        machine_token: TOKEN,
+      }),
+    );
+    await start(ctx);
+    expect(s.read().projects[PROJ_B].mcpServers.late.headersHelper).toBe(
+      `${BIN} mcp-proof`,
+    );
+  });
+
+  it("never writes through a symlinked config", async () => {
+    const s = setup();
+    await installAdapters(s.deps);
+    const doc = s.read();
+    doc.projects[PROJ_B].mcpServers.late = http();
+    const real = join(s.h, "real.json");
+    writeFileSync(real, JSON.stringify(doc, null, 2));
+    rmSync(s.file);
+    symlinkSync(real, s.file);
+    await start(ctxFor(s));
+    expect(readFileSync(real, "utf8")).toBe(JSON.stringify(doc, null, 2));
+  });
+
+  it("writes nothing when the file changed between the read and the write", () => {
+    const s = setup();
+    const write = vi.fn();
+    const first = readFileSync(s.file, "utf8");
+    let n = 0;
+    const r = installProof(
+      {
+        file: s.file,
+        record: join(s.h, "install.json"),
+        write,
+        // The second read, just before the write, sees Claude's own edit.
+        read: () => (++n === 1 ? first : `${first}\n`),
+      },
+      HUB,
+      [BIN],
+      undefined,
+      { guard: true },
+    );
+    expect(r.skipped).toBe(true);
+    expect(r.changed).toEqual([]);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("does nothing without a config file", async () => {
     const s = setup(null);
     await start(ctxFor(s));
@@ -254,14 +364,16 @@ describe("doctor, Claude entries (#2688)", () => {
     s: ReturnType<typeof setup>,
     cwdFile?: object,
     log?: string,
+    cwdIn?: string,
   ) => {
-    const cwd = mkdtempSync(join(tmpdir(), "ob-proof-cwd-"));
+    const cwd = cwdIn ?? mkdtempSync(join(tmpdir(), "ob-proof-cwd-"));
     if (cwdFile) writeFileSync(join(cwd, ".mcp.json"), JSON.stringify(cwdFile));
     const ctx = fakeCtx({
       userHome: s.h,
       home: join(s.h, ".oa-bus"),
       cwd,
       env: {},
+      now: () => Date.parse("2026-11-18T00:00:00Z"),
       nodeVersion: "v22.11.0",
       which: (c) => c === "claude",
       exec: vi.fn(async () => ({ code: 0, stdout: "2.1.318", stderr: "" })),
@@ -281,7 +393,11 @@ describe("doctor, Claude entries (#2688)", () => {
       writeFileSync(join(ctx.home, "logs/events.log"), log);
     }
     await doctor(ctx);
-    return ctx.all().filter((l) => /^( {2}Fix|Claude Code: )/.test(l));
+    return ctx
+      .all()
+      .filter((l) =>
+        /^( {2}\S|Claude Code: |No Claude Code| {3}Agents using)/.test(l),
+      );
   };
 
   it("passes for each entry that has the helper", async () => {
@@ -307,7 +423,7 @@ describe("doctor, Claude entries (#2688)", () => {
     const out = await lines(s);
     expect(out).toEqual([
       "Claude Code: the open-artifacts entry (user scope) has no session helper, so what it posts can't be tied to this session.",
-      `  Fix: ${"npx @open-artifacts/bus"} install`,
+      "  Fix: run npx @open-artifacts/bus install",
       "Claude Code: the mine entry (local scope, project /work/a) has a headersHelper that is not oa-bus's, so oa-bus left it alone.",
       expect.stringMatching(
         /^ {2}Fix: remove that headersHelper from the entry in .*\.claude\.json, then run .* install$/,
@@ -315,25 +431,58 @@ describe("doctor, Claude entries (#2688)", () => {
     ]);
   });
 
-  it("fails for a project-scope entry in this folder, with the one-line fix", async () => {
+  it("warns, not fails, for a project-scope entry, in words and with no command that edits .mcp.json", async () => {
     const s = setup(claudeJson({ projects: {} }));
     await installAdapters(s.deps);
-    const out = await lines(s, { mcpServers: { projA: http() } });
+    const out = await lines(s, { mcpServers: { "$(evil) x": http() } });
+    expect(out).toEqual([
+      "Claude Code: the open-artifacts entry (user scope) shows as this session on pages.",
+      "Claude Code: the $(evil) x entry (project scope, .mcp.json in this folder) is not set up by the bus; it links only if it has our helper and the folder is trusted.",
+      "  Re-add it at user scope with Claude Code, then run npx @open-artifacts/bus install.",
+    ]);
+    expect(out.join("\n")).not.toContain("claude mcp");
+  });
+
+  it("does not report a project entry that a same-name local entry for this folder shadows", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ob-proof-cwd-"));
+    const s = setup(
+      claudeJson({ projects: { [cwd]: { mcpServers: { oa: http() } } } }),
+    );
+    await installAdapters(s.deps);
+    const out = await lines(s, { mcpServers: { oa: http() } }, undefined, cwd);
+    expect(out.join("\n")).not.toContain("project scope");
+  });
+
+  it("warns for an entry with our helper in a folder Claude doesn't trust, and reads no flag as unknown", async () => {
+    const s = setup(
+      claudeJson({
+        projects: {
+          [PROJ_A]: {
+            hasTrustDialogAccepted: false,
+            mcpServers: { oa: http() },
+          },
+          [PROJ_B]: { mcpServers: { late: http() } },
+        },
+      }),
+    );
+    await installAdapters(s.deps);
+    const out = await lines(s);
     expect(out).toContain(
-      "Claude Code: the projA entry (project scope, .mcp.json in this folder) can't show as this session: Claude skips the helper on project-scope entries.",
+      "Claude Code: the oa entry (local scope, project /work/a) has the helper, but Claude doesn't trust that folder yet, so it won't run it.",
     );
     expect(out).toContain(
-      `  Fix: claude mcp remove projA -s project, then claude mcp add --transport http projA ${HUB}/mcp -s user, then npx @open-artifacts/bus install`,
+      "Claude Code: the late entry (local scope, project /work/b) shows as this session on pages.",
     );
   });
 
-  it("warns when there is no entry at all, and for the same host at another path", async () => {
+  it("says, without counting it, when there is no entry at all; warns for the same host at another path", async () => {
     const none = await lines(
       setup(claudeJson({ mcpServers: {}, projects: {} })),
     );
-    expect(none[0]).toBe(
-      "Claude Code: no entry for oa.example.com was found at user, local or project scope.",
-    );
+    expect(none).toEqual([
+      "No Claude Code entry for oa.example.com.",
+      "   Agents using a connector or another client aren't checked.",
+    ]);
     const other = await lines(
       setup(
         claudeJson({
@@ -344,6 +493,41 @@ describe("doctor, Claude entries (#2688)", () => {
     );
     expect(other).toContain(
       `Claude Code: the x entry (user scope) points at ${HUB}/v2/mcp, not ${HUB}/mcp, so it can't be linked.`,
+    );
+  });
+
+  it("warns about an entry with our helper that no install recorded, and install adopts it", async () => {
+    const own = `T=$(cat ${TOKEN_FILE}) && { ${BIN} mcp-proof --token-file ${TOKEN_FILE} 2>/dev/null || printf '{"Authorization":"Bearer %s"}' "$T"; }`;
+    const s = setup(
+      claudeJson({
+        mcpServers: {
+          "open-artifacts": http(undefined, { headersHelper: own }),
+        },
+        projects: {},
+      }),
+    );
+    const before = await lines(s);
+    expect(before).toEqual([
+      "Claude Code: the open-artifacts entry (user scope) has the helper, but was set up by another bus or an older install.",
+      "  Fix: run npx @open-artifacts/bus install to adopt it",
+    ]);
+    await installAdapters(s.deps);
+    expect((await lines(s))[0]).toContain("shows as this session");
+    // The token form comes back on uninstall.
+    await uninstallAdapters(s.deps);
+    expect(s.read().mcpServers["open-artifacts"].headersHelper).toBe(
+      TOKEN_HELPER,
+    );
+  });
+
+  it("says when the Claude config is a symlink", async () => {
+    const s = setup(null);
+    const real = join(s.h, "real.json");
+    writeFileSync(real, claudeJson());
+    symlinkSync(real, s.file);
+    const out = await lines(s);
+    expect(out.join("\n")).toContain(
+      "is a symlink, so the daemon doesn't edit it on its own.",
     );
   });
 
@@ -358,6 +542,13 @@ describe("doctor, Claude entries (#2688)", () => {
     expect(out).toContain(
       "Claude Code: the last automatic fix (2026-11-17 08:00 UTC) added the helper to late (local scope).",
     );
+    // Older than a week: not shown.
+    const old = await lines(
+      s,
+      undefined,
+      "2020-01-01T08:00:00.000Z claude_proof_applied name=late kind=local\n",
+    );
+    expect(old.join("\n")).not.toContain("last automatic fix");
   });
 
   it("never prints a header value", async () => {
