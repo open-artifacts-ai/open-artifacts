@@ -76,6 +76,7 @@ describe("contract is pinned", () => {
       "run_version",
       "install_now",
       "update_ack",
+      "owner_away",
     ]);
   });
 

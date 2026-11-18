@@ -191,6 +191,7 @@ describe("frames", () => {
       "run_version",
       "install_now",
       "update_ack",
+      "owner_away",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {
