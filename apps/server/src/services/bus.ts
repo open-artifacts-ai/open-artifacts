@@ -130,6 +130,10 @@ export type BusHubRpc = {
   }>;
   /** #1822: the live session whose proof hashes to `hash`, in this member's own hub; else null. */
   agentByProof(hash: string): Promise<AgentIdentity | null>;
+  /** Why a proof resolved to no session, for the log only (hub.ts). */
+  proofMissReason(
+    hash: string,
+  ): Promise<"unbound" | "closed" | "unlinked" | "revoked" | "other">;
   /** #1890: the identity id and kind of this member's agent at the address (live or away), else null. */
   identityOf(
     namespace: string,
@@ -641,9 +645,13 @@ async function lookupProof(
   const t0 = Date.now();
   // #2110: one line per lookup that gives no identity, so a flapping link is
   // visible. Reason and elapsed ms only: never the proof, its hash or a token.
-  const none = (reason: "timeout" | "miss" | "no_machine" | "error") => {
+  const none = (
+    reason: "timeout" | "miss" | "no_machine" | "error",
+    why?: string,
+  ) => {
     logInfo("bus_link_lookup_none", {
       reason,
+      ...(why ? { why } : {}),
       ms: Date.now() - t0,
     });
     return null;
@@ -654,18 +662,29 @@ async function lookupProof(
     // One bound for the whole lookup, the machine read included, so a slow
     // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
     const r = await within(
-      (async (): Promise<{ id: AgentIdentity | null } | "no_machine"> => {
+      (async (): Promise<
+        { id: AgentIdentity | null; why?: string } | "no_machine"
+      > => {
         if (!(await hasConnectedMachine(env, userId))) return "no_machine";
         const hub = busHub(env, userId);
-        return {
-          id: hub ? await hub.agentByProof(await sha256Hex(p.data)) : null,
-        };
+        if (!hub) return { id: null, why: "no_hub" };
+        const hash = await sha256Hex(p.data);
+        const id = await hub.agentByProof(hash);
+        // A miss is rare: one more read says why, for the log only.
+        if (id) return { id };
+        let why: string;
+        try {
+          why = await hub.proofMissReason(hash);
+        } catch {
+          why = "error";
+        }
+        return { id: null, why };
       })(),
       PROOF_LOOKUP_MS,
     );
     if (r === null) return none("timeout");
     if (r === "no_machine") return none("no_machine");
-    if (r.id === null) return none("miss");
+    if (r.id === null) return none("miss", r.why);
     const ms = Date.now() - t0;
     if (ms >= LINK_LOOKUP_SLOW_MS) logInfo("bus_link_lookup_ok", { ms });
     return r.id;
