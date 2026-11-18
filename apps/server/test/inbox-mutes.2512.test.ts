@@ -97,6 +97,46 @@ describe("mutes", () => {
     ).toBe(204);
   });
 
+  it("a mute shows a page's title only while they can still read it (and it isn't deleted)", async () => {
+    const owner = await mk("t-own");
+    const guest = await mk("t-read");
+    const art = await page(owner, "Secret plan");
+    await E.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+    )
+      .bind(art, guest.member.email, owner.userId, Date.now())
+      .run();
+    expect((await post(guest.cookie, { kind: "page", id: art })).status).toBe(
+      204,
+    );
+    expect((await list(guest.cookie)).items).toEqual([
+      { kind: "page", id: art, name: "Secret plan" },
+    ]);
+    // Access lost: the mute stays, the title doesn't.
+    await E.DB.prepare("delete from shares where artifact_id = ?")
+      .bind(art)
+      .run();
+    expect((await list(guest.cookie)).items).toEqual([
+      { kind: "page", id: art, name: "" },
+    ]);
+    expect(JSON.stringify(await list(guest.cookie))).not.toContain("Secret");
+    // The owner still sees it; soft-deleted, nobody does.
+    await post(owner.cookie, { kind: "page", id: art });
+    expect((await list(owner.cookie)).items[0]?.name).toBe("Secret plan");
+    await E.DB.prepare("update artifacts set deleted_at = ? where id = ?")
+      .bind(Date.now(), art)
+      .run();
+    expect((await list(owner.cookie)).items[0]?.name).toBe("");
+  });
+
+  it("an unmute with an unknown kind is a 400", async () => {
+    const a = await mk("kind");
+    const r = await api(app, "/api/v1/me/inbox/mutes/tag/x", a.cookie, {
+      method: "DELETE",
+    });
+    expect(r.status).toBe(400);
+  });
+
   it("only ids they can see: another's private page and an agent on none of their items are 404", async () => {
     const a = await mk("own");
     const b = await mk("other");

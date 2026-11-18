@@ -4,7 +4,10 @@
 // agent that is on an item they have had. At most MUTES_MAX; a person in a
 // browser only (the route).
 import type { InboxMuteBody, InboxMutes, Member } from "@oa/shared";
-import { accessLevel, callerOf } from "../auth/authz.js";
+import { and, inArray, isNull } from "drizzle-orm";
+import { accessLevel, callerOf, listFilterSql } from "../auth/authz.js";
+import { getDb } from "../db/client.js";
+import { artifacts } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
@@ -14,21 +17,44 @@ export const MUTES_MAX = 200;
 /** Mute changes one member may make per day. */
 export const MUTE_WRITES_PER_DAY = 200;
 
-export async function listMutes(env: Env, userId: string): Promise<InboxMutes> {
+/**
+ * The member's mutes. A page's title shows only while the member can still
+ * read it (and it isn't deleted); otherwise the name is empty, so a mute never
+ * keeps a title they lost access to. An agent's name is the one it had on an
+ * item they received.
+ */
+export async function listMutes(env: Env, user: Member): Promise<InboxMutes> {
   const { results } = await stmt(
     env.DB,
-    `select m.kind, m.target_id, coalesce(a.title, m.name, '') as name
-       from inbox_mutes m
-       left join artifacts a on m.kind = 'page' and a.id = m.target_id
-      where m.user_id = ?1 order by m.created_at, m.target_id`,
+    `select kind, target_id, name from inbox_mutes
+      where user_id = ?1 order by created_at, target_id`,
   )
-    .bind(userId)
-    .all<{ kind: "agent" | "page"; target_id: string; name: string }>();
+    .bind(user.id)
+    .all<{ kind: "agent" | "page"; target_id: string; name: string | null }>();
+  const titles = new Map<string, string>();
+  const pages = results
+    .filter((r) => r.kind === "page")
+    .map((r) => r.target_id);
+  const caller = callerOf(user);
+  for (let i = 0; i < pages.length; i += 90) {
+    const rows = await getDb(env)
+      .select({ id: artifacts.id, title: artifacts.title })
+      .from(artifacts)
+      .where(
+        and(
+          inArray(artifacts.id, pages.slice(i, i + 90)),
+          isNull(artifacts.deletedAt),
+          listFilterSql(caller, "all"),
+        ),
+      );
+    for (const r of rows) titles.set(r.id, r.title);
+  }
   return {
     items: results.map((r) => ({
       kind: r.kind,
       id: r.target_id,
-      name: r.name,
+      name:
+        r.kind === "page" ? (titles.get(r.target_id) ?? "") : (r.name ?? ""),
     })),
   };
 }
