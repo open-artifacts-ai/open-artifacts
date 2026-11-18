@@ -3,10 +3,10 @@
 // a mention held for "Allow" is #2577's own Needs-you item, not one here.
 // Writes are best effort, run after the comment is stored, and idempotent on
 // (user, key), so a retry or a repeat writes one row. Never throws.
-import { newId, stripNameControls } from "@oa/shared";
+import { type Member, newId, stripNameControls } from "@oa/shared";
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import {
-  accessLevel,
+  accessLevels,
   type Caller,
   callerOf,
   capOfCaller,
@@ -21,7 +21,7 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
-import { getUser } from "./users.js";
+import { getUsers } from "./users.js";
 
 /** The most characters of a comment an item keeps. */
 export const EXCERPT_MAX = 120;
@@ -68,22 +68,39 @@ export async function writeInboxItems(
   items: NewItem[],
 ): Promise<void> {
   try {
-    const rows: NewItem[] = [];
-    const ok = new Map<string, boolean>();
-    for (const it of items) {
-      if (it.actor.kind === "user" && it.actor.ref === it.userId) continue;
-      const k = `${it.userId}|${it.artifactId}`;
-      let can = ok.get(k);
-      if (can === undefined) {
-        const user = await getUser(env, it.userId);
-        can =
-          !!user &&
-          !capsReads(capOfCaller(callerOf(user))) &&
-          !!(await accessLevel(env, callerOf(user), it.artifactId))?.artifact;
-        ok.set(k, can);
-      }
-      if (can) rows.push(it);
+    // Who can still read what: one batch of member reads and one batch of
+    // access reads per artifact, not a D1 call per recipient.
+    const candidates = items.filter(
+      (it) => !(it.actor.kind === "user" && it.actor.ref === it.userId),
+    );
+    const users = await getUsers(env, [
+      ...new Set(candidates.map((it) => it.userId)),
+    ]);
+    const byArtifact = new Map<string, Set<string>>();
+    for (const it of candidates) {
+      if (!users.has(it.userId)) continue;
+      const set = byArtifact.get(it.artifactId) ?? new Set<string>();
+      set.add(it.userId);
+      byArtifact.set(it.artifactId, set);
     }
+    const ok = new Set<string>();
+    for (const [artifactId, ids] of byArtifact) {
+      const list = [...ids].filter((id) => {
+        const u = users.get(id);
+        return u ? !capsReads(capOfCaller(callerOf(u))) : false;
+      });
+      const levels = await accessLevels(
+        env,
+        list.map((id) => callerOf(users.get(id) as Member)),
+        artifactId,
+      );
+      list.forEach((id, i) => {
+        if (levels[i]?.artifact) ok.add(`${id}|${artifactId}`);
+      });
+    }
+    const rows = candidates.filter((it) =>
+      ok.has(`${it.userId}|${it.artifactId}`),
+    );
     for (let i = 0; i < rows.length; i += 50)
       await env.DB.batch(
         rows.slice(i, i + 50).map((r) =>
@@ -184,6 +201,51 @@ export async function recordCommentItems(
     await writeInboxItems(env, items);
   } catch (e) {
     logWarn("inbox_items_record_failed", e);
+  }
+}
+
+/**
+ * A comment was deleted: its items go (a root takes its whole thread's items
+ * with it). Best effort, never throws.
+ */
+export async function forgetCommentItems(
+  env: Env,
+  j: { artifactId: string; threadId: string; commentId: string; root: boolean },
+): Promise<void> {
+  try {
+    if (j.root)
+      await stmt(
+        env.DB,
+        "delete from inbox_items where artifact_id = ? and thread_id = ?",
+      )
+        .bind(j.artifactId, j.threadId)
+        .run();
+    else
+      await stmt(
+        env.DB,
+        "delete from inbox_items where artifact_id = ? and comment_id = ?",
+      )
+        .bind(j.artifactId, j.commentId)
+        .run();
+  } catch (e) {
+    logWarn("inbox_items_forget_failed", e);
+  }
+}
+
+/** A comment was edited: its mention, reply and comment items show the new text. */
+export async function refreshCommentItems(
+  env: Env,
+  j: { artifactId: string; commentId: string; body: string },
+): Promise<void> {
+  try {
+    await stmt(
+      env.DB,
+      "update inbox_items set excerpt = ? where artifact_id = ? and comment_id = ? and kind in ('mention', 'reply', 'comment')",
+    )
+      .bind(itemExcerpt(j.body), j.artifactId, j.commentId)
+      .run();
+  } catch (e) {
+    logWarn("inbox_items_refresh_failed", e);
   }
 }
 

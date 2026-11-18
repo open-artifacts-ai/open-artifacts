@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { type Inbox, type Me, type Member, newId, R } from "@oa/shared";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import {
@@ -9,6 +10,8 @@ import {
   addThread,
   answerAsk,
   type CommentWho,
+  deleteComment,
+  editComment,
 } from "../src/services/comments.js";
 import {
   itemExcerpt,
@@ -457,5 +460,123 @@ describe("inbox updates: reads", () => {
       (await api(app, R.meInboxReadAll, "", { method: "POST", body: {} }))
         .status,
     ).toBe(401);
+  });
+});
+
+describe("inbox items follow their comment, and the read routes are for a person", () => {
+  const rowsFor = async (id: string, u: U) =>
+    (
+      await E.DB.prepare(
+        "select kind, excerpt, comment_id c from inbox_items where artifact_id = ? and user_id = ? order by created_at, id",
+      )
+        .bind(id, u.userId)
+        .all<{ kind: string; excerpt: string; c: string }>()
+    ).results;
+
+  it("an edited comment's items show the new text", async () => {
+    const id = await mkArtifact();
+    const t = await thread(id, me, "hello");
+    const cid = t.comments[0]?.id as string;
+    expect((await rowsFor(id, owner)).map((r) => r.excerpt)).toEqual(["hello"]);
+    await editComment(E, id, t.id, cid, who(me), view(me), "changed text");
+    expect((await rowsFor(id, owner)).map((r) => r.excerpt)).toEqual([
+      "changed text",
+    ]);
+    const [item] = await ups(owner, id);
+    expect(item?.excerpt).toBe("changed text");
+  });
+
+  it("a deleted reply takes its items; the thread's other items stay", async () => {
+    const id = await mkArtifact();
+    const t = await thread(id, me, "root");
+    const r = await reply(id, t.id, other, "second");
+    const rid = r.id as string;
+    expect((await rowsFor(id, me)).map((x) => x.kind)).toEqual(["reply"]);
+    await deleteComment(E, id, t.id, rid, who(other), false);
+    expect((await rowsFor(id, me)).filter((x) => x.c === rid)).toEqual([]);
+    expect((await rowsFor(id, owner)).map((x) => x.excerpt)).toEqual(["root"]);
+  });
+
+  it("a deleted thread takes every item of the thread", async () => {
+    const id = await mkArtifact();
+    const t = await thread(id, me, "root");
+    await reply(id, t.id, other, "second");
+    expect((await rowsOf(id)).length).toBeGreaterThan(0);
+    await deleteComment(
+      E,
+      id,
+      t.id,
+      t.comments[0]?.id as string,
+      who(me),
+      false,
+    );
+    expect(await rowsOf(id)).toEqual([]);
+  });
+
+  it("read and read-all are refused to a personal token, allowed to a session", async () => {
+    const pat = (await createPat(E, me.userId, "inbox")).token;
+    for (const [path, body] of [
+      [R.meInboxRead, { ids: ["x"] }],
+      [R.meInboxReadAll, {}],
+    ] as const) {
+      const viaToken = await api(app, path, pat, { method: "POST", body });
+      expect(viaToken.status, path).toBe(404);
+      const viaSession = await api(app, path, me.cookie, {
+        method: "POST",
+        body,
+      });
+      expect(viaSession.status, path).toBe(200);
+    }
+  });
+
+  it("a thread with 60 participants writes every item in a few D1 round trips", async () => {
+    const crowd: U[] = [];
+    for (let i = 0; i < 60; i++) crowd.push(await mk(`u-crowd-${i}`));
+    const a = await publish(
+      E,
+      owner.member,
+      {
+        title: "crowd",
+        format: "html",
+        content: "<p>x</p>",
+        visibility: "team",
+      } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await E.DB.prepare("delete from inbox_items where artifact_id = ?")
+      .bind(a.id)
+      .run();
+    const proto = Object.getPrototypeOf(E.DB.prepare("select 1"));
+    const spies = ["first", "all", "run", "raw"].map((m) => vi.spyOn(proto, m));
+    const batch = vi.spyOn(E.DB, "batch");
+    try {
+      await writeInboxItems(
+        E,
+        crowd.map((u, i) => ({
+          userId: u.userId,
+          kind: "reply" as const,
+          key: `reply:crowd-${i}`,
+          artifactId: a.id,
+          actor: { kind: "user" as const, ref: owner.userId, name: "Owner" },
+          excerpt: "hi",
+          at: Date.now(),
+        })),
+      );
+      const single = spies.reduce((n, s) => n + s.mock.calls.length, 0);
+      // Members, access and inserts each go in batches of 50: well under one call per recipient.
+      expect(batch.mock.calls.length).toBeLessThanOrEqual(8);
+      expect(single).toBeLessThanOrEqual(8);
+    } finally {
+      for (const s of spies) s.mockRestore();
+      batch.mockRestore();
+    }
+    const n = await E.DB.prepare(
+      "select count(*) n from inbox_items where artifact_id = ?",
+    )
+      .bind(a.id)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(60);
   });
 });

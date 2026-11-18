@@ -15,6 +15,7 @@ import { canConnect } from "../auth/agents.js";
 import {
   caller,
   capOfCaller,
+  interactiveSession,
   planOfMember,
   requireUser,
 } from "../auth/authz.js";
@@ -275,11 +276,15 @@ export function mountMe(app: AppType): void {
   // asks match nothing. Read-all clears updates only; a mention clears by id.
   app.post(R.meInboxRead, async (c) => {
     const user = requireUser(c);
+    // A person in a browser only, as the share-notice PUT: never a personal
+    // token or an agent grant.
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
     const { ids } = await jsonBody(c, InboxReadBodySchema);
     return c.json({ read: await markRead(c.env, user.id, ids) });
   });
   app.post(R.meInboxReadAll, async (c) => {
     const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
     return c.json({ read: await markAllRead(c.env, user.id) });
   });
 

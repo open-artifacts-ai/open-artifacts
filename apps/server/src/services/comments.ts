@@ -100,7 +100,12 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
-import { recordCommentItems, recordDecisionItems } from "./inbox-items.js";
+import {
+  forgetCommentItems,
+  recordCommentItems,
+  recordDecisionItems,
+  refreshCommentItems,
+} from "./inbox-items.js";
 import {
   isGuestMember,
   isOutsideMember,
@@ -2799,6 +2804,11 @@ export async function editComment(
       rate: rateKeyOf(who),
     }),
   );
+  await refreshCommentItems(env, {
+    artifactId,
+    commentId,
+    body: c.body,
+  });
   return commentView(env, c, viewer);
 }
 
@@ -2827,6 +2837,12 @@ export async function deleteComment(
     }),
   );
   await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
+  await forgetCommentItems(env, {
+    artifactId,
+    threadId,
+    commentId,
+    root: r?.root === true,
+  });
 }
 
 /** A new thread; records the commenter for the first-run checklist (#2287). */
