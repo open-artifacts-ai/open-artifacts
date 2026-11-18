@@ -598,7 +598,8 @@ removed and is clipped as an unknown kind is:
 ```
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 [[warning]]![[/warning]]  Update available: 0.47.0 (this machine runs 0.46.3)
-   Run npx @open-artifacts/bus@latest install.
+   Have your agent run "Install the bus" from
+   https://bus.example.com/llms.txt.
 ```
 
 Agent kinds. A kind this release knows shows its label (Claude Code,
@@ -728,7 +729,7 @@ Check lines and their failures:
 - Update available: after the daemon line, the same warning as in status,
   under the same rules (connected hub only), counted as a warning:
   `[[warning]]![[/warning]]  Update available: 0.47.0 (this machine runs 0.46.3)`
-  then `   Run npx @open-artifacts/bus@latest install.`
+  then the checked install step at the instance's `llms.txt`
 - Hub problem (#294): in the hub section, after the reachability check, the
   same text as in status (including the unknown-value form), counted as a
   failure. Read from the one `/healthz` doctor already makes.

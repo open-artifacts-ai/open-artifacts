@@ -235,7 +235,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
       st,
       async () => (await health()).version,
     );
-    if (update) warn(c.updateAvailable(update, st.version));
+    if (update) warn(c.updateAvailable(update, st.version, hub ?? ""));
   } else
     fail(
       probe.state === "stalled"

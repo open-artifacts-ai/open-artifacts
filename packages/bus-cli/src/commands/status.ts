@@ -180,7 +180,7 @@ export async function status(ctx: Ctx): Promise<number> {
     st,
     async () => (await health).version,
   );
-  if (update) say(ctx, c.updateAvailable(update, st.version));
+  if (update) say(ctx, c.updateAvailable(update, st.version, m.hub));
   const habits = habitsLine(ctx);
   if (habits) say(ctx, habits);
   // From the install record only: status never starts Claude Code.
