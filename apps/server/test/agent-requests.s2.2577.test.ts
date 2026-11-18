@@ -186,8 +186,8 @@ const listAs = async (id: string, v: CommentViewer) =>
   (await listComments(E, id, "all", v)).threads;
 
 // #2577 S2: the switch and the "listens to" list routes, and the gate with the switch off.
-/** The held list's form of a nameless member: the email's local part. */
-const localOf = (u: U) => u.email.split("@")[0];
+/** #2868: a member with no real name reads "Someone", never the email or its local part. */
+const NAMELESS = "Someone";
 const nameRow = async (u: U) =>
   (
     await E.DB.prepare("select name from users where id = ?1")
@@ -408,13 +408,12 @@ describe("names in the 403 and the list (#2843)", () => {
     }
   });
 
-  it("the list names a member as the held list does: name, else the email's local part", async () => {
+  it("the list names a member as the app does: a real name, else Someone (never the email or its local part)", async () => {
     const s = await setup();
     await listEditor(s);
     const entry = async () =>
       (await listens()).entries.find((e) => e.artifact?.id === s.id);
-    expect((await entry())?.member.name).toBe(localOf(editor));
-    expect((await entry())?.member.name).not.toContain("@");
+    expect((await entry())?.member.name).toBe(NAMELESS);
     const original = await nameRow(editor);
     try {
       await setName(editor, "Eddie Editor");
@@ -437,7 +436,7 @@ describe("the listens-to list", () => {
     );
     expect(mine).toHaveLength(1);
     expect(mine[0]).toMatchObject({
-      member: { id: editor.userId, name: localOf(editor) },
+      member: { id: editor.userId, name: NAMELESS },
       scope: "page",
       artifact: { id: s.id, title: "doc" },
     });

@@ -2,6 +2,7 @@ import {
   AgentRequestsSwitchBodySchema,
   AllowBodySchema,
   AllowChallengeBodySchema,
+  ListenAddBodySchema,
   ListenShortenBodySchema,
   R,
 } from "@oa/shared";
@@ -11,9 +12,11 @@ import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import {
+  addListens,
   agentRequestsOn,
   allow,
   allowChallenge,
+  askHistory,
   listHeld,
   listListens,
   notNow,
@@ -98,6 +101,15 @@ export function mountAgentRequests(app: AppType): void {
   app.get(R.agentListens, async (c) => {
     const user = member(c);
     return c.json(await listListens(c.env, user.id));
+  });
+  app.post(R.agentListens, async (c) => {
+    const user = member(c);
+    const body = await jsonBody(c, ListenAddBodySchema);
+    return c.json(await addListens(c.env, user.id, body));
+  });
+  app.get(R.agentAskHistory, async (c) => {
+    const user = member(c);
+    return c.json(await askHistory(c.env, user.id));
   });
   app.patch(`${R.agentListens}/:id`, async (c) => {
     const user = member(c);

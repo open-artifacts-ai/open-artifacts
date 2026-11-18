@@ -150,3 +150,62 @@ export const ListenShortenBodySchema = z.strictObject({
   until: z.number().int(),
 });
 export type ListenShortenBody = z.infer<typeof ListenShortenBodySchema>;
+
+/** The most colleagues one batch add may name. */
+export const LISTEN_ADD_BATCH_MAX = 200;
+
+/**
+ * POST R.agentListens: add teammates to the caller's "listens to" list directly
+ * (Settings, the share tick, first setup). Exactly one of `memberId` and
+ * `memberIds` (at most 200; all-or-nothing). `until` is 30, 90 or 365 (days from
+ * now), or an end time in ms, clamped to a year from now.
+ */
+export const ListenAddBodySchema = z
+  .strictObject({
+    memberId: z.string().optional(),
+    memberIds: z.array(z.string()).min(1).max(LISTEN_ADD_BATCH_MAX).optional(),
+    scope: z.enum(["page", "space", "all"]),
+    /** scope "page". */
+    artifactId: z.string().optional(),
+    /** scope "space". */
+    spaceId: z.string().optional(),
+    until: z.number().int().positive(),
+    via: z.enum(["settings", "share_tick", "first_setup"]),
+  })
+  .refine((b) => (b.memberId === undefined) !== (b.memberIds === undefined), {
+    message: "Send memberId or memberIds",
+    path: ["memberId"],
+  });
+export type ListenAddBody = z.infer<typeof ListenAddBodySchema>;
+
+/** The entries added or extended, in the order asked. A re-add of a live entry extends its end and returns it again. */
+export const ListenAddResultSchema = z.strictObject({
+  entries: z.array(ListenEntrySchema),
+});
+export type ListenAddResult = z.infer<typeof ListenAddResultSchema>;
+
+/** What became of one request, from the receiver's side. */
+export const AskOutcomeSchema = z.enum([
+  "on_list",
+  "allowed_once",
+  "held",
+  "lapsed",
+  "not_now",
+]);
+export type AskOutcome = z.infer<typeof AskOutcomeSchema>;
+
+/** One row of "Who asked what": ids, names, titles and times only; never the words. */
+export const AskHistoryRowSchema = z.strictObject({
+  agent: z.strictObject({ key: z.string(), name: z.string() }),
+  asker: z.strictObject({ id: z.string(), name: z.string() }),
+  /** Null when the page is gone or the caller can no longer open it. */
+  artifact: z.strictObject({ id: z.string(), title: z.string() }).nullable(),
+  at: z.number(),
+  outcome: AskOutcomeSchema,
+});
+export type AskHistoryRow = z.infer<typeof AskHistoryRowSchema>;
+
+export const AskHistorySchema = z.strictObject({
+  rows: z.array(AskHistoryRowSchema),
+});
+export type AskHistory = z.infer<typeof AskHistorySchema>;
