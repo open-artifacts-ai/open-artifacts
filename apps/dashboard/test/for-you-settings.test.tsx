@@ -1,11 +1,15 @@
 // #2512 slices 2 and 3: Settings › Notifications for For you
 // (R.meNotificationPrefs, R.meInboxMutes) and this browser's notifications
-// (R.mePushKey, R.mePushSubscriptions).
+// (R.mePushKey, R.mePushSubscriptions, PATCH R.mePushSubscription, #2774).
 import { NotificationPrefsSchema, R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { getResponse, HttpResponse, http } from "msw";
+import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  muteErrorCopy,
+  type NotificationPrefs,
+} from "../src/foryou/prefsContract";
 import {
   dismissNudge,
   nudgeDismissed,
@@ -13,7 +17,14 @@ import {
   SW_URL,
 } from "../src/foryou/push";
 import { prefsToSave, thisBrowser } from "../src/settings/ForYouPrefs";
-import { calls, events, installHarness, mount, server } from "./harness";
+import {
+  calls,
+  events,
+  findVisibleToast,
+  installHarness,
+  mount,
+  server,
+} from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
@@ -74,16 +85,25 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const levels = async () => {
-  mount("/settings/notifications");
-  return screen.findByRole("table", {}, { timeout: FIRST_LOAD_MS });
-};
 const needs = () =>
   screen.findByRole(
     "switch",
     { name: "Needs you in this browser" },
     { timeout: FIRST_LOAD_MS },
   );
+
+const page = async () => {
+  fakePush("default");
+  mount("/settings/notifications");
+  return screen.findByRole(
+    "switch",
+    { name: "Needs you in this browser" },
+    { timeout: FIRST_LOAD_MS },
+  );
+};
+
+const err = (code: string, status: number) =>
+  HttpResponse.json({ error: { code, message: code } }, { status });
 
 describe("For you settings", () => {
   it("are absent on a server without For you; the email switch stays", async () => {
@@ -94,58 +114,28 @@ describe("For you settings", () => {
       { name: "Notifications" },
       { timeout: FIRST_LOAD_MS },
     );
-    expect(screen.queryByRole("table")).toBeNull();
-    expect(gets.some((c) => c.path === R.meNotificationPrefs)).toBe(false);
-  });
-
-  it("the quiet-hours line names the real end time (OA Product, #2677)", async () => {
-    const base = createHandlers({ events, forYou: "mixed" });
-    server.use(
-      // First wins: this prefs answer, then the rest of the mock.
-      http.get(`*${R.meNotificationPrefs}`, async ({ request }) => {
-        const res = await getResponse(base, request);
-        const body = (await res?.json()) as Record<string, unknown>;
-        return HttpResponse.json({
-          ...body,
-          quietHours: { start: "21:30", end: "06:00" },
-        });
-      }),
-      ...base,
-    );
-    fakePush("default");
-    mount("/settings/notifications");
-    await needs();
-    const hint = await screen.findByText(/away until/);
-    expect(hint).toHaveTextContent('Your own agents see "away until 06:00"');
-    expect(hint.textContent).not.toMatch(/\{end\}|T\d\d:|Z\b|undefined/);
-  });
-
-  it("an end time that isn't HH:MM (an ISO string) never parses", () => {
     expect(
-      NotificationPrefsSchema.shape.quietHours.safeParse({
-        start: "22:00",
-        end: "2026-11-17T07:30:00.000Z",
-      }).success,
-    ).toBe(false);
+      screen.queryByRole("switch", { name: "Needs you in this browser" }),
+    ).toBeNull();
+    expect(gets.some((c) => c.path === R.meNotificationPrefs)).toBe(false);
   });
 
   it("shows the levels, quiet hours, interrupts, lock screens and mutes", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    fakePush("default");
-    mount("/settings/notifications");
-    expect(await needs()).toHaveAttribute("aria-checked", "false");
+    const needs = await page();
+    expect(needs).toHaveAttribute("aria-checked", "false");
     expect(
       screen.getByRole("switch", { name: "Updates in this browser" }),
     ).toBeDisabled();
-    // Slice 3: live, so quiet hours show as the server has them (on).
+    // Drawn off while "Coming later", though the server has them on.
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toHaveAttribute(
       "aria-checked",
-      "true",
+      "false",
     );
     expect(screen.getByText(/away until 07:30/)).toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "Interrupt me for" }),
-    ).toHaveTextContent("Asks waiting for you");
+    ).toHaveTextContent("Waiting asks and approvals");
     expect(
       screen.getByRole("combobox", { name: "On lock screens" }),
     ).toHaveTextContent("Hide details");
@@ -156,32 +146,56 @@ describe("For you settings", () => {
     ).toBeInTheDocument();
   });
 
-  // Slice 3: the interrupt settings are live with browser notifications.
-  it("saves the whole prefs in the browser's zone (quiet hours off)", async () => {
+  // Design (#2674): nothing reads these yet (no push, no away status).
+  it("quiet hours, interrupts and lock screens wait: disabled under Coming later, nothing saved", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    fakePush("default");
-    mount("/settings/notifications");
-    await needs();
+    await page();
     const puts = calls("PUT");
-    expect(screen.queryByText("Coming later", { selector: "p" })).toBeNull();
-    fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
-    await waitFor(() =>
-      expect(puts.find((c) => c.path === R.meNotificationPrefs)?.body).toEqual({
-        needsYou: { inApp: true, browser: false },
-        updates: { inApp: true, browser: false },
-        browserAllAsks: false,
-        quietHours: null,
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        lockScreenDetail: false,
-      }),
+    const box = screen.getByRole("region", { name: "When to interrupt" });
+    expect(box).toHaveAccessibleDescription("Coming later");
+    for (const name of [
+      "Quiet hours start",
+      "Quiet hours end",
+      "Interrupt me for",
+      "On lock screens",
+    ])
+      expect(screen.getByRole("combobox", { name })).toBeDisabled();
+    const quiet = screen.getByRole("switch", { name: "Quiet hours" });
+    expect(quiet).toBeDisabled();
+    fireEvent.click(quiet);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(puts.filter((c) => c.path === R.meNotificationPrefs)).toEqual([]);
+  });
+
+  it("an API-set true never shows the browser switches on without a subscription (#2769)", async () => {
+    server.use(
+      http.get(`*${R.meNotificationPrefs}`, () =>
+        HttpResponse.json({
+          needsYou: { inApp: true, browser: true },
+          updates: { inApp: true, browser: true },
+          browserAllAsks: true,
+          quietHours: null,
+          timeZone: "UTC",
+          lockScreenDetail: true,
+        }),
+      ),
+      ...createHandlers({ events, forYou: "mixed" }),
     );
+    const needs = await page();
+    expect(needs).toHaveAttribute("aria-checked", "false");
+    const updates = screen.getByRole("switch", {
+      name: "Updates in this browser",
+    });
+    expect(updates).toHaveAttribute("aria-checked", "false");
+    expect(updates).toBeDisabled();
+    expect(
+      screen.getByRole("combobox", { name: "Interrupt me for" }),
+    ).toHaveTextContent("Every ask put to me");
   });
 
   it("unmutes", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    fakePush("default");
-    mount("/settings/notifications");
-    await needs();
+    await page();
     const dels = calls("DELETE");
     const muted = screen.getByRole("region", { name: "Muted" });
     fireEvent.click(
@@ -194,16 +208,133 @@ describe("For you settings", () => {
       R.meInboxMute("agent", "agent:polish"),
     );
   });
+
+  it("an unmute of something already gone says so and refreshes the list", async () => {
+    server.use(
+      http.delete("*/api/v1/me/inbox/mutes/:kind/:id", () =>
+        err("not_found", 404),
+      ),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    await page();
+    const muted = screen.getByRole("region", { name: "Muted" });
+    fireEvent.click(
+      within(muted).getByRole("button", { name: "Unmute OA Polish" }),
+    );
+    await findVisibleToast("That's already unmuted.");
+    await waitFor(() =>
+      expect(within(muted).getAllByRole("listitem")).toHaveLength(2),
+    );
+  });
+
+  it("an end time that isn't HH:MM (an ISO string) never parses", () => {
+    expect(
+      NotificationPrefsSchema.shape.quietHours.safeParse({
+        start: "22:00",
+        end: "2026-11-17T07:30:00.000Z",
+      }).success,
+    ).toBe(false);
+  });
 });
 
-describe("this browser's notifications (slice 3)", () => {
-  it("are asked for only on the click, then subscribe, register and save", async () => {
+/** This browser's subscription on the server, with its switches (PROVISIONAL #2774). */
+function subscribed(over: Record<string, unknown> = {}, patchStatus = 200) {
+  localStorage.setItem("oa.push.subscription", "sub_9");
+  let item = {
+    id: "sub_9",
+    label: "Chrome on this Mac",
+    createdAt: "2026-11-17T10:00:00.000Z",
+    lastSentAt: null,
+    needsYou: true,
+    updates: false,
+    ...over,
+  };
+  const patches: unknown[] = [];
+  const handlers = [
+    http.get(`*${R.mePushSubscriptions}`, () =>
+      HttpResponse.json({ items: [item] }),
+    ),
+    http.patch("*/api/v1/me/push/subscriptions/:id", async ({ request }) => {
+      const body = await request.json();
+      patches.push(body);
+      if (patchStatus !== 200) return err("internal", patchStatus);
+      item = { ...item, ...(body as object) };
+      return HttpResponse.json({
+        needsYou: item.needsYou,
+        updates: item.updates,
+      });
+    }),
+  ];
+  return { patches, handlers };
+}
+
+describe("this browser's notifications (slice 3, S5)", () => {
+  it("reads this browser's own switches from the subscription list", async () => {
+    const sub = subscribed({ needsYou: true, updates: false });
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const sw = await page();
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    expect(sw).toBeEnabled();
+    expect(sw).toHaveAccessibleDescription("On for Chrome on this Mac");
+    const updates = screen.getByRole("switch", {
+      name: "Updates in this browser",
+    });
+    expect(updates).toHaveAttribute("aria-checked", "false");
+    expect(updates).toBeEnabled();
+  });
+
+  it("a toggle PATCHes the switch at once and keeps it", async () => {
+    const sub = subscribed();
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const sw = await page();
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    const updates = screen.getByRole("switch", {
+      name: "Updates in this browser",
+    });
+    fireEvent.click(updates);
+    await waitFor(() =>
+      expect(updates).toHaveAttribute("aria-checked", "true"),
+    );
+    await waitFor(() => expect(sub.patches).toEqual([{ updates: true }]));
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() =>
+      expect(sub.patches).toEqual([{ updates: true }, { needsYou: false }]),
+    );
+    // Off keeps the subscription (Updates is still on): no unsubscribe, no DELETE.
+    expect(updates).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("a failed PATCH puts the switch back and says so", async () => {
+    const sub = subscribed({}, 500);
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const sw = await page();
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    const updates = screen.getByRole("switch", {
+      name: "Updates in this browser",
+    });
+    fireEvent.click(updates);
+    await findVisibleToast("Couldn't save. Try again.");
+    await waitFor(() =>
+      expect(updates).toHaveAttribute("aria-checked", "false"),
+    );
+    expect(sub.patches).toEqual([{ updates: true }]);
+  });
+
+  it("no subscription: Needs you is off and asks only on the click, Updates waits", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     const f = fakePush("default", "granted");
     const posts = calls("POST");
     const puts = calls("PUT");
     mount("/settings/notifications");
     const sw = await needs();
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    await waitFor(() => expect(sw).toBeEnabled());
+    const updates = screen.getByRole("switch", {
+      name: "Updates in this browser",
+    });
+    expect(updates).toBeDisabled();
+    expect(updates).toHaveAccessibleDescription("Turn on Needs you here first");
     // Nothing is asked before the click.
     expect(f.n.requestPermission).not.toHaveBeenCalled();
     expect(f.register).not.toHaveBeenCalled();
@@ -230,26 +361,16 @@ describe("this browser's notifications (slice 3)", () => {
       ).toBe(true),
     );
     expect(sw).toHaveAccessibleDescription(/^On for /);
+    expect(updates).toBeEnabled();
   });
 
-  it("turning off removes this browser's subscription", async () => {
-    server.use(...createHandlers({ events, forYou: "mixed" }));
-    fakePush("default", "granted");
-    const dels = calls("DELETE");
-    mount("/settings/notifications");
-    const sw = await needs();
-    fireEvent.click(sw);
-    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
-    fireEvent.click(sw);
-    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "false"));
-    expect(dels.map((c) => c.path)).toContain(R.mePushSubscription("sub_1"));
-  });
-
-  it("a refusal: Blocked in the cell, how to unblock under the row; interrupts stay live", async () => {
+  it("a refusal: Blocked in the cell, how to unblock under the row", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     const f = fakePush("default", "denied");
     mount("/settings/notifications");
-    fireEvent.click(await needs());
+    const sw = await needs();
+    await waitFor(() => expect(sw).toBeEnabled());
+    fireEvent.click(sw);
     expect(
       await screen.findByText("Blocked in this browser"),
     ).toBeInTheDocument();
@@ -262,19 +383,17 @@ describe("this browser's notifications (slice 3)", () => {
     );
     expect(note).toHaveAttribute("colspan", "3");
     expect(f.register).not.toHaveBeenCalled();
-    // Blocked here isn't "can't": the interrupt settings stay live.
     expect(
-      screen.getByRole("combobox", { name: "Interrupt me for" }),
-    ).toBeEnabled();
-    expect(
-      screen.queryByText("Browser notifications aren't available here."),
-    ).toBeNull();
+      screen.getByRole("switch", { name: "Updates in this browser" }),
+    ).toBeDisabled();
   });
 
   it("a browser that can't: Not available, the line under the row, interrupts off", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
-    await levels();
-    expect(await screen.findByText("Not available")).toBeInTheDocument();
+    mount("/settings/notifications");
+    expect(
+      await screen.findByText("Not available", {}, { timeout: FIRST_LOAD_MS }),
+    ).toBeInTheDocument();
     expect(document.querySelector("[data-push-note]")?.textContent).toBe(
       "This browser can't show notifications.",
     );
@@ -289,7 +408,8 @@ describe("this browser's notifications (slice 3)", () => {
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeDisabled();
   });
 
-  it("no push key on the server: no browser column at all", async () => {
+  it("no push key on the server: both switches off and disabled, in plain words", async () => {
+    const sub = subscribed();
     server.use(
       // First: server.use's earlier handlers win.
       http.get(`*${R.mePushKey}`, () =>
@@ -298,14 +418,18 @@ describe("this browser's notifications (slice 3)", () => {
           { status: 404 },
         ),
       ),
+      ...sub.handlers,
       ...createHandlers({ events, forYou: "mixed" }),
     );
-    fakePush("default");
-    const t = await levels();
-    expect(within(t).queryByText("This browser")).toBeNull();
-    expect(
-      screen.queryByRole("switch", { name: "Needs you in this browser" }),
-    ).toBeNull();
+    const sw = await page();
+    for (const el of [
+      sw,
+      screen.getByRole("switch", { name: "Updates in this browser" }),
+    ]) {
+      expect(el).toHaveAttribute("aria-checked", "false");
+      expect(el).toBeDisabled();
+      expect(el).toHaveAccessibleDescription("Not set up on this server");
+    }
     expect(
       screen.getByText("Browser notifications aren't available here."),
     ).toBeInTheDocument();
@@ -328,19 +452,34 @@ describe("the nudge's Not now (Design)", () => {
   });
 });
 
+describe("mute errors in plain words (#2769)", () => {
+  it("mutes_full, not found, and the rest", () => {
+    expect(muteErrorCopy({ status: 409, code: "internal" }, "mute")).toMatch(
+      /muted as many as we allow \(200\)/,
+    );
+    expect(muteErrorCopy({ code: "mutes_full" }, "mute")).toMatch(/200/);
+    expect(muteErrorCopy({ status: 404 }, "mute")).toMatch(/gone/);
+    expect(muteErrorCopy({ status: 404 }, "unmute")).toBe(
+      "That's already unmuted.",
+    );
+    expect(muteErrorCopy({ status: 500 }, "mute")).toBe("Couldn't mute that.");
+    expect(muteErrorCopy(null, "unmute")).toBe("Couldn't unmute that.");
+  });
+});
+
 describe("quiet hours while Coming later (#2674)", () => {
   const prefs = {
     needsYou: { browser: false },
     quietHours: { start: "22:00", end: "07:30" },
-  } as unknown as Parameters<typeof prefsToSave>[0];
+  } as unknown as NotificationPrefs;
   it("a save never sends them on", () => {
+    expect(prefsToSave(prefs).quietHours).toBeNull();
     expect(prefsToSave(prefs, false).quietHours).toBeNull();
   });
-  it("once live, they are sent as set", () => {
-    expect(prefsToSave(prefs, true).quietHours).toEqual({
-      start: "22:00",
-      end: "07:30",
-    });
+  it("once live, they are sent as set, with the browser's zone", () => {
+    const out = prefsToSave(prefs, true);
+    expect(out.quietHours).toEqual({ start: "22:00", end: "07:30" });
+    expect(out.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   });
 });
 

@@ -10,11 +10,18 @@
  * - A notification opens its item's same-origin path; the app checks it again.
  */
 import { PushKeySchema, R } from "@oa/shared";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { ApiClientError, api } from "../api/client";
 import { safePath } from "./model";
+import {
+  type PushSubscriptionItem,
+  type PushSubscriptionList,
+  PushSubscriptionListSchema,
+  type PushSubscriptionPatchBody,
+  PushSubscriptionSwitchesSchema,
+} from "./prefsContract";
 
 export const SW_URL = "/sw.js";
 export const SW_SCOPE = "/notifications/sw/";
@@ -40,6 +47,10 @@ export const PUSH_WORDS = {
   waited: (d: string) =>
     `An agent waited ${d} for you today. Get told the moment one is waiting?`,
   onFor: (browser: string) => `On for ${browser}`,
+  /** The server has no push key: both switches stay off. */
+  noKey: "Not set up on this server",
+  /** Updates needs this browser subscribed first. */
+  turnOnFirst: "Turn on Needs you here first",
 } as const;
 
 /** "Chrome on this Mac": this browser, for the browser column's "On for …" (slice 3). */
@@ -260,6 +271,73 @@ export async function forgetThisBrowser(
     stepMs,
   );
 }
+
+export const pushSubsKey = ["push-subscriptions"] as const;
+
+/** This browser's subscription id on the server, if it kept one. */
+export function thisSubscriptionId(): string | null {
+  try {
+    return localStorage.getItem(SUB_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** PROVISIONAL (#2774): every browser the member turned notifications on in, with its switches. */
+export const usePushSubscriptions = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: pushSubsKey,
+    queryFn: ({ signal }) =>
+      api.get(R.mePushSubscriptions, PushSubscriptionListSchema, signal),
+  });
+
+/** This browser's own row in the list, by the id it kept (undefined: not subscribed). */
+export const thisSubscription = (
+  list: PushSubscriptionList | undefined,
+): PushSubscriptionItem | undefined => {
+  const id = thisSubscriptionId();
+  return id ? list?.items.find((x) => x.id === id) : undefined;
+};
+
+/**
+ * PROVISIONAL (#2774): PATCH this browser's switches, shown at once; a
+ * failure puts them back.
+ */
+export const usePatchSubscription = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; body: PushSubscriptionPatchBody }) =>
+      api.send(
+        "PATCH",
+        R.mePushSubscription(v.id),
+        v.body,
+        PushSubscriptionSwitchesSchema,
+      ),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: pushSubsKey });
+      const prev = qc.getQueryData<PushSubscriptionList>(pushSubsKey);
+      if (prev)
+        qc.setQueryData<PushSubscriptionList>(pushSubsKey, {
+          items: prev.items.map((x) =>
+            x.id === v.id ? { ...x, ...v.body } : x,
+          ),
+        });
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(pushSubsKey, ctx.prev);
+    },
+    onSuccess: (r, v) =>
+      qc.setQueryData<PushSubscriptionList>(
+        pushSubsKey,
+        (cur) =>
+          cur && {
+            items: cur.items.map((x) => (x.id === v.id ? { ...x, ...r } : x)),
+          },
+      ),
+  });
+};
 
 /** Whether this browser has notifications on (its own subscription), read once. */
 export function useThisBrowserOn() {

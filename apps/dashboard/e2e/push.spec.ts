@@ -158,9 +158,9 @@ test("off, then on from the click; the prompt waits for it", async ({
         (window as unknown as { __oaSwRegistered: unknown[] }).__oaSwRegistered,
     ),
   ).toEqual([["/sw.js", "/notifications/sw/"]]);
-  // The interrupt settings are live now.
+  // Subscribed: Updates is this browser's own switch now.
   await expect(
-    page.getByRole("combobox", { name: "Interrupt me for" }),
+    page.getByRole("switch", { name: "Updates in this browser" }),
   ).toBeEnabled();
   await shot(page, "p2-settings-on");
   await axe(page);

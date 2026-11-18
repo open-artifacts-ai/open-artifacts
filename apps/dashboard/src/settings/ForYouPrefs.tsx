@@ -4,8 +4,9 @@
  * screens, and the muted list. Prefs are R.meNotificationPrefs (PUT whole);
  * mutes are R.meInboxMutes. The browser switch is slice 3: a stub for now.
  */
-import type { InboxMutes, NotificationPrefs } from "@oa/shared";
+import type { InboxMutes } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   browserTimeZone,
@@ -15,15 +16,22 @@ import {
   useUnmute,
 } from "../foryou/api";
 import {
+  muteErrorCopy,
+  type NotificationPrefs,
+  type PushSubscriptionItem,
+} from "../foryou/prefsContract";
+import {
   PermissionRefused,
   PUSH_WORDS,
   permission,
+  pushSubsKey,
   pushSupported,
   thisBrowser,
-  turnOff,
+  thisSubscription,
   turnOn,
+  usePatchSubscription,
   usePushKey,
-  useThisBrowserOn,
+  usePushSubscriptions,
 } from "../foryou/push";
 import { toast } from "../layout/toast";
 import { OptionSelect } from "./OptionSelect";
@@ -98,18 +106,31 @@ function Levels({
   prefs: NotificationPrefs;
   pushKey: string | null;
 }) {
-  const browser = pushKey !== null;
   const supported = pushSupported();
   // Lifted here: the cell says it short, the row under it says it in full.
   const [perm, setPerm] = useState(permission);
   const blocked = supported && perm === "denied";
-  const note = !browser
-    ? null
-    : !supported
-      ? PUSH_WORDS.cant
-      : blocked
-        ? PUSH_WORDS.blocked
-        : null;
+  // This browser's own row, from the list (S5, #2774).
+  const subs = usePushSubscriptions(pushKey !== null && supported);
+  const mine = thisSubscription(subs.data);
+  const note =
+    pushKey === null
+      ? null
+      : !supported
+        ? PUSH_WORDS.cant
+        : blocked
+          ? PUSH_WORDS.blocked
+          : null;
+  const cantHere =
+    pushKey === null ? null : !supported ? (
+      <span data-push="unsupported" className={MUTED_SM}>
+        {PUSH_WORDS.notAvailable}
+      </span>
+    ) : blocked ? (
+      <span data-push="blocked" className={MUTED_SM}>
+        {PUSH_WORDS.blockedHere}
+      </span>
+    ) : null;
   const th =
     "px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-[var(--oa-text-muted)] max-[600px]:px-2.5";
   const td =
@@ -127,11 +148,9 @@ function Levels({
             <th scope="col" className={th}>
               In the app
             </th>
-            {browser && (
-              <th scope="col" className={th}>
-                This browser
-              </th>
-            )}
+            <th scope="col" className={th}>
+              This browser
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -143,26 +162,18 @@ function Levels({
               </small>
             </th>
             <td className={td}>Always</td>
-            {browser && pushKey && (
-              <td className={td}>
-                {!supported ? (
-                  <span data-push="unsupported" className={MUTED_SM}>
-                    {PUSH_WORDS.notAvailable}
-                  </span>
-                ) : blocked ? (
-                  <span data-push="blocked" className={MUTED_SM}>
-                    {PUSH_WORDS.blockedHere}
-                  </span>
-                ) : (
-                  <NeedsYouBrowser
-                    prefs={prefs}
-                    pushKey={pushKey}
-                    sub={sub}
-                    onRefused={setPerm}
-                  />
-                )}
-              </td>
-            )}
+            <td className={td}>
+              {cantHere ?? (
+                <NeedsYouBrowser
+                  prefs={prefs}
+                  pushKey={pushKey}
+                  sub={sub}
+                  mine={mine}
+                  loading={subs.isPending && pushKey !== null && supported}
+                  onRefused={setPerm}
+                />
+              )}
+            </td>
           </tr>
           {note && (
             // Design: the full line goes under the row, across the table.
@@ -184,21 +195,13 @@ function Levels({
               </small>
             </th>
             <td className={td}>Always</td>
-            {browser && (
-              <td className={td}>
-                {/* v1: updates never reach the browser (updates.browser is fixed false). */}
-                <Switch
-                  label="Updates in this browser"
-                  describedBy="oa-updates-browser"
-                  checked={false}
-                  disabled
-                  onChange={() => {}}
-                />
-                <small id="oa-updates-browser" className={sub}>
-                  Coming later
-                </small>
-              </td>
-            )}
+            <td className={td}>
+              <UpdatesBrowser
+                pushKey={pushKey}
+                sub={sub}
+                mine={cantHere ? undefined : mine}
+              />
+            </td>
           </tr>
         </tbody>
       </table>
@@ -207,48 +210,50 @@ function Levels({
 }
 
 /**
- * #2512 slice 3: browser notifications for "Needs you" in this browser. The
- * switch shows this browser's own subscription; turning it on asks the browser
- * (from this click only), subscribes and saves needsYou.browser. A browser
- * that can't do it says so; a blocked one says how to unblock.
+ * #2512 slice 3 on S5 (#2774): "Needs you" in this browser. With a
+ * subscription the switch is its own (needsYou, PATCH); without one, turning
+ * it on asks the browser (from this click only) and subscribes. A server
+ * with no push key leaves it off and disabled.
  */
 function NeedsYouBrowser({
   prefs,
   pushKey,
   sub,
+  mine,
+  loading,
   onRefused,
 }: {
   prefs: NotificationPrefs;
-  pushKey: string;
+  pushKey: string | null;
   sub: string;
+  mine: PushSubscriptionItem | undefined;
+  loading: boolean;
   /** The browser's prompt answered: the row shows the blocked state. */
   onRefused: (p: NotificationPermission) => void;
 }) {
   const save = useSavePrefs();
-  const [on, setOn] = useThisBrowserOn();
+  const qc = useQueryClient();
+  const patch = usePatchSubscription();
   const [busy, setBusy] = useState(false);
   const change = async (next: boolean) => {
+    if (mine) {
+      patch.mutate(
+        { id: mine.id, body: { needsYou: next } },
+        { onError: (e) => patchFailed(e, qc) },
+      );
+      return;
+    }
+    if (!next || !pushKey) return;
     setBusy(true);
     try {
-      if (next) {
-        await turnOn(pushKey, thisBrowser());
-        setOn(true);
-        if (!prefs.needsYou.browser)
-          await save.mutateAsync({
-            ...prefs,
-            needsYou: { ...prefs.needsYou, browser: true },
-            timeZone: browserTimeZone(),
-          });
-      } else {
-        const none = await turnOff();
-        setOn(false);
-        if (none && prefs.needsYou.browser)
-          await save.mutateAsync({
-            ...prefs,
-            needsYou: { ...prefs.needsYou, browser: false },
-            timeZone: browserTimeZone(),
-          });
-      }
+      await turnOn(pushKey, thisBrowser());
+      await qc.invalidateQueries({ queryKey: pushSubsKey });
+      if (!prefs.needsYou.browser)
+        await save.mutateAsync({
+          ...prefs,
+          needsYou: { ...prefs.needsYou, browser: true },
+          timeZone: browserTimeZone(),
+        });
     } catch (e) {
       if (e instanceof PermissionRefused) onRefused(e.state);
       else toast({ title: PUSH_WORDS.failed, tone: "danger" });
@@ -256,13 +261,14 @@ function NeedsYouBrowser({
       setBusy(false);
     }
   };
+  const on = mine ? mine.needsYou || mine.updates : false;
   return (
     <>
       <Switch
         label="Needs you in this browser"
         describedBy="oa-needs-browser"
-        checked={on === true}
-        disabled={busy || on === undefined}
+        checked={mine?.needsYou === true}
+        disabled={pushKey === null || busy || loading}
         onChange={(next) => void change(next)}
       />
       <small
@@ -270,19 +276,68 @@ function NeedsYouBrowser({
         className={sub}
         data-push={on ? "on" : "off"}
       >
-        {on ? PUSH_WORDS.onFor(thisBrowser()) : ""}
+        {pushKey === null
+          ? PUSH_WORDS.noKey
+          : mine && on
+            ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
+            : ""}
       </small>
     </>
   );
+}
+
+/** Updates in this browser: its own switch once the browser is subscribed. */
+function UpdatesBrowser({
+  pushKey,
+  sub,
+  mine,
+}: {
+  pushKey: string | null;
+  sub: string;
+  mine: PushSubscriptionItem | undefined;
+}) {
+  const qc = useQueryClient();
+  const patch = usePatchSubscription();
+  return (
+    <>
+      <Switch
+        label="Updates in this browser"
+        describedBy="oa-updates-browser"
+        checked={mine?.updates === true}
+        disabled={!mine}
+        onChange={(next) =>
+          mine &&
+          patch.mutate(
+            { id: mine.id, body: { updates: next } },
+            { onError: (e) => patchFailed(e, qc) },
+          )
+        }
+      />
+      <small id="oa-updates-browser" className={sub}>
+        {pushKey === null
+          ? PUSH_WORDS.noKey
+          : mine
+            ? ""
+            : PUSH_WORDS.turnOnFirst}
+      </small>
+    </>
+  );
+}
+
+/** A switch that didn't save went back; a browser the server forgot is read again. */
+function patchFailed(e: unknown, qc: QueryClient) {
+  if ((e as { status?: number } | null)?.status === 404)
+    void qc.invalidateQueries({ queryKey: pushSubsKey });
+  toast({ title: "Couldn't save. Try again.", tone: "danger" });
 }
 
 /**
  * Design (#2512 slice 2 review): quiet hours, "Interrupt me for" and "On lock
  * screens" only matter once browser notifications ship (slice 3); the server
  * doesn't use them yet (no prefs route, no away status). Until then they show,
- * disabled, under one "Coming later" line. Flip it when slice 3 lands.
+ * disabled, under one "Coming later" line (Design, #2674: they stay so until the away wiring ships).
  */
-export const INTERRUPTS_LIVE = true;
+export const INTERRUPTS_LIVE = false;
 
 function Interrupts({
   prefs,
@@ -369,7 +424,7 @@ function Interrupts({
             value={prefs.browserAllAsks ? "all" : "waiting"}
             disabled={!live}
             options={[
-              { value: "waiting", label: "Asks waiting for you" },
+              { value: "waiting", label: "Waiting asks and approvals" },
               { value: "all", label: "Every ask put to me" },
             ]}
             onChange={(v) => save({ ...prefs, browserAllAsks: v === "all" })}
@@ -416,7 +471,18 @@ function Muted({ items }: { items: InboxMutes["items"] }) {
               variant="outline"
               size="sm"
               aria-label={`Unmute ${m.name}`}
-              onClick={() => unmute.mutate({ kind: m.kind, id: m.id })}
+              onClick={() =>
+                unmute.mutate(
+                  { kind: m.kind, id: m.id },
+                  {
+                    onError: (e) =>
+                      toast({
+                        title: muteErrorCopy(e, "unmute"),
+                        tone: "danger",
+                      }),
+                  },
+                )
+              }
             >
               Unmute
             </Button>

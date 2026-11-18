@@ -81,7 +81,7 @@ test("notification settings at 1280 light", async ({ page }) => {
   await expect(
     page.getByRole("switch", { name: "Needs you in this browser" }),
   ).toHaveAttribute("aria-checked", "false");
-  // Slice 3: live (e2e/push.spec.ts drives it with a stubbed browser).
+  // Needs a subscription first (e2e/push.spec.ts drives it with a stubbed browser).
   await expect(
     page.getByRole("switch", { name: "Updates in this browser" }),
   ).toBeDisabled();
@@ -93,7 +93,7 @@ test("notification settings at 1280 light", async ({ page }) => {
   ).toHaveText("07:30");
   await expect(
     page.getByRole("combobox", { name: "Interrupt me for" }),
-  ).toHaveText("Asks waiting for you");
+  ).toHaveText("Waiting asks and approvals");
   await expect(
     page.getByRole("combobox", { name: "On lock screens" }),
   ).toHaveText("Hide details");
@@ -114,16 +114,12 @@ test("notification settings at 1280 light", async ({ page }) => {
     });
   }
 
-  // Slice 3: the interrupt settings are live; a change saves the whole prefs.
-  const put = page.waitForRequest(
-    (r) => r.method() === "PUT" && r.url().includes("/me/notification-prefs"),
-  );
-  await page.getByRole("combobox", { name: "Interrupt me for" }).click();
-  await page.getByRole("option", { name: "Every ask put to me" }).click();
-  expect((await put).postDataJSON().browserAllAsks).toBe(true);
-  await page.getByRole("switch", { name: "Quiet hours" }).click();
+  // Design (#2674): quiet hours, interrupts and lock screens wait under "Coming later".
   await expect(
-    page.getByRole("combobox", { name: "Quiet hours start" }),
+    page.getByRole("combobox", { name: "Interrupt me for" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("switch", { name: "Quiet hours" }),
   ).toBeDisabled();
   // The Email card is as wide as the cards above it.
   const w = async (sel: string) =>

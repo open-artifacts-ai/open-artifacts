@@ -62,6 +62,7 @@ import {
   waitMs,
   waitText,
 } from "./model";
+import { muteErrorCopy } from "./prefsContract";
 import {
   dismissNudge,
   nudgeDismissed,
@@ -717,6 +718,8 @@ function Row({
   /** A mute keeps the row; the toast says so and can take it back. */
   const muteWith = (m: { kind: "agent" | "page"; id: string }, title: string) =>
     mute.mutate(m, {
+      onError: (e) =>
+        toast({ title: muteErrorCopy(e, "mute"), tone: "danger" }),
       onSuccess: () =>
         toast({
           title,
