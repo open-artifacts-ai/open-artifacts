@@ -55,9 +55,10 @@ describe("For you settings", () => {
     expect(
       screen.getByRole("switch", { name: "Updates in this browser" }),
     ).toBeDisabled();
+    // Drawn off while "Coming later", though the server has them on.
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toHaveAttribute(
       "aria-checked",
-      "true",
+      "false",
     );
     expect(screen.getByText(/away until 07:30/)).toBeInTheDocument();
     expect(
@@ -73,41 +74,25 @@ describe("For you settings", () => {
     ).toBeInTheDocument();
   });
 
-  it("quiet hours, interrupts and lock screens are live and save the whole prefs", async () => {
+  // Design (#2674): nothing reads these yet (no push, no away status).
+  it("quiet hours, interrupts and lock screens wait: disabled under Coming later, nothing saved", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     await page();
     const puts = calls("PUT");
-    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
-    expect(
-      screen.getByRole("combobox", { name: "Interrupt me for" }),
-    ).toBeEnabled();
-    fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
-    await waitFor(() => expect(puts).toHaveLength(1));
-    expect(puts[0]?.path).toBe(R.meNotificationPrefs);
-    const body = puts[0]?.body as NotificationPrefs;
-    expect(body.quietHours).toBeNull();
-    expect(body.timeZone).toBeTruthy();
-    expect(body.updates.browser).toBe(false);
-    await waitFor(() =>
-      expect(
-        screen.getByRole("switch", { name: "Quiet hours" }),
-      ).toHaveAttribute("aria-checked", "false"),
-    );
-  });
-
-  it("a failed save puts the choice back and says so", async () => {
-    server.use(
-      http.put(`*${R.meNotificationPrefs}`, () => err("internal", 500)),
-      ...createHandlers({ events, forYou: "mixed" }),
-    );
-    await page();
-    fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
-    await findVisibleToast("Couldn't save. Try again.");
-    await waitFor(() =>
-      expect(
-        screen.getByRole("switch", { name: "Quiet hours" }),
-      ).toHaveAttribute("aria-checked", "true"),
-    );
+    const box = screen.getByRole("region", { name: "When to interrupt" });
+    expect(box).toHaveAccessibleDescription("Coming later");
+    for (const name of [
+      "Quiet hours start",
+      "Quiet hours end",
+      "Interrupt me for",
+      "On lock screens",
+    ])
+      expect(screen.getByRole("combobox", { name })).toBeDisabled();
+    const quiet = screen.getByRole("switch", { name: "Quiet hours" });
+    expect(quiet).toBeDisabled();
+    fireEvent.click(quiet);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(puts.filter((c) => c.path === R.meNotificationPrefs)).toEqual([]);
   });
 
   it("reads updates.browser as a boolean (#2769)", async () => {
@@ -132,9 +117,6 @@ describe("For you settings", () => {
     expect(
       screen.getByRole("combobox", { name: "Interrupt me for" }),
     ).toHaveTextContent("Every ask put to me");
-    expect(
-      screen.getByRole("combobox", { name: "On lock screens" }),
-    ).toHaveTextContent("Show details");
   });
 
   it("unmutes", async () => {
@@ -206,14 +188,17 @@ describe("mute errors in plain words (#2769)", () => {
   });
 });
 
-describe("a save", () => {
-  it("keeps quiet hours as set and carries the browser's zone", () => {
-    const prefs = {
-      needsYou: { browser: false },
-      quietHours: { start: "22:00", end: "07:30" },
-      timeZone: "UTC",
-    } as unknown as NotificationPrefs;
-    const out = prefsToSave(prefs);
+describe("quiet hours while Coming later (#2674)", () => {
+  const prefs = {
+    needsYou: { browser: false },
+    quietHours: { start: "22:00", end: "07:30" },
+  } as unknown as NotificationPrefs;
+  it("a save never sends them on", () => {
+    expect(prefsToSave(prefs).quietHours).toBeNull();
+    expect(prefsToSave(prefs, false).quietHours).toBeNull();
+  });
+  it("once live, they are sent as set, with the browser's zone", () => {
+    const out = prefsToSave(prefs, true);
     expect(out.quietHours).toEqual({ start: "22:00", end: "07:30" });
     expect(out.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   });

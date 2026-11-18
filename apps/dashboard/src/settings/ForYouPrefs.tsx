@@ -2,8 +2,7 @@
  * Settings › Notifications for For you (#2512 slice 2), Design's screen 4:
  * where each level reaches you, quiet hours, what may interrupt, lock
  * screens, and the muted list. Prefs are R.meNotificationPrefs (PUT whole);
- * mutes are R.meInboxMutes. The per-browser switches need push (slice 3, and
- * PATCH R.mePushSubscription, S5): shown, not yet usable.
+ * mutes are R.meInboxMutes. The browser switch is slice 3: a stub for now.
  */
 import type { InboxMutes } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
@@ -75,9 +74,17 @@ export function ForYouPrefs() {
   );
 }
 
-/** What a save sends: the whole prefs, in the browser's zone ("morning" and quiet hours are in it). */
-export const prefsToSave = (next: NotificationPrefs): NotificationPrefs => ({
+/**
+ * What a save sends: the whole prefs, in the browser's zone ("morning" and
+ * quiet hours are in it). Design (#2674): while quiet hours wait under
+ * "Coming later", they are never sent on.
+ */
+export const prefsToSave = (
+  next: NotificationPrefs,
+  live = INTERRUPTS_LIVE,
+): NotificationPrefs => ({
   ...next,
+  quietHours: live ? next.quietHours : null,
   timeZone: browserTimeZone(),
 });
 
@@ -145,7 +152,7 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             </th>
             <td className={td}>Always</td>
             <td className={td}>
-              {/* updates.browser is the default a new browser starts with; the switch is per browser (S5). */}
+              {/* v1: updates never reach the browser (updates.browser is fixed false). */}
               <Switch
                 label="Updates in this browser"
                 describedBy="oa-updates-browser"
@@ -164,12 +171,33 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
   );
 }
 
+/**
+ * Design (#2512 slice 2 review): quiet hours, "Interrupt me for" and "On lock
+ * screens" only matter once browser notifications ship (slice 3); the server
+ * doesn't use them yet (no prefs route, no away status). Until then they show,
+ * disabled, under one "Coming later" line. Flip it when slice 3 lands.
+ */
+export const INTERRUPTS_LIVE = false;
+
 function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
   const save = useSave();
-  const quiet = prefs.quietHours;
+  const live = INTERRUPTS_LIVE;
+  // Design (#2674): while "Coming later" is on, quiet hours are drawn off,
+  // whatever the server stored.
+  const quiet = live ? prefs.quietHours : null;
   const end = quiet?.end ?? QUIET_DEFAULT.end;
   return (
-    <section aria-label="When to interrupt" className={BOX}>
+    <section
+      aria-label="When to interrupt"
+      aria-describedby={live ? undefined : "oa-interrupts-later"}
+      className={BOX}
+      data-interrupts={live ? "live" : "later"}
+    >
+      {!live && (
+        <p id="oa-interrupts-later" className={`m-0 pb-2 ${muted}`}>
+          Coming later
+        </p>
+      )}
       <div className={ROW}>
         <div className="min-w-0">
           <b className="font-semibold" id="oa-quiet-label">
@@ -185,6 +213,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
             label="Quiet hours"
             describedBy="oa-quiet-hint"
             checked={quiet !== null}
+            disabled={!live}
             onChange={(on) =>
               save({ ...prefs, quietHours: on ? QUIET_DEFAULT : null })
             }
@@ -194,7 +223,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
               label="Quiet hours start"
               value={quiet?.start ?? QUIET_DEFAULT.start}
               options={HALF_HOURS}
-              disabled={!quiet}
+              disabled={!live || !quiet}
               onChange={(start) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, start } })
               }
@@ -206,7 +235,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
               label="Quiet hours end"
               value={end}
               options={HALF_HOURS}
-              disabled={!quiet}
+              disabled={!live || !quiet}
               onChange={(e) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, end: e } })
               }
@@ -226,6 +255,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
           <OptionSelect
             label="Interrupt me for"
             value={prefs.browserAllAsks ? "all" : "waiting"}
+            disabled={!live}
             options={[
               { value: "waiting", label: "Waiting asks and approvals" },
               { value: "all", label: "Every ask put to me" },
@@ -240,6 +270,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
           <OptionSelect
             label="On lock screens"
             value={prefs.lockScreenDetail ? "show" : "hide"}
+            disabled={!live}
             options={[
               { value: "hide", label: "Hide details" },
               { value: "show", label: "Show details" },
