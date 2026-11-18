@@ -4,6 +4,7 @@ import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { focusManager } from "@tanstack/react-query";
 import {
   act,
+  cleanup,
   fireEvent,
   screen,
   waitFor,
@@ -774,6 +775,50 @@ describe("failures and announcements", () => {
     await findVisibleToast("Not found");
     await waitFor(() => expect(row()).not.toBeNull());
     expect(await bell()).toHaveAccessibleName("For you, 2 need you");
+  });
+
+  it("Later sends the browser's time zone, and omits it when unknown", async () => {
+    const bodies: unknown[] = [];
+    const run = async () => {
+      forYou("mixed");
+      server.use(
+        http.post("*/api/v1/me/inbox/:id/later", async ({ request }) => {
+          bodies.push(await request.json());
+          return HttpResponse.json(
+            { error: { code: "not_found", message: "Not found" } },
+            { status: 404 },
+          );
+        }),
+      );
+      mount("/");
+      const panel = await openPanel();
+      const row = panel.querySelector(
+        '[data-for-you-item="itm:mention1"]',
+      ) as HTMLElement;
+      fireEvent.pointerDown(
+        within(row).getByRole("button", { name: /Later/ }),
+        { button: 0, pointerType: "mouse" },
+      );
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Tomorrow morning" }),
+      );
+      await waitFor(() => expect(bodies.length).toBeGreaterThan(0));
+    };
+    const spy = vi
+      .spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions")
+      .mockReturnValue({
+        timeZone: "Asia/Tokyo",
+      } as Intl.ResolvedDateTimeFormatOptions);
+    await run();
+    expect(bodies[0]).toEqual({ until: "morning", timeZone: "Asia/Tokyo" });
+    spy.mockReturnValue({
+      timeZone: undefined,
+    } as unknown as Intl.ResolvedDateTimeFormatOptions);
+    bodies.length = 0;
+    cleanup();
+    await run();
+    spy.mockRestore();
+    expect(bodies[0]).toEqual({ until: "morning" });
   });
 
   it("announces a change in the count, politely", async () => {
