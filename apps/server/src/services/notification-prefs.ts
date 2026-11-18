@@ -8,6 +8,7 @@ import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { audit, userActor } from "./audit.js";
+import { instantAt, wall } from "./zone-time.js";
 
 /** Saves one member may make per day (a person flipping switches, never a loop). */
 export const PREFS_WRITES_PER_DAY = 100;
@@ -205,4 +206,61 @@ export async function awayUntil(
 ): Promise<number | null> {
   const s = quietState(await getPrefs(env, userId), now);
   return s.quiet ? s.until : null;
+}
+
+/**
+ * The next time the quiet-hours state flips (ms): the end of the window while
+ * inside it, else the next start. Null with no quiet hours or a bad zone.
+ * Pure: the caller reads the prefs.
+ */
+export function nextQuietEdge(
+  prefs: Pick<NotificationPrefs, "quietHours" | "timeZone">,
+  now: number,
+): number | null {
+  const q = prefs.quietHours;
+  if (!q) return null;
+  const s = quietState(prefs, now);
+  if (s.quiet) return s.until;
+  try {
+    const start = hm(q.start);
+    const w = wall(now, prefs.timeZone);
+    const today = instantAt(
+      prefs.timeZone,
+      w.y,
+      w.mo,
+      w.d,
+      Math.floor(start / 60),
+      start % 60,
+    );
+    if (today > now) return today;
+    const t = new Date(Date.UTC(w.y, w.mo - 1, w.d + 1));
+    return instantAt(
+      prefs.timeZone,
+      t.getUTCFullYear(),
+      t.getUTCMonth() + 1,
+      t.getUTCDate(),
+      Math.floor(start / 60),
+      start % 60,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the bus tells a person's own agents (#2759): when quiet hours end (null
+ * outside them) and when that next changes (null: never, no quiet hours), from
+ * one read of their prefs.
+ */
+export async function awayState(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<{ until: number | null; next: number | null }> {
+  const prefs = await getPrefs(env, userId);
+  const s = quietState(prefs, now);
+  return {
+    until: s.quiet ? s.until : null,
+    next: nextQuietEdge(prefs, now),
+  };
 }

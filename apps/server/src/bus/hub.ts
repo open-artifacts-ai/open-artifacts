@@ -73,6 +73,7 @@ import {
   pruneDeadFollows,
   unfollow,
 } from "../services/follows.js";
+import { awayState } from "../services/notification-prefs.js";
 import {
   namedRecorded,
   noteAgentNamed,
@@ -366,7 +367,26 @@ const HUB_CAPS = [
   BUS_CAPS.ackConfirm,
   BUS_CAPS.runVersion,
   BUS_CAPS.noticeMeta,
+  BUS_CAPS.ownerAway,
 ];
+
+/** #2759: `owner_away` goes only to a socket whose hello listed BUS_CAPS.ownerAway. */
+const ownerAwayGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ownerAway);
+};
+
+/** #2759: how long a hello waits for the member's quiet hours before it answers without them. */
+const OWNER_AWAY_READ_MS = 300;
+const OWNER_AWAY_DUE_KEY = "owner_away_due";
+/** The `owner_away` push: when quiet hours end (ms), or null outside them. */
+const ownerAwayFrame = (until: number | null) =>
+  ({
+    v: 1,
+    id: frameId(),
+    type: "owner_away",
+    until: until === null ? null : new Date(until).toISOString(),
+  }) as const;
 
 /**
  * #2552: the update frames (run_version, install_now, update_ack, and an
@@ -5515,7 +5535,7 @@ export class BusHub extends DurableObject<Env> {
     }
 
     switch (f.type) {
-      case "hello":
+      case "hello": {
         // #1325: the hello's caps gate the rename wire (renameGated). Kept
         // in the attachment so they survive hibernation; a later hello
         // replaces them. Other attachment fields are kept.
@@ -5526,6 +5546,12 @@ export class BusHub extends DurableObject<Env> {
             ...(f.caps === undefined ? {} : { caps: [...f.caps] }),
           } satisfies Attachment);
         }
+        // #2759: a cap'd hello is told when the owner's quiet hours end when
+        // the hub already knows (a fresh cache); else a push follows the read.
+        const awayUntil =
+          hasCap(f, BUS_CAPS.ownerAway) && this.#awayFresh()
+            ? this.#away
+            : undefined;
         sendFrame(ws, {
           v: 1,
           id: f.id,
@@ -5546,8 +5572,19 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.waitingQuery) ||
           hasCap(f, BUS_CAPS.ackConfirm) ||
           hasCap(f, BUS_CAPS.runVersion) ||
-          hasCap(f, BUS_CAPS.noticeMeta)
-            ? { caps: [...HUB_CAPS] }
+          hasCap(f, BUS_CAPS.noticeMeta) ||
+          hasCap(f, BUS_CAPS.ownerAway)
+            ? // Only the caps this daemon listed: BUS_CAPS outgrew the 16 an
+              // older daemon decodes (#2759).
+              { caps: HUB_CAPS.filter((c) => hasCap(f, c)) }
+            : {}),
+          ...(awayUntil !== undefined
+            ? {
+                owner_away_until:
+                  awayUntil.until === null
+                    ? null
+                    : new Date(awayUntil.until).toISOString(),
+              }
             : {}),
           // #2552: only when the instance names one, and only to a socket
           // that listed the cap. Unknown yet (cold cache): the push below.
@@ -5556,9 +5593,17 @@ export class BusHub extends DurableObject<Env> {
             ? { run_version: this.#runVersion }
             : {}),
         });
-        return hasCap(f, BUS_CAPS.runVersion)
-          ? this.#helloUpdates(ws, f.id, machineId)
-          : undefined;
+        {
+          const updates = hasCap(f, BUS_CAPS.runVersion)
+            ? this.#helloUpdates(ws, f.id, machineId)
+            : undefined;
+          if (!hasCap(f, BUS_CAPS.ownerAway)) return updates;
+          const away = this.#helloOwnerAway(ws, awayUntil !== undefined);
+          return updates === undefined
+            ? away
+            : Promise.all([updates, away]).then(() => undefined);
+        }
+      }
       case "sessions": {
         // Open sessions come back with their own agent_up; closed ones end.
         const change: RosterChange = { namespaces: [], global: false };
@@ -5745,6 +5790,135 @@ export class BusHub extends DurableObject<Env> {
         }
         return this.#rename(ws, f, a);
       }
+    }
+  }
+
+  // ------------------------------------------------- #2759 owner away
+
+  /** The member's quiet-hours state as last read (by a hello, an edge or a prefs save). */
+  #away: { until: number | null; next: number | null } | undefined;
+  #awayAt = -Infinity;
+  #awayFresh(): boolean {
+    return this.#away !== undefined && this.#now() - this.#awayAt < 30_000;
+  }
+
+  /**
+   * A cap'd hello: when hello_ok already carried the answer, only make sure the
+   * next edge is armed; otherwise read it and push `owner_away` to this socket.
+   */
+  async #helloOwnerAway(ws: WebSocket, sent: boolean): Promise<void> {
+    if (sent) {
+      this.#armOwnerAway(this.#away?.next ?? null);
+      return;
+    }
+    const state = await this.#readOwnerAway();
+    if (state === undefined) return;
+    if (!trySendFrame(ws, ownerAwayFrame(state.until))) return;
+    this.#armOwnerAway(state.next);
+    await this.#commitArm();
+  }
+
+  /** The member's quiet-hours state, bounded; undefined when it cannot be read in time. */
+  async #readOwnerAway(): Promise<
+    { until: number | null; next: number | null } | undefined
+  > {
+    const userId = this.#userId();
+    if (userId === null) return undefined;
+    try {
+      const state = await Promise.race([
+        awayState(this.env, userId, this.#now()),
+        new Promise<undefined>((r) =>
+          setTimeout(() => r(undefined), OWNER_AWAY_READ_MS),
+        ),
+      ]);
+      if (state !== undefined) {
+        this.#away = state;
+        this.#awayAt = this.#now();
+      }
+      return state;
+    } catch (e) {
+      logError("bus_owner_away_read_failed", e);
+      return undefined;
+    }
+  }
+
+  /** Keeps the next quiet-hours edge in meta (an eviction forgets nothing) and arms the alarm. */
+  #armOwnerAway(next: number | null): void {
+    const sql = this.ctx.storage.sql;
+    if (next === null) {
+      sql.exec(
+        "delete from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        OWNER_AWAY_DUE_KEY,
+      );
+      return;
+    }
+    sql.exec(
+      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+      OWNER_ORG_ID,
+      OWNER_AWAY_DUE_KEY,
+      String(next),
+    );
+    this.#arm(next);
+  }
+
+  #ownerAwayDue(): number | null {
+    const v = one<{ value: string }>(
+      this.ctx.storage.sql,
+      "select value from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      OWNER_AWAY_DUE_KEY,
+    )?.value;
+    const n = v === undefined ? Number.NaN : Number(v);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+
+  /**
+   * Tells every open socket that listed the cap when the owner's quiet hours
+   * end (null: not in them), and arms the alarm for the next edge. Only this
+   * member's own sockets are on this hub. No cap'd socket: nothing is read or
+   * armed, so an idle hub stays idle.
+   */
+  async #pushOwnerAway(): Promise<void> {
+    const sockets = this.ctx
+      .getWebSockets(DAEMON_TAG)
+      .filter((ws) => !isReplaced(ws) && ownerAwayGated(ws));
+    if (sockets.length === 0) {
+      this.#armOwnerAway(null);
+      return;
+    }
+    const state = await this.#readOwnerAway();
+    if (state === undefined) {
+      // Try again shortly; never leave the sockets with a stale answer.
+      this.#armOwnerAway(this.#now() + 60_000);
+      await this.#commitArm();
+      return;
+    }
+    for (const ws of sockets) trySendFrame(ws, ownerAwayFrame(state.until));
+    this.#armOwnerAway(state.next);
+    await this.#commitArm();
+  }
+
+  /** The member saved their prefs: tell their sockets now (the Worker calls this on their own hub). */
+  async ownerAwayChanged(): Promise<void> {
+    await this.#pushOwnerAway();
+  }
+
+  /** The alarm's part: a quiet-hours edge has come. */
+  async #ownerAwayEdge(now: number): Promise<void> {
+    const due = this.#ownerAwayDue();
+    if (due === null) return;
+    if (due > now) {
+      this.#arm(due);
+      return;
+    }
+    // Cleared first: the push re-arms for the next edge.
+    this.#armOwnerAway(null);
+    try {
+      await this.#pushOwnerAway();
+    } catch (e) {
+      logError("bus_owner_away_push_failed", e);
+      this.#armOwnerAway(now + 60_000);
     }
   }
 
@@ -8250,6 +8424,8 @@ export class BusHub extends DurableObject<Env> {
 
     // 7. #2552: a machine that reported `switching` and never said hello again.
     await this.#stoppedMachines(now);
+    // 8. #2759: the owner's quiet hours began or ended.
+    await this.#ownerAwayEdge(now);
 
     const want = this.#armWant;
     this.#armWant = null;
