@@ -13,7 +13,12 @@ export type BusPin = { version: string; integrity: string };
 export const BUS_CHECK_STOP =
   'If the check prints MISMATCH, stop. Run nothing from that folder, and tell the person: "The bus download did not match what this instance expects, so I stopped before running it." If another command fails, stop too, and tell the person which command failed and what it printed. Don\'t try another way to install.';
 
-export const busInstallBlock = (origin: string, pin: BusPin): string => {
+export const busInstallBlock = (
+  origin: string,
+  pin: BusPin,
+  /** What the checked copy runs; the installer by default. */
+  command = `install --instance ${origin}`,
+): string => {
   const check = `node -e 'const l=require("./package-lock.json").packages||{};const k=Object.keys(l).filter(x=>x!=="");const p=l["node_modules/@open-artifacts/bus"];const ok=k.length===1&&p&&p.version==="${pin.version}"&&p.integrity==="${pin.integrity}";process.stdout.write((ok?"OK":"MISMATCH")+"\\n");process.exit(ok?0:1)'`;
   // One command: every step is chained with &&, so a failed install, check or
   // audit can never reach the installer line.
@@ -23,7 +28,7 @@ export const busInstallBlock = (origin: string, pin: BusPin): string => {
     `npm install --ignore-scripts --registry https://registry.npmjs.org @open-artifacts/bus@${pin.version} &&`,
     `${check} &&`,
     "npm audit signatures &&",
-    `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" install --instance ${origin}`,
+    `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" ${command}`,
     "```",
   ].join("\n");
 };
