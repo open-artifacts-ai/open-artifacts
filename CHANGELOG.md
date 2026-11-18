@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.210.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.209.0...v0.210.0) (2026-11-18)
+
+
+### Features
+
+* **inbox:** "While you were away" after quiet hours ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512)) ([#2772](https://github.com/open-artifacts-ai/open-artifacts/issues/2772)) ([8d3ba33](https://github.com/open-artifacts-ai/open-artifacts/commit/8d3ba3368d14bb490498e0dcd82a9df8e44fbf54))
+* **notifications:** browser push sender ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) S5) ([#2774](https://github.com/open-artifacts-ai/open-artifacts/issues/2774)) ([eb73217](https://github.com/open-artifacts-ai/open-artifacts/commit/eb732179feb9387a1c4766ca5f992ac6dc8a6c3e))
+
 ## [0.209.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.208.0...v0.209.0) (2026-11-18)
 
 
