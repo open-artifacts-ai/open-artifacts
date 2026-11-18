@@ -780,6 +780,8 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
   quietEnd: text("quiet_end"),
   timeZone: text("time_zone").notNull().default("UTC"),
   lockDetail: integer("lock_detail").notNull().default(0),
+  // #2577 S2: 1 = the member's agents hear nobody outside (no holds, mentions refused).
+  agentRequestsOff: integer("agent_requests_off").notNull().default(0),
   updatedAt: integer("updated_at").notNull(),
 });
 

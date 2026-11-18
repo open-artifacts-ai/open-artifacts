@@ -126,7 +126,7 @@ export class StartError extends Error {
 const notLoggedIn = () => new StartError("NOT_LOGGED_IN", NOT_LOGGED_IN);
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-function checkHub(hub: string): void {
+export function checkHub(hub: string): void {
   let u: URL;
   try {
     u = new URL(hub);
@@ -158,7 +158,7 @@ function originOf(url: string): string | undefined {
 }
 
 // An old or hand-edited label must not make the hub reject every hello.
-const cleanLabel = (raw: unknown): string =>
+export const cleanLabel = (raw: unknown): string =>
   typeof raw === "string" ? newMachineLabel(raw) : "machine";
 
 /** How the revoked marker names a token: its sha256, never the token. */
@@ -199,8 +199,8 @@ export function savedToken(h = home()): string | undefined {
   }
 }
 
-export function readConfig(): Config {
-  const file = join(home(), "machine.json");
+export function readConfig(h: string = home()): Config {
+  const file = join(h, "machine.json");
   let text: string;
   try {
     if (process.platform !== "win32" && statSync(file).mode & 0o077) {
@@ -236,7 +236,7 @@ export function readConfig(): Config {
   if (typeof r.hub !== "string" || !r.hub || r.machine_token === undefined)
     throw notLoggedIn();
   // The hub refused this token; `npx @open-artifacts/bus install` approves it again and clears the marker.
-  if (revokedFor(String(r.machine_token)))
+  if (revokedFor(String(r.machine_token), h))
     throw new StartError(
       "REVOKED",
       `this machine was revoked; run \`${BUS_CMD} install\``,

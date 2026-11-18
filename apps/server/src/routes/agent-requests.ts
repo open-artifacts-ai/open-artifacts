@@ -1,14 +1,25 @@
-import { AllowBodySchema, AllowChallengeBodySchema, R } from "@oa/shared";
+import {
+  AgentRequestsSwitchSchema,
+  AllowBodySchema,
+  AllowChallengeBodySchema,
+  ListenShortenBodySchema,
+  R,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { interactiveSession, requireUser } from "../auth/authz.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import {
+  agentRequestsOn,
   allow,
   allowChallenge,
   listHeld,
+  listListens,
   notNow,
+  removeListen,
+  setAgentRequests,
+  shortenListen,
 } from "../services/agent-requests.js";
 import type { AppType } from "./index.js";
 
@@ -58,6 +69,33 @@ export function mountAgentRequests(app: AppType): void {
   app.post(`${R.agentAskHeld}/:id/not-now`, async (c) => {
     const user = member(c);
     await notNow(c.env, user.id, idOf(c));
+    return c.body(null, 204);
+  });
+
+  // #2577 S2: the switch. Reading is any signed-in person's; saving is a browser session only.
+  app.get(R.agentRequests, async (c) => {
+    const user = requireUser(c);
+    return c.json({ on: await agentRequestsOn(c.env, user.id) });
+  });
+  app.put(R.agentRequests, async (c) => {
+    const user = member(c);
+    const body = await jsonBody(c, AgentRequestsSwitchSchema);
+    return c.json({ on: await setAgentRequests(c.env, user.id, body.on) });
+  });
+
+  // #2577 S2: the "listens to" list.
+  app.get(R.agentListens, async (c) => {
+    const user = member(c);
+    return c.json(await listListens(c.env, user.id));
+  });
+  app.patch(`${R.agentListens}/:id`, async (c) => {
+    const user = member(c);
+    const body = await jsonBody(c, ListenShortenBodySchema);
+    return c.json(await shortenListen(c.env, user.id, idOf(c), body.until));
+  });
+  app.delete(`${R.agentListens}/:id`, async (c) => {
+    const user = member(c);
+    await removeListen(c.env, user.id, idOf(c));
     return c.body(null, 204);
   });
 }

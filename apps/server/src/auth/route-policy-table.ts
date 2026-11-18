@@ -379,6 +379,16 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/me/agent-asks/held/:id/not-now": {
     user: "the caller's held requests",
   },
+  // #2577 S2: the switch and the "listens to" list; the handlers refuse anything but a browser session (the switch can be read by any signed-in person).
+  "GET /api/v1/me/agent-requests": { user: "the caller's own switch" },
+  "PUT /api/v1/me/agent-requests": { user: "the caller's own switch" },
+  "GET /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "PATCH /api/v1/me/agent-listens/:id": {
+    user: "the caller's listens-to list",
+  },
+  "DELETE /api/v1/me/agent-listens/:id": {
+    user: "the caller's listens-to list",
+  },
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
   "PATCH /api/v1/tokens/:id": { user: "the caller's tokens" },

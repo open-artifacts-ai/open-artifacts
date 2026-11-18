@@ -53,6 +53,7 @@ import { VERSION } from "../version.gen.js";
 import {
   type AgentIdentity,
   NAMES_OF_MAX,
+  type UnlinkedWhy,
   type Via,
   viaKey,
 } from "./agent-usage.js";
@@ -641,24 +642,47 @@ async function lookupProof(
   env: Env,
   userId: string,
   proof: unknown,
-): Promise<AgentIdentity | null> {
+): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const t0 = Date.now();
   // #2110: one line per lookup that gives no identity, so a flapping link is
   // visible. Reason and elapsed ms only: never the proof, its hash or a token.
   const none = (
-    reason: "timeout" | "miss" | "no_machine" | "error",
+    reason: "timeout" | "miss" | "no_machine" | "error" | "malformed",
     why?: string,
-  ) => {
+  ): { why: UnlinkedWhy } => {
     logInfo("bus_link_lookup_none", {
       reason,
       ...(why ? { why } : {}),
       ms: Date.now() - t0,
     });
-    return null;
+    // The tool result's note (#2688): a miss's own reason, else the failure's.
+    const known = [
+      "unbound",
+      "closed",
+      "unlinked",
+      "revoked",
+      "other",
+      "no_hub",
+    ];
+    return {
+      why:
+        reason === "miss"
+          ? ((known.includes(why ?? "") ? why : "other") as UnlinkedWhy)
+          : (reason as UnlinkedWhy),
+    };
   };
   try {
     const p = LinkProofSchema.safeParse(proof);
-    if (!busOn(env) || !p.success) return null;
+    if (!busOn(env)) return {};
+    // A proof that is not one (a helper's output changed, a header mangled on
+    // the way): logged with its shape only, never its value.
+    if (!p.success)
+      return none(
+        "malformed",
+        typeof proof === "string"
+          ? `string_len_${Math.min(proof.length, 512)}`
+          : typeof proof,
+      );
     // One bound for the whole lookup, the machine read included, so a slow
     // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
     const r = await within(
@@ -687,7 +711,7 @@ async function lookupProof(
     if (r.id === null) return none("miss", r.why);
     const ms = Date.now() - t0;
     if (ms >= LINK_LOOKUP_SLOW_MS) logInfo("bus_link_lookup_ok", { ms });
-    return r.id;
+    return { identity: r.id };
   } catch (e) {
     logError("bus_link_lookup_failed", e);
     return none("error");
@@ -762,7 +786,7 @@ export async function linkRequest(
   env: Env,
   userId: string,
   req: Request,
-): Promise<{ req: Request; identity?: AgentIdentity }> {
+): Promise<{ req: Request; identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const header = req.headers.get(LINK_PROOF_HEADER);
   let out = req;
   let argProof: unknown;
@@ -800,11 +824,14 @@ export async function linkRequest(
       out = new Request(out.url, { method: out.method, body: UNPARSEABLE });
     }
   }
-  if (poisoned) return { req: out };
+  if (poisoned)
+    return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
-  if (proof === undefined) return { req: out };
-  const identity = await lookupProof(env, userId, proof);
-  return identity ? { req: out, identity } : { req: out };
+  // No proof at all: nothing was looked up, so nothing is logged; the note says so.
+  if (proof === undefined)
+    return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+  const r = await lookupProof(env, userId, proof);
+  return { req: out, ...r };
 }
 
 /**

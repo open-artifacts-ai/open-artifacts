@@ -61,7 +61,12 @@ import {
   plainAgentName,
   shownName,
 } from "./agent-display.js";
-import { decide, heldAfterEdit, recordHolds } from "./agent-requests.js";
+import {
+  decide,
+  heldAfterEdit,
+  onlyAnswers,
+  recordHolds,
+} from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { activation } from "./analytics.js";
 import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
@@ -1653,9 +1658,14 @@ async function resolveExtras(
       let wake = typedByPerson(who);
       // #2577: another person's agent takes a request only from someone on their list; else the delivery is held for their person.
       if (wake && viewerId) {
-        if (
-          (await decide(env, viewerId, e.agent.userId, artifactId)) === "hold"
-        ) {
+        const verdict = await decide(env, viewerId, e.agent.userId, artifactId);
+        // #2577 S2: their agents hear nobody outside: refused, nothing held.
+        if (verdict === "off")
+          throw new ApiError(
+            "forbidden",
+            await onlyAnswers(env, e.agent.userId),
+          );
+        if (verdict === "hold") {
           // The sender's hourly limit comes first: over it, nothing is held.
           if (gate && !(await gate.takeSender())) {
             notice = TOO_MANY_MENTIONS;
@@ -1904,16 +1914,26 @@ async function addThreadInner(
     else if (typedByPerson(who)) {
       // Another person's page agent: not for an outside member, and under the mention limits.
       if (await isOutsideMember(env, who.id)) page = null;
-      else if ((await decide(env, who.id, page0.userId, a.id)) === "hold") {
-        // #2577: held for the page agent's person; the note posts, nothing is sent.
-        if (await (gateOf(env, who, r0) as MentionGate).takeSender()) {
-          const h = { agent: heldAgentOf(page0), way: "page" };
-          r0.held = [...(r0.held ?? []), h];
-          r0.extras = { ...r0.extras, held: [...(r0.extras?.held ?? []), h] };
-        } else r0.notice = TOO_MANY_MENTIONS;
-      } else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
-        page = page0;
-      else r0.notice = TOO_MANY_MENTIONS;
+      else {
+        const verdict = await decide(env, who.id, page0.userId, a.id);
+        if (verdict === "off") {
+          // #2577 S2: their agents hear nobody outside: the note posts, nobody is woken or held.
+        } else if (verdict === "hold") {
+          // #2577: held for the page agent's person; the note posts, nothing is sent.
+          if (await (gateOf(env, who, r0) as MentionGate).takeSender()) {
+            const h = { agent: heldAgentOf(page0), way: "page" };
+            r0.held = [...(r0.held ?? []), h];
+            r0.extras = {
+              ...r0.extras,
+              held: [...(r0.extras?.held ?? []), h],
+            };
+          } else r0.notice = TOO_MANY_MENTIONS;
+        } else if (
+          await (gateOf(env, who, r0) as MentionGate).take(page0.userId)
+        )
+          page = page0;
+        else r0.notice = TOO_MANY_MENTIONS;
+      }
     }
   }
   if (page) {
@@ -2094,15 +2114,18 @@ async function resolveToAsker(
   ) {
     const mine = to.filter((a) => a.userId !== who.id);
     const receiver = mine[0]?.userId;
-    if (
-      receiver &&
-      (await decide(env, who.id, receiver, artifactId)) === "hold"
-    ) {
+    const verdict = receiver
+      ? await decide(env, who.id, receiver, artifactId)
+      : "deliver";
+    if (verdict !== "deliver") {
       // The sender's hourly limit comes first: over it, nothing is held.
-      const gate = new MentionGate(env, who.id);
-      if (await gate.takeSender())
-        for (const a of mine)
-          heldFor.push({ agent: heldAgentOf(a), way: "reply" });
+      // #2577 S2: with their switch off, nothing is held either.
+      if (verdict === "hold") {
+        const gate = new MentionGate(env, who.id);
+        if (await gate.takeSender())
+          for (const a of mine)
+            heldFor.push({ agent: heldAgentOf(a), way: "reply" });
+      }
       wake = to.filter((a) => a.userId === who.id);
     }
   }
@@ -2122,6 +2145,26 @@ async function resolveToAsker(
     // The asker's agents are not named one by one: the asking agent joins by its own comment.
     participants: [],
   };
+}
+
+/** #2733: lets go of the holds a reply took up front; retried once. False when it failed (they stay held: masked, undelivered). Logs a fixed event, no content. Never throws. */
+async function unholdOnce(
+  env: Env,
+  artifactId: string,
+  commentId: string,
+  keys: string[],
+): Promise<boolean> {
+  for (let i = 0; i < 2; i++)
+    try {
+      await call(() =>
+        stub(env, artifactId).commentsUnhold({ commentId, keys }),
+      );
+      return true;
+    } catch {
+      // once more
+    }
+  logError("hold_release_failed", undefined, { artifactId });
+  return false;
 }
 
 /**
@@ -2159,6 +2202,9 @@ async function threadReply(
         exclude: r.agents.map((x) => x.agent.key),
         // A reply that @-mentions someone is for them (#1968).
         skipPage: r.agents.length > 0,
+        // #2733: every other person's agent is held for this reply in the same
+        // step (masked at once); the ones we may deliver to are let go below.
+        hold: { commentId: c.id, author: c.author.ref },
       }),
     );
     if (due.length === 0) return c;
@@ -2176,7 +2222,10 @@ async function threadReply(
         outside ??= await isOutsideMember(env, c.author.ref);
         if (outside) continue;
         // #2577: not on the person's list: held for them, no notice.
-        if ((await decide(env, c.author.ref, p.owner, a.id)) === "hold") {
+        const verdict = await decide(env, c.author.ref, p.owner, a.id);
+        // #2577 S2: their agents hear nobody outside: no hold, no wake.
+        if (verdict === "off") continue;
+        if (verdict === "hold") {
           // The sender's hourly limit comes first: over it, nothing is held.
           senderGate ??= r.gate ?? new MentionGate(env, c.author.ref);
           if (!(await senderGate.takeSender())) {
@@ -2220,16 +2269,26 @@ async function threadReply(
         });
     }
     heldHere = heldNow;
-    if (heldNow.length > 0) {
-      await call(() =>
-        stub(env, a.id).commentsHold({
-          threadId,
-          commentId: c.id,
-          held: heldNow,
-        }),
-      ).catch(() => undefined);
-      await recordHolds(env, c.author.ref, a.id, threadId, c.id, heldNow);
+    // #2733: the holds were taken with the participants (fail closed). Let go
+    // of the other people's agents we decided not to hold: if that write
+    // fails (once retried) they stay held, masked and undelivered, so they are
+    // dropped from `reached` and the notice never goes out.
+    const release = due
+      .filter(
+        (p) =>
+          p.owner !== c.author.ref &&
+          !heldNow.some((h) => h.agent.key === p.key),
+      )
+      .map((p) => p.key);
+    if (release.length > 0) {
+      const freed = await unholdOnce(env, a.id, c.id, release);
+      if (!freed)
+        for (let i = reached.length - 1; i >= 0; i--)
+          if (release.includes((reached[i] as RosterAgent).key))
+            reached.splice(i, 1);
     }
+    if (heldNow.length > 0)
+      await recordHolds(env, c.author.ref, a.id, threadId, c.id, heldNow);
     // The rows exist (queued) before any notice goes out, as a mention's do, so
     // a daemon's ack that beats the write below still finds its row to settle.
     await call(() =>
@@ -2802,17 +2861,35 @@ export async function artifactAgents(
   // A guest's holds none.
   if (viewerId !== null && (await isGuestMember(env, viewerId))) return [];
   const outside = viewerId !== null && (await isOutsideMember(env, viewerId));
-  return (await agentRoster(env, artifactId, viewerId, true, true))
-    .filter((a) => !outside || a.userId === viewerId)
-    .map(({ key, name, online, state, lastActiveAt, machine, owner }) => ({
-      key,
-      name,
-      online,
-      state,
-      lastActiveAt: masked ? null : lastActiveAt,
-      machine: masked ? null : machine,
-      owner,
-    }));
+  // #2577: what asking each agent does for this viewer, once per owner.
+  const verdicts = new Map<string, "listening" | "held" | "off">();
+  const askState = async (ownerId: string) => {
+    if (masked || viewerId === null) return undefined;
+    if (ownerId === viewerId) return "listening" as const;
+    let v = verdicts.get(ownerId);
+    if (!v) {
+      const d = await decide(env, viewerId, ownerId, artifactId);
+      v = d === "deliver" ? "listening" : d === "hold" ? "held" : "off";
+      verdicts.set(ownerId, v);
+    }
+    return v;
+  };
+  const out: ArtifactAgent[] = [];
+  for (const a of await agentRoster(env, artifactId, viewerId, true, true)) {
+    if (outside && a.userId !== viewerId) continue;
+    const st = await askState(a.userId);
+    out.push({
+      key: a.key,
+      name: a.name,
+      online: a.online,
+      state: a.state,
+      lastActiveAt: masked ? null : a.lastActiveAt,
+      machine: masked ? null : a.machine,
+      owner: a.owner,
+      ...(st ? { askState: st } : {}),
+    });
+  }
+  return out;
 }
 
 // ------------------------------------------------------------ withdraw (#2511)
