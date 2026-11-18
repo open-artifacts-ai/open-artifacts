@@ -40,6 +40,12 @@ async function lookup(userId: string, hash: string) {
   );
 }
 
+async function missReason(userId: string, hash: string) {
+  return runInDurableObject(await hubOf(userId), (i: BusHub) =>
+    i.proofMissReason(hash),
+  );
+}
+
 async function rows(userId: string, q: string, ...b: SqlStorageValue[]) {
   return runInDurableObject(
     await hubOf(userId),
@@ -634,6 +640,9 @@ describe("the away grace (#2110)", () => {
     expect(await lookup(s.m.userId, hashOf("e"))).toEqual(live);
     await setClock(s.m.userId, t0 + PROOF_AWAY_GRACE_MS);
     expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    // The log says why: its session went away past the grace.
+    expect(await missReason(s.m.userId, hashOf("e"))).toBe("closed");
+    expect(await missReason(s.m.userId, hashOf("9"))).toBe("unbound");
     await setClock(s.m.userId, null);
   });
 
