@@ -22,11 +22,13 @@ import {
 import { sweepAuditEvents } from "./services/audit.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { pullEmailEvents, sweepEmailEvents } from "./services/email-events.js";
+import { drainPush } from "./services/push.js";
 import { checkLatestRelease } from "./services/release.js";
 import { sendSetupReminders } from "./services/setup-reminder.js";
 import { directoryMode } from "./services/spaces.js";
 import { clearSuspended, markSuspended } from "./services/suspend.js";
 import { sweepUploads } from "./services/uploads.js";
+import { pushOn } from "./services/web-push.js";
 
 /**
  * Platform system jobs (hosted). The platform calls an install's
@@ -166,6 +168,11 @@ async function run(
         ctx.waitUntil(
           pullEmailEvents(env).catch((e) => logError("cron_task_failed", e)),
         );
+      // Browser push (#2512 S5): send what is due. Never throws.
+      if (pushOn(env))
+        ctx.waitUntil(
+          drainPush(env).catch((e) => logError("cron_task_failed", e)),
+        );
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });
@@ -226,6 +233,10 @@ async function run(
         logError("cron_task_failed", e),
       ),
     );
+    if (pushOn(env))
+      ctx.waitUntil(
+        drainPush(env, at).catch((e) => logError("cron_task_failed", e)),
+      );
     if (!inDailySlot(at) || !(await claimDaily(env, at))) return;
     daily(env, ctx, Date.now(), false, "slot");
     return;

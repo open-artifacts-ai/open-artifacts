@@ -1749,6 +1749,22 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  "POST /api/v1/me/push/subscriptions": {
+    refuse: {
+      req: async () => ({ path: "", body: {} }),
+      allow: code("push_unavailable"),
+    },
+    real: {
+      req: () => ({ path: "", body: {} }),
+      allow: code("push_unavailable"),
+    },
+  },
+  "DELETE /api/v1/me/push/subscriptions/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/push/subscriptions/x" }),
+      allow: code("push_unavailable"),
+    },
+  },
   // #1292: the caller's own picks; a real write sets none (the default).
   "PUT /api/v1/bus/share-notices": {
     refuse: invalid(),
@@ -2438,6 +2454,11 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/me/notification-prefs", U, [200]],
   ["PUT /api/v1/me/notification-prefs", U],
+  // #2512 S5: no VAPID key pair in the matrix's env, so push is off: 404 push_unavailable for everyone signed in.
+  ["GET /api/v1/me/push/key", U, [404]],
+  ["GET /api/v1/me/push/subscriptions", U, [404]],
+  ["POST /api/v1/me/push/subscriptions", U, [404]],
+  ["DELETE /api/v1/me/push/subscriptions/:id", U, [404]],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
   ["GET /api/v1/members", org("members.manage"), [200]],

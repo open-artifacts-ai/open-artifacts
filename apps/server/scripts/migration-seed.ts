@@ -55,6 +55,8 @@ export const SHAPE = {
   passkeys: 2_000, // #2263
   pick_assertions: 1_000,
   passkey_settings: 1_000,
+  push_subscriptions: 3_000, // #2512 S5: a browser or two per member who turned notifications on
+  push_pending: 200, // #2512 S5: items waiting to be pushed
   notification_prefs: 5_000, // #2512 S4: members who changed a notification choice
   agent_grants: 50_000,
   bus_machines: 20_000,
@@ -689,6 +691,43 @@ export const RULES: Record<string, Rule> = {
         challenge: c.id("ch"),
         expires_at: at + 120_000,
         used_at: c.rand() < 0.5 ? at + 1000 : null,
+        created_at: at,
+      };
+    },
+  },
+  push_subscriptions: {
+    rows: (c) => Math.min(c.count("push_subscriptions"), c.users.length),
+    row(i, c) {
+      const u = c.users[i];
+      if (!u) return null;
+      return {
+        id: c.id("ps"),
+        user_id: u.id,
+        endpoint: `https://fcm.googleapis.com/fcm/send/${c.id("ep")}`,
+        p256dh: c.id("k"),
+        auth: c.id("a"),
+        label: null,
+        created_at: c.time(),
+        last_sent_at: null,
+      };
+    },
+  },
+  push_pending: {
+    rows: (c) => Math.min(c.count("push_pending"), c.users.length),
+    row(i, c) {
+      const u = c.users[i];
+      if (!u) return null;
+      const at = c.time();
+      return {
+        id: c.id("pp"),
+        user_id: u.id,
+        key: `ask:${c.id("c")}`,
+        kind: "ask",
+        artifact_id: c.id("art"),
+        thread_id: c.id("t"),
+        asker_name: "Agent",
+        excerpt: "A question",
+        send_after: at,
         created_at: at,
       };
     },

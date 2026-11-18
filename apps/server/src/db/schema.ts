@@ -759,6 +759,57 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+// #2512 S5: one row per browser a member turned notifications on in. An
+// endpoint belongs to one member at a time (registering it again for another
+// member removes the first's row). The rows go with the member's sessions
+// (the users_end_push trigger in the migration).
+export const pushSubscriptions = sqliteTable(
+  "push_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull().unique(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    label: text("label"),
+    createdAt: integer("created_at").notNull(),
+    lastSentAt: integer("last_sent_at"),
+  },
+  (t) => [index("push_subscriptions_user_idx").on(t.userId)],
+);
+
+// #2512 S5: Needs-you items waiting to be pushed. One row per (member, key);
+// send_after holds them for the 10-minute bundle and for quiet hours. The
+// cron tick drains it; a row is deleted as it is claimed.
+export const pushPending = sqliteTable(
+  "push_pending",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    kind: text("kind").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    // Plain text, control characters stripped, only shown with lockScreenDetail.
+    askerName: text("asker_name").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // Set when the asker is the member's own agent: who waits on whom.
+    askerRef: text("asker_ref"),
+    agentKey: text("agent_key"),
+    sendAfter: integer("send_after").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("push_pending_key_idx").on(t.userId, t.key),
+    index("push_pending_due_idx").on(t.sendAfter),
+    check("push_pending_kind", inList("kind", ["ask", "later"])),
+  ],
+);
+
 // #2263 a member's "ask for a passkey to approve" switches. No row: the
 // defaults (every action on, every pick off). ask_command is always 1.
 export const passkeySettings = sqliteTable("passkey_settings", {

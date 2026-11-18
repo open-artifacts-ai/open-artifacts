@@ -23,6 +23,7 @@ import { mountMe } from "./me.js";
 import { mountMembers } from "./members.js";
 import { mountOnboarding } from "./onboarding.js";
 import { mountPasskeys } from "./passkeys.js";
+import { mountPush } from "./push.js";
 import { mountSearch } from "./search.js";
 import { mountSettings } from "./settings.js";
 import { mountRemindOff } from "./setup-reminder-off.js";
@@ -47,6 +48,7 @@ export function mountRoutes(app: AppType): void {
   mountShareOptout(app);
   mountMe(app);
   mountShareNotices(app);
+  mountPush(app);
   mountMembers(app);
   mountSettings(app);
   mountOnboarding(app);
