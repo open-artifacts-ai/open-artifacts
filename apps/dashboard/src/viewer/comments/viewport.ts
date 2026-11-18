@@ -38,6 +38,28 @@ export function sheetLift(): number {
   return Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
 }
 
+/** Which edge of the visible area the phone doc toolbar sits on. One switch. */
+export type ToolbarEdge = "top" | "bottom";
+export const TOOLBAR_EDGE: ToolbarEdge = "top";
+
+/**
+ * Where the fixed toolbar goes (layout-viewport px) so it sits on `edge` of
+ * the visible area: top is the visual viewport's offsetTop, bottom the gap
+ * under its bottom edge. Both follow the pan, so neither ends up behind the
+ * keyboard.
+ */
+export function toolbarEdge(
+  edge: ToolbarEdge,
+): { top: number } | { bottom: number } {
+  const vv = window.visualViewport;
+  if (edge === "top") return { top: Math.max(0, vv?.offsetTop ?? 0) };
+  return {
+    bottom: vv
+      ? Math.max(0, window.innerHeight - (vv.offsetTop + vv.height))
+      : 0,
+  };
+}
+
 /** The composer's cap in px: its own cap, or 40% of what is visible. */
 export function fieldCap(own: number): number {
   return Math.min(own, viewHeight() * 0.4 || Number.POSITIVE_INFINITY);
@@ -88,6 +110,11 @@ export function trackViewportVar(): () => void {
     root.style.setProperty("--oa-vvh", `${viewHeight() / 100}px`);
     // The phone sheet is fixed to the layout viewport: lift it above the keyboard.
     root.style.setProperty("--oa-kb", `${sheetLift()}px`);
+    // The doc toolbar's top edge: the visible area's top, panned or not.
+    root.style.setProperty(
+      "--oa-vv-top",
+      `${Math.max(0, window.visualViewport?.offsetTop ?? 0)}px`,
+    );
   };
   if (users++ === 0) {
     set();
@@ -99,6 +126,7 @@ export function trackViewportVar(): () => void {
     stop = null;
     root.style.removeProperty("--oa-vvh");
     root.style.removeProperty("--oa-kb");
+    root.style.removeProperty("--oa-vv-top");
   };
 }
 

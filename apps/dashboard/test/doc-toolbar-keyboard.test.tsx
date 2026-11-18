@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   phoneToolbarHidden,
   sheetLift,
+  toolbarEdge,
   trackViewportVar,
   useKeyboardOpen,
 } from "../src/viewer/comments/viewport";
@@ -85,5 +86,48 @@ describe("phone doc toolbar (#2276)", () => {
     t.dispatchEvent(new Event("scroll"));
     expect(kb()).toBe("44px");
     stop();
+  });
+
+  it("publishes the visible area's top (--oa-vv-top), panned or not", () => {
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(844);
+    const stop = trackViewportVar();
+    const top = () =>
+      document.documentElement.style.getPropertyValue("--oa-vv-top");
+    expect(top()).toBe("0px");
+    t.height = 500;
+    t.dispatchEvent(new Event("resize"));
+    expect(top()).toBe("0px");
+    t.offsetTop = 300;
+    t.dispatchEvent(new Event("scroll"));
+    expect(top()).toBe("300px");
+    stop();
+    expect(top()).toBe("");
+  });
+  it("places the bar on the chosen edge of the visible area", () => {
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(500);
+    expect(toolbarEdge("top")).toEqual({ top: 0 });
+    expect(toolbarEdge("bottom")).toEqual({ bottom: 344 });
+    t.offsetTop = 300;
+    expect(toolbarEdge("top")).toEqual({ top: 300 });
+    expect(toolbarEdge("bottom")).toEqual({ bottom: 44 });
+    // Panned past the layout viewport's bottom: never a negative lift.
+    t.offsetTop = 400;
+    expect(toolbarEdge("bottom")).toEqual({ bottom: 0 });
+  });
+  it("is shown when scrolled with the keyboard open, hidden when scrolled without", () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(500, 300);
+    const { result } = renderHook(() => useKeyboardOpen());
+    expect(result.current).toBe(true);
+    expect(phoneToolbarHidden(result.current)).toBe(false);
+    act(() => {
+      t.height = 844;
+      t.offsetTop = 300;
+      t.dispatchEvent(new Event("resize"));
+    });
+    expect(phoneToolbarHidden(result.current)).toBe(true);
   });
 });
