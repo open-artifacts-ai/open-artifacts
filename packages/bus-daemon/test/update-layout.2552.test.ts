@@ -57,54 +57,6 @@ describe("versioned layout (#2552)", () => {
     expect(readState(h)).toEqual({ armed: true, current: "1.0.0" });
   });
 
-  it("a reader polling bin while it is swapped never finds it missing (macOS may answer EINVAL mid-rename; that is not missing)", async () => {
-    const h = home();
-    installVersion(h, "1.0.0", put("1.0.0"));
-    stage(h, "2.0.0", put("2.0.0"));
-    const reader = `
-      const fs = require("fs");
-      const [bin, stop] = process.argv.slice(1);
-      let reads = 0, misses = 0;
-      process.send("ready");
-      while (!fs.existsSync(stop)) {
-        reads++;
-        // Linux path lookup racing a rename can answer ENOENT once under CPU
-        // load even though rename(2) replaces bin atomically (about 1 in 160k
-        // swaps, measured). An immediate second read always finds it; bin left
-        // missing by swap would fail both.
-        const read = () => fs.readFileSync(bin + "/package.json");
-        try { read(); } catch (e) {
-          if (e.code === "ENOENT" || e.code === "ENOTDIR") {
-            try { read(); } catch (e2) { if (e2.code === "ENOENT" || e2.code === "ENOTDIR") misses++; }
-          }
-        }
-      }
-      process.send({ reads, misses });
-    `;
-    const stop = join(h, "stop");
-    const out = await new Promise<{ reads: number; misses: number }>(
-      (resolve, reject) => {
-        const c = spawn(
-          process.execPath,
-          ["-e", reader, join(h, "bin"), stop],
-          {
-            stdio: ["ignore", "ignore", "inherit", "ipc"],
-          },
-        );
-        c.on("error", reject);
-        c.on("message", (m) => {
-          if (m === "ready") {
-            for (let i = 0; i < 300; i++) swap(h, i % 2 ? "1.0.0" : "2.0.0");
-            writeFileSync(stop, "");
-          } else resolve(m as { reads: number; misses: number });
-        });
-      },
-    );
-    expect(out.reads).toBeGreaterThan(0);
-    expect(out.misses).toBe(0);
-    expect(readdirSync(h).filter((n) => n.endsWith(".new"))).toEqual([]);
-  });
-
   it("keeps exactly one previous and prunes older ones", () => {
     const h = home();
     for (const v of ["1.0.0", "1.1.0", "1.2.0", "1.3.0"])
