@@ -18,6 +18,8 @@ const SECRETS = [
   "ACCESS_CLIENT_SECRET",
   "SESSION_SECRET",
   "CONTENT_SIGNING_KEY",
+  "VAPID_PUBLIC_KEY",
+  "VAPID_PRIVATE_KEY",
 ];
 const CONFIG = `${ROOT}/apps/server/wrangler.jsonc`;
 /** The B16-2 scope: prereqs, resources, access, secrets. */
@@ -79,8 +81,9 @@ describe("access + secrets", () => {
       ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
       ACCESS_CLIENT_ID: "cid-new",
     });
+    // SESSION_SECRET, CONTENT_SIGNING_KEY and the 32-byte VAPID private scalar.
     expect(w.values.filter((v) => /^[A-Za-z0-9_-]{43}$/.test(v))).toHaveLength(
-      2,
+      3,
     );
     noLeak(w);
   });

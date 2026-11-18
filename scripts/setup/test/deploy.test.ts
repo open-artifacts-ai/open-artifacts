@@ -27,6 +27,8 @@ const SECRETS = [
   "ACCESS_CLIENT_SECRET",
   "SESSION_SECRET",
   "CONTENT_SIGNING_KEY",
+  "VAPID_PUBLIC_KEY",
+  "VAPID_PRIVATE_KEY",
 ];
 const ALL = [
   "prereqs",
