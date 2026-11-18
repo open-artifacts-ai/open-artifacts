@@ -371,6 +371,76 @@ describe("limits per person", () => {
     expect(await stored(pic.id)).toBeNull();
     expect(await env.FILES.get((row as { r2_key: string }).r2_key)).toBeNull();
   });
+
+  it("a picture stuck under a hold: claim is deleted by the sweep after an hour", async () => {
+    const id = await pub();
+    const { pic } = await upload(owner, id);
+    const row = await stored(pic.id);
+    await env.DB.prepare(
+      "update comment_pictures set comment_id = ? where id = ?",
+    )
+      .bind(`hold:${newId()}`, pic.id)
+      .run();
+    expect(await sweepPictures(env, Date.now() + 30 * 60_000)).toBe(0);
+    expect(await r2(pic.id)).not.toBeNull();
+    expect(await sweepPictures(env, Date.now() + 61 * 60_000)).toBeGreaterThan(
+      0,
+    );
+    expect(await stored(pic.id)).toBeNull();
+    expect(await env.FILES.get((row as { r2_key: string }).r2_key)).toBeNull();
+  });
+
+  it("a picture attached to a comment is not swept", async () => {
+    const id = await pub();
+    const { pic } = await upload(owner, id);
+    expect((await thread(owner, id, [{ pictureId: pic.id }])).status).toBe(201);
+    await sweepPictures(env, Date.now() + 61 * 60_000);
+    expect(await stored(pic.id)).not.toBeNull();
+  });
+});
+
+describe("declared dimensions (#2508)", () => {
+  // A tiny file can claim a huge picture: refused when a side is over 16384
+  // or the area over 50 million pixels, whatever the type.
+  const SIZES = [
+    [16_385, 4],
+    [4, 16_385],
+    [9_000, 9_000],
+  ] as const;
+  for (const type of Object.keys(TYPES) as Kind[])
+    for (const [w, h] of SIZES)
+      it(`${type} ${w}x${h} is too_large (dimensions)`, async () => {
+        const id = await pub();
+        const bytes = TYPES[type](w, h, false);
+        const r = await reserve(owner, id, { type, bytes: bytes.length });
+        expect(r.status).toBe(201);
+        const res = (await r.json()) as CommentPictureReserved;
+        const p = await put(res.url, bytes);
+        expect(p.status).toBe(413);
+        const e = await errOf(p);
+        expect(e.code).toBe("too_large");
+        expect(e.details).toMatchObject({ reason: "dimensions" });
+        // Not a pending reservation of the owner's for the tests after it.
+        await env.DB.prepare(
+          "delete from comment_pictures where artifact_id = ?",
+        )
+          .bind(id)
+          .run();
+      });
+
+  it("a large picture inside the limits is accepted", async () => {
+    const id = await pub();
+    const { pic } = await upload(
+      owner,
+      id,
+      "image/png",
+      png(7_000, 7_000, false),
+    );
+    expect(pic).toMatchObject({ w: 7_000, h: 7_000 });
+    await env.DB.prepare("delete from comment_pictures where artifact_id = ?")
+      .bind(id)
+      .run();
+  });
 });
 
 describe("attach", () => {
