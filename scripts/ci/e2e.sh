@@ -19,14 +19,35 @@
 # in, library, viewer, publish, share, comment, ask, doc edit, guest), real on
 # Chromium only, and spaces, ui and landing do not run. Any other value, an
 # empty or missing one, a local run, the merge queue and a dispatch run the
-# whole suite. A smoke run that selects no test fails (Playwright's "No tests
-# found"; it never passes with no tests).
+# whole suite. A smoke run first counts its selection with `playwright test
+# --list` (same config and project, no --shard) and fails when the count is 0 or
+# cannot be read. Playwright itself exits 0 for an empty `--grep` with
+# `--shard`, so its "No tests found" is not the guard.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 hosts_file="${HOSTS_FILE:-/etc/hosts}"
 blob_dir="${E2E_BLOB_DIR:-$root/apps/dashboard/blob-report}"
 smoke=false
 [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && smoke=true
+
+# Smoke: the number of tests the run would select, or a failure. Reads the JSON
+# list (specs, at any depth); any error or unreadable output fails the run.
+require_smoke_tests() {
+  local out n
+  if ! out="$(pnpm --filter @oa/dashboard exec playwright test "$@" --list --reporter=json 2> /dev/null)"; then
+    echo "e2e: could not list the @smoke tests; failing (no smoke run without a readable selection)" >&2
+    exit 1
+  fi
+  if ! n="$(node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));const c=(s)=>(s.specs||[]).length+(s.suites||[]).reduce((a,x)=>a+c(x),0);const n=(j.suites||[]).reduce((a,s)=>a+c(s),0);if(!Number.isInteger(n))process.exit(1);console.log(n)' <<< "$out" 2> /dev/null)"; then
+    echo "e2e: the @smoke test list is unreadable; failing" >&2
+    exit 1
+  fi
+  if [ "$n" -lt 1 ]; then
+    echo "e2e: the @smoke selection is empty (0 tests); failing. Tag tests with { tag: \"@smoke\" }." >&2
+    exit 1
+  fi
+  echo "e2e: $n @smoke tests selected"
+}
 
 # Suites with no @smoke test do not run on pull requests.
 skip_in_smoke() {
@@ -72,6 +93,8 @@ case "${1:-}" in
       # (the mock config has no projects).
       [ "$suite" = real ] && args+=(--project chromium)
       echo "e2e $suite: smoke (@smoke only), pull request"
+      # Counted without --shard and reporters: the run's own arguments only.
+      require_smoke_tests ${args[@]+"${args[@]}"}
     fi
     if [ -n "${E2E_SHARD:-}" ]; then
       # One file per shard and suite, so the merge sees every shard.

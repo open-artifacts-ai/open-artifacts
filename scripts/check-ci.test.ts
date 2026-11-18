@@ -343,13 +343,22 @@ describe("ci.yml", () => {
       expect(JSON.stringify(job())).not.toContain("@smoke");
       expect(JSON.stringify(job())).not.toContain("--grep");
     });
-    // Runs e2e.sh with a stand-in pnpm that records its arguments.
-    const run = (suite: string, event: string | undefined) => {
+    // Runs e2e.sh with a stand-in pnpm that records its arguments. For
+    // `--list` it prints `list` (default: two tests) and exits `listExit`.
+    const LIST2 = JSON.stringify({
+      suites: [{ specs: [{}], suites: [{ specs: [{}] }] }],
+    });
+    const run = (
+      suite: string,
+      event: string | undefined,
+      o: { list?: string; listExit?: number } = {},
+    ) => {
       const dir = mkdtempSync(join(tmpdir(), "e2e-smoke-"));
       const log = join(dir, "args");
+      writeFileSync(join(dir, "list.json"), o.list ?? LIST2);
       writeFileSync(
         join(dir, "pnpm"),
-        `#!/usr/bin/env bash\necho "$*" >> "${log}"\n`,
+        `#!/usr/bin/env bash\necho "$*" >> "${log}"\ncase " $* " in *" --list "*) cat "${join(dir, "list.json")}"; exit ${o.listExit ?? 0};; esac\n`,
         { mode: 0o755 },
       );
       const env: Record<string, string> = {
@@ -361,23 +370,60 @@ describe("ci.yml", () => {
         env,
         encoding: "utf8",
       });
-      expect(r.status).toBe(0);
-      return existsSync(log) ? readFileSync(log, "utf8") : "";
+      const calls = existsSync(log)
+        ? readFileSync(log, "utf8").trim().split("\n")
+        : [];
+      return { status: r.status, calls, stderr: r.stderr };
     };
-    it("a pull request runs @smoke on the mock and real suites (real: Chromium only)", () => {
+    // The playwright runs (not the lists, not the runtime build before them).
+    const ran = (r: ReturnType<typeof run>) =>
+      r.calls
+        .filter((c) => c.includes("playwright test") && !c.includes("--list"))
+        .join("\n");
+    it("a pull request lists, then runs @smoke on the mock and real suites (real: Chromium only)", () => {
       const mock = run("mock", "pull_request");
-      expect(mock).toContain("playwright test");
-      expect(mock).toContain("--grep @smoke");
-      expect(mock).not.toContain("--project");
+      expect(mock.status).toBe(0);
+      expect(mock.calls.some((c) => c.includes("--grep @smoke --list"))).toBe(
+        true,
+      );
+      expect(ran(mock)).toContain("playwright test --grep @smoke");
+      expect(mock.calls.join("\n")).not.toContain("--project");
       const real = run("real", "pull_request");
-      expect(real).toContain("--grep @smoke");
-      expect(real).toContain("--project chromium");
+      expect(real.status).toBe(0);
+      // The list and the run use the same config and project.
+      expect(real.calls.join("\n")).toContain(
+        "playwright test -c playwright.real.config.ts --grep @smoke --project chromium --list",
+      );
+      expect(ran(real)).toContain("--grep @smoke --project chromium");
+    });
+    it("a smoke selection of 0 tests, an unreadable list, or a failed list fails before the run", () => {
+      for (const suite of ["mock", "real"]) {
+        for (const o of [
+          { list: JSON.stringify({ suites: [] }) },
+          { list: JSON.stringify({ suites: [{ specs: [] }] }) },
+          { list: "not json" },
+          { list: "" },
+          { list: JSON.stringify({}) },
+          { list: LIST2, listExit: 1 },
+          // Playwright exits 0 for an empty selection with --shard, so exit
+          // codes alone prove nothing: a zero count is what must fail.
+          { list: JSON.stringify({ suites: [] }), listExit: 0 },
+        ]) {
+          const r = run(suite, "pull_request", o);
+          expect(r.status, `${suite} ${JSON.stringify(o)}`).not.toBe(0);
+          expect(r.stderr).toContain("e2e:");
+          expect(ran(r), `${suite} ${JSON.stringify(o)}`).toBe("");
+        }
+      }
     });
     it("a pull request skips spaces, ui and landing", () => {
-      for (const suite of ["spaces", "ui", "landing"])
-        expect(run(suite, "pull_request"), suite).toBe("");
+      for (const suite of ["spaces", "ui", "landing"]) {
+        const r = run(suite, "pull_request");
+        expect(r.status).toBe(0);
+        expect(r.calls, suite).toEqual([]);
+      }
     });
-    it("every other event, an empty or a missing one runs everything", () => {
+    it("every other event, an empty or a missing one runs everything and never lists", () => {
       for (const event of [
         "merge_group",
         "workflow_dispatch",
@@ -389,18 +435,24 @@ describe("ci.yml", () => {
         undefined,
       ]) {
         for (const suite of ["mock", "real"]) {
-          const out = run(suite, event);
-          expect(out, `${suite} on ${event}`).toContain("playwright test");
-          expect(out, `${suite} on ${event}`).not.toContain("@smoke");
-          expect(out, `${suite} on ${event}`).not.toContain("--grep");
-          expect(out, `${suite} on ${event}`).not.toContain("--project");
+          // Even a list that would be empty changes nothing here.
+          const r = run(suite, event, { list: "", listExit: 1 });
+          const all = r.calls.join("\n");
+          expect(r.status, `${suite} on ${event}`).toBe(0);
+          expect(all, `${suite} on ${event}`).toContain("playwright test");
+          expect(all, `${suite} on ${event}`).not.toContain("--list");
+          expect(all, `${suite} on ${event}`).not.toContain("@smoke");
+          expect(all, `${suite} on ${event}`).not.toContain("--grep");
+          expect(all, `${suite} on ${event}`).not.toContain("--project");
         }
         for (const suite of ["spaces", "ui", "landing"])
-          expect(run(suite, event), `${suite} on ${event}`).not.toBe("");
+          expect(run(suite, event).calls, `${suite} on ${event}`).not.toEqual(
+            [],
+          );
       }
     });
-    it("a smoke run that selects no test fails (never --pass-with-no-tests)", () => {
-      expect(ci("e2e.sh")).not.toContain("pass-with-no-tests");
+    it("the workflow and the script never rely on Playwright's empty-selection exit", () => {
+      expect(ci("e2e.sh")).not.toContain("--pass-with-no-tests");
       expect(ci("e2e.sh")).not.toContain("passWithNoTests");
       const cfgs = readdirSync(join(root, "apps/dashboard")).filter((f) =>
         f.startsWith("playwright"),
