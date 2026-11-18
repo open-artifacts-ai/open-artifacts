@@ -321,6 +321,46 @@ describe("For you", () => {
     );
   });
 
+  it("Updates empty while something needs you: No updates yet., Needs you stays", async () => {
+    forYou("back");
+    mount("/");
+    const panel = await openPanel();
+    const updates = within(panel).getByRole("region", { name: "Updates" });
+    expect(within(updates).getByText("No updates yet.")).toBeInTheDocument();
+    expect(within(panel).queryByText("Nothing is waiting on you.")).toBeNull();
+  });
+
+  it("nothing at all: one caught-up state, no group messages", async () => {
+    forYou("mixed");
+    server.use(
+      http.get(`*${R.meInbox}`, () =>
+        HttpResponse.json({
+          needsYou: [],
+          later: [],
+          updates: [],
+          cursor: null,
+          counts: { needsYou: 0, unreadUpdates: 0 },
+        }),
+      ),
+    );
+    mount("/");
+    fireEvent.click(await bell());
+    const panel = await screen.findByRole("dialog", { name: "For you" });
+    // Nothing at all is the single "all caught up" state, not two group messages.
+    expect(
+      await within(panel).findByText("You're all caught up."),
+    ).toBeInTheDocument();
+    expect(within(panel).queryByText("No updates yet.")).toBeNull();
+  });
+
+  it("Updates has rows: no empty message", async () => {
+    forYou("calm");
+    mount("/");
+    const panel = await openPanel();
+    const updates = within(panel).getByRole("region", { name: "Updates" });
+    expect(within(updates).queryByText("No updates yet.")).toBeNull();
+  });
+
   it("a returned item is marked, with no Later", async () => {
     forYou("back");
     mount("/");
