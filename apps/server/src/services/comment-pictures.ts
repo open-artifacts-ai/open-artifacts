@@ -159,7 +159,9 @@ export async function reservePicture(
       artifactId,
       user.id,
       ok.data,
-      `comment-pictures/${artifactId}/${newId()}`,
+      // Under the artifact's files/ prefix, so the purge that lists and deletes
+      // that prefix takes the bytes with no R2 call of its own.
+      `files/${artifactId}/${newId()}`,
       input.bytes,
       input.sha256 ?? null,
       now,
@@ -481,27 +483,4 @@ export async function sweepPictures(env: Env, now: number): Promise<number> {
     .bind(JSON.stringify(results.map((r) => r.id)))
     .run();
   return results.length;
-}
-
-/** A purged artifact's pictures, all of them (rows and bytes). */
-export async function deletePicturesOfArtifact(
-  env: Env,
-  artifactId: string,
-): Promise<void> {
-  for (;;) {
-    const { results } = await stmt(
-      env.DB,
-      "select id, r2_key from comment_pictures where artifact_id = ?1 limit 500",
-    )
-      .bind(artifactId)
-      .all<{ id: string; r2_key: string }>();
-    if (results.length === 0) return;
-    await env.FILES.delete(results.map((r) => r.r2_key));
-    await stmt(
-      env.DB,
-      "delete from comment_pictures where id in (select value from json_each(?1))",
-    )
-      .bind(JSON.stringify(results.map((r) => r.id)))
-      .run();
-  }
 }
