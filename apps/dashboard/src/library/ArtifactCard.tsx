@@ -1,5 +1,6 @@
 import type { ArtifactSummary } from "@oa/shared";
 import { FormatIcon } from "@oa/ui";
+import { LibraryWaiting } from "../foryou/waiting";
 import { UserAvatar } from "../layout/UserAvatar";
 import { SpaceMarker, VisibilityWithHint } from "../spaces/SpaceMarker";
 import { AppLink } from "./AppLink";
@@ -23,6 +24,7 @@ function Meta({ artifact: a, meId, showSpace }: CardProps) {
       <VisibilityWithHint visibility={a.visibility} space={a.space} />
       {showSpace && <SpaceMarker space={a.space} />}
       <AsksBadge n={a.asksForYou} />
+      <LibraryWaiting a={a} />
       {a.lastAgent && <span>{a.lastAgent.name}</span>}
       {a.owner.id !== meId && (
         <UserAvatar
