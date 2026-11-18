@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,7 +73,21 @@ const DENIED = [
   "echo `oa-bus use x`",
   "oa-'bus' add",
   'oa-bus "add"',
-  "oa-bus\nadd",
+  "oa-bus a$'d'd home",
+  "oa-bus a${X}dd",
+  "oa-bus ${V:-add}",
+  "oa-bus $(cat /tmp/w)",
+  "oa-bus $(echo YWRk|base64 -d)",
+  "oa-bus {ad,}d",
+  "oa-bus a\\\ndd",
+  "~/.local/bin/oa-b* add",
+  "~/.local/bin/oa-?us use",
+  "oa-bu${Z}s add",
+  "O=oa; ${O}-bus add",
+  "oa-bus *",
+  "oa-bus a?d",
+  "xargs oa-bus < /tmp/args",
+  "sudo -u bob oa-bus add",
   "script -qc 'oa-bus add' /dev/null",
   `${"/some/where"}/oa-bus use`,
 ];
@@ -85,6 +100,14 @@ const ALLOWED = [
   "ls -la",
   "npx vitest run",
   "echo adding the use of tools",
+  "oa-bus\nadd",
+  "git add packages/bus-cli/src/x.ts",
+  "grep -rn use packages/bus-cli/src",
+  "pnpm --filter @oa/bus-cli add zod",
+  "git commit -m 'feat(bus): oa-bus use picks a namespace'",
+  "gh pr create --body 'oa-bus add docs'",
+  "cat ~/.oa-bus/machine.json && git add .",
+  "oa-bus status && git add .",
 ];
 
 describe("the oa-bus add/use hook script (#2793 S5a)", () => {
@@ -103,6 +126,34 @@ describe("the oa-bus add/use hook script (#2793 S5a)", () => {
 
   it.each(ALLOWED)("allows %j", (cmd) => {
     expect(run(bash(cmd))).toBeUndefined();
+  });
+
+  it("denies through a symlinked bus home", () => {
+    const link = join(root, "link");
+    symlinkSync(busHome, link);
+    const r = spawnSync(
+      process.execPath,
+      [join(link, "hooks", HOOK_FILE), busHome],
+      {
+        input: bash("oa-bus add"),
+        encoding: "utf8",
+        timeout: 20_000,
+      },
+    );
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe(
+      "deny",
+    );
+  });
+
+  it("judges the Monitor tool too", () => {
+    const out = run(
+      JSON.stringify({
+        tool_name: "Monitor",
+        tool_input: { command: "oa-bus use x" },
+      }),
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
   it("allows other tools", () => {
@@ -175,7 +226,7 @@ describe("install and uninstall (#2793 S5a)", () => {
     expect(readFileSync(settings(), "utf8")).toBe(first);
     const list = read().hooks.PreToolUse;
     expect(list).toHaveLength(1);
-    expect(list[0].matcher).toBe("Bash");
+    expect(list[0].matcher).toBe("Bash|Monitor");
     expect(list[0].hooks[0].type).toBe("command");
     expect(list[0].hooks[0].command).toContain(HOOK_FILE);
     expect(existsSync(script())).toBe(true);

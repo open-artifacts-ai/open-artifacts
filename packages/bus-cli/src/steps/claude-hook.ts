@@ -1,6 +1,6 @@
 // The Claude Code hook that refuses `oa-bus add` and `oa-bus use` from an agent
 // (#2793 S5a). Install writes the script to <busHome>/hooks and adds one
-// PreToolUse entry (matcher "Bash") to Claude Code's settings.json. Ours is the
+// PreToolUse entry (matcher "Bash|Monitor") to Claude Code's settings.json. Ours is the
 // entry whose command names HOOK_FILE: install is idempotent on it, and
 // uninstall removes only it. A hook the person wrote is never touched. A
 // settings.json that is a symlink or does not parse is left alone.
@@ -90,7 +90,7 @@ const read = (path: string): Read => {
 };
 
 const entry = (w: Where) => ({
-  matcher: "Bash",
+  matcher: "Bash|Monitor",
   hooks: [{ type: "command", command: hookCommand(w) }],
 });
 

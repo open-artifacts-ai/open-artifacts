@@ -19,32 +19,133 @@ export const HOOK_REASON =
 
 export const HOOK_SCRIPT = String.raw`// oa-bus-refuse-add-use: written by oa-bus install. Refuses oa-bus add and oa-bus use from an agent.
 // Edits are replaced on reinstall. Removed by oa-bus uninstall.
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const REASON = ${JSON.stringify(HOOK_REASON)};
 
-const MENTIONS = ["oa-bus", "open-artifacts/bus", "bus-cli"];
+// Words after which the rest of a simple command may be the real command.
+const WRAPPERS = new Set([
+  "sudo", "doas", "env", "command", "exec", "nohup", "time", "timeout", "nice",
+  "ionice", "setsid", "stdbuf", "xargs", "parallel", "npx", "pnpm", "pnpx",
+  "bunx", "bun", "yarn", "npm", "node", "nodejs", "sh", "bash", "zsh", "dash",
+  "ksh", "eval", "script", "watch", "builtin",
+]);
+const KEYWORDS = new Set(["if", "then", "do", "else", "elif", "while", "until", "!"]);
+const ASSIGN = /^[a-z_][a-z0-9_]*=/;
+const EXPANSION = /[$\u0060]|<\(/;
+const GLOB = /[*?[{]/;
+
+const base = (tok) => tok.slice(tok.lastIndexOf("/") + 1);
+
+// A token as a regex: expansions and globs stand for anything. Null when it has none.
+function toRegex(tok) {
+  const hasVar = tok.includes("$");
+  if (!hasVar && !GLOB.test(tok)) return null;
+  const src = tok
+    .replace(/\$\{[^}]*\}/g, "\u0001")
+    .replace(/\$\(.*$/g, "\u0001")
+    .replace(/\$[a-z0-9_]*/g, "\u0001")
+    .replace(/\{[^}]*\}/g, "\u0001")
+    .replace(/\[[^\]]*\]/g, "\u0002")
+    .replace(/\*/g, "\u0001")
+    .replace(/\?/g, "\u0002");
+  const literal = src.replace(/[\u0001\u0002]/g, "").length;
+  const re = src
+    .replace(/[.+^|()\\\/\[\]{}$]/g, "\\$&")
+    .replace(/\u0001/g, ".*")
+    .replace(/\u0002/g, ".");
+  try {
+    return { re: new RegExp("^" + re + "$"), literal };
+  } catch {
+    return { re: /^/, literal: 0 };
+  }
+}
+
+// Could this word, once the shell has expanded it, be exactly target?
+function couldBe(tok, target) {
+  if (EXPANSION.test(tok)) return true;
+  const r = toRegex(tok);
+  return r ? r.re.test(target) : tok === target;
+}
+
+// Does this token, in command position, name the bus program?
+function isBusName(tok, extra) {
+  const b = base(tok);
+  if (b === "oa-bus" || b.startsWith("oa-bus.") || b.startsWith("oa-bus@")) return true;
+  if (
+    tok.includes("@open-artifacts/bus") ||
+    tok.includes("/bus-cli/dist") ||
+    tok.includes("/bus-cli/bin") ||
+    tok.includes(".oa-bus/bin/")
+  ) return true;
+  if (extra && tok.startsWith(extra + "/")) return true;
+  // The name split by a glob or expansion: oa-b*, oa-?us, oa-bu-var-s.
+  const r = toRegex(b);
+  return !!r && r.literal >= 2 && r.re.test("oa-bus");
+}
+
+// The words after the program: refused when add or use could be the subcommand
+// (one of the first two plain words, to allow for an option value).
+function argsRefused(rest) {
+  let words = 0;
+  for (const tok of rest) {
+    if (tok === "") continue;
+    if (EXPANSION.test(tok)) return true;
+    if (tok.startsWith("-")) continue;
+    if (couldBe(tok, "add") || couldBe(tok, "use")) return true;
+    if (++words >= 2) break;
+  }
+  return false;
+}
+
+function simpleRefused(tokens, extra) {
+  let wrapped = false;
+  let fanout = false;
+  for (const tok of tokens) {
+    if (tok === "") continue;
+    if (isBusName(tok, extra)) {
+      if (fanout) return true;
+      const i = tokens.indexOf(tok);
+      return argsRefused(tokens.slice(i + 1));
+    }
+    if (wrapped) {
+      continue;
+    }
+    if (ASSIGN.test(tok) || KEYWORDS.has(tok)) continue;
+    const w = base(tok);
+    if (!WRAPPERS.has(w)) return false;
+    wrapped = true;
+    if (w === "xargs" || w === "parallel") fanout = true;
+  }
+  return false;
+}
 
 // extra: the bus home, another way a command can name the installed bin.
 export function refuses(text, extra) {
   const t = String(text)
     .toLowerCase()
-    .replace(/\\[nrt]/g, " ")
-    .replace(/['"\\\u0060]/g, "");
-  const names = extra ? MENTIONS.concat([String(extra).toLowerCase()]) : MENTIONS;
-  if (!names.some((m) => t.includes(m))) return false;
-  return t.split(/[^a-z0-9_.@\/~:+-]+/).some((w) => w === "add" || w === "use");
+    .replace(/\\\r?\n/g, "")
+    .replace(/['"\\]/g, "");
+  const e = extra ? String(extra).toLowerCase() : "";
+  // Whole simple commands, and again with parens and backticks cut out so a
+  // command substitution is judged on its own.
+  const parts = t.split(/[;&|\n]+/).concat(t.split(/[;&|\n()\u0060]+/));
+  return parts.some((p) => simpleRefused(p.trim().split(/\s+/), e));
 }
 
 // The hook JSON in, the answer out: a deny object, or undefined to allow.
 export function decide(input, extra) {
-  let subject = String(input);
+  let subject = String(input).replace(/\\[nrt]/g, "\n").replace(/[{}\[\]:,]/g, "\n");
   try {
     const j = JSON.parse(input);
     if (j && typeof j === "object") {
-      if (typeof j.tool_name === "string" && j.tool_name !== "Bash") return undefined;
+      const tool = j.tool_name;
+      if (typeof tool === "string" && tool !== "Bash" && tool !== "Monitor") return undefined;
       const c = j.tool_input && j.tool_input.command;
-      subject = typeof c === "string" ? c : JSON.stringify(j.tool_input === undefined ? j : j.tool_input);
+      if (typeof c === "string") subject = c;
+      else if (Array.isArray(c) && c.every((x) => typeof x === "string")) subject = c.join(" ");
+      else subject = JSON.stringify(j.tool_input === undefined ? j : j.tool_input).replace(/[{}\[\]:,"]/g, "\n");
     }
   } catch {}
   if (!refuses(subject, extra)) return undefined;
@@ -76,5 +177,11 @@ function run() {
   process.stdin.on("error", finish);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) run();
+// Node resolves symlinks in import.meta.url but not in argv[1]: compare real paths,
+// and if they cannot be read, run anyway (a hook that fails open is worse).
+let main = true;
+try {
+  main = realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+} catch {}
+if (process.argv[1] && main) run();
 `;
