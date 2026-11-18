@@ -496,6 +496,52 @@ export async function notifyAnswered(
 }
 
 /**
+ * `ask_later` (#2762): the person put an ask off ("Later"); the asking agent
+ * (only it, by its verified bus address, as `ask_answered`) is told when they
+ * will look at it, so it does not wait on a clock. Fixed text, one waiting
+ * notice per ask comment. Never throws.
+ */
+export async function notifyAskLater(
+  env: Env,
+  artifactId: string,
+  version: number,
+  threadId: string,
+  commentId: string,
+  askerId: string,
+  asker: AskerAddress | null,
+  /** When they will look at it, ms. */
+  until: number,
+): Promise<void> {
+  const targets = await askerAgents(env, artifactId, askerId, asker);
+  if (targets.length === 0) return;
+  const url = appOrigin(env) + viewerPath(artifactId);
+  const when = new Date(until).toISOString().slice(0, 16).replace("T", " ");
+  const scope = newDeliveryScope();
+  for (const to of targets) {
+    const n: BusNotice = {
+      id: newId(),
+      kind: "ask_later",
+      from: NOTICE_SENDER,
+      artifactId,
+      version,
+      url,
+      to: { namespace: to.namespace, name: to.name },
+      ...(to.identityId ? { toIdentity: to.identityId } : {}),
+      text: [
+        `Open Artifacts: your user will look at your ask after ${when} UTC.`,
+        url,
+        `Thread ${threadId}, comment ${commentId}. Do not wait for an answer before then.`,
+      ].join("\n"),
+      coalesceKey: `${artifactId}:${commentId}:later`,
+      threadId,
+      commentId,
+    };
+    const out = await deliverNotice(env, askerId, n, scope);
+    logInfo("comment_notice", { artifactId, kind: "later", outcome: out });
+  }
+}
+
+/**
  * The one agent that can be told of something on an ask (#1535, #1614, #2224):
  * the agent that posted it, by its own bus address. Never a follower or the
  * member's other agents: an answer is a yes for the asker alone. A person's

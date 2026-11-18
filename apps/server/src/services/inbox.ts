@@ -6,12 +6,21 @@ import { capsReads, isGuestRole } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifactAsks, artifacts } from "../db/schema.js";
 import type { Env } from "../env.js";
+import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
+import { runtimeStub } from "../runtime/do.js";
 import { receiverCanOpen } from "./agent-requests.js";
 import { agentsWaitingOn } from "./bus.js";
-import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
+import { notifyAskLater } from "./comment-agents.js";
+import {
+  askerFaces,
+  askingAddress,
+  type CommentViewer,
+  repairAsks,
+} from "./comments.js";
 import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
+import { laterRows, laterUntil, recordLater } from "./inbox-later.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
 import { getUser } from "./users.js";
@@ -38,13 +47,24 @@ const forMe = (caller: Me) =>
 
 /** How many open asks wait for the caller (the /me badge): one indexed query. */
 export async function needsYouCount(env: Env, caller: Me): Promise<number> {
+  const now = Date.now();
+  // #2762: an item put off and not yet back is not counted (the bell leaves it out).
   const r = await getDb(env)
     .select({ n: sql<number>`count(distinct ${artifactAsks.commentId})` })
     .from(artifactAsks)
     .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
-    .where(forMe(caller));
+    .where(
+      and(
+        forMe(caller),
+        sql`not exists (select 1 from inbox_later l where l.user_id = ${caller.user.id} and l.item_id = 'ask:' || ${artifactAsks.commentId} and l.until > ${now})`,
+      ),
+    );
   const held = await heldRequestRows(env, caller).catch(() => []);
-  return Math.min((r[0]?.n ?? 0) + held.length, NEEDS_YOU_MAX);
+  const away = await laterRows(env, caller.user.id).catch(
+    () => new Map<string, number>(),
+  );
+  const shown = held.filter((h) => (away.get(`request:${h.id}`) ?? 0) <= now);
+  return Math.min((r[0]?.n ?? 0) + shown.length, NEEDS_YOU_MAX);
 }
 
 export { unreadUpdateCount };
@@ -389,21 +409,120 @@ export async function inboxOf(
   // Waiting agents first, then what needs an approval (asks and requests, oldest first), then the rest.
   const byAge = (a: InboxItem, b: InboxItem) =>
     a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
-  const list = [
+  const ordered = [
     ...asks.filter((i) => i.urgency === "waiting"),
     ...[...asks.filter((i) => i.urgency === "approval"), ...requests].sort(
       byAge,
     ),
     ...asks.filter((i) => i.urgency !== "waiting" && i.urgency !== "approval"),
-  ].slice(0, NEEDS_YOU_MAX);
+  ];
+  // #2762: put-off items sit in Later until their time, then return on top,
+  // once, marked backFromLater (they cannot be put off again).
+  const away = await laterRows(env, caller.user.id).catch((e) => {
+    logWarn("inbox_later_failed", e);
+    return new Map<string, number>();
+  });
+  const now = Date.now();
+  const laterList: InboxItem[] = [];
+  const back: InboxItem[] = [];
+  const rest: InboxItem[] = [];
+  for (const i of ordered) {
+    const until = away.get(i.id);
+    if (until === undefined) rest.push(i);
+    else if (until > now)
+      laterList.push({
+        ...i,
+        later: { until: new Date(until).toISOString(), used: true },
+      });
+    else
+      back.push({
+        ...i,
+        later: { until: new Date(until).toISOString(), used: true },
+        backFromLater: true,
+      });
+  }
+  laterList.sort((a, b) =>
+    (a.later?.until ?? "") < (b.later?.until ?? "") ? -1 : 1,
+  );
+  const list = [...back, ...rest].slice(0, NEEDS_YOU_MAX);
   const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
     (x, y) => y.createdAt.localeCompare(x.createdAt),
   );
   return {
     needsYou: list,
-    later: [],
+    later: laterList,
     updates,
     cursor: page.next,
     counts: { needsYou: list.length, unreadUpdates: unread + setUp.length },
   };
+}
+
+/**
+ * #2762 POST /me/inbox/:id/later: puts one Needs-you item off, once. 404: not
+ * one of theirs (an update, someone else's, gone). 409 later_used: put off
+ * before (a return from Later cannot be put off again). The asking agent, if
+ * the item is its ask, is told when they will look at it. Time: "hour" is one
+ * hour on; "morning" the next 08:00 UTC (the person's zone is not stored yet).
+ */
+export async function deferItem(
+  env: Env,
+  caller: Me,
+  id: string,
+  which: "hour" | "morning",
+  now = Date.now(),
+): Promise<InboxItem> {
+  const away = await laterRows(env, caller.user.id);
+  if (away.has(id))
+    throw new ApiError("later_used", "You already put this off once.");
+  const [asks, requests] = await Promise.all([
+    needsYou(env, caller),
+    heldRequestItems(env, caller).catch(() => [] as InboxItem[]),
+  ]);
+  const item = [...asks, ...requests].find((i) => i.id === id);
+  if (!item) throw new ApiError("not_found", "Not found");
+  const until = laterUntil(which, now);
+  if (!(await recordLater(env, caller.user.id, id, until, now)))
+    throw new ApiError("later_used", "You already put this off once.");
+  if (item.kind === "ask") await tellAsker(env, caller, id, until);
+  return {
+    ...item,
+    later: { until: new Date(until).toISOString(), used: true },
+  };
+}
+
+/** The asking agent hears when the person will look at its ask. Never throws. */
+async function tellAsker(
+  env: Env,
+  caller: Me,
+  itemId: string,
+  until: number,
+): Promise<void> {
+  try {
+    const commentId = itemId.slice("ask:".length);
+    const row = await env.DB.prepare(
+      `select a.artifact_id, a.thread_id, x.current_version as version
+         from artifact_asks a join artifacts x on x.id = a.artifact_id
+        where a.comment_id = ? and a.addressee = ? limit 1`,
+    )
+      .bind(commentId, caller.user.id)
+      .first<{ artifact_id: string; thread_id: string; version: number }>();
+    if (!row) return;
+    const t = await runtimeStub(env, row.artifact_id).commentsGet(
+      row.thread_id,
+    );
+    const c = t.comments.find((x) => x.id === commentId);
+    if (!c || c.author.kind !== "user" || !c.author.agent) return;
+    await notifyAskLater(
+      env,
+      row.artifact_id,
+      Math.max(1, row.version),
+      row.thread_id,
+      commentId,
+      c.author.ref,
+      await askingAddress(env, row.artifact_id, row.thread_id, c.author),
+      until,
+    );
+  } catch (e) {
+    logWarn("inbox_later_notice_failed", e);
+  }
 }

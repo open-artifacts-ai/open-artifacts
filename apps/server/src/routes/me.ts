@@ -1,5 +1,7 @@
 import {
+  InboxLaterBodySchema,
   InboxReadBodySchema,
+  LIMITS,
   MCP_PATH,
   type Me,
   type Member,
@@ -29,7 +31,7 @@ import {
   readHealthBound,
   readThawNotice,
 } from "../directory/health.js";
-import { emailEnabled } from "../email/send.js";
+import { emailEnabled, takeAll } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
@@ -37,6 +39,7 @@ import { logWarn } from "../log.js";
 import { busOn } from "../services/bus.js";
 import { docsState } from "../services/docs-available.js";
 import {
+  deferItem,
   inboxOf,
   needsYouCount,
   unreadUpdateCount,
@@ -281,6 +284,26 @@ export function mountMe(app: AppType): void {
     if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
     const { ids } = await jsonBody(c, InboxReadBodySchema);
     return c.json({ read: await markRead(c.env, user.id, ids) });
+  });
+  // #2762 "Later": put one Needs-you item off, once. A person in a browser only.
+  app.post("/api/v1/me/inbox/:id/later", async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    const who = caller(c);
+    if (who.kind !== "user")
+      throw new ApiError("unauthorized", "Login required");
+    const { until } = await jsonBody(c, InboxLaterBodySchema);
+    const minute = new Date().toISOString().slice(0, 16);
+    if (
+      (await takeAll(c.env, [
+        [`later:${user.id}`, LIMITS.viewerWritesPerMin, minute],
+      ])) !== -1
+    )
+      throw new ApiError(
+        "rate_limited",
+        "Too many changes. Try again shortly.",
+      );
+    return c.json(await deferItem(c.env, who, c.req.param("id"), until));
   });
   app.post(R.meInboxReadAll, async (c) => {
     const user = requireUser(c);

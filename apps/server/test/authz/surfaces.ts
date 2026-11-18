@@ -1753,6 +1753,23 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // #2762: an id that is not theirs is a 404 for everyone allowed in.
+  "POST /api/v1/me/inbox/:id/later": {
+    refuse: {
+      req: async () => ({
+        path: "/api/v1/me/inbox/ask%3Anone/later",
+        body: { until: "hour" },
+      }),
+      allow: code("not_found"),
+    },
+    real: {
+      req: () => ({
+        path: "/api/v1/me/inbox/ask%3Anone/later",
+        body: { until: "hour" },
+      }),
+      allow: code("not_found"),
+    },
+  },
   "POST /api/v1/me/inbox/read-all": {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
@@ -2442,6 +2459,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
   ["GET /api/v1/me/inbox", U, [200]],
   ["POST /api/v1/me/inbox/read", U],
+  ["POST /api/v1/me/inbox/:id/later", U],
   ["POST /api/v1/me/inbox/read-all", U, [200]],
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
