@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.211.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.210.0...v0.211.0) (2026-11-18)
+
+
+### Features
+
+* **foryou:** waiting mark on the page's ask and the Library card ([#1910](https://github.com/open-artifacts-ai/open-artifacts/issues/1910)) ([#2779](https://github.com/open-artifacts-ai/open-artifacts/issues/2779)) ([173e13f](https://github.com/open-artifacts-ai/open-artifacts/commit/173e13f77fe79804ff6c8c6c268f502b78242652))
+
 ## [0.210.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.209.0...v0.210.0) (2026-11-18)
 
 
