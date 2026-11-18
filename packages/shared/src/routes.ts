@@ -20,7 +20,7 @@ export const R = {
   meInboxReadAll: "/api/v1/me/inbox/read-all",
   /** POST InboxLaterBody (`{ until: "hour" | "morning" }`) -> 200 InboxItem (the deferred item). Defers a needs-you item once; a second time is 409 later_used. */
   meInboxLater: (id: string) => `/api/v1/me/inbox/${seg(id)}/later`,
-  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204. A mute stops push only: a muted agent's or page's items (asks and updates) stay in the inbox list. */
+  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204 (404 for an id the caller can't see: a page they can't read, or an agent on none of their items; 409 mutes_full past 200; a person in a browser, a token gets 404). A mute stops push only: a muted agent's or page's items (asks and updates) stay in the inbox list. */
   meInboxMutes: "/api/v1/me/inbox/mutes",
   /** DELETE -> 204. Unmutes one agent or page. */
   meInboxMute: (kind: "agent" | "page", id: string) =>
@@ -31,7 +31,7 @@ export const R = {
   mePushKey: "/api/v1/me/push/key",
   /** GET -> PushSubscriptions; POST PushSubscribeBody -> 201 `{ id }`. */
   mePushSubscriptions: "/api/v1/me/push/subscriptions",
-  /** DELETE -> 204. The caller's own subscription only. */
+  /** PATCH PushSubscriptionPatchBody (`{ needsYou?, updates? }`) -> 200 { needsYou, updates }: this browser's switches. DELETE -> 204: removes it. The caller's own subscription only (404 otherwise); a person in a browser (a token gets 404). */
   mePushSubscription: (id: string) =>
     `/api/v1/me/push/subscriptions/${seg(id)}`,
   /** GET -> ShareNoticeAgents; PUT ShareNoticeAgents -> ShareNoticeAgents (replaces the list; 400 bad_request on an invalid address, details { path: "agents[i].name", reason: "invalid" | "reserved" }, or more than SHARE_NOTICE_MAX, details { path: "agents", reason: "too_many" }). The bus addresses that get "shared with you" notices; empty (the default) drops them. Callers who may connect agents (mcp.connect), their own list only; PUT takes an interactive cookie session (a PAT or OAuth grant gets 404) (#1292). */
