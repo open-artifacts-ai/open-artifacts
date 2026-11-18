@@ -201,11 +201,17 @@ function UpdatesCard({
   return (
     <SettingsCard id="oa-updates-h" title={UPDATES_COPY.title}>
       <div className="flex items-start justify-between gap-[var(--oa-space-3)]">
-        <p id="oa-updates-state" className={`m-0 ${muted}`}>
-          {paused ? UPDATES_COPY.on : UPDATES_COPY.off}
-        </p>
+        <div className="grid gap-[2px]">
+          <p id="oa-updates-label" className="m-0 font-medium">
+            {UPDATES_COPY.label}
+          </p>
+          <p id="oa-updates-state" className={`m-0 ${muted}`}>
+            {paused ? UPDATES_COPY.on : UPDATES_COPY.off}
+          </p>
+        </div>
         <Switch
           label={UPDATES_COPY.label}
+          labelledBy="oa-updates-label"
           checked={paused}
           disabled={saving}
           describedBy="oa-updates-state"

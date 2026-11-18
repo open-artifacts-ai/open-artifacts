@@ -5,6 +5,7 @@ export function Switch({
   disabled,
   onChange,
   describedBy,
+  labelledBy,
   id,
 }: {
   id?: string;
@@ -13,13 +14,16 @@ export function Switch({
   disabled?: boolean;
   onChange: (next: boolean) => void;
   describedBy?: string;
+  /** A visible label's id: the name comes from it, `label` stays the fallback. */
+  labelledBy?: string;
 }) {
   return (
     <button
       id={id}
       type="button"
       role="switch"
-      aria-label={label}
+      aria-label={labelledBy ? undefined : label}
+      aria-labelledby={labelledBy}
       aria-checked={checked}
       aria-describedby={describedBy}
       disabled={disabled}
