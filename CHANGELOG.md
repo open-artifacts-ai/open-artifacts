@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.204.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.203.0...v0.204.0) (2026-11-18)
+
+
+### Features
+
+* **inbox:** mentions and updates in For you ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) S2) ([#2575](https://github.com/open-artifacts-ai/open-artifacts/issues/2575)) ([17332ef](https://github.com/open-artifacts-ai/open-artifacts/commit/17332ef2c63510758d95f97bf3191ca3aa03af7b))
+* **onboarding:** one setup reminder email, three days after a first login ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632)) ([#2721](https://github.com/open-artifacts-ai/open-artifacts/issues/2721)) ([e864926](https://github.com/open-artifacts-ai/open-artifacts/commit/e8649269ec12b648429f564b4e3a670af73b0135))
+* **setup:** installing the skill is its own step with a check ([#2624](https://github.com/open-artifacts-ai/open-artifacts/issues/2624)) ([#2720](https://github.com/open-artifacts-ai/open-artifacts/issues/2720)) ([3499cac](https://github.com/open-artifacts-ai/open-artifacts/commit/3499cac930275356f8be56638b3b25f7d3896bcf))
+
+## [0.203.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.202.0...v0.203.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** the instance names the version; machines report back ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2579](https://github.com/open-artifacts-ai/open-artifacts/issues/2579)) ([28a93da](https://github.com/open-artifacts-ai/open-artifacts/commit/28a93da5a928cd3133c0b543b7d01a8ae708e975))
+
 ## [0.202.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.201.0...v0.202.0) (2026-11-18)
 
 

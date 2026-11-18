@@ -52,6 +52,7 @@ import {
   optoutPlatform,
   platformUnsubscribeUrl,
 } from "./hosted-optout.js";
+import { recordShareItem } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
@@ -275,6 +276,19 @@ export async function putShare(
   // #1292: a new direct share tells the recipient's picked agents, after
   // the response; ids and the link only.
   if (created) await inBackground(ctx, notifyShared(env, user.id, email, id));
+  // #2512 S2: a member the page is shared with sees it in their inbox.
+  if (created)
+    await inBackground(
+      ctx,
+      recordShareItem(env, {
+        artifactId: id,
+        title: artifact.title,
+        email,
+        sharer: user.id,
+        sharerName: senderName(user),
+        createdAt: row.createdAt,
+      }),
+    );
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
   return {

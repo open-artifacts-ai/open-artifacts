@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import inviteHtml from "../../../design/emails/invite.html?raw";
 import inviteTxt from "../../../design/emails/invite.txt?raw";
+import reminderHtml from "../../../design/emails/setup-reminder.html?raw";
+import reminderTxt from "../../../design/emails/setup-reminder.txt?raw";
 import shareHtml from "../../../design/emails/share.html?raw";
 import shareTxt from "../../../design/emails/share.txt?raw";
 import {
   INVITE_HTML,
   INVITE_TXT,
+  SETUP_REMINDER_HTML,
+  SETUP_REMINDER_TXT,
   SHARE_HTML,
   SHARE_TXT,
 } from "../src/email/email-templates.js";
@@ -51,6 +55,8 @@ describe("email templates", () => {
     expect(INVITE_TXT).toBe(inviteTxt);
     expect(SHARE_HTML).toBe(shareHtml);
     expect(SHARE_TXT).toBe(shareTxt);
+    expect(SETUP_REMINDER_HTML).toBe(reminderHtml);
+    expect(SETUP_REMINDER_TXT).toBe(reminderTxt);
   });
 
   it("renders the invite with hostile values", () => {
@@ -69,7 +75,7 @@ describe("email templates", () => {
       "Then connect your agent. Paste this into Claude Code, Codex, Cursor or any other AI agent:",
     );
     expect(m.text).toContain(line);
-    expect(m.html).toContain(line);
+    expect(m.html).toContain(line.replace(/\//g, "/<wbr>"));
     for (const part of [m.text, m.html]) expect(part).not.toContain("setup-->");
     const g = inviteEmail({ ...common, guest: true });
     for (const part of [g.text, g.html]) {

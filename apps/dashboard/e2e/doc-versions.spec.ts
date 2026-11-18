@@ -83,105 +83,121 @@ for (const scheme of ["light", "dark"] as const)
     test.describe(`${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
 
-      test("the doc's versions: labels, agent faces, Save version", async ({
-        page,
-      }, info) => {
-        await open(page, info);
-        await expect(rows(page)).toHaveCount(6);
-        // How each was saved: a restore, automatic ones, names.
-        await expect(row(page, 6)).toContainText("Restored v2");
-        await expect(row(page, 5)).toContainText("Saved automatically");
-        await expect(row(page, 4)).toContainText("Before OA Product edited");
-        await expect(row(page, 3)).toContainText("After review");
-        await expect(row(page, 2)).toContainText("Saved automatically");
-        await expect(row(page, 1)).toContainText("First draft");
-        // An agent's version shows the agent's face (AuthorFace's tile).
-        for (const v of [5, 1])
+      test(
+        "the doc's versions: labels, agent faces, Save version",
+        {
+          tag: scheme === "light" && width === 1280 ? "@smoke" : [],
+        },
+        async ({ page }, info) => {
+          await open(page, info);
+          await expect(rows(page)).toHaveCount(6);
+          // How each was saved: a restore, automatic ones, names.
+          await expect(row(page, 6)).toContainText("Restored v2");
+          await expect(row(page, 5)).toContainText("Saved automatically");
+          await expect(row(page, 4)).toContainText("Before OA Product edited");
+          await expect(row(page, 3)).toContainText("After review");
+          await expect(row(page, 2)).toContainText("Saved automatically");
+          await expect(row(page, 1)).toContainText("First draft");
+          // An agent's version shows the agent's face (AuthorFace's tile).
+          for (const v of [5, 1])
+            await expect(
+              row(page, v).locator('[data-avatar="agent"][data-animal="duck"]'),
+            ).toBeVisible();
           await expect(
-            row(page, v).locator('[data-avatar="agent"][data-animal="duck"]'),
+            row(page, 3).locator('[data-avatar="agent"]'),
+          ).toHaveCount(0);
+          // The box: the mockup's words.
+          const name = page.getByRole("textbox", { name: "Version name" });
+          await expect(name).toHaveAttribute(
+            "placeholder",
+            "Name this version, for example: Before launch",
+          );
+          await expect(
+            page.getByText("Keeps the doc as it is now."),
           ).toBeVisible();
-        await expect(row(page, 3).locator('[data-avatar="agent"]')).toHaveCount(
-          0,
-        );
-        // The box: the mockup's words.
-        const name = page.getByRole("textbox", { name: "Version name" });
-        await expect(name).toHaveAttribute(
-          "placeholder",
-          "Name this version, for example: Before launch",
-        );
-        await expect(
-          page.getByText("Keeps the doc as it is now."),
-        ).toBeVisible();
-        await shot(page, info, `doc-versions-${scheme}-${width}.png`);
-        await axe(page);
-        // A named save.
-        const saved = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" &&
-            r.url().endsWith(`/api/v1/artifacts/${LANDING}/doc/versions`),
-        );
-        await name.fill("Before launch");
-        await page.getByRole("button", { name: "Save version" }).click();
-        expect((await saved).postDataJSON()).toEqual({ name: "Before launch" });
-        await expect(page.getByText("Version saved.")).toBeVisible();
-        await expect(row(page, 7)).toContainText("Before launch");
-        await expect(name).toHaveValue("");
-        // No name: the server's "Version n".
-        const unnamed = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" && r.url().endsWith("/doc/versions"),
-        );
-        await page.getByRole("button", { name: "Save version" }).click();
-        expect((await unnamed).postDataJSON()).toEqual({});
-        await expect(page.getByText("Version saved.").first()).toBeVisible();
-        await expect(row(page, 8)).toContainText("Version 8");
-      });
+          await shot(page, info, `doc-versions-${scheme}-${width}.png`);
+          await axe(page);
+          // A named save.
+          const saved = page.waitForRequest(
+            (r: Request) =>
+              r.method() === "POST" &&
+              r.url().endsWith(`/api/v1/artifacts/${LANDING}/doc/versions`),
+          );
+          await name.fill("Before launch");
+          await page.getByRole("button", { name: "Save version" }).click();
+          expect((await saved).postDataJSON()).toEqual({
+            name: "Before launch",
+          });
+          await expect(page.getByText("Version saved.")).toBeVisible();
+          await expect(row(page, 7)).toContainText("Before launch");
+          await expect(name).toHaveValue("");
+          // No name: the server's "Version n".
+          const unnamed = page.waitForRequest(
+            (r: Request) =>
+              r.method() === "POST" && r.url().endsWith("/doc/versions"),
+          );
+          await page.getByRole("button", { name: "Save version" }).click();
+          expect((await unnamed).postDataJSON()).toEqual({});
+          await expect(page.getByText("Version saved.").first()).toBeVisible();
+          await expect(row(page, 8)).toContainText("Version 8");
+        },
+      );
 
-      test("restore goes through the room, then back to the live doc", async ({
-        page,
-      }, info) => {
-        await open(page, info);
-        await row(page, 3).click();
-        // The older version shows what was saved, not the live editor.
-        await expect(page).toHaveURL(new RegExp(`/a/${LANDING}/v/3`));
-        await expect(page.locator(".ProseMirror")).toHaveCount(0);
-        await shot(page, info, `doc-versions-old-${scheme}-${width}.png`);
-        const restore = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" &&
-            r
-              .url()
-              .endsWith(`/api/v1/artifacts/${LANDING}/doc/versions/3/restore`),
-        );
-        await page
-          .getByRole("button", { name: "Restore", exact: true })
-          .click();
-        await restore;
-        await expect(
-          page.getByText(
-            "Restored v3. Nothing is lost: the doc as it was is kept as v6.",
-          ),
-        ).toBeVisible();
-        await expect(page).toHaveURL(new RegExp(`/a/${LANDING}(\\?|$)`));
-        // The room applied v3's content for every editor (the mock room
-        // stands in an older draft for it).
-        await expect(page.locator(".ProseMirror")).toContainText(
-          "The plan has two parts: copy and design.",
-        );
-        await expect(page.locator(".ProseMirror")).not.toContainText(
-          "three parts",
-        );
-        await expect(row(page, 7)).toContainText("Restored v3");
-        // Only Current is highlighted, though the pointer still rests
-        // where Restore was (over an older row).
-        const tint = (v: number) =>
-          row(page, v).evaluate((b) => getComputedStyle(b).backgroundColor);
-        expect(await tint(3)).toBe("rgba(0, 0, 0, 0)");
-        expect(await tint(6)).toBe("rgba(0, 0, 0, 0)");
-        await expect(row(page, 7)).toHaveAttribute("aria-current", "true");
-        await shot(page, info, `doc-versions-restored-${scheme}-${width}.png`);
-        await axe(page);
-      });
+      test(
+        "restore goes through the room, then back to the live doc",
+        {
+          tag: scheme === "light" && width === 1280 ? "@smoke" : [],
+        },
+        async ({ page }, info) => {
+          await open(page, info);
+          await row(page, 3).click();
+          // The older version shows what was saved, not the live editor.
+          await expect(page).toHaveURL(new RegExp(`/a/${LANDING}/v/3`));
+          await expect(page.locator(".ProseMirror")).toHaveCount(0);
+          await shot(page, info, `doc-versions-old-${scheme}-${width}.png`);
+          const restore = page.waitForRequest(
+            (r: Request) =>
+              r.method() === "POST" &&
+              r
+                .url()
+                .endsWith(
+                  `/api/v1/artifacts/${LANDING}/doc/versions/3/restore`,
+                ),
+          );
+          await page
+            .getByRole("button", { name: "Restore", exact: true })
+            .click();
+          await restore;
+          await expect(
+            page.getByText(
+              "Restored v3. Nothing is lost: the doc as it was is kept as v6.",
+            ),
+          ).toBeVisible();
+          await expect(page).toHaveURL(new RegExp(`/a/${LANDING}(\\?|$)`));
+          // The room applied v3's content for every editor (the mock room
+          // stands in an older draft for it).
+          await expect(page.locator(".ProseMirror")).toContainText(
+            "The plan has two parts: copy and design.",
+          );
+          await expect(page.locator(".ProseMirror")).not.toContainText(
+            "three parts",
+          );
+          await expect(row(page, 7)).toContainText("Restored v3");
+          // Only Current is highlighted, though the pointer still rests
+          // where Restore was (over an older row).
+          const tint = (v: number) =>
+            row(page, v).evaluate((b) => getComputedStyle(b).backgroundColor);
+          expect(await tint(3)).toBe("rgba(0, 0, 0, 0)");
+          expect(await tint(6)).toBe("rgba(0, 0, 0, 0)");
+          await expect(row(page, 7)).toHaveAttribute("aria-current", "true");
+          await shot(
+            page,
+            info,
+            `doc-versions-restored-${scheme}-${width}.png`,
+          );
+          await axe(page);
+        },
+      );
 
       test("a reader: no Save version, no Restore", async ({ page }, info) => {
         await open(page, info, "doc-readonly");

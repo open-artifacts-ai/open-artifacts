@@ -1716,6 +1716,18 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // #2512 S2: the caller's own inbox items; ids that are not theirs change nothing.
+  "POST /api/v1/me/inbox/read": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { ids: [] } }),
+      allow: ok(200),
+    },
+  },
+  "POST /api/v1/me/inbox/read-all": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(200) },
+    real: { req: () => ({ path: "" }), allow: ok(200) },
+  },
   // #1292: the caller's own picks; a real write sets none (the default).
   "PUT /api/v1/bus/share-notices": {
     refuse: invalid(),
@@ -2370,6 +2382,8 @@ const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
   ["GET /api/v1/me/inbox", U, [200]],
+  ["POST /api/v1/me/inbox/read", U],
+  ["POST /api/v1/me/inbox/read-all", U, [200]],
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
@@ -2558,6 +2572,8 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/code/link",
   "GET /auth/unsubscribe/comments",
   "POST /auth/unsubscribe/comments",
+  "GET /auth/unsubscribe/setup-reminder",
+  "POST /auth/unsubscribe/setup-reminder",
   "GET /auth/unsubscribe/shares",
   "POST /auth/unsubscribe/shares",
   "POST /auth/logout",

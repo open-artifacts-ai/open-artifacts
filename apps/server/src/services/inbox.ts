@@ -10,6 +10,7 @@ import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
+import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
 import { getUser } from "./users.js";
@@ -43,6 +44,8 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
     .where(forMe(caller));
   return Math.min(r[0]?.n ?? 0, NEEDS_YOU_MAX);
 }
+
+export { unreadUpdateCount };
 
 type Row = {
   artifactId: string;
@@ -193,6 +196,61 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
   return out;
 }
 
+/** The text of a stored item, written here and never taken from a client. */
+const textOf = (r: ItemRow, name: string): string => {
+  switch (r.kind) {
+    case "mention":
+      return `${name} mentioned ${r.agentName ?? "your agent"} on ${r.title}`;
+    case "reply":
+      return `${name} replied: ${r.excerpt}`;
+    case "comment":
+      return `${name} commented: ${r.excerpt}`;
+    case "share":
+      return `${name} shared "${r.excerpt}" with you`;
+    default:
+      return `${name} decided: ${r.excerpt}`;
+  }
+};
+
+/** Stored rows as inbox items, the actor shown as the comments API shows them to the caller. */
+async function itemsOf(
+  env: Env,
+  caller: Me,
+  rows: ItemRow[],
+): Promise<InboxItem[]> {
+  if (rows.length === 0) return [];
+  const viewer: CommentViewer = {
+    userId: caller.user.id,
+    short: null,
+    guest: isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+  };
+  const faces = await askerFaces(
+    env,
+    viewer,
+    rows.map((r) => JSON.parse(r.actor) as StoredActor),
+  );
+  return rows.map((r, i): InboxItem => {
+    const face = faces[i] as CommentAuthor;
+    return {
+      id: r.id,
+      level: "update",
+      kind: r.kind,
+      artifact: { id: r.artifactId, title: r.title },
+      actor: face,
+      text: textOf(r, face.name),
+      ...(r.kind === "mention" || r.kind === "reply" || r.kind === "comment"
+        ? { excerpt: r.excerpt }
+        : {}),
+      href: r.threadId
+        ? `${viewerPath(r.artifactId)}?thread=${encodeURIComponent(r.threadId)}`
+        : viewerPath(r.artifactId),
+      createdAt: new Date(r.createdAt).toISOString(),
+      readAt: r.readAt === null ? null : new Date(r.readAt).toISOString(),
+    };
+  });
+}
+
 /** How long a "member is set up" line stays (there is no read state for it yet). */
 const SET_UP_DAYS = 30;
 
@@ -239,18 +297,33 @@ export async function memberSetUpUpdates(
   return out;
 }
 
-/** The whole inbox response. Later and the cursor are the next slices. */
-export async function inboxOf(env: Env, caller: Me): Promise<Inbox> {
-  const list = await needsYou(env, caller);
-  const updates = await memberSetUpUpdates(env, caller).catch((e) => {
-    logWarn("inbox_member_set_up_failed", e);
-    return [];
-  });
+/** The whole inbox response: Needs you (asks) and one page of Updates (mentions of your agents among them). */
+export async function inboxOf(
+  env: Env,
+  caller: Me,
+  cursor?: string,
+): Promise<Inbox> {
+  const [asks, page, unread, setUp] = await Promise.all([
+    needsYou(env, caller),
+    updatesPage(env, caller, cursor),
+    unreadUpdateCount(env, caller),
+    // #2632: synthesized lines (no stored row), on the first page only.
+    cursor
+      ? Promise.resolve([] as InboxItem[])
+      : memberSetUpUpdates(env, caller).catch((e) => {
+          logWarn("inbox_member_set_up_failed", e);
+          return [] as InboxItem[];
+        }),
+  ]);
+  const list = asks.slice(0, NEEDS_YOU_MAX);
+  const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
+    (x, y) => y.createdAt.localeCompare(x.createdAt),
+  );
   return {
     needsYou: list,
     later: [],
     updates,
-    cursor: null,
-    counts: { needsYou: list.length, unreadUpdates: updates.length },
+    cursor: page.next,
+    counts: { needsYou: list.length, unreadUpdates: unread + setUp.length },
   };
 }

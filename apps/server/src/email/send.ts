@@ -164,7 +164,8 @@ export type EmailKind =
   | "space"
   | "directory"
   | "comment"
-  | "passkey";
+  | "passkey"
+  | "setup_reminder";
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 class EmailTimeout extends Error {}
@@ -280,8 +281,13 @@ export async function sendEmail(
      * no caller forgets it. `undefined` reads settings here (bounded).
      */
     instance: string | null | undefined;
-    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. */
-    outcome?: { limited?: boolean; reason?: string; skipped?: boolean };
+    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. `timedOut`: the send timed out, so the email may still arrive. `skipped`: the render declined (EmailSkipped). */
+    outcome?: {
+      limited?: boolean;
+      reason?: string;
+      timedOut?: boolean;
+      skipped?: boolean;
+    };
     /** Caps taken before the usual ones (outside shares, #2590), each with the reason it reports. */
     extraCaps?: { cap: Cap; reason: string }[];
   },
@@ -366,6 +372,7 @@ export async function sendEmail(
     );
     return true;
   } catch (e) {
+    if (e instanceof EmailTimeout && opts.outcome) opts.outcome.timedOut = true;
     logFailed(opts.kind, failReason(e));
     return false;
   } finally {

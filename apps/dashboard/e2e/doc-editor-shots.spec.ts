@@ -17,6 +17,15 @@ test.beforeEach(async ({ page }, info) => {
     ? ["--too-large"]
     : ["--fakes"];
   room = await startRoom(info, page, args);
+  // #2276: on a phone the toolbar shows only with the keyboard open. These
+  // shots are about the editor, so take away the visual viewport that would
+  // hide the bar (the phone toolbar has its own spec).
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "visualViewport", {
+      value: undefined,
+      configurable: true,
+    });
+  });
 });
 test.afterEach(async () => {
   await stopRoom(room);
