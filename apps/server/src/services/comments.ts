@@ -2828,17 +2828,35 @@ export async function artifactAgents(
   // A guest's holds none.
   if (viewerId !== null && (await isGuestMember(env, viewerId))) return [];
   const outside = viewerId !== null && (await isOutsideMember(env, viewerId));
-  return (await agentRoster(env, artifactId, viewerId, true, true))
-    .filter((a) => !outside || a.userId === viewerId)
-    .map(({ key, name, online, state, lastActiveAt, machine, owner }) => ({
-      key,
-      name,
-      online,
-      state,
-      lastActiveAt: masked ? null : lastActiveAt,
-      machine: masked ? null : machine,
-      owner,
-    }));
+  // #2577: what asking each agent does for this viewer, once per owner.
+  const verdicts = new Map<string, "listening" | "held" | "off">();
+  const askState = async (ownerId: string) => {
+    if (masked || viewerId === null) return undefined;
+    if (ownerId === viewerId) return "listening" as const;
+    let v = verdicts.get(ownerId);
+    if (!v) {
+      const d = await decide(env, viewerId, ownerId, artifactId);
+      v = d === "deliver" ? "listening" : d === "hold" ? "held" : "off";
+      verdicts.set(ownerId, v);
+    }
+    return v;
+  };
+  const out: ArtifactAgent[] = [];
+  for (const a of await agentRoster(env, artifactId, viewerId, true, true)) {
+    if (outside && a.userId !== viewerId) continue;
+    const st = await askState(a.userId);
+    out.push({
+      key: a.key,
+      name: a.name,
+      online: a.online,
+      state: a.state,
+      lastActiveAt: masked ? null : a.lastActiveAt,
+      machine: masked ? null : a.machine,
+      owner: a.owner,
+      ...(st ? { askState: st } : {}),
+    });
+  }
+  return out;
 }
 
 // ------------------------------------------------------------ withdraw (#2511)
