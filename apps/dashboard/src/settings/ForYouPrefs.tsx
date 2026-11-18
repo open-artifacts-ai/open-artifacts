@@ -4,8 +4,17 @@
  * screens, and the muted list. Prefs are R.meNotificationPrefs (PUT whole);
  * mutes are R.meInboxMutes. The browser switch is slice 3: a stub for now.
  */
-import type { InboxMutes, NotificationPrefs } from "@oa/shared";
+import type {
+  InboxMutes,
+  NotificationPrefs,
+  PushSubscriptions,
+} from "@oa/shared";
+
+type PushSubscriptionItem = PushSubscriptions["items"][number];
+
 import { Button } from "@oa/ui/shadcn";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import {
   browserTimeZone,
   useMutes,
@@ -14,7 +23,22 @@ import {
   useUnmute,
 } from "../foryou/api";
 import { muteErrorCopy } from "../foryou/prefsContract";
+import {
+  PermissionRefused,
+  PUSH_WORDS,
+  permission,
+  pushSubsKey,
+  pushSupported,
+  thisBrowser,
+  thisSubscription,
+  turnOn,
+  useMeId,
+  usePatchSubscription,
+  usePushKey,
+  usePushSubscriptions,
+} from "../foryou/push";
 import { toast } from "../layout/toast";
+import { useInstanceName } from "../layout/useDocumentTitle";
 import { OptionSelect } from "./OptionSelect";
 import { Switch } from "./spaces/Switch";
 import { muted } from "./ui";
@@ -28,31 +52,9 @@ export const HALF_HOURS = Array.from({ length: 48 }, (_, i) => {
   return { value: t, label: t };
 });
 
-/** "Chrome on this Mac": this browser, for the browser column's "On for …" (slice 3). */
-export function thisBrowser(ua = navigator.userAgent): string {
-  const browser = /Edg\//.test(ua)
-    ? "Edge"
-    : /Firefox\//.test(ua)
-      ? "Firefox"
-      : /Chrome\//.test(ua)
-        ? "Chrome"
-        : /Safari\//.test(ua)
-          ? "Safari"
-          : "this browser";
-  const device = /iPhone/.test(ua)
-    ? "iPhone"
-    : /iPad/.test(ua)
-      ? "iPad"
-      : /Android/.test(ua)
-        ? "phone"
-        : /Mac OS X|Macintosh/.test(ua)
-          ? "Mac"
-          : /Windows/.test(ua)
-            ? "PC"
-            : "computer";
-  return `${browser} on this ${device}`;
-}
+export { thisBrowser } from "../foryou/push";
 
+const MUTED_SM = "text-[12.5px] text-[var(--oa-text-muted)]";
 const BOX =
   "rounded-[12px] border border-[var(--oa-divider)] bg-[var(--oa-surface)] px-3.5 py-3 text-[length:var(--oa-text-sm)]";
 const ROW =
@@ -62,11 +64,16 @@ const ROW =
 export function ForYouPrefs() {
   const prefs = usePrefs(true);
   const mutes = useMutes(true);
-  if (!prefs.data) return null;
+  // #2512 slice 3: no push key on the server: the browser column isn't shown.
+  const key = usePushKey(true);
+  if (!prefs.data || key.isPending) return null;
+  // Design: these are per account and reach other browsers, so only a server
+  // with no push key turns them off (not this browser's own capability).
+  const available = !!key.data;
   return (
     <>
-      <Levels prefs={prefs.data} />
-      <Interrupts prefs={prefs.data} />
+      <Levels prefs={prefs.data} pushKey={key.data ?? null} />
+      <Interrupts prefs={prefs.data} unavailable={!available} />
       {mutes.data && mutes.data.items.length > 0 && (
         <Muted items={mutes.data.items} />
       )}
@@ -89,7 +96,39 @@ function useSave() {
     });
 }
 
-function Levels({ prefs }: { prefs: NotificationPrefs }) {
+function Levels({
+  prefs,
+  pushKey,
+}: {
+  prefs: NotificationPrefs;
+  pushKey: string | null;
+}) {
+  const supported = pushSupported();
+  // Lifted here: the cell says it short, the row under it says it in full.
+  const [perm, setPerm] = useState(permission);
+  const blocked = supported && perm === "denied";
+  // This browser's own row, from the list (S5, #2774).
+  const subs = usePushSubscriptions(pushKey !== null && supported);
+  const userId = useMeId();
+  const mine = thisSubscription(subs.data, userId);
+  const note =
+    pushKey === null
+      ? null
+      : !supported
+        ? PUSH_WORDS.cant
+        : blocked
+          ? PUSH_WORDS.blocked
+          : null;
+  const cantHere =
+    pushKey === null ? null : !supported ? (
+      <span data-push="unsupported" className={MUTED_SM}>
+        {PUSH_WORDS.notAvailable}
+      </span>
+    ) : blocked ? (
+      <span data-push="blocked" className={MUTED_SM}>
+        {PUSH_WORDS.blockedHere}
+      </span>
+    ) : null;
   const th =
     "px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-[var(--oa-text-muted)] max-[600px]:px-2.5";
   const td =
@@ -122,19 +161,30 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             </th>
             <td className={td}>Always</td>
             <td className={td}>
-              {/* Drawn off while they wait (slice 3, S5), whatever the server stored. */}
-              <Switch
-                label="Needs you in this browser"
-                describedBy="oa-needs-browser"
-                checked={false}
-                disabled
-                onChange={() => {}}
-              />
-              <small id="oa-needs-browser" className={sub}>
-                Coming later
-              </small>
+              {cantHere ?? (
+                <NeedsYouBrowser
+                  prefs={prefs}
+                  pushKey={pushKey}
+                  sub={sub}
+                  mine={mine}
+                  loading={subs.isPending && pushKey !== null && supported}
+                  onRefused={setPerm}
+                />
+              )}
             </td>
           </tr>
+          {note && (
+            // Design: the full line goes under the row, across the table.
+            <tr>
+              <td
+                colSpan={3}
+                data-push-note=""
+                className="border-t border-[var(--oa-divider)] bg-[var(--oa-surface-2,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--oa-text-2)] max-[600px]:px-2.5"
+              >
+                {note}
+              </td>
+            </tr>
+          )}
           <tr>
             <th scope="row" className={`${td} text-left font-normal`}>
               <b className="font-semibold">Updates</b>
@@ -144,17 +194,11 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             </th>
             <td className={td}>Always</td>
             <td className={td}>
-              {/* Same: drawn off, whatever updates.browser says. */}
-              <Switch
-                label="Updates in this browser"
-                describedBy="oa-updates-browser"
-                checked={false}
-                disabled
-                onChange={() => {}}
+              <UpdatesBrowser
+                pushKey={pushKey}
+                sub={sub}
+                mine={cantHere ? undefined : mine}
               />
-              <small id="oa-updates-browser" className={sub}>
-                Coming later
-              </small>
             </td>
           </tr>
         </tbody>
@@ -163,12 +207,155 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
   );
 }
 
-function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
+/**
+ * #2512 slice 3 on S5 (#2774): "Needs you" in this browser. With a
+ * subscription the switch is its own (needsYou, PATCH); without one, turning
+ * it on asks the browser (from this click only) and subscribes. A server
+ * with no push key leaves it off and disabled.
+ */
+function NeedsYouBrowser({
+  prefs,
+  pushKey,
+  sub,
+  mine,
+  loading,
+  onRefused,
+}: {
+  prefs: NotificationPrefs;
+  pushKey: string | null;
+  sub: string;
+  mine: PushSubscriptionItem | undefined;
+  loading: boolean;
+  /** The browser's prompt answered: the row shows the blocked state. */
+  onRefused: (p: NotificationPermission) => void;
+}) {
+  const save = useSavePrefs();
+  const userId = useMeId();
+  const qc = useQueryClient();
+  const patch = usePatchSubscription();
+  const [busy, setBusy] = useState(false);
+  const change = async (next: boolean) => {
+    if (mine) {
+      patch.mutate(
+        { id: mine.id, body: { needsYou: next } },
+        { onError: (e) => patchFailed(e, qc) },
+      );
+      return;
+    }
+    if (!next || !pushKey) return;
+    setBusy(true);
+    try {
+      await turnOn(pushKey, thisBrowser(), userId);
+      await qc.invalidateQueries({ queryKey: pushSubsKey });
+      if (!prefs.needsYou.browser)
+        await save.mutateAsync({
+          ...prefs,
+          needsYou: { ...prefs.needsYou, browser: true },
+          timeZone: browserTimeZone(),
+        });
+    } catch (e) {
+      if (e instanceof PermissionRefused) onRefused(e.state);
+      else toast({ title: PUSH_WORDS.failed, tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const on = mine ? mine.needsYou || mine.updates : false;
+  return (
+    <>
+      <Switch
+        label="Needs you in this browser"
+        describedBy="oa-needs-browser"
+        checked={mine?.needsYou === true}
+        disabled={pushKey === null || busy || loading}
+        onChange={(next) => void change(next)}
+      />
+      <small
+        id="oa-needs-browser"
+        className={sub}
+        data-push={on ? "on" : "off"}
+      >
+        {pushKey === null
+          ? PUSH_WORDS.noKey
+          : mine && on
+            ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
+            : ""}
+      </small>
+    </>
+  );
+}
+
+/** Updates in this browser: its own switch once the browser is subscribed. */
+function UpdatesBrowser({
+  pushKey,
+  sub,
+  mine,
+}: {
+  pushKey: string | null;
+  sub: string;
+  mine: PushSubscriptionItem | undefined;
+}) {
+  const qc = useQueryClient();
+  const patch = usePatchSubscription();
+  return (
+    <>
+      <Switch
+        label="Updates in this browser"
+        describedBy="oa-updates-browser"
+        checked={mine?.updates === true}
+        disabled={!mine}
+        onChange={(next) =>
+          mine &&
+          patch.mutate(
+            { id: mine.id, body: { updates: next } },
+            { onError: (e) => patchFailed(e, qc) },
+          )
+        }
+      />
+      <small id="oa-updates-browser" className={sub}>
+        {pushKey === null
+          ? PUSH_WORDS.noKey
+          : mine
+            ? ""
+            : PUSH_WORDS.turnOnFirst}
+      </small>
+    </>
+  );
+}
+
+/** A switch that didn't save went back; a browser the server forgot is read again. */
+function patchFailed(e: unknown, qc: QueryClient) {
+  if ((e as { status?: number } | null)?.status === 404)
+    void qc.invalidateQueries({ queryKey: pushSubsKey });
+  toast({ title: "Couldn't save. Try again.", tone: "danger" });
+}
+
+function Interrupts({
+  prefs,
+  unavailable,
+}: {
+  prefs: NotificationPrefs;
+  /** No push key on the server, or a browser that can't notify (Design). */
+  unavailable: boolean;
+}) {
+  // Live (#2674), except where this server or browser can't notify (Design).
+  const live = !unavailable;
+  const site = useInstanceName();
   const save = useSave();
   const quiet = prefs.quietHours;
   const end = quiet?.end ?? QUIET_DEFAULT.end;
   return (
-    <section aria-label="When to interrupt" className={BOX}>
+    <section
+      aria-label="When to interrupt"
+      aria-describedby={unavailable ? "oa-interrupts-later" : undefined}
+      className={BOX}
+      data-interrupts={live ? "live" : "later"}
+    >
+      {unavailable && (
+        <p id="oa-interrupts-later" className={`m-0 pb-2 ${muted}`}>
+          {PUSH_WORDS.notSetUp(site)}
+        </p>
+      )}
       <div className={ROW}>
         <div className="min-w-0">
           <b className="font-semibold" id="oa-quiet-label">
@@ -183,6 +370,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
             label="Quiet hours"
             describedBy="oa-quiet-hint"
             checked={quiet !== null}
+            disabled={!live}
             onChange={(on) =>
               save({ ...prefs, quietHours: on ? QUIET_DEFAULT : null })
             }
@@ -192,7 +380,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
               label="Quiet hours start"
               value={quiet?.start ?? QUIET_DEFAULT.start}
               options={HALF_HOURS}
-              disabled={!quiet}
+              disabled={!live || !quiet}
               onChange={(start) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, start } })
               }
@@ -204,7 +392,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
               label="Quiet hours end"
               value={end}
               options={HALF_HOURS}
-              disabled={!quiet}
+              disabled={!live || !quiet}
               onChange={(e) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, end: e } })
               }
@@ -224,6 +412,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
           <OptionSelect
             label="Interrupt me for"
             value={prefs.browserAllAsks ? "all" : "waiting"}
+            disabled={!live}
             options={[
               { value: "waiting", label: "Waiting asks and approvals" },
               { value: "all", label: "Every ask put to me" },
@@ -238,6 +427,7 @@ function Interrupts({ prefs }: { prefs: NotificationPrefs }) {
           <OptionSelect
             label="On lock screens"
             value={prefs.lockScreenDetail ? "show" : "hide"}
+            disabled={!live}
             options={[
               { value: "hide", label: "Hide details" },
               { value: "show", label: "Show details" },

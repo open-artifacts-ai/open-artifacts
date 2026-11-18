@@ -1,7 +1,8 @@
 /**
  * Plain words for a failed mute or unmute. The shapes (NotificationPrefs,
- * InboxMutes, ...) come from @oa/shared; it doesn't export the 200 cap, so
- * the copy keeps its own MUTES_MAX (server: mutes_full past 200).
+ * InboxMutes, push subscriptions, ...) come from @oa/shared; it doesn't
+ * export the 200 cap, so the copy keeps its own MUTES_MAX (server: mutes_full
+ * past 200).
  */
 export const MUTES_MAX = 200;
 

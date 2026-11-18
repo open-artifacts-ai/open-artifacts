@@ -9,6 +9,20 @@ const AXE = createRequire(import.meta.url).resolve("axe-core/axe.min.js", {
   paths: [new URL("../../../packages/ui", import.meta.url).pathname],
 });
 const OUT = process.env.FOR_YOU_SHOTS_DIR;
+// Headless Chromium reports notifications "denied" whatever is granted: a
+// Notification at "default" here, so "Needs you in this browser" is the
+// switch, not "Blocked". e2e/push.spec.ts covers the live path.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() =>
+    Object.defineProperty(window, "Notification", {
+      configurable: true,
+      value: {
+        permission: "default",
+        requestPermission: async () => "default",
+      },
+    }),
+  );
+});
 
 const settled = (page: Page) =>
   page.waitForFunction(() =>
@@ -67,9 +81,7 @@ test("notification settings at 1280 light", async ({ page }) => {
   await expect(
     page.getByRole("switch", { name: "Needs you in this browser" }),
   ).toHaveAttribute("aria-checked", "false");
-  await expect(
-    page.getByRole("switch", { name: "Needs you in this browser" }),
-  ).toBeDisabled();
+  // Needs a subscription first (e2e/push.spec.ts drives it with a stubbed browser).
   await expect(
     page.getByRole("switch", { name: "Updates in this browser" }),
   ).toBeDisabled();

@@ -221,6 +221,29 @@ describe("stale (fresh: false)", () => {
     await waitFor(() => expect(lastRedirect).toHaveBeenCalledWith("/sign-in"));
     expect(out).toBe(true);
   });
+
+  it("Log out deletes this browser's push subscription before the session ends (Axe M1)", async () => {
+    localStorage.setItem(
+      "oa.push.subscription.v2",
+      JSON.stringify({ userId: "u1", id: "sub_1" }),
+    );
+    const order: string[] = [];
+    mountHosted("/", stale, undefined, [
+      http.delete("*/api/v1/me/push/subscriptions/sub_1", () => {
+        order.push("push");
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.post(`*${AUTH.logout}`, () => {
+        order.push("logout");
+        return new HttpResponse(null, { status: 204 });
+      }),
+    ]);
+    await card();
+    fireEvent.click(screen.getByRole("button", { name: C.signOut }));
+    await waitFor(() => expect(lastRedirect).toHaveBeenCalledWith("/sign-in"));
+    expect(order).toEqual(["push", "logout"]);
+    localStorage.clear();
+  });
 });
 
 describe("fresh (fresh: true)", () => {

@@ -1,5 +1,6 @@
 import { AUTH } from "@oa/shared";
 import { api } from "../api/client";
+import { forgetThisBrowser } from "../foryou/push";
 import { toast } from "../layout/toast";
 import { useRedirect } from "./redirect";
 
@@ -14,10 +15,16 @@ export function clearDisplayNameSkips() {
   }
 }
 
-/** POST logout, then go to /sign-in. On failure stay put and say so. */
+/**
+ * Turn this browser's notifications off (Axe M1, best effort, bounded), POST
+ * logout, then go to /sign-in. On a logout failure stay put and say so. Every
+ * sign-out goes through here.
+ */
 export function useSignOut() {
   const redirect = useRedirect();
   return async () => {
+    // While the session still exists, so the server can delete it.
+    await forgetThisBrowser();
     try {
       await api.send("POST", AUTH.logout, undefined);
     } catch {

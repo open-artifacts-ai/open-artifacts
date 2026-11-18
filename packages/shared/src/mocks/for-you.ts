@@ -14,6 +14,8 @@ import {
   InboxReadBodySchema,
   type NotificationPrefs,
   NotificationPrefsSchema,
+  PushSubscribeBodySchema,
+  type PushSubscriptions,
 } from "../inbox.js";
 import { R } from "../routes.js";
 import { FOR_YOU_ASK } from "./comments.js";
@@ -229,6 +231,8 @@ export function createForYouMock(d: Deps): {
     return all.find((x) => x.artifact?.id === id)?.artifact?.title ?? id;
   };
   const done = () => new HttpResponse(null, { status: 204 });
+  /** This mock's push subscriptions (one per browser that turned it on). */
+  const subs: PushSubscriptions["items"] = [];
   const readNow = (x: InboxItem) =>
     x.readAt === null ? { ...x, readAt: ago(0) } : x;
   return {
@@ -306,6 +310,35 @@ export function createForYouMock(d: Deps): {
           (m) => m.kind === params.kind && m.id === params.id,
         );
         if (i >= 0) mutes.splice(i, 1);
+        return done();
+      }),
+      // #2512 slice 3: web push. The key is a stand-in (65 bytes, base64url).
+      http.get(`*${R.mePushKey}`, () =>
+        HttpResponse.json({
+          publicKey:
+            "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+        }),
+      ),
+      http.get(`*${R.mePushSubscriptions}`, () =>
+        HttpResponse.json({ items: subs }),
+      ),
+      http.post(`*${R.mePushSubscriptions}`, async ({ request }) => {
+        const p = PushSubscribeBodySchema.safeParse(await request.json());
+        if (!p.success) return d.err("bad_request", "Invalid body");
+        const id = `sub_${subs.length + 1}`;
+        subs.push({
+          id,
+          label: p.data.label ?? null,
+          createdAt: ago(0),
+          lastSentAt: null,
+          needsYou: true,
+          updates: prefs.updates.browser,
+        });
+        return HttpResponse.json({ id }, { status: 201 });
+      }),
+      http.delete("*/api/v1/me/push/subscriptions/:id", ({ params }) => {
+        const i = subs.findIndex((x) => x.id === params.id);
+        if (i >= 0) subs.splice(i, 1);
         return done();
       }),
     ],
