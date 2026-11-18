@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.214.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.214.0...v0.214.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **auth:** login domains are editable only when the platform says so ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2822](https://github.com/open-artifacts-ai/open-artifacts/issues/2822)) ([581ca99](https://github.com/open-artifacts-ai/open-artifacts/commit/581ca99bdfcdbce317b7533ffe203fc4a46458d6))
+
 ## [0.214.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.213.0...v0.214.0) (2026-11-18)
 
 
