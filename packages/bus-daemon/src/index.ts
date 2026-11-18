@@ -31,7 +31,6 @@ import {
 } from "@oa/bus-ipc";
 import {
   AgentRefSchema,
-  BUS_CAPS,
   BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
@@ -107,7 +106,6 @@ import { HubConnection, type HubOptions } from "./hub.ts";
 import { BoundedMap, Lane, Lanes, ResendSet, refOf } from "./hubs.ts";
 import {
   credentialsFor,
-  defaultHomeLookup,
   type HomeLookup,
   instancesDir,
   listInstances,
@@ -470,15 +468,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const agents = new AgentTable();
   /** The link an agent is registered on; with one link, always main. */
   const laneOfRef = (ref: string): Lane | undefined =>
-    lanes.multi ? lanes.get(agents.byRef(ref)?.instance) : main;
+    lanes.get(agents.byRef(ref)?.instance);
   /** Which link carried a request or a delivery, while more than one link runs. */
   const idLane = new BoundedMap<string, Lane>(20_000);
   const msgLane = new BoundedMap<string, Lane>(20_000);
   const laneOfFrame = (f: ClientFrame): Lane | undefined => {
-    if (!lanes.multi) return main;
     const ref = refOf(f);
     if (ref !== undefined) return laneOfRef(ref);
-    if (f.type === "ack" || f.type === "refuse") return msgLane.get(f.msg_id);
+    if (f.type === "ack" || f.type === "refuse")
+      return lanes.multi ? msgLane.get(f.msg_id) : main;
     return f.type === "update_report" ? main : undefined;
   };
   const sendOn = (lane: Lane, f: ClientFrame, onUnsent?: () => void) => {
@@ -495,10 +493,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const l of lanes.all()) any = l.hub.cancel(id) || any;
     return any;
   };
+  // Main for every folder only when main is the only instance on this machine.
+  const onlyMain =
+    instHome === undefined || listInstances(instHome).every((i) => i.main);
   const lookup: HomeLookup =
     deps.homeLookup ??
-    ((cwd) =>
-      lanes.multi ? defaultHomeLookup(cwd) : { instance: MAIN_INSTANCE });
+    (() => (onlyMain ? { instance: MAIN_INSTANCE } : { unmapped: true }));
   const unmappedNoted = new Set<string>();
   /**
    * The instance a folder's sessions register on, or undefined: none is
@@ -1413,7 +1413,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         : clearedFrom(s.ref, s.pid, s.procStart, liveRefs);
       if (old) takenOver.add(old.ref);
       const rec = agents.up({
-        ...(old ? { replaces: handoverOf(old) } : {}),
+        ...(old && old.instance === instance
+          ? { replaces: handoverOf(old) }
+          : {}),
         ref: s.ref,
         kind: "claude-code",
         proposedName: old?.busName ?? s.name,
@@ -1545,7 +1547,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     const went: Report[] = [];
     const rescue = readRescueVersion(home());
     for (const r of queued) {
-      const ok = main.hub.send({
+      const ok = sendOn(main, {
         v: 1,
         id: frameId(),
         type: "update_report",
@@ -1931,16 +1933,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ) {
       ok = false;
       why = "is a daemon-wide command, honoured from main only";
-    } else if (lanes.multi) {
+    } else {
       switch (frame.type) {
         case "deliver":
-          ok = laneOfRef(frame.to_ref) === lane;
+          ok = ownsRef(frame.to_ref, lane);
           break;
         case "agent_ok":
         case "renamed":
-          ok = laneOfRef(frame.agent_ref) === lane;
+          ok = ownsRef(frame.agent_ref, lane);
           break;
         case "receipt_update": {
+          if (!lanes.multi) break;
           const from = sent.get(frame.msg_id)?.from_ref;
           ok =
             (msgLane.get(frame.msg_id) ??
@@ -1955,7 +1958,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         case "owner_away":
           break;
         default:
-          ok = idLane.get(frame.id) === lane;
+          if (lanes.multi) ok = idLane.get(frame.id) === lane;
       }
     }
     if (!ok) {
@@ -1968,6 +1971,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
     return ok;
   };
+  /**
+   * The ref is on this lane. With one link, a ref nobody registered still goes
+   * through, as before: the answer to it is a refusal, not silence.
+   */
+  function ownsRef(ref: string, lane: Lane): boolean {
+    if (!lanes.multi && agents.byRef(ref) === undefined) return true;
+    return laneOfRef(ref) === lane;
+  }
   for (const lane of lanes.all()) lane.hub = buildHub(lane);
   const hub = main.hub;
   /** The namespace roster as `ref` sees it, or undefined if the hub does not answer in time. */
@@ -2005,7 +2016,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }, deps.statusRosterMs ?? 1500);
       timer.unref();
       waitingAsks.set(id, done);
-      if (!main.hub.send({ v: 1, id, type: "waiting_query", agent_refs: refs }))
+      if (!sendOn(main, { v: 1, id, type: "waiting_query", agent_refs: refs }))
         done(undefined);
     });
   // Another live daemon holds the socket, or the path cannot be bound: a restart cannot fix either.
@@ -2415,7 +2426,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         seenAt.set(hello.agent_ref, ++seenSeq);
         if (old) takenOver.add(old.ref);
         const rec = agents.up({
-          ...(old ? { replaces: handoverOf(old) } : {}),
+          ...(old && old.instance === instance
+            ? { replaces: handoverOf(old) }
+            : {}),
           ref: hello.agent_ref,
           kind: hello.kind,
           proposedName: old?.busName ?? proposedName,
@@ -3135,9 +3148,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         running: runVersion,
         hub: () => hub.open && main.helloed,
         // Socket bound, and every live session announced and answered.
-        local: () =>
-          existsSync(listenPath) &&
-          lanes.all().every((l) => l.upIds.size === 0),
+        local: () => existsSync(listenPath) && main.upIds.size === 0,
         exit: upd.exit,
         log,
         ...(upd.every ? { every: upd.every } : {}),
@@ -3170,7 +3181,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               res(ok);
             });
           });
-          const sentOk = main.hub.send({
+          const sentOk = sendOn(main, {
             v: 1,
             id,
             type: "update_report",

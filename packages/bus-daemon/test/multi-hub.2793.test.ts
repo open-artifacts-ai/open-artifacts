@@ -121,7 +121,6 @@ describe("one daemon, two hubs (#2793 S3)", () => {
     expect(hubB.upgrades).toEqual([`Bearer ${TOKEN_B}`]);
     expect(h.raw.join("\n")).not.toContain(TOKEN_B);
     expect(hubB.everything()).not.toContain(TOKEN_A);
-    // A hub reach proposal also carries only its own instance's key.
     expect(h.raw.join("\n")).not.toContain("b".repeat(28));
   });
 
@@ -194,12 +193,17 @@ describe("one daemon, two hubs (#2793 S3)", () => {
     const { h, hubB, a } = await setup();
     const call = a.request({ type: "list" } as never).catch(() => undefined);
     const req = (await h.next("list")) as { id: string };
-    hubB.send({ id: req.id, type: "roster", agents: [] });
+    hubB.send({
+      id: req.id,
+      type: "roster",
+      agents: [{ name: "from-b" }],
+    });
     // B's frame was dropped: the request still waits for A.
     await settled(hubB);
     h.toDaemon({ id: req.id, type: "roster", agents: [] });
-    const r = (await call) as { type?: string } | undefined;
+    const r = (await call) as { type?: string; agents?: unknown[] } | undefined;
     expect(r?.type).toBe("roster");
+    expect(JSON.stringify(r)).not.toContain("from-b");
   });
 
   it("revoking hub B closes B only, writes its marker, and A still delivers", async () => {
@@ -338,6 +342,7 @@ describe("a single instance behaves as before (#2793 S3)", () => {
     const logs: string[] = [];
     const h = await daemonHarness({
       instancesHome: home,
+      homeLookup: () => ({ instance: "main" }),
       log: (m) => logs.push(m),
     });
     await h.adapter("only", { cwd: "/anywhere" });
@@ -345,5 +350,38 @@ describe("a single instance behaves as before (#2793 S3)", () => {
     expect([...h.daemon.hubs.keys()]).toEqual(["main"]);
     expect(logs.some((l) => l.includes("bad is not connected"))).toBe(true);
     expect(logs.join("\n")).not.toContain("machine_token");
+  });
+});
+
+describe("routing fails closed when an added instance has no link (#2793 S3)", () => {
+  it("a folder mapped to it, and an unmapped one, never register on main", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-2793-open-"));
+    mkdirSync(join(home, "instances"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "instances", "b.json"),
+      JSON.stringify({
+        name: "b",
+        hub: "https://b.example.test",
+        machine_id: "",
+        label: "laptop",
+        machine_token: TOKEN_B,
+      }),
+      { mode: 0o644 },
+    );
+    const logs: string[] = [];
+    const h = await daemonHarness({
+      instancesHome: home,
+      homeLookup: byFolder,
+      log: (m) => logs.push(m),
+    });
+    expect([...h.daemon.hubs.keys()]).toEqual(["main"]);
+    await h.adapter("refB", { cwd: "/b/proj" });
+    await h.adapter("refU", { cwd: "/u/proj" });
+    const refA = await h.adapter("refA", { cwd: "/a/proj" });
+    expect(refA.welcome.bus_name).toBeDefined();
+    expect(await h.next("agent_up")).toMatchObject({ agent_ref: "refA" });
+    expect(h.of("agent_up").map((f) => f.agent_ref)).toEqual(["refA"]);
+    expect(h.daemon.agents.byRef("refB")?.instance).toBeUndefined();
+    expect(h.daemon.agents.byRef("refU")?.instance).toBeUndefined();
   });
 });
