@@ -11,6 +11,7 @@ import type { StoredActor } from "../runtime/comments-store.js";
 import { receiverCanOpen } from "./agent-requests.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
+import { awayItem } from "./inbox-away.js";
 import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
@@ -370,7 +371,7 @@ export async function inboxOf(
   caller: Me,
   cursor?: string,
 ): Promise<Inbox> {
-  const [asks, requests, page, unread, setUp] = await Promise.all([
+  const [asks, requests, page, unread, setUp, away] = await Promise.all([
     needsYou(env, caller),
     heldRequestItems(env, caller).catch((e) => {
       logWarn("inbox_held_requests_failed", e);
@@ -384,6 +385,13 @@ export async function inboxOf(
       : memberSetUpUpdates(env, caller).catch((e) => {
           logWarn("inbox_member_set_up_failed", e);
           return [] as InboxItem[];
+        }),
+    // "While you were away": the quiet-hours summary, on the first page only.
+    cursor
+      ? Promise.resolve(null)
+      : awayItem(env, caller).catch((e) => {
+          logWarn("inbox_away_failed", e);
+          return null;
         }),
   ]);
   // Waiting agents first, then what needs an approval (asks and requests, oldest first), then the rest.
@@ -399,6 +407,9 @@ export async function inboxOf(
   const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
     (x, y) => y.createdAt.localeCompare(x.createdAt),
   );
+  // The summary leads the Updates; the rows it sums up stay listed below it,
+  // so it adds nothing to the unread count.
+  if (away) updates.unshift(away);
   return {
     needsYou: list,
     later: [],
