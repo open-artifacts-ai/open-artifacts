@@ -77,8 +77,10 @@ import {
   type Config,
   claudeReturnDir,
   home,
+  isDefaultHome,
   prepareReturnDir,
   prepareSocketDir,
+  procBusHome,
   readConfig,
   revokedMarker,
   StartError,
@@ -326,6 +328,10 @@ export type DaemonDeps = {
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
     linksFile?: string;
+    /** #2806: adopt sessions found only in the sessions dir; default: this is the default home. */
+    discover?: boolean;
+    /** #2806: the bus home a session's process was started for (procBusHome). */
+    homeOf?: (pid: number) => string | null | undefined;
   };
   opencode?: {
     /** TUI presence files; default ~/.oa-bus/opencode-tui. */
@@ -617,6 +623,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   prepareSocketDir(listenPath, returnDir);
   const startOfPid = cl.procStart ?? claudeProcStartOf;
   const running = cl.isRunning ?? isRunning;
+  /** #2806: adopt unseen sessions from the scan (the default home only). */
+  const discoverClaude = cl.discover ?? isDefaultHome();
+  const claudeHomeOf = cl.homeOf ?? procBusHome;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
     procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
@@ -1225,6 +1234,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const s of live) {
       const prev = agents.byRef(s.ref);
       if (prev && prev.kind !== "claude-code") continue;
+      // #2806: ~/.claude/sessions lists every Claude session on the machine.
+      // Only the default home adopts one it has not met; a second home keeps
+      // to the sessions its own adapter said hello for, so it never announces
+      // another bus's sessions to its hub or delivers into them.
+      if (!prev && !discoverClaude) continue;
+      // The default home also leaves a session started for another home alone,
+      // where it can read the process's OA_BUS_HOME.
+      if (!prev) {
+        const h = claudeHomeOf(s.pid);
+        if (typeof h === "string" && h !== home()) continue;
+      }
       // Admitted before its session file existed: learn the process start
       // now (live or already closed by a tick that could not see the file),
       // so a later /clear in this process is recognised (#1295).
