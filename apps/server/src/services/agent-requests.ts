@@ -28,6 +28,7 @@ import { sha256Hex } from "../util/crypto.js";
 import { askInfo } from "./asks.js";
 import { audit, userActor } from "./audit.js";
 import { type CommentNoticeKind, notifyAgent } from "./comment-agents.js";
+import { itemExcerpt } from "./inbox-items.js";
 import {
   giveBackReceiverSlot,
   isOutsideMember,
@@ -715,6 +716,19 @@ export async function allow(
     )
       .bind(row.comment_id, requestId)
       .run();
+    // The person's inbox items for this comment show the words they allowed.
+    if (rel.comment)
+      await stmt(
+        env.DB,
+        "update inbox_items set excerpt = ?1 where artifact_id = ?2 and comment_id = ?3 and user_id = ?4 and kind in ('mention', 'reply', 'comment')",
+      )
+        .bind(
+          itemExcerpt(rel.comment.body),
+          req.artifact_id,
+          row.comment_id,
+          receiverId,
+        )
+        .run();
     // An ask held for this person: its rows open now, with the question.
     const c = rel.comment;
     if (c?.ask)

@@ -11,11 +11,13 @@ import { createApp } from "../src/app.js";
 import { callerOf } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
+import { runtimeStub } from "../src/runtime/do.js";
 import {
   allow,
   allowChallenge,
   decide,
   HELD_PER_PAIR_MAX,
+  lapseHeld,
   listenBinding,
   listHeld,
   notNow,
@@ -38,7 +40,10 @@ import {
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { inboxOf, needsYouCount } from "../src/services/inbox.js";
-import { writeInboxItems } from "../src/services/inbox-items.js";
+import {
+  HELD_EXCERPT,
+  recordCommentItems,
+} from "../src/services/inbox-items.js";
 import {
   giveBackReceiverSlot,
   takeReceiverSlot,
@@ -1085,7 +1090,26 @@ describe("the inbox", () => {
     await notNow(E, owner.userId, r?.id as string);
     expect(await mine()).toHaveLength(0);
   });
-  it("a mention update's excerpt is masked for the receiver's agent while held, and shown to the person (#2577)", async () => {
+  // #2577 (OA Axe W): an inbox item never stores the words of a request held for its person.
+  const inboxVia = async (id: string, cred: string) =>
+    JSON.stringify(
+      (
+        (await (await api(app, R.meInbox, cred)).json()) as {
+          updates: { artifact?: { id: string } }[];
+        }
+      ).updates.filter((i) => i.artifact?.id === id),
+    );
+  const record = async (id: string, threadId: string) => {
+    const t = await runtimeStub(E, id).commentsGet(threadId);
+    await recordCommentItems(E, {
+      artifactId: id,
+      threadId,
+      comment: t.comments[0] as never,
+      reply: false,
+    });
+  };
+
+  it("a held mention's item keeps a placeholder through a lapse and an edit, and the allow fills in the words", async () => {
     const s = await setup();
     const t = await post(
       s.id,
@@ -1094,30 +1118,84 @@ describe("the inbox", () => {
       "inbox secret",
       mention(s.claude),
     );
-    const commentId = t.comments[0]?.id as string;
-    await writeInboxItems(E, [
-      {
-        userId: owner.userId,
-        kind: "mention",
-        key: `mention:${commentId}`,
-        artifactId: s.id,
-        threadId: t.id,
-        commentId,
-        actor: { kind: "user", ref: editor.userId },
-        excerpt: "inbox secret",
-        agentName: "Claude",
-        at: Date.now(),
-      },
-    ]);
-    const me = callerOf(owner.member) as Parameters<typeof inboxOf>[1];
-    const mineOf = async (asAgent: boolean) =>
-      (await inboxOf(E, me, undefined, asAgent)).updates.filter(
-        (i) => i.artifact?.id === s.id,
-      );
-    const asAgent = JSON.stringify(await mineOf(true));
-    expect(asAgent).not.toContain("inbox secret");
-    expect(asAgent).toContain("is waiting for your person");
-    expect(JSON.stringify(await mineOf(false))).toContain("inbox secret");
+    await record(s.id, t.id);
+    const pat = (await createPat(E, owner.userId, "inbox token")).token;
+    for (const cred of [pat, owner.cookie]) {
+      const seen = await inboxVia(s.id, cred);
+      expect(seen).not.toContain("inbox secret");
+      expect(seen).toContain(HELD_EXCERPT);
+    }
+    // An edit of the held comment writes no words either.
+    await editComment(
+      E,
+      s.id,
+      t.id,
+      t.comments[0]?.id as string,
+      typed(editor),
+      view(editor),
+      "edited secret",
+    );
+    expect(await inboxVia(s.id, pat)).not.toContain("edited secret");
+    // The allow fills in the words the person allowed.
+    const [r] = await held(s.id);
+    await allow(E, owner.userId, r?.id as string, {
+      level: "once",
+      items: (r?.items ?? []).map((i) => ({
+        commentId: i.commentId,
+        wordsHash: i.wordsHash,
+      })),
+    });
+    expect(await inboxVia(s.id, pat)).toContain("edited secret");
+  });
+
+  it("a lapsed hold's item still reads the placeholder", async () => {
+    const s = await setup();
+    const t = await post(
+      s.id,
+      typed(editor),
+      editor,
+      "lapsed secret",
+      mention(s.claude),
+    );
+    await record(s.id, t.id);
+    await lapseHeld(E, Date.now() + 30 * 86_400_000);
+    const pat = (await createPat(E, owner.userId, "lapse token")).token;
+    expect(await inboxVia(s.id, pat)).not.toContain("lapsed secret");
+  });
+
+  it("a hold over the per-sender cap (no D1 row) still stores no words", async () => {
+    const s = await setup();
+    const other = await setup();
+    await post(other.id, typed(editor), editor, "x", mention(other.claude));
+    const [req] = await held(other.id);
+    for (let i = 0; i < HELD_PER_PAIR_MAX; i++)
+      await E.DB.prepare(
+        `insert into held_request_items (id, request_id, thread_id, comment_id, agent_key, way, state, created_at, expires_at)
+         values (?, ?, ?, ?, ?, 'mention', 'held', ?, ?)`,
+      )
+        .bind(
+          newId(),
+          req?.id,
+          "t",
+          `c-inbox-${tag}-${i}`,
+          `k${i}`,
+          Date.now(),
+          Date.now() + 86_400_000,
+        )
+        .run();
+    const t = await post(
+      s.id,
+      typed(editor),
+      editor,
+      "capped inbox secret",
+      mention(s.claude),
+    );
+    expect(await held(s.id)).toHaveLength(0);
+    await record(s.id, t.id);
+    const pat = (await createPat(E, owner.userId, "cap token")).token;
+    const seen = await inboxVia(s.id, pat);
+    expect(seen).not.toContain("capped inbox secret");
+    expect(seen).toContain(HELD_EXCERPT);
   });
 });
 

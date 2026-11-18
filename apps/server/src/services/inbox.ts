@@ -215,32 +215,10 @@ const textOf = (r: ItemRow, name: string): string => {
 };
 
 /** Stored rows as inbox items, the actor shown as the comments API shows them to the caller. */
-/** Comment ids among `rows` that hold a request for the caller (state held). */
-async function heldCommentIds(
-  env: Env,
-  caller: Me,
-  rows: ItemRow[],
-): Promise<Set<string>> {
-  const ids = [
-    ...new Set(rows.flatMap((r) => (r.commentId ? [r.commentId] : []))),
-  ];
-  if (ids.length === 0) return new Set();
-  const found = await env.DB.prepare(
-    `select distinct i.comment_id as id from held_request_items i
-       join held_requests r on r.id = i.request_id
-      where r.receiver_id = ?1 and i.state = 'held'
-        and i.comment_id in (${ids.map((_, k) => `?${k + 2}`).join(", ")})`,
-  )
-    .bind(caller.user.id, ...ids)
-    .all<{ id: string }>();
-  return new Set(found.results.map((x) => x.id));
-}
-
 async function itemsOf(
   env: Env,
   caller: Me,
   rows: ItemRow[],
-  asAgent = false,
 ): Promise<InboxItem[]> {
   if (rows.length === 0) return [];
   const viewer: CommentViewer = {
@@ -254,19 +232,8 @@ async function itemsOf(
     viewer,
     rows.map((r) => JSON.parse(r.actor) as StoredActor),
   );
-  // #2577: the caller's agent (a token) never reads the words of a request held for its person.
-  const held = asAgent
-    ? await heldCommentIds(env, caller, rows)
-    : new Set<string>();
-  return rows.map((row, i): InboxItem => {
+  return rows.map((r, i): InboxItem => {
     const face = faces[i] as CommentAuthor;
-    const r =
-      row.commentId && held.has(row.commentId)
-        ? {
-            ...row,
-            excerpt: `A request from ${face.name} is waiting for your person`,
-          }
-        : row;
     return {
       id: r.id,
       level: "update",
@@ -402,8 +369,6 @@ export async function inboxOf(
   env: Env,
   caller: Me,
   cursor?: string,
-  /** The caller is a token (an agent), not a browser session: held requests read masked. */
-  asAgent = false,
 ): Promise<Inbox> {
   const [asks, requests, page, unread, setUp] = await Promise.all([
     needsYou(env, caller),
@@ -431,10 +396,9 @@ export async function inboxOf(
     ),
     ...asks.filter((i) => i.urgency !== "waiting" && i.urgency !== "approval"),
   ].slice(0, NEEDS_YOU_MAX);
-  const updates = [
-    ...(await itemsOf(env, caller, page.rows, asAgent)),
-    ...setUp,
-  ].sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+  const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
+    (x, y) => y.createdAt.localeCompare(x.createdAt),
+  );
   return {
     needsYou: list,
     later: [],

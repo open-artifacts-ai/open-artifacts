@@ -269,9 +269,7 @@ export function mountMe(app: AppType): void {
     const who = caller(c);
     if (who.kind !== "user")
       throw new ApiError("unauthorized", "Login required");
-    return c.json(
-      await inboxOf(c.env, who, c.req.query("cursor"), !interactiveSession(c)),
-    );
+    return c.json(await inboxOf(c.env, who, c.req.query("cursor")));
   });
 
   // Mark items read by id (an update, or a mention): another person's ids and

@@ -2994,6 +2994,7 @@ export async function editComment(
     artifactId,
     commentId,
     body: c.body,
+    held: c.held,
   });
   return commentView(env, c, viewer);
 }
