@@ -11,7 +11,7 @@ import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
 import { receiverCanOpen } from "./agent-requests.js";
-import { agentsWaitingOn } from "./bus.js";
+import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
 import { notifyAskLater } from "./comment-agents.js";
 import {
   askerFaces,
@@ -173,27 +173,13 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
   const actors = ready.map((r) => JSON.parse(r.asker) as StoredActor);
   const faces = await askerFaces(env, viewer, actors);
   // Only my own agents can wait on me: their status is in my hub.
-  const mine = new Set<string>();
-  for (const a of actors)
-    if (a.ref === caller.user.id && a.agent?.identity)
-      mine.add(a.agent.identity.identityId);
-  const waiting = await agentsWaitingOn(env, caller.user.id, [...mine]);
+  const waiting = await waitingAgents(env, caller.user.id, actors);
   const items = ready.map((r, i): InboxItem & { rank: number } => {
     const actor = actors[i] as StoredActor;
     const face = faces[i] as CommentAuthor;
     const idn = actor.agent?.identity?.identityId;
-    // A wait on this ask can't start before it was asked: the agent's waiting
-    // status may be older than the ask (#2761).
-    const began =
-      idn && actor.ref === caller.user.id ? waiting.get(idn) : undefined;
-    // A bad askedAt (NaN) must not take the inbox down: the hub's own start stands.
-    const askedMs = Date.parse(r.askedAt);
-    const since =
-      began === undefined
-        ? undefined
-        : Number.isNaN(askedMs)
-          ? began
-          : Math.max(began, askedMs);
+    const own = ownAgentId(actor, caller.user.id);
+    const since = waitingSince(own ? waiting.get(own) : undefined, r.askedAt);
     const urgency =
       since !== undefined ? "waiting" : r.confirm === 1 ? "approval" : "plain";
     return {

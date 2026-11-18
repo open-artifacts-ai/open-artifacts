@@ -362,6 +362,8 @@ create table if not exists notices (
   fold_acks text,
   -- #2238: the agent identity the notice is addressed to (null: by name only).
   to_identity text,
+  -- #2768: the notice's structured fields (JSON, bounded; null: none).
+  meta text,
   primary key (to_ns, to_lname, ckey)
 );
 create index if not exists notices_due on notices(parked, not_before);
@@ -561,6 +563,8 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     sql.exec("alter table notices add column fold_acks text");
   if (!noticeCols.has("to_identity"))
     sql.exec("alter table notices add column to_identity text");
+  if (!noticeCols.has("meta"))
+    sql.exec("alter table notices add column meta text");
   sql.exec(HUB_SCHEMA_B7_INDEXES);
   // open-bus #422: when the machine's last daemon socket went (epoch ms);
   // null while it is connected, or not yet seen offline. The alarm closes the

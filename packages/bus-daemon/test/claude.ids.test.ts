@@ -124,6 +124,7 @@ describe("reply ids in the daemon", () => {
       "notice_ack",
       "ack_confirm",
       "run_version",
+      "notice_meta",
     ]);
   });
 

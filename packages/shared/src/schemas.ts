@@ -396,6 +396,13 @@ export const ArtifactSummarySchema = z.object({
   commenters: CommentersSchema.optional(),
   /** #1535: open asks addressed to the caller. Absent reads as 0. */
   asksForYou: z.number().int().min(0).optional(),
+  /** #2512: open asks on this page waiting on the caller (their own agent, blocked now): how many and the oldest wait (ISO). Absent when none. */
+  waiting: z
+    .object({
+      count: z.number().int().min(1),
+      oldestSince: z.string(),
+    })
+    .optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 

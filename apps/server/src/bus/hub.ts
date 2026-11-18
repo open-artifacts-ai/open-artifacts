@@ -26,6 +26,8 @@ import {
   MAILBOX_RETAIN_MS,
   MachineLabelSchema,
   type NameKind,
+  type NoticeMeta,
+  NoticeMetaSchema,
   newId,
   PING,
   PONG,
@@ -363,6 +365,7 @@ const HUB_CAPS = [
   BUS_CAPS.nameChosen,
   BUS_CAPS.ackConfirm,
   BUS_CAPS.runVersion,
+  BUS_CAPS.noticeMeta,
 ];
 
 /**
@@ -417,6 +420,12 @@ const linkGated = (ws: WebSocket): boolean => {
  * socket with the cap. 0.138.x daemons count as old, which is acceptable.
  */
 const noticeGated = (ws: WebSocket): boolean => followGated(ws);
+
+/** #2768: `deliver.meta` goes only to a socket whose hello listed BUS_CAPS.noticeMeta. */
+const noticeMetaGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.noticeMeta);
+};
 
 /**
  * #1752 (BUS_CAPS.noticeAck): a socket that acks a notice only once its
@@ -3662,9 +3671,11 @@ type NoticeRow = {
   foldAcks: string | null;
   /** #2238: the identity the notice is addressed to; null: by name only. */
   toIdentity: string | null;
+  /** #2768: the notice's structured fields as JSON (NoticeMeta); null: none. */
+  meta: string | null;
 };
 const NOTICE_COLS =
-  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks, to_identity as toIdentity";
+  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks, to_identity as toIdentity, meta";
 
 /** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
 const NOTICE_FOLD_MAX = 50;
@@ -3758,6 +3769,34 @@ function noticeAckOf(n: BusNotice): string | null {
   });
 }
 
+/**
+ * #2768: the notice's structured fields as the JSON stored with it, or null
+ * when it has none worth sending (a field that fails the wire schema leaves the
+ * whole object out: the frame must never fail a daemon's decoder).
+ */
+function noticeMetaOf(n: BusNotice): string | null {
+  const meta = NoticeMetaSchema.safeParse({
+    kind: n.kind,
+    ...(n.artifactId ? { artifact_id: n.artifactId } : {}),
+    ...(n.commentId ? { comment_id: n.commentId } : {}),
+    ...(n.threadId ? { thread_id: n.threadId } : {}),
+    ...(n.userId ? { user_id: n.userId } : {}),
+    ...(n.until ? { until: n.until } : {}),
+  });
+  return meta.success ? JSON.stringify(meta.data) : null;
+}
+
+/** #2768: the stored meta, or undefined when absent or malformed (never a throw). */
+function parseNoticeMeta(s: string | null): NoticeMeta | undefined {
+  if (!s) return undefined;
+  try {
+    const r = NoticeMetaSchema.safeParse(JSON.parse(s));
+    return r.success ? r.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** #1317: the shape deliverNotice trusts: the Worker is the only caller, but the hub still checks. */
 function wellFormedNotice(n: BusNotice): boolean {
   return (
@@ -3781,7 +3820,14 @@ function wellFormedNotice(n: BusNotice): boolean {
     (n.toIdentity === undefined ||
       (typeof n.toIdentity === "string" &&
         n.toIdentity.length > 0 &&
-        n.toIdentity.length <= 128))
+        n.toIdentity.length <= 128)) &&
+    // #2768: structured fields are bounded and safe, or the notice is refused.
+    (n.userId === undefined ||
+      (typeof n.userId === "string" &&
+        NoticeMetaSchema.shape.user_id.safeParse(n.userId).success)) &&
+    (n.until === undefined ||
+      (typeof n.until === "string" &&
+        NoticeMetaSchema.shape.until.safeParse(n.until).success))
   );
 }
 
@@ -3798,7 +3844,11 @@ function identityOfAgent(sql: SqlStorage, agentId: string): string | null {
 }
 
 /** #1317: one notice as a deliver frame from the reserved sender; no receipt, no mail row, no from_id. */
-function noticeFrame(agent: AgentRow, text: string): ServerFrame {
+function noticeFrame(
+  agent: AgentRow,
+  text: string,
+  meta?: NoticeMeta,
+): ServerFrame {
   return {
     v: 1,
     id: frameId(),
@@ -3808,6 +3858,7 @@ function noticeFrame(agent: AgentRow, text: string): ServerFrame {
     from_name: NOTICE_SENDER,
     namespace: agent.namespace,
     body: text,
+    ...(meta ? { meta } : {}),
   };
 }
 
@@ -4426,7 +4477,7 @@ export class BusHub extends DurableObject<Env> {
               );
             }
             sql.exec(
-              `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?"}
+              `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?, meta = null"}
                where to_ns = ? and to_lname = ? and ckey = ?`,
               ack,
               foldN,
@@ -5494,7 +5545,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.waiting) ||
           hasCap(f, BUS_CAPS.waitingQuery) ||
           hasCap(f, BUS_CAPS.ackConfirm) ||
-          hasCap(f, BUS_CAPS.runVersion)
+          hasCap(f, BUS_CAPS.runVersion) ||
+          hasCap(f, BUS_CAPS.noticeMeta)
             ? { caps: [...HUB_CAPS] }
             : {}),
           // #2552: only when the instance names one, and only to a socket
@@ -7535,8 +7587,13 @@ export class BusHub extends DurableObject<Env> {
     agent: AgentRow,
     text: string,
     ack: string | null,
+    metaJson: string | null,
   ): boolean {
-    const frame = noticeFrame(agent, text);
+    const frame = noticeFrame(
+      agent,
+      text,
+      noticeMetaGated(ws) ? parseNoticeMeta(metaJson) : undefined,
+    );
     if (!trySendFrame(ws, frame)) return false;
     if (ack !== null && !noticeAckGated(ws)) {
       // #2062: no notice_ack on this socket, so a send is the delivery: the
@@ -7782,6 +7839,7 @@ export class BusHub extends DurableObject<Env> {
         foldRef: foldN > 0 ? n.artifactId : null,
         foldAcks: folds.length > 0 ? JSON.stringify(folds) : null,
         toIdentity: heldIdentity,
+        meta: noticeMetaOf(n),
       };
       if (
         this.#sendNotice(
@@ -7789,6 +7847,7 @@ export class BusHub extends DurableObject<Env> {
           agent,
           noticeTextOf(merged),
           noticeSendAck(merged),
+          merged.meta,
         )
       ) {
         sql.exec(
@@ -7827,8 +7886,8 @@ export class BusHub extends DurableObject<Env> {
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
     const foldRef = foldN > 0 ? n.artifactId : null;
     sql.exec(
-      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks, to_identity)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks, to_identity, meta)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...key,
       n.id,
       n.text,
@@ -7840,6 +7899,7 @@ export class BusHub extends DurableObject<Env> {
       foldRef,
       folds.length > 0 ? JSON.stringify(folds) : null,
       heldIdentity,
+      noticeMetaOf(n),
     );
     this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
@@ -7891,7 +7951,9 @@ export class BusHub extends DurableObject<Env> {
       if (liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity)?.id !== agent.id)
         continue;
       if (this.#identityMismatch(r, agent)) continue;
-      if (!this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r)))
+      if (
+        !this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r), r.meta)
+      )
         break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -7988,7 +8050,13 @@ export class BusHub extends DurableObject<Env> {
       if (
         agent &&
         socket &&
-        this.#sendNotice(socket, agent, noticeTextOf(r), noticeSendAck(r))
+        this.#sendNotice(
+          socket,
+          agent,
+          noticeTextOf(r),
+          noticeSendAck(r),
+          r.meta,
+        )
       ) {
         sent++;
         sql.exec(
