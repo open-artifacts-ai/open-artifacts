@@ -1000,7 +1000,10 @@ describe("customer_mismatch: synced callers resolve to no one", () => {
 describe("CSRF: a cookie write without X-OA-Request", () => {
   const WRITE = /^(POST|PUT|PATCH|DELETE) (\/api\/v1\/|\/auth\/logout$)/;
   /** Authenticated by its URL signature: no session, so no CSRF check (app.ts unlessSigned). */
-  const SIGNED = ["PUT /api/v1/uploads/:uploadId"];
+  const SIGNED = [
+    "PUT /api/v1/uploads/:uploadId",
+    "PUT /api/v1/artifacts/:id/pictures/:pictureId",
+  ];
   const routes = Object.keys(ROUTE_POLICY).filter(
     (k) => WRITE.test(k) && !SIGNED.includes(k),
   );

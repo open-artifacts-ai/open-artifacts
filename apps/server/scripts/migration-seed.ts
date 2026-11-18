@@ -67,6 +67,7 @@ export const SHAPE = {
   share_email_messages: 20_000, // #2650: outside share emails of the last 30 days
   share_email_events_seen: 20_000, // #2650: processed platform event ids of the last 30 days
   share_email_pauses: 20, // #2650: members paused after a bounce or complaint
+  comment_pictures: 20_000, // #2508: one comment in a few carries a picture
   email_optouts: 2_000, // #2590: an address that chose "Don't email me again"
   audit_events: 1_000_000,
 } as const;
@@ -492,6 +493,31 @@ export const RULES: Record<string, Rule> = {
         created_at: c.time(),
         consumed: c.rand() < 0.95 ? 1 : 0,
         received_at: c.rand() < 0.97 ? c.time() : null,
+      };
+    },
+  },
+  comment_pictures: {
+    rows: (c) => c.count("comment_pictures"),
+    row(i, c) {
+      const a = c.artifacts[i % c.artifacts.length];
+      if (!a) return null;
+      const id = c.id("cp");
+      const attached = c.rand() < 0.97;
+      return {
+        id,
+        artifact_id: a.id,
+        user_id: a.owner,
+        type: c.pick(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+        r2_key: `comment-pictures/${a.id}/${id}`,
+        bytes: 10_000 + c.int(2_000_000),
+        w: 100 + c.int(2_400),
+        h: 100 + c.int(2_400),
+        expected_sha256: null,
+        alt: null,
+        comment_id: attached ? `c${i}` : null,
+        thread_id: attached ? `t${i}` : null,
+        created_at: c.time(),
+        received_at: c.time(),
       };
     },
   },

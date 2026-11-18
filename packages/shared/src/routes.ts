@@ -310,6 +310,11 @@ export const R = {
   docOps: (id: string) => `${A}/${seg(id)}/doc/ops`,
   /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
   comments: (id: string) => `${A}/${seg(id)}/comments`,
+  /** POST CommentPictureReserve -> 201 CommentPictureReserved (#2508): reserves one comment picture. Comment rights on the page, signed in, never a guest (403). */
+  commentPictures: (id: string) => `${A}/${seg(id)}/pictures`,
+  /** GET -> the picture's bytes (access as reading the page's comments, on every request; 404 for an unknown or foreign one). PUT raw bytes (signed: ?exp=&sig=, from CommentPictureReserved.url) -> 200 CommentPicture. */
+  commentPicture: (id: string, pictureId: string) =>
+    `${A}/${seg(id)}/pictures/${seg(pictureId)}`,
   /** PATCH { status } -> CommentThread. */
   commentThread: (id: string, thread: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}`,

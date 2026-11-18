@@ -102,6 +102,7 @@ describe("purgeDeleted", () => {
     expect(settled.map((s) => s.status)).toEqual([
       "fulfilled",
       "fulfilled",
+      "fulfilled", // sweepPictures (#2508)
       "fulfilled", // sweepEmailEvents (#2650)
       "fulfilled",
       "fulfilled", // sweepOAuthStore (expired rows, old tombstones)

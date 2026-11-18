@@ -1091,3 +1091,37 @@ export const dataWritesTotal = sqliteTable("data_writes_total", {
   day: integer("day").notNull(),
   n: integer("n").notNull(),
 });
+
+/**
+ * Pictures on comments (#2508). A row is a reservation (received_at null), then
+ * an uploaded picture, then attached to a comment (comment_id set). The bytes
+ * are in R2 under r2_key, private: only the artifact-authorized route serves
+ * them. thread_id lets a deleted thread take its pictures with it.
+ */
+export const commentPictures = sqliteTable(
+  "comment_pictures",
+  {
+    id: text("id").primaryKey(),
+    artifactId: text("artifact_id").notNull(),
+    userId: text("user_id").notNull(),
+    /** The type the reservation asked for, then the checked one. */
+    type: text("type").notNull(),
+    r2Key: text("r2_key").notNull(),
+    /** Declared at reserve; the stored size after the PUT. */
+    bytes: integer("bytes").notNull(),
+    w: integer("w").notNull().default(0),
+    h: integer("h").notNull().default(0),
+    expectedSha256: text("expected_sha256"),
+    alt: text("alt"),
+    commentId: text("comment_id"),
+    threadId: text("thread_id"),
+    createdAt: integer("created_at").notNull(),
+    /** Null until the PUT stored the bytes; -1 while one is in flight. */
+    receivedAt: integer("received_at"),
+  },
+  (t) => [
+    index("comment_pictures_artifact_idx").on(t.artifactId, t.commentId),
+    index("comment_pictures_user_idx").on(t.userId, t.createdAt),
+    index("comment_pictures_thread_idx").on(t.threadId),
+  ],
+);
