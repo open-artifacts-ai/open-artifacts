@@ -91,6 +91,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /auth/unsubscribe/comments": {
     public: "comment email unsubscribe (RFC 8058 one-click); signed token",
   },
+  // #2590 "Don't email me again" in outside share emails: a signed token (one
+  // address, one purpose) is the only credential; GET changes nothing.
+  "GET /auth/unsubscribe/shares": {
+    public: "share email opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/shares": {
+    public: "share email opt-out (RFC 8058 one-click); signed token",
+  },
   "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).

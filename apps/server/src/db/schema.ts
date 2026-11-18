@@ -837,6 +837,15 @@ export const reservedArtifacts = sqliteTable("reserved_artifacts", {
   createdAt: integer("created_at").notNull(),
 });
 
+/**
+ * "Don't email me again" (#2590): an address that opted out of outside share
+ * emails, by the SHA-256 of its normalized form (never the address itself).
+ */
+export const emailOptouts = sqliteTable("email_optouts", {
+  addressHash: text("address_hash").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

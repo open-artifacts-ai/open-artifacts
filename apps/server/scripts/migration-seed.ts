@@ -62,6 +62,7 @@ export const SHAPE = {
   counters: 5_000,
   creator_months: 5_000, // hosted only: one per creator and UTC month
   settings: 20,
+  email_optouts: 2_000, // #2590: an address that chose "Don't email me again"
   audit_events: 1_000_000,
 } as const;
 
@@ -741,6 +742,13 @@ export const RULES: Record<string, Rule> = {
       user_id: `u${Math.floor(i / 12)}`,
       source: c.pick(["version", "data"]),
       first_at: c.time(),
+    }),
+  },
+  email_optouts: {
+    rows: (c) => c.count("email_optouts"),
+    row: (i, c) => ({
+      address_hash: `${i.toString(16).padStart(64, "0")}`,
+      created_at: c.time(),
     }),
   },
   settings: {
