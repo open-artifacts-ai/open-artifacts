@@ -16,6 +16,7 @@ import {
   SW_SCOPE,
   SW_URL,
 } from "../src/foryou/push";
+import { pushSwitchHandlers } from "../src/mockPushSwitches";
 import { prefsToSave, thisBrowser } from "../src/settings/ForYouPrefs";
 import {
   calls,
@@ -322,7 +323,8 @@ describe("this browser's notifications (slice 3, S5)", () => {
   });
 
   it("no subscription: Needs you is off and asks only on the click, Updates waits", async () => {
-    server.use(...createHandlers({ events, forYou: "mixed" }));
+    const base = createHandlers({ events, forYou: "mixed" });
+    server.use(...pushSwitchHandlers(() => base), ...base);
     const f = fakePush("default", "granted");
     const posts = calls("POST");
     const puts = calls("PUT");
@@ -500,5 +502,43 @@ describe("thisBrowser", () => {
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
       ),
     ).toBe("Safari on this iPhone");
+  });
+});
+
+describe("the mock's per-browser switches (PROVISIONAL #2774)", () => {
+  it("lists them, PATCH changes them, an unknown id is 404", async () => {
+    const base = createHandlers({ events, forYou: "mixed" });
+    server.use(...pushSwitchHandlers(() => base), ...base);
+    const origin = location.origin;
+    const json = { "Content-Type": "application/json", "X-OA-Request": "1" };
+    await fetch(`${origin}${R.mePushSubscriptions}`, {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({
+        endpoint: "https://push.example.com/x",
+        keys: { p256dh: "BNcRdreALRFX", auth: "tBHItJI5svbpez" },
+      }),
+    });
+    const get = async () =>
+      (
+        (await (await fetch(`${origin}${R.mePushSubscriptions}`)).json()) as {
+          items: { id: string; needsYou: boolean; updates: boolean }[];
+        }
+      ).items;
+    expect((await get())[0]).toMatchObject({ needsYou: true, updates: false });
+    const id = (await get())[0]?.id ?? "";
+    const ok = await fetch(`${origin}${R.mePushSubscription(id)}`, {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({ updates: true }),
+    });
+    expect(await ok.json()).toEqual({ needsYou: true, updates: true });
+    expect((await get())[0]).toMatchObject({ updates: true });
+    const gone = await fetch(`${origin}${R.mePushSubscription("nope")}`, {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({ updates: true }),
+    });
+    expect(gone.status).toBe(404);
   });
 });

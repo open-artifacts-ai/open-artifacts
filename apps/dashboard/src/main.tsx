@@ -871,6 +871,10 @@ async function startMocks() {
       () => mainHandlers,
     ),
   );
+  if (params.get("mock") === "foryou") {
+    const { pushSwitchHandlers } = await import("./mockPushSwitches");
+    extra.push(...pushSwitchHandlers(() => mainHandlers));
+  }
   await setupWorker(
     ...extra,
     ...mainHandlers,

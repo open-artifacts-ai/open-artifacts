@@ -36,14 +36,13 @@ export const PushSubscriptionSwitchesSchema = z.object({
 
 // PROVISIONAL (#2774): GET R.mePushSubscriptions, each browser with its own
 // switches. A new browser starts with needsYou on and updates from the prefs.
-// (The defaults below cover the mock API, which doesn't send them yet.)
 export const PushSubscriptionItemSchema = z.object({
   id: z.string(),
   label: z.string().nullable(),
   createdAt: z.string(),
   lastSentAt: z.string().nullable(),
-  needsYou: z.boolean().default(true),
-  updates: z.boolean().default(false),
+  needsYou: z.boolean(),
+  updates: z.boolean(),
 });
 export type PushSubscriptionItem = z.infer<typeof PushSubscriptionItemSchema>;
 export const PushSubscriptionListSchema = z.object({
