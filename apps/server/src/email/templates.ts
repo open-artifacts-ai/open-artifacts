@@ -212,7 +212,8 @@ export function inviteEmail(
 ): EmailContent {
   const { origin, values } = common(p);
   const member = !p.guest;
-  return render(
+  const line = setupLine(origin);
+  const m = render(
     setupBlock(INVITE_HTML, member),
     setupBlock(INVITE_TXT, member),
     "{{inviterName}} added you to {{instanceName}}",
@@ -221,9 +222,15 @@ export function inviteEmail(
       signInUrl: linkOn(origin, "/sign-in"),
       signInLine: `There's no password to set up. ${signInSentence(p.signIn, values.recipientEmail, p)}`,
       signInPreheader: signInSentence(p.signIn, "this address", p),
-      setupLine: setupLine(origin),
+      setupLine: line,
     },
   );
+  // The setup line may wrap only after a "/" (never inside "https").
+  const esc = escapeHtml(line);
+  return {
+    ...m,
+    html: m.html.replace(`>${esc}<`, `>${esc.replace(/\//g, "/<wbr>")}<`),
+  };
 }
 
 /** An artifact shared with a non-member, linking to its viewer URL. */

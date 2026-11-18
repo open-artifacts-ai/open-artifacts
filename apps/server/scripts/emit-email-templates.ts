@@ -1,4 +1,4 @@
-// Writes src/email/email-templates.ts from Design's design/emails/{invite,share}
+// Writes src/email/email-templates.ts from Design's design/emails/{invite,share,setup-reminder}
 // .{html,txt}, so the Worker bundles them as strings (no runtime reads). Run by
 // `pnpm build`; the file is committed and test/email.templates.test.ts fails
 // when stale.
@@ -16,6 +16,8 @@ const parts = [
   ["INVITE_TXT", "invite.txt"],
   ["SHARE_HTML", "share.html"],
   ["SHARE_TXT", "share.txt"],
+  ["SETUP_REMINDER_HTML", "setup-reminder.html"],
+  ["SETUP_REMINDER_TXT", "setup-reminder.txt"],
 ].map(
   ([name, file]) =>
     `export const ${name} = \`${literal(readFileSync(path.join(dir, file as string), "utf8"))}\`;\n`,

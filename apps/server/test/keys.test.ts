@@ -46,6 +46,7 @@ describe("deriveKey", () => {
       "oa:glink-cookie",
       "oa:audit-cursor",
       "oa:comment-unsub",
+      "oa:setup-remind-off",
       "oa:share-optout",
       "oa:directory-state",
       "oa:content-url",

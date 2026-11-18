@@ -91,6 +91,13 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /auth/unsubscribe/comments": {
     public: "comment email unsubscribe (RFC 8058 one-click); signed token",
   },
+  // #2632 "Don't remind me" in the setup reminder: same shape, one flag.
+  "GET /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out (RFC 8058 one-click); signed token",
+  },
   // #2590 "Don't email me again" in outside share emails: a signed token (one
   // address, one purpose) is the only credential; GET changes nothing.
   "GET /auth/unsubscribe/shares": {
