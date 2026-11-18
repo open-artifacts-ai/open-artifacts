@@ -328,6 +328,12 @@ type Sub = {
 };
 
 export const DEFAULT_UPDATE_BODY = "You have a new update";
+/** #2781: a person's @-mention of the member (Needs you), without lock-screen detail. */
+export const DEFAULT_MENTION_BODY = "Someone mentioned you";
+
+/** A Needs-you item of a person @mentioned (#2770, #2781): its key is "person:<comment id>". */
+const isPersonMention = (r: { key: string }): boolean =>
+  r.key.startsWith("person:");
 
 /**
  * The one notification for everything due to one browser: fixed text, a link
@@ -337,7 +343,7 @@ export const DEFAULT_UPDATE_BODY = "You have a new update";
 export function pushPayload(
   items: Pick<
     Pending,
-    "kind" | "artifact_id" | "thread_id" | "asker_name" | "excerpt"
+    "kind" | "key" | "artifact_id" | "thread_id" | "asker_name" | "excerpt"
   >[],
   detail: boolean,
   title: string,
@@ -350,14 +356,21 @@ export function pushPayload(
   let body: string;
   if (needs.length > 0) {
     const m = needs.length;
-    const asks = detail ? `${lead.asker_name} asks: ${lead.excerpt}` : "";
+    const mention = isPersonMention(lead as { key: string });
+    const asks = detail
+      ? mention
+        ? `${lead.asker_name} mentioned you: ${lead.excerpt}`
+        : `${lead.asker_name} asks: ${lead.excerpt}`
+      : "";
     body =
       m === 1
         ? detail
           ? asks
-          : DEFAULT_BODY
+          : mention
+            ? DEFAULT_MENTION_BODY
+            : DEFAULT_BODY
         : detail
-          ? `${m} asks are waiting for you. Latest: ${asks}`
+          ? `${m} things are waiting for you. Latest: ${asks}`
           : `${m} things are waiting for your answer`;
   } else {
     const what = detail ? `${lead.asker_name}: ${lead.excerpt}` : "";
@@ -458,8 +471,11 @@ async function stillWanted(
   // "ask:<comment id>" and "later:ask:<comment id>:<until>" both wait on an open ask.
   const cid = (r: Pending): string =>
     r.kind === "later" ? (r.key.split(":")[2] ?? "") : r.key.slice(4);
-  const asks = kept.filter((r) => r.kind === "ask" || r.kind === "later");
-  const updates = kept.filter((r) => r.kind === "update");
+  const asks = kept.filter(
+    (r) => (r.kind === "ask" || r.kind === "later") && !isPersonMention(r),
+  );
+  // A mention (#2781) waits on its own item, like an update: it must still exist.
+  const updates = kept.filter((r) => r.kind === "update" || isPersonMention(r));
   const open = new Map<string, string>();
   if (asks.length > 0) {
     const { results } = await stmt(
@@ -484,7 +500,11 @@ async function stillWanted(
   }
   const out: Pending[] = [];
   for (const r of kept) {
-    if (r.kind === "ask" || r.kind === "later") {
+    if (isPersonMention(r)) {
+      const e = items.get(r.key);
+      if (e === undefined) continue;
+      out.push({ ...r, excerpt: e });
+    } else if (r.kind === "ask" || r.kind === "later") {
       const q = open.get(cid(r));
       if (q === undefined) continue;
       out.push({ ...r, excerpt: q ? itemExcerpt(q) : r.excerpt });
@@ -545,7 +565,7 @@ async function drainMember(
   if (due.length === 0) return 0;
   if (!prefs.browserAllAsks) {
     // "Asks waiting for you": an ask counts only when an agent of theirs waits on them.
-    const asks = due.filter((r) => r.kind === "ask");
+    const asks = due.filter((r) => r.kind === "ask" && !isPersonMention(r));
     const keys = [
       ...new Set(
         asks
@@ -559,6 +579,7 @@ async function drainMember(
     due = due.filter(
       (r) =>
         r.kind !== "ask" ||
+        isPersonMention(r) ||
         (r.asker_ref === userId && !!r.agent_key && waiting.has(r.agent_key)),
     );
   }
@@ -679,3 +700,22 @@ export const queueUpdatePush = (
   item: Omit<PushItem, "kind">,
   now = Date.now(),
 ): Promise<void> => queuePush(env, [userId], { ...item, kind: "update" }, now);
+
+/**
+ * A person @mentioned the member (#2770): a Needs-you push, like an ask. The
+ * same send-time checks (the item still exists, the page is still readable),
+ * mutes (the page only: the mentioner is a person), quiet hours, bundling and
+ * lock-screen detail. Stored as an "ask" row with the item's own key.
+ */
+export const queueMentionPush = (
+  env: Env,
+  userId: string,
+  item: Omit<PushItem, "kind" | "askerRef" | "agentKey">,
+  now = Date.now(),
+): Promise<void> =>
+  queuePush(
+    env,
+    [userId],
+    { ...item, kind: "ask", askerRef: null, agentKey: null },
+    now,
+  );
