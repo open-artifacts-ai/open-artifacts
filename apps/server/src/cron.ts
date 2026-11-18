@@ -20,6 +20,7 @@ import {
   sweepLostIndexJobs,
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
+import { drainRunVersionFanout } from "./services/bus.js";
 import { sweepPictures } from "./services/comment-pictures.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { pullEmailEvents, sweepEmailEvents } from "./services/email-events.js";
@@ -170,6 +171,12 @@ async function run(
         ctx.waitUntil(
           pullEmailEvents(env).catch((e) => logError("cron_task_failed", e)),
         );
+      // #2719: the members a run-version change has not reached yet.
+      ctx.waitUntil(
+        drainRunVersionFanout(env).catch((e) =>
+          logError("cron_task_failed", e),
+        ),
+      );
       // Browser push (#2512 S5): send what is due. Never throws.
       if (pushOn(env))
         ctx.waitUntil(
@@ -234,6 +241,11 @@ async function run(
       sweepLostIndexJobs(env, at, "tick").catch((e) =>
         logError("cron_task_failed", e),
       ),
+    );
+    // #2719: the members a run-version change has not reached yet (one read
+    // when there are none).
+    ctx.waitUntil(
+      drainRunVersionFanout(env).catch((e) => logError("cron_task_failed", e)),
     );
     if (pushOn(env))
       ctx.waitUntil(

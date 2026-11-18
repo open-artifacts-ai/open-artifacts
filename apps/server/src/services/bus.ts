@@ -1716,6 +1716,7 @@ export async function setBusRunVersion(
   ownerId: string,
   version: string | null,
   stepBack = false,
+  page = RUN_VERSION_FANOUT_PAGE,
 ): Promise<void> {
   if (version !== null) {
     // Never ahead of this server: it could not vouch for a release it has not met.
@@ -1747,20 +1748,25 @@ export async function setBusRunVersion(
       { detail: { version, stepBack: stepBack === true } },
     ),
   ]);
-  // Every member's hub with a machine (the owner's first, even with none),
-  // so an idle connected machine hears a change or a clearing at once (#2719).
-  let users: string[] = [];
-  try {
-    const r = await stmt(
-      env.DB,
-      "select distinct user_id as id from bus_machines where revoked_at is null",
-    ).all<{ id: string }>();
-    users = r.results.map((x) => x.id);
-  } catch (e) {
-    logError("bus_run_version_members_failed", e);
-  }
+  // The owner's hub first (even with no machine), then the first page of
+  // members; a cursor carries the rest to the recovery cron (#2719).
+  await pushRunVersion(env, [ownerId]);
+  await fanOutRunVersion(env, null, ownerId, page);
+}
+
+/**
+ * The members one request or cron tick tells. Each push is a Worker
+ * subrequest (about 1000 allowed per invocation, shared with D1 calls and
+ * the route's own), so a page stays well under that: 200 leaves room for
+ * the owner's push, the settings and audit writes and the member read.
+ */
+export const RUN_VERSION_FANOUT_PAGE = 200;
+/** settings row: { after, gen } while members past the first page await a push. */
+export const RUN_VERSION_FANOUT_KEY = "bus_run_version_fanout";
+
+async function pushRunVersion(env: Env, users: string[]): Promise<void> {
   await Promise.all(
-    [ownerId, ...users.filter((u) => u !== ownerId)].map(async (u) => {
+    users.map(async (u) => {
       const hub = busHub(env, u);
       if (!hub) return;
       try {
@@ -1769,6 +1775,117 @@ export async function setBusRunVersion(
         logError("bus_run_version_push_failed", e);
       }
     }),
+  );
+}
+
+/**
+ * Pushes one page of members (by user_id, after `after`) and moves the
+ * cursor on. `cursor` null: a new change, which overwrites any older
+ * cursor; else the raw stored cursor, and a write that finds it replaced by
+ * a newer change leaves the newer one alone. A repeat push is harmless: a
+ * hub's runVersionChanged only re-reads the setting and re-sends it.
+ */
+async function fanOutRunVersion(
+  env: Env,
+  cursor: { raw: string; after: string; gen: string } | null,
+  skip: string | null,
+  page: number,
+): Promise<void> {
+  let ids: string[] = [];
+  try {
+    const r = await stmt(
+      env.DB,
+      `select distinct user_id as id from bus_machines
+       where revoked_at is null and user_id > ?1 and user_id != ?2
+       order by user_id limit ?3`,
+    )
+      .bind(cursor?.after ?? "", skip ?? "", page + 1)
+      .all<{ id: string }>();
+    ids = r.results.map((x) => x.id);
+  } catch (e) {
+    logError("bus_run_version_members_failed", e);
+    // A new change whose first read failed: the cron starts it from the
+    // beginning, replacing any older change's cursor.
+    if (cursor === null)
+      try {
+        await stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        )
+          .bind(
+            RUN_VERSION_FANOUT_KEY,
+            JSON.stringify({ after: "", gen: crypto.randomUUID() }),
+          )
+          .run();
+      } catch (e2) {
+        logError("bus_run_version_cursor_failed", e2);
+      }
+    return;
+  }
+  const more = ids.length > page;
+  const now = ids.slice(0, page);
+  await pushRunVersion(env, now);
+  try {
+    const gen = cursor?.gen ?? crypto.randomUUID();
+    const last = now[now.length - 1];
+    if (more && last !== undefined) {
+      const value = JSON.stringify({ after: last, gen });
+      if (cursor === null)
+        await stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        )
+          .bind(RUN_VERSION_FANOUT_KEY, value)
+          .run();
+      else
+        await stmt(
+          env.DB,
+          "update settings set value = ? where key = ? and value = ?",
+        )
+          .bind(value, RUN_VERSION_FANOUT_KEY, cursor.raw)
+          .run();
+    } else if (cursor === null)
+      await stmt(env.DB, "delete from settings where key = ?")
+        .bind(RUN_VERSION_FANOUT_KEY)
+        .run();
+    else
+      await stmt(env.DB, "delete from settings where key = ? and value = ?")
+        .bind(RUN_VERSION_FANOUT_KEY, cursor.raw)
+        .run();
+  } catch (e) {
+    logError("bus_run_version_cursor_failed", e);
+  }
+}
+
+/**
+ * The recovery cron's tick (#2719): pushes the next page of members a
+ * setBusRunVersion left behind. One read when there is none.
+ */
+export async function drainRunVersionFanout(
+  env: Env,
+  page = RUN_VERSION_FANOUT_PAGE,
+): Promise<void> {
+  const row = await stmt(env.DB, "select value from settings where key = ?")
+    .bind(RUN_VERSION_FANOUT_KEY)
+    .first<{ value: string }>();
+  if (!row) return;
+  let c: { after?: unknown; gen?: unknown } | null;
+  try {
+    c = JSON.parse(row.value) as { after?: unknown; gen?: unknown } | null;
+  } catch {
+    c = null;
+  }
+  if (typeof c?.after !== "string" || typeof c.gen !== "string") {
+    await stmt(env.DB, "delete from settings where key = ? and value = ?")
+      .bind(RUN_VERSION_FANOUT_KEY, row.value)
+      .run();
+    return;
+  }
+  await fanOutRunVersion(
+    env,
+    { raw: row.value, after: c.after, gen: c.gen },
+    null,
+    page,
   );
 }
 
