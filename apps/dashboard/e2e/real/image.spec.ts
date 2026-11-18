@@ -17,7 +17,7 @@ const decoded = (page: import("@playwright/test").Page) =>
       return [img.naturalWidth, img.naturalHeight];
     });
 
-test("a PNG opens as an image", async ({ page, member }) => {
+test("a PNG opens as an image", { tag: "@smoke" }, async ({ page, member }) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Image ${uniq()}`,
     format: "image",

@@ -61,8 +61,10 @@ const trapped = async (
   await expect(opener()).toBeFocused();
 };
 
-for (const scheme of ["light", "dark"] as const)
-  for (const width of [1280, 390])
+// One viewport and theme per flow (#2711); the dark and phone variants of
+// these three flows were repeats.
+for (const scheme of ["light"] as const)
+  for (const width of [1280])
     test.describe(`shadcn ${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
       const shot = (page: Page, name: string, path: (n: string) => string) =>

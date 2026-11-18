@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],
+    globalSetup: ["../../scripts/test/tmp-root.ts"],
     setupFiles: ["test/sentinel.ts", "../../scripts/test/agent-cli-guard.ts"],
   },
 });

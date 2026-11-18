@@ -11,6 +11,8 @@ import {
   type Comment,
   type CommentAuthor,
   type CommentList,
+  type CommentPicture,
+  type CommentPictureRef,
   isId,
   type KeyRef,
   type MentionDelivery,
@@ -32,6 +34,7 @@ import { ApiError } from "../http/errors.js";
 import { logError, logInfo, logWarn } from "../log.js";
 import {
   bodyOk,
+  type HeldAgent,
   type NewExtras,
   type ParticipantRow,
   type StoredActor,
@@ -57,6 +60,7 @@ import {
   plainAgentName,
   shownName,
 } from "./agent-display.js";
+import { decide, heldAfterEdit, recordHolds } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { activation } from "./analytics.js";
 import {
@@ -93,6 +97,13 @@ import {
   versionFormat,
 } from "./comment-anchor.js";
 import { emailCommentRecipients } from "./comment-email.js";
+import {
+  bindPictures,
+  claimPictures,
+  deleteCommentPictures,
+  picturesOf,
+  releasePictures,
+} from "./comment-pictures.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
 import {
   addressKey,
@@ -100,6 +111,12 @@ import {
   inBackground,
   notifyCommented,
 } from "./follows.js";
+import {
+  forgetCommentItems,
+  recordCommentItems,
+  recordDecisionItems,
+  refreshCommentItems,
+} from "./inbox-items.js";
 import {
   isGuestMember,
   isOutsideMember,
@@ -256,7 +273,9 @@ async function call<T>(fn: () => Promise<T>): Promise<T> {
 const stub = (env: Env, artifactId: string) => runtimeStub(env, artifactId);
 
 /** 400 invalid_body: empty after trim, or over 2,000 characters. */
-export function checkBody(body: unknown): string {
+export function checkBody(body: unknown, allowEmpty = false): string {
+  // #2508: a comment with pictures may have no text.
+  if (allowEmpty && typeof body === "string" && body.trim() === "") return "";
   if (!bodyOk(body))
     throw new ApiError(
       "invalid_body",
@@ -624,7 +643,36 @@ async function threadViews(
     out.flatMap((t) => t.comments),
     viewer,
   );
+  await withPictures(
+    env,
+    out.flatMap((t) => t.comments),
+    new Set(
+      threads.flatMap((t) =>
+        t.comments.filter((c) => maskedFor(c, viewer)).map((c) => c.id),
+      ),
+    ),
+  );
   return out;
+}
+
+/**
+ * #2508: each comment's pictures, from their own table (absent when it has
+ * none). Not for a comment `masked` for this viewer: an agent of the person a
+ * request is held for reads a placeholder, so no picture either (#2577).
+ */
+async function withPictures(
+  env: Env,
+  comments: Comment[],
+  masked: Set<string>,
+): Promise<void> {
+  const by = await picturesOf(
+    env,
+    comments.filter((c) => !masked.has(c.id)).map((c) => c.id),
+  );
+  for (const c of comments) {
+    const p: CommentPicture[] | undefined = by.get(c.id);
+    if (p?.length) c.pictures = p;
+  }
 }
 
 /** The users a comment shows by name: its author and, on an ask, who was asked and who answered. */
@@ -807,7 +855,51 @@ const deciderFields = (
   };
 };
 
+/**
+ * #2577: what an agent of the receiver reads of a request held for its person:
+ * a placeholder for the words, an ask's question and options and its
+ * recommendation, never the words themselves. Anyone else reads the comment.
+ */
+const HELD_OPTION = "(held)";
+const maskedFor = (c: StoredComment, viewer: CommentViewer): boolean =>
+  viewer.agent !== undefined &&
+  viewer.userId !== null &&
+  !!c.held?.some((h) => h.state === "held" && h.owner === viewer.userId);
+
+const maskHeld = (v: Comment): Comment => {
+  const who = v.author.name || "someone";
+  const text = `A request from ${who} is waiting for your person`;
+  return {
+    ...v,
+    body: text,
+    ...(v.ask
+      ? {
+          ask: {
+            ...v.ask,
+            question: text,
+            options: v.ask.options.map((o) => ({
+              id: o.id,
+              label: HELD_OPTION,
+            })),
+            recommended: undefined,
+            picks: [],
+            answer: undefined,
+          },
+        }
+      : {}),
+  };
+};
+
 const commentOf = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  users: Ctx,
+): Comment => {
+  const v = commentOfRaw(c, viewer, users);
+  return maskedFor(c, viewer) ? maskHeld(v) : v;
+};
+
+const commentOfRaw = (
   c: StoredComment,
   viewer: CommentViewer,
   users: Ctx,
@@ -987,6 +1079,7 @@ async function commentView(
     await ctxFor(env, ids, hasAgent(c), { comments: [c] }),
   );
   await fillReplacedTitles(env, [out], viewer);
+  await withPictures(env, [out], new Set(maskedFor(c, viewer) ? [c.id] : []));
   return out;
 }
 
@@ -1092,7 +1185,10 @@ const announce = async (
       who.id,
       Date.now(),
       new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
-      (receiverId) => gate.take(receiverId),
+      // #2577: a sender not on the receiver's list tells their agents nothing (no hold: it carries no request).
+      async (receiverId) =>
+        (await decide(env, who.id, receiverId, artifactId)) === "deliver" &&
+        (await gate.take(receiverId)),
     ),
   );
 };
@@ -1109,7 +1205,11 @@ const emailPeople = (
   after && comment
     ? inBackground(
         after.ctx,
-        emailCommentRecipients(env, { artifactId, threadId, comment, reply }),
+        Promise.all([
+          // #2512 S2: the same people, in their inbox (no email setting needed).
+          recordCommentItems(env, { artifactId, threadId, comment, reply }),
+          emailCommentRecipients(env, { artifactId, threadId, comment, reply }),
+        ]),
       )
     : undefined;
 
@@ -1119,6 +1219,8 @@ export type CommentExtras = {
   ask?: AskInput;
   /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
   toAsker?: boolean;
+  /** #2508: pictures to attach (reserved with R.commentPictures): the caller's own, uploaded, unattached, on this artifact. */
+  pictures?: CommentPictureRef[];
 };
 
 /** Who may mention and ask. `moderator`: the owner or an editor. */
@@ -1142,6 +1244,8 @@ type Resolved = {
   /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
   mentionKind: "mention" | "asker";
   participants: StoredParticipant[];
+  /** #2577: agents of other people this comment's delivery is held for (their person has not allowed the sender). */
+  held?: { agent: HeldAgent; way: string }[];
   /** #2559: a non-fatal notice for the response (a mention over the limit). */
   notice?: string;
   /** #2559: this comment's draw on the mention limits (one sender slot per comment). */
@@ -1149,6 +1253,22 @@ type Resolved = {
   /** #2511: an ask on another artifact this comment's ask replaces; it is withdrawn once this one is posted. */
   crossReplace?: ReplacesRef;
 };
+
+/** The people whose agent an ask is held for: their rows in the asks index open only when they allow it. */
+const heldAskOwners = (
+  held: { agent: HeldAgent; way: string }[] | undefined,
+): Set<string> =>
+  new Set(
+    (held ?? []).filter((h) => h.way === "ask").map((h) => h.agent.owner),
+  );
+
+/** An agent of another person, as a held delivery stores it. */
+const heldAgentOf = (a: RosterAgent): HeldAgent => ({
+  key: a.key,
+  name: a.address.name,
+  owner: a.userId,
+  namespace: a.address.namespace,
+});
 
 /** The comment's mention-limit gate: made once per comment, by its author. */
 const gateOf = (env: Env, who: CommentWho, r: Resolved): MentionGate | null => {
@@ -1412,6 +1532,7 @@ async function resolveExtras(
   const others = [...agents.values()].filter(
     (e) => e.agent.userId !== viewerId,
   );
+  const held: { agent: HeldAgent; way: string }[] = [];
   const gate = gateOf(env, who, none);
   // A guest wakes no agent, their own included: the same refusal as a
   // viewer who may not mention.
@@ -1428,6 +1549,25 @@ async function resolveExtras(
     // on the comment and reads "gone". 2: and only under the hourly limits.
     for (const e of others) {
       let wake = typedByPerson(who);
+      // #2577: another person's agent takes a request only from someone on their list; else the delivery is held for their person.
+      if (wake && viewerId) {
+        if (
+          (await decide(env, viewerId, e.agent.userId, artifactId)) === "hold"
+        ) {
+          // The sender's hourly limit comes first: over it, nothing is held.
+          if (gate && !(await gate.takeSender())) {
+            notice = TOO_MANY_MENTIONS;
+            agents.delete(e.agent.key);
+            continue;
+          }
+          held.push({
+            agent: heldAgentOf(e.agent),
+            way: e.kind === "ask" ? "ask" : "mention",
+          });
+          agents.delete(e.agent.key);
+          continue;
+        }
+      }
       if (wake && gate && !(await gate.take(e.agent.userId))) {
         wake = false;
         notice = TOO_MANY_MENTIONS;
@@ -1445,7 +1585,9 @@ async function resolveExtras(
       ...(mentioned.length
         ? { mentions: mentioned.map((m) => storedAgent(m)) }
         : {}),
+      ...(held.length ? { held } : {}),
     },
+    held,
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
     mentionKind: "mention",
@@ -1539,11 +1681,15 @@ async function deliver(
   } finally {
     clearTimeout(timer);
   }
-  const states = r.mentions.map((key) => ({
-    kind: r.mentionKind,
-    key,
-    state: stateOf(outcome.get(key) ?? "dropped"),
-  }));
+  // A held mention was never sent: its row stays queued ("waiting").
+  const heldKeys = new Set((r.held ?? []).map((h) => h.agent.key));
+  const states = r.mentions
+    .filter((key) => !heldKeys.has(key))
+    .map((key) => ({
+      kind: r.mentionKind,
+      key,
+      state: stateOf(outcome.get(key) ?? "dropped"),
+    }));
   if (states.length === 0) return c;
   try {
     return await call(() =>
@@ -1615,12 +1761,20 @@ async function addThreadInner(
   raw: { anchor: unknown; body: unknown } & CommentExtras,
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
-  const body = checkBody(raw.body);
+  const pics = raw.pictures ?? [];
+  const body = checkBody(raw.body, pics.length > 0);
+  if (pics.length > 0 && (who.kind !== "user" || viewer.guest))
+    throw new ApiError("forbidden", "Log in as a member to add pictures");
   const r0 = await resolveExtras(env, a.id, who, raw, {
     ...opts,
     caller: viewer.caller,
   });
   gateOf(env, who, r0);
+  if (body === "" && (r0.mentions.length > 0 || r0.agents.length > 0))
+    throw new ApiError(
+      "bad_request",
+      "A comment that mentions an agent needs text",
+    );
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -1632,6 +1786,7 @@ async function addThreadInner(
   const page0 =
     // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
     anchor.kind === "note" &&
+    body !== "" &&
     r0.mentions.length === 0 &&
     r0.agents.length === 0 &&
     who.kind === "user" &&
@@ -1645,7 +1800,14 @@ async function addThreadInner(
     else if (typedByPerson(who)) {
       // Another person's page agent: not for an outside member, and under the mention limits.
       if (await isOutsideMember(env, who.id)) page = null;
-      else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
+      else if ((await decide(env, who.id, page0.userId, a.id)) === "hold") {
+        // #2577: held for the page agent's person; the note posts, nothing is sent.
+        if (await (gateOf(env, who, r0) as MentionGate).takeSender()) {
+          const h = { agent: heldAgentOf(page0), way: "page" };
+          r0.held = [...(r0.held ?? []), h];
+          r0.extras = { ...r0.extras, held: [...(r0.extras?.held ?? []), h] };
+        } else r0.notice = TOO_MANY_MENTIONS;
+      } else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
         page = page0;
       else r0.notice = TOO_MANY_MENTIONS;
     }
@@ -1674,20 +1836,39 @@ async function addThreadInner(
       : []),
     ...(await authorParticipant(a.id, who)),
   ];
-  const t = await call(() =>
-    stub(env, a.id).commentsAdd({
-      actor: actorOf(who),
-      rate: rateKeyOf(who),
-      counted: true,
-      anchor,
-      version,
-      body,
-      ...(r.extras ? { extras: r.extras } : {}),
-      ...(participants.length ? { participants } : {}),
-    }),
-  );
+  // #2508: the pictures are claimed (yours, uploaded, unused, this page)
+  // before the comment is written, and given back if it never is.
+  const claim =
+    pics.length > 0 && who.kind === "user"
+      ? await claimPictures(env, a.id, who.id, pics)
+      : null;
+  let t: Awaited<ReturnType<ReturnType<typeof stub>["commentsAdd"]>>;
+  try {
+    t = await call(() =>
+      stub(env, a.id).commentsAdd({
+        actor: actorOf(who),
+        rate: rateKeyOf(who),
+        counted: true,
+        anchor,
+        version,
+        body,
+        ...(claim ? { allowEmpty: true } : {}),
+        ...(r.extras ? { extras: r.extras } : {}),
+        ...(participants.length ? { participants } : {}),
+      }),
+    );
+  } catch (e) {
+    if (claim) await releasePictures(env, claim.holder);
+    throw e;
+  }
   const root = t.comments[0];
+  if (claim) {
+    if (root) await bindPictures(env, claim.holder, t.id, root.id);
+    else await releasePictures(env, claim.holder);
+  }
   if (root) opts.written?.(root);
+  if (root && who.kind === "user" && r.held?.length)
+    await recordHolds(env, who.id, a.id, t.id, root.id, r.held);
   if (root?.ask)
     await indexAsk(
       env,
@@ -1697,6 +1878,7 @@ async function addThreadInner(
       root.ask.to,
       root.ask.decider ?? root.author.ref,
       askInfo(root),
+      heldAskOwners(r.held),
     );
   // #2511: a replaced ask leaves the index; one on another page is withdrawn now.
   if (root?.ask?.replaces)
@@ -1776,6 +1958,7 @@ async function resolveToAsker(
   env: Env,
   artifactId: string,
   threadId: string,
+  who: CommentWho,
 ): Promise<Resolved> {
   const t = await call(() => stub(env, artifactId).commentsGet(threadId));
   const root = t.comments[0];
@@ -1790,12 +1973,48 @@ async function resolveToAsker(
     root.author.ref,
     await askingAddress(env, artifactId, threadId, root.author),
   );
+  // #2577: the asking agent's person takes a reply only from someone on their
+  // list, or from a person the ask was put to; else the delivery is held for them.
+  const heldFor: { agent: HeldAgent; way: string }[] = [];
+  let wake = to;
+  // #2559: a reply no person typed (a token or an agent) wakes only the asking
+  // agents of its own author, an addressee included; it holds nothing, since
+  // it carries no person's request.
+  if (who.kind === "user" && !typedByPerson(who))
+    wake = to.filter((a) => a.userId === who.id);
+  else if (
+    who.kind === "user" &&
+    typedByPerson(who) &&
+    to.length > 0 &&
+    !isAsked(root.ask, who, root.author.ref)
+  ) {
+    const mine = to.filter((a) => a.userId !== who.id);
+    const receiver = mine[0]?.userId;
+    if (
+      receiver &&
+      (await decide(env, who.id, receiver, artifactId)) === "hold"
+    ) {
+      // The sender's hourly limit comes first: over it, nothing is held.
+      const gate = new MentionGate(env, who.id);
+      if (await gate.takeSender())
+        for (const a of mine)
+          heldFor.push({ agent: heldAgentOf(a), way: "reply" });
+      wake = to.filter((a) => a.userId === who.id);
+    }
+  }
   return {
-    extras: to.length ? { asker: to.map((a) => storedAgent(a)) } : undefined,
-    agents: to.map((agent) => ({ agent, kind: "asker" as const })),
+    extras:
+      wake.length || heldFor.length
+        ? {
+            ...(wake.length ? { asker: wake.map((a) => storedAgent(a)) } : {}),
+            ...(heldFor.length ? { held: heldFor } : {}),
+          }
+        : undefined,
+    agents: wake.map((agent) => ({ agent, kind: "asker" as const })),
     follow: [],
-    mentions: to.map((a) => a.key),
+    mentions: wake.map((a) => a.key),
     mentionKind: "asker",
+    ...(heldFor.length ? { held: heldFor } : {}),
     // The asker's agents are not named one by one: the asking agent joins by its own comment.
     participants: [],
   };
@@ -1826,6 +2045,8 @@ async function threadReply(
   // or a guest-role member.
   if (c.author.kind !== "user" || c.author.agent || outsider(viewer)) return c;
   let out = c;
+  // #2577: holds added here; the comment returned always carries them (the inbox stores no words for their people).
+  let heldHere: { agent: HeldAgent; way: string }[] = [];
   try {
     const due = await call(() =>
       stub(env, a.id).commentsThreadReplyTake({
@@ -1838,9 +2059,11 @@ async function threadReply(
     );
     if (due.length === 0) return c;
     const reached: RosterAgent[] = [];
+    const heldNow: { agent: HeldAgent; way: string }[] = [];
     const users = new Map<string, boolean>();
     // #2559: a comment not typed by a person wakes only its author's own agents.
     const typed = isTyped(c.author);
+    let senderGate: MentionGate | undefined;
     let outside: boolean | undefined;
     for (const p of due) {
       if (p.owner !== c.author.ref) {
@@ -1848,6 +2071,25 @@ async function threadReply(
         // Another person's agent: not for an outside member, and under the mention limits.
         outside ??= await isOutsideMember(env, c.author.ref);
         if (outside) continue;
+        // #2577: not on the person's list: held for them, no notice.
+        if ((await decide(env, c.author.ref, p.owner, a.id)) === "hold") {
+          // The sender's hourly limit comes first: over it, nothing is held.
+          senderGate ??= r.gate ?? new MentionGate(env, c.author.ref);
+          if (!(await senderGate.takeSender())) {
+            limited?.();
+            continue;
+          }
+          heldNow.push({
+            agent: {
+              key: p.key,
+              name: p.name,
+              owner: p.owner,
+              namespace: p.namespace,
+            },
+            way: "reply",
+          });
+          continue;
+        }
         if (
           !(await (r.gate ?? new MentionGate(env, c.author.ref)).take(p.owner))
         ) {
@@ -1872,6 +2114,17 @@ async function threadReply(
           userId: p.owner,
           address: { namespace: p.namespace, name: p.name },
         });
+    }
+    heldHere = heldNow;
+    if (heldNow.length > 0) {
+      await call(() =>
+        stub(env, a.id).commentsHold({
+          threadId,
+          commentId: c.id,
+          held: heldNow,
+        }),
+      ).catch(() => undefined);
+      await recordHolds(env, c.author.ref, a.id, threadId, c.id, heldNow);
     }
     // The rows exist (queued) before any notice goes out, as a mention's do, so
     // a daemon's ack that beats the write below still finds its row to settle.
@@ -1942,6 +2195,22 @@ async function threadReply(
       code: e instanceof ApiError ? e.code : "error",
     });
   }
+  const missing = heldHere.filter(
+    (h) => !out.held?.some((x) => x.key === h.agent.key),
+  );
+  if (missing.length > 0)
+    out = {
+      ...out,
+      held: [
+        ...(out.held ?? []),
+        ...missing.map((h) => ({
+          key: h.agent.key,
+          owner: h.agent.owner,
+          state: "held",
+          way: h.way,
+        })),
+      ],
+    };
   return out;
 }
 
@@ -1956,7 +2225,10 @@ async function addReplyInner(
   extras: CommentExtras = {},
   opts: ExtrasOpts = {},
 ): Promise<Comment> {
-  const text = checkBody(body);
+  const pics = extras.pictures ?? [];
+  const text = checkBody(body, pics.length > 0);
+  if (pics.length > 0 && (who.kind !== "user" || viewer.guest))
+    throw new ApiError("forbidden", "Log in as a member to add pictures");
   let r: Resolved;
   if (extras.toAsker) {
     // A guest, signed out or not, cannot wake the asking agent.
@@ -1970,7 +2242,7 @@ async function addReplyInner(
         "bad_request",
         "toAsker cannot be combined with mentions or ask",
       );
-    r = await resolveToAsker(env, artifactId, threadId);
+    r = await resolveToAsker(env, artifactId, threadId, who);
   } else {
     // The reply's rate-limit charge is inside the DO write, so the lookups
     // come first here (parallel, bounded: about one LINK_LOOKUP_MS).
@@ -1983,26 +2255,46 @@ async function addReplyInner(
     );
   }
   gateOf(env, who, r);
+  if (text === "" && (r.agents.length > 0 || r.mentions.length > 0))
+    throw new ApiError(
+      "bad_request",
+      "A comment that mentions an agent needs text",
+    );
   const participants = [
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),
   ];
-  let c = await call(() =>
-    stub(env, artifactId).commentsReply({
-      threadId,
-      actor: actorOf(who),
-      rate: rateKeyOf(who),
-      body: text,
-      ...(r.extras ? { extras: r.extras } : {}),
-      ...(participants.length ? { participants } : {}),
-    }),
-  );
+  // #2508: claimed before the write, given back if it never happens.
+  const claim =
+    pics.length > 0 && who.kind === "user"
+      ? await claimPictures(env, artifactId, who.id, pics)
+      : null;
+  let c: StoredComment;
+  try {
+    c = await call(() =>
+      stub(env, artifactId).commentsReply({
+        threadId,
+        actor: actorOf(who),
+        rate: rateKeyOf(who),
+        body: text,
+        ...(claim ? { allowEmpty: true } : {}),
+        ...(r.extras ? { extras: r.extras } : {}),
+        ...(participants.length ? { participants } : {}),
+      }),
+    );
+  } catch (e) {
+    if (claim) await releasePictures(env, claim.holder);
+    throw e;
+  }
+  if (claim) await bindPictures(env, claim.holder, threadId, c.id);
   // The thread's bound (one notice per window, a cap in all) left the reply
   // without its mention rows: nobody is told, and the usual follower notice
   // (its own limits) is the only one.
   if (extras.toAsker && !c.mentions?.length)
     r = { ...r, agents: [], mentions: [] };
   opts.written?.(c);
+  if (who.kind === "user" && r.held?.length)
+    await recordHolds(env, who.id, artifactId, threadId, c.id, r.held);
   if (c.ask)
     await indexAsk(
       env,
@@ -2012,6 +2304,7 @@ async function addReplyInner(
       c.ask.to,
       c.ask.decider ?? c.author.ref,
       askInfo(c),
+      heldAskOwners(r.held),
     );
   if (c.ask?.replaces)
     await indexDeleted(env, artifactId, threadId, c.ask.replaces, false);
@@ -2071,7 +2364,7 @@ async function storedAsk(
   const c = t.comments.find((x) => x.id === commentId);
   const ask = c?.ask;
   if (!c || !ask) throw new ApiError("not_found", "Not found");
-  return { ask, status: t.status, author: c.author.ref };
+  return { ask, status: t.status, author: c.author.ref, held: c.held ?? [] };
 }
 
 /** Whether `who` is one of the people the ask was put to (as the DO decides). */
@@ -2190,12 +2483,23 @@ export async function answerAsk(
   // A guest (role or guest cap) picks nothing; a restricted or capped member still can.
   if (viewer.guest === true || (await guestWho(env, who)))
     throw new ApiError("forbidden", "Only the people asked can answer");
-  const { ask, status, author } = await storedAsk(
+  const { ask, status, author, held } = await storedAsk(
     env,
     artifactId,
     threadId,
     commentId,
   );
+  // #2577: an ask held for this person's agents is not theirs to answer blind:
+  // their agent or token reads a placeholder, so it cannot pick on it.
+  if (
+    viewer.agent !== undefined &&
+    viewer.userId !== null &&
+    held.some((h) => h.state === "held" && h.owner === viewer.userId)
+  )
+    throw new ApiError(
+      "forbidden",
+      "This request is waiting for your person to allow it",
+    );
   if (ask.replacedBy)
     throw new ApiError(
       "replaced",
@@ -2287,6 +2591,16 @@ export async function answerAsk(
       logError("ask_approve_audit_failed", e, { artifactId, commentId });
     }
   // Only the decision is "answered"; a weigh-in is input (#2381).
+  // #2512 S2: those who weighed in hear of the decision, before it closes their rows' siblings.
+  if (decided && stored)
+    await recordDecisionItems(env, {
+      artifactId,
+      threadId,
+      commentId,
+      question: ask.question,
+      by: stored.by,
+      decidedAt: stored.at,
+    });
   if (decided) await indexAnswered(env, artifactId, commentId);
   else if (who.kind === "user")
     await indexWeighed(env, artifactId, commentId, who.id);
@@ -2784,6 +3098,13 @@ export async function editComment(
       rate: rateKeyOf(who),
     }),
   );
+  await heldAfterEdit(env, artifactId, commentId);
+  await refreshCommentItems(env, {
+    artifactId,
+    commentId,
+    body: c.body,
+    held: c.held,
+  });
   return commentView(env, c, viewer);
 }
 
@@ -2812,6 +3133,16 @@ export async function deleteComment(
     }),
   );
   await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
+  // #2508: the comment's pictures go with it (the whole thread's with a root).
+  await deleteCommentPictures(env, threadId, commentId, r?.root === true).catch(
+    (e) => logWarn("comment_pictures_delete_failed", e, { artifactId }),
+  );
+  await forgetCommentItems(env, {
+    artifactId,
+    threadId,
+    commentId,
+    root: r?.root === true,
+  });
 }
 
 /** A new thread; records the commenter for the first-run checklist (#2287). */

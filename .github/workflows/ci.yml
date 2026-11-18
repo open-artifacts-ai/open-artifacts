@@ -369,17 +369,18 @@ jobs:
       # Every shard reports, so one failure never hides another.
       fail-fast: false
       matrix:
-        # The merge queue (and a dispatch) runs four shards: the full proof
-        # before main. Pull requests run two: on the free plan's 20
-        # concurrent jobs, two or three four-shard runs filled the cap and
-        # bursts took 28-34 min (#965). A shard of four is about 7 min.
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1,2]' || '[1,2,3,4]') }}
+        # The merge queue, a dispatch and every other event: the whole suite on
+        # four shards (about 10 min each; #965, #2708). Pull requests only
+        # (`github.event_name` exactly "pull_request"): the happy-path smoke,
+        # tests tagged @smoke, on one shard (scripts/ci/e2e.sh decides the same
+        # way from GITHUB_EVENT_NAME). Anything else, or a missing value, is the
+        # whole suite on four. The required `e2e` check reports either way.
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1, 2, 3, 4]') }}
     env:
       PLAYWRIGHT_IMAGE_VERSION: 1.64.1
-      E2E_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 2 || 4 }}
-    # A shard of four well under 10 min (15 allowed); a pull request's shard of
-    # two does about twice the work (25 allowed).
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 15 }}
+      E2E_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 1 || 4 }}
+    # A shard of four well under 12 min (15 allowed); the pull request smoke is a few.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -415,42 +416,57 @@ jobs:
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      # Pull requests only: skip the browser suites when the diff reaches
+      # none of the packages they drive (the shard then passes in about a
+      # minute). The decision is made inside the job, never by a job `if:`,
+      # so `e2e` still reports; the merge queue always runs them whole, and
+      # any error or a missing output runs them. Like test-affected.sh, the
+      # script is the PR head's copy: it can narrow only this PR's check.
+      - id: e2e
+        name: Does this pull request reach the browser suites?
         if: ${{ steps.ro.outputs.release_only != 'true' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci/e2e-affected.sh
+      - name: browser suites not affected
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run == 'false' }}
+        run: |
+          echo "no browser-suite package is affected by this pull request: skipped (the merge queue runs them whole)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - id: pw
         run: bash scripts/ci/e2e.sh version
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - id: install
         run: bash scripts/ci/e2e.sh install
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - run: bash scripts/ci/e2e.sh hosts
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
       - name: Mock suite
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
         run: bash scripts/ci/e2e.sh mock
       # Runs even when the mock suite failed (not when the browsers didn't install).
       - name: Real-server suite (local wrangler dev)
-        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh real
-      # One spec on its own server: whole, in exactly one shard per event
-      # (shard 3 of four in the queue, the lightest real share; shard 2 of two
-      # on a pull request, since shard 1 carries ui and landing).
+      # One spec on its own server: whole, in exactly one shard (shard 3, the
+      # lightest real share; shard 1 carries ui and landing).
       - name: Real-server suite with spaces on (local wrangler dev)
-        if: ${{ !cancelled() && matrix.shard == (github.event_name == 'pull_request' && 2 || 3) && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 3 && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh spaces
       # Not sharded (about a minute together): shard 1 only.
       - name: UI real-browser checks (axe contrast, focus)
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh ui
       - name: Landing real-browser checks (no horizontal overflow)
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
-      - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
+      - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.e2e.outputs.run != 'false' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: blob-report-${{ matrix.shard }}
@@ -614,47 +630,21 @@ jobs:
         run: |
           npm install --no-save --prefix "$RUNNER_TEMP/rp" release-please@17.3.0
           RELEASE_PLEASE="$RUNNER_TEMP/rp/node_modules/.bin/release-please" bash scripts/ci/release-dry-run.sh
-  # #1056 untangle D: the public code installs, builds, typechecks and tests
-  # with every private path (scripts/ci/private-paths.txt) removed.
-  # Not a required check, and nothing needs it. It runs on the merge queue and
-  # on dispatch. On a pull request it runs only when the PR changes scripts/ci/,
-  # scripts/test/ or this workflow (#2254), the paths whose breakage shows up only here: the
-  # decision is made inside the job, like migration-timing, so a PR that
-  # touches neither passes in seconds. It does not block a merge: a red run is
-  # a signal to fix, not a gate. A PR that brings back a listed private path is
-  # still refused at the next cloud pin bump.
+  # #1056: the hosted code lives in open-artifacts-cloud, so the public repo
+  # must not carry any path in scripts/ci/private-paths.txt. This job checks
+  # that, in seconds, on every pull request and merge-queue run. The job name
+  # stays `public-only` so the status check keeps reporting. The old full
+  # install, build and test run on a copy without those paths is still
+  # available as scripts/ci/public-only.sh, but no job runs it.
   public-only:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - id: changed
-        name: Is this a PR that skips public-only?
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          run=true
-          if [ "$EVENT" = pull_request ]; then
-            run=false
-            if [ -z "${BASE_SHA:-}" ] || ! files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
-              || grep -qE '^(scripts/ci/|scripts/test/|\.github/workflows/ci\.yml$)' <<< "$files"; then
-              run=true
-            fi
-          fi
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-          if [ "$run" = false ]; then
-            echo "no scripts/ci or scripts/test change: public-only not needed on this PR"
-          fi
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        if: ${{ steps.changed.outputs.run == 'true' }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: ${{ steps.changed.outputs.run == 'true' }}
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - if: ${{ steps.changed.outputs.run == 'true' }}
-        run: bash scripts/ci/public-only.sh
+      - run: |
+          # The guard asks git what is tracked. Trust the workspace so a root
+          # or container checkout never fails "dubious ownership".
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          bash scripts/ci/public-only-guard.sh

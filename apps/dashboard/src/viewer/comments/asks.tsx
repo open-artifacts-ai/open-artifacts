@@ -55,7 +55,7 @@ type AskT = NonNullable<CommentT["ask"]>;
 const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
 
 /** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
-const needsMe = (ask: AskT): boolean => {
+export const needsMe = (ask: AskT): boolean => {
   // A withdrawn or replaced card waits for no one (#2511).
   if (ask.withdrawn || ask.replacedBy) return false;
   if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
@@ -64,6 +64,10 @@ const needsMe = (ask: AskT): boolean => {
     (!ask.answer || isSendingAnswer(ask.answer)) && ask.to.some((a) => a.me)
   );
 };
+
+/** A risky ask: a passkey-confirm ask, or any option with an `action`. It is only answered in the pane. */
+export const isRiskyAsk = (ask: AskT): boolean =>
+  ask.confirm === "passkey" || ask.options.some((o) => !!o.action);
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
@@ -631,7 +635,14 @@ export function AskBlock({
   from = true,
   boxed = true,
   openCard,
+  holdPicks = false,
 }: {
+  /**
+   * #2426 review, #2736: the card beside a mark takes no pick and no other
+   * one-click change yet (take back, change); they show disabled. Only that
+   * card sets it; the pane never does.
+   */
+  holdPicks?: boolean;
   /** The "X asks you" line; off where the card's header already says it (#2486). */
   from?: boolean;
   /** The ask's own ring; off where the thread's card is the box (#2486). */
@@ -783,7 +794,7 @@ export function AskBlock({
   const decider = ask.decider;
   // A risky ask (an action option or a passkey) shows no one else: no who-line,
   // weigh-ins or take back. It is the asker's own user's call.
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const risky = isRiskyAsk(ask);
   const deciderLine =
     !decider || risky
       ? null
@@ -939,8 +950,9 @@ export function AskBlock({
                 size="xs"
                 variant="link"
                 className="h-auto p-0 font-normal text-primary underline"
-                disabled={takeBack.isPending}
+                disabled={takeBack.isPending || holdPicks}
                 onClick={() => {
+                  if (holdPicks) return;
                   setErr(null);
                   takeBack.mutate(
                     { thread: thread.id, comment: c.id },
@@ -998,6 +1010,7 @@ export function AskBlock({
                     } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
                       !canAnswer ||
+                      holdPicks ||
                       answer.isPending ||
                       sel ||
                       (locked && !sel) ||
@@ -1006,6 +1019,7 @@ export function AskBlock({
                     aria-pressed={sel}
                     data-option={o.id}
                     onClick={() => {
+                      if (holdPicks) return;
                       setErr(null);
                       setLastPick(o.id);
                       const v = {
@@ -1115,6 +1129,7 @@ export function AskBlock({
                     size="xs"
                     variant="link"
                     className="h-auto p-0"
+                    disabled={holdPicks}
                     onClick={() => setChanging(true)}
                   >
                     Change
@@ -1142,6 +1157,7 @@ export function AskBlock({
                         size="xs"
                         variant="link"
                         className="h-auto p-0"
+                        disabled={holdPicks}
                         onClick={() => setChanging(true)}
                       >
                         Change

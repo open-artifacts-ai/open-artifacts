@@ -117,7 +117,8 @@ async function startMocks() {
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);
-  // &sharedBy=none answers null.
+  // &sharedBy=none answers null. #2702: as the server does, the guest's own
+  // share decides can.comment (&share=viewer: View only; else Can comment).
   if (role === "guest")
     extra.push(
       http.get("*/api/v1/artifacts/:id", async ({ request }) => {
@@ -126,6 +127,16 @@ async function startMocks() {
         const body = (await res.json()) as object;
         return HttpResponse.json({
           ...body,
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+            comment: params.get("share") !== "viewer",
+          },
           sharedBy:
             params.get("sharedBy") === "none" ? null : { name: "Ada Lovelace" },
         });
@@ -137,6 +148,17 @@ async function startMocks() {
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
+          // #2702: a guest is capped, so read-only, as the server says.
+          ...(role === "guest"
+            ? {
+                auth: {
+                  method: "access",
+                  readOnly: true,
+                  cap: "guest",
+                  expiresAt: null,
+                },
+              }
+            : {}),
           // #2632: the owner's name (MeSchema instanceOwner).
           instanceOwner: { name: "Bob Builder" },
         }),

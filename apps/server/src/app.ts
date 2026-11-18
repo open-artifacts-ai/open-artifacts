@@ -115,8 +115,11 @@ const SESSION_PATHS = [
 
 // PUT R.upload(id) is authorized by its signature: no session, no CSRF.
 const SIGNED_UPLOAD = /^\/api\/v1\/uploads\/[^/]+$/;
+// PUT R.commentPicture(id, pictureId) likewise (#2508): the reservation's signature.
+const SIGNED_PICTURE = /^\/api\/v1\/artifacts\/[^/]+\/pictures\/[^/]+$/;
 const isSignedUpload = (c: Context<AppEnv>) =>
-  c.req.method === "PUT" && SIGNED_UPLOAD.test(c.req.path);
+  c.req.method === "PUT" &&
+  (SIGNED_UPLOAD.test(c.req.path) || SIGNED_PICTURE.test(c.req.path));
 const unlessSigned =
   (mw: MiddlewareHandler<AppEnv>): MiddlewareHandler<AppEnv> =>
   (c, next) =>

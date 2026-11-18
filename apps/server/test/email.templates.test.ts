@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import inviteHtml from "../../../design/emails/invite.html?raw";
 import inviteTxt from "../../../design/emails/invite.txt?raw";
+import reminderHtml from "../../../design/emails/setup-reminder.html?raw";
+import reminderTxt from "../../../design/emails/setup-reminder.txt?raw";
 import shareHtml from "../../../design/emails/share.html?raw";
 import shareTxt from "../../../design/emails/share.txt?raw";
 import {
   INVITE_HTML,
   INVITE_TXT,
+  SETUP_REMINDER_HTML,
+  SETUP_REMINDER_TXT,
   SHARE_HTML,
   SHARE_TXT,
 } from "../src/email/email-templates.js";
@@ -51,14 +55,35 @@ describe("email templates", () => {
     expect(INVITE_TXT).toBe(inviteTxt);
     expect(SHARE_HTML).toBe(shareHtml);
     expect(SHARE_TXT).toBe(shareTxt);
+    expect(SETUP_REMINDER_HTML).toBe(reminderHtml);
+    expect(SETUP_REMINDER_TXT).toBe(reminderTxt);
   });
 
   it("renders the invite with hostile values", () => {
-    const m = inviteEmail(common);
+    const m = inviteEmail({ ...common, guest: false });
     clean(m);
     expect(m.text).toContain("https://app.example.com/sign-in");
     expect(m.html).toContain('href="https://app.example.com/sign-in"');
     expect(m.text).toContain("new@x.com");
+  });
+
+  it("a member invite carries the line to paste into an agent; a guest's doesn't (#2632)", () => {
+    const line =
+      "Set up Open Artifacts for me: follow https://app.example.com/llms.txt";
+    const m = inviteEmail({ ...common, guest: false });
+    expect(m.text).toContain(
+      "Then connect your agent. Paste this into Claude Code, Codex, Cursor or any other AI agent:",
+    );
+    expect(m.text).toContain(line);
+    expect(m.html).toContain(line.replace(/\//g, "/<wbr>"));
+    for (const part of [m.text, m.html]) expect(part).not.toContain("setup-->");
+    const g = inviteEmail({ ...common, guest: true });
+    for (const part of [g.text, g.html]) {
+      expect(part).not.toContain("llms.txt");
+      expect(part).not.toContain("connect your agent");
+      expect(part).not.toContain("setup-->");
+    }
+    expect(g.text).toContain("https://app.example.com/sign-in");
   });
 
   it("renders the share with hostile values", () => {
@@ -79,7 +104,7 @@ describe("email templates", () => {
 
   it("refuses links off the app host", () => {
     for (const appHost of ["x.com/@evil", "evil.com:80@x", "a b"])
-      expect(() => inviteEmail({ ...common, appHost })).toThrow();
+      expect(() => inviteEmail({ ...common, appHost, guest: false })).toThrow();
     for (const path of ["@evil.com/x", ".evil.com/x", "x"])
       expect(() =>
         shareEmail({
@@ -114,7 +139,7 @@ describe("copy (#213)", () => {
   });
 
   const render = (instance: string) => [
-    inviteEmail({ ...common, inviter: "Ada", instance }),
+    inviteEmail({ ...common, inviter: "Ada", instance, guest: false }),
     shareEmail({
       ...common,
       inviter: "Ada",
@@ -148,7 +173,12 @@ describe("copy (#213)", () => {
 
   it("a user named 'me' (the login default) is shown as the full address", () => {
     const inviter = senderName({ name: "me", email: "me@test.invalid" });
-    const m = inviteEmail({ ...common, inviter, instance: "Open Artifacts" });
+    const m = inviteEmail({
+      ...common,
+      inviter,
+      instance: "Open Artifacts",
+      guest: false,
+    });
     expect(m.subject).toBe("me@test.invalid added you to Open Artifacts");
   });
 });
@@ -168,7 +198,13 @@ describe("login copy (review item 11)", () => {
       signIn,
     });
   const invite = (signIn: typeof common.signIn) =>
-    inviteEmail({ ...common, inviter: "Ada", instance: "Acme", signIn });
+    inviteEmail({
+      ...common,
+      inviter: "Ada",
+      instance: "Acme",
+      signIn,
+      guest: false,
+    });
 
   it.each([
     [["email"], "You'll log in with a one-time code sent to new@x.com."],

@@ -1,5 +1,5 @@
-// #2512 slice 2: Settings › Notifications for For you on mocks (?mock=foryou), at 1280
-// and 390, light and dark: axe, no sideways scroll, saves, unmute, the browser stub.
+// #2512 slice 2: Settings › Notifications for For you on mocks (?mock=foryou), at 1280 light (#2711):
+// axe, no sideways scroll, unmute, the browser stub. The server-without-it case is in test/for-you-settings.test.tsx.
 // FOR_YOU_SHOTS_DIR picks where the PNGs go (none when unset).
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -11,7 +11,7 @@ const AXE = createRequire(import.meta.url).resolve("axe-core/axe.min.js", {
 const OUT = process.env.FOR_YOU_SHOTS_DIR;
 // Headless Chromium reports notifications "denied" whatever is granted: a
 // Notification at "default" here, so "Needs you in this browser" is the
-// switch, not "Blocked". e2e/push.spec.ts covers blocked and the rest.
+// switch, not "Blocked". e2e/push.spec.ts covers the live path.
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() =>
     Object.defineProperty(window, "Notification", {
@@ -64,97 +64,86 @@ async function noSidewaysScroll(page: Page) {
   expect(r.sw).toBeLessThanOrEqual(r.iw);
 }
 
-for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const)
-    test(`notification settings at ${width} ${theme}`, async ({ page }) => {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.setViewportSize({ width, height: 1000 });
-      await page.goto("/settings/notifications?mock=foryou");
-      const levels = page.locator("[data-notification-levels]");
-      await expect(levels).toBeVisible();
-      await expect(levels.getByRole("columnheader")).toHaveText([
-        "In the app",
-        "This browser",
-      ]);
-      await expect(levels).toContainText(
-        "Asks for you, and an agent that's stuck",
-      );
-      await expect(levels).not.toContainText("failed payment");
-      await expect(
-        page.getByRole("switch", { name: "Needs you in this browser" }),
-      ).toHaveAttribute("aria-checked", "false");
-      // Slice 3: live (e2e/push.spec.ts drives it with a stubbed browser).
-      await expect(
-        page.getByRole("switch", { name: "Updates in this browser" }),
-      ).toBeDisabled();
-      await expect(
-        page.getByRole("combobox", { name: "Quiet hours start" }),
-      ).toHaveText("22:00");
-      await expect(
-        page.getByRole("combobox", { name: "Quiet hours end" }),
-      ).toHaveText("07:30");
-      await expect(
-        page.getByRole("combobox", { name: "Interrupt me for" }),
-      ).toHaveText("Asks waiting for you");
-      await expect(
-        page.getByRole("combobox", { name: "On lock screens" }),
-      ).toHaveText("Hide details");
-      const muted = page.getByRole("region", { name: "Muted" });
-      await expect(muted.getByRole("listitem")).toHaveCount(2);
-      // Today's email switch stays.
-      await expect(
-        page.getByRole("region", { name: "Notifications", exact: true }),
-      ).toBeVisible();
-      await axe(page);
-      await noSidewaysScroll(page);
-      if (OUT) {
-        mkdirSync(OUT, { recursive: true });
-        await settled(page);
-        await page.screenshot({
-          path: `${OUT}/s1-settings-${width}-${theme}.png`,
-          fullPage: true,
-        });
-      }
-
-      // Slice 3: the interrupt settings are live; a change saves the whole prefs.
-      const put = page.waitForRequest(
-        (r) =>
-          r.method() === "PUT" && r.url().includes("/me/notification-prefs"),
-      );
-      await page.getByRole("combobox", { name: "Interrupt me for" }).click();
-      await page.getByRole("option", { name: "Every ask put to me" }).click();
-      expect((await put).postDataJSON().browserAllAsks).toBe(true);
-      await page.getByRole("switch", { name: "Quiet hours" }).click();
-      await expect(
-        page.getByRole("combobox", { name: "Quiet hours start" }),
-      ).toBeDisabled();
-      // The Email card is as wide as the cards above it.
-      const w = async (sel: string) =>
-        (await page.locator(sel).first().boundingBox())?.width ?? 0;
-      expect(
-        Math.abs(
-          (await w("[data-notification-levels]")) -
-            (await w('section[aria-label="Notifications"]')),
-        ),
-      ).toBeLessThanOrEqual(1);
-
-      // Unmute.
-      await muted.getByRole("button", { name: "Unmute OA Polish" }).click();
-      await expect(muted.getByRole("listitem")).toHaveCount(1);
-
-      if (OUT) {
-        await settled(page);
-        await page.screenshot({
-          path: `${OUT}/s2-settings-changed-${width}-${theme}.png`,
-          fullPage: true,
-        });
-      }
-    });
-
-test("no For you settings on a server without it", async ({ page }) => {
-  await page.goto("/settings/notifications");
+const width = 1280;
+const theme = "light";
+test("notification settings at 1280 light", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: theme });
+  await page.setViewportSize({ width, height: 1000 });
+  await page.goto("/settings/notifications?mock=foryou");
+  const levels = page.locator("[data-notification-levels]");
+  await expect(levels).toBeVisible();
+  await expect(levels.getByRole("columnheader")).toHaveText([
+    "In the app",
+    "This browser",
+  ]);
+  await expect(levels).toContainText("Asks for you, and an agent that's stuck");
+  await expect(levels).not.toContainText("failed payment");
+  await expect(
+    page.getByRole("switch", { name: "Needs you in this browser" }),
+  ).toHaveAttribute("aria-checked", "false");
+  // Slice 3: live (e2e/push.spec.ts drives it with a stubbed browser).
+  await expect(
+    page.getByRole("switch", { name: "Updates in this browser" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("combobox", { name: "Quiet hours start" }),
+  ).toHaveText("22:00");
+  await expect(
+    page.getByRole("combobox", { name: "Quiet hours end" }),
+  ).toHaveText("07:30");
+  await expect(
+    page.getByRole("combobox", { name: "Interrupt me for" }),
+  ).toHaveText("Asks waiting for you");
+  await expect(
+    page.getByRole("combobox", { name: "On lock screens" }),
+  ).toHaveText("Hide details");
+  const muted = page.getByRole("region", { name: "Muted" });
+  await expect(muted.getByRole("listitem")).toHaveCount(2);
+  // Today's email switch stays.
   await expect(
     page.getByRole("region", { name: "Notifications", exact: true }),
   ).toBeVisible();
-  await expect(page.locator("[data-notification-levels]")).toHaveCount(0);
+  await axe(page);
+  await noSidewaysScroll(page);
+  if (OUT) {
+    mkdirSync(OUT, { recursive: true });
+    await settled(page);
+    await page.screenshot({
+      path: `${OUT}/s1-settings-${width}-${theme}.png`,
+      fullPage: true,
+    });
+  }
+
+  // Slice 3: the interrupt settings are live; a change saves the whole prefs.
+  const put = page.waitForRequest(
+    (r) => r.method() === "PUT" && r.url().includes("/me/notification-prefs"),
+  );
+  await page.getByRole("combobox", { name: "Interrupt me for" }).click();
+  await page.getByRole("option", { name: "Every ask put to me" }).click();
+  expect((await put).postDataJSON().browserAllAsks).toBe(true);
+  await page.getByRole("switch", { name: "Quiet hours" }).click();
+  await expect(
+    page.getByRole("combobox", { name: "Quiet hours start" }),
+  ).toBeDisabled();
+  // The Email card is as wide as the cards above it.
+  const w = async (sel: string) =>
+    (await page.locator(sel).first().boundingBox())?.width ?? 0;
+  expect(
+    Math.abs(
+      (await w("[data-notification-levels]")) -
+        (await w('section[aria-label="Notifications"]')),
+    ),
+  ).toBeLessThanOrEqual(1);
+
+  // Unmute.
+  await muted.getByRole("button", { name: "Unmute OA Polish" }).click();
+  await expect(muted.getByRole("listitem")).toHaveCount(1);
+
+  if (OUT) {
+    await settled(page);
+    await page.screenshot({
+      path: `${OUT}/s2-settings-changed-${width}-${theme}.png`,
+      fullPage: true,
+    });
+  }
 });

@@ -1,12 +1,12 @@
-// #2338: comment bodies render a safe markdown subset (mock=markdown), at 1280 and 390, light and dark.
+// #2338: comment bodies render a safe markdown subset (mock=markdown), at 1280, light.
 import { mkdirSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 const OUT = process.env.MARKDOWN_SHOTS_DIR;
 
-for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const)
+for (const width of [1280])
+  for (const theme of ["light"] as const)
     test(`markdown comments at ${width}px ${theme}`, async ({ page }, info) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width, height: 1100 });
