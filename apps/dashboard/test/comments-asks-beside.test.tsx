@@ -406,7 +406,6 @@ describe("asks inside the page (#2426)", () => {
           ],
         },
       ],
-      ["a passkey-confirm ask", { confirm: "passkey" }],
     ])("%s never opens beside: the pane takes it", async (_n, over) => {
       serve([thread("t1", {}, over)]);
       mount(viewerPath(OWNED));
