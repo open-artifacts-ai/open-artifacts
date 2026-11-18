@@ -11,11 +11,13 @@ import {
   forgetCommentItems,
   recordShareItem,
   refreshCommentItems,
+  writeInboxItems,
 } from "../src/services/inbox-items.js";
 import { DEFAULT_PREFS, putPrefs } from "../src/services/notification-prefs.js";
 import {
   BUNDLE_MS,
   DEFAULT_BODY,
+  DEFAULT_MENTION_BODY,
   DEFAULT_UPDATE_BODY,
   drainPush,
   MAX_SUBSCRIPTIONS,
@@ -1400,5 +1402,202 @@ describe("the cron tick", () => {
     expect(mine()).toHaveLength(0);
     expect(await run(E, T0)).toBe(base + 1);
     expect(mine()).toHaveLength(1);
+  });
+});
+
+describe("a person's @-mention of the member (#2781)", () => {
+  /** The Needs-you item #2770 writes for a mentioned person, through the real writer. */
+  const mention = (
+    E: Env,
+    userId: string,
+    id: string,
+    over: { artifactId?: string; excerpt?: string; name?: string } = {},
+  ) =>
+    writeInboxItems(E, [
+      {
+        userId,
+        kind: "mention",
+        level: "needs_you",
+        key: `person:${id}`,
+        artifactId: over.artifactId ?? PUB,
+        threadId: "th-m",
+        commentId: id,
+        actor: { kind: "user", ref: "someone-else", name: over.name ?? "Ann" },
+        excerpt: over.excerpt ?? "Can you check the yearly numbers?",
+        at: T0,
+      },
+    ]);
+  /** This browser's own notifications: the queue is shared, so other members' pushes may be due too. */
+  const mineOf = (sent: Sent[], b: { body: { endpoint: string } }) =>
+    sent.filter((x) => x.url === b.body.endpoint);
+  const bodyOf = async (
+    sent: Sent[],
+    b: Awaited<ReturnType<typeof browser>>,
+    n = 0,
+  ) => JSON.parse(await decrypt((mineOf(sent, b)[n] as Sent).body, b));
+
+  it("writing the item queues a Needs-you push; the lock screen says only that someone mentioned you", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, { browserAllAsks: false });
+    const { sent } = fakePush();
+    await mention(E, u.userId, "pm1");
+    expect(await pendingCount(u.userId)).toBe(1);
+    const row = await env.DB.prepare(
+      "select kind, key from push_pending where user_id = ?",
+    )
+      .bind(u.userId)
+      .first<{ kind: string; key: string }>();
+    expect(row).toEqual({ kind: "ask", key: "person:pm1" });
+    await drainPush(E, Date.now());
+    expect(mineOf(sent, b)).toHaveLength(1);
+    const p = await bodyOf(sent, b);
+    expect(p.body).toBe(DEFAULT_MENTION_BODY);
+    expect(p.tag).toBe("needs-you");
+    expect(p.href).toBe(`/a/${PUB}?thread=th-m`);
+    expect(JSON.stringify(p)).not.toContain("Ann");
+    expect(JSON.stringify(p)).not.toContain("yearly");
+    // Not also queued as an Update.
+    expect(await pendingCount(u.userId)).toBe(0);
+  });
+
+  it("with lock-screen detail: who and the words, written by the server", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, { lockScreenDetail: true });
+    const { sent } = fakePush();
+    await mention(E, u.userId, "pm2", {
+      name: "Ann‮\u0000",
+      excerpt: "Can you check the yearly numbers?",
+    });
+    await drainPush(E, Date.now());
+    const p = await bodyOf(sent, b);
+    expect(p.body).toBe("Ann mentioned you: Can you check the yearly numbers?");
+  });
+
+  it("not queued with the Needs-you switch off or no browser", async () => {
+    const { E } = await world();
+    const off = await enroll(E, { needsYou: { inApp: true, browser: false } });
+    await mention(E, off.u.userId, "pm3");
+    expect(await pendingCount(off.u.userId)).toBe(0);
+    const none = await mk(`nb-${newId().slice(0, 5)}`);
+    await putPrefs(E, none.userId, prefs());
+    await mention(E, none.userId, "pm3b");
+    expect(await pendingCount(none.userId)).toBe(0);
+  });
+
+  it("quiet hours hold it; the waiting-asks-only filter is for asks and never drops it", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      browserAllAsks: false,
+      quietHours: { start: "22:00", end: "07:00" },
+    });
+    const { sent } = fakePush();
+    const night = Date.UTC(2026, 10, 18, 23, 0);
+    await mention(E, u.userId, "pm4");
+    await env.DB.prepare(
+      "update push_pending set send_after = ? where user_id = ?",
+    )
+      .bind(night, u.userId)
+      .run();
+    // Quiet: held to when quiet hours end.
+    await drainPush(E, night);
+    expect(mineOf(sent, b)).toHaveLength(0);
+    expect(await pendingCount(u.userId)).toBe(1);
+    const morning = Date.UTC(2026, 10, 19, 7, 0, 5);
+    await drainPush(E, morning);
+    expect(mineOf(sent, b)).toHaveLength(1);
+    expect((await bodyOf(sent, b)).body).toBe(DEFAULT_MENTION_BODY);
+  });
+
+  it("mutes: the page only. A muted page is not pushed; a person has no agent to mute", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E);
+    await env.DB.prepare(
+      `insert into inbox_mutes (user_id, kind, target_id, name, created_at) values (?, 'page', '${MUTED}', null, ?), (?, 'agent', 'idn-ann', 'Ann', ?)`,
+    )
+      .bind(u.userId, T0, u.userId, T0)
+      .run();
+    const { sent } = fakePush();
+    await mention(E, u.userId, "pm5", { artifactId: MUTED });
+    await drainPush(E, Date.now());
+    expect(mineOf(sent, b)).toHaveLength(0);
+    // The agent mute is not for people: a mention on another page still goes.
+    await mention(E, u.userId, "pm5b");
+    await env.DB.prepare(
+      "update push_pending set send_after = 0 where user_id = ?",
+    )
+      .bind(u.userId)
+      .run();
+    await drainPush(E, Date.now() + BUNDLE_MS);
+    expect(mineOf(sent, b)).toHaveLength(1);
+  });
+
+  it("checked at send time: the item deleted, or the page no longer readable, sends nothing; an edited mention shows the new words", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, { lockScreenDetail: true });
+    const art = await (async () => {
+      const owner = await mk(`own-${newId().slice(0, 4)}`);
+      const om = await getUser(E, owner.userId);
+      const me = await getUser(E, u.userId);
+      const { id } = await publish(
+        E,
+        om as never,
+        { title: "Private", format: "markdown", content: "x" } as never,
+        null,
+        undefined,
+        "create",
+      );
+      await env.DB.prepare(
+        "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+      )
+        .bind(id, (me as { email: string }).email, owner.userId, Date.now())
+        .run();
+      return id;
+    })();
+    const { sent } = fakePush();
+    // The item is gone (its comment was deleted): nothing is sent.
+    await mention(E, u.userId, "pm6", { artifactId: art });
+    await forgetCommentItems(E, {
+      artifactId: art,
+      threadId: "th-m",
+      commentId: "pm6",
+      root: false,
+    });
+    await env.DB.prepare("update push_pending set send_after = 0").run();
+    await drainPush(E, Date.now());
+    expect(mineOf(sent, b)).toHaveLength(0);
+    expect(await pendingCount(u.userId)).toBe(0);
+    // Access revoked while queued: nothing is sent.
+    await mention(E, u.userId, "pm7", { artifactId: art });
+    await env.DB.prepare("delete from shares where artifact_id = ?")
+      .bind(art)
+      .run();
+    await env.DB.prepare("update push_pending set send_after = 0").run();
+    await drainPush(E, Date.now());
+    expect(mineOf(sent, b)).toHaveLength(0);
+    // Edited while queued: the current words.
+    await mention(E, u.userId, "pm8", { excerpt: "first words" });
+    await refreshCommentItems(E, {
+      artifactId: PUB,
+      commentId: "pm8",
+      body: "edited words",
+    });
+    await env.DB.prepare("update push_pending set send_after = 0").run();
+    await drainPush(E, Date.now());
+    expect((await bodyOf(sent, b)).body).toBe(
+      "Ann mentioned you: edited words",
+    );
+  });
+
+  it("a mention and an ask due together go as one notification, counted, with no detail", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E);
+    const { sent } = fakePush();
+    await queuePush(E, [u.userId], item("ask:pm9a"), T0);
+    await mention(E, u.userId, "pm9");
+    await env.DB.prepare("update push_pending set send_after = 0").run();
+    await drainPush(E, Date.now());
+    expect(mineOf(sent, b)).toHaveLength(1);
+    const p = await bodyOf(sent, b);
+    expect(p.body).toBe("2 things are waiting for your answer");
   });
 });
