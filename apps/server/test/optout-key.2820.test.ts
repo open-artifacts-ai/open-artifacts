@@ -293,3 +293,111 @@ describe("with the key", () => {
     expect(`${stored?.h}${audits?.d}`).not.toContain(hex);
   });
 });
+
+describe("fail closed when the key goes missing", () => {
+  const clearKeyed = () =>
+    env.DB.prepare(
+      "delete from email_optouts where address_hash >= 'k1:' and address_hash < 'k1;'",
+    ).run();
+  const captured = async (fn: () => Promise<unknown>) => {
+    const lines: string[] = [];
+    const spies = (["log", "warn", "error", "info"] as const).map((k) =>
+      vi.spyOn(console, k).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      }),
+    );
+    try {
+      await fn();
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+    return lines;
+  };
+
+  it("a keyed row and the key removed: no send, the skipped shape, one optout_key_missing line", async () => {
+    await clearKeyed();
+    const keyedWorld = await world(WITH_KEY);
+    const person = uniq("kp", "gmail.com");
+    await optOut(keyedWorld.e, await signOptoutToken(keyedWorld.e, person));
+    expect(await keyed(keyedWorld.e, person)).toBe(1);
+    // The key is gone from this invocation.
+    const { share, m } = await world();
+    const stranger = uniq("st", "gmail.com");
+    let out: Awaited<ReturnType<typeof share>> | undefined;
+    const lines = await captured(async () => {
+      out = await share(stranger);
+    });
+    expect(out).toMatchObject({ emailed: false, notEmailed: "skipped" });
+    expect(m.sent.filter((x) => x.to === stranger)).toHaveLength(0);
+    const evts = lines.filter((l) => l.includes("optout_key_"));
+    expect(evts).toEqual([JSON.stringify({ evt: "optout_key_missing" })]);
+    // Nothing about the address, a value or a length.
+    expect(lines.join("\n")).not.toContain(stranger);
+    await clearKeyed();
+  });
+
+  it("a keyed row and a key that is set but unusable: the same, with optout_key_invalid", async () => {
+    await clearKeyed();
+    const keyedWorld = await world(WITH_KEY);
+    await optOut(
+      keyedWorld.e,
+      await signOptoutToken(keyedWorld.e, uniq("kq", "gmail.com")),
+    );
+    const bad = "invalid-key-value-xyz";
+    const { share, m } = await world({ INSTALL_OPTOUT_KEY: bad });
+    const stranger = uniq("sti", "gmail.com");
+    let out: Awaited<ReturnType<typeof share>> | undefined;
+    const lines = await captured(async () => {
+      out = await share(stranger);
+    });
+    expect(out).toMatchObject({ emailed: false, notEmailed: "skipped" });
+    expect(m.sent.filter((x) => x.to === stranger)).toHaveLength(0);
+    expect(lines.filter((l) => l.includes("optout_key_"))).toEqual([
+      JSON.stringify({ evt: "optout_key_invalid" }),
+    ]);
+    expect(lines.join("\n")).not.toContain(bad);
+    expect(lines.join("\n")).not.toContain(stranger);
+    await clearKeyed();
+  });
+
+  it("no keyed rows and no key: sends as today, and legacy rows alone don't trip it", async () => {
+    await clearKeyed();
+    const { share, m } = await world();
+    const to = uniq("ok", "gmail.com");
+    let out: Awaited<ReturnType<typeof share>> | undefined;
+    const lines = await captured(async () => {
+      out = await share(to);
+    });
+    expect(out?.emailed).toBe(true);
+    expect(m.sent.filter((x) => x.to === to)).toHaveLength(1);
+    expect(lines.filter((l) => l.includes("optout_key_"))).toEqual([]);
+    // A legacy row alone is still just that row.
+    const legacyTo = uniq("ol", "gmail.com");
+    await env.DB.prepare(
+      "insert into email_optouts (address_hash, created_at) values (?, ?)",
+    )
+      .bind(await addressHash(legacyTo), Date.now())
+      .run();
+    expect(suppressedShare(await share(legacyTo))).toBe(true);
+    // With the key set, a keyed row never trips it.
+    const k = await world(WITH_KEY);
+    await optOut(k.e, await signOptoutToken(k.e, uniq("kk2", "gmail.com")));
+    expect((await k.share(uniq("fine", "gmail.com"))).emailed).toBe(true);
+    await clearKeyed();
+  });
+
+  it("a person at a login domain (not outside) is unaffected by the missing key", async () => {
+    await clearKeyed();
+    const keyedWorld = await world(WITH_KEY);
+    await optOut(
+      keyedWorld.e,
+      await signOptoutToken(keyedWorld.e, uniq("kr", "gmail.com")),
+    );
+    const { share } = await world();
+    const memberEmail = uniq("inside", "a.com");
+    await login(memberEmail, "member");
+    const r = await share(memberEmail);
+    expect(r.notEmailed).toBeUndefined();
+    await clearKeyed();
+  });
+});
