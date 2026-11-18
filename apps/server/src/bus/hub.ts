@@ -5779,20 +5779,23 @@ export class BusHub extends DurableObject<Env> {
         noteHello(this.env, machineId, this.#now()),
         new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
       ]).catch((e) => logError("bus_update_hello_failed", e));
-      if (!fresh) await this.#refreshRunVersion();
+      // #2719: a failed read leaves the cache stale; push nothing then.
+      if (!fresh && !(await this.#refreshRunVersion())) return;
       if (this.#runVersion !== sent) this.#pushRunVersion(ws);
     } finally {
       this.indexInFlight--;
     }
   }
 
-  async #refreshRunVersion(): Promise<void> {
+  async #refreshRunVersion(): Promise<boolean> {
     try {
       this.#runVersion = await readRunVersion(this.env);
       this.#runVersionAt = this.#now();
+      return true;
     } catch (e) {
       // Keep what we had; a later hello asks again.
       logError("bus_run_version_read_failed", e);
+      return false;
     }
   }
 

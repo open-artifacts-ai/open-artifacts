@@ -15,6 +15,7 @@ import {
   RUN_VERSION_KEY,
   STOPPED_AFTER_MS,
 } from "../../src/bus/updates.js";
+import type { Env } from "../../src/env.js";
 import { setBusRunVersion } from "../../src/services/bus.js";
 import { VERSION } from "../../src/version.gen.js";
 import { api } from "../helpers.js";
@@ -145,6 +146,35 @@ describe("run_version: the instance names it (#2552)", () => {
       } finally {
         await setNamed(null);
       }
+    }
+  });
+
+  it("a failed read of the name pushes nothing, not a stale value (#2719)", async () => {
+    await setNamed("1.5.0");
+    try {
+      const who = await member();
+      const m = await machine("MacBook", who.userId);
+      const stub = await hubOf(who.userId);
+      await runInDurableObject(stub, (i) => {
+        const hub = i as unknown as { env: Env };
+        const broken = {
+          prepare: () => {
+            throw new Error("d1 down");
+          },
+        };
+        Object.defineProperty(hub, "env", {
+          value: { ...hub.env, DB: broken },
+          configurable: true,
+        });
+      });
+      const d = await daemon(m.token);
+      d.send({ ...hello("h0"), caps: CAP } as ClientFrame);
+      const ok = await waitFor(d, "hello_ok");
+      expect(ok.run_version).toBeUndefined();
+      await barrier(d);
+      expect(seen(d, "run_version")).toHaveLength(0);
+    } finally {
+      await setNamed(null);
     }
   });
 
@@ -383,6 +413,20 @@ describe("the bus stopped (#2552)", () => {
     await dueNow(who.userId);
     await runDurableObjectAlarm(await hubOf(who.userId));
     expect((await latestReport(e, m.id))?.stoppedAt).toBeNull();
+  });
+
+  it("a held report after switching replaces the clock: not stopped (#2719)", async () => {
+    const { who, m, d } = await open();
+    d.send(report({ event: "switching", reason: "requested" }));
+    await waitFor(d, "update_ack");
+    d.send(report({ event: "held", reason: "other" }));
+    await barrier(d);
+    await aged(m.id, STOPPED_AFTER_MS + 1000);
+    await dueNow(who.userId);
+    await runDurableObjectAlarm(await hubOf(who.userId));
+    const r = await latestReport(e, m.id);
+    expect(r?.event).toBe("held");
+    expect(r?.stoppedAt).toBeNull();
   });
 
   it("without any switching report the alarm asks D1 nothing about updates", async () => {
