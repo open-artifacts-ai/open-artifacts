@@ -1,9 +1,8 @@
 import type { ArtifactSummary } from "@oa/shared";
 import { FormatIcon } from "@oa/ui";
-import { LibraryWaiting } from "../foryou/waiting";
+import { LibraryAsks } from "../foryou/waiting";
 import { SpaceMarker, VisibilityWithHint } from "../spaces/SpaceMarker";
 import { AppLink } from "./AppLink";
-import { AsksBadge } from "./AsksBadge";
 import { Snippet } from "./Snippet";
 import { relativeTime } from "./time";
 import { META, STRETCH, TITLE_LINK } from "./ui";
@@ -39,8 +38,7 @@ export function ArtifactRow({
       >
         <VisibilityWithHint visibility={a.visibility} space={a.space} />
         {showSpace && <SpaceMarker space={a.space} />}
-        <AsksBadge n={a.asksForYou} />
-        <LibraryWaiting a={a} />
+        <LibraryAsks a={a} />
         {a.lastAgent && <span>{a.lastAgent.name}</span>}
         <time dateTime={a.updatedAt}>{relativeTime(a.updatedAt)}</time>
       </div>

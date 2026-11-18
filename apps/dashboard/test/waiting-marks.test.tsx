@@ -1,7 +1,7 @@
 import type { ArtifactSummary, Comment } from "@oa/shared";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { LibraryWaiting } from "../src/foryou/waiting";
+import { LibraryAsks, LibraryWaiting } from "../src/foryou/waiting";
 import { AskFrom } from "../src/viewer/comments/asks";
 
 const NOW = Date.parse("2026-11-18T12:00:00Z");
@@ -65,6 +65,30 @@ describe("waiting mark on the Library card (#1910)", () => {
       <LibraryWaiting a={card({ count: 1, oldestSince: "nope" })} now={NOW} />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("asks and waiting chips on the Library card (#1910)", () => {
+  const withAsks = (n: number, count: number) =>
+    ({
+      ...card({ count, oldestSince: ago(4 * MIN) }),
+      asksForYou: n,
+    }) as ArtifactSummary;
+  it("is one chip when every ask is waited on", () => {
+    const { container } = render(<LibraryAsks a={withAsks(1, 1)} now={NOW} />);
+    expect(screen.getByText("1 ask for you · 4 min")).toBeInTheDocument();
+    expect(container.querySelector("[data-for-you-wait]")).toBeNull();
+    expect(container.children).toHaveLength(1);
+  });
+  it("keeps both chips when the counts differ", () => {
+    render(<LibraryAsks a={withAsks(3, 1)} now={NOW} />);
+    expect(screen.getByText("3 asks for you")).toBeInTheDocument();
+    expect(screen.getByText(/1 waiting 4 min/)).toBeInTheDocument();
+  });
+  it("is just the asks chip when nothing waits", () => {
+    render(<LibraryAsks a={card()} now={NOW} />);
+    expect(screen.getByText("3 asks for you")).toBeInTheDocument();
+    expect(screen.queryByText(/waiting/)).toBeNull();
   });
 });
 

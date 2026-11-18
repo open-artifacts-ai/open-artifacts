@@ -1,4 +1,5 @@
 import type { ArtifactSummary, Comment } from "@oa/shared";
+import { AsksBadge } from "../library/AsksBadge";
 import { waitText } from "./model";
 
 /** ms since an ISO time, or undefined when absent or unreadable. */
@@ -59,5 +60,31 @@ export function LibraryWaiting({
   const ms = w && w.count > 0 ? sinceMs(w.oldestSince, now) : undefined;
   return ms === undefined || !w ? null : (
     <WaitMark ms={ms} lead={`${w.count} `} />
+  );
+}
+
+/**
+ * The asks and waiting marks on a Library card or row. When every ask for the
+ * viewer is one an agent waits on, one chip: "1 ask for you · 4 min".
+ * Otherwise the asks chip and the waiting mark, side by side.
+ */
+export function LibraryAsks({
+  a,
+  now = Date.now(),
+}: {
+  a: ArtifactSummary;
+  now?: number;
+}) {
+  const w = libraryWaiting(a);
+  const ms = w && w.count > 0 ? sinceMs(w.oldestSince, now) : undefined;
+  if (w && ms !== undefined && a.asksForYou === w.count)
+    return (
+      <AsksBadge n={a.asksForYou} age={waitText(ms).replace(/^waiting /, "")} />
+    );
+  return (
+    <>
+      <AsksBadge n={a.asksForYou} />
+      <LibraryWaiting a={a} now={now} />
+    </>
   );
 }
