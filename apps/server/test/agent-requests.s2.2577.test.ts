@@ -186,7 +186,18 @@ const listAs = async (id: string, v: CommentViewer) =>
   (await listComments(E, id, "all", v)).threads;
 
 // #2577 S2: the switch and the "listens to" list routes, and the gate with the switch off.
-const nameOf = (u: U) => u.member.name ?? u.email;
+/** The held list's form of a nameless member: the email's local part. */
+const localOf = (u: U) => u.email.split("@")[0];
+const nameRow = async (u: U) =>
+  (
+    await E.DB.prepare("select name from users where id = ?1")
+      .bind(u.userId)
+      .first<{ name: string }>()
+  )?.name as string;
+const setName = (u: U, name: string) =>
+  E.DB.prepare("update users set name = ?1 where id = ?2")
+    .bind(name, u.userId)
+    .run();
 afterEach(async () => {
   await api(app, R.agentRequests, owner.cookie, {
     method: "PUT",
@@ -298,7 +309,7 @@ describe("with the switch off", () => {
         post(s.id, typed(editor), editor, "hello", extra),
       ).rejects.toMatchObject({
         code: "forbidden",
-        message: `Only answers ${nameOf(owner)}`,
+        message: "Only answers its owner",
       });
     expect(await held(s.id)).toHaveLength(0);
     expect(toOwnerAgent(s.id)).toHaveLength(0);
@@ -365,6 +376,50 @@ describe("with the switch off", () => {
   });
 });
 
+describe("names in the 403 and the list (#2843)", () => {
+  it("a nameless owner is never named by their email: Only answers its owner; a named one is named", async () => {
+    const s = await setup();
+    await flip(false);
+    const refused = async () => {
+      try {
+        await post(s.id, typed(editor), editor, "hi", mention(s.claude));
+      } catch (e) {
+        return e as { message: string };
+      }
+      throw new Error("not refused");
+    };
+    const original = await nameRow(owner);
+    const nameless = await refused();
+    expect(nameless.message).toBe("Only answers its owner");
+    expect(nameless.message).not.toContain(owner.email);
+    try {
+      await setName(owner, "Olive Owner");
+      expect((await refused()).message).toBe("Only answers Olive Owner");
+      // An address as a name, or a name that reads as an agent, is not shown either.
+      await setName(owner, owner.email);
+      expect((await refused()).message).toBe("Only answers its owner");
+    } finally {
+      await setName(owner, original);
+    }
+  });
+
+  it("the list names a member as the held list does: name, else the email's local part", async () => {
+    const s = await setup();
+    await listEditor(s);
+    const entry = async () =>
+      (await listens()).entries.find((e) => e.artifact?.id === s.id);
+    expect((await entry())?.member.name).toBe(localOf(editor));
+    expect((await entry())?.member.name).not.toContain("@");
+    const original = await nameRow(editor);
+    try {
+      await setName(editor, "Eddie Editor");
+      expect((await entry())?.member.name).toBe("Eddie Editor");
+    } finally {
+      await setName(editor, original);
+    }
+  });
+});
+
 describe("the listens-to list", () => {
   it("lists the member's live entries by name; another member sees none", async () => {
     const s = await setup();
@@ -377,7 +432,7 @@ describe("the listens-to list", () => {
     );
     expect(mine).toHaveLength(1);
     expect(mine[0]).toMatchObject({
-      member: { id: editor.userId, name: nameOf(editor) },
+      member: { id: editor.userId, name: localOf(editor) },
       scope: "page",
       artifact: { id: s.id, title: "doc" },
     });
