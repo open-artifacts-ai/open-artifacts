@@ -476,9 +476,13 @@ describe("Later (#2762)", () => {
       Date.UTC(2026, 10, 19, 7),
     );
     // New York in November is UTC-5, and summer time (UTC-4) is honoured.
+    // At 12:00 UTC it is 07:00 there, so today's 08:00 is still ahead.
     expect(laterUntil("morning", noon, "America/New_York")).toBe(
-      Date.UTC(2026, 10, 19, 13),
+      Date.UTC(2026, 10, 18, 13),
     );
+    expect(
+      laterUntil("morning", Date.UTC(2026, 10, 18, 20), "America/New_York"),
+    ).toBe(Date.UTC(2026, 10, 19, 13));
     expect(
       laterUntil("morning", Date.UTC(2026, 5, 18, 20), "America/New_York"),
     ).toBe(Date.UTC(2026, 5, 19, 12));
