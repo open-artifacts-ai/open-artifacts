@@ -1,5 +1,10 @@
 import { oversizedText, stripTerminalControls } from "@oa/bus-ipc";
-import { type DeliverFrame, frameId, type RefuseFrame } from "@oa/bus-protocol";
+import {
+  type DeliverFrame,
+  frameId,
+  type NoticeMeta,
+  type RefuseFrame,
+} from "@oa/bus-protocol";
 import type { AgentRecord, AgentTable } from "./agents.ts";
 import { Seen } from "./dedupe.ts";
 import type { HubConnection } from "./hub.ts";
@@ -16,6 +21,12 @@ export type Mail = {
    * fetch notice, not text the peer wrote.
    */
   notice?: { size: number; msg_id: string };
+  /**
+   * #2768: a server notice's structured fields (kind, ids, user id, `until`),
+   * schema-checked by the protocol decoder (every string is id- or token-shaped,
+   * no controls). Data for a harness's own slot, never part of `body`.
+   */
+  meta?: NoticeMeta;
 };
 type Detail = RefuseFrame["detail"];
 /**
@@ -197,6 +208,7 @@ export function createDeliver(ctx: {
       ...(frame.body === undefined
         ? { notice: { size: frame.notice?.size ?? 0, msg_id } }
         : {}),
+      ...(frame.meta === undefined ? {} : { meta: frame.meta }),
     }).catch((e: unknown): DeliverOutcome => {
       ctx.log?.(
         `transport threw: ${e instanceof Error ? e.message : String(e)}`,
