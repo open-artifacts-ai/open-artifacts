@@ -68,7 +68,7 @@ function refusal(code: LoginDomainsError, change: LoginChange): ApiError {
     case "vars_refused":
       return new ApiError(
         "bad_request",
-        "The platform can't use those login domains.",
+        "These login domains can't be used. Check each one and try again.",
         {
           reason: code,
         },

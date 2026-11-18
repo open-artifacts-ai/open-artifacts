@@ -304,6 +304,10 @@ describe("refusals", () => {
       const err = await errOf(r);
       expect(err.code).toBe(code);
       if (details !== undefined) expect(err.details).toEqual(details);
+      if (code === "bad_request")
+        expect(err.message).toBe(
+          "These login domains can't be used. Check each one and try again.",
+        );
       // Nothing was marked as applying.
       const after = LoginSettingsSchema.parse(
         await (await get(H, cookie, { LOGIN: g })).json(),
