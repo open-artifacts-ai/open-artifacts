@@ -37,10 +37,15 @@ export const BROKER_PROPS = {
 
 /** The ctx.props key carrying the billing gate (platform BillingGate, #849). */
 export const BILLING_PROPS = "BILLING";
+/** The ctx.props key that says this install may change its own login domains (#2802): the gate alone doesn't (opt-outs ride it too). */
+export const LOGIN_EDITABLE_PROPS = "LOGIN_EDITABLE";
+
 /** The ctx.props key carrying the login gate (platform LoginGate: login-domain changes and the opt-out list, #2652). */
 export const LOGIN_PROPS = "LOGIN";
 
-type Gates = Partial<Record<BrokerName | "billing" | "login", BrokerGate>>;
+type Gates = Partial<Record<BrokerName | "billing" | "login", BrokerGate>> & {
+  loginEditable?: boolean;
+};
 
 const invocation = new AsyncLocalStorage<Gates>();
 
@@ -66,6 +71,9 @@ function gatesOf(ctx: { props?: unknown } | null | undefined): Gates {
   if (isGate(b)) out.billing = b;
   const l = (props as Record<string, unknown>)[LOGIN_PROPS];
   if (isGate(l)) out.login = l;
+  // Only the platform's own `true`: absent, false or anything else is no.
+  if ((props as Record<string, unknown>)[LOGIN_EDITABLE_PROPS] === true)
+    out.loginEditable = true;
   return out;
 }
 
@@ -99,6 +107,10 @@ export const billingGate = (): BrokerGate | null =>
  */
 export const loginGate = (): BrokerGate | null =>
   invocation.getStore()?.login ?? null;
+
+/** Whether this invocation's ctx.props says login changes are allowed (LOGIN_EDITABLE === true). */
+export const loginEditableProp = (): boolean =>
+  invocation.getStore()?.loginEditable === true;
 
 const bindingOf = (env: Env, which: BrokerName): Fetcher | undefined =>
   which === "auth" ? env.BROKER : env.DIRECTORY_BROKER;

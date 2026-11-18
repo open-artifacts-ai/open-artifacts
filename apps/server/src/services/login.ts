@@ -2,7 +2,7 @@
 // login settings (domains, joining rule) with the owner's proof of a domain.
 import { normalizeEmail } from "@oa/auth-core";
 import type { InviteReach, LoginSettings, Role } from "@oa/shared";
-import { loginGate } from "../auth/broker-transport.js";
+import { loginEditableProp, loginGate } from "../auth/broker-transport.js";
 import { authConfig } from "../auth/config.js";
 import type { EffectivePlan } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
@@ -68,12 +68,14 @@ export async function markFirstInviteSeen(
 
 /**
  * Whether the instance may apply a login-settings change itself (#2520): a
- * hosted install whose invocation carries the platform's LOGIN gate. Self-host
- * sets them in setup, and a hosted install without the gate (prod, until the
- * platform binds it) can't apply anything.
+ * hosted install whose invocation carries the platform's LOGIN gate AND its
+ * LOGIN_EDITABLE prop set to true (#2802). The gate alone isn't enough: opt-outs
+ * ride it too, so the platform binds it everywhere. Self-host sets them in
+ * setup; without the gate or the prop nothing can be applied (PUT answers 409
+ * apply_pending without calling the gate, GET says editable: false).
  */
 export const loginEditable = (env: Env): boolean =>
-  env.HOSTED === "1" && loginGate() !== null;
+  env.HOSTED === "1" && loginGate() !== null && loginEditableProp();
 
 /** Hosted Solo (or the pre-Solo free tier): login settings never apply there. */
 export const soloPlan = (plan: EffectivePlan | null | undefined): boolean =>

@@ -116,7 +116,7 @@ describe("with the platform's gate", () => {
     const { cookie } = await owner();
     const { g } = gate([]);
     const on = LoginSettingsSchema.parse(
-      await (await get(H, cookie, { LOGIN: g })).json(),
+      await (await get(H, cookie, { LOGIN: g, LOGIN_EDITABLE: true })).json(),
     );
     expect(on.editable).toBe(true);
     const noGate = LoginSettingsSchema.parse(
@@ -125,10 +125,46 @@ describe("with the platform's gate", () => {
     expect(noGate.editable).toBe(false);
     const selfHost = LoginSettingsSchema.parse(
       await (
-        await get(direct({ HOSTED: undefined }) as Env, cookie, { LOGIN: g })
+        await get(direct({ HOSTED: undefined }) as Env, cookie, {
+          LOGIN: g,
+          LOGIN_EDITABLE: true,
+        })
       ).json(),
     );
     expect(selfHost.editable).toBe(false);
+  });
+
+  it("the gate alone isn't editable: with the prop missing or false GET says editable false, and PUT is 409 apply_pending without calling the gate", async () => {
+    const { cookie } = await owner();
+    for (const props of [
+      undefined,
+      { LOGIN_EDITABLE: false },
+      { LOGIN_EDITABLE: "true" },
+      { LOGIN_EDITABLE: 1 },
+    ]) {
+      const { g, seen } = gate([ACCEPT]);
+      const p = { LOGIN: g, ...props };
+      const got = LoginSettingsSchema.parse(
+        await (await get(H, cookie, p)).json(),
+      );
+      expect(got.editable, JSON.stringify(props)).toBe(false);
+      const r = await put(H, cookie, asks, p);
+      expect(r.status).toBe(409);
+      expect((await errOf(r)).code).toBe("apply_pending");
+      expect(seen).toEqual([]);
+    }
+    // The prop alone, with no gate, is no either.
+    const r = await put(H, cookie, asks, { LOGIN_EDITABLE: true });
+    expect(r.status).toBe(409);
+    // Both: editable, and the change goes through.
+    const { g, seen } = gate([ACCEPT]);
+    const on = { LOGIN: g, LOGIN_EDITABLE: true };
+    expect(
+      LoginSettingsSchema.parse(await (await get(H, cookie, on)).json())
+        .editable,
+    ).toBe(true);
+    expect((await put(H, cookie, asks, on)).status).toBe(200);
+    expect(seen).toHaveLength(1);
   });
 
   it("success: one signed POST of exactly the six fields; the answer says it is applying", async () => {
@@ -138,7 +174,7 @@ describe("with the platform's gate", () => {
       H,
       cookie,
       { autoJoin: true, domains: [" Acme.io ", "acme.io"] },
-      { LOGIN: g },
+      { LOGIN: g, LOGIN_EDITABLE: true },
     );
     expect(r.status).toBe(200);
     const body = LoginSettingsSchema.parse(await r.json());
@@ -174,7 +210,7 @@ describe("with the platform's gate", () => {
       H,
       cookie,
       { autoJoin: false, domains: ["Acme.io"] },
-      { LOGIN: g },
+      { LOGIN: g, LOGIN_EDITABLE: true },
     );
     const rows = (
       await env.DB.prepare(
@@ -202,8 +238,8 @@ describe("with the platform's gate", () => {
   it("each call carries a fresh nonce; the marker clears when the config shows the change", async () => {
     const { cookie } = await owner();
     const { g, seen } = gate([ACCEPT, ACCEPT]);
-    await put(H, cookie, asks, { LOGIN: g });
-    await put(H, cookie, asks, { LOGIN: g });
+    await put(H, cookie, asks, { LOGIN: g, LOGIN_EDITABLE: true });
+    await put(H, cookie, asks, { LOGIN: g, LOGIN_EDITABLE: true });
     const nonces = seen.map(
       (s) => (JSON.parse(s.text) as { nonce: string }).nonce,
     );
@@ -216,7 +252,9 @@ describe("with the platform's gate", () => {
       AUTH_DOMAIN_JOIN_SOURCE: "owner",
     }) as Env;
     const after = LoginSettingsSchema.parse(
-      await (await get(applied, cookie, { LOGIN: g })).json(),
+      await (
+        await get(applied, cookie, { LOGIN: g, LOGIN_EDITABLE: true })
+      ).json(),
     );
     expect(after.applying).toBeUndefined();
     expect(after.domains).toEqual(["acme.io"]);
@@ -299,7 +337,7 @@ describe("refusals", () => {
     async (_n, answer, status, code, details) => {
       const { cookie } = await owner();
       const { g } = gate([answer]);
-      const r = await put(H, cookie, asks, { LOGIN: g });
+      const r = await put(H, cookie, asks, { LOGIN: g, LOGIN_EDITABLE: true });
       expect(r.status).toBe(status);
       const err = await errOf(r);
       expect(err.code).toBe(code);
@@ -310,7 +348,7 @@ describe("refusals", () => {
         );
       // Nothing was marked as applying.
       const after = LoginSettingsSchema.parse(
-        await (await get(H, cookie, { LOGIN: g })).json(),
+        await (await get(H, cookie, { LOGIN: g, LOGIN_EDITABLE: true })).json(),
       );
       expect(after.applying).toBeUndefined();
     },
@@ -329,7 +367,7 @@ describe("refusals", () => {
     ]) {
       const { u, cookie } = await owner();
       const { g } = gate([a]);
-      const r = await put(H, cookie, asks, { LOGIN: g });
+      const r = await put(H, cookie, asks, { LOGIN: g, LOGIN_EDITABLE: true });
       expect(r.status, JSON.stringify(a)).toBe(503);
       const err = await errOf(r);
       expect(err.code).toBe("login_unavailable");
@@ -341,7 +379,7 @@ describe("refusals", () => {
     // A gate that never answers.
     const { u, cookie } = await owner();
     const hang = { fetch: () => new Promise<Response>(() => {}) };
-    const r = await put(H, cookie, asks, { LOGIN: hang });
+    const r = await put(H, cookie, asks, { LOGIN: hang, LOGIN_EDITABLE: true });
     expect(r.status).toBe(503);
     expect((await errOf(r)).message).toBe(UNSURE);
     expect(await auditRows(u.userId)).toBe(0);
@@ -351,7 +389,10 @@ describe("refusals", () => {
     const { u, cookie } = await owner();
     const { g, seen } = gate([ACCEPT]);
     const noKey = direct({ ...HOSTED, BROKER_SIGNING_KEY: undefined }) as Env;
-    const r = await put(noKey, cookie, asks, { LOGIN: g });
+    const r = await put(noKey, cookie, asks, {
+      LOGIN: g,
+      LOGIN_EDITABLE: true,
+    });
     expect(r.status).toBe(503);
     const err = await errOf(r);
     expect(err.code).toBe("login_unavailable");
@@ -374,20 +415,27 @@ describe("refusals", () => {
     const u = await login(uniq("own2", "acme.io"), "owner");
     // No fresh login.
     const stale = await login(uniq("own3", "acme.io"), "owner");
-    expect((await put(H, stale.cookie, asks, { LOGIN: g })).status).toBe(401);
+    expect(
+      (await put(H, stale.cookie, asks, { LOGIN: g, LOGIN_EDITABLE: true }))
+        .status,
+    ).toBe(401);
     // A different domain than the proven one.
     const r = await put(
       H,
       await fresh(u.userId, "acme.io"),
       { autoJoin: false, domains: ["other.io"] },
-      { LOGIN: g },
+      { LOGIN: g, LOGIN_EDITABLE: true },
     );
     expect((await errOf(r)).code).toBe("domain_unproven");
     // A member.
     const m = await login(uniq("mem", "acme.io"), "member");
     expect([403, 404]).toContain(
-      (await put(H, await fresh(m.userId, "acme.io"), asks, { LOGIN: g }))
-        .status,
+      (
+        await put(H, await fresh(m.userId, "acme.io"), asks, {
+          LOGIN: g,
+          LOGIN_EDITABLE: true,
+        })
+      ).status,
     );
     expect(seen).toEqual([]);
   });
