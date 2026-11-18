@@ -142,7 +142,10 @@ it. The hub answers `ok: false` to a `switching` report whose `to` is not the
 version the instance names, read fresh from the setting (not the 30 s cache),
 unless the move is a step back (`to` lower than `from`) or the person asked for
 it on the machine (`reason: "requested"`, `oa-bus update`). A read that fails
-is a no. The daemon, for its part, swaps to a version it staged from the
+is a no. `to`, `from` and `reason` are the daemon's own claims, so the veto
+guards against stale state on an honest daemon, not against a hostile one: the
+proof check and the forward-only rule on the machine are what stop a bad
+version. The daemon, for its part, swaps to a version it staged from the
 instance only while that version is the one last named. A machine with `switching` as its latest report and no `hello` for 5
 minutes is marked stopped.
 
