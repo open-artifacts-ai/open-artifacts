@@ -26,11 +26,33 @@ export type Config = {
 
 export const home = () => busHome();
 /**
- * #2552: only the person's default bus home takes instance-driven updates
- * (the named version or the default): a second home (OA_BUS_HOME set to
- * something else) never does.
+ * #2806: whether `h` is the default home (~/.oa-bus). Only that daemon may
+ * adopt Claude sessions it finds in the machine-wide ~/.claude/sessions; a
+ * second home (--alongside) admits a session only on its own adapter's hello.
+ * #2552: only the default home takes instance-driven updates.
  */
-export const isDefaultHome = (): boolean => home() === busHome({});
+export const isDefaultHome = (h: string = home()): boolean => h === busHome({});
+
+/**
+ * #2806: the bus home a process was started for, from its OA_BUS_HOME:
+ * undefined when it has none (the default home), null when its environment
+ * cannot be read. Linux only (/proc); elsewhere always null. Best effort until
+ * one daemon serves every instance (#2793).
+ */
+export function procBusHome(pid: number): string | null | undefined {
+  if (process.platform !== "linux") return null;
+  let env: string;
+  try {
+    env = readFileSync(`/proc/${pid}/environ`, "utf8");
+  } catch {
+    return null;
+  }
+  const v = env
+    .split("\0")
+    .find((e) => e.startsWith("OA_BUS_HOME="))
+    ?.slice("OA_BUS_HOME=".length);
+  return v ? busHome({ OA_BUS_HOME: v }) : undefined;
+}
 export const socketPath = () => daemonSocketPath(home());
 
 /** Claude's return sockets (`<8 hex>.sock`): under the home, or the short folder when they would not fit. */

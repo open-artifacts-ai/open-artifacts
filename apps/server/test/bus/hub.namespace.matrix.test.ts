@@ -644,7 +644,6 @@ describe("RPC surface", () => {
       "expireLinkProposalsOf",
       "expireRoleProposalsOf",
       "identityOf",
-      // #2552: a fieldless frame to one machine of the member; the named version changed.
       "installNow",
       "listLinks",
       "listReach",
@@ -654,6 +653,7 @@ describe("RPC surface", () => {
       "ownerAwayChanged",
       "pendingProposalSources",
       "ping",
+      "proofMissReason",
       "proposeLink",
       "proposeReach",
       "proposeRole",
@@ -666,7 +666,6 @@ describe("RPC surface", () => {
       "viewLinkProposal",
       "viewReachProposal",
       "viewRoleProposal",
-      // #2512: read-only; returns identity ids and times only.
       "waitingOf",
       "wipe",
       "withdrawHeld",
