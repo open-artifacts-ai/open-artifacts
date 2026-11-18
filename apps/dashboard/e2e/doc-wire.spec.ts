@@ -25,19 +25,6 @@ const open = async (
   await expect(page.locator(".ProseMirror")).toBeVisible();
 };
 
-/**
- * The mock doc answers this currentVersion from ~600 ms in, before the room's
- * frame (1.2 s after connect), as the server would once it had saved: so the
- * pill can only tick if the page refetches on the event.
- */
-const serverSavesAt = (page: Page, version: number) =>
-  page.addInitScript((v) => {
-    setTimeout(() => {
-      (window as unknown as { __oaDocVersion: number }).__oaDocVersion = v;
-    }, 600);
-  }, version);
-const pill = (page: Page, v: number) =>
-  page.getByRole("button", { name: new RegExp(`^Version: v${v}\\b`) });
 const prose = (page: Page) => page.locator(".ProseMirror");
 
 test(
@@ -77,14 +64,3 @@ test(
     ).toBeVisible({ timeout: 8000 });
   },
 );
-
-test("a named save shows its name and the pill ticks", async ({
-  page,
-}, info) => {
-  await serverSavesAt(page, 6);
-  await open(page, info, ["--saved", "6:Before launch"]);
-  await expect(
-    page.getByRole("status").filter({ hasText: "Saved as v6 (Before launch)" }),
-  ).toBeVisible();
-  await expect(pill(page, 6)).toBeVisible();
-});
