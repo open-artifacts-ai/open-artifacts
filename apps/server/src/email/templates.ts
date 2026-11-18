@@ -344,9 +344,12 @@ export function outsideShareEmail(
       pageUrl: linkOn(origin, p.path),
       openLine,
       optOutUrl: optOut,
-      optOutLabel: fill((p.hostedWide ? OPTOUT_COPY_HOSTED : OPTOUT_COPY).link, {
-        org: orgLabel(p.instance, p.appHost),
-      }),
+      optOutLabel: fill(
+        (p.hostedWide ? OPTOUT_COPY_HOSTED : OPTOUT_COPY).link,
+        {
+          org: orgLabel(p.instance, p.appHost),
+        },
+      ),
     },
   );
   // RFC 8058: one-click unsubscribe, the same POST the link's page makes.
