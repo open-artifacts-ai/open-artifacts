@@ -58,7 +58,7 @@ import {
   plainAgentName,
   shownName,
 } from "./agent-display.js";
-import { decide, recordHolds } from "./agent-requests.js";
+import { decide, heldAfterEdit, recordHolds } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { activation } from "./analytics.js";
 import {
@@ -1501,6 +1501,12 @@ async function resolveExtras(
         if (
           (await decide(env, viewerId, e.agent.userId, artifactId)) === "hold"
         ) {
+          // The sender's hourly limit comes first: over it, nothing is held.
+          if (gate && !(await gate.takeSender())) {
+            notice = TOO_MANY_MENTIONS;
+            agents.delete(e.agent.key);
+            continue;
+          }
           held.push({
             agent: heldAgentOf(e.agent),
             way: e.kind === "ask" ? "ask" : "mention",
@@ -1734,9 +1740,11 @@ async function addThreadInner(
       if (await isOutsideMember(env, who.id)) page = null;
       else if ((await decide(env, who.id, page0.userId, a.id)) === "hold") {
         // #2577: held for the page agent's person; the note posts, nothing is sent.
-        const h = { agent: heldAgentOf(page0), way: "page" };
-        r0.held = [...(r0.held ?? []), h];
-        r0.extras = { ...r0.extras, held: [...(r0.extras?.held ?? []), h] };
+        if (await (gateOf(env, who, r0) as MentionGate).takeSender()) {
+          const h = { agent: heldAgentOf(page0), way: "page" };
+          r0.held = [...(r0.held ?? []), h];
+          r0.extras = { ...r0.extras, held: [...(r0.extras?.held ?? []), h] };
+        } else r0.notice = TOO_MANY_MENTIONS;
       } else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
         page = page0;
       else r0.notice = TOO_MANY_MENTIONS;
@@ -1937,6 +1945,7 @@ async function threadReply(
     const users = new Map<string, boolean>();
     // #2559: a comment not typed by a person wakes only its author's own agents.
     const typed = isTyped(c.author);
+    let senderGate: MentionGate | undefined;
     let outside: boolean | undefined;
     for (const p of due) {
       if (p.owner !== c.author.ref) {
@@ -1946,6 +1955,12 @@ async function threadReply(
         if (outside) continue;
         // #2577: not on the person's list: held for them, no notice.
         if ((await decide(env, c.author.ref, p.owner, a.id)) === "hold") {
+          // The sender's hourly limit comes first: over it, nothing is held.
+          senderGate ??= r.gate ?? new MentionGate(env, c.author.ref);
+          if (!(await senderGate.takeSender())) {
+            limited?.();
+            continue;
+          }
           heldNow.push({
             agent: {
               key: p.key,
@@ -2906,6 +2921,7 @@ export async function editComment(
       rate: rateKeyOf(who),
     }),
   );
+  await heldAfterEdit(env, artifactId, commentId);
   return commentView(env, c, viewer);
 }
 

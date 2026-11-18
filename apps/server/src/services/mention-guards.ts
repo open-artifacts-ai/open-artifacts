@@ -83,6 +83,26 @@ export class MentionGate {
     private now = Date.now(),
   ) {}
 
+  /**
+   * #2577: the sender's slot alone, for a request that is held (nothing is
+   * woken, so no receiver slot). Once per comment, like take(). False: the
+   * sender is over their hourly limit, so nothing is held either.
+   */
+  async takeSender(): Promise<boolean> {
+    if (this.blocked) return false;
+    if (this.sent) return true;
+    const hour = new Date(this.now).toISOString().slice(0, 13);
+    const from: Cap = [
+      `notice:mention:from:${this.senderId}`,
+      MENTIONS_PER_SENDER_PER_HOUR,
+      hour,
+    ];
+    const full = await takeAll(this.env, [from]);
+    if (full === -1) this.sent = true;
+    else this.blocked = true;
+    return full === -1;
+  }
+
   async take(receiverId: string): Promise<boolean> {
     if (this.blocked) return false;
     const hour = new Date(this.now).toISOString().slice(0, 13);

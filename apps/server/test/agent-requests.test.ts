@@ -9,11 +9,13 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { callerOf } from "../src/auth/authz.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import {
   allow,
   allowChallenge,
   decide,
+  HELD_PER_PAIR_MAX,
   listHeld,
   notNow,
 } from "../src/services/agent-requests.js";
@@ -24,6 +26,7 @@ import {
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
 import {
+  addReply,
   addThread,
   artifactAgents,
   type CommentViewer,
@@ -106,12 +109,18 @@ const NOTE = { kind: "note" } as const;
 const art = (id: string) =>
   ({ id, format: "html", currentVersion: 1 }) as never;
 
-async function setup(extra: Record<string, unknown> = {}) {
+/** The owner's agent as a publisher: its versions carry an agent name. */
+const OWNER_AGENT = { name: "Claude", version: null };
+
+async function setup(
+  extra: Record<string, unknown> = {},
+  publisher: { name: string; version: string | null } | null = null,
+) {
   const a = await publish(
     E,
     owner.member,
     { title: "doc", format: "html", content: "<p>x</p>", ...extra } as never,
-    null,
+    publisher,
     undefined,
     "create",
   );
@@ -277,6 +286,81 @@ describe("allow", () => {
     const again = (await held(s.id))[0]?.items[0];
     expect(again?.body).toBe("after, with new words");
     expect(again?.wordsHash).not.toBe(shown[0]?.wordsHash);
+  });
+
+  it("an edit after an allow sends the request back to held: masked again, allowed only on the new words (#2577)", async () => {
+    const s = await setup();
+    const t = await post(
+      s.id,
+      typed(editor),
+      editor,
+      "first words",
+      mention(s.claude),
+    );
+    const commentId = t.comments[0]?.id as string;
+    const [r] = await held(s.id);
+    const items = (rr: typeof r) =>
+      (rr?.items ?? []).map((i) => ({
+        commentId: i.commentId,
+        wordsHash: i.wordsHash,
+      }));
+    await allow(E, owner.userId, r?.id as string, {
+      level: "once",
+      items: items(r),
+    });
+    expect(toOwnerAgent(s.id)).toHaveLength(1);
+    expect((await listAs(s.id, asAgent(owner)))[0]?.comments[0]?.body).toBe(
+      "first words",
+    );
+    // The same words again change nothing.
+    await editComment(
+      E,
+      s.id,
+      t.id,
+      commentId,
+      typed(editor),
+      view(editor),
+      "first words",
+    );
+    expect(await held(s.id)).toHaveLength(0);
+    // New words: held again, masked, and the first allow is spent.
+    await editComment(
+      E,
+      s.id,
+      t.id,
+      commentId,
+      typed(editor),
+      view(editor),
+      "second, different words",
+    );
+    const [again] = await held(s.id);
+    expect(again?.items[0]?.body).toBe("second, different words");
+    expect(
+      JSON.stringify((await listAs(s.id, asAgent(owner)))[0]?.comments[0]),
+    ).not.toContain("second");
+    expect(
+      await allow(E, owner.userId, again?.id as string, {
+        level: "once",
+        items: items(r),
+      }),
+    ).toEqual({ sent: 0, changed: 1, waiting: 0 });
+    expect(toOwnerAgent(s.id)).toHaveLength(1);
+    // Allowed at the words shown now: delivered once more.
+    expect(
+      await allow(E, owner.userId, again?.id as string, {
+        level: "once",
+        items: items(again),
+      }),
+    ).toEqual({ sent: 1, changed: 0, waiting: 0 });
+    expect(toOwnerAgent(s.id)).toHaveLength(2);
+    // Allowing a request that is already allowed delivers nothing twice.
+    expect(
+      await allow(E, owner.userId, again?.id as string, {
+        level: "once",
+        items: items(again),
+      }),
+    ).toMatchObject({ sent: 0 });
+    expect(toOwnerAgent(s.id)).toHaveLength(2);
   });
 
   it("a hash that is not the one shown, or someone else's request, passes nothing", async () => {
@@ -453,7 +537,7 @@ describe("all pages in a space", () => {
   it("a page in the space delivers, a page moved out holds, and a page in another space holds", async () => {
     const launch = await space("Launch");
     const other = await space("Other");
-    const s = await setup();
+    const s = await setup({}, OWNER_AGENT);
     // Every page is in some space: "moved out" is back to the owner's personal one.
     const home = (
       await E.DB.prepare("select space_id as s from artifacts where id = ?")
@@ -482,8 +566,76 @@ describe("all pages in a space", () => {
     expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
   });
 
+  it("covers only pages where the owner's own agent published: not one the sender made, not one where it was only mentioned (#2577)", async () => {
+    const launch = await space("Launch");
+    await listen(launch);
+    const agentMade = await setup({}, OWNER_AGENT);
+    const bySender = await setup(); // the owner's page, no agent publish
+    // A page the sender created in the space: the owner's agent never published it.
+    const mine = await publish(
+      E,
+      editor.member,
+      { title: "theirs", format: "html", content: "<p>y</p>" } as never,
+      { name: "Codex", version: null },
+      undefined,
+      "create",
+    );
+    await putShare(E, editor.member, mine.id, {
+      email: owner.email,
+      role: "editor",
+    });
+    for (const id of [agentMade.id, bySender.id, mine.id])
+      await move(id, launch);
+    expect(await decide(E, editor.userId, owner.userId, agentMade.id)).toBe(
+      "deliver",
+    );
+    expect(await decide(E, editor.userId, owner.userId, bySender.id)).toBe(
+      "hold",
+    );
+    expect(await decide(E, editor.userId, owner.userId, mine.id)).toBe("hold");
+    // The owner's agent was only mentioned on the sender's page: still held.
+    await follow(
+      E,
+      owner.userId,
+      { namespace: "ns-o", name: "Claude" },
+      mine.id,
+    );
+    expect(await decide(E, editor.userId, owner.userId, mine.id)).toBe("hold");
+    // A personal space is never offered.
+    await E.DB.prepare("update spaces set kind = 'personal' where id = ?")
+      .bind(launch)
+      .run();
+    expect(await decide(E, editor.userId, owner.userId, agentMade.id)).toBe(
+      "hold",
+    );
+    await E.DB.prepare("update spaces set kind = 'shared' where id = ?")
+      .bind(launch)
+      .run();
+  });
+
+  it("the confirm step counts the pages a space allow covers today", async () => {
+    const launch = await space("Launch");
+    const a = await setup({}, OWNER_AGENT);
+    const b = await setup({}, OWNER_AGENT);
+    const c = await setup(); // no agent publish: not counted
+    for (const x of [a, b, c]) await move(x.id, launch);
+    await post(c.id, typed(editor), editor, "x", mention(c.claude));
+    const [r] = await held(c.id);
+    expect(r?.space?.pagesCovered).toBe(
+      (
+        await E.DB.prepare(
+          `select count(*) as n from artifacts a where a.space_id = ? and a.deleted_at is null
+             and exists (select 1 from versions v where v.artifact_id = a.id and v.created_by = ? and v.agent_name is not null)`,
+        )
+          .bind(launch, owner.userId)
+          .first<{ n: number }>()
+      )?.n,
+    );
+    expect(r?.space?.pagesCovered).toBe(2);
+  });
+
   it("the allow needs a page in a shared space, an end date and a passkey", async () => {
-    const s = await setup();
+    const s = await setup({}, OWNER_AGENT);
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
     const [r] = await held(s.id);
     const items = (r?.items ?? []).map((i) => ({
@@ -501,6 +653,7 @@ describe("all pages in a space", () => {
     expect((await held(s.id))[0]?.space).toEqual({
       id: launch,
       name: "Launch",
+      pagesCovered: 1,
     });
     await expect(
       allow(E, owner.userId, r?.id as string, { level: "space", items, until }),
@@ -512,6 +665,199 @@ describe("all pages in a space", () => {
         until: Date.now() + 400 * 86_400_000,
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
+  });
+});
+
+describe("held on every path, and read nowhere (#2577)", () => {
+  const LINKED = {
+    name: "Claude",
+    version: null,
+    identity: {
+      identityId: "id-pub-ar-1",
+      namespace: "ns-o",
+      name: "Claude",
+      kind: "claude-code",
+    },
+  };
+
+  it("a plain note to the page agent stores the held target and is masked for it", async () => {
+    const s = await setup({}, LINKED as never);
+    await post(s.id, typed(editor), editor, "note for the page agent");
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
+    const [r] = await held(s.id);
+    expect(r?.items[0]?.way).toBe("page");
+    expect(
+      JSON.stringify((await listAs(s.id, asAgent(owner)))[0]?.comments[0]),
+    ).not.toContain("note for the page agent");
+    expect((await listAs(s.id, view(owner)))[0]?.comments[0]?.body).toBe(
+      "note for the page agent",
+    );
+  });
+
+  it("a reply that would wake the receiver's thread agent is held and masked", async () => {
+    const s = await setup();
+    const t = await post(
+      s.id,
+      typed(owner),
+      owner,
+      "ask Claude",
+      mention(s.claude),
+    );
+    bus.sent = [];
+    const reply = await addReply(
+      E,
+      s.id,
+      t.id,
+      typed(editor),
+      view(editor),
+      "reply secret",
+      {},
+      { moderator: true },
+    );
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
+    expect((await held(s.id))[0]?.items[0]?.way).toBe("reply");
+    const seen = (await listAs(s.id, asAgent(owner)))[0]?.comments.find(
+      (c) => c.id === reply.id,
+    );
+    expect(JSON.stringify(seen)).not.toContain("reply secret");
+  });
+
+  it("the REST list masks for a token of the receiver, and shows the words to the person's session", async () => {
+    const s = await setup();
+    await post(s.id, typed(editor), editor, "rest secret", mention(s.claude));
+    const pat = (await createPat(E, owner.userId, "owner token")).token;
+    const viaToken = await (await api(app, R.comments(s.id), pat)).text();
+    expect(viaToken).not.toContain("rest secret");
+    expect(viaToken).toContain("is waiting for your person");
+    const viaSession = await (
+      await api(app, R.comments(s.id), owner.cookie)
+    ).text();
+    expect(viaSession).toContain("rest secret");
+  });
+
+  it("an ask held for the receiver is masked in its question and options, and out of the asks index until allowed", async () => {
+    const s = await setup();
+    const t = await addThread(
+      E,
+      art(s.id),
+      typed(editor),
+      view(editor),
+      {
+        anchor: NOTE,
+        body: "ask secret",
+        ask: {
+          question: "secret question?",
+          options: [
+            { id: "a", label: "secret yes" },
+            { id: "b", label: "secret no" },
+          ],
+          to: [{ key: s.claude }],
+        },
+      },
+      { moderator: true },
+    );
+    const seen = JSON.stringify(
+      (await listAs(s.id, asAgent(owner)))[0]?.comments[0],
+    );
+    for (const w of [
+      "ask secret",
+      "secret question",
+      "secret yes",
+      "secret no",
+    ])
+      expect(seen).not.toContain(w);
+    const rows = await E.DB.prepare(
+      "select open, held, question, asker from artifact_asks where addressee = ? and artifact_id = ? and comment_id = ?",
+    )
+      .bind(owner.userId, s.id, t.comments[0]?.id)
+      .first<{
+        open: number;
+        held: number;
+        question: string | null;
+        asker: string | null;
+      }>();
+    expect(rows).toMatchObject({
+      open: 0,
+      held: 1,
+      question: null,
+      asker: null,
+    });
+    const me = callerOf(owner.member) as Parameters<typeof inboxOf>[1];
+    expect(
+      (await inboxOf(E, me)).needsYou.filter(
+        (i) => i.kind === "ask" && i.artifact?.id === s.id,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("over the hold caps nothing is written to D1, but the comment is still masked and undelivered", async () => {
+    const s = await setup();
+    // Fill the sender's allowance with this receiver (other requests, same pair).
+    const other = await setup();
+    await post(other.id, typed(editor), editor, "x", mention(other.claude));
+    const [req] = await held(other.id);
+    for (let i = 0; i < HELD_PER_PAIR_MAX; i++)
+      await E.DB.prepare(
+        `insert into held_request_items (id, request_id, thread_id, comment_id, agent_key, way, state, created_at, expires_at)
+         values (?, ?, ?, ?, ?, 'mention', 'held', ?, ?)`,
+      )
+        .bind(
+          newId(),
+          req?.id,
+          "t",
+          `c-fill-${tag}-${i}`,
+          `k${i}`,
+          Date.now(),
+          Date.now() + 86_400_000,
+        )
+        .run();
+    await post(s.id, typed(editor), editor, "capped secret", mention(s.claude));
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
+    expect(await held(s.id)).toHaveLength(0); // no D1 row
+    expect(
+      JSON.stringify((await listAs(s.id, asAgent(owner)))[0]?.comments[0]),
+    ).not.toContain("capped secret");
+    expect((await listAs(s.id, view(editor)))[0]?.comments[0]?.body).toBe(
+      "capped secret",
+    );
+  });
+});
+
+describe("the sender's hourly limit comes before the hold (#2577)", () => {
+  it("a sender over their limit creates no hold: the comment posts, nothing is held, nothing is woken", async () => {
+    const s = await setup();
+    const hour = new Date().toISOString().slice(0, 13);
+    await E.DB.prepare(
+      "insert or replace into counters (key, day, n) values (?, ?, ?)",
+    )
+      .bind(`notice:mention:from:${editor.userId}`, hour, 10)
+      .run();
+    const t = await post(
+      s.id,
+      typed(editor),
+      editor,
+      "over the limit",
+      mention(s.claude),
+    );
+    expect(t.comments[0]?.body).toBe("over the limit");
+    expect(await held(s.id)).toHaveLength(0);
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
+    // The words are not hidden by a hold that does not exist.
+    expect((await listAs(s.id, asAgent(owner)))[0]?.comments[0]?.body).toBe(
+      "over the limit",
+    );
+    // Under the limit it holds again (and takes the sender's slot once).
+    await E.DB.prepare("delete from counters where key = ?")
+      .bind(`notice:mention:from:${editor.userId}`)
+      .run();
+    await post(
+      s.id,
+      typed(editor),
+      editor,
+      "under the limit",
+      mention(s.claude),
+    );
+    expect(await held(s.id)).toHaveLength(1);
   });
 });
 

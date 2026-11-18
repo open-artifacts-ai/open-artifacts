@@ -835,7 +835,7 @@ export function releaseHeld(
   return true;
 }
 
-/** The notices went out: the held rows of these keys are gone. */
+/** The notices went out: these keys are allowed. The row stays, so an edit of the words can send it back to held. */
 export function finishHeld(
   sql: SqlStorage,
   commentId: string,
@@ -843,7 +843,7 @@ export function finishHeld(
 ): void {
   for (const k of keys)
     sql.exec(
-      "delete from comment_targets where comment_id = ? and kind = 'held' and key = ?",
+      "update comment_targets set state = 'allowed' where comment_id = ? and kind = 'held' and key = ?",
       commentId,
       k,
     );

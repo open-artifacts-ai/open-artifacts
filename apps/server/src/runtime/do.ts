@@ -2824,6 +2824,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
           a.commentId,
         );
       }
+      // #2577: an edit after an allow is new words, not what was allowed: the
+      // request goes back to held (masked, and delivered only on a new allow).
+      const before = this.sql
+        .exec<{ body: string }>(
+          "select body from comments where id = ?",
+          a.commentId,
+        )
+        .toArray()[0]?.body;
+      if (before !== a.body.trim())
+        this.sql.exec(
+          "update comment_targets set state = 'held' where comment_id = ? and kind = 'held' and state = 'allowed'",
+          a.commentId,
+        );
       this.sql.exec(
         "update comments set body = ?, edited_at = ? where id = ?",
         a.body.trim(),

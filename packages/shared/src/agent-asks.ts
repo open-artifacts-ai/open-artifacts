@@ -52,7 +52,14 @@ export const HeldRequestSchema = z.strictObject({
   /** The page is open to guests or to anyone with the link: the list never applies there. */
   open: z.boolean(),
   /** The shared space the page is in now, if any: "Allow in the space" shows only then. */
-  space: z.strictObject({ id: z.string(), name: z.string() }).nullable(),
+  space: z
+    .strictObject({
+      id: z.string(),
+      name: z.string(),
+      /** How many pages a space-level allow covers today: in the space, open to no guest, and published through the person's own agent by them. */
+      pagesCovered: z.number(),
+    })
+    .nullable(),
 });
 export type HeldRequest = z.infer<typeof HeldRequestSchema>;
 

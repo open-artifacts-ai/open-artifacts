@@ -72,6 +72,39 @@ export async function spaceOf(
     .first<{ id: string; name: string }>();
 }
 
+/** The page's shared space and how many of its pages a space-level allow by `receiverId` covers today. */
+export async function spaceWithCover(
+  env: Env,
+  receiverId: string,
+  artifactId: string,
+): Promise<{ id: string; name: string; pagesCovered: number } | null> {
+  const sp = await spaceOf(env, artifactId);
+  if (!sp) return null;
+  const n = await stmt(
+    env.DB,
+    `select count(*) as n from artifacts a
+      where a.space_id = ?1 and a.deleted_at is null and a.visibility != 'public'
+        and not exists (select 1 from shares s join users u on lower(u.email) = lower(s.email)
+                         where s.artifact_id = a.id and u.role = 'guest')
+        and exists (select 1 from versions v where v.artifact_id = a.id and v.created_by = ?2
+                    and (v.agent_name is not null or v.agent_via is not null))`,
+  )
+    .bind(sp.id, receiverId)
+    .first<{ n: number }>();
+  return { ...sp, pagesCovered: n?.n ?? 0 };
+}
+
+/**
+ * #2577: a space-level entry covers a page only where the receiver's own agent
+ * already works by the receiver's doing: the page is in that shared space now,
+ * and the receiver published a version of it through an agent. A page the
+ * sender created or moved in, or where the agent was only mentioned, is not
+ * covered. Needs ?1 (the receiver) and ?4 (the page); `space_id` is the entry's.
+ */
+const SPACE_COVERS = `exists (select 1 from spaces sp where sp.id = space_id and sp.kind = 'shared' and sp.deleted_at is null)
+  and exists (select 1 from versions v where v.artifact_id = ?4 and v.created_by = ?1
+              and (v.agent_name is not null or v.agent_via is not null))`;
+
 /**
  * Whether the receiver's list takes the sender's request here, right now. The
  * row is never trusted alone: the entry must be live, the member still on the
@@ -90,7 +123,9 @@ export async function listensTo(
     `select id from agent_listens where owner_id = ?1 and member_id = ?2 and removed_at is null
        and until > ?3 and (scope = 'all' or artifact_id = ?4
          or (scope = 'space' and space_id is not null
-             and space_id = (select space_id from artifacts where id = ?4))) limit 1`,
+             and space_id = (select space_id from artifacts where id = ?4)
+             and ${SPACE_COVERS}
+         )) limit 1`,
   )
     .bind(receiverId, senderId, now, artifactId)
     .first();
@@ -112,6 +147,59 @@ export async function decide(
   return (await listensTo(env, receiverId, senderId, artifactId))
     ? "deliver"
     : "hold";
+}
+
+/**
+ * After an edit of a comment's words: a request already allowed on it goes
+ * back to held (the DO target did so in the edit's own transaction), so its
+ * person reads the new words and allows them again. Held ones need nothing
+ * here: the words and their hash are read from the DO each time. Never throws.
+ */
+export async function heldAfterEdit(
+  env: Env,
+  artifactId: string,
+  commentId: string,
+  now = Date.now(),
+): Promise<void> {
+  try {
+    const { results } = await stmt(
+      env.DB,
+      `select i.id as id, i.thread_id as thread_id, i.agent_key as agent_key, r.id as request_id, r.receiver_id as receiver_id
+         from held_request_items i join held_requests r on r.id = i.request_id
+        where i.comment_id = ?1 and i.state = 'allowed'`,
+    )
+      .bind(commentId)
+      .all<{
+        id: string;
+        thread_id: string;
+        agent_key: string;
+        request_id: string;
+        receiver_id: string;
+      }>();
+    for (const it of results) {
+      const info = await call(() =>
+        stub(env, artifactId).commentsHeldCanon({
+          threadId: it.thread_id,
+          commentId,
+          owner: it.receiver_id,
+        }),
+      );
+      if (!info?.held.some((h) => h.key === it.agent_key && h.state === "held"))
+        continue;
+      await env.DB.batch([
+        stmt(
+          env.DB,
+          "update held_request_items set state = 'held', expires_at = ?1 where id = ?2 and state = 'allowed'",
+        ).bind(now + HELD_LAPSE_MS, it.id),
+        stmt(
+          env.DB,
+          "update held_requests set last_at = ?1 where id = ?2",
+        ).bind(now, it.request_id),
+      ]);
+    }
+  } catch (e) {
+    logWarn("held_after_edit_failed", e, { artifactId });
+  }
 }
 
 /** The D1 side of a hold: one request row per (receiver, sender, page) and an item per held agent. Never throws. */
@@ -326,7 +414,7 @@ export async function listHeld(
       lastAt: r.last_at,
       quietUntil: r.quiet_until,
       open: await pageIsOpen(env, r.artifact_id),
-      space: await spaceOf(env, r.artifact_id),
+      space: await spaceWithCover(env, receiverId, r.artifact_id),
     });
   }
   return { requests: out };
@@ -485,7 +573,11 @@ export async function allow(
         owner: receiverId,
       }),
     ).catch(() => null);
-    if (!info || info.held.length === 0) {
+    // Rows already allowed are done (an edit sends them back to held).
+    const live = info?.held.filter(
+      (h) => h.state === "held" || h.state === "releasing",
+    );
+    if (!info || !live || live.length === 0) {
       result.changed++;
       await stmt(
         env.DB,
@@ -496,7 +588,7 @@ export async function allow(
       continue;
     }
     // Resumable: targets a crashed allow left "releasing" are delivered again.
-    const resuming = info.held.some((h) => h.state === "releasing");
+    const resuming = live.some((h) => h.state === "releasing");
     if (
       !resuming &&
       (await sha256Hex(info.canon)) !== wanted.get(row.comment_id)
