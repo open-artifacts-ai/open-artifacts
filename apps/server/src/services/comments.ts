@@ -69,6 +69,7 @@ import {
   addressees,
   askInfo,
   askRows,
+  holdsRow,
   indexAnswered,
   indexAsk,
   indexDeleted,
@@ -684,7 +685,9 @@ async function withWaiting(
       !a.answer &&
       !a.withdrawn &&
       !a.closed &&
-      views[i]?.ask?.role !== undefined &&
+      // Only the person it is put to (or the decider it names): the people
+      // who hold a row in the asks index, as the inbox lists.
+      holdsRow(c, me) &&
       ownAgentId(c.author, me) !== undefined
     )
       open.push(i);

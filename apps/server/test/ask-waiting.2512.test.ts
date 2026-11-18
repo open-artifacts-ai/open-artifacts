@@ -170,9 +170,9 @@ describe("the page's ask card", () => {
     await waitingAgent(me, "idn-blocked-4", Date.now() - 3_600_000);
     await ask(id2, agentOf(me, "idn-blocked-4"), other, "to other");
     expect((await askOf(other, id2))?.waitingSince).toBeUndefined();
-    // The asker's own user decides an ask by default, so it is theirs too: the
-    // inbox lists it, and so it is waiting on them as well.
-    expect((await askOf(me, id2))?.waitingSince).toBeDefined();
+    // The mark is for the person it is put to: not the asker's own user, who
+    // holds no row for it in the inbox, though their agent is blocked.
+    expect((await askOf(me, id2))?.waitingSince).toBeUndefined();
     // A person's own ask to me.
     const id3 = await page([me]);
     await ask(id3, personOf(owner), me);
