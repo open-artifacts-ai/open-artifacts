@@ -316,9 +316,11 @@ const robots = (e: unknown) => callWorker(new Request(`${APP}/robots.txt`), e);
  * cron.ts's day mark included (O1). 19 before #2650; the email-event sweep
  * (sweepEmailEvents) adds 3: its deletes of expired share_email_pauses, of old
  * share_email_messages and of old share_email_events_seen (one D1 batch,
- * counted per statement).
+ * counted per statement). The comment-picture sweep (sweepPictures, #2508)
+ * adds 1: its select of unattached pictures past the TTL (nothing to delete
+ * here, so no second statement).
  */
-const NIGHTLY_QUERIES = 22;
+const NIGHTLY_QUERIES = 23;
 
 /** Another isolate: its own marker check (keyed by the DB binding). */
 const isolate = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>
