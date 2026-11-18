@@ -791,6 +791,7 @@ function Viewer({
               gone={gone !== null}
               comments={commentsButton}
               asks={asksButton}
+              titleInDoc={isDoc && !!shown}
             />
             <SignupNudge
               authed={authed}

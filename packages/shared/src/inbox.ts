@@ -110,8 +110,25 @@ export const InboxReadBodySchema = z.object({
 });
 export type InboxReadBody = z.infer<typeof InboxReadBodySchema>;
 
+/** An IANA zone name the runtime knows ("Europe/Paris"). */
+const validZone = (z: string): boolean => {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: z });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const InboxLaterBodySchema = z.object({
   until: z.enum(["hour", "morning"]),
+  /** The person's zone (the browser's): "morning" is 08:00 there. Absent: the saved zone, then UTC. */
+  timeZone: z
+    .string()
+    .min(1)
+    .max(64)
+    .refine(validZone, "Unknown time zone")
+    .optional(),
 });
 export type InboxLaterBody = z.infer<typeof InboxLaterBodySchema>;
 

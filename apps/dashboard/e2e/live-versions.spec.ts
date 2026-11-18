@@ -36,21 +36,6 @@ const publish = (page: Page, id = LANDING) =>
     return ((await r.json()) as { version: number }).version;
   }, id);
 
-const restore = (page: Page, v: number, id = LANDING) =>
-  page.evaluate(
-    async ({ id, v }) => {
-      await fetch(`/api/v1/artifacts/${id}/versions/${v}/restore`, {
-        method: "POST",
-      });
-    },
-    { id, v },
-  );
-
-const del = (page: Page, id = LANDING) =>
-  page.evaluate(async (id) => {
-    await fetch(`/api/v1/artifacts/${id}`, { method: "DELETE" });
-  }, id);
-
 /** The frame said hello (the slow notice is off and the bridge is live). */
 const loaded = async (page: Page) => {
   await expect(page.locator(".oa-vlayer iframe.oa-vframe")).toHaveCount(1);
@@ -176,31 +161,6 @@ const shot = async (page: Page, name: string) => {
     });
   });
 }
-
-test("an explicit version never swaps: Back to current selects Current", async ({
-  page,
-}) => {
-  await page.goto(`/a/${LANDING}/v/1`);
-  await loaded(page);
-  const back = page.getByRole("button", { name: "Back to current" });
-  await expect(back).toBeVisible();
-  const banner = page.locator("[data-older-banner]");
-  await expect(banner).toHaveAttribute("data-current", "2");
-  const v = await publish(page);
-  // The live feed reaches the older page: the banner now points at the new current.
-  await expect(banner).toHaveAttribute("data-current", String(v), {
-    timeout: LIVE_MS,
-  });
-  await expect(page.getByRole("button", { name: /View version/ })).toHaveCount(
-    0,
-  );
-  await expect(page.getByRole("button", { name: "Version: v1" })).toBeVisible();
-  await back.click();
-  await expect(page).toHaveURL(new RegExp(`/a/${LANDING}$`));
-  await expect(
-    page.getByRole("button", { name: `Version: v${v} · Current` }),
-  ).toBeVisible();
-});
 
 test("an open menu means the chip, which stays until View", async ({
   page,

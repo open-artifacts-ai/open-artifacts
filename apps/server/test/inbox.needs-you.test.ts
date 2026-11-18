@@ -15,6 +15,11 @@ import {
   setStatus,
 } from "../src/services/comments.js";
 import { needsYou } from "../src/services/inbox.js";
+import {
+  laterUntil,
+  laterWhen,
+  sweepInboxLater,
+} from "../src/services/inbox-later.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { hubOf } from "./bus/helpers.js";
@@ -235,7 +240,8 @@ describe("GET R.meInbox: Needs you", () => {
       { id: "n", label: "No" },
     ]);
     await at("plain newer", OPTS);
-    await waitingAgent(u, "idn-wait", Date.parse("2026-11-14T08:00:00Z"));
+    // Waiting for six days, on an ask posted just now (#2761).
+    await waitingAgent(u, "idn-wait", Date.now() - 6 * 86_400_000);
     await at("go?", OPTS, {
       kind: "user",
       id: u.userId,
@@ -263,11 +269,102 @@ describe("GET R.meInbox: Needs you", () => {
       "plain old",
       "plain newer",
     ]);
-    expect(items[0]).toMatchObject({
-      waitingSince: "2026-11-14T08:00:00.000Z",
-      agentKey: "idn-wait",
-    });
+    // The wait can't predate the ask: waitingSince is when it was asked.
+    expect(items[0]).toMatchObject({ agentKey: "idn-wait" });
+    expect(items[0]?.waitingSince).toBe(items[0]?.createdAt);
+    expect(
+      Date.now() - Date.parse(items[0]?.waitingSince as string),
+    ).toBeLessThan(60_000);
     expect(items[0]?.actor?.kind).toBe("agent");
+  });
+
+  it("a wait that began after the ask keeps its own time", async () => {
+    const u = await mk("i-later");
+    const own = await publish(
+      E,
+      u.member,
+      { title: "later", format: "html", content: "<p>x</p>" } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await addThread(
+      E,
+      { id: own.id, format: "html", currentVersion: 1 } as never,
+      {
+        kind: "user",
+        id: u.userId,
+        agent: {
+          name: "Claude",
+          identity: {
+            identityId: "idn-later",
+            name: "Scout",
+            kind: "claude-code",
+          },
+        },
+      } as never,
+      view(u),
+      {
+        anchor: { kind: "note" },
+        body: "go?",
+        ask: { question: "go?", options: OPTS, to: [{ key: u.userId }] },
+      },
+      { moderator: true },
+    );
+    const began = Date.now() + 5 * 60_000;
+    await waitingAgent(u, "idn-later", began);
+    const [item] = (await inbox(u)).needsYou.filter(
+      (i) => i.artifact?.id === own.id,
+    );
+    expect(item?.urgency).toBe("waiting");
+    expect(item?.waitingSince).toBe(new Date(began).toISOString());
+  });
+
+  it("a bad askedAt keeps the hub's wait start and does not take the inbox down", async () => {
+    const u = await mk("i-badat");
+    const own = await publish(
+      E,
+      u.member,
+      { title: "badat", format: "html", content: "<p>x</p>" } as never,
+      null,
+      undefined,
+      "create",
+    );
+    const t = await addThread(
+      E,
+      { id: own.id, format: "html", currentVersion: 1 } as never,
+      {
+        kind: "user",
+        id: u.userId,
+        agent: {
+          name: "Claude",
+          identity: {
+            identityId: "idn-badat",
+            name: "Scout",
+            kind: "claude-code",
+          },
+        },
+      } as never,
+      view(u),
+      {
+        anchor: { kind: "note" },
+        body: "go?",
+        ask: { question: "go?", options: OPTS, to: [{ key: u.userId }] },
+      },
+      { moderator: true },
+    );
+    const began = Date.now() - 2 * 86_400_000;
+    await waitingAgent(u, "idn-badat", began);
+    await E.DB.prepare(
+      "update artifact_asks set asked_at = 'not a date' where comment_id = ?",
+    )
+      .bind(t.comments[0]?.id)
+      .run();
+    const [item] = (await inbox(u)).needsYou.filter(
+      (i) => i.artifact?.id === own.id,
+    );
+    expect(item?.urgency).toBe("waiting");
+    expect(item?.waitingSince).toBe(new Date(began).toISOString());
   });
 
   it("an agent of someone else waiting on its owner is not waiting on me", async () => {
@@ -438,5 +535,207 @@ describe("GET R.meInbox: Needs you", () => {
     expect(
       (await inbox(u)).needsYou.filter((i) => i.artifact?.id === id),
     ).toHaveLength(1);
+  });
+});
+
+describe("Later (#2762)", () => {
+  const later = (u: U, id: string, body: unknown = { until: "hour" }) =>
+    api(app, R.meInboxLater(id), u.cookie, { method: "POST", body });
+  const setUntil = (u: U, id: string, at: number) =>
+    E.DB.prepare(
+      "update inbox_later set until = ? where user_id = ? and item_id = ?",
+    )
+      .bind(at, u.userId, id)
+      .run();
+  const meBadge = async (u: U) =>
+    (
+      (await (await api(app, R.me, u.cookie)).json()) as {
+        inbox: { needsYou: number };
+      }
+    ).inbox.needsYou;
+
+  it("laterUntil: an hour on; the next 08:00 on the person's clock, today if still ahead", () => {
+    const noon = Date.UTC(2026, 10, 18, 12, 0);
+    expect(laterUntil("hour", noon)).toBe(noon + 3_600_000);
+    expect(laterUntil("morning", noon)).toBe(Date.UTC(2026, 10, 19, 8));
+    const five = Date.UTC(2026, 10, 18, 5, 0);
+    expect(laterUntil("morning", five)).toBe(Date.UTC(2026, 10, 18, 8));
+    // Paris in November is UTC+1: 08:00 there is 07:00 UTC; at 12:00 UTC it is tomorrow's.
+    expect(laterUntil("morning", five, "Europe/Paris")).toBe(
+      Date.UTC(2026, 10, 18, 7),
+    );
+    expect(laterUntil("morning", noon, "Europe/Paris")).toBe(
+      Date.UTC(2026, 10, 19, 7),
+    );
+    // New York in November is UTC-5, and summer time (UTC-4) is honoured.
+    // At 12:00 UTC it is 07:00 there, so today's 08:00 is still ahead.
+    expect(laterUntil("morning", noon, "America/New_York")).toBe(
+      Date.UTC(2026, 10, 18, 13),
+    );
+    expect(
+      laterUntil("morning", Date.UTC(2026, 10, 18, 20), "America/New_York"),
+    ).toBe(Date.UTC(2026, 10, 19, 13));
+    expect(
+      laterUntil("morning", Date.UTC(2026, 5, 18, 20), "America/New_York"),
+    ).toBe(Date.UTC(2026, 5, 19, 12));
+    // A zone whose clock is already past 08:00 while UTC's is not.
+    expect(laterUntil("morning", five, "Asia/Tokyo")).toBe(
+      Date.UTC(2026, 10, 18, 23),
+    );
+  });
+
+  it("laterWhen: 'tomorrow at 8:00' or 'at 14:30', on their clock", () => {
+    const noon = Date.UTC(2026, 10, 18, 12, 0);
+    expect(
+      laterWhen(
+        laterUntil("morning", noon, "Europe/Paris"),
+        noon,
+        "Europe/Paris",
+      ),
+    ).toBe("tomorrow at 8:00");
+    expect(laterWhen(noon + 2.5 * 3_600_000, noon, "Europe/Paris")).toBe(
+      "at 15:30",
+    );
+    expect(laterWhen(noon + 3_600_000, noon)).toBe("at 13:00 UTC");
+  });
+
+  it("the body's timeZone is used, and an unknown zone is a 400", async () => {
+    const u = await mk("l-tz");
+    const id = await mkArtifact([u]);
+    const t = await ask(id, [u]);
+    const itemId = `ask:${t.comments[0]?.id}`;
+    expect(
+      (await later(u, itemId, { until: "hour", timeZone: "Mars/Base" })).status,
+    ).toBe(400);
+    const r = await later(u, itemId, {
+      until: "morning",
+      timeZone: "Asia/Tokyo",
+    });
+    expect(r.status).toBe(200);
+    const at = Date.parse(
+      ((await r.json()) as { later: { until: string } }).later.until,
+    );
+    // 08:00 in Tokyo is 23:00 UTC, within a day of now.
+    expect(new Date(at).getUTCHours()).toBe(23);
+    expect(new Date(at).getUTCMinutes()).toBe(0);
+  });
+
+  it.each(["hour", "morning"] as const)(
+    "%s: the item leaves Needs you for Later, with its time, and the bell count drops",
+    async (until) => {
+      const u = await mk(`l-${until}`);
+      const id = await mkArtifact([u]);
+      const t = await ask(id, [u]);
+      const itemId = `ask:${t.comments[0]?.id}`;
+      expect(await meBadge(u)).toBe(1);
+      const before = Date.now();
+      const r = await later(u, itemId, { until });
+      expect(r.status).toBe(200);
+      const item = (await r.json()) as {
+        id: string;
+        later?: { until: string; used: boolean };
+      };
+      expect(item.id).toBe(itemId);
+      expect(item.later?.used).toBe(true);
+      expect(Date.parse(item.later?.until as string)).toBeGreaterThan(before);
+      if (until === "hour")
+        expect(Date.parse(item.later?.until as string)).toBeLessThanOrEqual(
+          Date.now() + 3_600_000,
+        );
+      const inb = await inbox(u);
+      expect(inb.needsYou.filter((i) => i.id === itemId)).toEqual([]);
+      expect(inb.later.map((i) => i.id)).toEqual([itemId]);
+      expect(inb.later[0]?.later?.used).toBe(true);
+      expect(inb.counts.needsYou).toBe(0);
+      expect(await meBadge(u)).toBe(0);
+      // The ask itself is untouched: still open in the asks index.
+      const open = await E.DB.prepare(
+        "select open from artifact_asks where comment_id = ? and addressee = ?",
+      )
+        .bind(t.comments[0]?.id, u.userId)
+        .first<{ open: number }>();
+      expect(open?.open).toBe(1);
+    },
+  );
+
+  it("a second put-off is 409 later_used", async () => {
+    const u = await mk("l-twice");
+    const id = await mkArtifact([u]);
+    const t = await ask(id, [u]);
+    const itemId = `ask:${t.comments[0]?.id}`;
+    expect((await later(u, itemId)).status).toBe(200);
+    const again = await later(u, itemId, { until: "morning" });
+    expect(again.status).toBe(409);
+    expect(
+      ((await again.json()) as { error: { code: string } }).error.code,
+    ).toBe("later_used");
+  });
+
+  it("after its time the item returns on top, marked backFromLater, and cannot be put off again", async () => {
+    const u = await mk("l-back");
+    const id = await mkArtifact([u]);
+    const first = await ask(id, [u], "first question");
+    const second = await ask(id, [u], "second question");
+    const firstId = `ask:${first.comments[0]?.id}`;
+    expect((await later(u, firstId)).status).toBe(200);
+    await setUntil(u, firstId, Date.now() - 1_000);
+    const inb = await inbox(u);
+    expect(inb.later).toEqual([]);
+    expect(inb.needsYou.map((i) => i.id)).toEqual([
+      firstId,
+      `ask:${second.comments[0]?.id}`,
+    ]);
+    expect(inb.needsYou[0]).toMatchObject({
+      backFromLater: true,
+      later: { used: true },
+    });
+    expect(inb.counts.needsYou).toBe(2);
+    expect(await meBadge(u)).toBe(2);
+    expect((await later(u, firstId)).status).toBe(409);
+  });
+
+  it("only a Needs-you item of mine: an update, someone else's and an unknown id are 404", async () => {
+    const u = await mk("l-404");
+    const id = await mkArtifact([u, other]);
+    const t = await ask(id, [other]);
+    expect((await later(u, `ask:${t.comments[0]?.id}`)).status).toBe(404);
+    expect((await later(u, "ask:nothing")).status).toBe(404);
+    expect((await later(u, "reply:nothing")).status).toBe(404);
+    const bad = await later(u, "ask:x", { until: "tomorrow" });
+    expect(bad.status).toBe(400);
+  });
+
+  it("a personal token is refused, like the read routes", async () => {
+    const u = await mk("l-pat");
+    const id = await mkArtifact([u]);
+    const t = await ask(id, [u]);
+    const pat = (await createPat(E, u.userId, "later")).token;
+    const r = await api(app, R.meInboxLater(`ask:${t.comments[0]?.id}`), pat, {
+      method: "POST",
+      body: { until: "hour" },
+    });
+    expect(r.status).toBe(404);
+    expect((await mine(u, id)).length).toBe(1);
+  });
+
+  it("the sweep drops rows for items that are gone, and keeps the open ones", async () => {
+    const u = await mk("l-sweep");
+    const id = await mkArtifact([u]);
+    const open = await ask(id, [u], "still open");
+    const closed = await ask(id, [u], "will close");
+    for (const t of [open, closed])
+      expect((await later(u, `ask:${t.comments[0]?.id}`)).status).toBe(200);
+    await E.DB.prepare(
+      "update artifact_asks set open = 0 where comment_id = ? and addressee = ?",
+    )
+      .bind(closed.comments[0]?.id, u.userId)
+      .run();
+    await sweepInboxLater(E, Date.now());
+    const left = (
+      await E.DB.prepare("select item_id from inbox_later where user_id = ?")
+        .bind(u.userId)
+        .all<{ item_id: string }>()
+    ).results.map((r) => r.item_id);
+    expect(left).toEqual([`ask:${open.comments[0]?.id}`]);
   });
 });
