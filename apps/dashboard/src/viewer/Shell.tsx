@@ -1121,6 +1121,7 @@ function ArtifactShell({
   shownRef.current = version;
   const preload = live.preload?.version;
   const newer = live.latest > (v ?? preload ?? version);
+  const docFollows = v === undefined && isDocArtifact(data);
   const layers = [
     ...(live.leaving !== null && live.leaving !== version
       ? [live.leaving]
@@ -1153,7 +1154,9 @@ function ArtifactShell({
         return (
           <div
             // New id/version remounts everything, so a new document never inherits the old bridge.
-            key={`${data.id}:${n}`}
+            // A doc following Current is live in the room: a newer saved
+            // version never remounts its editor (caret, focus, cursors).
+            key={`${data.id}:${docFollows ? "doc" : n}`}
             className="oa-vlayer"
             data-preload={n === preload}
             data-arrived={shown && live.leaving !== null}
