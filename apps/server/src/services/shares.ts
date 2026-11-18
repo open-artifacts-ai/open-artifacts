@@ -28,6 +28,11 @@ import {
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import {
+  addressHash,
+  optoutUrl,
+  signOptoutToken,
+} from "../email/share-optout.js";
+import {
   outsideShareEmail,
   senderName,
   shareEmail,
@@ -145,6 +150,7 @@ const shareAudit = (
   );
 
 const SAME_SHARE = `SELECT email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ? AND can_comment = ?`;
+const OPTED_OUT = "select 1 as x from email_optouts where address_hash = ?1";
 const IS_USER = "select 1 as x from users where email = ? limit 1";
 // Only a lapsed guest (removed by the last-share cleanup): an admin or
 // directory removal clears guest_lapsed and stays removed (P3 T6).
@@ -344,6 +350,24 @@ async function emailShare(
     // hosted's: a self-hosted install sends it, without limits. Anyone else (a login domain's address) gets the normal share
     // email, with its role line, as on main.
     const outside = outsideAddress(env, email);
+    // "Don't email me again": an address that opted out gets no outside share
+    // email (#2590). Across hosted would be a call to the platform here.
+    const optOutHash = outside ? await addressHash(email) : null;
+    if (
+      optOutHash &&
+      (await stmt(env.DB, OPTED_OUT).bind(optOutHash).first())
+    ) {
+      // The sharer is not told a recipient opted out (that choice is the
+      // recipient's): the result says "skipped"; the log has the reason.
+      logInfo("share_email_skipped", {
+        reason: "recipient_opted_out",
+        artifactId: artifact.id,
+      });
+      return { emailed: false, notEmailed: "skipped" };
+    }
+    const optOutUrl = outside
+      ? optoutUrl(env.APP_HOST, await signOptoutToken(env, email))
+      : "";
     const hosted = env.HOSTED === "1";
     // No user row. An outside address (#2590) gets the outside email, under
     // its own daily limits (apart from the usual ones; the share is saved
@@ -368,6 +392,7 @@ async function emailShare(
               path: viewerPath(artifact.id),
               signIn: reach.methods,
               cantSignIn: reach.recipient?.reason,
+              optOutUrl,
             })
           : shareEmail({
               inviter: senderName(user),

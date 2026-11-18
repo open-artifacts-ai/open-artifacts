@@ -518,11 +518,13 @@ describe("the outside share email", () => {
     // 80 characters: 79 and an ellipsis.
     expect(mail?.text).toContain(`${"T".repeat(79)}…`);
     expect(mail?.text).not.toContain("T".repeat(80));
-    // The title is plain text: the only link is the button to the page.
+    // The title is plain text: the links are the button to the page and the
+    // footer's "Don't email me again".
     const links = [...(mail?.html ?? "").matchAll(/href="([^"]+)"/g)].map(
       (x) => x[1] ?? "",
     );
-    expect(links).toEqual([`https://${env.APP_HOST}/a/${id}`]);
+    expect(links).toHaveLength(2);
+    expect(links[0]).toBe(`https://${env.APP_HOST}/a/${id}`);
     expect(mail?.html).toContain(">Open the page<");
   });
 
@@ -595,6 +597,6 @@ describe("the outside share email", () => {
     const mail = m.sent.find((x) => x.to === email);
     expect(mail?.html).not.toContain("<img");
     const links = [...(mail?.html ?? "").matchAll(/href="([^"]+)"/g)];
-    expect(links).toHaveLength(1);
+    expect(links).toHaveLength(2);
   });
 });

@@ -17,6 +17,7 @@ import {
   SHARE_HTML,
   SHARE_TXT,
 } from "./email-templates.js";
+import { OPTOUT_COPY } from "./share-optout.js";
 
 export type EmailContent = {
   subject: string;
@@ -191,18 +192,36 @@ type SignIn = {
   cantSignIn?: ShareRecipient["reason"];
 };
 
-/** A member invite, linking to the instance's sign-in page. */
-export function inviteEmail(p: Common & SignIn): EmailContent {
+// The invite's agent setup block (#2632), between these markers in both
+// parts: kept, markers removed, for a member; dropped whole for a guest.
+const SETUP_BLOCK = /<!--setup-->\n?([\s\S]*?)<!--\/setup-->\n?/g;
+const setupBlock = (tpl: string, keep: boolean) =>
+  tpl.replace(SETUP_BLOCK, (_, inner: string) => (keep ? inner : ""));
+
+/** The line a member pastes into their agent (#2632). */
+export const setupLine = (origin: string) =>
+  `Set up Open Artifacts for me: follow ${linkOn(origin, "/llms.txt")}`;
+
+/**
+ * An invite, linking to the instance's sign-in page. A member's (any role
+ * but guest) also carries the line to paste into their agent (#2632); a
+ * guest can't publish, so theirs doesn't.
+ */
+export function inviteEmail(
+  p: Common & SignIn & { guest: boolean },
+): EmailContent {
   const { origin, values } = common(p);
+  const member = !p.guest;
   return render(
-    INVITE_HTML,
-    INVITE_TXT,
+    setupBlock(INVITE_HTML, member),
+    setupBlock(INVITE_TXT, member),
     "{{inviterName}} added you to {{instanceName}}",
     {
       ...values,
       signInUrl: linkOn(origin, "/sign-in"),
       signInLine: `There's no password to set up. ${signInSentence(p.signIn, values.recipientEmail, p)}`,
       signInPreheader: signInSentence(p.signIn, "this address", p),
+      setupLine: setupLine(origin),
     },
   );
 }
@@ -237,10 +256,24 @@ export function shareEmail(
 const OUTSIDE_TITLE_MAX = 80;
 
 /** Looks like a URL or holds one: "://", "www.", or a domain-like token. */
-const urlish = (s: string): boolean =>
+export const urlish = (s: string): boolean =>
   /:\/\/|www\.|(?:^|[^\p{L}\p{N}-])[\p{L}\p{N}-]+\.[\p{L}]{2,}(?![\p{L}\p{N}])/iu.test(
     s,
   );
+
+/**
+ * The install's name for text a stranger reads (the opt-out link and page): its
+ * display name, else its host. A name that looks like a URL or holds one is
+ * not shown (a mail client would link it): the host stands in.
+ */
+export const orgName = (name: string | null | undefined, host: string) => {
+  const n = name?.trim();
+  return n && !urlish(n) ? n : host;
+};
+
+/** The name the email footer and the opt-out pages both show: one line, at most 80 characters. */
+export const orgLabel = (name: string | null | undefined, host: string) =>
+  oneLine(orgName(name, host), 80);
 
 const OUTSIDE_TXT = `{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
 
@@ -253,17 +286,19 @@ Open the page:
 
 --
 
-You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
+You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. {{optOutLabel}}:
+{{optOutUrl}}
 `;
 
 const OUTSIDE_HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{senderName}} shared a page with you</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{senderName}} shared a page with you</title>
+<style>@media (prefers-color-scheme: dark){body{background:#131518 !important;color:#e8eaed !important}.oa-btn{background:#e8eaed !important;color:#131518 !important}.oa-foot,.oa-foot a{color:#aab0bb !important}}</style></head>
 <body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <p>{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
 <p style="font-weight:600">{{pageTitle}}</p>
 <p>{{openLine}}</p>
-<p><a href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
-<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
+<p><a class="oa-btn" href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
+<p class="oa-foot" style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. <a href="{{optOutUrl}}" style="color:#5d636e">{{optOutLabel}}</a></p>
 </body></html>
 `;
 
@@ -280,6 +315,8 @@ export function outsideShareEmail(
       /** Viewer path on the app host, e.g. `/a/<id>`. */
       path: string;
       senderEmail: string;
+      /** The "Don't email me again" link (email/share-optout.ts). */
+      optOutUrl: string;
     },
 ): EmailContent {
   const { origin, values } = common(p);
@@ -301,7 +338,12 @@ export function outsideShareEmail(
     : oneLine(p.title, OUTSIDE_TITLE_MAX);
   const senderEmail = oneLine(p.senderEmail, 320);
   const sender = urlish(values.inviterName) ? senderEmail : values.inviterName;
-  return render(
+  // The opt-out link is ours: https on the app host, nothing else.
+  const link = new URL(p.optOutUrl);
+  if (link.origin !== origin || link.href.length > URL_MAX)
+    throw new Error("the opt-out link must be https on the app host");
+  const optOut = link.href;
+  const out = render(
     OUTSIDE_HTML,
     OUTSIDE_TXT,
     `{{senderName}} shared "{{pageTitle}}" with you`,
@@ -312,8 +354,20 @@ export function outsideShareEmail(
       pageTitle: title,
       pageUrl: linkOn(origin, p.path),
       openLine,
+      optOutUrl: optOut,
+      optOutLabel: fill(OPTOUT_COPY.link, {
+        org: orgLabel(p.instance, p.appHost),
+      }),
     },
   );
+  // RFC 8058: one-click unsubscribe, the same POST the link's page makes.
+  return {
+    ...out,
+    headers: {
+      "List-Unsubscribe": `<${optOut}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+  };
 }
 
 const CODE_TXT = `Your {{instanceName}} login code is {{code}}

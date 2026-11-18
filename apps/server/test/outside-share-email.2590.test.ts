@@ -59,7 +59,7 @@ async function world(over: Partial<Env>) {
 }
 
 const FOOTER = (email: string) =>
-  `You got this email because Pat Sharer (${email}) shared a page with you on Open Artifacts.`;
+  `You got this email because Pat Sharer (${email}) shared a page with you on Open Artifacts. `;
 
 describe("the outside share email", () => {
   it("hosted: an outside address gets it, with the plain footer and no link in it", async () => {
@@ -72,13 +72,19 @@ describe("the outside share email", () => {
     expect(mail?.subject).toBe('Pat Sharer shared "Plan" with you');
     expect(mail?.text).toContain(FOOTER(member.email));
     expect(mail?.html).toContain(FOOTER(member.email));
-    // No promotion and no link in the footer: the footer is the last text,
-    // and the only link in the mail is the button to the page.
-    expect(mail?.text?.trim().endsWith(FOOTER(member.email))).toBe(true);
+    // The footer's only link is "Don't email me again"; no promotion. The
+    // other link in the mail is the button to the page.
     const links = [...(mail?.html ?? "").matchAll(/href="([^"]+)"/g)].map(
-      (x) => x[1],
+      (x) => x[1] ?? "",
     );
-    expect(links).toEqual([`https://${env.APP_HOST}/a/${id}`]);
+    expect(links).toHaveLength(2);
+    expect(links[0]).toBe(`https://${env.APP_HOST}/a/${id}`);
+    expect(links[1]).toMatch(
+      new RegExp(`^https://${env.APP_HOST}/auth/unsubscribe/shares\\?t=`),
+    );
+    expect(mail?.html).toContain(
+      ">Don&#39;t email me from Open Artifacts again</a>",
+    );
   });
 
   it("hosted: the limits still apply, and a refused email is reported with its number", async () => {

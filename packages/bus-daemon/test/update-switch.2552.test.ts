@@ -22,6 +22,7 @@ import {
   readPolicy,
   readReports,
   readState,
+  recordAttempt,
   requestInstall,
   runningVersion,
   setPending,
@@ -69,6 +70,7 @@ describe("the loop is off in this PR", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit,
       log: () => {},
@@ -324,6 +326,7 @@ describe("the install request", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -397,6 +400,11 @@ describe("the updater loop (enabled by a test only)", () => {
       login?: () => boolean;
       verify?: () => VerifiedRelease;
       fetchFails?: boolean;
+      announce?: (
+        from: string,
+        to: string,
+        reason?: string,
+      ) => Promise<boolean>;
     } = {},
   ) => {
     const w = world();
@@ -416,6 +424,7 @@ describe("the updater loop (enabled by a test only)", () => {
       }),
       loginActive: over.login ?? (() => false),
       hubReady: () => hubUp.v,
+      announceSwitch: over.announce ?? (async () => true),
       serverVersion: () => "1.2.0",
       exit,
       log: () => {},
@@ -434,7 +443,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("stages at once, swaps only after 30 s of quiet, then exits non-zero", async () => {
     const w = make();
-    expect(await w.u.instruct({ version: "1.1.0" })).toEqual({
+    expect(await w.u.instructFromInstance("1.1.0")).toEqual({
       kind: "staged",
       version: "1.1.0",
     });
@@ -467,7 +476,7 @@ describe("the updater loop (enabled by a test only)", () => {
     let busy = false;
     let login = false;
     const w = make({ busy: () => busy, login: () => login });
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     await w.u.tick();
     w.advance(QUIET_MS - 1);
     busy = true;
@@ -488,7 +497,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("off stops everything, and an instruction cannot turn it on", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     const j = JSON.parse(readFileSync(join(w.home, "update.json"), "utf8"));
     writeFileSync(
       join(w.home, "update.json"),
@@ -507,7 +516,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("a staged file changed since the proof is refused, dropped and reported", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     writeFileSync(join(versionDir(w.home, "1.1.0"), "dist/index.js"), "evil");
     await w.u.tick();
     w.advance(QUIET_MS);
@@ -523,7 +532,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it(".live markers do not count as a change", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     mkdirSync(join(versionDir(w.home, "1.1.0"), ".live"));
     writeFileSync(join(versionDir(w.home, "1.1.0"), ".live/4242"), "");
     await w.u.tick();
@@ -597,6 +606,7 @@ describe("the updater loop (enabled by a test only)", () => {
       reason: "bad_version",
     });
     expect(readReports(w.home).map((r) => r.reason)).toEqual([
+      "not_forward",
       "ahead_of_server",
       "bad_instruction",
     ]);
@@ -604,7 +614,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("one attempt per 6 h: the swap counts, the next instruction waits", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     await w.u.tick();
     w.advance(QUIET_MS);
     await w.u.tick();
@@ -659,6 +669,79 @@ describe("the updater loop (enabled by a test only)", () => {
     }
   });
 
+  // #2719: stopping a rollout.
+  it("a staged version swaps only while the instance still names it", async () => {
+    const w = make();
+    await w.u.instructFromInstance("1.1.0");
+    w.u.clearNamed();
+    await w.u.tick();
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+    expect(currentVersion(w.home)).toBe("1.0.0");
+  });
+
+  it("naming the running version drops a newer staged one", async () => {
+    const w = make();
+    await w.u.instructFromInstance("1.1.0");
+    expect(readPolicy(w.home).staged?.version).toBe("1.1.0");
+    await w.u.instructFromInstance("1.0.0");
+    expect(readPolicy(w.home).staged).toBeUndefined();
+    expect(existsSync(versionDir(w.home, "1.1.0"))).toBe(false);
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("the person's own request still installs when nothing is named, and says so", async () => {
+    const reasons: (string | undefined)[] = [];
+    const w = make({
+      busy: () => true,
+      announce: async (_f, _t, r) => {
+        reasons.push(r);
+        return true;
+      },
+    });
+    await w.u.instruct({ version: "1.1.0" });
+    requestInstall(w.home, "1.1.0", w.clock());
+    await w.u.tick();
+    expect(w.exit).toHaveBeenCalledWith(1);
+    expect(reasons).toEqual(["requested"]);
+  });
+
+  it("a clearing during the ack wait stops the swap", async () => {
+    let w!: ReturnType<typeof make>;
+    w = make({
+      announce: async () => {
+        w.u.clearNamed();
+        return true;
+      },
+    });
+    await w.u.instructFromInstance("1.1.0");
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+    expect(currentVersion(w.home)).toBe("1.0.0");
+  });
+
+  it("a staged tree changed during the ack wait stops the swap", async () => {
+    let w!: ReturnType<typeof make>;
+    w = make({
+      announce: async () => {
+        writeFileSync(
+          join(versionDir(w.home, "1.1.0"), "dist/index.js"),
+          "evil",
+        );
+        return true;
+      },
+    });
+    await w.u.instructFromInstance("1.1.0");
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+    expect(currentVersion(w.home)).toBe("1.0.0");
+  });
+
   it("a newer staged version replaces the older and removes its folder", async () => {
     const w = make();
     await w.u.instruct({ version: "1.1.0" });
@@ -671,6 +754,7 @@ describe("the updater loop (enabled by a test only)", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -696,6 +780,7 @@ describe("review fixes (#2552)", () => {
       busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
       loginActive: () => false,
       hubReady: () => true,
+      announceSwitch: async () => true,
       serverVersion: () => undefined,
       exit: () => {},
       log: () => {},
@@ -824,5 +909,214 @@ describe("review fixes (#2552)", () => {
     expect(readState(home).armed).toBe(false);
     installVersion(home, "1.1.0", () => {});
     expect(readState(home).armed).toBe(true);
+  });
+});
+
+describe("the instance's install_now and announced switches (#2552)", () => {
+  const build = (
+    over: {
+      login?: () => boolean;
+      announce?: () => boolean | Promise<boolean>;
+    } = {},
+  ) => {
+    const { home, fill } = world();
+    const exit = vi.fn();
+    let clock = T;
+    const f2 = (v: string) => ({
+      rel: { version: v } as FetchedRelease,
+      ver: {
+        version: v,
+        sha512: "x",
+        commit: "c",
+        entries: [
+          { path: "package", type: "dir", data: Buffer.alloc(0) },
+          { path: "package/dist", type: "dir", data: Buffer.alloc(0) },
+          {
+            path: "package/dist/index.js",
+            type: "file",
+            data: Buffer.from(`// ${v}`),
+          },
+        ],
+        packageJson: { name: "n", version: v, oaBus: { settingsKinds: ["a"] } },
+      } as VerifiedRelease,
+    });
+    const rel = f2("1.1.0");
+    const calls: string[] = [];
+    const u = new Updater({
+      home,
+      running: "1.0.0",
+      enabled: true,
+      now: () => clock,
+      busy: () => ({ pending: 1, outbox: 0, codexQueue: 0 }),
+      loginActive: over.login ?? (() => false),
+      hubReady: () => true,
+      announceSwitch: async (from, to) => {
+        calls.push(`${from}>${to}@${currentVersion(home)}`);
+        return (await over.announce?.()) ?? true;
+      },
+      serverVersion: () => undefined,
+      exit,
+      log: () => {},
+      fetch: async () => rel.rel,
+      verify: () => rel.ver,
+    });
+    return {
+      home,
+      fill,
+      u,
+      exit,
+      calls,
+      advance: (ms: number) => (clock += ms),
+    };
+  };
+
+  it("install_now swaps the staged version the instance named, announcing first", async () => {
+    const w = build();
+    await w.u.instructFromInstance("1.1.0");
+    expect(readPolicy(w.home).staged?.version).toBe("1.1.0");
+    expect(await w.u.installNowFromInstance()).toMatchObject({
+      kind: "switching",
+    });
+    // The announcement came before bin moved.
+    expect(w.calls).toEqual(["1.0.0>1.1.0@1.0.0"]);
+    expect(currentVersion(w.home)).toBe("1.1.0");
+    expect(w.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("install_now without a named staged version does nothing", async () => {
+    const w = build();
+    expect(await w.u.installNowFromInstance()).toMatchObject({
+      reason: "nothing_staged",
+    });
+    // Staged by an instruction the instance has not named through the instance path.
+    await w.u.instruct({ version: "1.1.0" });
+    expect(await w.u.installNowFromInstance()).toMatchObject({
+      reason: "nothing_staged",
+    });
+    expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("install_now honors off, a login, the 6 h limit and a held switch", async () => {
+    const off = build();
+    await off.u.instructFromInstance("1.1.0");
+    const j = JSON.parse(readFileSync(join(off.home, "update.json"), "utf8"));
+    writeFileSync(
+      join(off.home, "update.json"),
+      JSON.stringify({ ...j, off: true }),
+    );
+    expect(await off.u.installNowFromInstance()).toMatchObject({
+      reason: "off",
+    });
+
+    let login = true;
+    const l = build({ login: () => login });
+    await l.u.instructFromInstance("1.1.0");
+    expect(await l.u.installNowFromInstance()).toMatchObject({
+      reason: "login_in_progress",
+    });
+    login = false;
+
+    const r = build();
+    await r.u.instructFromInstance("1.1.0");
+    recordAttempt(r.home, T);
+    expect(await r.u.installNowFromInstance()).toMatchObject({
+      reason: "rate_limited",
+    });
+
+    const held = build({ announce: () => false });
+    await held.u.instructFromInstance("1.1.0");
+    expect(await held.u.installNowFromInstance()).toEqual({
+      kind: "retry_later",
+    });
+    expect(currentVersion(held.home)).toBe("1.0.0");
+    expect(readPolicy(held.home).pending).toBeUndefined();
+  });
+
+  it("`off` set while the hub's answer is awaited stops the swap", async () => {
+    let home = "";
+    const w = build({
+      announce: () => {
+        const j = JSON.parse(readFileSync(join(home, "update.json"), "utf8"));
+        writeFileSync(
+          join(home, "update.json"),
+          JSON.stringify({ ...j, off: true }),
+        );
+        return true;
+      },
+    });
+    home = w.home;
+    await w.u.instructFromInstance("1.1.0");
+    expect(await w.u.installNowFromInstance()).toEqual({
+      kind: "retry_later",
+    });
+    expect(currentVersion(w.home)).toBe("1.0.0");
+    expect(readPolicy(w.home).pending).toBeUndefined();
+    expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("a second switch while one awaits the hub gets retry_later; one swap only", async () => {
+    let release: (v: boolean) => void = () => {};
+    const gate = new Promise<boolean>((r) => {
+      release = r;
+    });
+    let n = 0;
+    const w = build({ announce: () => (n++ === 0 ? gate : true) });
+    await w.u.instructFromInstance("1.1.0");
+    const first = w.u.installNowFromInstance();
+    expect(await w.u.installNowFromInstance()).toEqual({
+      kind: "retry_later",
+    });
+    release(true);
+    expect(await first).toMatchObject({ kind: "switching" });
+    expect(w.exit).toHaveBeenCalledTimes(1);
+    expect(n).toBe(1);
+  });
+
+  it("naming the running version is no instruction; naming the kept previous is a step back", async () => {
+    const w = build();
+    expect(await w.u.instructFromInstance("1.0.0")).toEqual({
+      kind: "disabled",
+    });
+    expect(await w.u.instructFromInstance("0.9.0")).toMatchObject({
+      kind: "switching",
+    });
+    expect(currentVersion(w.home)).toBe("0.9.0");
+  });
+
+  it("a not_forward instruction is reported once per version, like the others", async () => {
+    const w = build();
+    for (let i = 0; i < 3; i++) await w.u.instructFromInstance("0.5.0");
+    await w.u.instructFromInstance("0.6.0");
+    await w.u.instructFromInstance("0.6.0");
+    expect(readReports(w.home).map((r) => [r.event, r.to, r.reason])).toEqual([
+      ["refused", "0.5.0", "not_forward"],
+      ["refused", "0.6.0", "not_forward"],
+    ]);
+    // Ahead of the server and malformed ones are once too.
+    const u2 = new Updater({
+      home: w.home,
+      running: "1.0.0",
+      enabled: true,
+      now: () => T,
+      busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
+      loginActive: () => false,
+      hubReady: () => true,
+      announceSwitch: async () => true,
+      serverVersion: () => "1.0.0",
+      exit: () => {},
+      log: () => {},
+    });
+    for (let i = 0; i < 3; i++) {
+      await u2.instructFromInstance("2.0.0");
+      await u2.instructFromInstance("1.2");
+    }
+    expect(
+      readReports(w.home)
+        .slice(2)
+        .map((r) => [r.to, r.reason]),
+    ).toEqual([
+      ["2.0.0", "ahead_of_server"],
+      ["", "bad_instruction"],
+    ]);
   });
 });

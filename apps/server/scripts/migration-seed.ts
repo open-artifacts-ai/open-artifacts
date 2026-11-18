@@ -54,12 +54,14 @@ export const SHAPE = {
   passkey_settings: 1_000,
   agent_grants: 50_000,
   bus_machines: 20_000,
+  bus_machine_updates: 10_000,
   bus_device_codes: 500,
   login_codes: 2_000,
   oauth_kv: 100_000,
   counters: 5_000,
   creator_months: 5_000, // hosted only: one per creator and UTC month
   settings: 20,
+  email_optouts: 2_000, // #2590: an address that chose "Don't email me again"
   audit_events: 1_000_000,
 } as const;
 
@@ -84,6 +86,8 @@ export interface Ctx {
   sharedSpaces: string[];
   artifacts: { id: string; owner: string; deleted: boolean }[];
   groups: { id: string; email: string }[];
+  /** Bus machine ids already written (bus_machine_updates points at them). */
+  busMachines: string[];
 }
 
 export interface Rule {
@@ -618,14 +622,39 @@ export const RULES: Record<string, Rule> = {
     row(i, c) {
       const u = c.users[(i * 7) % c.users.length];
       if (!u) return null;
+      const id = c.id("bm");
+      c.busMachines.push(id);
       return {
-        id: c.id("bm"),
+        id,
         user_id: u.id,
         label: `machine ${i}`,
         token_hash: `${c.id("bh")}${i}`,
         created_at: c.time(),
         last_used_at: c.rand() < 0.7 ? c.time() : null,
         revoked_at: c.rand() < 0.2 ? c.time() : null,
+      };
+    },
+  },
+  // #2552: the latest update report of some machines (one row each).
+  bus_machine_updates: {
+    rows: (c) => Math.min(c.count("bus_machine_updates"), c.busMachines.length),
+    row(i, c) {
+      const id = c.busMachines[i];
+      if (id === undefined) return null;
+      const at = c.time();
+      const switching = c.rand() < 0.1;
+      return {
+        machine_id: id,
+        event: switching ? "switching" : "updated",
+        from_version: "0.186.0",
+        to_version: "0.187.0",
+        reason: "ok",
+        detail: null,
+        rescue_version: 1,
+        reported_at: at,
+        switching_at: switching ? at : null,
+        last_hello_at: at,
+        stopped_at: null,
       };
     },
   },
@@ -706,6 +735,13 @@ export const RULES: Record<string, Rule> = {
       user_id: `u${Math.floor(i / 12)}`,
       source: c.pick(["version", "data"]),
       first_at: c.time(),
+    }),
+  },
+  email_optouts: {
+    rows: (c) => c.count("email_optouts"),
+    row: (i, c) => ({
+      address_hash: `${i.toString(16).padStart(64, "0")}`,
+      created_at: c.time(),
     }),
   },
   settings: {
@@ -845,6 +881,7 @@ function context(scale: number): Ctx {
     sharedSpaces: [],
     artifacts: [],
     groups: [],
+    busMachines: [],
   };
 }
 
