@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.216.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.215.0...v0.216.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** instance store and oa-bus add ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S1) ([#2833](https://github.com/open-artifacts-ai/open-artifacts/issues/2833)) ([41b4290](https://github.com/open-artifacts-ai/open-artifacts/commit/41b4290fc182f94108e19ce776506fe3402e014b))
+* **sharing:** key the opt-out hash with the install's own key ([#2820](https://github.com/open-artifacts-ai/open-artifacts/issues/2820)) ([#2829](https://github.com/open-artifacts-ai/open-artifacts/issues/2829)) ([d5e3bb6](https://github.com/open-artifacts-ai/open-artifacts/commit/d5e3bb6eb32e3e57834383b204c306acd31edb50))
+
+
+### Bug Fixes
+
+* **bus:** the proof a session is sending is never evicted; proofs wait for a late join ([#2811](https://github.com/open-artifacts-ai/open-artifacts/issues/2811)) ([cd1ac11](https://github.com/open-artifacts-ai/open-artifacts/commit/cd1ac1135e070277e00d0b8753f65922fc1f9159))
+* **sharing:** an opt-out can't be told apart from a failed send ([#2716](https://github.com/open-artifacts-ai/open-artifacts/issues/2716)) ([#2821](https://github.com/open-artifacts-ai/open-artifacts/issues/2821)) ([b6fae13](https://github.com/open-artifacts-ai/open-artifacts/commit/b6fae13d0c37cd2fbeca22072505fb51c3978256))
+
 ## [0.215.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.214.1...v0.215.0) (2026-11-18)
 
 

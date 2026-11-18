@@ -616,8 +616,10 @@ export const ShareResultSchema = ShareSchema.extend({
    * either way, #2590): member_limit (this member's outside addresses for
    * the day), instance_limit (the instance's daily outside emails, lower in
    * a trial), limit (the existing per-recipient, per-share or sending cap),
-   * skipped (no email, and the sharer is not told why: a recipient's choice
-   * is theirs, logged as recipient_opted_out), sender_paused (this member's outside share emails are paused
+   * skipped (no email to an outside address, for any reason that isn't a cap:
+   * the recipient opted out, a failed or timed-out send, or an outage; the
+   * sharer is not told which, so an opt-out can't be told from the rest, and
+   * the page says to copy the link; the real reason is logged), sender_paused (this member's outside share emails are paused
    * after bounces or a complaint: see pausedUntil; never which recipient).
    */
   notEmailed: z

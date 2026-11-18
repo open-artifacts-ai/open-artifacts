@@ -55,6 +55,14 @@ export interface Env {
   /** Secret, held by hosted installs only: the key of h1 = HMAC(key, address), what the install sends the platform instead of an address (#2652). */
   OPTOUT_HASH_KEY?: string;
   /**
+   * Secret, minted once per install (the provisioner on hosted, setup on
+   * self-host) and never rotated (#2820): 48 random bytes, base64url without
+   * padding, used as the raw HMAC-SHA256 key that hashes opted-out addresses.
+   * Distinct from OPTOUT_HASH_KEY (the hosted-wide platform list). Unset: the
+   * opt-out table keeps the plain SHA-256, as before. Never logged or sent.
+   */
+  INSTALL_OPTOUT_KEY?: string;
+  /**
    * The instance's Web Push key pair (#2512 S5), base64url: the 65-byte
    * uncompressed P-256 public point and the 32-byte private scalar. Secrets
    * the platform sets on hosted and setup sets on self-host; the code never
