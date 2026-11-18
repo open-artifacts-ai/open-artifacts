@@ -1,14 +1,16 @@
 // #2577: asking someone else's agent: the held-request notice, the Settings list and the @ list.
 import { R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
+import { focusManager } from "@tanstack/react-query";
 import {
+  act,
   fireEvent,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { allowedText, endDate, leftoverText } from "../src/foryou/held";
 import { MentionMenu } from "../src/viewer/comments/asks";
@@ -17,11 +19,14 @@ import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
 
-const asks = () =>
-  server.use(...createHandlers({ events, forYou: "held", agentAsks: true }));
+const asks = (...first: HttpHandler[]) =>
+  server.use(
+    ...first,
+    ...createHandlers({ events, forYou: "held", agentAsks: true }),
+  );
 
-const openNotice = async () => {
-  asks();
+const openNotice = async (...first: HttpHandler[]) => {
+  asks(...first);
   mount("/");
   fireEvent.click(
     await screen.findByRole(
@@ -36,7 +41,7 @@ const openNotice = async () => {
       name: "Dev Patel wants to ask your agent",
     }),
   );
-  await within(panel).findByText(/where does the 42%/);
+  await within(panel).findByRole("button", { name: "Allow once" });
   return panel;
 };
 
@@ -90,6 +95,138 @@ describe("the held-request notice", () => {
         "Web got Dev's 3 requests. Dev's next one will ask you again.",
       ),
     ).toBeInTheDocument();
+  });
+
+  const HASHES = ["a", "b", "c"].map((c) => c.repeat(64));
+  const heldWith = (
+    over: (r: Record<string, unknown>) => Record<string, unknown>,
+    seen?: { current: Record<string, unknown> | null },
+  ) =>
+    http.get(`*${R.agentAskHeld}`, async ({ request }) => {
+      const base = (await getResponse(
+        createHandlers({ events, forYou: "held", agentAsks: true }),
+        request,
+      )) as Response;
+      const j = (await base.json()) as { requests: Record<string, unknown>[] };
+      const r = over(j.requests[0] ?? {});
+      if (seen) seen.current = r;
+      return HttpResponse.json({ requests: [r] });
+    });
+
+  it("sends exactly the hashes the notice showed", async () => {
+    const posts = calls("POST");
+    const panel = await openNotice();
+    fireEvent.click(within(panel).getByRole("button", { name: "Allow once" }));
+    await waitFor(() =>
+      expect(posts.some((c) => c.path.endsWith("/allow"))).toBe(true),
+    );
+    const body = posts.find((c) => c.path.endsWith("/allow"))?.body as {
+      items: { wordsHash: string }[];
+    };
+    expect(body.items.map((i) => i.wordsHash)).toEqual(HASHES);
+  });
+
+  it("shows a body with markup and a link as plain text", async () => {
+    const panel = await openNotice(
+      heldWith((r) => ({
+        ...r,
+        items: [
+          {
+            ...(r.items as Record<string, unknown>[])[0],
+            body: "<b>bold</b> see https://evil.example/x and [x](https://e.example)",
+          },
+        ],
+      })),
+    );
+    expect(panel).toHaveTextContent(
+      "<b>bold</b> see https://evil.example/x and [x](https://e.example)",
+    );
+    expect(
+      panel.querySelector("a[href*='evil'], a[href*='e.example']"),
+    ).toBeNull();
+    expect(panel.querySelector("li b")).toBeNull();
+  });
+
+  it("changed words keep the card; so does an hourly limit", async () => {
+    const panel = await openNotice(
+      http.post("*/api/v1/me/agent-asks/held/:id/allow", () =>
+        HttpResponse.json({ sent: 2, changed: 1, waiting: 0 }),
+      ),
+    );
+    fireEvent.click(within(panel).getByRole("button", { name: "Allow once" }));
+    expect(
+      await screen.findByText(/1 request changed while you looked/),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("button", { name: "Allow once" }),
+    ).toBeInTheDocument();
+  });
+
+  it("an hourly limit keeps the card", async () => {
+    const panel = await openNotice(
+      http.post("*/api/v1/me/agent-asks/held/:id/allow", () =>
+        HttpResponse.json({ sent: 2, changed: 0, waiting: 1 }),
+      ),
+    );
+    fireEvent.click(within(panel).getByRole("button", { name: "Allow once" }));
+    expect(
+      await screen.findByText(/1 still waiting \(hourly limit\)/),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("button", { name: "Allow once" }),
+    ).toBeInTheDocument();
+  });
+
+  it("words that change under the confirm step go back to the notice and send nothing", async () => {
+    const posts = calls("POST");
+    let hash = "a".repeat(64);
+    const panel = await openNotice(
+      heldWith((r) => ({
+        ...r,
+        items: (r.items as Record<string, unknown>[]).map((i, n) =>
+          n === 0 ? { ...i, wordsHash: hash } : i,
+        ),
+      })),
+    );
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Allow on all pages\u2026" }),
+    );
+    expect(
+      await within(panel).findByText("Allow Dev on all pages?"),
+    ).toBeInTheDocument();
+    expect(panel).toHaveTextContent("Allows these 3 requests from Dev now");
+    hash = "f".repeat(64);
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    expect(
+      await within(panel).findByText("These changed. Read them again."),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("button", { name: "Allow once" }),
+    ).toBeInTheDocument();
+    expect(posts.some((c) => c.path.endsWith("/allow"))).toBe(false);
+  });
+
+  it("the end date is a minute inside the longest", async () => {
+    const posts = calls("POST");
+    const panel = await openNotice();
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Allow on all pages\u2026" }),
+    );
+    fireEvent.click(await within(panel).findByLabelText(/^1 year/));
+    const at = Date.now();
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Allow Dev on all pages" }),
+    );
+    await waitFor(() =>
+      expect(posts.some((c) => c.path.endsWith("/allow"))).toBe(true),
+    );
+    const b = posts.find((c) => c.path.endsWith("/allow"))?.body as {
+      until: number;
+    };
+    expect(b.until).toBeLessThan(at + 365 * 86_400_000);
   });
 
   it("this page sends level page; no passkey", async () => {

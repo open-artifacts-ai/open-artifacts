@@ -4,7 +4,7 @@
  * held request is shown word for word as plain text, never as markup or links.
  */
 import type { HeldRequest } from "@oa/shared";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAllowHeld, useNotNow } from "../api/agentAsks";
 import { errorCopy } from "../api/errorCopy";
 import { useMe } from "../auth/useMe";
@@ -65,10 +65,31 @@ export function HeldCard({
   const who = firstName(r.sender.name);
   const agent = agentsOf(r);
   const busy = allow.isPending || notNow.isPending;
-  const items = r.items.map((i) => ({
+  const live = r.items.map((i) => ({
     commentId: i.commentId,
     wordsHash: i.wordsHash,
   }));
+  const liveKey = JSON.stringify(live);
+  // What the confirm step was opened on: it shows no words, so it sends only these.
+  const [snap, setSnap] = useState<typeof live | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const stale = wide !== null && JSON.stringify(snap) !== liveKey;
+  // The words changed under the confirm step: back to the notice, to read them again.
+  useEffect(() => {
+    if (stale) {
+      setWide(null);
+      setSnap(null);
+      setNote("These changed. Read them again.");
+    }
+  }, [stale]);
+  // Only what is on screen goes: the snapshot in the confirm step, else the notice's own words.
+  const items = wide && snap ? snap : live;
+  const enter = (level: "space" | "all") => {
+    setError(null);
+    setNote(null);
+    setSnap(live);
+    setWide(level);
+  };
 
   const run = (level: Level, until?: number) => {
     setError(null);
@@ -95,8 +116,12 @@ export function HeldCard({
             title: [said, rest].filter(Boolean).join(" ") || "Done.",
             tone: "neutral",
           });
-          // Everything went through: the card is done. A changed one stays, held at its new words.
-          if (res.changed === 0) onGone();
+          // Everything went through: the card is done. A changed or waiting one stays.
+          if (res.changed === 0 && res.waiting === 0) onGone();
+          else {
+            setWide(null);
+            setSnap(null);
+          }
         },
       },
     );
@@ -116,15 +141,19 @@ export function HeldCard({
     });
   };
 
-  if (wide) {
+  if (wide && !stale) {
     const space = wide === "space";
     const until = untilOf(days);
+    const n = items.length;
     const title = space
       ? `Allow ${who} in the "${r.space?.name}" space?`
       : `Allow ${who} on all pages?`;
     return (
       <div data-held-confirm="" className="grid gap-2.5">
         <h3 className="m-0 text-[14px] font-semibold">{title}</h3>
+        <p className={NOTE}>
+          {`Allows these ${plural(n)} from ${who} now, and the later ones below.`}
+        </p>
         <p className={NOTE}>
           {space
             ? `${who}'s requests on pages in "${r.space?.name}" that your agents work on go straight to your agents, without asking you. That is ${r.space?.pagesCovered} ${r.space?.pagesCovered === 1 ? "page" : "pages"} today, plus pages there your agents work on later. Each request is marked as from ${who}.`
@@ -176,6 +205,7 @@ export function HeldCard({
             disabled={busy}
             onClick={() => {
               setWide(null);
+              setSnap(null);
               setError(null);
             }}
           >
@@ -185,7 +215,7 @@ export function HeldCard({
             type="button"
             className={PRIMARY}
             disabled={busy}
-            onClick={() => run(wide, until)}
+            onClick={() => run(wide, untilOf(days) - 60_000)}
           >
             {space
               ? `Allow ${who} in "${r.space?.name}"`
@@ -242,6 +272,11 @@ export function HeldCard({
           Anyone with the link can read {agent}'s reply on this page.
         </p>
       )}
+      {note && (
+        <p role="status" className={NOTE}>
+          {note}
+        </p>
+      )}
       {error && (
         <p role="alert" className="m-0 text-[12.5px] text-destructive">
           {error}
@@ -271,7 +306,7 @@ export function HeldCard({
                 type="button"
                 className={PLAIN}
                 disabled={busy}
-                onClick={() => setWide("space")}
+                onClick={() => enter("space")}
               >
                 {`Allow in the "${r.space.name}" space…`}
               </button>
@@ -280,7 +315,7 @@ export function HeldCard({
               type="button"
               className={PLAIN}
               disabled={busy}
-              onClick={() => setWide("all")}
+              onClick={() => enter("all")}
             >
               Allow on all pages{"…"}
             </button>

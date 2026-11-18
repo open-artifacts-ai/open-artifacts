@@ -875,9 +875,15 @@ function Composer({
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 const n = matches.length;
-                setActiveOpt(
-                  (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
-                );
+                // #2577: an agent whose person turned asking off can't be picked: skip it.
+                const step = e.key === "ArrowDown" ? 1 : n - 1;
+                setActiveOpt((i) => {
+                  for (let k = 1; k <= n; k++) {
+                    const j = (i + step * k) % n;
+                    if (matches[j]?.askState !== "off") return j;
+                  }
+                  return i;
+                });
                 return;
               }
               if (
