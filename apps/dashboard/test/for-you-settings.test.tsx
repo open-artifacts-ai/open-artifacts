@@ -423,7 +423,7 @@ describe("this browser's notifications (slice 3, S5)", () => {
     ).toBeDisabled();
   });
 
-  it("a browser that can't: Not available, the line under the row, interrupts off", async () => {
+  it("a browser that can't, key present: Not available, the line under the row, account controls stay on", async () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     mount("/settings/notifications");
     expect(
@@ -436,11 +436,11 @@ describe("this browser's notifications (slice 3, S5)", () => {
       screen.queryByRole("switch", { name: "Needs you in this browser" }),
     ).toBeNull();
     expect(
-      screen.getByText("Browser notifications aren't available here."),
-    ).toBeInTheDocument();
+      screen.queryByText("Browser notifications aren't available here."),
+    ).toBeNull();
     for (const name of ["Interrupt me for", "On lock screens"])
-      expect(screen.getByRole("combobox", { name })).toBeDisabled();
-    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeDisabled();
+      expect(screen.getByRole("combobox", { name })).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
   });
 
   it("no push key on the server: both switches off and disabled, in plain words", async () => {
@@ -471,6 +471,7 @@ describe("this browser's notifications (slice 3, S5)", () => {
     expect(
       screen.getByRole("combobox", { name: "On lock screens" }),
     ).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeDisabled();
   });
 });
 

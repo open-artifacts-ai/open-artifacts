@@ -66,9 +66,9 @@ export function ForYouPrefs() {
   // #2512 slice 3: no push key on the server: the browser column isn't shown.
   const key = usePushKey(true);
   if (!prefs.data || key.isPending) return null;
-  // Design: no key on the server, or a browser that can't: the interrupt
-  // settings have nothing to act on here.
-  const available = !!key.data && pushSupported();
+  // Design: these are per account and reach other browsers, so only a server
+  // with no push key turns them off (not this browser's own capability).
+  const available = !!key.data;
   return (
     <>
       <Levels prefs={prefs.data} pushKey={key.data ?? null} />
