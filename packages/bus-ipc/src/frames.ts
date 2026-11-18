@@ -516,7 +516,7 @@ export const StatusReply = z.object({
   /** The hub's `server_version` from its last `hello_ok`. Absent before one, and from older daemons. */
   hub_version: z.string().optional(),
   /** The owner's quiet hours end (ISO UTC), only while they last (#2759). Older daemons omit it. */
-  owner_away_until: z.string().optional(),
+  owner_away_until: z.string().max(40).optional(),
   /** This daemon takes `link_proof` (#1822). Older daemons omit it. */
   link: z.boolean().optional(),
   /** The namespace `cwd` resolves to, when the request named one. */
