@@ -295,6 +295,13 @@
       "when": 1794835282589,
       "tag": "0041_email_optouts",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1794970229276,
+      "tag": "0042_bus_machine_updates",
+      "breakpoints": true
     }
   ]
 }
