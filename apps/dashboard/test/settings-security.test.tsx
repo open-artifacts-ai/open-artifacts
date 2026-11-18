@@ -389,7 +389,8 @@ describe("Settings › Security: passkeys", () => {
         "Your current passkey was accepted. Now add the new one.",
       ),
     ).toBeVisible();
-    expect(next).toHaveFocus();
+    // Focus lands in a passive effect after the button mounts: wait for it.
+    await waitFor(() => expect(next).toHaveFocus());
     // One primary action: the header button steps back, the sign-in note goes.
     const header = screen.getByRole("button", { name: "Add a passkey" });
     expect(header).toHaveAttribute("aria-disabled", "true");
