@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { markLive } from "@oa/bus-daemon";
 import { copyFor, useBusCmd } from "./bus-cmd.ts";
+import { add } from "./commands/add.ts";
 import { autoUpdate } from "./commands/auto-update.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
@@ -23,6 +24,7 @@ import { type Command, parse } from "./index.ts";
 /** Commands that print to a terminal and survive the shim: see `main`. */
 const TERMINAL = new Set([
   "login",
+  "add",
   "skill",
   "status",
   "logs",
@@ -110,6 +112,8 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       if (pid !== undefined) say(ctx, ctx.copy.daemonOldToken(pid));
       return 0;
     }
+    case "add":
+      return add(cmd, ctx);
     case "skill":
       return skill(cmd, ctx);
     case "daemon":
