@@ -91,6 +91,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /auth/unsubscribe/comments": {
     public: "comment email unsubscribe (RFC 8058 one-click); signed token",
   },
+  // #2590 "Don't email me again" in outside share emails: a signed token (one
+  // address, one purpose) is the only credential; GET changes nothing.
+  "GET /auth/unsubscribe/shares": {
+    public: "share email opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/shares": {
+    public: "share email opt-out (RFC 8058 one-click); signed token",
+  },
   "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).
@@ -384,6 +392,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public: "share notices; form CSRF, checks canConnect, plan cap refuses",
   },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
+  // #2552 the version the instance names: owner only, cookie session only (handler).
+  "PUT /api/v1/bus/run-version": { org: "bus.run_version" },
+  // #2552 "Install now" for the caller's own machine: browser session only (handler).
+  "POST /api/v1/bus/machines/:id/install-now": { org: "mcp.connect" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
   // #1299: the hosted canary's probe of the reserved ping hub; a read, so a

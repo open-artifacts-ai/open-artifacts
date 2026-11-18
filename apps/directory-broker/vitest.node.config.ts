@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 /** Config and bundle checks that need Node (fs, wrangler), not workerd. */
 export default defineConfig({
   test: {
+    globalSetup: ["../../scripts/test/tmp-root.ts"],
     setupFiles: ["../../scripts/test/agent-cli-guard.ts"],
     include: ["test/node/**/*.test.ts"],
     environment: "node",

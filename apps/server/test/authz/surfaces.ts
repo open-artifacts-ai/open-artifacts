@@ -2223,6 +2223,26 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #2552: the owner names the version machines run. Refusal mode sends an
+  // invalid body (400 after the owner check); real mode clears it (204).
+  "PUT /api/v1/bus/run-version": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { version: null } }),
+      allow: ok(204),
+    },
+  },
+  // #2552 "Install now": only the caller's own machine answers past the
+  // rules: real only. 409 machine_offline is the answer while it is not connected.
+  "POST /api/v1/bus/machines/:id/install-now": {
+    real: {
+      needs: ["busMachineId"],
+      req: (r) => ({
+        path: `/api/v1/bus/machines/${r.busMachineId}/install-now`,
+      }),
+      allow: either(ok(204), code("conflict")),
+    },
+  },
   // #1296: the caller's own role addresses. A vacant role (agentId null) is
   // 200 on a member's bus, or the named conflict while they have none.
   "PUT /api/v1/bus/roles": {
@@ -2481,6 +2501,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["DELETE /api/v1/bus/roles/:id", org("mcp.connect")],
   // #1567: project links; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/run-version", org("bus.run_version")],
+  ["POST /api/v1/bus/machines/:id/install-now", org("mcp.connect")],
   ["PUT /api/v1/bus/links", org("mcp.connect")],
   ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],
   // #1346: role reach; writes also need a cookie session (the handler).
@@ -2536,6 +2558,8 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/code/link",
   "GET /auth/unsubscribe/comments",
   "POST /auth/unsubscribe/comments",
+  "GET /auth/unsubscribe/shares",
+  "POST /auth/unsubscribe/shares",
   "POST /auth/logout",
   "GET /auth/dev-login",
   "ALL /__test/*",

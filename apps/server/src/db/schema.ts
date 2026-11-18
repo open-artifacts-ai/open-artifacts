@@ -659,6 +659,27 @@ export const busMachines = sqliteTable(
   (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
 );
 
+// #2552 the latest update report of each machine (BUS_CAPS.runVersion): one
+// row, replaced by the next report. The bus hub writes it; Settings > Machines
+// reads it later. switching_at / last_hello_at / stopped_at carry "the bus
+// stopped": a machine whose latest report is `switching` and that has not said
+// hello for 5 minutes gets stopped_at (no notice yet).
+export const busMachineUpdates = sqliteTable("bus_machine_updates", {
+  machineId: text("machine_id")
+    .primaryKey()
+    .references(() => busMachines.id, { onDelete: "cascade" }),
+  event: text("event").notNull(),
+  fromVersion: text("from_version").notNull(),
+  toVersion: text("to_version").notNull(),
+  reason: text("reason").notNull(),
+  detail: text("detail"),
+  rescueVersion: integer("rescue_version").notNull().default(0),
+  reportedAt: integer("reported_at").notNull(),
+  switchingAt: integer("switching_at"),
+  lastHelloAt: integer("last_hello_at"),
+  stoppedAt: integer("stopped_at"),
+});
+
 // #1291 pending device-flow codes, 10 minutes each. device_code_hash is the
 // sha256 of the CLI's polling secret; user_code is the short code the person
 // sees on the approval page (useless without a session that can connect).
@@ -738,6 +759,15 @@ export const reservedArtifacts = sqliteTable("reserved_artifacts", {
   userId: text("user_id")
     .notNull()
     .references(() => users.id),
+  createdAt: integer("created_at").notNull(),
+});
+
+/**
+ * "Don't email me again" (#2590): an address that opted out of outside share
+ * emails, by the SHA-256 of its normalized form (never the address itself).
+ */
+export const emailOptouts = sqliteTable("email_optouts", {
+  addressHash: text("address_hash").primaryKey(),
   createdAt: integer("created_at").notNull(),
 });
 

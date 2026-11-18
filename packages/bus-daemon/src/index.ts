@@ -33,6 +33,8 @@ import {
   frameId,
   MAX_WAITING_QUERY,
   type SendFrame,
+  UPDATE_REASONS,
+  type UpdateReason,
   WireNamespaceSchema,
 } from "@oa/bus-protocol";
 import { type AgentRecord, AgentTable, withLinkHash } from "./agents.ts";
@@ -152,6 +154,12 @@ import { PiTransport } from "./transports/pi.ts";
 import { runningVersion } from "./update/layout.ts";
 import { loginActive } from "./update/login-flag.ts";
 import { parseVersion } from "./update/policy.ts";
+import {
+  type Report,
+  readReports,
+  readRescueVersion,
+  removeReports,
+} from "./update/reports.ts";
 import { startSelfCheck } from "./update/selfcheck.ts";
 import { Updater } from "./update/updater.ts";
 
@@ -192,6 +200,11 @@ export * from "./update/state.ts";
 export * from "./update/updater.ts";
 
 const NOTICE_RETRY_MS = 30_000;
+/** How long a `switching` report waits for the hub's answer before the switch is held. */
+const SWITCH_ACK_MS = 5000;
+/** How often queued update reports are sent. */
+const REPORT_FLUSH_MS = 5000;
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** #1956: a ref binding whose link has been closed this long lapses, even if its pid lives. */
 export const BINDING_IDLE_MS = 24 * 60 * 60_000;
 /** #1956: how often the bindings map is swept; the sync tick runs more often than needed. */
@@ -259,6 +272,8 @@ export type DaemonDeps = {
     enabled?: boolean;
     every?: (fn: () => void, ms: number) => () => void;
     deadlineMs?: number;
+    /** Tests only: how long a `switching` report waits for the hub's answer. */
+    ackMs?: number;
   };
   /** How often the bound socket is checked; default 60 s. */
   socketCheckMs?: number;
@@ -1384,6 +1399,38 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
+  /** The hub's last hello_ok listed BUS_CAPS.runVersion: the update frames may go (#2552). */
+  let hubRunCap = false;
+  /** `switching` reports waiting for the hub's update_ack, by frame id. */
+  const switchAcks = new Map<string, (ok: boolean) => void>();
+  /** Set below, once the updater exists (a hello_ok cannot come before it). */
+  let updaterRef: Updater | undefined;
+  /** Sends the queued update reports (BUS_CAPS.runVersion hubs only); removes the ones that went. */
+  function flushUpdateReports(): void {
+    if (!hubRunCap || !hubHelloed || !hub.open || !deps.update) return;
+    const queued = readReports(home());
+    const went: Report[] = [];
+    const rescue = readRescueVersion(home());
+    for (const r of queued) {
+      const ok = hub.send({
+        v: 1,
+        id: frameId(),
+        type: "update_report",
+        // The 24 h notice is "held" on the wire.
+        event: r.event === "ready_24h" ? "held" : r.event,
+        from: r.from,
+        to: r.to,
+        reason: (UPDATE_REASONS as readonly string[]).includes(r.reason)
+          ? (r.reason as UpdateReason)
+          : "other",
+        rescue_version: rescue,
+        at: new Date(r.at).toISOString(),
+      });
+      if (!ok) break;
+      went.push(r);
+    }
+    removeReports(home(), went);
+  }
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
   let hubWaiting = false;
   /** The hub's last hello_ok listed BUS_CAPS.waitingQuery: it counts waiting mail by this machine's own away refs (#2079). */
@@ -1520,6 +1567,25 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        // #2552: only from a hub that listed the cap; anything else is ignored.
+        case "run_version":
+          if (hubRunCap) {
+            if (frame.run_version === null) updaterRef?.clearNamed();
+            else
+              void updaterRef
+                ?.instructFromInstance(frame.run_version)
+                .catch((e) => log(`update: ${errText(e)}`));
+          }
+          return;
+        case "install_now":
+          if (hubRunCap)
+            void updaterRef
+              ?.installNowFromInstance()
+              .catch((e) => log(`update: ${errText(e)}`));
+          return;
+        case "update_ack":
+          switchAcks.get(frame.id)?.(frame.ok);
+          return;
         case "acked": {
           // Only the answer to an ack sent on this link, from a hub that
           // negotiated the cap; anything else is ignored.
@@ -1550,7 +1616,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
+          hubRunCap = frame.caps?.includes(BUS_CAPS.runVersion) ?? false;
           hubHelloed = true;
+          if (hubRunCap) {
+            if (frame.run_version === null) updaterRef?.clearNamed();
+            else if (frame.run_version !== undefined)
+              void updaterRef
+                ?.instructFromInstance(frame.run_version)
+                .catch((e) => log(`update: ${errText(e)}`));
+            flushUpdateReports();
+          }
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
@@ -1637,6 +1712,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       codexAckIds.clear();
       hubWaitingQuery = false;
       hubHelloed = false;
+      hubRunCap = false;
+      for (const [id, done] of [...switchAcks]) {
+        switchAcks.delete(id);
+        done(false);
+      }
       statusRelay.dropped();
       receipts.release();
       // A send not yet answered waits for the next link; anything else fails now.
@@ -2798,6 +2878,37 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }),
         loginActive: () => loginActive(home()),
         hubReady: () => hub.open && hubHelloed,
+        announceSwitch: async (from, to, reason = "ok") => {
+          if (!hubRunCap || !hub.open) return false;
+          const id = frameId();
+          const answer = new Promise<boolean>((res) => {
+            const t = setTimeout(() => {
+              switchAcks.delete(id);
+              res(false);
+            }, upd.ackMs ?? SWITCH_ACK_MS);
+            t.unref?.();
+            switchAcks.set(id, (ok) => {
+              clearTimeout(t);
+              switchAcks.delete(id);
+              res(ok);
+            });
+          });
+          const sentOk = hub.send({
+            v: 1,
+            id,
+            type: "update_report",
+            event: "switching",
+            from,
+            to,
+            reason,
+            rescue_version: readRescueVersion(home()),
+            at: new Date().toISOString(),
+          });
+          if (!sentOk) {
+            switchAcks.get(id)?.(false);
+          }
+          return answer;
+        },
         serverVersion: () => hubVersion,
         exit: upd.exit,
         log,
@@ -2805,7 +2916,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ...(upd.every ? { every: upd.every } : {}),
       })
     : undefined;
+  updaterRef = updater;
   updater?.start();
+  // Queued update reports go out on each hello and every few seconds after,
+  // so a report queued by the self-check or the updater is not stranded.
+  const reportTimer = upd
+    ? setInterval(flushUpdateReports, REPORT_FLUSH_MS)
+    : undefined;
+  reportTimer?.unref?.();
   return {
     hub,
     agents,
@@ -2815,6 +2933,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ev("daemon_stop", { pid: process.pid });
       selfCheck?.stop();
       updater?.stop();
+      if (reportTimer) clearInterval(reportTimer);
       clearInterval(socketWatch);
       clearInterval(watcher);
       clearInterval(retry);
