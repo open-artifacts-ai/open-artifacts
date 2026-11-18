@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "506e0304-124c-444a-af65-bbae478181d7",
+  "id": "d889292e-ac01-4d8c-982d-cdd40a9167eb",
   "prevId": "ac5c3c6f-ab97-403e-a78f-97ee88d7228e",
   "tables": {
     "agent_grants": {
@@ -146,14 +146,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "held": {
-          "name": "held",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
         }
       },
       "indexes": {
@@ -671,6 +663,104 @@
           "columnsFrom": ["user_id"],
           "columnsTo": ["id"],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "bus_machine_updates": {
+      "name": "bus_machine_updates",
+      "columns": {
+        "machine_id": {
+          "name": "machine_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "from_version": {
+          "name": "from_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "to_version": {
+          "name": "to_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "detail": {
+          "name": "detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "rescue_version": {
+          "name": "rescue_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "reported_at": {
+          "name": "reported_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "switching_at": {
+          "name": "switching_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_hello_at": {
+          "name": "last_hello_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "stopped_at": {
+          "name": "stopped_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "bus_machine_updates_machine_id_bus_machines_id_fk": {
+          "name": "bus_machine_updates_machine_id_bus_machines_id_fk",
+          "tableFrom": "bus_machine_updates",
+          "tableTo": "bus_machines",
+          "columnsFrom": ["machine_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -2761,341 +2851,6 @@
           "value": "\"format\" in ('html', 'markdown', 'code', 'pdf', 'image')"
         }
       }
-    },
-    "agent_listens": {
-      "name": "agent_listens",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "member_id": {
-          "name": "member_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "scope": {
-          "name": "scope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "artifact_id": {
-          "name": "artifact_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "until": {
-          "name": "until",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_via": {
-          "name": "created_via",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "removed_at": {
-          "name": "removed_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "agent_listens_owner_idx": {
-          "name": "agent_listens_owner_idx",
-          "columns": ["owner_id", "member_id"],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "agent_listens_owner_id_users_id_fk": {
-          "name": "agent_listens_owner_id_users_id_fk",
-          "tableFrom": "agent_listens",
-          "tableTo": "users",
-          "columnsFrom": ["owner_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "agent_listens_member_id_users_id_fk": {
-          "name": "agent_listens_member_id_users_id_fk",
-          "tableFrom": "agent_listens",
-          "tableTo": "users",
-          "columnsFrom": ["member_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "agent_listens_artifact_id_artifacts_id_fk": {
-          "name": "agent_listens_artifact_id_artifacts_id_fk",
-          "tableFrom": "agent_listens",
-          "tableTo": "artifacts",
-          "columnsFrom": ["artifact_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "agent_listens_space_id_spaces_id_fk": {
-          "name": "agent_listens_space_id_spaces_id_fk",
-          "tableFrom": "agent_listens",
-          "tableTo": "spaces",
-          "columnsFrom": ["space_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "agent_listens_scope": {
-          "name": "agent_listens_scope",
-          "value": "\"scope\" in ('page', 'space', 'all')"
-        }
-      }
-    },
-    "held_request_items": {
-      "name": "held_request_items",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "comment_id": {
-          "name": "comment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "agent_key": {
-          "name": "agent_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "way": {
-          "name": "way",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'held'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "held_items_comment_idx": {
-          "name": "held_items_comment_idx",
-          "columns": ["comment_id", "agent_key"],
-          "isUnique": true
-        },
-        "held_items_request_idx": {
-          "name": "held_items_request_idx",
-          "columns": ["request_id", "state"],
-          "isUnique": false
-        },
-        "held_items_expiry_idx": {
-          "name": "held_items_expiry_idx",
-          "columns": ["state", "expires_at"],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "held_request_items_request_id_held_requests_id_fk": {
-          "name": "held_request_items_request_id_held_requests_id_fk",
-          "tableFrom": "held_request_items",
-          "tableTo": "held_requests",
-          "columnsFrom": ["request_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "held_items_way": {
-          "name": "held_items_way",
-          "value": "\"way\" in ('mention', 'reply', 'ask', 'page')"
-        },
-        "held_items_state": {
-          "name": "held_items_state",
-          "value": "\"state\" in ('held', 'allowed', 'lapsed', 'withdrawn')"
-        }
-      }
-    },
-    "held_requests": {
-      "name": "held_requests",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "receiver_id": {
-          "name": "receiver_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "sender_id": {
-          "name": "sender_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "artifact_id": {
-          "name": "artifact_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "last_at": {
-          "name": "last_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "quiet_until": {
-          "name": "quiet_until",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "held_requests_pair_idx": {
-          "name": "held_requests_pair_idx",
-          "columns": ["receiver_id", "sender_id", "artifact_id"],
-          "isUnique": true
-        },
-        "held_requests_receiver_idx": {
-          "name": "held_requests_receiver_idx",
-          "columns": ["receiver_id", "last_at"],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "held_requests_receiver_id_users_id_fk": {
-          "name": "held_requests_receiver_id_users_id_fk",
-          "tableFrom": "held_requests",
-          "tableTo": "users",
-          "columnsFrom": ["receiver_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "held_requests_sender_id_users_id_fk": {
-          "name": "held_requests_sender_id_users_id_fk",
-          "tableFrom": "held_requests",
-          "tableTo": "users",
-          "columnsFrom": ["sender_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "held_requests_artifact_id_artifacts_id_fk": {
-          "name": "held_requests_artifact_id_artifacts_id_fk",
-          "tableFrom": "held_requests",
-          "tableTo": "artifacts",
-          "columnsFrom": ["artifact_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
     }
   },
   "views": {},

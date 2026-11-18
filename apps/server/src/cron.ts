@@ -22,6 +22,7 @@ import {
 import { sweepAuditEvents } from "./services/audit.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
+import { sendSetupReminders } from "./services/setup-reminder.js";
 import { directoryMode } from "./services/spaces.js";
 import { clearSuspended, markSuspended } from "./services/suspend.js";
 import { sweepUploads } from "./services/uploads.js";
@@ -311,6 +312,8 @@ function daily(
       env.HOSTED === "1" ? null : checkLatestRelease(env, now),
       expirePending(env, now, { cron: true }),
       sweepAuditEvents(env, now),
+      // #2632: the one setup reminder, three days after a first login.
+      sendSetupReminders(env, now),
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a
       // lost one.
       directoryMode(env) === "off" ? null : kickSync(env, "cron"),

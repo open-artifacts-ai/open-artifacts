@@ -104,6 +104,7 @@ const STATES: [string, string[], (page: Page) => Promise<void>][] = [
     ["--hello", "edit"],
     async (page) => {
       await expect(status(page, /^Saved$/)).toBeVisible();
+      // #2276: only a touch phone hides the bar; this spec has a fine pointer.
       await expect(page.getByRole("toolbar")).toBeVisible();
     },
   ],

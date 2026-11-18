@@ -119,6 +119,14 @@ export const BUS_CAPS = {
    * hub confirmed it, and sends it again on a new link otherwise.
    */
   ackConfirm: "ack_confirm",
+  /**
+   * The instance names the version (#2552): `hello_ok.run_version`, the
+   * `run_version` push, the fieldless `install_now` push and the `update_ack`
+   * answer go only to a socket whose hello listed it, and a daemon sends
+   * `update_report` only to a hub that listed it in `hello_ok.caps`. Either
+   * side without it sees none of these frames.
+   */
+  runVersion: "run_version",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

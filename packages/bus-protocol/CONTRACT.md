@@ -92,6 +92,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
 - `link_bind {agent_ref, hash}` (`BUS_CAPS.link`, see Session links).
 - `waiting_query {agent_refs}` (`BUS_CAPS.waitingQuery`, up to 64): pending mail for this machine's own away agents.
+- `update_report {event, from, to, reason, detail?, rescue_version, at}` (`BUS_CAPS.runVersion`, see Updates): the machine's update state. `event` is `updated`, `refused`, `stepped_back`, `needs_you`, `held` or `switching`; `from` and `to` are x.y.z or empty; `reason` is a closed set (`UPDATE_REASONS`); `detail` is at most 200 chars.
 
 Hub to client (`SERVER_FRAMES`):
 
@@ -109,6 +110,7 @@ Hub to client (`SERVER_FRAMES`):
 - `link_bound {}`: reply to `link_bind`.
 - `waiting_counts {counts}`: reply to `waiting_query`: `agent_ref` to pending count (1 to 100). A ref that is unknown, live, on another machine or has nothing waiting is omitted.
 - `acked {msg_id}`: reply to a mail `ack` from a socket whose hello listed `ack_confirm` (never to a notice ack). Sent after the receipt is settled, or for an id that can no longer settle (a repeat, unknown, or not this machine's) with the same frame, so it says nothing about the id. Only on the link the ack came in on.
+- `run_version {run_version}`, `install_now {}`, `update_ack {ok}` (`BUS_CAPS.runVersion`, see Updates).
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
@@ -119,6 +121,33 @@ depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
 frames depth <= 5, 65536 and 131072, so a full roster of rows with status
 fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
 in one object.
+
+## Updates (`BUS_CAPS.runVersion`, #2552)
+
+The instance names a version and nothing else. `hello_ok.run_version` (and
+the `run_version` push while connected) is strict `x.y.z`, at most 32 chars,
+or `null` when the instance names none (the owner cleared it: the daemon then
+stops any rollout it has staged). A hub sends it only to a socket whose hello
+listed `run_version`; a `hello_ok` without the field means the hub does not
+know yet and a push follows. The daemon never reads a URL, hash or flag from
+the instance; it verifies the release itself. `install_now {}` has no field:
+the daemon installs only the version it already staged and the instance named.
+
+A machine reports with `update_report`; the hub keeps the latest per machine.
+A `switching` report is answered by `update_ack {ok}` (yes or no, nothing
+else) and the machine swaps only after `ok: true`; with no answer it holds and
+tries later. The hub lists `run_version` in `hello_ok.caps` only to a hello
+that listed it, and a daemon sends `update_report` only to a hub that listed
+it. The hub answers `ok: false` to a `switching` report whose `to` is not the
+version the instance names, read fresh from the setting (not the 30 s cache),
+unless the move is a step back (`to` lower than `from`) or the person asked for
+it on the machine (`reason: "requested"`, `oa-bus update`). A read that fails
+is a no. `to`, `from` and `reason` are the daemon's own claims, so the veto
+guards against stale state on an honest daemon, not against a hostile one: the
+proof check and the forward-only rule on the machine are what stop a bad
+version. The daemon, for its part, swaps to a version it staged from the
+instance only while that version is the one last named. A machine with `switching` as its latest report and no `hello` for 5
+minutes is marked stopped.
 
 ## Follows (`BUS_CAPS.follow`, #1317)
 

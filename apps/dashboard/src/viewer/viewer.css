@@ -586,7 +586,7 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
 .oa-doc-fade {
   display: none;
 }
-@media (max-width: 640px) {
+@media (max-width: 600px) {
   .oa-doc-fade {
     display: block;
   }
@@ -1052,7 +1052,7 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
  * on-screen keyboard. It is fixed to the layout viewport and lifted by --oa-kb
  * (the keyboard's height, from the visual viewport; see comments/viewport.ts).
  */
-@media (max-width: 640px) {
+@media (max-width: 600px) {
   .oa-doc-toolbar {
     position: fixed;
     inset-inline: 0;
@@ -1094,9 +1094,23 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   .oa-doc-toolbar[data-keyboard] {
     padding-bottom: 4px;
   }
+  /* 44px touch targets. */
+  .oa-doc-toolbar button {
+    width: 44px;
+    height: 44px;
+  }
+  /* No keyboard: no bar, and the doc has the full height. */
+  .oa-doc-toolbar[data-hidden] {
+    display: none;
+  }
   /* Room under the text for the bar, so the last line can scroll clear of it. */
-  .oa-doc[data-editable] .oa-doc-scroll {
-    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  .oa-doc[data-editable]:has(.oa-doc-toolbar:not([data-hidden]))
+  .oa-doc-scroll {
+    padding-bottom: calc(
+      52px +
+      var(--oa-kb, 0px) +
+      env(safe-area-inset-bottom, 0px)
+    );
   }
 }
 @media (max-width: 600px) {

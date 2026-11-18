@@ -78,11 +78,15 @@ test("hello read/access: a viewer reads only, no toolbar, no banner", async ({
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
-test("hello edit: stays editable", async ({ page }, info) => {
-  await open(page, info, ["--hello", "edit"]);
-  await expect(prose(page)).toHaveAttribute("contenteditable", "true");
-  await expect(page.getByRole("toolbar")).toBeVisible();
-});
+test(
+  "hello edit: stays editable",
+  { tag: "@smoke" },
+  async ({ page }, info) => {
+    await open(page, info, ["--hello", "edit"]);
+    await expect(prose(page)).toHaveAttribute("contenteditable", "true");
+    await expect(page.getByRole("toolbar")).toBeVisible();
+  },
+);
 
 test("hello read/room_full: reads only, says why, Try again reconnects", async ({
   page,
@@ -195,31 +199,33 @@ test("1013 on every connection: the reconnect gaps grow, not a steady 200 ms", a
   expect(g3 - 600).toBeGreaterThan((g2 - 600) * 1.2);
 });
 
-test("saved: the title bar says Saved as v5 for a moment and the version data refetches", async ({
-  page,
-}, info) => {
-  let artifactGets = 0;
-  page.on("request", (r) => {
-    if (
-      r.method() === "GET" &&
-      r.url().endsWith(`/api/v1/artifacts/${LANDING}`)
-    )
-      artifactGets++;
-  });
-  await open(page, info, ["--saved", "5"]);
-  await expect(
-    page.getByRole("status").filter({ hasText: "Saved" }),
-  ).toBeVisible();
-  const before = artifactGets;
-  await expect(
-    page.getByRole("status").filter({ hasText: "Saved as v5" }),
-  ).toBeVisible();
-  await expect.poll(() => artifactGets).toBeGreaterThan(before);
-  // And it goes back to plain Saved.
-  await expect(
-    page.getByRole("status").filter({ hasText: /^Saved$/ }),
-  ).toBeVisible({ timeout: 8000 });
-});
+test(
+  "saved: the title bar says Saved as v5 for a moment and the version data refetches",
+  { tag: "@smoke" },
+  async ({ page }, info) => {
+    let artifactGets = 0;
+    page.on("request", (r) => {
+      if (
+        r.method() === "GET" &&
+        r.url().endsWith(`/api/v1/artifacts/${LANDING}`)
+      )
+        artifactGets++;
+    });
+    await open(page, info, ["--saved", "5"]);
+    await expect(
+      page.getByRole("status").filter({ hasText: "Saved" }),
+    ).toBeVisible();
+    const before = artifactGets;
+    await expect(
+      page.getByRole("status").filter({ hasText: "Saved as v5" }),
+    ).toBeVisible();
+    await expect.poll(() => artifactGets).toBeGreaterThan(before);
+    // And it goes back to plain Saved.
+    await expect(
+      page.getByRole("status").filter({ hasText: /^Saved$/ }),
+    ).toBeVisible({ timeout: 8000 });
+  },
+);
 
 test("restored by someone else: says so, the pill ticks, the doc stays editable", async ({
   page,

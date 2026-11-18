@@ -49,6 +49,7 @@ export const SHAPE = {
   held_requests: 500, // #2577: requests to someone else's agent, held for their person
   held_request_items: 800,
   agent_listens: 300,
+  inbox_items: 20_000, // #2512 S2: mentions and updates, a few per active member
   data_writes_total: 1, // the install-wide write counter: one row
   tokens: 30_000,
   passkeys: 2_000, // #2263
@@ -56,6 +57,7 @@ export const SHAPE = {
   passkey_settings: 1_000,
   agent_grants: 50_000,
   bus_machines: 20_000,
+  bus_machine_updates: 10_000,
   bus_device_codes: 500,
   login_codes: 2_000,
   oauth_kv: 100_000,
@@ -87,6 +89,8 @@ export interface Ctx {
   sharedSpaces: string[];
   artifacts: { id: string; owner: string; deleted: boolean }[];
   groups: { id: string; email: string }[];
+  /** Bus machine ids already written (bus_machine_updates points at them). */
+  busMachines: string[];
 }
 
 export interface Rule {
@@ -574,6 +578,31 @@ export const RULES: Record<string, Rule> = {
       };
     },
   },
+  // #2512 S2: the For you inbox's stored items; a third already read.
+  inbox_items: {
+    rows: (c) => c.count("inbox_items"),
+    row(i, c) {
+      const a = c.artifacts[(i * 89) % c.artifacts.length];
+      const u = c.users[(i * 7919) % c.users.length];
+      if (!a || !u) return null;
+      const kind = c.pick(["reply", "comment", "share", "decision", "mention"]);
+      return {
+        id: c.id("ib"),
+        user_id: u.id,
+        kind,
+        level: "update",
+        key: `${kind}:${c.id("cm")}`,
+        artifact_id: a.id,
+        thread_id: c.id("th"),
+        comment_id: c.id("cm"),
+        actor: '{"kind":"user","ref":"seed","name":"Seed"}',
+        excerpt: `seed item ${i}`,
+        agent_name: kind === "mention" ? "Scout" : null,
+        created_at: Date.now() - c.int(30 * 86_400_000),
+        read_at: c.rand() < 0.33 ? Date.now() : null,
+      };
+    },
+  },
   tokens: {
     rows: (c) => c.count("tokens"),
     row(i, c) {
@@ -654,14 +683,39 @@ export const RULES: Record<string, Rule> = {
     row(i, c) {
       const u = c.users[(i * 7) % c.users.length];
       if (!u) return null;
+      const id = c.id("bm");
+      c.busMachines.push(id);
       return {
-        id: c.id("bm"),
+        id,
         user_id: u.id,
         label: `machine ${i}`,
         token_hash: `${c.id("bh")}${i}`,
         created_at: c.time(),
         last_used_at: c.rand() < 0.7 ? c.time() : null,
         revoked_at: c.rand() < 0.2 ? c.time() : null,
+      };
+    },
+  },
+  // #2552: the latest update report of some machines (one row each).
+  bus_machine_updates: {
+    rows: (c) => Math.min(c.count("bus_machine_updates"), c.busMachines.length),
+    row(i, c) {
+      const id = c.busMachines[i];
+      if (id === undefined) return null;
+      const at = c.time();
+      const switching = c.rand() < 0.1;
+      return {
+        machine_id: id,
+        event: switching ? "switching" : "updated",
+        from_version: "0.186.0",
+        to_version: "0.187.0",
+        reason: "ok",
+        detail: null,
+        rescue_version: 1,
+        reported_at: at,
+        switching_at: switching ? at : null,
+        last_hello_at: at,
+        stopped_at: null,
       };
     },
   },
@@ -888,6 +942,7 @@ function context(scale: number): Ctx {
     sharedSpaces: [],
     artifacts: [],
     groups: [],
+    busMachines: [],
   };
 }
 

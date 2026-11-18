@@ -38,6 +38,7 @@ import {
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { inboxOf, needsYouCount } from "../src/services/inbox.js";
+import { writeInboxItems } from "../src/services/inbox-items.js";
 import {
   giveBackReceiverSlot,
   takeReceiverSlot,
@@ -1083,6 +1084,40 @@ describe("the inbox", () => {
     const [r] = await held(s.id);
     await notNow(E, owner.userId, r?.id as string);
     expect(await mine()).toHaveLength(0);
+  });
+  it("a mention update's excerpt is masked for the receiver's agent while held, and shown to the person (#2577)", async () => {
+    const s = await setup();
+    const t = await post(
+      s.id,
+      typed(editor),
+      editor,
+      "inbox secret",
+      mention(s.claude),
+    );
+    const commentId = t.comments[0]?.id as string;
+    await writeInboxItems(E, [
+      {
+        userId: owner.userId,
+        kind: "mention",
+        key: `mention:${commentId}`,
+        artifactId: s.id,
+        threadId: t.id,
+        commentId,
+        actor: { kind: "user", ref: editor.userId },
+        excerpt: "inbox secret",
+        agentName: "Claude",
+        at: Date.now(),
+      },
+    ]);
+    const me = callerOf(owner.member) as Parameters<typeof inboxOf>[1];
+    const mineOf = async (asAgent: boolean) =>
+      (await inboxOf(E, me, undefined, asAgent)).updates.filter(
+        (i) => i.artifact?.id === s.id,
+      );
+    const asAgent = JSON.stringify(await mineOf(true));
+    expect(asAgent).not.toContain("inbox secret");
+    expect(asAgent).toContain("is waiting for your person");
+    expect(JSON.stringify(await mineOf(false))).toContain("inbox secret");
   });
 });
 

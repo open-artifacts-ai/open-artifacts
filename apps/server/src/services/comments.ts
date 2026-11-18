@@ -103,6 +103,12 @@ import {
   notifyCommented,
 } from "./follows.js";
 import {
+  forgetCommentItems,
+  recordCommentItems,
+  recordDecisionItems,
+  refreshCommentItems,
+} from "./inbox-items.js";
+import {
   isGuestMember,
   isOutsideMember,
   MentionGate,
@@ -1158,7 +1164,11 @@ const emailPeople = (
   after && comment
     ? inBackground(
         after.ctx,
-        emailCommentRecipients(env, { artifactId, threadId, comment, reply }),
+        Promise.all([
+          // #2512 S2: the same people, in their inbox (no email setting needed).
+          recordCommentItems(env, { artifactId, threadId, comment, reply }),
+          emailCommentRecipients(env, { artifactId, threadId, comment, reply }),
+        ]),
       )
     : undefined;
 
@@ -2472,6 +2482,16 @@ export async function answerAsk(
       logError("ask_approve_audit_failed", e, { artifactId, commentId });
     }
   // Only the decision is "answered"; a weigh-in is input (#2381).
+  // #2512 S2: those who weighed in hear of the decision, before it closes their rows' siblings.
+  if (decided && stored)
+    await recordDecisionItems(env, {
+      artifactId,
+      threadId,
+      commentId,
+      question: ask.question,
+      by: stored.by,
+      decidedAt: stored.at,
+    });
   if (decided) await indexAnswered(env, artifactId, commentId);
   else if (who.kind === "user")
     await indexWeighed(env, artifactId, commentId, who.id);
@@ -2970,6 +2990,11 @@ export async function editComment(
     }),
   );
   await heldAfterEdit(env, artifactId, commentId);
+  await refreshCommentItems(env, {
+    artifactId,
+    commentId,
+    body: c.body,
+  });
   return commentView(env, c, viewer);
 }
 
@@ -2998,6 +3023,12 @@ export async function deleteComment(
     }),
   );
   await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
+  await forgetCommentItems(env, {
+    artifactId,
+    threadId,
+    commentId,
+    root: r?.root === true,
+  });
 }
 
 /** A new thread; records the commenter for the first-run checklist (#2287). */

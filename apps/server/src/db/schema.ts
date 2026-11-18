@@ -650,6 +650,44 @@ export const agentListens = sqliteTable(
   ],
 );
 
+// #2512 S2: the For you inbox's stored items (mentions and updates). Asks are
+// not here: they come from artifact_asks. `key` makes a write idempotent: one
+// row per (user, key), e.g. "reply:<comment id>", "share:<created at>".
+export const inboxItems = sqliteTable(
+  "inbox_items",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    level: text("level").notNull(),
+    key: text("key").notNull(),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    threadId: text("thread_id"),
+    commentId: text("comment_id"),
+    // The actor's StoredActor (or a guest/user stub), as JSON.
+    actor: text("actor").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // A mention's agent ("{author} mentioned {agent} on {page}"); null otherwise.
+    agentName: text("agent_name"),
+    createdAt: integer("created_at").notNull(),
+    readAt: integer("read_at"),
+  },
+  (t) => [
+    uniqueIndex("inbox_items_key_idx").on(t.userId, t.key),
+    index("inbox_items_read_idx").on(t.userId, t.readAt),
+    index("inbox_items_created_idx").on(t.userId, t.createdAt),
+    check(
+      "inbox_items_kind",
+      inList("kind", ["mention", "reply", "comment", "share", "decision"]),
+    ),
+    check("inbox_items_level", inList("level", ["needs_you", "update"])),
+  ],
+);
+
 // #2263 passkeys: one row per WebAuthn credential a member registered. It can
 // confirm a pick only once `created_at` is 24 h old (services/passkeys.ts).
 // public_key is the credential's COSE key, base64url; sign_count is the last
@@ -754,6 +792,27 @@ export const busMachines = sqliteTable(
   },
   (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
 );
+
+// #2552 the latest update report of each machine (BUS_CAPS.runVersion): one
+// row, replaced by the next report. The bus hub writes it; Settings > Machines
+// reads it later. switching_at / last_hello_at / stopped_at carry "the bus
+// stopped": a machine whose latest report is `switching` and that has not said
+// hello for 5 minutes gets stopped_at (no notice yet).
+export const busMachineUpdates = sqliteTable("bus_machine_updates", {
+  machineId: text("machine_id")
+    .primaryKey()
+    .references(() => busMachines.id, { onDelete: "cascade" }),
+  event: text("event").notNull(),
+  fromVersion: text("from_version").notNull(),
+  toVersion: text("to_version").notNull(),
+  reason: text("reason").notNull(),
+  detail: text("detail"),
+  rescueVersion: integer("rescue_version").notNull().default(0),
+  reportedAt: integer("reported_at").notNull(),
+  switchingAt: integer("switching_at"),
+  lastHelloAt: integer("last_hello_at"),
+  stoppedAt: integer("stopped_at"),
+});
 
 // #1291 pending device-flow codes, 10 minutes each. device_code_hash is the
 // sha256 of the CLI's polling secret; user_code is the short code the person

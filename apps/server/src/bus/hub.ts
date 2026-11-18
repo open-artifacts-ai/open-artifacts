@@ -34,6 +34,7 @@ import {
   type RefusalReason,
   type SendFrame,
   type ServerFrame,
+  semverGte,
   suffixName,
   utf8Bytes,
 } from "@oa/bus-protocol";
@@ -156,6 +157,13 @@ import {
   type StatusChange,
   statusWire,
 } from "./status.js";
+import {
+  markStopped,
+  noteHello,
+  readRunVersion,
+  recordReport,
+  STOPPED_AFTER_MS,
+} from "./updates.js";
 
 // BusHub (#1291): OpenBus 0.63.0's hub DO (apps/server/src/hub/do.ts), one per
 // member (idFromName(busHubName(userId))). Dropped from the port: machines'
@@ -209,6 +217,8 @@ const HOUR_MS = 3_600_000;
 const CLOSE_CLEAR = `${STATUS_CLEAR}, proof_hash = null`;
 /** meta key: when the last closeAll started (ms). */
 const REVOKED_AT_KEY = "revoked_at";
+/** meta key: when the earliest `switching` report's 5 minutes end (ms); absent: none waits (#2552). */
+const UPDATE_DUE_KEY = "update_due";
 /**
  * Latest alarm time ever asked of workerd, which throws past year 2189. A
  * later deadline is clamped here (and re-checked when this alarm fires).
@@ -352,7 +362,23 @@ const HUB_CAPS = [
   BUS_CAPS.noticeAck,
   BUS_CAPS.nameChosen,
   BUS_CAPS.ackConfirm,
+  BUS_CAPS.runVersion,
 ];
+
+/**
+ * #2552: the update frames (run_version, install_now, update_ack, and an
+ * accepted update_report) go only to, and come only from, a socket whose
+ * hello listed BUS_CAPS.runVersion.
+ */
+const runVersionGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.runVersion);
+};
+
+/** How long the hub keeps the instance's named version before it asks D1 again. */
+const RUN_VERSION_TTL_MS = 30_000;
+/** A report's D1 write waits this long; the daemon waits 5 s for the answer. */
+const REPORT_WRITE_MS = 3000;
 
 /**
  * Follows (#1317, BUS_CAPS.follow): the follow, unfollow and following frames
@@ -5411,6 +5437,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #2552: as unknown as it is to an older hub without the cap.
+    if (f.type === "update_report" && !runVersionGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // #2079: as unknown as it is to an older hub without the cap.
     if (f.type === "waiting_query" && !waitingQueryGated(ws)) {
       reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
@@ -5461,11 +5493,20 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.link) ||
           hasCap(f, BUS_CAPS.waiting) ||
           hasCap(f, BUS_CAPS.waitingQuery) ||
-          hasCap(f, BUS_CAPS.ackConfirm)
+          hasCap(f, BUS_CAPS.ackConfirm) ||
+          hasCap(f, BUS_CAPS.runVersion)
             ? { caps: [...HUB_CAPS] }
             : {}),
+          // #2552: only when the instance names one, and only to a socket
+          // that listed the cap. Unknown yet (cold cache): the push below.
+          // null: it names none (cleared, #2719).
+          ...(hasCap(f, BUS_CAPS.runVersion) && this.#runVersionFresh()
+            ? { run_version: this.#runVersion }
+            : {}),
         });
-        return;
+        return hasCap(f, BUS_CAPS.runVersion)
+          ? this.#helloUpdates(ws, f.id, machineId)
+          : undefined;
       case "sessions": {
         // Open sessions come back with their own agent_up; closed ones end.
         const change: RosterChange = { namespaces: [], global: false };
@@ -5618,6 +5659,8 @@ export class BusHub extends DurableObject<Env> {
       case "unfollow":
       case "following":
         return sender ? this.#follows(ws, f, sender) : undefined;
+      case "update_report":
+        return this.#updateReport(ws, f, machineId);
       case "waiting_query":
         // Machine-authenticated: only this machine's own away agents answer.
         sendFrame(ws, {
@@ -5650,6 +5693,212 @@ export class BusHub extends DurableObject<Env> {
         }
         return this.#rename(ws, f, a);
       }
+    }
+  }
+
+  // ----------------------------------------------------- #2552 updates
+
+  /** The instance's named version as last read; null: none. Stale after RUN_VERSION_TTL_MS. */
+  #runVersion: string | null = null;
+  #runVersionAt = -Infinity;
+  #runVersionFresh(): boolean {
+    return this.#now() - this.#runVersionAt < RUN_VERSION_TTL_MS;
+  }
+  #userId(): string | null {
+    const n = this.ctx.id.name;
+    return n?.startsWith("bus:") ? n.slice(4) : null;
+  }
+
+  /**
+   * A cap'd hello: record that the machine is alive (its `switching` clock
+   * stops), and make sure it knows the named version. The hello_ok carried it
+   * when the cache was fresh; otherwise it is read now and pushed.
+   */
+  async #helloUpdates(
+    ws: WebSocket,
+    _id: string,
+    machineId: string,
+  ): Promise<void> {
+    this.indexInFlight++;
+    try {
+      const fresh = this.#runVersionFresh();
+      const sent = fresh ? this.#runVersion : undefined;
+      await Promise.race([
+        noteHello(this.env, machineId, this.#now()),
+        new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
+      ]).catch((e) => logError("bus_update_hello_failed", e));
+      if (!fresh) await this.#refreshRunVersion();
+      if (this.#runVersion !== sent) this.#pushRunVersion(ws);
+    } finally {
+      this.indexInFlight--;
+    }
+  }
+
+  async #refreshRunVersion(): Promise<void> {
+    try {
+      this.#runVersion = await readRunVersion(this.env);
+      this.#runVersionAt = this.#now();
+    } catch (e) {
+      // Keep what we had; a later hello asks again.
+      logError("bus_run_version_read_failed", e);
+    }
+  }
+
+  #pushRunVersion(ws: WebSocket): void {
+    if (!runVersionGated(ws)) return;
+    sendFrame(ws, {
+      v: 1,
+      id: frameId(),
+      type: "run_version",
+      run_version: this.#runVersion,
+    });
+  }
+
+  /**
+   * An update report: kept as the machine's latest. A `switching` one is
+   * answered yes once it is stored (no when it could not be), and starts the
+   * 5 minute "the bus stopped" clock.
+   */
+  async #updateReport(
+    ws: WebSocket,
+    f: Extract<ClientFrame, { type: "update_report" }>,
+    machineId: string,
+  ): Promise<void> {
+    // #2719: a swap the instance does not name is vetoed before anything is
+    // stored (so no stop clock starts), whatever the daemon believes. Read
+    // fresh, not from the cache; a failed read is a no. A step back (`to`
+    // below `from`) and the person's own request pass.
+    if (f.event === "switching") {
+      let allowed =
+        f.reason === "requested" ||
+        (f.to !== "" &&
+          f.from !== "" &&
+          f.to !== f.from &&
+          semverGte(f.from, f.to));
+      if (!allowed) {
+        try {
+          allowed = (await readRunVersion(this.env)) === f.to;
+        } catch (e) {
+          logError("bus_run_version_read_failed", e);
+        }
+      }
+      if (!allowed) {
+        sendFrame(ws, { v: 1, id: f.id, type: "update_ack", ok: false });
+        return;
+      }
+    }
+    const now = this.#now();
+    let stored = false;
+    this.indexInFlight++;
+    try {
+      await Promise.race([
+        recordReport(this.env, machineId, f, now).then(() => {
+          stored = true;
+        }),
+        new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
+      ]);
+    } catch (e) {
+      logError("bus_update_report_failed", e);
+    } finally {
+      this.indexInFlight--;
+    }
+    if (f.event === "switching") {
+      if (stored) {
+        this.#setUpdateDue(now + STOPPED_AFTER_MS + 1);
+        // The arm commit of this frame's turn came before the D1 write ended.
+        await this.#commitArm();
+      }
+      sendFrame(ws, { v: 1, id: f.id, type: "update_ack", ok: stored });
+      return;
+    }
+    // A report is also a moment to learn a changed version.
+    if (!this.#runVersionFresh()) {
+      await this.#refreshRunVersion();
+      this.#pushRunVersion(ws);
+    }
+  }
+
+  /**
+   * "Install now" (#2552): a fieldless frame to every open socket of one
+   * machine that listed the cap. The Worker calls this only for a signed-in
+   * member's own machine, from a browser session. Returns how many sockets
+   * it reached.
+   */
+  async installNow(machineId: string): Promise<number> {
+    if (typeof machineId !== "string" || !isId(machineId)) return 0;
+    if (!activeMachine(this.ctx, machineId)) return 0;
+    let n = 0;
+    for (const ws of this.ctx.getWebSockets(machineId)) {
+      if (isReplaced(ws) || !runVersionGated(ws)) continue;
+      if (trySendFrame(ws, { v: 1, id: frameId(), type: "install_now" })) n++;
+    }
+    return n;
+  }
+
+  /**
+   * The named version changed (the owner's route): forget the cache and tell
+   * this hub's connected sockets (null: none named now). The route calls this
+   * on every member's hub.
+   */
+  async runVersionChanged(): Promise<void> {
+    this.#runVersionAt = -Infinity;
+    await this.#refreshRunVersion();
+    for (const ws of this.ctx.getWebSockets(DAEMON_TAG))
+      this.#pushRunVersion(ws);
+  }
+
+  #updateDue(): number | null {
+    const v = one<{ value: string }>(
+      this.ctx.storage.sql,
+      "select value from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      UPDATE_DUE_KEY,
+    )?.value;
+    const n = v === undefined ? Number.NaN : Number(v);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+
+  /** Keeps the earliest due time in meta (so an eviction forgets nothing) and arms the alarm. */
+  #setUpdateDue(at: number | null): void {
+    const sql = this.ctx.storage.sql;
+    if (at === null) {
+      sql.exec(
+        "delete from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        UPDATE_DUE_KEY,
+      );
+      return;
+    }
+    const cur = this.#updateDue();
+    const next = cur === null ? at : Math.min(cur, at);
+    sql.exec(
+      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+      OWNER_ORG_ID,
+      UPDATE_DUE_KEY,
+      String(next),
+    );
+    this.#arm(next);
+  }
+
+  /** The alarm's part: machines whose `switching` went 5 minutes with no hello. */
+  async #stoppedMachines(now: number): Promise<void> {
+    const userId = this.#userId();
+    const due = this.#updateDue();
+    // No D1 round trip unless a `switching` report is waiting out its 5 minutes.
+    if (userId === null || due === null) return;
+    if (due > now) {
+      this.#arm(due);
+      return;
+    }
+    // Clear before the await: a `switching` report stored meanwhile sets its
+    // own due, and setUpdateDue below keeps the earlier of the two.
+    this.#setUpdateDue(null);
+    try {
+      const next = await markStopped(this.env, userId, now);
+      if (next !== null) this.#setUpdateDue(next + 1);
+    } catch (e) {
+      this.#setUpdateDue(now + 60_000);
+      logError("bus_update_stopped_failed", e);
     }
   }
 
@@ -7930,6 +8179,9 @@ export class BusHub extends DurableObject<Env> {
     // above, so work they just cleared counts).
     if (this.#purgeClosedAgents(now)) more = true;
     if (this.#purgeDefaultNamed(now)) more = true;
+
+    // 7. #2552: a machine that reported `switching` and never said hello again.
+    await this.#stoppedMachines(now);
 
     const want = this.#armWant;
     this.#armWant = null;

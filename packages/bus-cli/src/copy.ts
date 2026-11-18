@@ -563,6 +563,7 @@ export function copy(
       "Commands",
       "  install      Approve this machine, wire your harnesses, start the daemon (the default)",
       "  login        Approve this machine again",
+      "  skill        Save this instance's skill for your harnesses (--check only reports)",
       "  uninstall    Remove what install added",
       "  status       Who is on the bus, from this folder",
       "  logs         The daemon log",

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.203.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.202.0...v0.203.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** the instance names the version; machines report back ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2579](https://github.com/open-artifacts-ai/open-artifacts/issues/2579)) ([28a93da](https://github.com/open-artifacts-ai/open-artifacts/commit/28a93da5a928cd3133c0b543b7d01a8ae708e975))
+
+## [0.202.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.201.0...v0.202.0) (2026-11-18)
+
+
+### Features
+
+* **onboarding:** the invite email carries the agent setup line ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632)) ([#2718](https://github.com/open-artifacts-ai/open-artifacts/issues/2718)) ([58d6f9b](https://github.com/open-artifacts-ai/open-artifacts/commit/58d6f9b6d04cccb56ff0b19bdc1bfd90e7ab454d))
+
 ## [0.201.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.200.0...v0.201.0) (2026-11-18)
 
 

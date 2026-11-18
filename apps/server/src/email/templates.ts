@@ -192,20 +192,45 @@ type SignIn = {
   cantSignIn?: ShareRecipient["reason"];
 };
 
-/** A member invite, linking to the instance's sign-in page. */
-export function inviteEmail(p: Common & SignIn): EmailContent {
+// The invite's agent setup block (#2632), between these markers in both
+// parts: kept, markers removed, for a member; dropped whole for a guest.
+const SETUP_BLOCK = /<!--setup-->\n?([\s\S]*?)<!--\/setup-->\n?/g;
+const setupBlock = (tpl: string, keep: boolean) =>
+  tpl.replace(SETUP_BLOCK, (_, inner: string) => (keep ? inner : ""));
+
+/** The line a member pastes into their agent (#2632). */
+export const setupLine = (origin: string) =>
+  `Set up Open Artifacts for me: follow ${linkOn(origin, "/llms.txt")}`;
+
+/**
+ * An invite, linking to the instance's sign-in page. A member's (any role
+ * but guest) also carries the line to paste into their agent (#2632); a
+ * guest can't publish, so theirs doesn't.
+ */
+export function inviteEmail(
+  p: Common & SignIn & { guest: boolean },
+): EmailContent {
   const { origin, values } = common(p);
-  return render(
-    INVITE_HTML,
-    INVITE_TXT,
+  const member = !p.guest;
+  const line = setupLine(origin);
+  const m = render(
+    setupBlock(INVITE_HTML, member),
+    setupBlock(INVITE_TXT, member),
     "{{inviterName}} added you to {{instanceName}}",
     {
       ...values,
       signInUrl: linkOn(origin, "/sign-in"),
       signInLine: `There's no password to set up. ${signInSentence(p.signIn, values.recipientEmail, p)}`,
       signInPreheader: signInSentence(p.signIn, "this address", p),
+      setupLine: line,
     },
   );
+  // The setup line may wrap only after a "/" (never inside "https").
+  const esc = escapeHtml(line);
+  return {
+    ...m,
+    html: m.html.replace(`>${esc}<`, `>${esc.replace(/\//g, "/<wbr>")}<`),
+  };
 }
 
 /** An artifact shared with a non-member, linking to its viewer URL. */

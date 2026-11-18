@@ -44,9 +44,9 @@ for (const [w, h] of [
   [390, 844],
 ] as const)
   for (const scheme of ["light", "dark"] as const)
-    test(`${w}px ${scheme}: slow server, the comment shows at once and stays one`, async ({
-      page,
-    }) => {
+    test(`${w}px ${scheme}: slow server, the comment shows at once and stays one`, {
+      tag: w === 1280 && scheme === "light" ? "@smoke" : [],
+    }, async ({ page }) => {
       await page.emulateMedia({ colorScheme: scheme });
       await slowOrBroken(page, { delay: 1500 });
       const box = await open(page, w, h);

@@ -11,6 +11,7 @@ import type { StoredActor } from "../runtime/comments-store.js";
 import { receiverCanOpen } from "./agent-requests.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
+import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
 import { getUser } from "./users.js";
@@ -45,6 +46,8 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
   const held = await heldRequestRows(env, caller).catch(() => []);
   return Math.min((r[0]?.n ?? 0) + held.length, NEEDS_YOU_MAX);
 }
+
+export { unreadUpdateCount };
 
 type Row = {
   artifactId: string;
@@ -195,6 +198,94 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
   return out;
 }
 
+/** The text of a stored item, written here and never taken from a client. */
+const textOf = (r: ItemRow, name: string): string => {
+  switch (r.kind) {
+    case "mention":
+      return `${name} mentioned ${r.agentName ?? "your agent"} on ${r.title}`;
+    case "reply":
+      return `${name} replied: ${r.excerpt}`;
+    case "comment":
+      return `${name} commented: ${r.excerpt}`;
+    case "share":
+      return `${name} shared "${r.excerpt}" with you`;
+    default:
+      return `${name} decided: ${r.excerpt}`;
+  }
+};
+
+/** Stored rows as inbox items, the actor shown as the comments API shows them to the caller. */
+/** Comment ids among `rows` that hold a request for the caller (state held). */
+async function heldCommentIds(
+  env: Env,
+  caller: Me,
+  rows: ItemRow[],
+): Promise<Set<string>> {
+  const ids = [
+    ...new Set(rows.flatMap((r) => (r.commentId ? [r.commentId] : []))),
+  ];
+  if (ids.length === 0) return new Set();
+  const found = await env.DB.prepare(
+    `select distinct i.comment_id as id from held_request_items i
+       join held_requests r on r.id = i.request_id
+      where r.receiver_id = ?1 and i.state = 'held'
+        and i.comment_id in (${ids.map((_, k) => `?${k + 2}`).join(", ")})`,
+  )
+    .bind(caller.user.id, ...ids)
+    .all<{ id: string }>();
+  return new Set(found.results.map((x) => x.id));
+}
+
+async function itemsOf(
+  env: Env,
+  caller: Me,
+  rows: ItemRow[],
+  asAgent = false,
+): Promise<InboxItem[]> {
+  if (rows.length === 0) return [];
+  const viewer: CommentViewer = {
+    userId: caller.user.id,
+    short: null,
+    guest: isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+  };
+  const faces = await askerFaces(
+    env,
+    viewer,
+    rows.map((r) => JSON.parse(r.actor) as StoredActor),
+  );
+  // #2577: the caller's agent (a token) never reads the words of a request held for its person.
+  const held = asAgent
+    ? await heldCommentIds(env, caller, rows)
+    : new Set<string>();
+  return rows.map((row, i): InboxItem => {
+    const face = faces[i] as CommentAuthor;
+    const r =
+      row.commentId && held.has(row.commentId)
+        ? {
+            ...row,
+            excerpt: `A request from ${face.name} is waiting for your person`,
+          }
+        : row;
+    return {
+      id: r.id,
+      level: "update",
+      kind: r.kind,
+      artifact: { id: r.artifactId, title: r.title },
+      actor: face,
+      text: textOf(r, face.name),
+      ...(r.kind === "mention" || r.kind === "reply" || r.kind === "comment"
+        ? { excerpt: r.excerpt }
+        : {}),
+      href: r.threadId
+        ? `${viewerPath(r.artifactId)}?thread=${encodeURIComponent(r.threadId)}`
+        : viewerPath(r.artifactId),
+      createdAt: new Date(r.createdAt).toISOString(),
+      readAt: r.readAt === null ? null : new Date(r.readAt).toISOString(),
+    };
+  });
+}
+
 /** How long a "member is set up" line stays (there is no read state for it yet). */
 const SET_UP_DAYS = 30;
 
@@ -241,7 +332,6 @@ export async function memberSetUpUpdates(
   return out;
 }
 
-/** The whole inbox response. Later and the cursor are the next slices. */
 /** Requests to the caller's agents that wait for them, not quieted by "Not now": one row each. */
 const heldRequestRows = async (env: Env, caller: Me, now = Date.now()) => {
   const rows = (
@@ -307,12 +397,30 @@ export async function heldRequestItems(
   });
 }
 
-export async function inboxOf(env: Env, caller: Me): Promise<Inbox> {
-  const asks = await needsYou(env, caller);
-  const requests = await heldRequestItems(env, caller).catch((e) => {
-    logWarn("inbox_held_requests_failed", e);
-    return [];
-  });
+/** The whole inbox response: Needs you (asks and held requests) and one page of Updates. */
+export async function inboxOf(
+  env: Env,
+  caller: Me,
+  cursor?: string,
+  /** The caller is a token (an agent), not a browser session: held requests read masked. */
+  asAgent = false,
+): Promise<Inbox> {
+  const [asks, requests, page, unread, setUp] = await Promise.all([
+    needsYou(env, caller),
+    heldRequestItems(env, caller).catch((e) => {
+      logWarn("inbox_held_requests_failed", e);
+      return [] as InboxItem[];
+    }),
+    updatesPage(env, caller, cursor),
+    unreadUpdateCount(env, caller),
+    // #2632: synthesized lines (no stored row), on the first page only.
+    cursor
+      ? Promise.resolve([] as InboxItem[])
+      : memberSetUpUpdates(env, caller).catch((e) => {
+          logWarn("inbox_member_set_up_failed", e);
+          return [] as InboxItem[];
+        }),
+  ]);
   // Waiting agents first, then what needs an approval (asks and requests, oldest first), then the rest.
   const byAge = (a: InboxItem, b: InboxItem) =>
     a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
@@ -322,16 +430,16 @@ export async function inboxOf(env: Env, caller: Me): Promise<Inbox> {
       byAge,
     ),
     ...asks.filter((i) => i.urgency !== "waiting" && i.urgency !== "approval"),
-  ];
-  const updates = await memberSetUpUpdates(env, caller).catch((e) => {
-    logWarn("inbox_member_set_up_failed", e);
-    return [];
-  });
+  ].slice(0, NEEDS_YOU_MAX);
+  const updates = [
+    ...(await itemsOf(env, caller, page.rows, asAgent)),
+    ...setUp,
+  ].sort((x, y) => y.createdAt.localeCompare(x.createdAt));
   return {
     needsYou: list,
     later: [],
     updates,
-    cursor: null,
-    counts: { needsYou: list.length, unreadUpdates: updates.length },
+    cursor: page.next,
+    counts: { needsYou: list.length, unreadUpdates: unread + setUp.length },
   };
 }

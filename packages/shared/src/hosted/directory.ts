@@ -275,6 +275,8 @@ export const AuditActionSchema = z.enum([
   "agent.revoke",
   "machine.approve",
   "machine.revoke",
+  "bus.run_version.set",
+  "bus.install_now",
   "invite.create",
   "invite.accept",
   "settings.change",
