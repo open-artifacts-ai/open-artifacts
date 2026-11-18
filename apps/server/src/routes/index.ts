@@ -26,6 +26,7 @@ import { mountSearch } from "./search.js";
 import { mountSettings } from "./settings.js";
 import { mountRemindOff } from "./setup-reminder-off.js";
 import { mountShareNotices } from "./share-notices.js";
+import { mountShareOptout } from "./share-optout.js";
 import { mountShares } from "./shares.js";
 import { mountShell } from "./shell.js";
 import { mountSpaces } from "./spaces.js";
@@ -42,6 +43,7 @@ export function mountRoutes(app: AppType): void {
   mountCodes(app);
   mountCommentUnsub(app);
   mountRemindOff(app);
+  mountShareOptout(app);
   mountMe(app);
   mountShareNotices(app);
   mountMembers(app);

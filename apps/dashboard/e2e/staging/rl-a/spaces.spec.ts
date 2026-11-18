@@ -66,7 +66,9 @@ async function panel(page: Page, tab: "Details" | "Share") {
   await page.getByRole("tab", { name: tab }).click();
 }
 
-test("a member sees their spaces in the sidebar", async ({ browser }) => {
+test("a member sees their spaces in the sidebar", { tag: "@gate" }, async ({
+  browser,
+}) => {
   const m = await person(browser, "sidebar", "member", [
     { spaceId: eng.id, role: "viewer" },
     { spaceId: exec.id, role: "editor" },
@@ -82,9 +84,9 @@ test("a member sees their spaces in the sidebar", async ({ browser }) => {
   await expect(m.page.getByText("You're an editor")).toBeVisible();
 });
 
-test("a viewer sees no edit controls, and the API refuses their publish", async ({
-  browser,
-}) => {
+test("a viewer sees no edit controls, and the API refuses their publish", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const editor = await person(browser, "v-editor", "member", [
     { spaceId: eng.id, role: "editor" },
   ]);
@@ -132,9 +134,9 @@ test("a viewer sees no edit controls, and the API refuses their publish", async 
   expect(version.status).toBe(404);
 });
 
-test("an editor publishes into t19-eng; a manager moves it to t19-exec", async ({
-  browser,
-}) => {
+test("an editor publishes into t19-eng; a manager moves it to t19-exec", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const editor = await person(browser, "editor", "member", [
     { spaceId: eng.id, role: "editor" },
   ]);
@@ -234,9 +236,9 @@ test("public links off in t19-exec: Public is disabled, and anonymous /full gets
   await expect(stranger.locator("iframe.oa-vframe")).toHaveCount(0);
 });
 
-test("an admin never sees another person's personal space", async ({
-  browser,
-}) => {
+test("an admin never sees another person's personal space", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
   const m = await person(browser, "private", "member");
   const title = `T19 ${RUN} private page`;

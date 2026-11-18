@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.202.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.201.0...v0.202.0) (2026-11-18)
+
+
+### Features
+
+* **onboarding:** the invite email carries the agent setup line ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632)) ([#2718](https://github.com/open-artifacts-ai/open-artifacts/issues/2718)) ([58d6f9b](https://github.com/open-artifacts-ai/open-artifacts/commit/58d6f9b6d04cccb56ff0b19bdc1bfd90e7ab454d))
+
+## [0.201.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.200.0...v0.201.0) (2026-11-18)
+
+
+### Features
+
+* **provisioning-contract:** R29 also takes DOCS_PREVIEW ([#2715](https://github.com/open-artifacts-ai/open-artifacts/issues/2715)) ([33827c6](https://github.com/open-artifacts-ai/open-artifacts/commit/33827c669b3ef578c679886dd0466895ff637611))
+
+## [0.200.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.7...v0.200.0) (2026-11-18)
+
+
+### Features
+
+* **docs:** DOCS_PREVIEW opens doc creation on staging only ([#2641](https://github.com/open-artifacts-ai/open-artifacts/issues/2641)) ([9f60435](https://github.com/open-artifacts-ai/open-artifacts/commit/9f60435b4b92315915e238102694be460e809bf1))
+
 ## [0.199.7](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.6...v0.199.7) (2026-11-17)
 
 

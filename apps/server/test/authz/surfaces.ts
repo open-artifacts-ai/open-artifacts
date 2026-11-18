@@ -2538,6 +2538,8 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "POST /auth/unsubscribe/comments",
   "GET /auth/unsubscribe/setup-reminder",
   "POST /auth/unsubscribe/setup-reminder",
+  "GET /auth/unsubscribe/shares",
+  "POST /auth/unsubscribe/shares",
   "POST /auth/logout",
   "GET /auth/dev-login",
   "ALL /__test/*",
