@@ -1184,6 +1184,12 @@ export const SURFACES: readonly Surface[] = [
     ),
   ),
   rest(
+    "artifact mention candidates",
+    "comments.read",
+    [`GET ${ARTS}/mention-candidates`],
+    read((id) => `${A(id)}/mention-candidates?q=a`, 200),
+  ),
+  rest(
     "artifact agents",
     "comments.read",
     [`GET ${ARTS}/agents`],
