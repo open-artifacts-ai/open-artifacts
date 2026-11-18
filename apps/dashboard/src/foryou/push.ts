@@ -75,8 +75,9 @@ export const PUSH_WORDS = {
   /** The "This browser" cell, short (Design and OA Product). */
   blockedHere: "Blocked in this browser",
   notAvailable: "Not available",
-  /** Design: over the interrupt settings when this browser can't notify at all. */
-  unavailableHere: "Browser notifications aren't available here.",
+  /** Product: over the account settings when the server has no push key. */
+  notSetUp: (site: string) =>
+    `Browser notifications aren't set up for ${site || "this site"} yet.`,
   failed: "Couldn't turn on notifications. Try again.",
   turnOn: "Turn on",
   notNow: "Not now",

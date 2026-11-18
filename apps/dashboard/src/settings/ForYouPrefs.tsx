@@ -38,6 +38,7 @@ import {
   usePushSubscriptions,
 } from "../foryou/push";
 import { toast } from "../layout/toast";
+import { useInstanceName } from "../layout/useDocumentTitle";
 import { OptionSelect } from "./OptionSelect";
 import { Switch } from "./spaces/Switch";
 import { muted } from "./ui";
@@ -339,6 +340,7 @@ function Interrupts({
 }) {
   // Live (#2674), except where this server or browser can't notify (Design).
   const live = !unavailable;
+  const site = useInstanceName();
   const save = useSave();
   const quiet = prefs.quietHours;
   const end = quiet?.end ?? QUIET_DEFAULT.end;
@@ -351,7 +353,7 @@ function Interrupts({
     >
       {unavailable && (
         <p id="oa-interrupts-later" className={`m-0 pb-2 ${muted}`}>
-          {PUSH_WORDS.unavailableHere}
+          {PUSH_WORDS.notSetUp(site)}
         </p>
       )}
       <div className={ROW}>

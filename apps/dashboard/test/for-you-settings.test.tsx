@@ -436,7 +436,7 @@ describe("this browser's notifications (slice 3, S5)", () => {
       screen.queryByRole("switch", { name: "Needs you in this browser" }),
     ).toBeNull();
     expect(
-      screen.queryByText("Browser notifications aren't available here."),
+      screen.queryByText(/Browser notifications aren't (set up|available)/),
     ).toBeNull();
     for (const name of ["Interrupt me for", "On lock screens"])
       expect(screen.getByRole("combobox", { name })).toBeEnabled();
@@ -466,7 +466,7 @@ describe("this browser's notifications (slice 3, S5)", () => {
       expect(el).toHaveAccessibleDescription("Not set up here yet");
     }
     expect(
-      screen.getByText("Browser notifications aren't available here."),
+      screen.getByText(/^Browser notifications aren't set up for .+ yet\.$/),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "On lock screens" }),
