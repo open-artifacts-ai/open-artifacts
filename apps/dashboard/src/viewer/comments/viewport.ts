@@ -103,9 +103,13 @@ export function trackViewportVar(): () => void {
 }
 
 /**
- * #2276: on a phone the doc toolbar shows only while the keyboard is open. A
+ * #2276: on a touch phone the doc toolbar shows only while the keyboard is open. A
  * browser without a visual viewport cannot tell, so there it stays shown.
  */
 export function phoneToolbarHidden(keyboardOpen: boolean): boolean {
-  return !!window.visualViewport && !keyboardOpen;
+  // Touch only: a narrow desktop window has a mouse and no on-screen keyboard.
+  const touch =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
+  return touch && !!window.visualViewport && !keyboardOpen;
 }

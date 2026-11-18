@@ -104,12 +104,8 @@ const STATES: [string, string[], (page: Page) => Promise<void>][] = [
     ["--hello", "edit"],
     async (page) => {
       await expect(status(page, /^Saved$/)).toBeVisible();
-      // #2276: a phone shows the toolbar only while the keyboard is open.
-      if ((page.viewportSize()?.width ?? 1280) < 600)
-        await expect(
-          page.getByRole("toolbar", { includeHidden: true }),
-        ).toHaveAttribute("data-hidden", "");
-      else await expect(page.getByRole("toolbar")).toBeVisible();
+      // #2276: only a touch phone hides the bar; this spec has a fine pointer.
+      await expect(page.getByRole("toolbar")).toBeVisible();
     },
   ],
   [

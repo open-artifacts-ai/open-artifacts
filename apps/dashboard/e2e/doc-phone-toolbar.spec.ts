@@ -52,7 +52,12 @@ const bottomEdge = async (page: Page) => {
 
 for (const scheme of ["light", "dark"] as const) {
   test.describe(`phone ${scheme}`, () => {
-    test.use({ colorScheme: scheme, viewport: { width: 390, height: 800 } });
+    test.use({
+      colorScheme: scheme,
+      viewport: { width: 390, height: 800 },
+      hasTouch: true,
+      isMobile: true,
+    });
 
     test("the toolbar is hidden, then rides above the keyboard", async ({
       page,
@@ -127,6 +132,18 @@ for (const scheme of ["light", "dark"] as const) {
     });
   });
 }
+
+// A desktop window dragged narrow: a mouse, no on-screen keyboard, so the bar
+// is always there.
+test.describe("narrow window, fine pointer", () => {
+  test.use({ viewport: { width: 390, height: 800 } });
+  test("the toolbar is visible with no keyboard", async ({ page }) => {
+    await page.goto(`/a/${LANDING}?mock=doc`);
+    await expect(page.locator(".ProseMirror")).toBeVisible();
+    await expect(bar(page)).toBeVisible();
+    await expect(bar(page)).not.toHaveAttribute("data-hidden");
+  });
+});
 
 test.describe("wider than a phone", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
