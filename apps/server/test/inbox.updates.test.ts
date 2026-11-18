@@ -165,6 +165,13 @@ describe("inbox updates: what is written", () => {
     );
     expect(m?.level).toBe("update");
     expect(m?.text).toMatch(/ mentioned Scout on doc$/);
+    // The stored excerpt is the comment's text; the agent has its own column.
+    const stored = await E.DB.prepare(
+      "select excerpt, agent_name from inbox_items where artifact_id = ? and kind = 'mention'",
+    )
+      .bind(id)
+      .first<{ excerpt: string; agent_name: string | null }>();
+    expect(stored).toEqual({ excerpt: "ping", agent_name: "Scout" });
     expect(inb.counts.unreadUpdates).toBeGreaterThanOrEqual(1);
     const r = await api(app, R.meInboxRead, me.cookie, {
       method: "POST",

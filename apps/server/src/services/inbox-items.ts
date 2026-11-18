@@ -54,6 +54,8 @@ export type NewItem = {
   commentId?: string;
   actor: StoredActor;
   excerpt: string;
+  /** A mention's agent. */
+  agentName?: string;
   at: number;
 };
 
@@ -87,8 +89,8 @@ export async function writeInboxItems(
         rows.slice(i, i + 50).map((r) =>
           stmt(
             env.DB,
-            `insert or ignore into inbox_items (id, user_id, kind, level, key, artifact_id, thread_id, comment_id, actor, excerpt, created_at, read_at)
-               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null)`,
+            `insert or ignore into inbox_items (id, user_id, kind, level, key, artifact_id, thread_id, comment_id, actor, excerpt, agent_name, created_at, read_at)
+               values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null)`,
           ).bind(
             newId(),
             r.userId,
@@ -100,6 +102,7 @@ export async function writeInboxItems(
             r.commentId ?? null,
             JSON.stringify(r.actor),
             r.excerpt,
+            r.agentName ?? null,
             r.at,
           ),
         ),
@@ -133,8 +136,8 @@ export async function recordCommentItems(
       ORDER.map((k) => [k, new Set<string>()]),
     );
     // A mention of your agent, by someone else, once per owner. The item
-    // keeps the agent's name as its excerpt ("{author} mentioned {agent} on
-    // {page}"). Your own mention of your own agent: writeInboxItems skips the
+    // keeps the agent's name ("{author} mentioned {agent} on {page}"); its
+    // excerpt stays the comment's text. Your own mention of your own agent: writeInboxItems skips the
     // actor. A guest author gives none.
     const agentOf = new Map<string, string>();
     if (c.author.kind !== "guest")
@@ -171,10 +174,10 @@ export async function recordCommentItems(
           threadId: j.threadId,
           commentId: c.id,
           actor: c.author,
-          excerpt:
-            kind === "mention"
-              ? itemExcerpt(agentOf.get(userId) ?? "your agent")
-              : itemExcerpt(c.body),
+          excerpt: itemExcerpt(c.body),
+          ...(kind === "mention"
+            ? { agentName: itemExcerpt(agentOf.get(userId) ?? "your agent") }
+            : {}),
           at: Number.isNaN(at) ? Date.now() : at,
         });
       }
@@ -281,6 +284,7 @@ export type ItemRow = {
   threadId: string | null;
   actor: string;
   excerpt: string;
+  agentName: string | null;
   createdAt: number;
   readAt: number | null;
 };
@@ -293,6 +297,7 @@ const cols = {
   threadId: inboxItems.threadId,
   actor: inboxItems.actor,
   excerpt: inboxItems.excerpt,
+  agentName: inboxItems.agentName,
   createdAt: inboxItems.createdAt,
   readAt: inboxItems.readAt,
 };

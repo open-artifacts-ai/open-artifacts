@@ -575,6 +575,8 @@ export const inboxItems = sqliteTable(
     // The actor's StoredActor (or a guest/user stub), as JSON.
     actor: text("actor").notNull(),
     excerpt: text("excerpt").notNull(),
+    // A mention's agent ("{author} mentioned {agent} on {page}"); null otherwise.
+    agentName: text("agent_name"),
     createdAt: integer("created_at").notNull(),
     readAt: integer("read_at"),
   },

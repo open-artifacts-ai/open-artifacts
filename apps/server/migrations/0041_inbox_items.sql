@@ -9,6 +9,7 @@ CREATE TABLE `inbox_items` (
 	`comment_id` text,
 	`actor` text NOT NULL,
 	`excerpt` text NOT NULL,
+	`agent_name` text,
 	`created_at` integer NOT NULL,
 	`read_at` integer,
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade,

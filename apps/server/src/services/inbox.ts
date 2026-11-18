@@ -200,7 +200,7 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
 const textOf = (r: ItemRow, name: string): string => {
   switch (r.kind) {
     case "mention":
-      return `${name} mentioned ${r.excerpt} on ${r.title}`;
+      return `${name} mentioned ${r.agentName ?? "your agent"} on ${r.title}`;
     case "reply":
       return `${name} replied: ${r.excerpt}`;
     case "comment":
