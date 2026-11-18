@@ -388,6 +388,33 @@ const cols = {
   readAt: inboxItems.readAt,
 };
 
+/** The unread updates that arrived in [from, to) and the distinct pages they are on (#2512, "While you were away"). */
+export async function awayCount(
+  env: Env,
+  caller: Me,
+  from: number,
+  to: number,
+): Promise<{ count: number; pages: number }> {
+  const r = await getDb(env)
+    .select({
+      n: sql<number>`count(*)`,
+      p: sql<number>`count(distinct ${inboxItems.artifactId})`,
+    })
+    .from(inboxItems)
+    .innerJoin(artifacts, eq(artifacts.id, inboxItems.artifactId))
+    .where(
+      and(
+        mineOn(caller, "update"),
+        isNull(inboxItems.readAt),
+        sql`${inboxItems.createdAt} >= ${from} and ${inboxItems.createdAt} < ${to}`,
+      ),
+    );
+  return { count: r[0]?.n ?? 0, pages: r[0]?.p ?? 0 };
+}
+
+/** The settings row that says which "While you were away" window the person has read (its start, ms). */
+export const awayReadKey = (userId: string) => `inbox:away_read:${userId}`;
+
 /** How many unread updates I have: one indexed query. */
 export async function unreadUpdateCount(env: Env, caller: Me): Promise<number> {
   const r = await getDb(env)
@@ -456,9 +483,23 @@ export async function markRead(
   userId: string,
   ids: string[],
 ): Promise<number> {
-  const uniq = [...new Set(ids)];
+  const uniq = [...new Set(ids)].filter((id) => !id.startsWith("away:"));
   const now = Date.now();
   let n = 0;
+  // "While you were away" is not a stored row: reading it keeps the window's start.
+  for (const id of new Set(ids)) {
+    if (!id.startsWith("away:")) continue;
+    const at = Date.parse(id.slice("away:".length));
+    if (Number.isNaN(at)) continue;
+    const r = await env.DB.prepare(
+      `insert into settings (key, value) values (?1, ?2)
+       on conflict (key) do update set value = excluded.value
+         where cast(settings.value as integer) < cast(excluded.value as integer)`,
+    )
+      .bind(awayReadKey(userId), String(at))
+      .run();
+    n += r.meta.changes ?? 0;
+  }
   for (let i = 0; i < uniq.length; i += CHUNK) {
     const part = uniq.slice(i, i + CHUNK);
     const r = await env.DB.prepare(
