@@ -4,7 +4,14 @@
  * screens, and the muted list. Prefs are R.meNotificationPrefs (PUT whole);
  * mutes are R.meInboxMutes. The browser switch is slice 3: a stub for now.
  */
-import type { InboxMutes, NotificationPrefs } from "@oa/shared";
+import type {
+  InboxMutes,
+  NotificationPrefs,
+  PushSubscriptions,
+} from "@oa/shared";
+
+type PushSubscriptionItem = PushSubscriptions["items"][number];
+
 import { Button } from "@oa/ui/shadcn";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -15,10 +22,7 @@ import {
   useSavePrefs,
   useUnmute,
 } from "../foryou/api";
-import {
-  muteErrorCopy,
-  type PushSubscriptionItem,
-} from "../foryou/prefsContract";
+import { muteErrorCopy } from "../foryou/prefsContract";
 import {
   PermissionRefused,
   PUSH_WORDS,

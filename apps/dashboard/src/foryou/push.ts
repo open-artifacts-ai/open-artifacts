@@ -9,20 +9,27 @@
  * - Permission is asked only from a click ("Turn on", or the Settings switch).
  * - A notification opens its item's same-origin path; the app checks it again.
  */
-import { PushKeySchema, R } from "@oa/shared";
+import {
+  PushKeySchema,
+  type PushSubscriptionPatchBody,
+  type PushSubscriptions,
+  PushSubscriptionsSchema,
+  R,
+} from "@oa/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { ApiClientError, api } from "../api/client";
 import { useMe } from "../auth/useMe";
 import { safePath } from "./model";
-import {
-  type PushSubscriptionItem,
-  type PushSubscriptionList,
-  PushSubscriptionListSchema,
-  type PushSubscriptionPatchBody,
-  PushSubscriptionSwitchesSchema,
-} from "./prefsContract";
+
+type PushSubscriptionItem = PushSubscriptions["items"][number];
+/** PATCH R.mePushSubscription's 200 body (shared has no named schema): this browser's switches. */
+const PushSubscriptionSwitchesSchema =
+  PushSubscriptionsSchema.shape.items.element.pick({
+    needsYou: true,
+    updates: true,
+  });
 
 export const SW_URL = "/sw.js";
 export const SW_SCOPE = "/notifications/sw/";
@@ -325,18 +332,18 @@ export function useMeId(): string {
   return me.status === "authed" ? me.me.user.id : "";
 }
 
-/** PROVISIONAL (#2774): every browser the member turned notifications on in, with its switches. */
+/** Every browser the member turned notifications on in, with its switches. */
 export const usePushSubscriptions = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: pushSubsKey,
     queryFn: ({ signal }) =>
-      api.get(R.mePushSubscriptions, PushSubscriptionListSchema, signal),
+      api.get(R.mePushSubscriptions, PushSubscriptionsSchema, signal),
   });
 
 /** This browser's own row in the list, by the id it kept (undefined: not subscribed). */
 export const thisSubscription = (
-  list: PushSubscriptionList | undefined,
+  list: PushSubscriptions | undefined,
   userId: string,
 ): PushSubscriptionItem | undefined => {
   const id = userId ? thisSubscriptionId(userId) : null;
@@ -344,7 +351,7 @@ export const thisSubscription = (
 };
 
 /**
- * PROVISIONAL (#2774): PATCH this browser's switches, shown at once; a
+ * PATCH this browser's switches, shown at once; a
  * failure puts them back.
  */
 export const usePatchSubscription = () => {
@@ -359,9 +366,9 @@ export const usePatchSubscription = () => {
       ),
     onMutate: async (v) => {
       await qc.cancelQueries({ queryKey: pushSubsKey });
-      const prev = qc.getQueryData<PushSubscriptionList>(pushSubsKey);
+      const prev = qc.getQueryData<PushSubscriptions>(pushSubsKey);
       if (prev)
-        qc.setQueryData<PushSubscriptionList>(pushSubsKey, {
+        qc.setQueryData<PushSubscriptions>(pushSubsKey, {
           items: prev.items.map((x) =>
             x.id === v.id ? { ...x, ...v.body } : x,
           ),
@@ -372,7 +379,7 @@ export const usePatchSubscription = () => {
       if (ctx?.prev) qc.setQueryData(pushSubsKey, ctx.prev);
     },
     onSuccess: (r, v) =>
-      qc.setQueryData<PushSubscriptionList>(
+      qc.setQueryData<PushSubscriptions>(
         pushSubsKey,
         (cur) =>
           cur && {

@@ -237,7 +237,7 @@ describe("For you settings", () => {
   });
 });
 
-/** This browser's subscription on the server, with its switches (PROVISIONAL #2774). */
+/** This browser's subscription on the server, with its switches. */
 function subscribed(over: Record<string, unknown> = {}, patchStatus = 200) {
   localStorage.setItem(
     "oa.push.subscription.v2",
@@ -507,7 +507,7 @@ describe("thisBrowser", () => {
   });
 });
 
-describe("the mock's per-browser switches (PROVISIONAL #2774)", () => {
+describe("the mock's per-browser switches", () => {
   it("lists them, PATCH changes them, an unknown id is 404", async () => {
     const base = createHandlers({ events, forYou: "mixed" });
     server.use(...pushSwitchHandlers(() => base), ...base);

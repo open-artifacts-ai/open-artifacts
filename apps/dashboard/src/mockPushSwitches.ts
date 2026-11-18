@@ -1,8 +1,12 @@
-import { R } from "@oa/shared";
+import {
+  type PushSubscriptionPatchBody,
+  type PushSubscriptions,
+  R,
+} from "@oa/shared";
 import { getResponse, HttpResponse, http, type RequestHandler } from "msw";
 
 /**
- * Mock-only, PROVISIONAL (#2774): S5's per-browser switches on top of the For
+ * Mock-only, until #2774 lands: S5's per-browser switches on top of the For
  * you mock (?mock=foryou). The list carries each browser's needsYou and
  * updates (a new browser starts with Needs you on, Updates off), and PATCH
  * changes them; an unknown id is 404. Move into the shared mock when #2774
@@ -16,7 +20,7 @@ export const pushSwitchHandlers = (
     switches.get(id) ?? { needsYou: true, updates: false };
   const list = async (url: string) => {
     const res = await getResponse(base(), new Request(url, { method: "GET" }));
-    return (await res?.json()) as { items: { id: string }[] };
+    return (await res?.json()) as PushSubscriptions;
   };
   return [
     http.get(`*${R.mePushSubscriptions}`, async ({ request }) => {
@@ -37,7 +41,10 @@ export const pushSwitchHandlers = (
             { error: { code: "not_found", message: "Not found" } },
             { status: 404 },
           );
-        const next = { ...of(id), ...((await request.json()) as object) };
+        const next = {
+          ...of(id),
+          ...((await request.json()) as PushSubscriptionPatchBody),
+        };
         switches.set(id, next);
         return HttpResponse.json(next);
       },
