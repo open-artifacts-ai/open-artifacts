@@ -79,7 +79,7 @@ describe("through /mcp", () => {
       expect(pub.isError).toBeFalsy();
       expect(textOf(pub)).toMatch(NOTE);
       expect(textOf(pub)).toContain("this connection sent no link proof");
-      expect(textOf(pub)).toContain("/mcp Reconnect");
+      expect(textOf(pub)).toContain("Tell your person: run /mcp Reconnect");
       const id = (pub.structuredContent as { id: string }).id;
       const com = await tool(c, "add_comment", { id, body: "hi" });
       expect(com.isError).toBeFalsy();
@@ -181,28 +181,65 @@ describe("through /mcp", () => {
 });
 
 describe("the note's table", () => {
-  const reasons: UnlinkedWhy[] = [
-    "no_proof",
-    "unbound",
-    "closed",
-    "unlinked",
-    "revoked",
-    "malformed",
-    "no_hub",
-    "timeout",
-    "error",
-    "other",
+  const FULL =
+    "You can run `oa-bus doctor` to check. Tell your person: run /mcp Reconnect; if it stays unlinked, run the bus's install again and restart the session.";
+  const RETRY = "Try again shortly. If it stays unlinked, run `oa-bus doctor`.";
+  const exact: [UnlinkedWhy, string][] = [
+    [
+      "no_proof",
+      `This agent isn't linked to your account (this connection sent no link proof). ${FULL}`,
+    ],
+    [
+      "unbound",
+      `This agent isn't linked to your account (no bus session holds this connection's proof). ${FULL}`,
+    ],
+    [
+      "malformed",
+      `This agent isn't linked to your account (its link proof was malformed). ${FULL}`,
+    ],
+    [
+      "other",
+      `This agent isn't linked to your account (its session isn't ready). ${FULL}`,
+    ],
+    [
+      "closed",
+      "This agent isn't linked to your account (its bus session is closed). Tell your person: restart the session.",
+    ],
+    [
+      "unlinked",
+      "This agent isn't linked to your account (its bus session has no identity). You can run `oa-bus doctor` to check. Tell your person: run the bus's install again and restart the session.",
+    ],
+    [
+      "revoked",
+      "This agent isn't linked to your account (its machine was revoked). Tell your person: approve this machine again in the bus, then restart the session.",
+    ],
+    [
+      "no_hub",
+      `This agent isn't linked to your account (the bus couldn't be reached). ${RETRY}`,
+    ],
+    [
+      "timeout",
+      `This agent isn't linked to your account (the link check timed out). ${RETRY}`,
+    ],
+    [
+      "error",
+      `This agent isn't linked to your account (the link check failed). ${RETRY}`,
+    ],
   ];
-  it.each(reasons)(
-    "%s gives one plain line with a fix step and no id or hash",
-    (why) => {
+  it.each(exact)("%s is exactly the agreed line", (why, line) => {
+    expect(unlinkedNote(why)).toBe(line);
+  });
+  it("never tells an agent to run install or restart on its own: only its person is told", () => {
+    for (const [why] of exact) {
       const n = unlinkedNote(why) as string;
-      expect(n).toMatch(/^This agent isn't linked to your account \(.+\)\. .+/);
       expect(n).not.toMatch(/[0-9a-f]{16,}/);
       expect(n).not.toContain("\n");
-      expect(n).toMatch(/Reconnect|doctor|install|Restart|Approve|Try again/);
-    },
-  );
+      // install and restart only ever appear after "Tell your person".
+      const [before, after] = n.split("Tell your person");
+      expect(before).not.toMatch(/install|restart/i);
+      void after;
+    }
+  });
   it("no_machine and nothing say nothing", () => {
     expect(unlinkedNote("no_machine")).toBeNull();
     expect(unlinkedNote(undefined)).toBeNull();
@@ -241,7 +278,9 @@ describe("the wrapper", () => {
   it("each write tool carries the note for an unlinked agent; reads and a person's session do not", async () => {
     const run = await server({ name: "A", version: null, unlinked: "closed" });
     const pub = await run("publish_artifact", publishArgs("W"));
-    expect(texts(pub)).toContain("its bus session is closed");
+    expect(texts(pub)).toContain(
+      "its bus session is closed). Tell your person: restart the session.",
+    );
     const id = JSON.parse(JSON.stringify(pub)).structuredContent.id as string;
     expect(texts(await run("add_comment", { id, body: "c" }))).toMatch(NOTE);
     expect(texts(await run("list_comments", { id }))).not.toMatch(NOTE);
