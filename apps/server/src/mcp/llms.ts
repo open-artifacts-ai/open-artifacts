@@ -127,7 +127,7 @@ const SETUP_STEPS_INTRO =
  * nameSource, pi and Codex send a chosen rename. OA Product edits this; no em dashes.
  */
 const NAMING_HARNESS =
-  "To set it: in Claude Code, ask them to type `/rename <name>`, or in the Code tab of Claude Desktop, to rename the session in Desktop; in Codex, `/rename <name>`; in pi, `/name <name>`. Use the name they give, or your suggestion if they say yes to it. If they skip it, carry on with your session name. After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.";
+  "To set it: in Claude Code, ask them to type `/rename <name>`; in Claude Desktop's Code tab, to rename the session in Desktop; in Codex, `/rename <name>`; in pi, `/name <name>`. Use the name they give, or your suggestion if they say yes to it. If they skip it, carry on with your session name. After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.";
 /**
  * The skill is a step of its own (#2624), so a session started after setup has
  * it even when the bus install was refused or failed. OA Product edits this; no em dashes.
@@ -206,8 +206,8 @@ const setupBlock = (
 /**
  * For a chat app (a Claude chat, ChatGPT) that reads this guide but can't run
  * a shell or add its own connector: the person adds the connector by hand.
- * No menu paths until OA Client has walked each app; OA Product edits this
- * wording, no em dashes.
+ * No menu paths until each app is walked; OA Product edits this wording,
+ * no em dashes.
  */
 export const CHAT_APPS_TITLE = "If you can't run commands";
 export const CHAT_APPS_DOCS =
@@ -215,7 +215,11 @@ export const CHAT_APPS_DOCS =
 const chatAppsBlock = (mcpUrl: string) =>
   `## ${CHAT_APPS_TITLE}
 
-If you are a chat app, such as a Claude chat or ChatGPT, you can't run the steps below or connect yourself. Don't try. Tell the person to add ${PRODUCT_NAME} as a custom connector in their app's settings, with the address ${mcpUrl} and to log in to ${PRODUCT_NAME} when the app asks. The connector belongs to their account, so they add it once.
+If you are a chat app with no shell, such as a Claude chat or ChatGPT, you can't run the steps below or connect yourself. Don't try. Tell the person to add ${PRODUCT_NAME} as a custom connector in their app's settings, with this address:
+
+${mcpUrl}
+
+Then ask them to log in to ${PRODUCT_NAME} when the app asks. The connector belongs to their account, so they add it once.
 
 Then tell them plainly: once connected, you can work with their pages, but a chat can't join the bus, so you only see new comments and answers when they ask you to look. For an agent that hears them on its own, they can paste the same setup line into the Code tab of Claude Desktop. Guide: ${CHAT_APPS_DOCS}
 

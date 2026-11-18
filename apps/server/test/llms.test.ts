@@ -191,7 +191,7 @@ describe("GET /llms.txt", () => {
     );
     expect(steps).toContain("`/rename <name>`");
     expect(steps).toContain(
-      "Code tab of Claude Desktop, to rename the session in Desktop",
+      "in Claude Desktop's Code tab, to rename the session in Desktop;",
     );
     expect(steps).toContain("`/name <name>`");
     expect(steps).toContain(
@@ -231,8 +231,12 @@ describe("GET /llms.txt", () => {
     for (const e of [E({ BUS_HUB: undefined }), E({ HOSTED: undefined })]) {
       const chat =
         sections(await guide(e)).get("If you can't run commands") ?? "";
-      expect(chat).toContain("Claude chat or ChatGPT");
-      expect(chat).toContain(`with the address ${skillOrigin(HOST)}/mcp and`);
+      expect(chat).toContain(
+        "chat app with no shell, such as a Claude chat or ChatGPT",
+      );
+      expect(chat).toContain(
+        `with this address:\n\n${skillOrigin(HOST)}/mcp\n\nThen ask them to log in`,
+      );
       expect(chat).toContain("add Open Artifacts as a custom connector");
       expect(chat).toContain("a chat can't join the bus");
       expect(chat).toContain("Code tab of Claude Desktop");

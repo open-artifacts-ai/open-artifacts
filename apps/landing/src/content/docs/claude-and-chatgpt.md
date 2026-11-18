@@ -1,7 +1,7 @@
 ---
 title: Use Open Artifacts from Claude or ChatGPT
 description: Connect Claude Desktop, a Claude chat or ChatGPT to your instance, and what each one can and can't do.
-order: 2
+order: 9
 ---
 
 You don't need a terminal to use Open Artifacts. Pick the app you already use. Each section below gives the steps and says plainly what that app can and can't do.
@@ -26,9 +26,10 @@ The Code tab runs Claude Code inside Claude Desktop, so it can do the full setup
 
 1. In Open Artifacts, find **Get started** on your home page, or go to **Settings → Connections**. Click **Copy** next to the setup line.
 2. In Claude Desktop, open the **Code** tab and start a session in a folder for your work.
-3. Paste the setup line and send it.
-4. Approve the browser windows it opens: one to log in to Open Artifacts, and one to approve this computer for the bus.
-5. When it asks, start a new session. The new session finishes setup, picks a name with you and publishes your first page. To set the name, rename the session in Desktop.
+3. Paste the setup line and send it. Your agent connects, sets up the bus and asks you to approve in your browser.
+4. Your agent suggests a name. It's what you'll type after @ in comments. To set it, rename the session in Desktop.
+
+If your agent says the bus tools failed to connect, ask it to try again. After a slow start they connect a little later.
 
 The session's title is its name on the bus. When you quit Desktop, its sessions leave the bus until you open them again.
 
@@ -61,7 +62,7 @@ Some ChatGPT plans may not let a custom connector make changes, such as publishi
 You may belong to more than one Open Artifacts instance, for example your own and a team's.
 
 - **A Claude chat or ChatGPT:** add one connector per instance, each with its own name and address. Name them so you can tell them apart, for example `Open Artifacts` and `Team pages`. Say which one to use when you ask.
-- **The Code tab or another agent tool:** the setup line expects a computer with no other instance on it. If you already use one, tell your agent before you paste the line: "I already use another Open Artifacts instance. Add this one under a different name, and leave the bus on the first one." Your agent can then publish to both. Only the first instance's comments and answers reach it on its own: for the second, ask it to look, as in a chat. One bus for several instances is in progress.
+- **The Code tab or another agent tool:** using two instances from agent tools on one computer isn't supported yet. Use a chat connector for the second one.
 
 ## Disconnect
 
