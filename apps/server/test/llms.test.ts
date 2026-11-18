@@ -3,6 +3,7 @@ import { agentClients, hostSlug, newId, secretFile } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { CONTENT_POLICY, ROUTE_POLICY } from "../src/auth/route-policy.js";
 import { signContentPrefix } from "../src/content/signing.js";
+import { SKILL_COMMAND_MIN_BUS } from "../src/mcp/bus-install.js";
 import {
   CLAUDE_PLUGIN,
   CLAUDE_PLUGIN_ENABLED,
@@ -617,6 +618,22 @@ describe("the skill step (#2624)", () => {
     expect(step).not.toContain("claude plugin");
   });
 
+  it("a pin older than the first bus with `skill`: save by hand only", () => {
+    const old = renderLlms(HOST, {
+      bus: true,
+      pin: { ...PIN, version: "0.199.7" },
+    });
+    const step = stepOf(old);
+    expect(step).toContain("has no `skill` command");
+    expect(step).not.toContain("skill --check");
+    expect(step).toContain(`save ${origin}/skill.md the way your harness`);
+    const at = renderLlms(HOST, {
+      bus: true,
+      pin: { ...PIN, version: SKILL_COMMAND_MIN_BUS },
+    });
+    expect(stepOf(at)).toContain("skill --check --instance");
+  });
+
   it("no pin: no checked command, an oa-bus already here, or save it by hand", () => {
     const step = stepOf(renderLlms(HOST, { bus: true, pin: null }));
     expect(step).toContain("`oa-bus skill --check --instance");
@@ -636,7 +653,9 @@ describe("the skill step (#2624)", () => {
       renderLlms(HOST, { bus: true, pin: PIN, plugin: true }),
     );
     expect(step).toContain("install the open-artifacts plugin");
-    expect(step).toContain("The plugin brings the skill, so don't also");
+    expect(step).toContain("The plugin brings the skill.");
+    expect(step).toContain("`claude plugin list`");
+    expect(step).not.toContain("so don't also");
     expect(step).toContain("On any other harness:");
   });
 });

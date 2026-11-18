@@ -56,6 +56,22 @@ describe("oa-bus skill", () => {
     expect(d.out()).toHaveLength(2);
   });
 
+  it("--check fails when the instance's skill can't be read, even with another instance's skill saved", async () => {
+    const c = world(["claude"]);
+    await main(["skill", "--instance", ORIGIN], () => c);
+    const d = world(["claude"]);
+    Object.assign(d, { userHome: c.userHome, home: c.home });
+    d.fetch = vi.fn(async () => {
+      throw new Error("down");
+    }) as unknown as typeof fetch;
+    expect(
+      await main(["skill", "--check", "--instance", ORIGIN], () => d),
+    ).toBe(1);
+    expect(d.err().join("\n")).toContain(
+      "Could not read this instance's skill",
+    );
+  });
+
   it("fails with the URL when the instance can't serve it", async () => {
     const c = world(["claude"]);
     c.fetch = vi.fn(async () => {

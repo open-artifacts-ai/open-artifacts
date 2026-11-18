@@ -76,12 +76,17 @@ export async function skill(opts: Opts, ctx: Ctx): Promise<number> {
     failedUrl = r.failedUrl;
     if (failedUrl) sayErr(ctx, `Could not fetch the skill from ${failedUrl}.`);
   }
-  // The instance's own folder name when it answers; else any copy of ours.
+  // Only this instance's own copy counts, so its folder name must be known.
   let folder: string | undefined;
   try {
     folder = skillFolder(await deps.fetchSkill(`${origin}/skill.md`));
-  } catch {
-    folder = undefined;
+    if (!folder) throw new Error("no skill name in the file");
+  } catch (e) {
+    sayErr(
+      ctx,
+      `Could not read this instance's skill from ${origin}/skill.md (${e instanceof Error ? e.message : String(e)}), so I can't check it is the one saved.`,
+    );
+    return 1;
   }
   const where = Object.fromEntries(
     harnesses.map((h) => [h, savedSkill(deps, h, folder)]),

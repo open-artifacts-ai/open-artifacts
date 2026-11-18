@@ -47,3 +47,22 @@ export const cleanWhy = (s: string): string =>
  */
 export const busNoPin = (why: string): string =>
   `The bus can't be installed from this build of the instance: it has no verified release to check the download against (${cleanWhy(why) || "no reason recorded"}). Do not install it, and do not run \`npx @open-artifacts/bus\` or any other install command: nothing would check what it runs. Tell the person: "This instance can't give me a checked bus release, so I can't install the bus safely. Ask whoever runs the instance to deploy a release build." Then go on with the next step.`;
+
+/**
+ * The first bus release with `oa-bus skill` (#2624): the release after 0.199.7,
+ * the latest when this was written. An older pin has no such command, so the
+ * setup file gives only the save-by-hand text for it.
+ */
+export const SKILL_COMMAND_MIN_BUS = "0.200.0";
+
+/** Does the pinned bus have `oa-bus skill`? Plain x.y.z compare; anything else says no. */
+export const pinHasSkillCommand = (version: string): boolean => {
+  const a = version.split(".").map(Number);
+  const b = SKILL_COMMAND_MIN_BUS.split(".").map(Number);
+  if (a.length !== 3 || a.some((n) => !Number.isInteger(n))) return false;
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] as number) !== (b[i] as number))
+      return (a[i] as number) > (b[i] as number);
+  }
+  return true;
+};

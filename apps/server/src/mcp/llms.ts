@@ -25,6 +25,7 @@ import {
   type BusPin,
   busInstallBlock,
   busNoPin,
+  pinHasSkillCommand,
 } from "./bus-install.js";
 import { SKILL_PATH, skillEnabled } from "./skill.js";
 import { skillOrigin } from "./skill-common.js";
@@ -133,14 +134,15 @@ const skillStep = (origin: string, pin: BusPin | null, plugin: boolean) => {
   const manual = `If the installer doesn't know your harness (the check finds none of its harnesses), or these commands can't run, save ${origin}${SKILL_PATH} the way your harness keeps skills, and tell the person where you saved it.`;
   const checkCmd = `skill --check --instance ${origin}`;
   const installCmd = `skill --instance ${origin}`;
-  const bySkill = pin
-    ? `Run this from the same checked copy as the bus step. It prints one line per harness with where the skill is saved, and exits 0 only if it is saved for all of them:\n\n${busInstallBlock(origin, pin, checkCmd)}\n\nIf it exits non-zero, save the skill with this, which changes nothing about the bus, then run the check again:\n\n${busInstallBlock(origin, pin, installCmd)}\n\nIf a command fails or prints MISMATCH, don't try another way to run the bus: ${manual}`
-    : `This build has no checked bus release, so there is no command to run from a checked copy. If \`oa-bus\` is already on this machine, \`oa-bus ${checkCmd}\` prints where the skill is saved and \`oa-bus ${installCmd}\` saves it. Otherwise ${manual.charAt(0).toLowerCase()}${manual.slice(1)}`;
+  const bySkill =
+    pin && pinHasSkillCommand(pin.version)
+      ? `Run this. Like the bus step, it downloads a checked copy of the bus and runs from that. It prints one line per harness with where the skill is saved, and exits 0 only if it is saved for all of them:\n\n${busInstallBlock(origin, pin, checkCmd)}\n\nIf it exits non-zero, save the skill with this, which changes nothing about the bus, then run the check again:\n\n${busInstallBlock(origin, pin, installCmd)}\n\nIf a command fails or prints MISMATCH, don't try another way to run the bus: ${manual}`
+      : `${pin ? `This instance's pinned bus (version ${pin.version}) has no \`skill\` command, so there is no command to run for this.` : "This build has no checked bus release, so there is no command to run from a checked copy. If `oa-bus` is already on this machine, `oa-bus " + checkCmd + "` prints where the skill is saved and `oa-bus " + installCmd + "` saves it. Otherwise"} ${pin ? manual : manual.charAt(0).toLowerCase() + manual.slice(1)}`;
   const stands =
     "This step still applies if the bus step failed or was refused.";
   if (plugin) {
     const { name } = CLAUDE_PLUGIN;
-    return `**Install the skill.** ${stands} If you are Claude Code, install the ${name} plugin as described under "Claude Code: prefer the plugin" below, and check it there. The plugin brings the skill, so don't also save the skill another way. ${report} ${follow}\n\nOn any other harness: ${bySkill} ${report} ${follow}`;
+    return `**Install the skill.** ${stands} If you are Claude Code, install the ${name} plugin as described under "Claude Code: prefer the plugin" below. The plugin brings the skill. Check it with \`claude plugin list\`: ${name} is listed and enabled. ${report} ${follow}\n\nOn any other harness: ${bySkill} ${report} ${follow}`;
   }
   return `**Install the skill.** ${stands} ${bySkill} ${report} ${follow}`;
 };
