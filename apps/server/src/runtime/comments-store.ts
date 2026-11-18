@@ -180,6 +180,8 @@ export type StoredComment = {
   editedAt: string | null;
   ask?: StoredAsk;
   mentions?: StoredTarget[];
+  /** #2770: the people this comment @mentions, by user id (comment_targets kind "person"). */
+  people?: string[];
   /** #2035: the participant agents a person's reply also told (comment_targets kind "reply"). */
   notified?: StoredTarget[];
   /** #2577: agents of other people this comment's delivery is held for (comment_targets kind "held"): `held` until their person allows it, `releasing` between the allow and the notice. */
@@ -202,6 +204,8 @@ export type NewExtras = {
     "answer" | "closed" | "history" | "replacedBy" | "withdrawn"
   >;
   mentions?: StoredAgent[];
+  /** #2770: people @mentioned, by user id; already checked to be able to read the artifact. */
+  people?: string[];
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
   /** #2577: held for the agent's person; the words stay, undelivered, and agents of that person read a placeholder. `way`: mention | reply | ask | page. */
@@ -509,11 +513,15 @@ function attachExtras(
   for (const r of sql.exec<TargetRow>(
     `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity
      from comment_targets g
-     where g.kind in ('mention', 'asker', 'reply', 'held') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
+     where g.kind in ('mention', 'asker', 'reply', 'held', 'person') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
   )) {
     const c = byId.get(r.comment_id);
     if (!c) continue;
+    if (r.kind === "person") {
+      c.people = [...(c.people ?? []), r.key];
+      continue;
+    }
     if (r.kind === "held") {
       c.held = [
         ...(c.held ?? []),
@@ -713,6 +721,14 @@ export function insertExtras(
     );
   for (const m of x.mentions ?? []) put("mention", m);
   for (const m of x.asker ?? []) put("asker", m);
+  for (const id of x.people ?? [])
+    sql.exec(
+      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+       values (?, ?, 'person', ?, '', 'noted', null, null)`,
+      commentId,
+      threadId,
+      id,
+    );
   for (const h of x.held ?? [])
     addHeld(sql, threadId, commentId, h.agent, h.way);
 }
@@ -1239,7 +1255,7 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (!c) return;
   const open = sql
     .exec(
-      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state not in ('gone', 'withdrawn') limit 1",
+      "select 1 from comment_targets where comment_id = ? and kind not in ('reply', 'person') and state not in ('gone', 'withdrawn') limit 1",
       commentId,
     )
     .toArray();

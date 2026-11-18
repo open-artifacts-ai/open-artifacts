@@ -16,6 +16,7 @@ import { capsReads } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifacts, inboxItems } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
+import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
@@ -24,6 +25,8 @@ import { runtimeStub } from "../runtime/do.js";
 import { queueUpdatePush } from "./push.js";
 import { getUsers } from "./users.js";
 
+/** Person-mention Needs-you items one sender may cause per day (#2770). */
+export const PERSON_MENTIONS_PER_DAY = 200;
 /** The most characters of a comment an item keeps. */
 export const EXCERPT_MAX = 120;
 /** The items one page of Updates holds. */
@@ -42,10 +45,9 @@ export const itemExcerpt = (s: string): string => {
     : `${cps.slice(0, EXCERPT_MAX - 1).join("")}…`;
 };
 
-/** Every stored item is an Update (a mention of your agent included). */
-const levelOf = (_kind: ItemKind) => "update";
-
 export type NewItem = {
+  /** #2770: "needs_you" for a mention of the person; every other item is an Update (a mention of their agent included). */
+  level?: "needs_you" | "update";
   userId: string;
   kind: ItemKind;
   /** The idempotency key, unique per person: "reply:<comment id>". */
@@ -113,7 +115,7 @@ export async function writeInboxItems(
             newId(),
             r.userId,
             r.kind,
-            levelOf(r.kind),
+            r.level ?? "update",
             r.key,
             r.artifactId,
             r.threadId ?? null,
@@ -125,8 +127,9 @@ export async function writeInboxItems(
           ),
         ),
       );
-    // #2512 S5: browser push for each Update, for those who turned it on.
-    for (const r of rows)
+    // #2512 S5: browser push for each Update, for those who turned it on. A
+    // Needs-you item (a person @mentioned, #2770) is not an Update: its push is #2781.
+    for (const r of rows.filter((x) => !x.key.startsWith("person:")))
       await queueUpdatePush(env, r.userId, {
         key: r.key,
         artifactId: r.artifactId,
@@ -191,6 +194,40 @@ export async function recordCommentItems(
     const seen = new Set<string>();
     const items: NewItem[] = [];
     const at = Date.parse(c.createdAt);
+    // #2770: a person @mentioned is a Needs-you item, and the one item they get from this comment.
+    if (c.author.kind !== "guest")
+      for (const userId of c.people ?? []) {
+        if (seen.has(userId)) continue;
+        // A sender's daily cap on these items: over it the comment stands, no more items are written.
+        if (
+          c.author.kind === "user" &&
+          (await takeAll(env, [
+            [
+              `prefs:pm:${c.author.ref}`,
+              PERSON_MENTIONS_PER_DAY,
+              new Date().toISOString().slice(0, 10),
+            ],
+          ])) !== -1
+        ) {
+          logWarn("person_mention_capped", undefined, {
+            artifactId: j.artifactId,
+          });
+          continue;
+        }
+        seen.add(userId);
+        items.push({
+          userId,
+          kind: "mention",
+          level: "needs_you",
+          key: `person:${c.id}`,
+          artifactId: j.artifactId,
+          threadId: j.threadId,
+          commentId: c.id,
+          actor: c.author,
+          excerpt: heldFor.has(userId) ? HELD_EXCERPT : itemExcerpt(c.body),
+          at: Number.isNaN(at) ? Date.now() : at,
+        });
+      }
     for (const kind of ORDER)
       for (const userId of by.get(kind) ?? []) {
         if (seen.has(userId)) continue;
@@ -228,6 +265,12 @@ export async function forgetCommentItems(
   try {
     if (j.root)
       await env.DB.batch([
+        // #2770: a person's Later row for a mention goes with the item.
+        stmt(
+          env.DB,
+          `delete from inbox_later where item_id in
+             (select 'mention:' || id from inbox_items where artifact_id = ? and thread_id = ?)`,
+        ).bind(j.artifactId, j.threadId),
         stmt(
           env.DB,
           "delete from inbox_items where artifact_id = ? and thread_id = ?",
@@ -242,12 +285,17 @@ export async function forgetCommentItems(
       await env.DB.batch([
         stmt(
           env.DB,
+          `delete from inbox_later where item_id in
+             (select 'mention:' || id from inbox_items where artifact_id = ? and comment_id = ?)`,
+        ).bind(j.artifactId, j.commentId),
+        stmt(
+          env.DB,
           "delete from inbox_items where artifact_id = ? and comment_id = ?",
         ).bind(j.artifactId, j.commentId),
         stmt(
           env.DB,
           `delete from push_pending where artifact_id = ?1 and key in
-             ('ask:' || ?2, 'reply:' || ?2, 'comment:' || ?2, 'mention:' || ?2)`,
+             ('ask:' || ?2, 'reply:' || ?2, 'comment:' || ?2, 'mention:' || ?2, 'person:' || ?2)`,
         ).bind(j.artifactId, j.commentId),
       ]);
   } catch (e) {
@@ -503,6 +551,17 @@ export async function updatesPage(
     rows: page,
     next: more && last ? encodeCursor(last.createdAt, last.id) : null,
   };
+}
+
+/** #2770: the mentions of me still waiting in Needs you (unread), oldest first. */
+export async function mentionsOfMe(env: Env, caller: Me): Promise<ItemRow[]> {
+  return (await getDb(env)
+    .select(cols)
+    .from(inboxItems)
+    .innerJoin(artifacts, eq(artifacts.id, inboxItems.artifactId))
+    .where(and(mineOn(caller, "needs_you"), isNull(inboxItems.readAt)))
+    .orderBy(inboxItems.createdAt, inboxItems.id)
+    .limit(200)) as ItemRow[];
 }
 
 /** Marks my items read by id; others' ids, asks and unknown ids match nothing. Returns how many changed. */
