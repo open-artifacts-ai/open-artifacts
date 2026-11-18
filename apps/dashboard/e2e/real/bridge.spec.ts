@@ -16,10 +16,9 @@ document.getElementById("save").onclick = () =>
     .catch((e) => { out.textContent = "error:" + e.message; });
 </script>`;
 
-test("db-capable HTML artifact sets/gets a doc via window.openArtifacts and it persists after reload", async ({
-  page,
-  member,
-}) => {
+test("db-capable HTML artifact sets/gets a doc via window.openArtifacts and it persists after reload", {
+  tag: "@smoke",
+}, async ({ page, member }) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Notes app ${uniq()}`,
     format: "html",

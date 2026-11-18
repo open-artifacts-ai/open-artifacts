@@ -119,7 +119,7 @@ test("expired challenge offers another try", async ({ page }) => {
   await expect(card.locator("[data-option=merge]")).toBeEnabled();
 });
 
-test("an ordinary ask is unchanged", async ({ page }) => {
+test("an ordinary ask is unchanged", { tag: "@smoke" }, async ({ page }) => {
   let called = false;
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "credentials", {

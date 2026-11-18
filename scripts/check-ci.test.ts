@@ -229,12 +229,9 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Four shards on every event: since the 180-job plan (2026-11-16) a pull
-    // request no longer saves concurrency with two, and two set its wait.
+    // Four shards on every event but a pull request, which runs the one-shard
+    // smoke (see "pull request smoke" below for the exact expressions).
     const SHARDS = [1, 2, 3, 4];
-    expect(job.strategy.matrix.shard).toEqual(SHARDS);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
     expect(job["timeout-minutes"]).toBe(15);
     expect(job.strategy["fail-fast"]).toBe(false);
     // Browsers and their OS deps come baked into the image, pinned by digest:
@@ -324,6 +321,120 @@ describe("ci.yml", () => {
     // The deleted hosted package has no step left.
     expect(ci("e2e.sh")).not.toContain("provisioning");
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
+  });
+  // The pull request smoke: pull requests run only the @smoke tests on one
+  // shard; the merge queue and every other event run the whole suite on four.
+  describe("pull request smoke", () => {
+    const job = () => w.jobs["e2e-shard"];
+    it("only the pull_request event gets one shard; anything else gets four", () => {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job().strategy.matrix.shard).toBe(
+        "${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1, 2, 3, 4]') }}",
+      );
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job().env.E2E_SHARD).toBe(
+        "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 1 || 4 }}",
+      );
+      // Decided inside the job: no job-level if (a skipped job passes a
+      // required check), and the aggregate and its name are unchanged.
+      expect(job().if).toBeUndefined();
+      expect(w.jobs.e2e.needs).toEqual(["e2e-shard"]);
+      // The workflow never names the filter: only e2e.sh applies it.
+      expect(JSON.stringify(job())).not.toContain("@smoke");
+      expect(JSON.stringify(job())).not.toContain("--grep");
+    });
+    // Runs e2e.sh with a stand-in pnpm that records its arguments.
+    const run = (suite: string, event: string | undefined) => {
+      const dir = mkdtempSync(join(tmpdir(), "e2e-smoke-"));
+      const log = join(dir, "args");
+      writeFileSync(
+        join(dir, "pnpm"),
+        `#!/usr/bin/env bash\necho "$*" >> "${log}"\n`,
+        { mode: 0o755 },
+      );
+      const env: Record<string, string> = {
+        PATH: `${dir}:${process.env.PATH}`,
+        HOME: dir,
+      };
+      if (event !== undefined) env.GITHUB_EVENT_NAME = event;
+      const r = spawnSync("bash", [join(root, "scripts/ci/e2e.sh"), suite], {
+        env,
+        encoding: "utf8",
+      });
+      expect(r.status).toBe(0);
+      return existsSync(log) ? readFileSync(log, "utf8") : "";
+    };
+    it("a pull request runs @smoke on the mock and real suites (real: Chromium only)", () => {
+      const mock = run("mock", "pull_request");
+      expect(mock).toContain("playwright test");
+      expect(mock).toContain("--grep @smoke");
+      expect(mock).not.toContain("--project");
+      const real = run("real", "pull_request");
+      expect(real).toContain("--grep @smoke");
+      expect(real).toContain("--project chromium");
+    });
+    it("a pull request skips spaces, ui and landing", () => {
+      for (const suite of ["spaces", "ui", "landing"])
+        expect(run(suite, "pull_request"), suite).toBe("");
+    });
+    it("every other event, an empty or a missing one runs everything", () => {
+      for (const event of [
+        "merge_group",
+        "workflow_dispatch",
+        "push",
+        "pull_request_target",
+        "Pull_Request",
+        "pull_request ",
+        "",
+        undefined,
+      ]) {
+        for (const suite of ["mock", "real"]) {
+          const out = run(suite, event);
+          expect(out, `${suite} on ${event}`).toContain("playwright test");
+          expect(out, `${suite} on ${event}`).not.toContain("@smoke");
+          expect(out, `${suite} on ${event}`).not.toContain("--grep");
+          expect(out, `${suite} on ${event}`).not.toContain("--project");
+        }
+        for (const suite of ["spaces", "ui", "landing"])
+          expect(run(suite, event), `${suite} on ${event}`).not.toBe("");
+      }
+    });
+    it("a smoke run that selects no test fails (never --pass-with-no-tests)", () => {
+      expect(ci("e2e.sh")).not.toContain("pass-with-no-tests");
+      expect(ci("e2e.sh")).not.toContain("passWithNoTests");
+      const cfgs = readdirSync(join(root, "apps/dashboard")).filter((f) =>
+        f.startsWith("playwright"),
+      );
+      for (const c of cfgs)
+        expect(read(`apps/dashboard/${c}`)).not.toContain("passWithNoTests");
+    });
+    it("the smoke set is not empty and not large", () => {
+      const dir = join(root, "apps/dashboard/e2e");
+      const files: string[] = [];
+      const walk = (d: string) => {
+        for (const e of readdirSync(d, { withFileTypes: true })) {
+          const p = join(d, e.name);
+          if (e.isDirectory()) {
+            if (e.name !== "staging") walk(p);
+          } else if (e.name.endsWith(".spec.ts")) files.push(p);
+        }
+      };
+      walk(dir);
+      const tagged = files.reduce(
+        (n, f) => n + (readFileSync(f, "utf8").match(/"@smoke"/g) ?? []).length,
+        0,
+      );
+      // Source count: a few looped tests carry a tag on one iteration only.
+      expect(tagged).toBeGreaterThan(0);
+      expect(tagged).toBeLessThanOrEqual(60);
+      // Nothing in the browser suites outside mock and real carries the tag.
+      expect(
+        files.filter(
+          (f) =>
+            /"@smoke"/.test(readFileSync(f, "utf8")) && f.includes("/spaces/"),
+        ),
+      ).toEqual([]);
+    });
   });
   describe("release-only fast path", () => {
     const REQUIRED = [

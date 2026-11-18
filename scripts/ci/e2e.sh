@@ -13,10 +13,28 @@
 #                      playwright-report/<suite>
 #   e2e.sh ui       -> @oa/ui real-browser checks (axe contrast, focus outlines)
 #   e2e.sh landing  -> landing real-browser checks (no horizontal overflow)
+#
+# Smoke mode: on a pull request (GITHUB_EVENT_NAME exactly "pull_request") the
+# mock and real suites run only the tests tagged @smoke (the happy path: sign
+# in, library, viewer, publish, share, comment, ask, doc edit, guest), real on
+# Chromium only, and spaces, ui and landing do not run. Any other value, an
+# empty or missing one, a local run, the merge queue and a dispatch run the
+# whole suite. A smoke run that selects no test fails (Playwright's "No tests
+# found"; it never passes with no tests).
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 hosts_file="${HOSTS_FILE:-/etc/hosts}"
 blob_dir="${E2E_BLOB_DIR:-$root/apps/dashboard/blob-report}"
+smoke=false
+[ "${GITHUB_EVENT_NAME:-}" = pull_request ] && smoke=true
+
+# Suites with no @smoke test do not run on pull requests.
+skip_in_smoke() {
+  if [ "$smoke" = true ]; then
+    echo "e2e $1: not part of the pull request smoke (the merge queue runs it)"
+    exit 0
+  fi
+}
 
 case "${1:-}" in
   version)
@@ -48,6 +66,13 @@ case "${1:-}" in
     # frame (#2019): build it first, as the dist integration tests do.
     [ "$suite" = mock ] && pnpm --filter @oa/shared --filter @oa/runtime build
     [ "$suite" = real ] && args+=(-c playwright.real.config.ts)
+    if [ "$smoke" = true ]; then
+      args+=(--grep @smoke)
+      # The real config also has a webkit project; the smoke runs Chromium only
+      # (the mock config has no projects).
+      [ "$suite" = real ] && args+=(--project chromium)
+      echo "e2e $suite: smoke (@smoke only), pull request"
+    fi
     if [ -n "${E2E_SHARD:-}" ]; then
       # One file per shard and suite, so the merge sees every shard.
       PLAYWRIGHT_BLOB_OUTPUT_FILE="$blob_dir/$suite/shard-${E2E_SHARD%/*}.zip" \
@@ -55,7 +80,7 @@ case "${1:-}" in
         --shard="$E2E_SHARD" --reporter=list,blob
     elif [ "$suite" = mock ]; then
       PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/mock \
-        pnpm --filter @oa/dashboard exec playwright test --reporter=list,html
+        pnpm --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"} --reporter=list,html
     else
       PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/real \
         pnpm --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"}
@@ -71,6 +96,7 @@ case "${1:-}" in
     done
     ;;
   spaces)
+    skip_in_smoke spaces
     # Its own server (port 8797, FEATURES=spaces): hosted screens on the real
     # server. Small (one spec): in CI it runs whole in one shard, as a blob.
     if [ -n "${E2E_SHARD:-}" ]; then
@@ -82,9 +108,11 @@ case "${1:-}" in
     fi
     ;;
   ui)
+    skip_in_smoke ui
     pnpm --filter @oa/ui test:browser
     ;;
   landing)
+    skip_in_smoke landing
     pnpm --filter @oa/landing test:browser
     ;;
   *)

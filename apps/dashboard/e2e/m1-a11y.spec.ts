@@ -92,7 +92,9 @@ for (const theme of ["light", "dark"])
       expect(v, v.join("\n")).toEqual([]);
     });
 
-test("keyboard: log in with an emailed code, no mouse", async ({ page }) => {
+test("keyboard: log in with an emailed code, no mouse", {
+  tag: "@smoke",
+}, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/sign-in?hosted=1&method=code&next=%2Fshared");
   await page.waitForLoadState("networkidle");
