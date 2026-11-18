@@ -14,6 +14,8 @@ import {
   stripNameControls,
   viewerPath,
 } from "@oa/shared";
+import { accessLevels, callerOf, capOfCaller } from "../auth/authz.js";
+import { capsReads } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import { orgName } from "../email/templates.js";
 import type { Env } from "../env.js";
@@ -25,7 +27,8 @@ import { itemExcerpt } from "./inbox-items.js";
 import { mutedSet } from "./inbox-mutes.js";
 import { getSettings } from "./members.js";
 import { getPrefs, quietState } from "./notification-prefs.js";
-import { pushEndpointOk, pushOn, sendPush } from "./web-push.js";
+import { getUser } from "./users.js";
+import { pushEndpointOk, pushKeysOk, pushOn, sendPush } from "./web-push.js";
 
 /** Items that arrive within this long of the last push wait and go as one. */
 export const BUNDLE_MS = 10 * 60_000;
@@ -87,6 +90,11 @@ export async function addSubscription(
     throw new ApiError("bad_request", "That push service isn't supported", {
       path: "endpoint",
       reason: "unsupported",
+    });
+  if (!(await pushKeysOk(body.keys.p256dh, body.keys.auth)))
+    throw new ApiError("bad_request", "Those push keys can't be used", {
+      path: "keys",
+      reason: "invalid",
     });
   const label = body.label
     ? stripNameControls(body.label).trim() || null
@@ -426,6 +434,65 @@ const dropRows = (env: Env, rows: Pending[]) =>
     ),
   );
 
+/**
+ * What is still true at send time (the queue may be minutes or hours old): the
+ * member can still read the page, the ask is still open for them, the update's
+ * item still exists, and the words are the current ones (an edited comment or
+ * question), never the words queued. Rows that fail any are dropped.
+ */
+async function stillWanted(
+  env: Env,
+  userId: string,
+  rows: Pending[],
+): Promise<Pending[]> {
+  const user = await getUser(env, userId);
+  if (!user || capsReads(capOfCaller(callerOf(user)))) return [];
+  const caller = callerOf(user);
+  const readable = new Set<string>();
+  for (const id of new Set(rows.map((r) => r.artifact_id))) {
+    const [lvl] = await accessLevels(env, [caller], id);
+    if (lvl?.artifact) readable.add(id);
+  }
+  const kept = rows.filter((r) => readable.has(r.artifact_id));
+  const asks = kept.filter((r) => r.kind === "ask");
+  const updates = kept.filter((r) => r.kind === "update");
+  const open = new Map<string, string>();
+  if (asks.length > 0) {
+    const { results } = await stmt(
+      env.DB,
+      `select comment_id, question from artifact_asks
+        where addressee = ?1 and open = 1 and comment_id in (select value from json_each(?2))`,
+    )
+      .bind(userId, JSON.stringify(asks.map((r) => r.key.slice(4))))
+      .all<{ comment_id: string; question: string | null }>();
+    for (const r of results) open.set(`ask:${r.comment_id}`, r.question ?? "");
+  }
+  const items = new Map<string, string>();
+  if (updates.length > 0) {
+    const { results } = await stmt(
+      env.DB,
+      `select key, excerpt from inbox_items
+        where user_id = ?1 and key in (select value from json_each(?2))`,
+    )
+      .bind(userId, JSON.stringify(updates.map((r) => r.key)))
+      .all<{ key: string; excerpt: string }>();
+    for (const r of results) items.set(r.key, r.excerpt);
+  }
+  const out: Pending[] = [];
+  for (const r of kept) {
+    if (r.kind === "ask") {
+      const q = open.get(r.key);
+      if (q === undefined) continue;
+      out.push({ ...r, excerpt: q ? itemExcerpt(q) : r.excerpt });
+    } else if (r.kind === "update") {
+      const e = items.get(r.key);
+      if (e === undefined) continue;
+      out.push({ ...r, excerpt: e });
+    } else out.push(r);
+  }
+  return out;
+}
+
 async function drainMember(
   env: Env,
   userId: string,
@@ -470,6 +537,8 @@ async function drainMember(
       !muted.pages.has(r.artifact_id) &&
       !(r.agent_key && muted.agents.has(r.agent_key)),
   );
+  due = await stillWanted(env, userId, due);
+  if (due.length === 0) return 0;
   if (!prefs.browserAllAsks) {
     // "Asks waiting for you": an ask counts only when an agent of theirs waits on them.
     const asks = due.filter((r) => r.kind === "ask");
@@ -497,12 +566,19 @@ async function drainMember(
       r.kind === "update" ? s.updates === 1 : s.needs_you === 1,
     );
     if (mine.length === 0) continue;
-    const r = await sendPush(
-      env,
-      s,
-      pushPayload(mine, prefs.lockScreenDetail, title),
-      now,
-    );
+    // One browser's failure never stops the member's others.
+    let r: Awaited<ReturnType<typeof sendPush>>;
+    try {
+      r = await sendPush(
+        env,
+        s,
+        pushPayload(mine, prefs.lockScreenDetail, title),
+        now,
+      );
+    } catch (e) {
+      logWarn("push_send_failed", e, { subscription: s.id });
+      continue;
+    }
     if (r === "sent") {
       ok++;
       await stmt(
@@ -511,7 +587,7 @@ async function drainMember(
       )
         .bind(now, s.id)
         .run();
-    } else if (r === "gone")
+    } else if (r === "gone" || r === "unusable")
       await stmt(env.DB, "delete from push_subscriptions where id = ?1")
         .bind(s.id)
         .run();

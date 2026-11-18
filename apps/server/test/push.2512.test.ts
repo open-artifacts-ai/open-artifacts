@@ -1,13 +1,17 @@
 // #2512 S5: browser push. Keys are generated here, per run; none is committed.
 import { env } from "cloudflare:workers";
 import { type NotificationPrefs, newId, R } from "@oa/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { RECOVERY_CRON, scheduled } from "../src/cron.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
-import { recordShareItem } from "../src/services/inbox-items.js";
+import {
+  forgetCommentItems,
+  recordShareItem,
+  refreshCommentItems,
+} from "../src/services/inbox-items.js";
 import { DEFAULT_PREFS, putPrefs } from "../src/services/notification-prefs.js";
 import {
   BUNDLE_MS,
@@ -17,8 +21,8 @@ import {
   MAX_SUBSCRIPTIONS,
   queueAskPush,
   queueBackFromLater,
-  queuePush,
-  queueUpdatePush,
+  queuePush as rawQueuePush,
+  queueUpdatePush as rawQueueUpdatePush,
 } from "../src/services/push.js";
 import { getUser } from "../src/services/users.js";
 import {
@@ -190,15 +194,87 @@ const prefs = (over: Partial<NotificationPrefs> = {}): NotificationPrefs => ({
 const subscribe = (E: Env, cookie: string, body: unknown) =>
   api(app, R.mePushSubscriptions, cookie, { method: "POST", body }, E);
 const T0 = Date.UTC(2026, 10, 18, 12, 0);
+/** A public page everyone can read, and another (for mutes). */
+let PUB = "";
+let MUTED = "";
+beforeAll(async () => {
+  const owner = await login(`pub-${tag}@x.com`, "member");
+  const m = await getUser(env as unknown as Env, owner.userId);
+  const mkPublic = async (title: string) => {
+    const { id } = await publish(
+      env as unknown as Env,
+      m as never,
+      { title, format: "markdown", content: "x" } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await env.DB.prepare(
+      "update artifacts set visibility = 'public' where id = ?",
+    )
+      .bind(id)
+      .run();
+    return id;
+  };
+  PUB = await mkPublic("Shared page");
+  MUTED = await mkPublic("Muted page");
+});
 const item = (key: string, over: object = {}) => ({
   key,
   kind: "ask" as const,
-  artifactId: "art1",
+  artifactId: PUB,
   threadId: "th1",
   askerName: "Scout",
   excerpt: "Ship the draft?",
   ...over,
 });
+type QItem = ReturnType<typeof item>;
+/** What the queue is backed by, as the app writes it: an open ask row, or an inbox item. */
+async function seed(
+  userIds: string[],
+  it: Pick<QItem, "key" | "artifactId" | "threadId" | "excerpt"> & {
+    kind: string;
+  },
+) {
+  for (const userId of userIds) {
+    if (it.kind === "ask")
+      await env.DB.prepare(
+        `insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm)
+         values (?, ?, ?, ?, 1, 0, ?, '{}', '2026-11-18T10:00:00Z', 0)`,
+      )
+        .bind(it.artifactId, it.threadId, it.key.slice(4), userId, it.excerpt)
+        .run();
+    else if (it.kind === "update")
+      await env.DB.prepare(
+        `insert or replace into inbox_items (id, user_id, kind, level, key, artifact_id, thread_id, comment_id, actor, excerpt, created_at)
+         values (?, ?, 'comment', 'update', ?, ?, ?, ?, '{"kind":"user","ref":"x"}', ?, ?)`,
+      )
+        .bind(
+          newId(),
+          userId,
+          it.key,
+          it.artifactId,
+          it.threadId,
+          it.key.split(":")[1],
+          it.excerpt,
+          T0,
+        )
+        .run();
+  }
+}
+const queuePush = async (e: Env, users: string[], it: QItem, now?: number) => {
+  await seed(users, it);
+  return rawQueuePush(e, users, it, now);
+};
+const queueUpdatePush = async (
+  e: Env,
+  user: string,
+  it: Omit<QItem, "kind">,
+  now?: number,
+) => {
+  await seed([user], { ...it, kind: "update" });
+  return rawQueueUpdatePush(e, user, it, now);
+};
 const pendingCount = async (userId: string) =>
   (
     await env.DB.prepare(
@@ -527,7 +603,7 @@ describe("sending", () => {
       v: 1,
       title: "Open Artifacts",
       body: DEFAULT_BODY,
-      href: "/a/art1?thread=th1",
+      href: `/a/${PUB}?thread=th1`,
       tag: "needs-you",
     });
     expect(JSON.stringify(p)).not.toContain("Ship the draft");
@@ -586,7 +662,7 @@ describe("sending", () => {
     const p = JSON.parse(await decrypt((sent[0] as Sent).body, b));
     expect(p.count).toBe(2);
     expect(p.body).toBe("2 things are waiting for your answer");
-    expect(p.href).toBe("/a/art1?thread=t2");
+    expect(p.href).toBe(`/a/${PUB}?thread=t2`);
   });
 
   it("items within 10 minutes of a push wait and go as one bundle", async () => {
@@ -952,42 +1028,27 @@ describe("per-browser switches, Updates, mutes and Back from later (design v10)"
     });
     await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
     await env.DB.prepare(
-      "insert into inbox_mutes (user_id, kind, target_id, name, created_at) values (?, 'page', 'art-muted', null, ?), (?, 'agent', 'idn-muted', 'Scout', ?)",
+      `insert into inbox_mutes (user_id, kind, target_id, name, created_at) values (?, 'page', '${MUTED}', null, ?), (?, 'agent', 'idn-muted', 'Scout', ?)`,
     )
       .bind(u.userId, T0, u.userId, T0)
       .run();
     const { sent } = fakePush();
-    await queuePush(
-      E,
-      [u.userId],
-      item("ask:m1", { artifactId: "art-muted" }),
-      T0,
-    );
+    await queuePush(E, [u.userId], item("ask:m1", { artifactId: MUTED }), T0);
     await queuePush(
       E,
       [u.userId],
       item("ask:m2", { agentKey: "idn-muted", askerRef: u.userId }),
       T0,
     );
-    await queueUpdatePush(
-      E,
-      u.userId,
-      item("u:m3", { artifactId: "art-muted" }),
-      T0,
-    );
+    await queueUpdatePush(E, u.userId, item("u:m3", { artifactId: MUTED }), T0);
     await drainPush(E, T0);
     expect(sent).toHaveLength(0);
     expect(await pendingCount(u.userId)).toBe(0);
-    await queuePush(
-      E,
-      [u.userId],
-      item("ask:m4", { artifactId: "art-open" }),
-      T0 + BUNDLE_MS,
-    );
+    await queuePush(E, [u.userId], item("ask:m4"), T0 + BUNDLE_MS);
     await drainPush(E, T0 + BUNDLE_MS);
     expect(sent).toHaveLength(1);
     expect(JSON.parse(await decrypt((sent[0] as Sent).body, b)).href).toContain(
-      "art-open",
+      PUB,
     );
   });
 
@@ -1037,6 +1098,224 @@ describe("per-browser switches, Updates, mutes and Back from later (design v10)"
     expect(JSON.parse(await decrypt((mine[0] as Sent).body, b)).tag).toBe(
       "needs-you",
     );
+  });
+});
+
+describe("checked again at send time", () => {
+  const detail = { lockScreenDetail: true } as const;
+  /** A page only this member can read, shared to them. */
+  async function privateShared(E: Env, userId: string) {
+    const owner = await mk(`own-${newId().slice(0, 4)}`);
+    const om = await getUser(E, owner.userId);
+    const me = await getUser(E, userId);
+    const { id } = await publish(
+      E,
+      om as never,
+      { title: "Private", format: "markdown", content: "x" } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+    )
+      .bind(id, (me as { email: string }).email, owner.userId, Date.now())
+      .run();
+    return id;
+  }
+  const mineOf = (sent: Sent[], b: { body: { endpoint: string } }) =>
+    sent.filter((x) => x.url === b.body.endpoint);
+
+  it("access revoked while queued: nothing is sent, the words never leave", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, detail);
+    const art = await privateShared(E, u.userId);
+    const { sent } = fakePush();
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:rv1", { artifactId: art, excerpt: "Secret question" }),
+      T0,
+    );
+    await env.DB.prepare("delete from shares where artifact_id = ?")
+      .bind(art)
+      .run();
+    await drainPush(E, T0);
+    expect(mineOf(sent, b)).toHaveLength(0);
+    expect(await pendingCount(u.userId)).toBe(0);
+  });
+
+  it("an ask answered while queued is not sent; a still-open one carries its current question", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, detail);
+    const { sent } = fakePush();
+    await queuePush(E, [u.userId], item("ask:an1"), T0);
+    await env.DB.prepare(
+      "update artifact_asks set open = 0, answered = 1 where comment_id = 'an1'",
+    ).run();
+    await drainPush(E, T0);
+    expect(mineOf(sent, b)).toHaveLength(0);
+    // Open, but the question was replaced while queued.
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:an2", { excerpt: "Old words" }),
+      T0 + BUNDLE_MS * 2,
+    );
+    await env.DB.prepare(
+      "update artifact_asks set question = 'New words' where comment_id = 'an2'",
+    ).run();
+    await drainPush(E, T0 + BUNDLE_MS * 2);
+    const m = mineOf(sent, b);
+    expect(m).toHaveLength(1);
+    const body = JSON.parse(await decrypt((m[0] as Sent).body, b)).body;
+    expect(body).toContain("New words");
+    expect(body).not.toContain("Old words");
+  });
+
+  it("a comment deleted while queued is not sent; one edited shows the new words, at send time and in the queue", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      ...detail,
+      updates: { inApp: true, browser: true },
+    });
+    await env.DB.prepare(
+      "update push_subscriptions set updates = 1 where user_id = ?",
+    )
+      .bind(u.userId)
+      .run();
+    const { sent } = fakePush();
+    // Deleted.
+    await queueUpdatePush(
+      E,
+      u.userId,
+      item("comment:dl1", { excerpt: "Oops" }),
+      T0,
+    );
+    await forgetCommentItems(E, {
+      artifactId: PUB,
+      threadId: "th1",
+      commentId: "dl1",
+      root: false,
+    });
+    expect(await pendingCount(u.userId)).toBe(0);
+    // Removed from the inbox but still queued (a race): dropped at send time.
+    await queueUpdatePush(
+      E,
+      u.userId,
+      item("comment:dl2", { excerpt: "Gone" }),
+      T0,
+    );
+    await env.DB.prepare(
+      "delete from inbox_items where key = 'comment:dl2'",
+    ).run();
+    await drainPush(E, T0);
+    expect(mineOf(sent, b)).toHaveLength(0);
+    // Edited while queued.
+    await queueUpdatePush(
+      E,
+      u.userId,
+      item("comment:ed1", { excerpt: "Typo" }),
+      T0 + BUNDLE_MS * 2,
+    );
+    await refreshCommentItems(E, {
+      artifactId: PUB,
+      commentId: "ed1",
+      body: "Fixed words",
+    });
+    const row = await env.DB.prepare(
+      "select excerpt from push_pending where key = 'comment:ed1'",
+    ).first<{
+      excerpt: string;
+    }>();
+    expect(row?.excerpt).toBe("Fixed words");
+    await drainPush(E, T0 + BUNDLE_MS * 2);
+    const m = mineOf(sent, b);
+    expect(m).toHaveLength(1);
+    expect(JSON.parse(await decrypt((m[0] as Sent).body, b)).body).toContain(
+      "Fixed words",
+    );
+    // A deleted thread takes its queued items too.
+    await queueUpdatePush(
+      E,
+      u.userId,
+      item("reply:th9", { threadId: "thX" }),
+      T0 + BUNDLE_MS * 5,
+    );
+    await forgetCommentItems(E, {
+      artifactId: PUB,
+      threadId: "thX",
+      commentId: "r",
+      root: true,
+    });
+    expect(await pendingCount(u.userId)).toBe(0);
+  });
+});
+
+describe("the topic and bad keys", () => {
+  it("the topic follows the payload's tag, so Updates can't replace a waiting Needs-you push", async () => {
+    const { E } = await world();
+    const { u } = await enroll(E, { updates: { inApp: true, browser: true } });
+    await env.DB.prepare(
+      "update push_subscriptions set updates = 1 where user_id = ?",
+    )
+      .bind(u.userId)
+      .run();
+    const { sent } = fakePush();
+    await queuePush(E, [u.userId], item("ask:tp1"), T0);
+    await drainPush(E, T0);
+    await queueUpdatePush(E, u.userId, item("comment:tp2"), T0 + BUNDLE_MS);
+    await drainPush(E, T0 + BUNDLE_MS);
+    const mine = sent.filter((x) => x.url.includes("/fcm/send/")).slice(-2);
+    expect(mine.map((x) => x.headers.get("topic"))).toEqual([
+      "needs-you",
+      "updates",
+    ]);
+  });
+
+  it("subscribing with keys that can't be encrypted to is a 400: off the curve, wrong length, bad auth", async () => {
+    const { E } = await world();
+    const u = await mk("badkeys");
+    const good = await browser();
+    const offCurve = new Uint8Array(65);
+    offCurve[0] = 4;
+    offCurve.fill(7, 1);
+    for (const keys of [
+      { p256dh: b64u(offCurve), auth: good.body.keys.auth },
+      { p256dh: b64u(good.raw.slice(0, 33)), auth: good.body.keys.auth },
+      { p256dh: good.body.keys.p256dh, auth: b64u(new Uint8Array(8)) },
+      { p256dh: "!!!", auth: good.body.keys.auth },
+    ]) {
+      const r = await subscribe(E, u.cookie, {
+        endpoint: good.body.endpoint,
+        keys,
+      });
+      expect(r.status, JSON.stringify(keys)).toBe(400);
+    }
+    expect((await subscribe(E, u.cookie, good.body)).status).toBe(201);
+  });
+
+  it("a stored subscription that can't be encrypted to is deleted and the member's other browsers still get theirs", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E);
+    const bad = await browser();
+    expect((await subscribe(E, u.cookie, bad.body)).status).toBe(201);
+    await env.DB.prepare(
+      "update push_subscriptions set p256dh = ? where endpoint = ?",
+    )
+      .bind(b64u(new Uint8Array(65).fill(7)), bad.body.endpoint)
+      .run();
+    const { sent } = fakePush();
+    await queuePush(E, [u.userId], item("ask:bk1"), T0);
+    await drainPush(E, T0);
+    expect(sent.filter((x) => x.url === b.body.endpoint)).toHaveLength(1);
+    expect(sent.filter((x) => x.url === bad.body.endpoint)).toHaveLength(0);
+    const left = (await (
+      await api(app, R.mePushSubscriptions, u.cookie, {}, E)
+    ).json()) as {
+      items: unknown[];
+    };
+    expect(left.items).toHaveLength(1);
   });
 });
 

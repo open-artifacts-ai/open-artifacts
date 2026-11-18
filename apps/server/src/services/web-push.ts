@@ -26,6 +26,31 @@ export const pushOn = (env: Env): boolean =>
   !!env.VAPID_PUBLIC_KEY?.trim() && !!env.VAPID_PRIVATE_KEY?.trim();
 
 /**
+ * Whether a subscription's keys can be encrypted to: p256dh a 65-byte
+ * uncompressed P-256 point that is on the curve, auth 16 bytes.
+ */
+export async function pushKeysOk(
+  p256dh: string,
+  auth: string,
+): Promise<boolean> {
+  try {
+    const k = unb64u(p256dh);
+    if (k.length !== 65 || k[0] !== 4 || unb64u(auth).length !== 16)
+      return false;
+    await crypto.subtle.importKey(
+      "raw",
+      k,
+      { name: "ECDH", namedCurve: "P-256" },
+      false,
+      [],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Push services a subscription may name: a stored endpoint is a URL this
  * server will POST to, so only the known services are accepted (SSRF).
  * https, the default port, no credentials, and a host that is one of:
@@ -203,7 +228,7 @@ export async function vapidHeader(
   return `vapid t=${input}.${b64u(sig)}, k=${env.VAPID_PUBLIC_KEY?.trim()}`;
 }
 
-export type PushResult = "sent" | "gone" | "failed";
+export type PushResult = "sent" | "gone" | "failed" | "unusable";
 
 /** How long the push service may hold a message for an offline browser. */
 const TTL_SECONDS = 4 * 3600;
@@ -217,15 +242,21 @@ const SEND_TIMEOUT_MS = 8000;
 export async function sendPush(
   env: Env,
   sub: { endpoint: string; p256dh: string; auth: string },
-  payload: unknown,
+  payload: { tag: string },
   now = Date.now(),
 ): Promise<PushResult> {
   if (!pushEndpointOk(sub.endpoint)) return "failed";
-  const body = await encryptPayload(
-    unb64u(sub.p256dh),
-    unb64u(sub.auth),
-    enc.encode(JSON.stringify(payload)),
-  );
+  let body: Uint8Array<ArrayBuffer>;
+  try {
+    body = await encryptPayload(
+      unb64u(sub.p256dh),
+      unb64u(sub.auth),
+      enc.encode(JSON.stringify(payload)),
+    );
+  } catch {
+    // Keys we can't encrypt to: this subscription can never be sent to.
+    return "unusable";
+  }
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), SEND_TIMEOUT_MS);
   try {
@@ -239,7 +270,8 @@ export async function sendPush(
         "content-type": "application/octet-stream",
         ttl: String(TTL_SECONDS),
         urgency: "normal",
-        topic: "needs-you",
+        // By kind, so an Updates push can't replace a waiting Needs-you one.
+        topic: payload.tag,
       },
       body,
     });
