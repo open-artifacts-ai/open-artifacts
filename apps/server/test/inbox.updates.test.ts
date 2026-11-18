@@ -115,6 +115,9 @@ describe("inbox updates: what is written", () => {
     expect(item?.kind).toBe("comment");
     expect(item?.level).toBe("update");
     expect(item?.text).toContain("commented:");
+    // A comment item carries the comment's plain text (tags kept as text, <= 120 chars).
+    expect(item?.excerpt).toBe(itemExcerpt("<b>nice</b> page"));
+    expect((item?.excerpt ?? "").length).toBeLessThanOrEqual(120);
     expect(item?.href).toBe(`/a/${id}?thread=${encodeURIComponent(t.id)}`);
     expect(item?.readAt).toBeNull();
     expect(await ups(me, id)).toEqual([]);
@@ -133,6 +136,7 @@ describe("inbox updates: what is written", () => {
     expect(by.has(`${owner.userId}:comment`)).toBe(true);
     expect([...by.keys()].some((k) => k.startsWith(other.userId))).toBe(false);
     expect((await ups(me, id))[0]?.kind).toBe("reply");
+    expect(typeof (await ups(me, id))[0]?.excerpt).toBe("string");
   });
 
   it("someone else's mention of your agent is an Update for its owner (not Needs you), and clears when read", async () => {
@@ -165,6 +169,8 @@ describe("inbox updates: what is written", () => {
     );
     expect(m?.level).toBe("update");
     expect(m?.text).toMatch(/ mentioned Scout on doc$/);
+    // The item carries the comment's text as its excerpt.
+    expect(m?.excerpt).toBe("ping");
     // The stored excerpt is the comment's text; the agent has its own column.
     const stored = await E.DB.prepare(
       "select excerpt, agent_name from inbox_items where artifact_id = ? and kind = 'mention'",
@@ -242,6 +248,8 @@ describe("inbox updates: what is written", () => {
     expect(rows.map((r) => [r.u, r.kind])).toEqual([[me.userId, "share"]]);
     const [item] = await ups(me, id);
     expect(item?.text).toContain("shared");
+    // Only mention, reply and comment items carry an excerpt.
+    expect(item?.excerpt).toBeUndefined();
     expect(item?.href).toBe(`/a/${id}`);
   });
 

@@ -239,6 +239,9 @@ async function itemsOf(
       artifact: { id: r.artifactId, title: r.title },
       actor: face,
       text: textOf(r, face.name),
+      ...(r.kind === "mention" || r.kind === "reply" || r.kind === "comment"
+        ? { excerpt: r.excerpt }
+        : {}),
       href: r.threadId
         ? `${viewerPath(r.artifactId)}?thread=${encodeURIComponent(r.threadId)}`
         : viewerPath(r.artifactId),

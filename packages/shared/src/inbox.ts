@@ -66,6 +66,8 @@ export const InboxItemSchema = z
       })
       .optional(),
     text: z.string(),
+    /** A mention, reply or comment: the comment's plain text, at most 120 characters. In-app only, never in a push. */
+    excerpt: z.string().max(120).optional(),
     href: SameOriginPath,
     createdAt: Iso,
     readAt: Iso.nullable(),
