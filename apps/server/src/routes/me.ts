@@ -308,7 +308,7 @@ export function mountMe(app: AppType): void {
   // browser (never a token, a grant or an agent).
   app.get(R.meInboxMutes, async (c) => {
     const user = requireUser(c);
-    return c.json(await listMutes(c.env, user.id));
+    return c.json(await listMutes(c.env, user));
   });
   app.post(R.meInboxMutes, async (c) => {
     const user = requireUser(c);
@@ -319,7 +319,9 @@ export function mountMe(app: AppType): void {
   app.delete("/api/v1/me/inbox/mutes/:kind/:id", async (c) => {
     const user = requireUser(c);
     if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
-    await removeMute(c.env, user.id, c.req.param("kind"), c.req.param("id"));
+    const kind = InboxMuteBodySchema.shape.kind.safeParse(c.req.param("kind"));
+    if (!kind.success) throw new ApiError("bad_request", "Unknown kind");
+    await removeMute(c.env, user.id, kind.data, c.req.param("id"));
     return c.body(null, 204);
   });
   app.post(R.meInboxReadAll, async (c) => {
