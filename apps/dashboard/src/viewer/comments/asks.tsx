@@ -638,8 +638,9 @@ export function AskBlock({
   holdPicks = false,
 }: {
   /**
-   * #2426 review: the card beside a mark takes no pick yet (its options show
-   * disabled). Only that card sets it; the pane never does.
+   * #2426 review, #2736: the card beside a mark takes no pick and no other
+   * one-click change yet (take back, change); they show disabled. Only that
+   * card sets it; the pane never does.
    */
   holdPicks?: boolean;
   /** The "X asks you" line; off where the card's header already says it (#2486). */
@@ -949,8 +950,9 @@ export function AskBlock({
                 size="xs"
                 variant="link"
                 className="h-auto p-0 font-normal text-primary underline"
-                disabled={takeBack.isPending}
+                disabled={takeBack.isPending || holdPicks}
                 onClick={() => {
+                  if (holdPicks) return;
                   setErr(null);
                   takeBack.mutate(
                     { thread: thread.id, comment: c.id },
@@ -1127,6 +1129,7 @@ export function AskBlock({
                     size="xs"
                     variant="link"
                     className="h-auto p-0"
+                    disabled={holdPicks}
                     onClick={() => setChanging(true)}
                   >
                     Change
@@ -1154,6 +1157,7 @@ export function AskBlock({
                         size="xs"
                         variant="link"
                         className="h-auto p-0"
+                        disabled={holdPicks}
                         onClick={() => setChanging(true)}
                       >
                         Change
