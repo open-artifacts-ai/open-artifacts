@@ -1471,6 +1471,9 @@ describe("ask_answered notice (#1535)", () => {
     const s = await setup();
     const { t, cid } = await askFrom(owner, s.id);
     bus.clear();
+    await E.DB.prepare("update users set display_name = ? where id = ?")
+      .bind("Vic Viewer", viewer.userId)
+      .run();
     // 12:00 UTC is 14:00 in Paris in summer: an hour on is "at 15:00", the morning "tomorrow at 8:00".
     const noon = Date.UTC(2026, 5, 18, 12, 0);
     await deferItem(
@@ -1489,7 +1492,7 @@ describe("ask_answered notice (#1535)", () => {
     expect(n.to).toEqual({ namespace: "ns-owner", name: "Claude" });
     expect(n.coalesceKey).toBe(`${s.id}:${cid}:later`);
     expect(n.text).toMatch(
-      /^Open Artifacts: .+ will look at this at 15:00\.\n/,
+      /^Open Artifacts: Vic Viewer will look at this at 15:00\.\n/,
     );
     expect(n.text).not.toContain("your user");
     expect(n.text).toContain(`Thread ${t.id}, comment ${cid}.`);
@@ -1518,6 +1521,27 @@ describe("ask_answered notice (#1535)", () => {
       noon,
     );
     expect(bus.sent.at(-1)?.notice.text).toContain("at 13:00 UTC.");
+    // No display name or SSO name: "They", never an email (the asking agent can be someone else's).
+    await E.DB.prepare(
+      "update users set display_name = null, name = email where id = ?",
+    )
+      .bind(viewer.userId)
+      .run();
+    const d = await askFrom(owner, s.id);
+    bus.clear();
+    await deferItem(
+      E,
+      callerOf(viewer.member) as never,
+      `ask:${d.cid}`,
+      "hour",
+      "Europe/Paris",
+      noon,
+    );
+    const nameless = bus.sent.at(-1)?.notice.text ?? "";
+    expect(nameless).toMatch(
+      /^Open Artifacts: They will look at this at 15:00\.\n/,
+    );
+    expect(nameless).not.toContain("@");
     // A person's ask has no agent to tell.
     bus.clear();
     const mine = await addThread(

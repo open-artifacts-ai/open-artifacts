@@ -510,7 +510,7 @@ export async function notifyAskLater(
   askerId: string,
   asker: AskerAddress | null,
   /** The person's name and when they will look, as the notice says it ("tomorrow at 8:00"). */
-  who: { name: string; when: string },
+  who: { name: string | null; when: string },
 ): Promise<void> {
   const targets = await askerAgents(env, artifactId, askerId, asker);
   if (targets.length === 0) return;
@@ -527,7 +527,7 @@ export async function notifyAskLater(
       to: { namespace: to.namespace, name: to.name },
       ...(to.identityId ? { toIdentity: to.identityId } : {}),
       text: [
-        `Open Artifacts: ${who.name} will look at this ${who.when}.`,
+        `Open Artifacts: ${who.name ?? "They"} will look at this ${who.when}.`,
         url,
         `Thread ${threadId}, comment ${commentId}. Do not wait for an answer before then.`,
       ].join("\n"),

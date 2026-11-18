@@ -28,7 +28,7 @@ import {
 } from "./inbox-later.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
-import { effectiveName, getUser } from "./users.js";
+import { getUser, idpName } from "./users.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
 export const NEEDS_YOU_MAX = 200;
@@ -508,7 +508,8 @@ async function tellAsker(
   when: string,
 ): Promise<void> {
   try {
-    // Their own name, as they show it: display name, else the SSO name, else the email.
+    // Their name as they show it: display name, else a real SSO name. Never the
+    // email: the asking agent can belong to someone else.
     const me = await env.DB.prepare(
       "select name, display_name as displayName, email from users where id = ?",
     )
@@ -518,12 +519,10 @@ async function tellAsker(
         displayName: string | null;
         email: string;
       }>();
-    const who = {
-      name: me
-        ? effectiveName({ ...me, name: me.name ?? "" })
-        : caller.user.email,
-      when,
-    };
+    const shown = me
+      ? me.displayName?.trim() || idpName(me.name, me.email)
+      : null;
+    const who = { name: shown && !shown.includes("@") ? shown : null, when };
     const commentId = itemId.slice("ask:".length);
     const row = await env.DB.prepare(
       `select a.artifact_id, a.thread_id, x.current_version as version
