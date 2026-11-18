@@ -18,6 +18,7 @@ import {
   type PushSubscriptions,
 } from "../inbox.js";
 import { R } from "../routes.js";
+import { MOCK_HELD_ID } from "./agent-asks.js";
 import { FOR_YOU_ASK } from "./comments.js";
 
 /**
@@ -25,9 +26,16 @@ import { FOR_YOU_ASK } from "./comments.js";
  * calm: nothing needs you; "While you were away" and two updates.
  * empty: nothing at all (first time).
  * back: the mention is back from Later.
+ * held: one held request of someone else asking your agent (#2577; pair with agentAsks).
  * error: as mixed, but the list itself fails to load (the bell still counts).
  */
-export type ForYouVariant = "mixed" | "calm" | "empty" | "back" | "error";
+export type ForYouVariant =
+  | "mixed"
+  | "calm"
+  | "empty"
+  | "back"
+  | "held"
+  | "error";
 
 type Deps = {
   variant?: ForYouVariant;
@@ -193,6 +201,22 @@ export function createForYouMock(d: Deps): {
     ];
   }
   if (d.variant === "back") needsYou = [mention(true)];
+  if (d.variant === "held")
+    needsYou = [
+      {
+        id: `request:${MOCK_HELD_ID}`,
+        level: "needs_you",
+        kind: "request",
+        urgency: "approval",
+        waitingSince: ago(15 * MIN),
+        artifact: page(d.landingId, "Launch status"),
+        actor: person("Dev Patel"),
+        text: "Dev Patel wants to ask your agent",
+        href: `/a/${d.landingId}`,
+        createdAt: ago(15 * MIN),
+        readAt: null,
+      },
+    ];
 
   const open = () =>
     needsYou.filter((x) => {

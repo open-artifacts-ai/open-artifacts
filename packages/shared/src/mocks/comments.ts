@@ -53,6 +53,7 @@ export const MOCK_AGENTS: ArtifactAgent[] = [
     lastActiveAt: null,
     machine: null,
     owner: "Sam",
+    askState: "held",
   },
   {
     key: "agent:manager",

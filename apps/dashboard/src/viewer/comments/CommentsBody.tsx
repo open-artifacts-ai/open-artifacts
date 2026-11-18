@@ -600,6 +600,8 @@ function Composer({
   const menuOpen = matches.length > 0;
   const pickedAt = useRef<number | null>(null);
   const pick = (a: ArtifactAgent) => {
+    // #2577: its person turned asking off; a mention would be refused.
+    if (a.askState === "off") return;
     const before = text.slice(0, caret).replace(/@[\w .-]{0,40}$/, "");
     setText(`${before}@${a.name} ${text.slice(caret)}`);
     const at = before.length + a.name.length + 2;

@@ -1532,7 +1532,19 @@ function ago(iso: string | null | undefined, now = Date.now()): string {
  * dot when the name stem repeats among their own agents. Another member's
  * agent leads with its owner and shows the state alone: "online · Sam's".
  */
+/** #2577: what asking another person's agent does, in three plain states. */
+export function askLine(a: ArtifactAgent): string | null {
+  if (!a.owner || !a.askState) return null;
+  return a.askState === "held"
+    ? `${a.owner} will be asked first`
+    : a.askState === "listening"
+      ? "listens to you here"
+      : `only answers ${a.owner}`;
+}
+
 function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
+  const line = askLine(a);
+  if (line) return `${a.owner}'s agent \u00b7 ${line}`;
   // No state at all: the bus did not answer, so nothing is claimed (an empty column; "Sam's" alone for another member's).
   if (a.state === undefined && !a.online && !a.owner) return "";
   if (a.owner && a.state === undefined && !a.online) return `${a.owner}'s`;
@@ -1585,11 +1597,13 @@ export function MentionMenu({
             role="option"
             tabIndex={-1}
             aria-selected={i === active}
+            aria-disabled={a.askState === "off" ? true : undefined}
             className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)]`}
             // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
             onMouseDown={(e) => {
               e.preventDefault();
-              onPick(a);
+              // Asking is off for this agent's person: it can't be picked.
+              if (a.askState !== "off") onPick(a);
             }}
           >
             {!isUnknown(a) && (
