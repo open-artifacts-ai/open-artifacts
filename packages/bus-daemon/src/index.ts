@@ -188,6 +188,7 @@ export * from "./config-issues.ts";
 export * from "./dedupe.ts";
 export * from "./deliver.ts";
 export * from "./event-log.ts";
+export * from "./folders.ts";
 export * from "./global.ts";
 export * from "./hub.ts";
 export * from "./instances.ts";

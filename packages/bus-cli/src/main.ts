@@ -18,6 +18,7 @@ import { skill } from "./commands/skill.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
 import { installViaDaemon, update } from "./commands/update.ts";
+import { use } from "./commands/use.ts";
 import { askDaemon, type Ctx, realCtx, say, sayErr } from "./context.ts";
 import { type Command, parse } from "./index.ts";
 
@@ -25,6 +26,7 @@ import { type Command, parse } from "./index.ts";
 const TERMINAL = new Set([
   "login",
   "add",
+  "use",
   "skill",
   "status",
   "logs",
@@ -114,6 +116,8 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
     }
     case "add":
       return add(cmd, ctx);
+    case "use":
+      return use(cmd, ctx);
     case "skill":
       return skill(cmd, ctx);
     case "daemon":

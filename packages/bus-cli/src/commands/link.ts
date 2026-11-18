@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import {
   canonicalPath,
   globalFile,
-  namespacesFile,
   remotesFile,
   resolveNamespace,
   shq,
@@ -11,6 +10,7 @@ import {
 import { BUS_ROUTES } from "@oa/bus-protocol";
 import { type Ctx, plain, say, sayErr } from "../context.ts";
 import { readMachine } from "../machine.ts";
+import { approvalsFileFor } from "./namespace.ts";
 
 type Side = { dir: string; namespace: string };
 
@@ -22,7 +22,7 @@ function side(ctx: Ctx, dir: string): Side | undefined {
     if (!statSync(real).isDirectory()) return undefined;
     const ns = resolveNamespace(real, {
       globalFile: globalFile(ctx.home),
-      namespacesFile: namespacesFile(ctx.home),
+      namespacesFile: approvalsFileFor(ctx, real),
       remotesFile: remotesFile(ctx.home),
       recordRemote: false,
     });
