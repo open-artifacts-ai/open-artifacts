@@ -27,6 +27,7 @@ import { logInfo, logWarn } from "../log.js";
 import type { HeldAgent } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
 import { sha256Hex } from "../util/crypto.js";
+import { publicName } from "./agent-display.js";
 import { askInfo } from "./asks.js";
 import { audit, userActor } from "./audit.js";
 import { type CommentNoticeKind, notifyAgent } from "./comment-agents.js";
@@ -202,8 +203,9 @@ export async function onlyAnswers(
   env: Env,
   receiverId: string,
 ): Promise<string> {
+  // The owner's public name, as an agent's `for` shows it: never an email.
   const u = await getUser(env, receiverId);
-  return `Only answers ${u ? (u.name ?? u.email) : "its owner"}`;
+  return `Only answers ${(u && publicName(u)) ?? "its owner"}`;
 }
 
 /** Whether the member's agents take requests from other people (held or listed). Default on. */
@@ -276,7 +278,13 @@ export async function listListens(
     .all<ListenRow>();
   const entries: ListenEntry[] = [];
   for (const r of results) {
-    const m = await getUser(env, r.member_id);
+    // The held list's form: the name, else the email's local part, else "Someone".
+    const m = await stmt(
+      env.DB,
+      "select id, name, email from users where id = ?1",
+    )
+      .bind(r.member_id)
+      .first<{ id: string; name: string | null; email: string }>();
     if (!m) continue;
     const art = r.artifact_id
       ? await stmt(env.DB, "select id, title from artifacts where id = ?1")
@@ -290,7 +298,10 @@ export async function listListens(
       : null;
     entries.push({
       id: r.id,
-      member: { id: m.id, name: m.name ?? m.email },
+      member: {
+        id: m.id,
+        name: m.name ?? m.email.split("@")[0] ?? "Someone",
+      },
       scope: r.scope,
       artifact: art ?? null,
       space: sp ?? null,
