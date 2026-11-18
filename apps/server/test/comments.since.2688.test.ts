@@ -11,6 +11,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
+import type { AgentAttr } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
 import {
   installDelivery,
@@ -92,7 +93,7 @@ const identityOf = (name: string) => ({
   kind: "x",
 });
 /** An agent of `u` with a verified bus identity. */
-const agentOf = (u: U, name: string) => {
+const agentOf = (u: U, name: string): AgentAttr => {
   const identity = {
     ...identityOf(
       `${name.toLowerCase()}-${u.userId.slice(0, 4).toLowerCase()}`,
@@ -102,12 +103,12 @@ const agentOf = (u: U, name: string) => {
   hubs.set({ ...identity, owner: u.userId });
   return { name, version: null, via: { kind: "token", id: "t" }, identity };
 };
-const asAgent = (u: U, a: ReturnType<typeof agentOf>): CommentWho => ({
+const asAgent = (u: U, a: AgentAttr): CommentWho => ({
   kind: "user",
   id: u.userId,
   agent: a,
 });
-const viewerOf = (u: U, a?: ReturnType<typeof agentOf>): CommentViewer => ({
+const viewerOf = (u: U, a?: AgentAttr): CommentViewer => ({
   userId: u.userId,
   short: null,
   ...(a ? { agent: a } : {}),
@@ -283,7 +284,7 @@ describe("mentionedSince (#2688)", () => {
     await follow(
       E,
       owner.userId,
-      { namespace: mine.identity.namespace, name: "Claude" },
+      { namespace: mine.identity?.namespace ?? "", name: "Claude" },
       id,
     );
     const keys = (await (
