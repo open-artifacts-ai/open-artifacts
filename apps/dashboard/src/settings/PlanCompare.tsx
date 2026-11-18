@@ -90,7 +90,7 @@ const POINTS: Record<Column, string[]> = {
   business: [
     "Everything in Team",
     "Google group sync",
-    "Outside-sharing controls and audit log",
+    "Audit log",
     "Custom domain",
   ],
 };
@@ -132,7 +132,6 @@ const GROUPS: { title: string; rows: { row: string; on: Column[] }[] }[] = [
     title: "Admin and security",
     rows: [
       { row: "Google group sync", on: ["business"] },
-      { row: "Outside-sharing controls", on: ["business"] },
       { row: "Audit log", on: ["business"] },
       { row: "Custom domain", on: ["business"] },
     ],
