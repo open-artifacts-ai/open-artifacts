@@ -37,6 +37,11 @@ for (const scheme of ["light", "dark"] as const) {
             Object.defineProperty(v, k, { configurable: true, get: () => val });
           def("height", window.innerHeight - px);
           def("offsetTop", top);
+          // Pan honestly: iOS moves the visible area down by offsetTop, so
+          // everything on screen moves up by it (fixed things too).
+          document.documentElement.style.transform = top
+            ? `translateY(-${top}px)`
+            : "";
           v.dispatchEvent(new Event("resize"));
           v.dispatchEvent(new Event("scroll"));
         },
@@ -72,13 +77,24 @@ for (const scheme of ["light", "dark"] as const) {
         const b = (await box(page)) as NonNullable<
           Awaited<ReturnType<typeof box>>
         >;
-        const vis = await page.evaluate(() => {
-          const v = window.visualViewport as VisualViewport;
-          return { top: v.offsetTop, bottom: v.offsetTop + v.height };
-        });
+        // Screen coordinates: the pan shifts everything, so the visible area
+        // is always 0 to its height.
+        const vis = await page.evaluate(() => ({
+          top: 0,
+          bottom: (window.visualViewport as VisualViewport).height,
+        }));
+        const header = (await page.locator(".oa-vt").first().boundingBox()) as {
+          y: number;
+          height: number;
+        };
+        const headerBottom = header.y + header.height;
         expect(b.y).toBeGreaterThanOrEqual(vis.top - 1);
         expect(b.y + b.height).toBeLessThanOrEqual(vis.bottom + 1);
-        if (edge === "top") expect(b.y).toBeLessThanOrEqual(vis.top + 1);
+        // Top: under the title bar while it shows, else at the visible top.
+        if (edge === "top")
+          expect(Math.abs(b.y - Math.max(vis.top, headerBottom))).toBeLessThan(
+            1.5,
+          );
         else expect(b.y + b.height).toBeGreaterThanOrEqual(vis.bottom - 1);
         const bg = await bar.evaluate(
           (e) => getComputedStyle(e).backgroundColor,

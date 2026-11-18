@@ -5,6 +5,7 @@ import {
   phoneToolbarHidden,
   sheetLift,
   toolbarEdge,
+  toolbarTop,
   trackViewportVar,
   useKeyboardOpen,
 } from "../src/viewer/comments/viewport";
@@ -138,5 +139,39 @@ describe("phone doc toolbar (#2276)", () => {
       t.dispatchEvent(new Event("resize"));
     });
     expect(phoneToolbarHidden(result.current)).toBe(true);
+  });
+
+  it("top edge: under the header while it shows, at the visible top once it scrolls away", () => {
+    expect(toolbarTop(157, 0)).toBe(157);
+    // Panned part way: the header is still the lower edge.
+    expect(toolbarTop(157, 100)).toBe(157);
+    // Panned past the header: the visible top.
+    expect(toolbarTop(157, 200)).toBe(200);
+    // No header on screen: the visible top.
+    expect(toolbarTop(0, 0)).toBe(0);
+  });
+  it("publishes --oa-bar-top from the header's bottom and the visible top", () => {
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(844);
+    const header = document.createElement("div");
+    header.className = "oa-vt";
+    let bottom = 157;
+    header.getBoundingClientRect = () => ({ bottom }) as DOMRect;
+    document.body.append(header);
+    const stop = trackViewportVar();
+    const bar = () =>
+      document.documentElement.style.getPropertyValue("--oa-bar-top");
+    expect(bar()).toBe("157px");
+    t.offsetTop = 300;
+    t.dispatchEvent(new Event("scroll"));
+    expect(bar()).toBe("300px");
+    // The header moved (the page scrolled): follows on a window scroll.
+    t.offsetTop = 0;
+    bottom = 40;
+    window.dispatchEvent(new Event("scroll"));
+    expect(bar()).toBe("40px");
+    stop();
+    header.remove();
+    expect(bar()).toBe("");
   });
 });

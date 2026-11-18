@@ -60,6 +60,14 @@ export function toolbarEdge(
   };
 }
 
+/**
+ * The top edge of the phone doc toolbar (#2753): under the viewer's title bar
+ * while that is in view, at the visible top once it scrolls away. Both are in
+ * layout-viewport px.
+ */
+export const toolbarTop = (headerBottom: number, visibleTop: number) =>
+  Math.max(headerBottom, visibleTop);
+
 /** The composer's cap in px: its own cap, or 40% of what is visible. */
 export function fieldCap(own: number): number {
   return Math.min(own, viewHeight() * 0.4 || Number.POSITIVE_INFINITY);
@@ -112,6 +120,15 @@ export function trackViewportVar(): () => void {
     root.style.setProperty("--oa-kb", `${sheetLift()}px`);
     // The doc toolbar's bottom edge, from the visual viewport alone.
     root.style.setProperty("--oa-vv-bottom", `${viewBottom()}px`);
+    // The toolbar's top: under the title bar while it shows, else the top.
+    const header = document.querySelector(".oa-vt");
+    root.style.setProperty(
+      "--oa-bar-top",
+      `${toolbarTop(
+        header?.getBoundingClientRect().bottom ?? 0,
+        Math.max(0, window.visualViewport?.offsetTop ?? 0),
+      )}px`,
+    );
     // The doc toolbar's top edge: the visible area's top, panned or not.
     root.style.setProperty(
       "--oa-vv-top",
@@ -120,7 +137,22 @@ export function trackViewportVar(): () => void {
   };
   if (users++ === 0) {
     set();
-    stop = onViewport(set);
+    const off = onViewport(set);
+    // The title bar moves with the page and with its own wrapping.
+    window.addEventListener("scroll", set, true);
+    window.addEventListener("resize", set);
+    const header = document.querySelector(".oa-vt");
+    const ro =
+      header && typeof ResizeObserver === "function"
+        ? new ResizeObserver(set)
+        : null;
+    if (header) ro?.observe(header);
+    stop = () => {
+      off();
+      window.removeEventListener("scroll", set, true);
+      window.removeEventListener("resize", set);
+      ro?.disconnect();
+    };
   }
   return () => {
     if (--users > 0) return;
@@ -129,6 +161,7 @@ export function trackViewportVar(): () => void {
     root.style.removeProperty("--oa-vvh");
     root.style.removeProperty("--oa-kb");
     root.style.removeProperty("--oa-vv-top");
+    root.style.removeProperty("--oa-bar-top");
     root.style.removeProperty("--oa-vv-bottom");
   };
 }

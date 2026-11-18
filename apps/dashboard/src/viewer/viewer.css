@@ -1117,7 +1117,10 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
    * offsetTop, so a panned page keeps it in view), below the status bar.
    */
   .oa-doc-toolbar[data-edge="top"] {
-    top: calc(var(--oa-vv-top, 0px) + env(safe-area-inset-top, 0px));
+    top: max(
+      var(--oa-bar-top, 0px),
+      calc(var(--oa-vv-top, 0px) + env(safe-area-inset-top, 0px))
+    );
     bottom: auto;
     padding: 4px 12px;
     border-top: 0;
