@@ -1,12 +1,15 @@
 // #2793 S3: one daemon, several hubs. Two fake hubs in process; a scratch home
 // holds the added instance. Plain vitest, no host dependencies.
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ADAPTER_CAPS, daemonStatus } from "@oa/bus-ipc";
-import { PING, PONG } from "@oa/bus-protocol";
+import { ADAPTER_CAPS, daemonLinkProof, daemonStatus } from "@oa/bus-ipc";
+import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
+import { writeFolders } from "../src/folders.ts";
+import { credentialsFor } from "../src/instances.ts";
 import { daemonHarness, deliverFrame, stopAll, wsServer } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -175,7 +178,8 @@ describe("one daemon, two hubs (#2793 S3)", () => {
     await vi.waitFor(() => expect(hubB.of("ack")).toHaveLength(1));
     expect(mail.map((m) => m.ref)).toEqual(["refB"]);
     expect(hubB.of("ack").map((f) => f.msg_id)).toEqual([M("k")]);
-    expect(hubB.of("refuse")).toEqual([]);
+    // A ref nobody registered is refused on the link that asked, as with one hub.
+    expect(hubB.of("refuse").map((f) => f.msg_id)).toEqual([M("z")]);
     expect(h.of("ack")).toEqual([]);
     expect(h.of("refuse")).toEqual([]);
     expect(logs.some((l) => l.includes("dropped a deliver frame from b"))).toBe(
@@ -383,5 +387,178 @@ describe("routing fails closed when an added instance has no link (#2793 S3)", (
     expect(h.of("agent_up").map((f) => f.agent_ref)).toEqual(["refA"]);
     expect(h.daemon.agents.byRef("refB")?.instance).toBeUndefined();
     expect(h.daemon.agents.byRef("refU")?.instance).toBeUndefined();
+  });
+});
+
+describe("review fixes (#2793 S3)", () => {
+  it("update_ack and install_now from B are dropped: updates come from main only", async () => {
+    const { hubB, logs } = await setup();
+    hubB.send({ id: "u1", type: "update_ack", ok: true });
+    hubB.send({ id: "u2", type: "install_now" });
+    await settled(hubB);
+    expect(
+      logs.some((l) => l.includes("dropped a update_ack frame from b")),
+    ).toBe(true);
+    expect(
+      logs.some((l) => l.includes("dropped a install_now frame from b")),
+    ).toBe(true);
+  });
+
+  it("a receipt_update from B for a message of main is ignored", async () => {
+    const { h, hubB, logs } = await setup();
+    h.toDaemon(deliverFrame(M("a"), "refA"));
+    await vi.waitFor(() => expect(h.of("ack")).toHaveLength(1));
+    hubB.send({
+      id: "r1",
+      type: "receipt_update",
+      msg_id: M("a"),
+      state: "delivered",
+    });
+    await settled(hubB);
+    expect(
+      logs.some((l) => l.includes("dropped a receipt_update frame from b")),
+    ).toBe(true);
+  });
+
+  it("a msg_id that hub B reuses from main does not re-point it", async () => {
+    const { h, hubB, mail, logs } = await setup();
+    h.toDaemon(deliverFrame(M("a"), "refA"));
+    await vi.waitFor(() => expect(h.of("ack")).toHaveLength(1));
+    hubB.send(deliverFrame(M("a"), "refB"));
+    await settled(hubB);
+    // B's copy was neither delivered nor acked under that id.
+    expect(mail.filter((m) => m.ref === "refB")).toHaveLength(1);
+    expect(hubB.of("ack").map((f) => f.msg_id)).not.toContain(M("a"));
+    expect(logs.some((l) => l.includes("msg_id is another instance's"))).toBe(
+      true,
+    );
+  });
+
+  it("a restart after B's revoke does not dial B with the revoked key", async () => {
+    const hubB = await fakeHub();
+    const home = mkdtempSync(join(tmpdir(), "ob-2793-rv-"));
+    mkdirSync(join(home, "instances"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "instances", "b.json"),
+      JSON.stringify({
+        name: "b",
+        hub: hubB.origin,
+        machine_id: "",
+        label: "laptop",
+        machine_token: TOKEN_B,
+      }),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      join(home, "instances", "b.revoked"),
+      JSON.stringify({
+        at: new Date().toISOString(),
+        token_sha256: createHash("sha256").update(TOKEN_B).digest("hex"),
+      }),
+    );
+    const logs: string[] = [];
+    const h = await daemonHarness({
+      instancesHome: home,
+      homeLookup: byFolder,
+      log: (m) => logs.push(m),
+    });
+    await h.adapter("refA", { cwd: "/a/proj" });
+    await h.next("agent_up");
+    expect(h.daemon.hubs.get("b")).toBeUndefined();
+    expect(hubB.upgrades).toEqual([]);
+    expect(logs.some((l) => l.includes("revoked by its hub"))).toBe(true);
+    // A marker for an older key is stale: a newer key is used.
+    writeFileSync(
+      join(home, "instances", "b.revoked"),
+      JSON.stringify({ at: "x", token_sha256: "0".repeat(64) }),
+    );
+    expect(credentialsFor("b", home).machine_token).toBe(TOKEN_B);
+  });
+
+  it("with no homeLookup given, the daemon reads the folder map", async () => {
+    const { h, hubB, home } = await setup({ homeLookup: undefined });
+    // No map yet: neither session is tied to an instance, so none registers.
+    expect(h.of("agent_up")).toEqual([]);
+    expect(hubB.of("agent_up")).toEqual([]);
+    writeFolders({ map: { "/a": "main", "/b": "b" }, no: {}, seen: {} }, home);
+    await h.adapter("refC", { cwd: "/b/other" });
+    await vi.waitFor(() =>
+      expect(hubB.of("agent_up").map((f) => f.agent_ref)).toEqual(["refC"]),
+    );
+    expect(h.of("agent_up")).toEqual([]);
+  });
+
+  it("a Codex ack is replayed on the link that owns it only", async () => {
+    const takenFile = join(mkdtempSync(join(tmpdir(), "ob-ct-")), "p.json");
+    writeFileSync(
+      takenFile,
+      JSON.stringify({
+        [M("c")]: {
+          state: "taken",
+          thread: "019a0000-0000-7000-8000-000000000001",
+          at: Date.now(),
+          head: "[oa-bus] from peer",
+        },
+      }),
+    );
+    const { h, hubB } = await setup({ codex: { takenFile } as never });
+    // The mail came in on main: main owns its id.
+    h.toDaemon(deliverFrame(M("c"), "refA"));
+    await vi.waitFor(() => expect(h.of("ack")).toHaveLength(1));
+    // B's hello_ok lists ack_confirm: main's record is not B's to replay,
+    // and B's link must not make main send it again either.
+    hubB.send(helloOk({ caps: [BUS_CAPS.ackConfirm] }));
+    await settled(hubB);
+    expect(hubB.of("ack").map((f) => f.msg_id)).not.toContain(M("c"));
+    expect(h.of("ack")).toHaveLength(1);
+    h.toDaemon(helloOk({ caps: [BUS_CAPS.ackConfirm] }));
+    await vi.waitFor(() => expect(h.of("ack").length).toBeGreaterThan(1), {
+      timeout: 15_000,
+    });
+    expect(h.of("ack").every((f) => f.msg_id === M("c"))).toBe(true);
+  }, 30_000);
+
+  it("link_bind goes only on the session's own hub", async () => {
+    const d = mkdtempSync(join(tmpdir(), "ob-lb-"));
+    writeFileSync(
+      join(d, "4242.json"),
+      JSON.stringify({
+        pid: 4242,
+        sessionId: "s-b",
+        procStart: "t0",
+        name: "b-session",
+        messagingSocketPath: "",
+        cwd: "/b/proj",
+      }),
+    );
+    const { h, hubB } = await setup({
+      claude: {
+        sessionsDir: d,
+        socketsDir: join(d, "r"),
+        syncMs: 20,
+        procStart: () => "t0",
+        isRunning: () => true,
+      },
+    });
+    const caps = [BUS_CAPS.ids, BUS_CAPS.link];
+    hubB.send(helloOk({ caps }));
+    h.toDaemon(helloOk({ caps }));
+    await vi.waitFor(() =>
+      expect(hubB.of("agent_up").map((f) => f.agent_ref)).toContain("s-b"),
+    );
+    const up = hubB.of("agent_up").find((f) => f.agent_ref === "s-b");
+    hubB.send({
+      id: up?.id,
+      type: "agent_ok",
+      agent_ref: "s-b",
+      bus_name: "b-session",
+    });
+    await daemonLinkProof({
+      path: h.socketPath,
+      pid: 4242,
+      hash: "a".repeat(64),
+    });
+    await vi.waitFor(() => expect(hubB.of("link_bind")).toHaveLength(1));
+    expect(h.of("link_bind")).toEqual([]);
   });
 });
