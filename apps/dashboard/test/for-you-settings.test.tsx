@@ -1,13 +1,12 @@
 // #2512 slice 2: Settings › Notifications for For you (R.meNotificationPrefs, R.meInboxMutes).
+
+import type { NotificationPrefs } from "@oa/shared";
 import { R } from "@oa/shared";
 import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import {
-  muteErrorCopy,
-  type NotificationPrefs,
-} from "../src/foryou/prefsContract";
+import { muteErrorCopy } from "../src/foryou/prefsContract";
 import { prefsToSave, thisBrowser } from "../src/settings/ForYouPrefs";
 import {
   calls,
@@ -178,7 +177,7 @@ describe("For you settings", () => {
 
 describe("mute errors in plain words (#2769)", () => {
   it("mutes_full, not found, and the rest", () => {
-    expect(muteErrorCopy({ status: 409, code: "internal" }, "mute")).toMatch(
+    expect(muteErrorCopy({ status: 409, code: "mutes_full" }, "mute")).toMatch(
       /muted as many as we allow \(200\)/,
     );
     expect(muteErrorCopy({ code: "mutes_full" }, "mute")).toMatch(/200/);

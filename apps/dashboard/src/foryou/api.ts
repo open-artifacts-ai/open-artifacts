@@ -8,6 +8,8 @@ import {
   InboxMutesSchema,
   type Me,
   MeSchema,
+  type NotificationPrefs,
+  NotificationPrefsSchema,
   R,
 } from "@oa/shared";
 import {
@@ -29,10 +31,6 @@ import {
   LaterItemSchema,
 } from "./contract";
 import { countsOf } from "./model";
-import {
-  type NotificationPrefs,
-  NotificationPrefsSchema,
-} from "./prefsContract";
 
 export const inboxKey = ["inbox"] as const;
 /** How often the bell's counts (and an open list) refresh while the tab is visible. */
