@@ -63,7 +63,7 @@ function gate(answers: { status: number; body: unknown }[]) {
 }
 
 const UNSURE =
-  "We couldn't confirm the change. It may still apply in a few minutes. Check back before trying again.";
+  "We couldn't confirm the change. It may still take effect in a few minutes. Check back before trying again.";
 const auditRows = async (userId: string) =>
   (
     await env.DB.prepare(
@@ -342,6 +342,21 @@ describe("refusals", () => {
     expect((await errOf(r)).message).toBe(UNSURE);
     expect(await auditRows(u.userId)).toBe(0);
   }, 30_000);
+
+  it("a request that never left says nothing changed: no signing key", async () => {
+    const { u, cookie } = await owner();
+    const { g, seen } = gate([ACCEPT]);
+    const noKey = direct({ ...HOSTED, BROKER_SIGNING_KEY: undefined }) as Env;
+    const r = await put(noKey, cookie, asks, { LOGIN: g });
+    expect(r.status).toBe(503);
+    const err = await errOf(r);
+    expect(err.code).toBe("login_unavailable");
+    expect(err.message).toBe(
+      "We couldn't reach the platform. Nothing changed. Try again shortly.",
+    );
+    expect(seen).toEqual([]);
+    expect(await auditRows(u.userId)).toBe(0);
+  });
 
   it("no gate: today's 409 apply_pending, and nothing is sent", async () => {
     const { cookie } = await owner();

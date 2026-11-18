@@ -88,12 +88,15 @@ function refusal(code: LoginDomainsError, change: LoginChange): ApiError {
   }
 }
 
-const unavailable = () =>
-  new ApiError(
-    "login_unavailable",
-    // We can't know whether the platform applied it (a hang or a 5xx may come after it did).
-    "We couldn't confirm the change. It may still apply in a few minutes. Check back before trying again.",
-  );
+/** The platform may have applied it (a hang or a 5xx can follow an accept): Product's words, exactly. */
+export const UNCONFIRMED =
+  "We couldn't confirm the change. It may still take effect in a few minutes. Check back before trying again.";
+/** The request never left this install (no gate, no signing key, a stale stub): nothing changed. */
+export const NOT_SENT =
+  "We couldn't reach the platform. Nothing changed. Try again shortly.";
+
+const unavailable = () => new ApiError("login_unavailable", UNCONFIRMED);
+const notSent = () => new ApiError("login_unavailable", NOT_SENT);
 
 /**
  * Sends the change; resolves when the platform accepted it (202), after which
@@ -129,6 +132,11 @@ export async function applyLoginChange(
     logWarn("login_change_failed", e, {
       why: e instanceof LoginGateError ? e.why : "error",
     });
+    if (
+      e instanceof LoginGateError &&
+      (e.why === "no_gate" || e.why === "unconfigured" || e.why === "stale")
+    )
+      throw notSent();
     throw unavailable();
   }
   // Accepted: the marker and the audit row (the owner is the actor), together.
