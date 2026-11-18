@@ -221,7 +221,7 @@ ${mcpUrl}
 
 Then ask them to log in to ${PRODUCT_NAME} when the app asks. The connector belongs to their account, so they add it once.
 
-Then tell them plainly: once connected, you can work with their pages, but a chat can't join the bus, so you only see new comments and answers when they ask you to look. For an agent that hears them on its own, they can paste the same setup line into the Code tab of Claude Desktop. Guide: ${CHAT_APPS_DOCS}
+Also tell them plainly: once connected, you can work with their pages, but a chat can't join the bus, so you only see new comments and answers when they ask you to look. For an agent that hears them on its own, they can paste the same setup line into the Code tab of Claude Desktop. Guide: ${CHAT_APPS_DOCS}
 
 `;
 
