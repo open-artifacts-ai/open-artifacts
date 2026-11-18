@@ -1588,16 +1588,52 @@ describe("a person's @-mention of the member (#2781)", () => {
     );
   });
 
-  it("a mention and an ask due together go as one notification, counted, with no detail", async () => {
+  it("a bundle that holds a mention: 'N things need you', 'X asks, Y mentions', counts only, even with lock-screen detail", async () => {
+    const { E } = await world();
+    for (const lockScreenDetail of [false, true]) {
+      const { u, b } = await enroll(E, { lockScreenDetail });
+      const { sent } = fakePush();
+      await queuePush(E, [u.userId], item("ask:pm9a"), T0);
+      await queuePush(E, [u.userId], item("ask:pm9b"), T0);
+      await queuePush(E, [u.userId], item("ask:pm9c"), T0);
+      await mention(E, u.userId, "pm9", { name: "Ann" });
+      await env.DB.prepare("update push_pending set send_after = 0").run();
+      await drainPush(E, Date.now());
+      expect(mineOf(sent, b)).toHaveLength(1);
+      const p = await bodyOf(sent, b);
+      expect(p.title).toBe("4 things need you");
+      expect(p.body).toBe("3 asks, 1 mention");
+      expect(JSON.stringify(p)).not.toContain("Ann");
+      expect(JSON.stringify(p)).not.toContain("waiting for your answer");
+    }
+  });
+
+  it("singular and mention-only bundles read right; an ask-only bundle and every single item keep their text", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E);
     const { sent } = fakePush();
-    await queuePush(E, [u.userId], item("ask:pm9a"), T0);
-    await mention(E, u.userId, "pm9");
+    await queuePush(E, [u.userId], item("ask:pm10a"), T0);
+    await mention(E, u.userId, "pm10");
     await env.DB.prepare("update push_pending set send_after = 0").run();
     await drainPush(E, Date.now());
-    expect(mineOf(sent, b)).toHaveLength(1);
-    const p = await bodyOf(sent, b);
+    let p = await bodyOf(sent, b, 0);
+    expect([p.title, p.body]).toEqual([
+      "2 things need you",
+      "1 ask, 1 mention",
+    ]);
+    await mention(E, u.userId, "pm11");
+    await mention(E, u.userId, "pm12");
+    await env.DB.prepare("update push_pending set send_after = 0").run();
+    await drainPush(E, Date.now() + BUNDLE_MS);
+    p = await bodyOf(sent, b, 1);
+    expect([p.title, p.body]).toEqual(["2 things need you", "2 mentions"]);
+    // Asks alone are as before.
+    await queuePush(E, [u.userId], item("ask:pm13a"), T0);
+    await queuePush(E, [u.userId], item("ask:pm13b"), T0);
+    await env.DB.prepare("update push_pending set send_after = 0").run();
+    await drainPush(E, Date.now() + 2 * BUNDLE_MS);
+    p = await bodyOf(sent, b, 2);
     expect(p.body).toBe("2 things are waiting for your answer");
+    expect(p.title).toBe("Open Artifacts");
   });
 });

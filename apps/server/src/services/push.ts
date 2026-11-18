@@ -354,7 +354,18 @@ export function pushPayload(
     (needs.length > 0 ? needs : items).length - 1
   ] as (typeof items)[number];
   let body: string;
-  if (needs.length > 0) {
+  let heading = title;
+  const mentions = needs.filter(isPersonMention).length;
+  if (needs.length > 1 && mentions > 0) {
+    // Design v10, "Several at once": counts only, safe on a lock screen too.
+    const asks = needs.length - mentions;
+    const parts = [
+      asks > 0 ? `${asks} ${asks === 1 ? "ask" : "asks"}` : "",
+      `${mentions} ${mentions === 1 ? "mention" : "mentions"}`,
+    ].filter(Boolean);
+    heading = `${needs.length} things need you`;
+    body = parts.join(", ");
+  } else if (needs.length > 0) {
     const m = needs.length;
     const mention = isPersonMention(lead as { key: string });
     const asks = detail
@@ -385,7 +396,7 @@ export function pushPayload(
   }
   return {
     v: 1,
-    title,
+    title: heading,
     body: [...body].slice(0, 200).join(""),
     href: lead.thread_id
       ? `${viewerPath(lead.artifact_id)}?thread=${encodeURIComponent(lead.thread_id)}`
