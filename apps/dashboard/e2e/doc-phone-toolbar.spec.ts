@@ -13,6 +13,8 @@ const { defaultBrowserType: _d, ...phone } = devices["iPhone 14"];
 let room: ChildProcess | undefined;
 test.afterEach(async () => {
   await stopRoom(room);
+  // A later test in this worker that starts no room must not stop this one again.
+  room = undefined;
 });
 
 for (const scheme of ["light", "dark"] as const) {
