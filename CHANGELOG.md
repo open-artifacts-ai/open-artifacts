@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.217.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.216.0...v0.217.0) (2026-11-18)
+
+
+### Features
+
+* **agents:** the held-requests switch and the listens-to list ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577) slice 2) ([#2843](https://github.com/open-artifacts-ai/open-artifacts/issues/2843)) ([f9f12fb](https://github.com/open-artifacts-ai/open-artifacts/commit/f9f12fb8ebc163a6db5f9e1b75aef8fd5c1a3ad0))
+* **mcp:** an unlinked agent is told so on every write ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2841](https://github.com/open-artifacts-ai/open-artifacts/issues/2841)) ([c1f6103](https://github.com/open-artifacts-ai/open-artifacts/commit/c1f61034bcb9ae02880c795504974b1a4173e83b))
+
 ## [0.216.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.215.0...v0.216.0) (2026-11-18)
 
 

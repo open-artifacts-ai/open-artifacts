@@ -61,7 +61,12 @@ import {
   plainAgentName,
   shownName,
 } from "./agent-display.js";
-import { decide, heldAfterEdit, recordHolds } from "./agent-requests.js";
+import {
+  decide,
+  heldAfterEdit,
+  onlyAnswers,
+  recordHolds,
+} from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { activation } from "./analytics.js";
 import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
@@ -1653,9 +1658,14 @@ async function resolveExtras(
       let wake = typedByPerson(who);
       // #2577: another person's agent takes a request only from someone on their list; else the delivery is held for their person.
       if (wake && viewerId) {
-        if (
-          (await decide(env, viewerId, e.agent.userId, artifactId)) === "hold"
-        ) {
+        const verdict = await decide(env, viewerId, e.agent.userId, artifactId);
+        // #2577 S2: their agents hear nobody outside: refused, nothing held.
+        if (verdict === "off")
+          throw new ApiError(
+            "forbidden",
+            await onlyAnswers(env, e.agent.userId),
+          );
+        if (verdict === "hold") {
           // The sender's hourly limit comes first: over it, nothing is held.
           if (gate && !(await gate.takeSender())) {
             notice = TOO_MANY_MENTIONS;
@@ -1904,16 +1914,26 @@ async function addThreadInner(
     else if (typedByPerson(who)) {
       // Another person's page agent: not for an outside member, and under the mention limits.
       if (await isOutsideMember(env, who.id)) page = null;
-      else if ((await decide(env, who.id, page0.userId, a.id)) === "hold") {
-        // #2577: held for the page agent's person; the note posts, nothing is sent.
-        if (await (gateOf(env, who, r0) as MentionGate).takeSender()) {
-          const h = { agent: heldAgentOf(page0), way: "page" };
-          r0.held = [...(r0.held ?? []), h];
-          r0.extras = { ...r0.extras, held: [...(r0.extras?.held ?? []), h] };
-        } else r0.notice = TOO_MANY_MENTIONS;
-      } else if (await (gateOf(env, who, r0) as MentionGate).take(page0.userId))
-        page = page0;
-      else r0.notice = TOO_MANY_MENTIONS;
+      else {
+        const verdict = await decide(env, who.id, page0.userId, a.id);
+        if (verdict === "off") {
+          // #2577 S2: their agents hear nobody outside: the note posts, nobody is woken or held.
+        } else if (verdict === "hold") {
+          // #2577: held for the page agent's person; the note posts, nothing is sent.
+          if (await (gateOf(env, who, r0) as MentionGate).takeSender()) {
+            const h = { agent: heldAgentOf(page0), way: "page" };
+            r0.held = [...(r0.held ?? []), h];
+            r0.extras = {
+              ...r0.extras,
+              held: [...(r0.extras?.held ?? []), h],
+            };
+          } else r0.notice = TOO_MANY_MENTIONS;
+        } else if (
+          await (gateOf(env, who, r0) as MentionGate).take(page0.userId)
+        )
+          page = page0;
+        else r0.notice = TOO_MANY_MENTIONS;
+      }
     }
   }
   if (page) {
@@ -2094,15 +2114,18 @@ async function resolveToAsker(
   ) {
     const mine = to.filter((a) => a.userId !== who.id);
     const receiver = mine[0]?.userId;
-    if (
-      receiver &&
-      (await decide(env, who.id, receiver, artifactId)) === "hold"
-    ) {
+    const verdict = receiver
+      ? await decide(env, who.id, receiver, artifactId)
+      : "deliver";
+    if (verdict !== "deliver") {
       // The sender's hourly limit comes first: over it, nothing is held.
-      const gate = new MentionGate(env, who.id);
-      if (await gate.takeSender())
-        for (const a of mine)
-          heldFor.push({ agent: heldAgentOf(a), way: "reply" });
+      // #2577 S2: with their switch off, nothing is held either.
+      if (verdict === "hold") {
+        const gate = new MentionGate(env, who.id);
+        if (await gate.takeSender())
+          for (const a of mine)
+            heldFor.push({ agent: heldAgentOf(a), way: "reply" });
+      }
       wake = to.filter((a) => a.userId === who.id);
     }
   }
@@ -2176,7 +2199,10 @@ async function threadReply(
         outside ??= await isOutsideMember(env, c.author.ref);
         if (outside) continue;
         // #2577: not on the person's list: held for them, no notice.
-        if ((await decide(env, c.author.ref, p.owner, a.id)) === "hold") {
+        const verdict = await decide(env, c.author.ref, p.owner, a.id);
+        // #2577 S2: their agents hear nobody outside: no hold, no wake.
+        if (verdict === "off") continue;
+        if (verdict === "hold") {
           // The sender's hourly limit comes first: over it, nothing is held.
           senderGate ??= r.gate ?? new MentionGate(env, c.author.ref);
           if (!(await senderGate.takeSender())) {

@@ -131,7 +131,7 @@ describe("linkRequest (#1822)", () => {
         a.userId,
         mcpReq("x", { [LINK_PROOF_HEADER]: v }),
       );
-      expect(Object.keys(r)).toEqual(["req"]);
+      expect(r.identity).toBeUndefined();
       expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     }
     // Only the well-formed unknown one reached the hub.
@@ -150,11 +150,12 @@ describe("linkRequest (#1822)", () => {
       agentByProof: () => Promise.reject(new Error("boom")),
     });
     const f = await linkRequest(failing.ev, a.userId, req());
-    expect(Object.keys(f)).toEqual(["req"]);
+    expect(f.identity).toBeUndefined();
+    expect(f.why).toBe("error");
     const slow = spyHubs({ agentByProof: () => new Promise(() => {}) });
     const t0 = Date.now();
     const s = await linkRequest(slow.ev, a.userId, req());
-    expect(Object.keys(s)).toEqual(["req"]);
+    expect(s.identity).toBeUndefined();
     expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
   });
 
@@ -170,7 +171,7 @@ describe("linkRequest (#1822)", () => {
       a.userId,
       mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
     );
-    expect(Object.keys(r)).toEqual(["req"]);
+    expect(r.identity).toBeUndefined();
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
     expect(asked).toEqual([]);
@@ -219,7 +220,7 @@ describe("linkRequest (#1822)", () => {
         a.userId,
         mcpReq("x", { [LINK_PROOF_HEADER]: bad }),
       );
-      expect(Object.keys(r)).toEqual(["req"]);
+      expect(r.identity).toBeUndefined();
       const none = log.mock.calls
         .map((c) => String(c[0]))
         .filter((l) => l.includes("bus_link_lookup_none"));
@@ -244,7 +245,8 @@ describe("linkRequest (#1822)", () => {
         a.userId,
         mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
       );
-      expect(Object.keys(r)).toEqual(["req"]);
+      expect(r.identity).toBeUndefined();
+      expect(r.why).toBe("timeout");
       expect(Date.now() - t0).toBeGreaterThanOrEqual(PROOF_LOOKUP_MS - 5);
       const none = log.mock.calls
         .map((c) => String(c[0]))
@@ -314,7 +316,7 @@ describe("linkRequest (#1822)", () => {
       a.userId,
       mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
     );
-    expect(Object.keys(r)).toEqual(["req"]);
+    expect(r.identity).toBeUndefined();
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
   });
 

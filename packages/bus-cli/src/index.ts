@@ -16,6 +16,7 @@ export type Command = (
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "add"; address: string; name?: string; noOpen: boolean }
+  | { cmd: "use"; name?: string; none: boolean }
   | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
@@ -55,6 +56,7 @@ const COMMANDS = new Set([
   "install",
   "login",
   "add",
+  "use",
   "skill",
   "daemon",
   "mcp",
@@ -97,6 +99,7 @@ const FLAGS: Record<string, string[]> = {
   ],
   login: ["instance", "no-open"],
   add: ["name", "no-open"],
+  use: ["none"],
   skill: ["instance", "check", "json"],
   daemon: ["instance"],
   uninstall: ["purge"],
@@ -126,6 +129,7 @@ export function parse(argv: string[]): Command {
       "token-env": { type: "string" },
       for: { type: "string" },
       "no-open": { type: "boolean", default: false },
+      none: { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
@@ -148,7 +152,7 @@ export function parse(argv: string[]): Command {
   if (!COMMANDS.has(cmd)) throw new Error(`unknown command: ${cmd}`);
   const tokenFile = values["token-file"];
   const takes =
-    cmd === "mcp" || cmd === "add"
+    cmd === "mcp" || cmd === "add" || cmd === "use"
       ? 1
       : cmd === "global"
         ? rest[0] === "list"
@@ -159,6 +163,8 @@ export function parse(argv: string[]): Command {
     throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
   if (cmd === "add" && rest.length === 0)
     throw new Error(`usage: ${BUS_CMD} add <address> [--name <name>]`);
+  if (cmd === "use" && rest[0] !== undefined && values.none)
+    throw new Error(`usage: ${BUS_CMD} use [name], or ${BUS_CMD} use --none`);
   if (cmd === "global" && rest.length < takes) throw new Error(GLOBAL_USAGE);
   if (cmd === "namespace") {
     const sub = rest[0];
@@ -242,6 +248,7 @@ type Values = {
   home?: string;
   "token-file"?: string;
   "no-open": boolean;
+  none: boolean;
   yes: boolean;
   check: boolean;
   "no-service": boolean;
@@ -263,6 +270,12 @@ function route(cmd: string, values: Values, positionals: string[]) {
         address: positionals[0] as string,
         ...(values.name ? { name: values.name } : {}),
         noOpen: values["no-open"],
+      };
+    case "use":
+      return {
+        cmd,
+        ...(positionals[0] ? { name: positionals[0] } : {}),
+        none: values.none,
       };
     case "skill":
       return {
