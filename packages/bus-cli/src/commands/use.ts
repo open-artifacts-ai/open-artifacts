@@ -3,16 +3,20 @@ import {
   coveringEntry,
   type Folders,
   folderKey,
+  foldersFile,
+  inspectFolders,
   instanceAt,
   listInstances,
-  readFolders,
   readSuggestion,
   writeFolders,
 } from "@oa/bus-daemon";
-import { type Ctx, say, sayErr } from "../context.ts";
+import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { showAddress } from "./add.ts";
 
 const SHOWN_MAX = 120;
+
+/** A path as the terminal may show it: controls stripped. */
+const clean = showAddress;
 
 /**
  * `oa-bus use [name]` and `oa-bus use --none`: tie this folder (its git repo
@@ -41,7 +45,14 @@ export async function use(
     return 0;
   }
   const key = folderKey(ctx.cwd);
-  const f = readFolders(ctx.home);
+  const { folders: f, unusable } = inspectFolders(ctx.home);
+  if (unusable) {
+    sayErr(
+      ctx,
+      `Nothing changed: ${tilde(ctx, foldersFile(ctx.home))} can't be read safely, so it is left as it is. Fix or remove it, then run ${ctx.busCmd} use again.`,
+    );
+    return 1;
+  }
   const covering = coveringEntry(f, key);
   const found = readSuggestion(
     ctx.cwd,
@@ -97,7 +108,7 @@ export async function use(
     if (open !== undefined) f.seen[key] = open;
     delete f.no[key];
     save(f);
-    say(ctx, `Done. ${key} now uses ${name}.`);
+    say(ctx, `Done. ${clean(key)} now uses ${name}.`);
     return 0;
   };
 
@@ -106,6 +117,14 @@ export async function use(
       sayErr(
         ctx,
         `Nothing changed: there is no instance named ${opts.name} on this computer. Run ${ctx.busCmd} use to see them.`,
+      );
+      return 1;
+    }
+    const named = list.find((i) => i.name === opts.name);
+    if (named && canonicalAddress(named.hub) === undefined) {
+      sayErr(
+        ctx,
+        `Nothing changed: the address of ${opts.name} can't be read, so it can't connect. Run ${ctx.busCmd} add again.`,
       );
       return 1;
     }
@@ -123,7 +142,7 @@ export async function use(
     );
     return 1;
   }
-  say(ctx, `Which instance should ${key} use?`, "");
+  say(ctx, `Which instance should ${clean(key)} use?`, "");
   list.forEach((i, n) => {
     const mark =
       added && i.name === added.name ? "  (suggested by this repo)" : "";
@@ -143,6 +162,13 @@ export async function use(
     : undefined;
   if (!chosen) {
     sayErr(ctx, "That is not on the list. Nothing changed.");
+    return 1;
+  }
+  if (canonicalAddress(chosen.hub) === undefined) {
+    sayErr(
+      ctx,
+      `Nothing changed: the address of ${chosen.name} can't be read, so it can't connect. Run ${ctx.busCmd} add again.`,
+    );
     return 1;
   }
   return pick(chosen.name);

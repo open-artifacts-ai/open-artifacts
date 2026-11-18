@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { BusConfigSchema, CONFIG_FILE } from "@oa/bus-protocol";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { BUS_CMD, BusConfigSchema, CONFIG_FILE } from "@oa/bus-protocol";
 import { home } from "./config.ts";
 import {
   canonicalAddress,
@@ -40,22 +40,36 @@ const strMap = (v: unknown): Record<string, string> | undefined => {
   return out;
 };
 
-/** The file's content; empty when it is missing, unreadable or not safely ours. */
-export function readFolders(h: string = home()): Folders {
+/**
+ * The file's content, and `unusable` when the file is there but cannot be
+ * trusted or parsed (so a writer leaves it alone instead of dropping it).
+ */
+export function inspectFolders(h: string = home()): {
+  folders: Folders;
+  unusable: boolean;
+} {
   const none: Folders = { map: {}, no: {}, seen: {} };
   const own = readOwnFile(foldersFile(h));
-  if (own.state !== "ok") return none;
+  if (own.state === "none") return { folders: none, unusable: false };
+  if (own.state !== "ok") return { folders: none, unusable: true };
   try {
     const raw = JSON.parse(own.text) as Record<string, unknown> | null;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return none;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return { folders: none, unusable: true };
     const map = strMap(raw.map);
     const no = strMap(raw.no);
     const seen = strMap(raw.seen);
-    return map && no && seen ? { map, no, seen } : none;
+    return map && no && seen
+      ? { folders: { map, no, seen }, unusable: false }
+      : { folders: none, unusable: true };
   } catch {
-    return none;
+    return { folders: none, unusable: true };
   }
 }
+
+/** The file's content; empty when it is missing, unreadable or not safely ours. */
+export const readFolders = (h: string = home()): Folders =>
+  inspectFolders(h).folders;
 
 /** Writes folders.json, 0600, atomically. Only a command the user ran calls this. */
 export function writeFolders(f: Folders, h: string = home()): void {
@@ -99,7 +113,10 @@ export function folderKey(
 /** Whether `path` is `dir` or below it. */
 function inside(dir: string, path: string): boolean {
   const rel = relative(dir, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return (
+    rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+  );
 }
 
 /** The map entry that covers `real` (longest prefix wins), or undefined. */
@@ -152,7 +169,7 @@ export function unmappedFolderNote(
   const key = `${h}\0${folderKey(cwd)}`;
   if (noted.has(key)) return undefined;
   noted.add(key);
-  return "This folder isn't tied to an instance yet. Run oa-bus use here.";
+  return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use here.`;
 }
 
 /**

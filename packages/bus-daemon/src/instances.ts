@@ -170,7 +170,8 @@ export function credentialsFor(name: string, h: string = home()): Config {
 }
 
 /**
- * Until the folder map (slice S2): a lone main instance serves every folder;
+ * @deprecated Use `folderHomeLookup` (folders.ts), which reads the folder
+ * map. Kept only for its tests. Until the folder map (slice S2): a lone main instance serves every folder;
  * with more than one, a folder is unmapped and gets no connection by guess.
  */
 export const defaultHomeLookup: HomeLookup = (_cwd) => {

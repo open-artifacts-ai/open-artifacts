@@ -12,7 +12,7 @@ import {
 import { basename, isAbsolute, join } from "node:path";
 import { home } from "./config.ts";
 import { sameDir } from "./global.ts";
-import { MAIN_INSTANCE } from "./instances.ts";
+import { MAIN_INSTANCE, nameProblem } from "./instances.ts";
 import { readOwnFile } from "./own-file.ts";
 
 /**
@@ -25,14 +25,17 @@ import { readOwnFile } from "./own-file.ts";
 export const namespacesFile = (
   h = home(),
   instance: string = MAIN_INSTANCE,
-): string =>
+): string => {
+  if (instance !== MAIN_INSTANCE && nameProblem(instance))
+    throw new Error(`not an instance name: ${instance}`);
   // Main keeps its file. An approval on one instance is none on another (#2793).
-  join(
+  return join(
     h,
     instance === MAIN_INSTANCE
       ? "namespaces.json"
       : `namespaces.${instance}.json`,
   );
+};
 
 export type Approval = { dir: string; namespace: string };
 
