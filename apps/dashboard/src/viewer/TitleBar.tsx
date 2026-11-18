@@ -81,6 +81,8 @@ export const BAR_STAGES = 3;
 const shortfall = (el: HTMLElement) => {
   const over = el.scrollWidth - el.clientWidth;
   const h1 = el.querySelector("h1");
+  // #2756: a doc's title is in the doc; this h1 takes no room to be cut.
+  if (h1?.hasAttribute("data-in-doc")) return Math.max(0, over);
   const text = (h1?.querySelector("button") ?? h1) as HTMLElement | null;
   const node = text?.firstChild;
   let cut = 0;
@@ -246,6 +248,7 @@ export function TitleBar({
   live,
   newer = false,
   gone = false,
+  titleInDoc = false,
   comments,
   asks,
   org = "",
@@ -283,6 +286,8 @@ export function TitleBar({
   newer?: boolean;
   /** Deleted or no access: Full screen, Versions and Share are disabled. */
   gone?: boolean;
+  /** #2756: the doc editor shows the title itself, so the bar does not repeat it. */
+  titleInDoc?: boolean;
 }) {
   const narrow = useNarrow();
   const navigate = useNavigate();
@@ -400,7 +405,13 @@ export function TitleBar({
     >
       <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
         {iconFormat && <FormatIcon format={iconFormat} />}
-        {canEdit ? (
+        {titleInDoc ? (
+          // #2756: the doc shows (and edits) its title in the page; the bar
+          // keeps the h1 for screen readers and the page's name.
+          <h1 className="sr-only" data-in-doc="">
+            {artifact.title}
+          </h1>
+        ) : canEdit ? (
           <EditableTitle artifact={artifact} />
         ) : (
           <h1 className={H1}>{artifact.title}</h1>
