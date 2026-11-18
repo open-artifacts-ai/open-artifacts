@@ -452,6 +452,7 @@ export const useReply = (id: string, guest = false) =>
           ...(v.guestName ? { guestName: v.guestName } : {}),
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
           ...(v.toAsker ? { toAsker: true } : {}),
+          ...(v.pictures?.length ? { pictures: v.pictures } : {}),
         },
         CommentSchema,
         undefined,

@@ -8,6 +8,7 @@ import {
   LinkProofHashSchema,
   MachineLabelSchema,
   MsgIdSchema,
+  NoticeMetaSchema,
   REACH_PROPOSAL_MAX,
   ReceiptReasonSchema,
   RefusalReasonSchema,
@@ -475,6 +476,8 @@ export const Deliver = z
     namespace: z.string(),
     body: z.string().optional(),
     notice: z.object({ size: z.number(), msg_id: z.string() }).optional(),
+    /** #2768: a server notice's structured fields, as data beside the body. */
+    meta: z.object(NoticeMetaSchema.shape).optional(),
   })
   .refine((d) => (d.body === undefined) !== (d.notice === undefined), {
     message: "deliver needs exactly one of body or notice",

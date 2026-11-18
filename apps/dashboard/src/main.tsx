@@ -875,6 +875,10 @@ async function startMocks() {
     const { pushSwitchHandlers } = await import("./mockPushSwitches");
     extra.push(...pushSwitchHandlers(() => mainHandlers));
   }
+  // #2508: pictures in comments.
+  extra.push(
+    ...(await import("./mockPictures")).pictureHandlers(mainHandlers, params),
+  );
   await setupWorker(
     ...extra,
     ...mainHandlers,
