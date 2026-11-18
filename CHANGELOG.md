@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.220.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.219.1...v0.220.0) (2026-11-18)
+
+
+### Features
+
+* **comments:** mention people in a comment ([#2784](https://github.com/open-artifacts-ai/open-artifacts/issues/2784)) ([e1ba320](https://github.com/open-artifacts-ai/open-artifacts/commit/e1ba320e148053a038b25f94f0b7defab2887fa0))
+
 ## [0.219.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.219.0...v0.219.1) (2026-11-18)
 
 
