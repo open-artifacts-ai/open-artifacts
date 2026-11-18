@@ -757,6 +757,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       (e) => e.pid === rec.pid && e.procStart === rec.procStart,
     );
     if (!hit) return;
+    // A proof for another instance than the one the session is homed on is never replayed.
+    if ((hit.instance ?? MAIN_INSTANCE) !== homedOf(rec)) return;
     rec.linkHashes = [...hit.hashes];
     saved = saved.filter((e) => e !== hit);
   };
@@ -771,7 +773,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         !a.linkHashes?.length
       )
         continue;
-      rows.push({ pid: a.pid, procStart: a.procStart, hashes: a.linkHashes });
+      rows.push({
+        pid: a.pid,
+        procStart: a.procStart,
+        hashes: a.linkHashes,
+        ...(a.instance !== undefined && a.instance !== MAIN_INSTANCE
+          ? { instance: a.instance }
+          : {}),
+      });
     }
     saved = saved.filter((e) => sameProc(e.pid, e.procStart));
     const all = [...rows, ...saved].slice(0, CLAUDE_LINKS_MAX);
@@ -1266,8 +1275,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const pendingProofs = new Map<
     number,
-    { procStart: string; hash: string; at: number }
+    { procStart: string; hash: string; at: number; instance: string }
   >();
+  /**
+   * #2793 S4: the instance a session's proofs are for: the one it is homed on.
+   * A record on no hub yet counts as main only while main is the one link.
+   */
+  const homedOf = (rec: AgentRecord): string | undefined =>
+    rec.instance ?? (lanes.multi ? undefined : MAIN_INSTANCE);
+  /** A proof for another instance than the session's is dropped here, never offered to any hub. */
+  const dropProof = (want: string, rec: AgentRecord) => {
+    log(
+      `dropped a proof for the instance ${want}: session ${rec.ref} is homed on ${homedOf(rec) ?? "no instance"}`,
+    );
+    noteUnbound("wrong_instance", rec.pid);
+  };
+  /** The hashes a replacing record keeps: only those of a record homed on the same instance. */
+  const carryLinks = (
+    instance: string | undefined,
+    ...from: (AgentRecord | undefined)[]
+  ): string[] | undefined =>
+    from.find((r) => r?.linkHashes !== undefined && r.instance === instance)
+      ?.linkHashes;
   /**
    * #2688: why a pid's proof did not link its session, and the last few
    * `mcp-proof` calls that bound nothing. Causes and times only: never a proof,
@@ -1276,7 +1305,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const proofIssues = new Map<number, "proof_timed_out" | "proof_refused">();
   const unboundProofs: {
     at: number;
-    cause: "no_live_record" | "process_mismatch" | "no_process_start";
+    cause:
+      | "no_live_record"
+      | "process_mismatch"
+      | "no_process_start"
+      | "wrong_instance";
   }[] = [];
   const noteUnbound = (
     cause: (typeof unboundProofs)[number]["cause"],
@@ -1311,6 +1344,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       const p = pendingProofs.get(rec.pid);
       if (!p || p.procStart !== rec.procStart) continue;
       pendingProofs.delete(rec.pid);
+      if (p.instance !== homedOf(rec)) {
+        dropProof(p.instance, rec);
+        continue;
+      }
       proofIssues.delete(rec.pid);
       rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
       persistLinks();
@@ -1427,8 +1464,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         pid: s.pid,
         procStart: s.procStart,
         // The same process keeps its proof across /clear and a reopen; agent_ok rebinds it.
-        ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
-          ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
+        ...(carryLinks(instance, prev, old) !== undefined
+          ? { linkHashes: carryLinks(instance, prev, old) as string[] }
           : {}),
         sessionName: s.name,
         ...(s.nameChosen ? { nameChosen: true } : {}),
@@ -2047,6 +2084,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // daemon checks is that a live Claude record it attested has that very pid
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
+      const want = req.instance ?? MAIN_INSTANCE;
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
       if (start === null || start === undefined) {
         noteUnbound("no_process_start");
@@ -2067,6 +2105,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           noteUnbound("process_mismatch", req.pid);
           return { bound: false };
         }
+        // #2793 S4: a proof binds only on its own instance's hub, for a
+        // session homed there. Anything else is dropped before any hub sees it.
+        if (want !== homedOf(rec)) {
+          dropProof(want, rec);
+          return { bound: false };
+        }
         proofIssues.delete(req.pid);
         rec.linkHashes = withLinkHash(rec.linkHashes, req.hash);
         persistLinks();
@@ -2080,6 +2124,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         procStart: start,
         hash: req.hash,
         at: Date.now(),
+        instance: want,
       });
       while (pendingProofs.size > PENDING_PROOF_MAX) {
         const oldest = pendingProofs.keys().next().value;
@@ -2442,8 +2487,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(mine ? { sessionName: mine.name } : {}),
           ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
-          ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
-            ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
+          ...(carryLinks(instance, prev, old) !== undefined
+            ? { linkHashes: carryLinks(instance, prev, old) as string[] }
             : {}),
           ...(codexName !== undefined ? { sessionName: codexName } : {}),
           cwd,

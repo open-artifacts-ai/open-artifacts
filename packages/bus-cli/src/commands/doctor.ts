@@ -42,6 +42,7 @@ import {
 } from "../steps/claude-plugins.ts";
 import {
   claudeProofChecks,
+  instanceProofChecks,
   lastAutoFix,
   safeText,
 } from "../steps/claude-proof-check.ts";
@@ -338,7 +339,10 @@ export async function doctor(ctx: Ctx): Promise<number> {
       else if (plugins) pass(c.pluginsDoctor());
       // #2688: each entry for the instance, at every scope, and what the last automatic fix did.
       if (hub !== undefined) {
-        for (const chk of claudeProofChecks(ctx, hub))
+        for (const chk of [
+          ...claudeProofChecks(ctx, hub),
+          ...instanceProofChecks(ctx),
+        ])
           if (chk.level === "pass") pass(chk.lines[0] as string);
           else if (chk.level === "warn") warn(chk.lines);
           else if (chk.level === "info") say(ctx, chk.lines);

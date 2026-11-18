@@ -52,6 +52,9 @@ const UNBOUND: Record<string, string> = {
   process_table_error: "the helper could not read the process table",
   process_not_matched:
     "the daemon could not match the process to a live session (a reused pid, or an unreadable start time)",
+  bad_instance: "the helper names an instance that is not a valid name",
+  wrong_instance:
+    "the proof was for another instance than the session's, so it was dropped",
   daemon_unreachable: "the daemon did not answer in time, or is not running",
 };
 

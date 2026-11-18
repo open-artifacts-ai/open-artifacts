@@ -1,3 +1,5 @@
+import { chmodSync } from "node:fs";
+import { join } from "node:path";
 import {
   addProblem,
   canonicalAddress,
@@ -7,6 +9,9 @@ import {
 } from "@oa/bus-daemon";
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { type Ctx, say, sayErr } from "../context.ts";
+import { addInstanceProof, claudeConfigFile } from "../steps/claude-proof.ts";
+import { isDefaultHome } from "../steps/service.ts";
+import { writeAtomic } from "../steps/skill.ts";
 import { LoginFailed, login, RedirectRefused } from "./login.ts";
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -122,5 +127,44 @@ export async function add(
     throw e;
   }
   say(ctx, `Added ${name}.`);
+  claudeEntries(name, parsed.hub, ctx);
   return 0;
+}
+
+/**
+ * #2793 S4: the Claude Code entries at the new instance's address get a
+ * helper that proves this session to that instance only. Never fails the add.
+ */
+function claudeEntries(name: string, hub: string, ctx: Ctx): void {
+  try {
+    const r = addInstanceProof(
+      {
+        file: claudeConfigFile(ctx.userHome, ctx.env),
+        record: join(ctx.home, "install.json"),
+        write: (path, data, mode) => {
+          writeAtomic(path, data);
+          if (mode !== undefined) chmodSync(path, mode);
+        },
+      },
+      { name, hub },
+      ctx.service.argv?.() ?? ctx.service.cli(),
+      isDefaultHome(ctx.home, ctx.userHome) ? undefined : ctx.home,
+    );
+    for (const n of r.notes) say(ctx, n);
+    if (r.changed.length > 0)
+      say(
+        ctx,
+        `Claude Code: ${r.changed.length === 1 ? "1 entry" : `${r.changed.length} entries`} for ${name} will show as this session on its pages.`,
+      );
+    else if (r.matched === 0)
+      say(
+        ctx,
+        `Claude Code: to connect it to ${name}, run claude mcp add --transport http open-artifacts-${name} ${showAddress(hub)}/mcp, then ${ctx.busCmd} install.`,
+      );
+  } catch (e) {
+    say(
+      ctx,
+      `Claude Code: could not set the session helper for ${name}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
