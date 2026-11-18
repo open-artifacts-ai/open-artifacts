@@ -176,6 +176,14 @@ export const failedToast = (e: unknown) =>
   toast({ title: errorCopy(e, "Couldn't save that."), tone: "danger" });
 
 /** Put off once: the server answers the deferred item, which joins Later. A failure puts the row back and says so. */
+/** The browser's IANA zone, so "morning" is 08:00 where the person is (#2762). */
+const laterBody = (
+  until: "hour" | "morning",
+): { until: "hour" | "morning"; timeZone?: string } => {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return timeZone ? { until, timeZone } : { until };
+};
+
 export const useLater = () => {
   const qc = useQueryClient();
   return useEdit(
@@ -183,7 +191,7 @@ export const useLater = () => {
       const moved = await api.send(
         "POST",
         R.meInboxLater(v.id),
-        { until: v.until },
+        laterBody(v.until),
         LaterItemSchema,
       );
       editPages(qc, (p, i) =>
