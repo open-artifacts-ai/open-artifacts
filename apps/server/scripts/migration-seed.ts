@@ -46,6 +46,7 @@ export const SHAPE = {
   reserved_artifacts: 1_000,
   uploads: 100_000,
   artifact_asks: 3_000, // asks are rare: about one live artifact in a hundred
+  inbox_items: 20_000, // #2512 S2: mentions and updates, a few per active member
   data_writes_total: 1, // the install-wide write counter: one row
   tokens: 30_000,
   passkeys: 2_000, // #2263
@@ -513,6 +514,31 @@ export const RULES: Record<string, Rule> = {
         addressee: u.id,
         open: answered || c.rand() < 0.2 ? 0 : 1,
         answered,
+      };
+    },
+  },
+  // #2512 S2: the For you inbox's stored items; a third already read.
+  inbox_items: {
+    rows: (c) => c.count("inbox_items"),
+    row(i, c) {
+      const a = c.artifacts[(i * 89) % c.artifacts.length];
+      const u = c.users[(i * 7919) % c.users.length];
+      if (!a || !u) return null;
+      const kind = c.pick(["reply", "comment", "share", "decision", "mention"]);
+      return {
+        id: c.id("ib"),
+        user_id: u.id,
+        kind,
+        level: "update",
+        key: `${kind}:${c.id("cm")}`,
+        artifact_id: a.id,
+        thread_id: c.id("th"),
+        comment_id: c.id("cm"),
+        actor: '{"kind":"user","ref":"seed","name":"Seed"}',
+        excerpt: `seed item ${i}`,
+        agent_name: kind === "mention" ? "Scout" : null,
+        created_at: Date.now() - c.int(30 * 86_400_000),
+        read_at: c.rand() < 0.33 ? Date.now() : null,
       };
     },
   },
