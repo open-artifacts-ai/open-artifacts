@@ -102,6 +102,7 @@ import {
 } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import type { EventFields } from "./event-log.ts";
+import { folderHomeLookup } from "./folders.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import { BoundedMap, Lane, Lanes, ResendSet, refOf } from "./hubs.ts";
 import {
@@ -477,6 +478,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Which link carried a request or a delivery, while more than one link runs. */
   const idLane = new BoundedMap<string, Lane>(20_000);
   const msgLane = new BoundedMap<string, Lane>(20_000);
+  /**
+   * A hub-chosen msg_id belongs to the first link that names it. Another link
+   * naming it is dropped, so it can never re-point an ack, refusal or receipt.
+   */
+  const claimMsg = (lane: Lane, msgId: string): boolean => {
+    const owner = msgLane.get(msgId);
+    if (owner === undefined || owner === lane) {
+      msgLane.set(msgId, lane);
+      return true;
+    }
+    ev("frame_dropped", { instance: lane.name, type: "msg_id_taken" });
+    log(`dropped a frame from ${lane.name}: its msg_id is another instance's`);
+    return false;
+  };
   const laneOfFrame = (f: ClientFrame): Lane | undefined => {
     const ref = refOf(f);
     if (ref !== undefined) return laneOfRef(ref);
@@ -503,7 +518,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     instHome === undefined || listInstances(instHome).every((i) => i.main);
   const lookup: HomeLookup =
     deps.homeLookup ??
-    (() => (onlyMain ? { instance: MAIN_INSTANCE } : { unmapped: true }));
+    (instHome !== undefined
+      ? folderHomeLookup(instHome)
+      : () => (onlyMain ? { instance: MAIN_INSTANCE } : { unmapped: true }));
   const unmappedNoted = new Set<string>();
   /**
    * The instance a folder's sessions register on, or undefined: none is
@@ -1528,8 +1545,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     log,
   });
 
-  /** Which link's hello_ok started the current Codex ack replay (#2198). */
-  let codexReplayLink = 0;
+  /** Which link's hello_ok started each lane's current Codex ack replay (#2198). */
+  const codexReplayLink = new Map<string, number>();
   /**
    * When the owner's quiet hours end (#2759): the last `hello_ok.owner_away_until`
    * or `owner_away` frame. A hello_ok without the field replaces it with unknown.
@@ -1590,7 +1607,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!routable(lane, frame)) return;
         switch (frame.type) {
           case "deliver":
-            msgLane.set(frame.msg_id, lane);
+            if (!claimMsg(lane, frame.msg_id)) return;
             void delivery.deliver(frame);
             return;
           case "agent_ok": {
@@ -1616,7 +1633,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             return;
           }
           case "receipt": {
-            msgLane.set(frame.msg_id, lane);
+            if (!claimMsg(lane, frame.msg_id)) return;
             resends.untrack(frame.id);
             // A tool call's queued send waits a moment for delivered (or a refusal or expiry).
             // No call waits: a held send whose call was answered Queued.
@@ -1788,11 +1805,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             // confirmed again, paced into the queue's spare half (#2198).
             // Without the cap there is no replay: an ack queued is done.
             if (lane.ackConfirm) {
-              const link = ++codexReplayLink;
+              const link = (codexReplayLink.get(lane.name) ?? 0) + 1;
+              codexReplayLink.set(lane.name, link);
               replayAcks(
-                codexTaken.unconfirmedIds(),
+                // Only this link's own mail: another hub's ids replay on its link.
+                codexTaken
+                  .unconfirmedIds()
+                  .filter((id) => (msgLane.get(id) ?? main) === lane),
                 (id) => void sendCodexAck(id),
-                () => lane.helloed && link === codexReplayLink,
+                () => lane.helloed && link === codexReplayLink.get(lane.name),
                 () => lane.hub.headroom,
               );
             }
@@ -1941,7 +1962,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     } else {
       switch (frame.type) {
         case "deliver":
-          ok = ownsRef(frame.to_ref, lane);
+          // A ref nobody registered (forgotten) passes, as with one link: the
+          // answer is a refusal on this link, not silence.
+          ok =
+            agents.byRef(frame.to_ref) === undefined ||
+            ownsRef(frame.to_ref, lane);
           break;
         case "agent_ok":
         case "renamed":
