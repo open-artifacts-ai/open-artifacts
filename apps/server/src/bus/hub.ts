@@ -5574,9 +5574,14 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.runVersion) ||
           hasCap(f, BUS_CAPS.noticeMeta) ||
           hasCap(f, BUS_CAPS.ownerAway)
-            ? // Only the caps this daemon listed: BUS_CAPS outgrew the 16 an
-              // older daemon decodes (#2759).
-              { caps: HUB_CAPS.filter((c) => hasCap(f, c)) }
+            ? // Everything the hub always listed, plus owner_away only to a
+              // daemon that listed it: an older daemon decodes at most 16
+              // caps, and HUB_CAPS outgrew that (#2759).
+              {
+                caps: HUB_CAPS.filter(
+                  (c) => c !== BUS_CAPS.ownerAway || hasCap(f, c),
+                ),
+              }
             : {}),
           ...(awayUntil !== undefined
             ? {

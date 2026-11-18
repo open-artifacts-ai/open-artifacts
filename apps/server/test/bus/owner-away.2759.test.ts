@@ -9,7 +9,10 @@ import { R } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { BusHub } from "../../src/bus/hub.js";
-import { DEFAULT_PREFS } from "../../src/services/notification-prefs.js";
+import {
+  DEFAULT_PREFS,
+  nextQuietEdge,
+} from "../../src/services/notification-prefs.js";
 import { api } from "../helpers.js";
 import {
   type Daemon,
@@ -83,45 +86,24 @@ const owner = (d: Daemon): Extract<ServerFrame, { type: "owner_away" }>[] =>
       f.type === "owner_away",
   );
 
-describe("hello: caps intersection (#2759)", () => {
-  it("an older daemon (16 caps or fewer, no owner_away) still decodes hello_ok: only the caps it listed, no field, no push", async () => {
-    const old = [
-      "rename",
-      "roles",
-      "ids",
-      "mailbox",
-      "links",
-      "reach",
-      "follow",
-      "link",
-      "link_arg",
-      "waiting",
-      "waiting_query",
-      "notice_ack",
-      "name_chosen",
-      "ack_confirm",
-      "run_version",
-      "notice_meta",
-    ];
-    expect(old).toHaveLength(16);
+describe("hello: caps (#2759)", () => {
+  it("an older daemon (16 caps or fewer, no owner_away) still decodes hello_ok: the 16 caps it always got, never owner_away, no field, no push", async () => {
+    const old = ["ids", "rename"];
     const { d, ok } = await open(old, { at: day(23) });
-    // hello_ok decoded strictly (the helper's decoder); only what it listed.
+    // hello_ok decoded strictly (the helper's decoder); an older daemon decodes
+    // at most 16 caps, so owner_away is never among them.
     expect(ok.caps?.length ?? 0).toBeLessThanOrEqual(16);
-    expect(ok.caps?.every((c) => old.includes(c))).toBe(true);
+    expect(ok.caps).toContain("rename");
     expect(ok.caps).not.toContain("owner_away");
     expect(ok.owner_away_until).toBeUndefined();
     await again(d, old);
     expect(owner(d)).toEqual([]);
   });
 
-  it("a daemon that listed one cap gets just that one back", async () => {
-    const { ok } = await open(["ids"]);
-    expect(ok.caps).toEqual(["ids"]);
-  });
-
-  it("a new daemon gets owner_away in caps; no cap: no caps field at all", async () => {
+  it("a daemon that lists owner_away gets it in caps (17, past the old 16); no cap at all: no caps field", async () => {
     const { ok } = await open(CAP);
-    expect(ok.caps).toEqual(["owner_away"]);
+    expect(ok.caps).toContain("owner_away");
+    expect(ok.caps?.length).toBeGreaterThan(16);
     const none = await open([]);
     expect(none.ok.caps).toBeUndefined();
     expect(none.ok.owner_away_until).toBeUndefined();
@@ -193,5 +175,24 @@ describe("a prefs save and other members' hubs", () => {
     expect((await put(a.who.cookie, null)).status).toBe(200);
     await again(a.d, ["ids"]);
     expect(owner(a.d)).toEqual([]);
+  });
+});
+
+describe("nextQuietEdge", () => {
+  const p = (tz = "UTC") => ({ quietHours: QUIET, timeZone: tz });
+  it("inside the window: its end; outside: the next start; none: null", () => {
+    expect(nextQuietEdge(p(), day(23))).toBe(day(7, 0, 2));
+    expect(nextQuietEdge(p(), day(12))).toBe(day(22));
+    // After today's start has passed it is inside; just before midnight's end it is the same night's end.
+    expect(nextQuietEdge(p(), day(3))).toBe(day(7));
+    expect(
+      nextQuietEdge({ quietHours: null, timeZone: "UTC" }, day(12)),
+    ).toBeNull();
+    // A bad zone is no edge, never a throw.
+    expect(nextQuietEdge(p("Mars/Base"), day(12))).toBeNull();
+  });
+  it("is on the person's clock", () => {
+    // Paris in January is UTC+1: 22:00 there is 21:00 UTC.
+    expect(nextQuietEdge(p("Europe/Paris"), day(12))).toBe(day(21));
   });
 });
