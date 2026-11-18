@@ -1,7 +1,7 @@
 // #2512 S4: the member's notification choices and quiet hours.
 import { env } from "cloudflare:workers";
 import { type NotificationPrefs, newId, R } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
@@ -140,15 +140,22 @@ describe("GET and PUT /me/notification-prefs", () => {
 
   it("is rate limited per person per day, counting only real changes", async () => {
     const a = await mk("rate");
-    for (let i = 0; i < PREFS_WRITES_PER_DAY; i++)
-      expect(
-        (await put(a.cookie, prefs({ lockScreenDetail: i % 2 === 0 }))).status,
-      ).toBe(200);
-    const r = await put(
-      a.cookie,
-      prefs({ lockScreenDetail: false, browserAllAsks: true }),
-    );
-    expect(r.status).toBe(429);
+    // A frozen clock: UTC midnight mid-loop would start a new day's count.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      for (let i = 0; i < PREFS_WRITES_PER_DAY; i++)
+        expect(
+          (await put(a.cookie, prefs({ lockScreenDetail: i % 2 === 0 })))
+            .status,
+        ).toBe(200);
+      const r = await put(
+        a.cookie,
+        prefs({ lockScreenDetail: false, browserAllAsks: true }),
+      );
+      expect(r.status).toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
