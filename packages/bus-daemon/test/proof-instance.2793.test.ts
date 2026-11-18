@@ -200,4 +200,33 @@ describe("one proof per instance (#2793 S4)", () => {
     expect(hubB.of("link_bind")).toEqual([]);
     expect(h.of("link_bind")).toEqual([]);
   });
+
+  it.each([
+    ["A then B", ["a", "b"]],
+    ["B then A", ["b", "a"]],
+  ])(
+    "both helpers' proofs held before the session file keep the home one (%s)",
+    async (_n, order) => {
+      const { h, hubB, logs } = await setup();
+      for (const w of order)
+        expect(
+          await proof(
+            h,
+            4545,
+            w === "a" ? HASH_A : HASH_B,
+            w === "a" ? undefined : "b",
+          ),
+        ).toBe(true);
+      session(h.sessionsDir, 4545, "sc", "/a/other");
+      const bind = await h.next("link_bind");
+      expect(bind).toMatchObject({ agent_ref: "sc", hash: HASH_A });
+      await vi.waitFor(() =>
+        expect(logs.some((l) => l.includes("dropped a proof"))).toBe(true),
+      );
+      await settled(h, hubB);
+      expect(hubB.raw.join("\n")).not.toContain(HASH_B);
+      expect(hubB.of("link_bind")).toEqual([]);
+      expect(h.raw.join("\n")).not.toContain(HASH_B);
+    },
+  );
 });

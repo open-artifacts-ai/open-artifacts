@@ -226,7 +226,9 @@ export function parse(argv: string[]): Command {
       ? {
           cmd,
           ...(tokenFile ? { tokenFile } : {}),
-          ...(values.instance ? { instance: values.instance } : {}),
+          ...(values.instance !== undefined
+            ? { instance: values.instance }
+            : {}),
         }
       : cmd === "mcp-proxy"
         ? {

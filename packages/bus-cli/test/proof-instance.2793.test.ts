@@ -3,10 +3,13 @@
 // binds only on its own hub) is in packages/bus-daemon/test.
 import { createHash } from "node:crypto";
 import {
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -170,6 +173,19 @@ describe("oa-bus add sets the --instance helper", () => {
     expect(rec.claudeConfig).toBeUndefined();
     expect(rec.claudeProof).toHaveLength(2);
     expect(statSync(join(w.ctx.home, "install.json")).mode & 0o077).toBe(0);
+  });
+
+  it("a symlinked ~/.claude.json stays a symlink and its target gets the helper", async () => {
+    const w = world(claudeJson());
+    const real = `${w.file}.real`;
+    renameSync(w.file, real);
+    symlinkSync(real, w.file);
+    expect(await add({ address: B, name: "b", noOpen: true }, w.ctx)).toBe(0);
+    expect(lstatSync(w.file).isSymbolicLink()).toBe(true);
+    expect(
+      parsed(readFileSync(real, "utf8")).mcpServers["open-artifacts-b"]
+        ?.headersHelper,
+    ).toBe("oa-bus mcp-proof --instance b");
   });
 
   it("a foreign helper is left alone, with the usual note", async () => {

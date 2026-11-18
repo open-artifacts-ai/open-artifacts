@@ -1,4 +1,3 @@
-import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import {
   addProblem,
@@ -9,9 +8,9 @@ import {
 } from "@oa/bus-daemon";
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { type Ctx, say, sayErr } from "../context.ts";
-import { addInstanceProof, claudeConfigFile } from "../steps/claude-proof.ts";
+import { proofIo } from "../steps/adapters.ts";
+import { addInstanceProof, readRecord } from "../steps/claude-proof.ts";
 import { isDefaultHome } from "../steps/service.ts";
-import { writeAtomic } from "../steps/skill.ts";
 import { LoginFailed, login, RedirectRefused } from "./login.ts";
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -137,14 +136,13 @@ export async function add(
  */
 function claudeEntries(name: string, hub: string, ctx: Ctx): void {
   try {
+    const io = proofIo({ home: ctx.userHome, busHome: ctx.home, env: ctx.env });
     const r = addInstanceProof(
       {
-        file: claudeConfigFile(ctx.userHome, ctx.env),
-        record: join(ctx.home, "install.json"),
-        write: (path, data, mode) => {
-          writeAtomic(path, data);
-          if (mode !== undefined) chmodSync(path, mode);
-        },
+        // Install's own I/O: writes through a symlinked config, 0600 record.
+        ...io,
+        // The file install recorded, when there is one.
+        file: readRecord(io.record).config ?? io.file,
       },
       { name, hub },
       ctx.service.argv?.() ?? ctx.service.cli(),

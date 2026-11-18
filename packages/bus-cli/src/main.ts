@@ -130,7 +130,7 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return mcpProof(
         {
           ...(cmd.tokenFile ? { tokenFile: cmd.tokenFile } : {}),
-          ...(cmd.instance ? { instance: cmd.instance } : {}),
+          ...(cmd.instance !== undefined ? { instance: cmd.instance } : {}),
         },
         ctx,
       );

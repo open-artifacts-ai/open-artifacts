@@ -1273,10 +1273,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * unwritten). The latest hash per pid and start time waits here, briefly and
    * bounded; a live record with that pid and start time takes it.
    */
+  // Keyed by pid and instance: one Claude process runs a helper per instance,
+  // and the second must not replace the first.
   const pendingProofs = new Map<
-    number,
-    { procStart: string; hash: string; at: number; instance: string }
+    string,
+    {
+      pid: number;
+      procStart: string;
+      hash: string;
+      at: number;
+      instance: string;
+    }
   >();
+  const pendingKey = (pid: number, instance: string) => `${pid}:${instance}`;
   /**
    * #2793 S4: the instance a session's proofs are for: the one it is homed on.
    * A record on no hub yet counts as main only while main is the one link.
@@ -1333,25 +1342,27 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const claimProofs = () => {
     if (pendingProofs.size === 0) return;
     const now = Date.now();
-    for (const [pid, p] of pendingProofs)
+    for (const [key, p] of pendingProofs)
       if (now - p.at > PENDING_PROOF_MS) {
-        pendingProofs.delete(pid);
-        noteUnbound("no_live_record", pid);
+        pendingProofs.delete(key);
+        noteUnbound("no_live_record", p.pid);
       }
     for (const rec of agents.all()) {
       if (rec.kind !== "claude-code" || !rec.live || rec.pid === undefined)
         continue;
-      const p = pendingProofs.get(rec.pid);
-      if (!p || p.procStart !== rec.procStart) continue;
-      pendingProofs.delete(rec.pid);
-      if (p.instance !== homedOf(rec)) {
-        dropProof(p.instance, rec);
-        continue;
+      const pid = rec.pid;
+      for (const [key, p] of [...pendingProofs]) {
+        if (p.pid !== pid || p.procStart !== rec.procStart) continue;
+        pendingProofs.delete(key);
+        if (p.instance !== homedOf(rec)) {
+          dropProof(p.instance, rec);
+          continue;
+        }
+        proofIssues.delete(pid);
+        rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
+        persistLinks();
+        sendLink(rec, p.hash);
       }
-      proofIssues.delete(rec.pid);
-      rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
-      persistLinks();
-      sendLink(rec, p.hash);
     }
   };
   /**
@@ -2119,8 +2130,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       // Still no record: hold it for the one that may appear (same pid and
       // start time only). Bounded, and a proof nobody claims expires.
-      pendingProofs.delete(req.pid);
-      pendingProofs.set(req.pid, {
+      const key = pendingKey(req.pid, want);
+      pendingProofs.delete(key);
+      pendingProofs.set(key, {
+        pid: req.pid,
         procStart: start,
         hash: req.hash,
         at: Date.now(),

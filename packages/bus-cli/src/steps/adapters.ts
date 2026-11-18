@@ -656,7 +656,7 @@ function ompOrigin(deps: AdapterDeps, notes: string[]) {
   }
 }
 
-const proofIo = (
+export const proofIo = (
   deps: Pick<AdapterDeps, "home" | "busHome" | "env">,
 ): ProofIo => ({
   file: paths(deps as AdapterDeps).claude,
