@@ -139,7 +139,7 @@ export function Lightbox({
         showCloseButton={false}
         aria-describedby={undefined}
         data-lightbox=""
-        className="top-0 left-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 bg-black/90 p-0 text-white shadow-none sm:max-w-none"
+        className="top-0 left-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 bg-black p-0 text-white shadow-none sm:max-w-none"
         onKeyDown={(e) => {
           if (n < 2) return;
           if (e.key === "ArrowRight") go(1);
