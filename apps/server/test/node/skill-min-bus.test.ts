@@ -1,7 +1,6 @@
-// #2624: SKILL_COMMAND_MIN_BUS must be the first release whose bus has
-// `oa-bus skill`. Before that release it must be ahead of the manifest; once
-// released, the CHANGELOG section for it must list #2624. A release cut
-// before the PR merged fails here, so the constant moves to the next one.
+// #2624: SKILL_COMMAND_MIN_BUS must name a bus release that has
+// `oa-bus skill`. Once the manifest reaches it, the CHANGELOG must list #2624
+// in a release at or below it. Before then nothing is claimed.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,29 +17,31 @@ const released = (
 )["."] as string;
 const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
 
-/** The CHANGELOG section for `v`, or null when it isn't there. */
-function section(v: string): string | null {
-  const start = changelog.indexOf(`## [${v}]`);
-  if (start < 0) return null;
-  const end = changelog.indexOf("\n## [", start + 1);
-  return changelog.slice(start, end < 0 ? undefined : end);
+const num = (v: string) => v.split(".").map(Number);
+const atMost = (a: string, b: string) => {
+  const [x, y] = [num(a), num(b)];
+  for (let i = 0; i < 3; i++)
+    if (x[i] !== y[i]) return (x[i] as number) < (y[i] as number);
+  return true;
+};
+
+/** Versions whose CHANGELOG section cites #2624. */
+function releasesWith2624(): string[] {
+  const out: string[] = [];
+  for (const part of changelog.split(/\n(?=## \[)/)) {
+    const v = /^## \[(\d+\.\d+\.\d+)\]/.exec(part)?.[1];
+    if (v && /#2624\b/.test(part)) out.push(v);
+  }
+  return out;
 }
 
 describe("SKILL_COMMAND_MIN_BUS", () => {
-  it("is the first release that carries oa-bus skill", () => {
-    if (!pinHasSkillCommand(released)) {
-      // Not released yet: no released version may already be at or past it.
-      expect(section(SKILL_COMMAND_MIN_BUS)).toBeNull();
-      return;
-    }
-    const s = section(SKILL_COMMAND_MIN_BUS);
+  it("names a release that has oa-bus skill", () => {
+    if (!pinHasSkillCommand(released)) return; // not reached yet
+    const ok = releasesWith2624().some((v) => atMost(v, SKILL_COMMAND_MIN_BUS));
     expect(
-      s,
-      `CHANGELOG has no ${SKILL_COMMAND_MIN_BUS} section`,
-    ).not.toBeNull();
-    expect(
-      s,
-      `${SKILL_COMMAND_MIN_BUS} shipped without #2624: set SKILL_COMMAND_MIN_BUS to the next release`,
-    ).toMatch(/#2624\b/);
+      ok,
+      `${SKILL_COMMAND_MIN_BUS} is released but #2624 shipped in no release at or below it: raise SKILL_COMMAND_MIN_BUS`,
+    ).toBe(true);
   });
 });

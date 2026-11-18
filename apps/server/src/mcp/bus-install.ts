@@ -49,12 +49,14 @@ export const busNoPin = (why: string): string =>
   `The bus can't be installed from this build of the instance: it has no verified release to check the download against (${cleanWhy(why) || "no reason recorded"}). Do not install it, and do not run \`npx @open-artifacts/bus\` or any other install command: nothing would check what it runs. Tell the person: "This instance can't give me a checked bus release, so I can't install the bus safely. Ask whoever runs the instance to deploy a release build." Then go on with the next step.`;
 
 /**
- * The first bus release with `oa-bus skill` (#2624). An older pin has no such
- * command, so the setup file gives only the save-by-hand text for it.
- * test/node/skill-min-bus.test.ts fails if a release ships without #2624 at or
- * past this version: then move it to the next release.
+ * A bus release that has `oa-bus skill` (#2624). An older pin has no such
+ * command, so the setup file gives only the save-by-hand text for it. Set a
+ * few releases ahead on purpose: releases ship faster than the merge queue, and
+ * until then the save-by-hand text works. test/node/skill-min-bus.test.ts fails
+ * if a release at or past this version shipped before #2624 did. Once #2624 is
+ * released, this can come down to that release.
  */
-export const SKILL_COMMAND_MIN_BUS = "0.201.0";
+export const SKILL_COMMAND_MIN_BUS = "0.210.0";
 
 /** Does the pinned bus have `oa-bus skill`? Plain x.y.z compare; anything else says no. */
 export const pinHasSkillCommand = (version: string): boolean => {
