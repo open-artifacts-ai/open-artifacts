@@ -127,6 +127,14 @@ export const BUS_CAPS = {
    * side without it sees none of these frames.
    */
   runVersion: "run_version",
+  /**
+   * Notice fields (#2768): a deliver frame from the reserved sender may carry
+   * `meta` (kind, ids, user id, `until`) as data beside its text. The hub sends
+   * it only to a socket whose hello listed this cap and lists it in
+   * `hello_ok.caps`: Deliver is a strict object, so an older daemon would refuse
+   * the whole frame. A daemon without it gets the text alone.
+   */
+  noticeMeta: "notice_meta",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

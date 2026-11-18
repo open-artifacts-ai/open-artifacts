@@ -60,6 +60,13 @@ export type BusNotice = {
   threadId?: string;
   commentId?: string;
   /**
+   * #2768: structured fields the agent reads as data, never in `text`: the
+   * person a notice is about (an `ask_later`'s `userId`) and an ISO 8601 UTC
+   * time (`until`). Both reach the daemon in the deliver frame's `meta`.
+   */
+  userId?: string;
+  until?: string;
+  /**
    * `comment` notices (#1752): the comment target (with `artifactId` and
    * `commentId`) whose delivery state the hub updates when the daemon acks
    * or refuses the notice.

@@ -102,7 +102,7 @@ Hub to client (`SERVER_FRAMES`):
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`, and `follow_limit` to a socket whose hello listed `follow`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
-- `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice}`; `from_id` is the sender's agent id.
+- `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice, meta?}`; `from_id` is the sender's agent id. `meta` (#2768, `notice_meta`) is a server notice's structured fields as data: `{kind, artifact_id?, comment_id?, thread_id?, user_id?, until?}` (ids bounded `[A-Za-z0-9_.:-]`, `until` an ISO UTC time). Only from `from_name` `open-artifacts`, and only to a socket whose hello listed `notice_meta`; the hub lists it in `hello_ok.caps`.
 - `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
@@ -259,6 +259,9 @@ addressing.
   (`rename`): the hub sends roster `former_names` and a former-name receipt
   `to_name` only to a socket whose hello listed it (`hasCap`). A decoder
   older than these fields refuses them, failing the whole frame.
+  `BUS_CAPS.noticeMeta` (`notice_meta`, #2768): the hub adds `deliver.meta` to
+  a server notice only for a socket whose hello listed it. With it the 16
+  tokens of `MAX_CAPS` are all in use.
 - Client frames are strict, so a hub decoder older than this change refuses a
   `hello` with `caps`, an `agent_up` with `name_kind` and any `rename`. A
   client sends them only to hubs that accept them.

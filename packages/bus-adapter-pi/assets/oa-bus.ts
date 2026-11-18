@@ -1199,7 +1199,13 @@ export default function oaBus(pi: Pi): void {
           body: stripTerminalControls(String(f.body)),
         });
     try {
-      show("oa_bus", content, { msg_id: msgId, from });
+      // #2768: a server notice's fields ride as data in `details`, never in the text.
+      const meta = f.meta;
+      show("oa_bus", content, {
+        msg_id: msgId,
+        from,
+        ...(meta && typeof meta === "object" ? { meta } : {}),
+      });
     } catch {
       shown.delete(msgId);
       return; // Not handed to Pi: no ack, so the daemon does not call it delivered.
