@@ -58,12 +58,13 @@ function world(prev = true) {
   return { home, fill };
 }
 
-describe("the loop is off in this PR", () => {
-  it("UPDATER_LOOP_ENABLED is false and nothing runs", async () => {
-    expect(UPDATER_LOOP_ENABLED).toBe(false);
+describe("the loop is on, for a version the instance names", () => {
+  it("UPDATER_LOOP_ENABLED is true; with nothing named, nothing swaps", async () => {
+    expect(UPDATER_LOOP_ENABLED).toBe(true);
     const { home } = world();
     setStaged(home, "1.1.0", T);
     const exit = vi.fn();
+    // No `enabled` override: the default is the loop's real switch.
     const u = new Updater({
       home,
       running: "1.0.0",
@@ -76,13 +77,14 @@ describe("the loop is off in this PR", () => {
       log: () => {},
       now: () => T + 10 * QUIET_MS,
     });
-    expect(await u.instruct({ version: "1.1.0" })).toEqual({
-      kind: "disabled",
-    });
     await u.tick();
     await u.tick();
     expect(exit).not.toHaveBeenCalled();
     expect(currentVersion(home)).toBe("1.0.0");
+    // A bad instruction is refused, never staged.
+    expect(await u.instruct({ version: "nope" })).toMatchObject({
+      kind: "refused",
+    });
   });
 });
 

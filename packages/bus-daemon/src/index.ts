@@ -163,7 +163,7 @@ import {
   removeReports,
 } from "./update/reports.ts";
 import { startSelfCheck } from "./update/selfcheck.ts";
-import { Updater } from "./update/updater.ts";
+import { Updater, type UpdaterDeps } from "./update/updater.ts";
 
 export * from "./agents.ts";
 export * from "./attest.ts";
@@ -276,6 +276,10 @@ export type DaemonDeps = {
     deadlineMs?: number;
     /** Tests only: how long a `switching` report waits for the hub's answer. */
     ackMs?: number;
+    /** Tests only: the updater's clock, release fetch and proof check. */
+    now?: () => number;
+    fetch?: UpdaterDeps["fetch"];
+    verify?: UpdaterDeps["verify"];
   };
   /** How often the bound socket is checked; default 60 s. */
   socketCheckMs?: number;
@@ -2886,7 +2890,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     );
   hub.start();
   ev("daemon_start", { version: deps.version, pid: process.pid });
-  // #2552: the self-check after a switch, and the loop (off until PR 6).
+  // #2552: the self-check after a switch, and the loop (on for a version the instance names).
   const upd = deps.update;
   // Decided once: a folder that is not x.y.z (unknown-<ts>, a workspace) never updates.
   const found = upd ? runningVersion(upd.entryFile, home()) : undefined;
@@ -2951,6 +2955,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         log,
         ...(upd.enabled !== undefined ? { enabled: upd.enabled } : {}),
         ...(upd.every ? { every: upd.every } : {}),
+        ...(upd.now ? { now: upd.now } : {}),
+        ...(upd.fetch ? { fetch: upd.fetch } : {}),
+        ...(upd.verify ? { verify: upd.verify } : {}),
       })
     : undefined;
   updaterRef = updater;

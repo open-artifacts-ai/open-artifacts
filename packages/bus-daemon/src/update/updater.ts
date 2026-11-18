@@ -48,10 +48,11 @@ import { unpackTo } from "./tar.ts";
 import { type VerifiedRelease, verifyRelease } from "./verify.ts";
 
 /**
- * The updater loop switch (#2552). PR 4 builds the loop but ships it off:
- * PR 6 flips this, and only an armed, not-off install ever runs it.
+ * The updater loop switch (#2552). On: the loop acts only for a version the
+ * instance names (or the person's own `oa-bus update`), and only an armed,
+ * not-off install ever runs it.
  */
-export const UPDATER_LOOP_ENABLED: boolean = false;
+export const UPDATER_LOOP_ENABLED: boolean = true;
 
 export const TICK_MS = 5000;
 /** A fetch that failed for the network: tried again after this long. */
