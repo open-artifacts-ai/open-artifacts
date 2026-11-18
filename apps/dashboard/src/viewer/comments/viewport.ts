@@ -40,7 +40,7 @@ export function sheetLift(): number {
 
 /** Which edge of the visible area the phone doc toolbar sits on. One switch. */
 export type ToolbarEdge = "top" | "bottom";
-export const TOOLBAR_EDGE: ToolbarEdge = "bottom";
+export const TOOLBAR_EDGE: ToolbarEdge = "top";
 
 /**
  * Where the fixed toolbar goes (layout-viewport px) so it sits on `edge` of
