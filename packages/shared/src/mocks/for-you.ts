@@ -331,6 +331,8 @@ export function createForYouMock(d: Deps): {
           label: p.data.label ?? null,
           createdAt: ago(0),
           lastSentAt: null,
+          needsYou: true,
+          updates: prefs.updates.browser,
         });
         return HttpResponse.json({ id }, { status: 201 });
       }),

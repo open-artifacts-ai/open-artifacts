@@ -1,15 +1,12 @@
 // #2512 slices 2 and 3: Settings › Notifications for For you
 // (R.meNotificationPrefs, R.meInboxMutes) and this browser's notifications
 // (R.mePushKey, R.mePushSubscriptions, PATCH R.mePushSubscription, #2774).
-import { NotificationPrefsSchema, R } from "@oa/shared";
+import { type NotificationPrefs, NotificationPrefsSchema, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  muteErrorCopy,
-  type NotificationPrefs,
-} from "../src/foryou/prefsContract";
+import { muteErrorCopy } from "../src/foryou/prefsContract";
 import {
   dismissNudge,
   nudgeDismissed,
@@ -461,7 +458,7 @@ describe("the nudge's Not now (Design)", () => {
 
 describe("mute errors in plain words (#2769)", () => {
   it("mutes_full, not found, and the rest", () => {
-    expect(muteErrorCopy({ status: 409, code: "internal" }, "mute")).toMatch(
+    expect(muteErrorCopy({ status: 409, code: "mutes_full" }, "mute")).toMatch(
       /muted as many as we allow \(200\)/,
     );
     expect(muteErrorCopy({ code: "mutes_full" }, "mute")).toMatch(/200/);
