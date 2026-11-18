@@ -33,7 +33,12 @@ import { FETCH_MS, hookKey, rlA } from "../targets";
 
 export const A = rlA();
 const KEY = hookKey(A.hookKeyFile);
-export const RUN = randomBytes(3).toString("hex");
+/**
+ * One id per T19 run, shared by every worker and the purge teardown: the
+ * config sets T19_RUN in the main process, so workers inherit it (#2680).
+ */
+process.env.T19_RUN ??= randomBytes(3).toString("hex");
+export const RUN = process.env.T19_RUN;
 /** __Host-oa_session on staging; oa_session on the local pair (a dev Worker). */
 const COOKIE = A.cookieName;
 

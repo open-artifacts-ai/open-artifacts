@@ -43,6 +43,7 @@ type SkillEnv = Pick<
   | "DATA_DOC_BYTES"
   | "HOSTED"
   | "FEATURES"
+  | "DOCS_PREVIEW"
 >;
 
 /**
@@ -208,7 +209,15 @@ export function renderSkill(
  * new ETag rather than a 304 under the same VERSION.
  */
 export const skillEtag = (
-  env: Pick<Env, "PLAN" | "DATA_DOC_BYTES" | "HOSTED" | "FEATURES" | "BUS_HUB">,
+  env: Pick<
+    Env,
+    | "PLAN"
+    | "DATA_DOC_BYTES"
+    | "HOSTED"
+    | "FEATURES"
+    | "BUS_HUB"
+    | "DOCS_PREVIEW"
+  >,
   harness?: Harness | undefined,
 ): string => {
   const { plan, docBytes } = dataLimits(env);

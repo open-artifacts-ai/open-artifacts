@@ -296,6 +296,11 @@ test("an admin never sees another person's personal space", async ({
 test("Remove someone with personal artifacts: Departed lists them, and Transfer gives them to a successor", async ({
   browser,
 }) => {
+  // Every T19 run leaves its people on rl-a, so Settings > Members lists
+  // thousands (GET members was 708 KB at v0.199.2) and each step here pays
+  // for re-rendering them: 36 s on 2026-11-13, 53 s at v0.195.0, then over
+  // 60 s. Room until rl-a stops keeping old runs' people.
+  test.setTimeout(120_000);
   const admin = await person(browser, "admin", "admin");
   const heir = await person(browser, "heir", "member");
   const gone = await person(browser, "gone", "member");

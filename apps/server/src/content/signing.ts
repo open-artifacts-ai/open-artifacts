@@ -189,6 +189,34 @@ export async function verifyContentToken(
   return ok ? { mode, viewer: t.viewer } : null;
 }
 
+/**
+ * Whether `token` is a well-formed, correctly signed frame token for id and v
+ * whose expiry has passed. Only for choosing the message of a refusal: it
+ * never admits anything (the caller still answers an error). The MAC is
+ * checked in constant time, over the same payload as verifyContentToken.
+ */
+export async function isExpiredContentToken(
+  env: Env,
+  token: string,
+  id: string,
+  v: number,
+  now = Date.now(),
+): Promise<boolean> {
+  const two = TOKEN.exec(token);
+  const four = two ? null : VIEWER_TOKEN.exec(token);
+  if (!two && !four) return false;
+  const exp = Number((two ?? four)?.[1]);
+  if (exp > Math.floor(now / 1000)) return false;
+  const viewer: ContentViewer | null = four
+    ? { uid: four[2] ?? "", epoch: Number(four[3]) }
+    : null;
+  return hmacVerify(
+    await signingKey(env),
+    payload(id, v, exp, "frame", viewer),
+    (two ? two[2] : four?.[4]) ?? "",
+  );
+}
+
 /** A frame-mode `{exp}.{sig}` token for id and v (see verifyContentToken). */
 export async function verifyContentPrefix(
   env: Env,
