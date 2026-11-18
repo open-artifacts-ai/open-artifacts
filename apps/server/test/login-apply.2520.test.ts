@@ -62,6 +62,16 @@ function gate(answers: { status: number; body: unknown }[]) {
   return { g, seen };
 }
 
+const UNSURE =
+  "We couldn't confirm the change. It may still apply in a few minutes. Check back before trying again.";
+const auditRows = async (userId: string) =>
+  (
+    await env.DB.prepare(
+      "select count(*) n from audit_events where action = 'settings.change' and actor_id = ?",
+    )
+      .bind(userId)
+      .first<{ n: number }>()
+  )?.n ?? 0;
 const ACCEPT = { status: 202, body: { ok: true, applying: true } };
 const refuse = (status: number, error: string) => ({ status, body: { error } });
 
@@ -155,6 +165,38 @@ describe("with the platform's gate", () => {
     ).toBe(true);
     // The body names no install.
     expect(s.text).not.toMatch(/install/i);
+  });
+
+  it("an accepted change writes one settings.change audit row, by the owner, with the domains and autoJoin", async () => {
+    const { u, cookie } = await owner();
+    const { g } = gate([ACCEPT]);
+    await put(
+      H,
+      cookie,
+      { autoJoin: false, domains: ["Acme.io"] },
+      { LOGIN: g },
+    );
+    const rows = (
+      await env.DB.prepare(
+        "select actor_id, target_type, target_id, detail from audit_events where action = 'settings.change' and actor_id = ?",
+      )
+        .bind(u.userId)
+        .all<{
+          actor_id: string;
+          target_type: string;
+          target_id: string;
+          detail: string;
+        }>()
+    ).results;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      target_type: "settings",
+      target_id: "instance",
+    });
+    expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
+      loginDomains: ["acme.io"],
+      autoJoin: false,
+    });
   });
 
   it("each call carries a fresh nonce; the marker clears when the config shows the change", async () => {
@@ -281,17 +323,24 @@ describe("refusals", () => {
       { status: 202, body: { ok: true } },
       { status: 202, body: { ok: true, applying: true, extra: 1 } },
     ]) {
-      const { cookie } = await owner();
+      const { u, cookie } = await owner();
       const { g } = gate([a]);
       const r = await put(H, cookie, asks, { LOGIN: g });
       expect(r.status, JSON.stringify(a)).toBe(503);
-      expect((await errOf(r)).code).toBe("login_unavailable");
+      const err = await errOf(r);
+      expect(err.code).toBe("login_unavailable");
+      // Unknown whether it applied: never "nothing changed".
+      expect(err.message).toBe(UNSURE);
+      expect(err.message).not.toMatch(/nothing changed/i);
+      expect(await auditRows(u.userId)).toBe(0);
     }
     // A gate that never answers.
-    const { cookie } = await owner();
+    const { u, cookie } = await owner();
     const hang = { fetch: () => new Promise<Response>(() => {}) };
     const r = await put(H, cookie, asks, { LOGIN: hang });
     expect(r.status).toBe(503);
+    expect((await errOf(r)).message).toBe(UNSURE);
+    expect(await auditRows(u.userId)).toBe(0);
   }, 30_000);
 
   it("no gate: today's 409 apply_pending, and nothing is sent", async () => {

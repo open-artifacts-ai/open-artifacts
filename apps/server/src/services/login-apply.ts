@@ -14,6 +14,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
+import { audit, userActor } from "./audit.js";
 import { LoginGateError, loginGateCall } from "./login-gate.js";
 
 /** What the owner asked: the marker an accepted change leaves until the redeploy shows it. */
@@ -90,14 +91,17 @@ function refusal(code: LoginDomainsError, change: LoginChange): ApiError {
 const unavailable = () =>
   new ApiError(
     "login_unavailable",
-    "Couldn't reach the platform to apply this. Nothing changed. Try again shortly.",
+    // We can't know whether the platform applied it (a hang or a 5xx may come after it did).
+    "We couldn't confirm the change. It may still apply in a few minutes. Check back before trying again.",
   );
 
 /**
  * Sends the change; resolves when the platform accepted it (202), after which
- * the redeploy is pending. Throws the ApiError to answer otherwise; any answer
- * that isn't a clean 202 or a known refusal is "login_unavailable", changing
- * nothing here.
+ * the redeploy is pending and a settings.change audit row is written. Throws
+ * the ApiError to answer otherwise; any answer that isn't a clean 202 or a
+ * known refusal is "login_unavailable": nothing is recorded here, but the
+ * platform may still have applied it (a timeout or 5xx can follow an accept),
+ * so the message says so.
  */
 export async function applyLoginChange(
   env: Env,
@@ -127,15 +131,23 @@ export async function applyLoginChange(
     });
     throw unavailable();
   }
-  await stmt(
-    env.DB,
-    "insert into settings (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value",
-  )
-    .bind(
+  // Accepted: the marker and the audit row (the owner is the actor), together.
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      "insert into settings (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value",
+    ).bind(
       MARKER,
       JSON.stringify({ at: Date.now(), domains, autoJoin: change.autoJoin }),
-    )
-    .run();
+    ),
+    audit(
+      env,
+      "settings.change",
+      { type: "settings", id: "instance" },
+      userActor(change.ownerUserId),
+      { detail: { loginDomains: domains, autoJoin: change.autoJoin } },
+    ),
+  ]);
 }
 
 /**

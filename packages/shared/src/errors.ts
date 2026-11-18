@@ -193,7 +193,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   later_used: 409,
   /** GET R.mePushKey on a server with no push key configured. */
   push_unavailable: 404,
-  /** PUT R.loginSettings when the platform can't be reached or answers something unknown (#2520): nothing changed; try again. */
+  /** PUT R.loginSettings when the platform can't be reached or answers something unknown (#2520): the change may still apply; check back before trying again. */
   login_unavailable: 503,
   /** POST R.meInboxMutes with 200 mutes already: unmute one first (#2512). */
   mutes_full: 409,
