@@ -209,6 +209,29 @@ describe("linkRequest (#1822)", () => {
     }
   });
 
+  it("a proof header that is not a proof logs reason malformed with its length only", async () => {
+    const a = await bound(proofOf());
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const bad = "not-a-proof";
+      const r = await linkRequest(
+        spyHubs({ agentByProof: async () => null }).ev,
+        a.userId,
+        mcpReq("x", { [LINK_PROOF_HEADER]: bad }),
+      );
+      expect(Object.keys(r)).toEqual(["req"]);
+      const none = log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("bus_link_lookup_none"));
+      expect(none.map((l) => JSON.parse(l))).toMatchObject([
+        { reason: "malformed", why: `string_len_${bad.length}` },
+      ]);
+      expect(none.join("")).not.toContain(bad);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("#2110: a lookup that never answers waits PROOF_LOOKUP_MS (1.5 s) and logs reason timeout", async () => {
     expect(PROOF_LOOKUP_MS).toBe(1500);
     const proof = proofOf();
