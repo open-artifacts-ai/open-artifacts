@@ -15,6 +15,7 @@ import {
   setStatus,
 } from "../src/services/comments.js";
 import { needsYou } from "../src/services/inbox.js";
+import { laterUntil, sweepInboxLater } from "../src/services/inbox-later.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { hubOf } from "./bus/helpers.js";
@@ -438,5 +439,151 @@ describe("GET R.meInbox: Needs you", () => {
     expect(
       (await inbox(u)).needsYou.filter((i) => i.artifact?.id === id),
     ).toHaveLength(1);
+  });
+});
+
+describe("Later (#2762)", () => {
+  const later = (u: U, id: string, body: unknown = { until: "hour" }) =>
+    api(app, R.meInboxLater(id), u.cookie, { method: "POST", body });
+  const setUntil = (u: U, id: string, at: number) =>
+    E.DB.prepare(
+      "update inbox_later set until = ? where user_id = ? and item_id = ?",
+    )
+      .bind(at, u.userId, id)
+      .run();
+  const meBadge = async (u: U) =>
+    (
+      (await (await api(app, R.me, u.cookie)).json()) as {
+        inbox: { needsYou: number };
+      }
+    ).inbox.needsYou;
+
+  it("laterUntil: an hour on; the next 08:00, today if it is still ahead", () => {
+    const noon = Date.UTC(2026, 10, 18, 12, 0);
+    expect(laterUntil("hour", noon)).toBe(noon + 3_600_000);
+    expect(laterUntil("morning", noon)).toBe(Date.UTC(2026, 10, 19, 8));
+    const five = Date.UTC(2026, 10, 18, 5, 0);
+    expect(laterUntil("morning", five)).toBe(Date.UTC(2026, 10, 18, 8));
+    // In a zone 2 h ahead of UTC, 08:00 there is 06:00 UTC.
+    expect(laterUntil("morning", five, 120)).toBe(Date.UTC(2026, 10, 18, 6));
+  });
+
+  it.each(["hour", "morning"] as const)(
+    "%s: the item leaves Needs you for Later, with its time, and the bell count drops",
+    async (until) => {
+      const u = await mk(`l-${until}`);
+      const id = await mkArtifact([u]);
+      const t = await ask(id, [u]);
+      const itemId = `ask:${t.comments[0]?.id}`;
+      expect(await meBadge(u)).toBe(1);
+      const before = Date.now();
+      const r = await later(u, itemId, { until });
+      expect(r.status).toBe(200);
+      const item = (await r.json()) as {
+        id: string;
+        later?: { until: string; used: boolean };
+      };
+      expect(item.id).toBe(itemId);
+      expect(item.later?.used).toBe(true);
+      expect(Date.parse(item.later?.until as string)).toBeGreaterThan(before);
+      if (until === "hour")
+        expect(Date.parse(item.later?.until as string)).toBeLessThanOrEqual(
+          Date.now() + 3_600_000,
+        );
+      const inb = await inbox(u);
+      expect(inb.needsYou.filter((i) => i.id === itemId)).toEqual([]);
+      expect(inb.later.map((i) => i.id)).toEqual([itemId]);
+      expect(inb.later[0]?.later?.used).toBe(true);
+      expect(inb.counts.needsYou).toBe(0);
+      expect(await meBadge(u)).toBe(0);
+      // The ask itself is untouched: still open in the asks index.
+      const open = await E.DB.prepare(
+        "select open from artifact_asks where comment_id = ? and addressee = ?",
+      )
+        .bind(t.comments[0]?.id, u.userId)
+        .first<{ open: number }>();
+      expect(open?.open).toBe(1);
+    },
+  );
+
+  it("a second put-off is 409 later_used", async () => {
+    const u = await mk("l-twice");
+    const id = await mkArtifact([u]);
+    const t = await ask(id, [u]);
+    const itemId = `ask:${t.comments[0]?.id}`;
+    expect((await later(u, itemId)).status).toBe(200);
+    const again = await later(u, itemId, { until: "morning" });
+    expect(again.status).toBe(409);
+    expect(
+      ((await again.json()) as { error: { code: string } }).error.code,
+    ).toBe("later_used");
+  });
+
+  it("after its time the item returns on top, marked backFromLater, and cannot be put off again", async () => {
+    const u = await mk("l-back");
+    const id = await mkArtifact([u]);
+    const first = await ask(id, [u], "first question");
+    const second = await ask(id, [u], "second question");
+    const firstId = `ask:${first.comments[0]?.id}`;
+    expect((await later(u, firstId)).status).toBe(200);
+    await setUntil(u, firstId, Date.now() - 1_000);
+    const inb = await inbox(u);
+    expect(inb.later).toEqual([]);
+    expect(inb.needsYou.map((i) => i.id)).toEqual([
+      firstId,
+      `ask:${second.comments[0]?.id}`,
+    ]);
+    expect(inb.needsYou[0]).toMatchObject({
+      backFromLater: true,
+      later: { used: true },
+    });
+    expect(inb.counts.needsYou).toBe(2);
+    expect(await meBadge(u)).toBe(2);
+    expect((await later(u, firstId)).status).toBe(409);
+  });
+
+  it("only a Needs-you item of mine: an update, someone else's and an unknown id are 404", async () => {
+    const u = await mk("l-404");
+    const id = await mkArtifact([u, other]);
+    const t = await ask(id, [other]);
+    expect((await later(u, `ask:${t.comments[0]?.id}`)).status).toBe(404);
+    expect((await later(u, "ask:nothing")).status).toBe(404);
+    expect((await later(u, "reply:nothing")).status).toBe(404);
+    const bad = await later(u, "ask:x", { until: "tomorrow" });
+    expect(bad.status).toBe(400);
+  });
+
+  it("a personal token is refused, like the read routes", async () => {
+    const u = await mk("l-pat");
+    const id = await mkArtifact([u]);
+    const t = await ask(id, [u]);
+    const pat = (await createPat(E, u.userId, "later")).token;
+    const r = await api(app, R.meInboxLater(`ask:${t.comments[0]?.id}`), pat, {
+      method: "POST",
+      body: { until: "hour" },
+    });
+    expect(r.status).toBe(404);
+    expect((await mine(u, id)).length).toBe(1);
+  });
+
+  it("the sweep drops rows for items that are gone, and keeps the open ones", async () => {
+    const u = await mk("l-sweep");
+    const id = await mkArtifact([u]);
+    const open = await ask(id, [u], "still open");
+    const closed = await ask(id, [u], "will close");
+    for (const t of [open, closed])
+      expect((await later(u, `ask:${t.comments[0]?.id}`)).status).toBe(200);
+    await E.DB.prepare(
+      "update artifact_asks set open = 0 where comment_id = ? and addressee = ?",
+    )
+      .bind(closed.comments[0]?.id, u.userId)
+      .run();
+    await sweepInboxLater(E, Date.now());
+    const left = (
+      await E.DB.prepare("select item_id from inbox_later where user_id = ?")
+        .bind(u.userId)
+        .all<{ item_id: string }>()
+    ).results.map((r) => r.item_id);
+    expect(left).toEqual([`ask:${open.comments[0]?.id}`]);
   });
 });

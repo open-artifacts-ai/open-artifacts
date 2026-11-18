@@ -20,6 +20,7 @@ import {
   vi,
 } from "vitest";
 import { createApp } from "../src/app.js";
+import { callerOf } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
@@ -44,6 +45,7 @@ import {
   takeBackAsk,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
+import { deferItem } from "../src/services/inbox.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { connectedMachine, FakeHubs } from "./comment-hub.js";
@@ -1463,6 +1465,58 @@ describe("ask_answered notice (#1535)", () => {
     expect(n.text).toContain(`(version ${n.version})`);
     expect(n.text).toContain(n.url);
     expect(n.text).toContain(`Thread ${t.id}, comment ${cid}.`);
+  });
+
+  it("Later tells the asking agent only, with fixed text and the ids (#2762)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(owner, s.id);
+    bus.clear();
+    const until = Date.now();
+    await deferItem(
+      E,
+      callerOf(viewer.member) as never,
+      `ask:${cid}`,
+      "hour",
+      until,
+    );
+    const sent = bus.sent.filter((x) => x.notice.kind === "ask_later");
+    // The owner's Claude only; the editor's Codex hears nothing.
+    expect(sent).toHaveLength(1);
+    const { userId, notice: n } = sent[0] as (typeof sent)[number];
+    expect(userId).toBe(owner.userId);
+    expect(n.to).toEqual({ namespace: "ns-owner", name: "Claude" });
+    expect(n.coalesceKey).toBe(`${s.id}:${cid}:later`);
+    const at = new Date(until + 3_600_000)
+      .toISOString()
+      .slice(0, 16)
+      .replace("T", " ");
+    expect(n.text).toContain(`after ${at} UTC`);
+    expect(n.text).toContain(`Thread ${t.id}, comment ${cid}.`);
+    // A person's ask has no agent to tell.
+    bus.clear();
+    const mine = await addThread(
+      E,
+      { id: s.id, format: "html", currentVersion: 1 } as never,
+      { kind: "user", id: owner.userId, typed: true },
+      view(owner),
+      {
+        anchor: NOTE,
+        body: "Which?",
+        ask: {
+          question: "Which?",
+          options: OPTS,
+          to: [{ key: viewer.userId }],
+        },
+      },
+      { moderator: true },
+    );
+    await deferItem(
+      E,
+      callerOf(viewer.member) as never,
+      `ask:${mine.comments[0]?.id}`,
+      "hour",
+    );
+    expect(bus.sent.filter((x) => x.notice.kind === "ask_later")).toEqual([]);
   });
 
   it("a changed answer sends again under the ask's key; the same option again sends nothing", async () => {
