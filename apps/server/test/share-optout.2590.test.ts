@@ -282,3 +282,134 @@ describe("the email and the opt-out", () => {
     });
   });
 });
+
+describe("the recipient's undo (#2653)", () => {
+  const form = (body: Record<string, string>) =>
+    app.fetch(
+      new Request(`${APP}${SHARE_OPTOUT_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(body),
+      }),
+      env as Env,
+      ctx,
+    );
+  const undo = (t: string) => form({ t, action: "undo" });
+  const optOut = (t: string) => form({ t });
+  const rowsFor = (hash: string | null) =>
+    env.DB.prepare(
+      "select actor_id, detail from audit_events where action = 'settings.change' and instr(detail, ?) > 0",
+    )
+      .bind(hash)
+      .all<{ actor_id: string | null; detail: string }>();
+
+  it("the done page offers Undo; Undo removes only that address's row and says you'll get the emails again", async () => {
+    const email = uniq("un", "gmail.com");
+    const other = uniq("ot", "gmail.com");
+    const t = await signOptoutToken(env, email);
+    const ot = await signOptoutToken(env, other);
+    const done = await (await optOut(t)).text();
+    expect(done).toContain(
+      "You won&#39;t get emails from Open Artifacts again.",
+    );
+    expect(done).toContain('name="action" value="undo"');
+    expect(done).toContain(">Undo</button>");
+    await optOut(ot);
+    expect(await suppressed(email)).toBe(true);
+    const r = await undo(t);
+    expect(r.status).toBe(200);
+    const html = await r.text();
+    expect(html).toContain("You&#39;ll get these emails again.");
+    expect(html).not.toContain("<button");
+    expect(await suppressed(email)).toBe(false);
+    // Another address is untouched.
+    expect(await suppressed(other)).toBe(true);
+    // An opt-out again works, and so does undoing again.
+    await optOut(t);
+    expect(await suppressed(email)).toBe(true);
+    expect((await undo(t)).status).toBe(200);
+    expect(await suppressed(email)).toBe(false);
+  });
+
+  it("is idempotent, and audits once per row actually removed: the hash, by the recipient, never the address", async () => {
+    const email = uniq("au", "gmail.com");
+    const t = await signOptoutToken(env, email);
+    const hash = (await addressHash(email)) as string;
+    await optOut(t);
+    await undo(t);
+    await undo(t);
+    const rows = (await rowsFor(hash)).results;
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
+      by: "recipient",
+      optoutRemoved: hash,
+    });
+    expect(rows[0]?.detail).not.toContain(email);
+    // Undoing an address that never opted out writes nothing.
+    const never = uniq("nv", "gmail.com");
+    await undo(await signOptoutToken(env, never));
+    expect(
+      (await rowsFor((await addressHash(never)) as string)).results,
+    ).toEqual([]);
+  });
+
+  it("a later visit to the same link, while opted out, shows the page with Undo, and a GET changes nothing", async () => {
+    const email = uniq("lv", "gmail.com");
+    const t = await signOptoutToken(env, email);
+    const path = `${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(t)}`;
+    // Not opted out: the confirm page.
+    expect(await (await hit("GET", path)).text()).toContain(
+      "Stop emails from Open Artifacts?",
+    );
+    await optOut(t);
+    const g = await hit("GET", path);
+    const html = await g.text();
+    expect(html).toContain(
+      "You won&#39;t get emails from Open Artifacts again.",
+    );
+    expect(html).toContain('name="action" value="undo"');
+    // A GET, even one that asks for the undo, never mutates.
+    await hit("GET", `${path}&action=undo`);
+    await hit("GET", path);
+    expect(await suppressed(email)).toBe(true);
+    // The Undo from that page works.
+    await undo(t);
+    expect(await suppressed(email)).toBe(false);
+    expect(await (await hit("GET", path)).text()).toContain(
+      "Stop emails from Open Artifacts?",
+    );
+  });
+
+  it("a bad or missing token is refused, and the opt-out stays", async () => {
+    const email = uniq("bt", "gmail.com");
+    const t = await signOptoutToken(env, email);
+    await optOut(t);
+    for (const bad of [
+      `${t.slice(0, -3)}abc`,
+      "garbage",
+      "",
+      `v2.${t.split(".").slice(1).join(".")}`,
+    ]) {
+      const r = await undo(bad);
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("This link is not valid");
+    }
+    // Another address's valid token can't remove this one.
+    await undo(await signOptoutToken(env, uniq("zz", "gmail.com")));
+    expect(await suppressed(email)).toBe(true);
+    // The token in the URL with no action is still an opt-out, not an undo.
+    await form({ t: "x" });
+    expect(await suppressed(email)).toBe(true);
+  });
+
+  it("no other way in: there is no admin route for it", async () => {
+    const r = await app.fetch(
+      new Request(`${APP}/api/v1/settings/outside-share-optouts`, {
+        method: "DELETE",
+      }),
+      env as Env,
+      ctx,
+    );
+    expect(r.status).toBe(404);
+  });
+});

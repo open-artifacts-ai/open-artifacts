@@ -298,8 +298,6 @@ describe("never on self-host, or with the switch off", () => {
 describe("the install's own page", () => {
   it("an install token (v1) always gets the per-team wording, with the platform's list on or off, hosted or not", async () => {
     const { signOptoutToken } = await import("../src/email/share-optout.js");
-    const t = await signOptoutToken(env, uniq("pg", "gmail.com"));
-    const path = `/auth/unsubscribe/shares?t=${encodeURIComponent(t)}`;
     const base = direct({}) as Env;
     for (const e of [
       base,
@@ -307,6 +305,10 @@ describe("the install's own page", () => {
       { ...base, ...HOSTED, OPTOUT_PLATFORM: undefined } as Env,
       { ...base, ...HOSTED, HOSTED: undefined } as Env,
     ]) {
+      // A fresh address each time: the POST below opts it out, and a later GET
+      // of the same link shows the done page (with Undo, #2653).
+      const t = await signOptoutToken(env, uniq("pg", "gmail.com"));
+      const path = `/auth/unsubscribe/shares?t=${encodeURIComponent(t)}`;
       const html = await (
         await app.fetch(new Request(`${APP}${path}`), e, ctx)
       ).text();

@@ -87,6 +87,9 @@ export const OPTOUT_COPY = {
   doneTitle: "You won't get emails from {{org}} again.",
   doneBody:
     "Pages shared with you still open when you log in. We just won't email you about them.",
+  undoButton: "Undo",
+  undoneTitle: "You'll get these emails again.",
+  undoneBody: "We'll email you when someone at {{org}} shares a page with you.",
   badTitle: "This link is not valid",
   badBody:
     "This link doesn't work. Open the most recent email from us and use the link there.",
