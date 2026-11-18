@@ -11,6 +11,7 @@ import {
   type MemberPatch,
   type MemberRemovedDetails,
   type MemberStatus,
+  type Role,
   type Settings,
   type SettingsPatch,
 } from "@oa/shared";
@@ -28,7 +29,7 @@ import {
 } from "drizzle-orm";
 import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { isOrgAdmin } from "../auth/policy.js";
+import { isGuestRole, isOrgAdmin } from "../auth/policy.js";
 import {
   type EffectivePlan,
   effectivePlan,
@@ -481,7 +482,7 @@ async function invited(
           recipient: email,
           appHost: env.APP_HOST,
           signIn: signInMethods,
-          guest: row.role === "guest",
+          guest: isGuestRole(row.role as Role),
         }),
       {
         kind: "invite",
