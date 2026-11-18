@@ -1,12 +1,13 @@
 // #2590 / PR #2649: the "Don't email me again" page against the real server.
 // The confirm page's form POST carries no X-OA-Request header, so it must get
 // past the server's CSRF middleware in a real browser (Chromium and WebKit),
-// even with a signed-in session cookie. Also writes the pages and the share
-// email as 390 px shots, light and dark, to SHOTS_DIR when it is set.
+// even with a signed-in session cookie. Also writes the pages as 390 px shots,
+// light and dark, to SHOTS_DIR when it is set. The share email's dark-mode
+// contrast is checked in apps/server/test/email-dark.2649.test.ts.
+
 import { createHash, createHmac, hkdfSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { R } from "@oa/shared";
 import type { Page, Request, TestInfo } from "@playwright/test";
 import { APP, expect, freshEmail, loginAs, test } from "./fixtures";
 
@@ -132,84 +133,6 @@ test.describe("share opt-out page (#2590)", () => {
     }
     await page.goto(link("nope"));
     await shot(page, info, "optout-bad-link");
-  });
-
-  test("the share email with its footer, at 390 wide, readable in light and dark", async ({
-    page,
-  }, info) => {
-    await loginAs(page, freshEmail("optout"), "member");
-    const t = mint(freshEmail("optout"));
-    // The install's own name, as the opt-out pages show it (one source: orgLabel).
-    const settings = await page.request.get(`${APP}${R.settings}`);
-    const name = ((await settings.json()) as { name: string }).name;
-    // The server's own template, rendered from source.
-    const src = new URL(
-      "../../../server/src/email/templates.ts",
-      import.meta.url,
-    );
-    const m = (await import(/* @vite-ignore */ src.href)) as {
-      outsideShareEmail: (p: unknown) => { html: string };
-    };
-    const { html } = m.outsideShareEmail({
-      inviter: "Sam Rivera",
-      instance: name,
-      recipient: "guest@example.org",
-      appHost: "oa.example.com",
-      signIn: ["email"],
-      title: "Q3 launch plan",
-      path: "/a/Zk3m9qLw",
-      senderEmail: "sam@acme.test",
-      optOutUrl: `https://oa.example.com${PATH}?t=${encodeURIComponent(t)}`,
-    });
-    await page.setContent(html);
-    await expect(page.getByRole("link", { name: /again/ })).toContainText(name);
-
-    // WCAG contrast of the button and the footer, from computed colors.
-    for (const scheme of SCHEMES) {
-      await page.emulateMedia({ colorScheme: scheme });
-      const r = await page.evaluate((dark) => {
-        const rgb = (c: string) =>
-          (c.match(/[\d.]+/g) ?? []).slice(0, 4).map(Number) as number[];
-        const lum = ([r, g, b]: number[]) => {
-          const f = (v: number) => {
-            const c = (v ?? 0) / 255;
-            return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-          };
-          return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
-        };
-        const ratio = (a: number[], b: number[]) => {
-          const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
-          return ((x as number) + 0.05) / ((y as number) + 0.05);
-        };
-        const cs = (sel: string) =>
-          getComputedStyle(document.querySelector(sel) as Element);
-        const body = rgb(cs("body").backgroundColor);
-        // A transparent body shows the canvas: white in light, near-black in dark.
-        const page =
-          body.length === 4 && body[3] === 0
-            ? dark
-              ? [18, 18, 18]
-              : [255, 255, 255]
-            : body;
-        const btn = cs("a.oa-btn");
-        const foot = cs("p.oa-foot");
-        const link = cs("p.oa-foot a");
-        return {
-          buttonText: ratio(rgb(btn.color), rgb(btn.backgroundColor)),
-          buttonVsPage: ratio(rgb(btn.backgroundColor), page),
-          footer: ratio(rgb(foot.color), page),
-          link: ratio(rgb(link.color), page),
-        };
-      }, scheme === "dark");
-      console.log(`email contrast ${scheme}: ${JSON.stringify(r)}`);
-      expect(r.buttonText, `${scheme} button text`).toBeGreaterThanOrEqual(4.5);
-      expect(r.buttonVsPage, `${scheme} button vs page`).toBeGreaterThanOrEqual(
-        3,
-      );
-      expect(r.footer, `${scheme} footer`).toBeGreaterThanOrEqual(4.5);
-      expect(r.link, `${scheme} opt-out link`).toBeGreaterThanOrEqual(4.5);
-    }
-    await shot(page, info, "optout-email");
   });
 });
 
