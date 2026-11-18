@@ -487,6 +487,8 @@ export const ArtifactAgentSchema = z.object({
   machine: z.string().nullable().optional(),
   /** The owner's public name for another member's agent; null for the viewer's own. */
   owner: z.string().nullable().optional(),
+  /** #2577: what asking this agent does for the viewer here and now: "listening" (it hears them: their own agents always, or an owner who lists them), "held" (the request waits for the owner to allow it), "off" (the owner's agents hear nobody outside; a mention is refused). Absent for a guest or signed-out viewer. */
+  askState: z.enum(["listening", "held", "off"]).optional(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
 
