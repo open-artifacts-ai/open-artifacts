@@ -26,7 +26,7 @@ import {
   storedShare,
 } from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
-import { emailEnabled, sendEmail } from "../email/send.js";
+import { EmailSkipped, emailEnabled, sendEmail } from "../email/send.js";
 import {
   addressHash,
   optoutUrl,
@@ -359,17 +359,17 @@ async function emailShare(
       return { emailed: false, notEmailed: "skipped" };
     }
     // Hosted, once the platform has switched it on (#2652): the platform's
-    // list is the source of truth and is asked before every outside email;
-    // no answer, or a mint refused over its daily cap, means no email (fail
-    // closed). The link is the platform's own unsubscribe page, carrying the
-    // token it minted for this email.
-    let optOutUrl = "";
+    // list is the source of truth and is asked before every outside email,
+    // once the daily limits have passed (a refused email never spends a
+    // mint); no answer, or a mint refused over its daily cap, means no email
+    // (fail closed). The link is the platform's own unsubscribe page,
+    // carrying the token it minted for this email.
     const hostedWide = outside && hostedOptoutOn(env);
-    if (outside && hostedWide) {
-      const skip = (reason: string) => {
-        logInfo("share_email_skipped", { reason, artifactId: artifact.id });
-        return { emailed: false, notEmailed: "skipped" as const };
-      };
+    const skip = (reason: string): never => {
+      logInfo("share_email_skipped", { reason, artifactId: artifact.id });
+      throw new EmailSkipped(reason);
+    };
+    const platformLink = async (): Promise<string> => {
       const h1 = await optoutHash(env, email);
       if (!h1) return skip("optout_unconfigured");
       try {
@@ -377,9 +377,9 @@ async function emailShare(
           return skip("platform_opted_out");
         const token = await optoutPlatform.impl.mint(env, h1);
         const url = platformUnsubscribeUrl(env, token);
-        if (!url) return skip("optout_unconfigured");
-        optOutUrl = url;
+        return url ?? skip("optout_unconfigured");
       } catch (e) {
+        if (e instanceof EmailSkipped) throw e;
         logWarn("optout_platform_failed", e, { artifactId: artifact.id });
         const why = e instanceof OptoutUnavailableError ? e.why : "";
         return skip(
@@ -390,9 +390,11 @@ async function emailShare(
               : "optout_unavailable",
         );
       }
-    } else if (outside) {
-      optOutUrl = optoutUrl(env.APP_HOST, await signOptoutToken(env, email));
-    }
+    };
+    const localOptOutUrl =
+      outside && !hostedWide
+        ? optoutUrl(env.APP_HOST, await signOptoutToken(env, email))
+        : "";
     const hosted = env.HOSTED === "1";
     // No user row. An outside address (#2590) gets the outside email, under
     // its own daily limits (apart from the usual ones; the share is saved
@@ -400,12 +402,13 @@ async function emailShare(
     // Access install) gets the normal share email, with its role line.
     const day = new Date().toISOString().slice(0, 10);
     const trial = planOfMember(user)?.tier === "trial";
-    const outcome: { limited?: boolean; reason?: string } = {};
+    const outcome: { limited?: boolean; reason?: string; skipped?: boolean } =
+      {};
     const sent = await sendEmail(
       env,
       user.id,
       email,
-      () =>
+      async () =>
         outside
           ? outsideShareEmail({
               inviter: senderName(user),
@@ -417,7 +420,7 @@ async function emailShare(
               path: viewerPath(artifact.id),
               signIn: reach.methods,
               cantSignIn: reach.recipient?.reason,
-              optOutUrl,
+              optOutUrl: hostedWide ? await platformLink() : localOptOutUrl,
               hostedWide,
             })
           : shareEmail({
@@ -463,6 +466,7 @@ async function emailShare(
       },
     );
     if (sent) return { emailed: true };
+    if (outcome.skipped) return { emailed: false, notEmailed: "skipped" };
     if (!outcome.limited) return { emailed: false };
     // The number a member_limit or instance_limit refusal hit, for the page.
     if (outcome.reason === "member_limit")

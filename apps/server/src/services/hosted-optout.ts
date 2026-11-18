@@ -11,7 +11,12 @@
 // - a self-hosted install never calls any of it.
 // It rides the platform's LoginGate (ctx.props.LOGIN). Off until the platform
 // sets OPTOUT_PLATFORM=on on the install, so merging changes nothing on hosted.
-import { keyId, publicFromPkcs8, signRequest } from "@oa/auth-core";
+import {
+  keyId,
+  normalizeEmail,
+  publicFromPkcs8,
+  signRequest,
+} from "@oa/auth-core";
 import {
   OPTOUT_CHECK_PATH,
   OPTOUT_MINT_PATH,
@@ -137,7 +142,7 @@ export const hostedOptoutOn = (env: Env): boolean =>
   env.HOSTED === "1" && env.OPTOUT_PLATFORM === "on";
 
 /**
- * h1 = HMAC-SHA256(OPTOUT_HASH_KEY, lowercased trimmed address), lowercase
+ * h1 = HMAC-SHA256(OPTOUT_HASH_KEY, address in normalizeEmail's form (trimmed, lowercased)), lowercase
  * hex. Null when the key is not set: the caller fails closed.
  */
 export async function optoutHash(
@@ -146,6 +151,10 @@ export async function optoutHash(
 ): Promise<string | null> {
   const key = env.OPTOUT_HASH_KEY?.trim();
   if (!key) return null;
+  // The local list's normal form (auth-core normalizeEmail), so every install
+  // and the platform hash one address one way. Not an address: no hash.
+  const address = normalizeEmail(email);
+  if (!address) return null;
   const enc = new TextEncoder();
   const k = await crypto.subtle.importKey(
     "raw",
@@ -154,11 +163,7 @@ export async function optoutHash(
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    k,
-    enc.encode(email.trim().toLowerCase()),
-  );
+  const sig = await crypto.subtle.sign("HMAC", k, enc.encode(address));
   return [...new Uint8Array(sig)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");

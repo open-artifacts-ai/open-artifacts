@@ -23,6 +23,7 @@ import {
   optoutPlatform,
   optoutTimeout,
 } from "../src/services/hosted-optout.js";
+import { OUTSIDE_EMAILS_PER_MEMBER_PER_DAY } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import { fetchAndWait, login } from "./helpers.js";
@@ -96,7 +97,7 @@ async function world(over: Partial<Env>) {
     expect(r.status).toBe(200);
     return ShareResultSchema.parse(await r.json());
   };
-  return { m, e, share };
+  return { m, e, share, member };
 }
 const links = (html: string | undefined) =>
   [...(html ?? "").matchAll(/href="([^"]+)"/g)].map((x) => x[1] ?? "");
@@ -110,6 +111,10 @@ describe("before an outside share email (hosted, the switch on)", () => {
     const h1 = await optoutHash(e, to);
     expect(h1).toMatch(/^[0-9a-f]{64}$/);
     expect(await optoutHash(e, ` ${to.toUpperCase()} `)).toBe(h1);
+    expect(await optoutHash(e, " A@B.com ")).toBe(
+      await optoutHash(e, "a@b.com"),
+    );
+    expect(await optoutHash(e, "not an address")).toBeNull();
     expect(calls).toEqual({ check: [h1], mint: [h1] });
     expect(JSON.stringify(calls)).not.toContain(to);
     const mail = m.sent.find((x) => x.to === to);
@@ -122,6 +127,52 @@ describe("before an outside share email (hosted, the switch on)", () => {
     expect(mail?.text).toContain(`Don't email me again:\n${url}`);
     expect(mail?.html).toContain(">Don&#39;t email me again</a>");
     expect(mail?.text).not.toContain("Don't email me from");
+  });
+
+  it("the platform is asked only after the daily limits pass: a limited email spends no check and no mint", async () => {
+    const calls = fake();
+    const { share, member } = await world(HOSTED);
+    const day = new Date().toISOString().slice(0, 10);
+    await env.DB.prepare(
+      "insert into counters (key, n, day) values (?, ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
+    )
+      .bind(`email:out:u:${member.id}`, OUTSIDE_EMAILS_PER_MEMBER_PER_DAY, day)
+      .run();
+    expect(await share(uniq("out", "gmail.com"))).toMatchObject({
+      emailed: false,
+      notEmailed: "member_limit",
+    });
+    expect(calls).toEqual({ check: [], mint: [] });
+  });
+
+  it("an email the platform's list or a failed mint stops gives its daily slot back", async () => {
+    const taken = async (userId: string) =>
+      (
+        await env.DB.prepare("select n from counters where key = ? and day = ?")
+          .bind(`email:out:u:${userId}`, new Date().toISOString().slice(0, 10))
+          .first<{ n: number }>()
+      )?.n ?? 0;
+    fake({
+      async check() {
+        return true;
+      },
+    });
+    const a = await world(HOSTED);
+    expect(await a.share(uniq("out", "gmail.com"))).toMatchObject({
+      emailed: false,
+      notEmailed: "skipped",
+    });
+    expect(await taken(a.member.id)).toBe(0);
+    fake({
+      async mint() {
+        throw new OptoutUnavailableError("capped");
+      },
+    });
+    const b = await world(HOSTED);
+    expect(await b.share(uniq("out", "gmail.com"))).toMatchObject({
+      notEmailed: "skipped",
+    });
+    expect(await taken(b.member.id)).toBe(0);
   });
 
   it("opted out hosted-wide: saved, not emailed, skipped; no token is minted; the log has the reason", async () => {
