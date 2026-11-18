@@ -560,6 +560,8 @@ export async function allow(
   now = Date.now(),
 ): Promise<AllowResult> {
   const req = await requestOf(env, receiverId, requestId);
+  // How wide the allow is (a grant's reach, not an access level).
+  const grant = body.level;
   // The receiver must still be able to open the page: else the request is
   // not theirs to answer, and what was held for them is withdrawn.
   if (!(await receiverCanOpen(env, receiverId, req.artifact_id))) {
@@ -572,15 +574,15 @@ export async function allow(
     throw new ApiError("not_found", NO_HELD);
   }
   const open = await pageIsOpen(env, req.artifact_id);
-  if (body.level === "page" && open)
+  if (grant === "page" && open)
     throw new ApiError(
       "bad_request",
       "The list does not apply on a page open to guests or to anyone with the link: allow once",
     );
   let until = 0;
   let space: { id: string; name: string } | null = null;
-  if (body.level === "page") until = now + LISTEN_PAGE_MS;
-  if (body.level === "space") {
+  if (grant === "page") until = now + LISTEN_PAGE_MS;
+  if (grant === "space") {
     space = await spaceOf(env, req.artifact_id);
     if (!space)
       throw new ApiError("bad_request", "This page is not in a shared space");
@@ -590,14 +592,14 @@ export async function allow(
         "The list does not apply on a page open to guests or to anyone with the link: allow once",
       );
   }
-  if (body.level === "space" || body.level === "all") {
+  if (grant === "space" || grant === "all") {
     until = body.until ?? 0;
     if (until <= now || until > now + LISTEN_MAX_MS)
       throw new ApiError("bad_request", "`until` is at most a year from now");
   }
   // Once and this page need no passkey. All pages and a whole space do, and a
   // member without a usable passkey cannot make them at all (409 no_passkey).
-  if (body.level === "all" || body.level === "space") {
+  if (grant === "all" || grant === "space") {
     if (!(await hasPasskey(env, receiverId, now)))
       throw new ApiError("no_passkey", "Add a passkey in your settings first");
     if (!body.assertion)
@@ -606,7 +608,7 @@ export async function allow(
       env,
       receiverId,
       req.sender_id,
-      listenBinding(body.level, until, space?.id),
+      listenBinding(grant, until, space?.id),
       body.assertion,
       now,
     );
@@ -719,7 +721,7 @@ export async function allow(
       await openAskRow(env, req.artifact_id, row.comment_id, receiverId, c);
     result.sent += rel.keys.length;
   }
-  if (body.level !== "once") {
+  if (grant !== "once") {
     const exists = await stmt(
       env.DB,
       `select id from agent_listens where owner_id = ?1 and member_id = ?2 and removed_at is null
@@ -728,10 +730,10 @@ export async function allow(
       .bind(
         receiverId,
         req.sender_id,
-        body.level,
-        body.level === "all"
+        grant,
+        grant === "all"
           ? ""
-          : body.level === "space"
+          : grant === "space"
             ? (space?.id ?? "")
             : req.artifact_id,
       )
@@ -753,16 +755,16 @@ export async function allow(
           newId(),
           receiverId,
           req.sender_id,
-          body.level,
-          body.level === "page" ? req.artifact_id : null,
+          grant,
+          grant === "page" ? req.artifact_id : null,
           until,
-          body.level === "all"
+          grant === "all"
             ? "allow_all"
-            : body.level === "space"
+            : grant === "space"
               ? "allow_space"
               : "allow_page",
           now,
-          body.level === "space" ? (space?.id ?? null) : null,
+          grant === "space" ? (space?.id ?? null) : null,
         )
         .run();
     await audit(
@@ -770,7 +772,7 @@ export async function allow(
       "agent_listens.add",
       { type: "user", id: req.sender_id },
       userActor(receiverId),
-      { detail: { level: body.level, until, artifactId: req.artifact_id } },
+      { detail: { level: grant, until, artifactId: req.artifact_id } },
     ).run();
   }
   await audit(
@@ -780,7 +782,7 @@ export async function allow(
     userActor(receiverId),
     {
       detail: {
-        level: body.level,
+        level: grant,
         artifactId: req.artifact_id,
         sent: result.sent,
         changed: result.changed,
