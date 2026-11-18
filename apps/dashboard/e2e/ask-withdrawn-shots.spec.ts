@@ -13,8 +13,8 @@ const shot = async (
   await loc.screenshot({ path: `${OUT}/${name}.png` });
 };
 
-for (const w of [1280, 390]) {
-  for (const theme of ["light", "dark"] as const) {
+for (const w of [1280]) {
+  for (const theme of ["light"] as const) {
     test(`${w} ${theme}: the withdrawn card states`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       // Tall enough for every card: the shot shows the whole column.

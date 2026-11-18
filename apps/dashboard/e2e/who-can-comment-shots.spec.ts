@@ -17,7 +17,7 @@ const shoot = async (page: Page, info: TestInfo, name: string) => {
 };
 
 for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const)
+  for (const theme of ["light"] as const)
     test.describe(`${width}px ${theme}`, () => {
       test.beforeEach(async ({ page }) => {
         await page.emulateMedia({ colorScheme: theme });

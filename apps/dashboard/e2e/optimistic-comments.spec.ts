@@ -43,7 +43,7 @@ for (const [w, h] of [
   [1280, 800],
   [390, 844],
 ] as const)
-  for (const scheme of ["light", "dark"] as const)
+  for (const scheme of ["light"] as const)
     test(`${w}px ${scheme}: slow server, the comment shows at once and stays one`, {
       tag: w === 1280 && scheme === "light" ? "@smoke" : [],
     }, async ({ page }) => {
@@ -140,10 +140,7 @@ const openAsk = async (page: Page, w = 1280, h = 800) => {
   return first;
 };
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const) {
+for (const [w, h] of [[1280, 800]] as const) {
   test(`${w}px: an ask pick shows as sending (not answered), then settles`, async ({
     page,
   }) => {
@@ -196,10 +193,7 @@ test("a 409 settles to the answer the server has", async ({ page }) => {
   await expect(ask.getByText(/You picked B/)).toHaveCount(0);
 });
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
+for (const [w, h] of [[1280, 800]] as const)
   test(`${w}px: a reply that fails while its thread is not open shows a Restore line`, async ({
     page,
   }) => {

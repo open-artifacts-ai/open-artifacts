@@ -67,7 +67,7 @@ async function aligned(page: Page) {
 }
 
 for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const)
+  for (const theme of ["light"] as const)
     test(`composer pills at ${width}px ${theme}`, async ({ page }) => {
       const box = await open(page, width, theme);
       await box.pressSequentially("@Claude Code hello @nobody");

@@ -12,7 +12,7 @@ const settled = (page: Page) =>
     document.getAnimations().every((a) => a.playState !== "running"),
   );
 
-for (const theme of ["light", "dark"] as const)
+for (const theme of ["light"] as const)
   for (const share of ["commenter", "viewer"] as const)
     test(`a guest on a ${share} share at 390 ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });

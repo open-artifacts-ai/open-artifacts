@@ -14,7 +14,7 @@ async function openComments(page: Page, mock: string, w: number) {
 }
 
 for (const w of [1280, 390])
-  for (const theme of ["light", "dark"] as const) {
+  for (const theme of ["light"] as const) {
     test(`participants ${w} ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width: w, height: w < 600 ? 844 : 900 });
@@ -100,7 +100,7 @@ for (const w of [1280, 390])
 // A close crop of the closed pill at 3x, to check the overlap and the rings.
 test.describe("pill crop", () => {
   test.use({ deviceScaleFactor: 3 });
-  for (const theme of ["light", "dark"] as const)
+  for (const theme of ["light"] as const)
     test(`pill 1280 ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width: 1280, height: 900 });

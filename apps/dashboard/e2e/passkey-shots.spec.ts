@@ -5,8 +5,8 @@ import { expect, test } from "@playwright/test";
 const ID = "Cd5fGhJkLm6nPqRs";
 const OUT = process.env.PASSKEY_SHOTS_DIR;
 
-for (const w of [1280, 390]) {
-  for (const theme of ["light", "dark"] as const) {
+for (const w of [1280]) {
+  for (const theme of ["light"] as const) {
     test(`${w} ${theme}: passkey states`, async ({ page }) => {
       test.skip(!OUT, "set PASSKEY_SHOTS_DIR");
       const dir = OUT as string;

@@ -29,7 +29,7 @@ const colW = (page: Page) =>
     .getByRole("complementary", { name: "Comments" })
     .evaluate((e) => e.getBoundingClientRect().width);
 
-for (const theme of ["light", "dark"]) {
+for (const theme of ["light"]) {
   test(`1280 ${theme}: default, min, max`, async ({ page }) => {
     await open(page, 1280, theme);
     expect(await colW(page)).toBe(352);

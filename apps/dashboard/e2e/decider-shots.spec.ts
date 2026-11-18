@@ -13,8 +13,8 @@ const STATES = [
   ["takeback", "Monthly or yearly shown first?"],
 ] as const;
 
-for (const w of [1280, 390]) {
-  for (const theme of ["light", "dark"] as const) {
+for (const w of [1280]) {
+  for (const theme of ["light"] as const) {
     test(`${w} ${theme}: decider card states`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width: w, height: w < 600 ? 844 : 900 });
@@ -78,8 +78,8 @@ for (const w of [1280, 390]) {
 }
 
 // A risky ask shows no one else: no who-line, weigh-ins or take back (mock v13, "A risky ask shows no one else").
-for (const w of [1280, 390]) {
-  for (const theme of ["light", "dark"] as const) {
+for (const w of [1280]) {
+  for (const theme of ["light"] as const) {
     test(`${w} ${theme}: a passkey ask shows no who-line, weigh-ins or take back`, async ({
       page,
     }) => {

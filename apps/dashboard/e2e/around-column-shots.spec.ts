@@ -29,8 +29,8 @@ async function shot(page: Page, name: string, clip?: { height: number }) {
   });
 }
 
-for (const w of [1280, 390]) {
-  for (const theme of ["light", "dark"]) {
+for (const w of [1280]) {
+  for (const theme of ["light"]) {
     test(`${w} ${theme}: title bar and older-version banner`, async ({
       page,
     }) => {

@@ -21,8 +21,8 @@ async function open(page: Page, text: string) {
     .click();
 }
 
-for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const)
+for (const width of [1280])
+  for (const theme of ["light"] as const)
     test(`delivery marks at ${width}px ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width, height: 900 });

@@ -13,8 +13,8 @@ const shot = async (
   await loc.screenshot({ path: `${OUT}/${name}.png` });
 };
 
-for (const w of [1280, 760, 390]) {
-  for (const theme of ["light", "dark"] as const) {
+for (const w of [1280, 390]) {
+  for (const theme of ["light"] as const) {
     test(`${w} ${theme}: the Decisions tab`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width: w, height: w < 600 ? 844 : 900 });

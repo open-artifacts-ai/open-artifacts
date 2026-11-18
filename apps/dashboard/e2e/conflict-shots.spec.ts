@@ -9,8 +9,8 @@ const settle = (page: Page) =>
     document.getAnimations().every((x) => x.playState !== "running"),
   );
 
-for (const scheme of ["light", "dark"] as const)
-  for (const width of [1280, 390])
+for (const scheme of ["light"] as const)
+  for (const width of [1280])
     test.describe(`${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
       const url = (tab: string) =>

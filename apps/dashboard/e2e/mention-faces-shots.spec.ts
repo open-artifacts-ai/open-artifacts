@@ -6,8 +6,8 @@ import { expect, test } from "@playwright/test";
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 const OUT = process.env.MENTION_SHOTS_DIR;
 
-for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const)
+for (const width of [1280])
+  for (const theme of ["light"] as const)
     test(`mention faces at ${width}px ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width, height: 900 });

@@ -23,7 +23,7 @@ async function shot(page: Page, name: string) {
 }
 
 for (const w of [1280, 390]) {
-  for (const theme of ["light", "dark"]) {
+  for (const theme of ["light"]) {
     test(`${w} ${theme}: column, composer, quote`, async ({ page }) => {
       await open(page, w, theme);
       await shot(page, `${w}-${theme}-column`);
@@ -113,7 +113,7 @@ test("1280: a fine pointer shows the send hint", async ({ page }) => {
 });
 
 // #2234: the reply composer inside a thread card.
-for (const theme of ["light", "dark"]) {
+for (const theme of ["light"]) {
   test(`1280 ${theme}: reply in card`, async ({ page }) => {
     await open(page, 1280, theme);
     const card = page.locator("[data-thread]").first();

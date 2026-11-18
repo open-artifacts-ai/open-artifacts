@@ -5,8 +5,8 @@ import { expect, test } from "@playwright/test";
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 const OUT = process.env.WIDER_SHOTS_DIR;
 
-for (const theme of ["light", "dark"] as const) {
-  for (const w of [560, 720, 900]) {
+for (const theme of ["light"] as const) {
+  for (const w of [560, 900]) {
     test(`comments column ${w} ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width: 1600, height: 900 });

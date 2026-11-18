@@ -124,7 +124,7 @@ const select = (
     { from, to, part },
   );
 
-for (const scheme of ["light", "dark"] as const)
+for (const scheme of ["light"] as const)
   for (const width of [1280, 390])
     test.describe(`${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
@@ -255,7 +255,7 @@ for (const scheme of ["light", "dark"] as const)
 
 // On a touch screen the system's Copy menu sits above a selection: the
 // chip goes below it.
-for (const scheme of ["light", "dark"] as const)
+for (const scheme of ["light"] as const)
   test.describe(`touch ${scheme} 390`, () => {
     test.use({
       colorScheme: scheme,

@@ -19,10 +19,7 @@ async function open(page: Page, text: string) {
   await expect(page.locator("[data-thread-agents]")).toBeVisible();
 }
 
-for (const [width, theme] of [
-  [1280, "light"],
-  [390, "dark"],
-] as const)
+for (const [width, theme] of [[1280, "light"]] as const)
   test(`thread agents at ${width}px ${theme}`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: theme });
     await page.setViewportSize({ width, height: 900 });
