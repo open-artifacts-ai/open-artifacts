@@ -237,12 +237,18 @@ async function seed(
   },
 ) {
   for (const userId of userIds) {
-    if (it.kind === "ask")
+    if (it.kind === "ask" || it.kind === "later")
       await env.DB.prepare(
         `insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm)
          values (?, ?, ?, ?, 1, 0, ?, '{}', '2026-11-18T10:00:00Z', 0)`,
       )
-        .bind(it.artifactId, it.threadId, it.key.slice(4), userId, it.excerpt)
+        .bind(
+          it.artifactId,
+          it.threadId,
+          it.kind === "later" ? (it.key.split(":")[2] ?? "") : it.key.slice(4),
+          userId,
+          it.excerpt,
+        )
         .run();
     else if (it.kind === "update")
       await env.DB.prepare(
@@ -1087,11 +1093,61 @@ describe("per-browser switches, Updates, mutes and Back from later (design v10)"
     expect(await pendingCount(u.userId)).toBe(1);
   });
 
+  it("a put-off item whose time has come is pushed once; a closed ask, an old return and a returned one are not", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, { browserAllAsks: false });
+    const { sent } = fakePush();
+    const later = (id: string, until: number) =>
+      env.DB.prepare(
+        "insert into inbox_later (user_id, item_id, until, used, created_at) values (?, ?, ?, 1, ?)",
+      )
+        .bind(u.userId, `ask:${id}`, until, T0 - 3_600_000)
+        .run();
+    const ask = (id: string, open: number) =>
+      env.DB.prepare(
+        `insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm)
+         values (?, 'thl', ?, ?, ?, 0, 'Still there?', '{"kind":"user","ref":"x","name":"Scout"}', '2026-11-18T10:00:00Z', 0)`,
+      )
+        .bind(PUB, id, u.userId, open)
+        .run();
+    await ask("l-ok", 1);
+    await ask("l-closed", 0);
+    await ask("l-old", 1);
+    await ask("l-future", 1);
+    await later("l-ok", T0 - 1000);
+    await later("l-closed", T0 - 1000);
+    await later("l-old", T0 - 7 * 3600_000);
+    await later("l-future", T0 + 3_600_000);
+    await drainPush(E, T0);
+    const mine = () => sent.filter((x) => x.url === b.body.endpoint);
+    expect(mine()).toHaveLength(1);
+    expect(JSON.parse(await decrypt((mine()[0] as Sent).body, b)).href).toBe(
+      `/a/${PUB}?thread=thl`,
+    );
+    // Once: the next tick does not queue it again.
+    await drainPush(E, T0 + 2 * BUNDLE_MS);
+    expect(mine()).toHaveLength(1);
+    const claimed = await env.DB.prepare(
+      "select item_id from inbox_later where user_id = ? and pushed_at is not null",
+    )
+      .bind(u.userId)
+      .all<{ item_id: string }>();
+    expect(claimed.results.map((r) => r.item_id).sort()).toEqual([
+      "ask:l-closed",
+      "ask:l-ok",
+    ]);
+    // The future one goes when its time comes.
+    await drainPush(E, T0 + 3_600_000 + 1000);
+    expect(mine()).toHaveLength(2);
+  });
+
   it("Back from later is queued like an ask and kept by the waiting-only filter, which is for asks", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E, { browserAllAsks: false });
     const { sent } = fakePush();
-    await queueBackFromLater(E, u.userId, item("later:x2"), T0);
+    const lx = item(`later:ask:lx2:${T0}`);
+    await seed([u.userId], { ...lx, kind: "later" });
+    await queueBackFromLater(E, u.userId, lx, T0);
     await drainPush(E, T0);
     const mine = sent.filter((x) => x.url === b.body.endpoint);
     expect(mine).toHaveLength(1);

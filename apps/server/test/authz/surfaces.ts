@@ -1753,6 +1753,24 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // #2762: an allowed caller gets 400 for a bad `until` before any lookup (a
+  // capped caller's 404 is the cap's, so a 404 could not tell them apart).
+  "POST /api/v1/me/inbox/:id/later": {
+    refuse: {
+      req: async () => ({
+        path: "/api/v1/me/inbox/ask%3Anone/later",
+        body: { until: "never" },
+      }),
+      allow: code("bad_request"),
+    },
+    real: {
+      req: () => ({
+        path: "/api/v1/me/inbox/ask%3Anone/later",
+        body: { until: "never" },
+      }),
+      allow: code("bad_request"),
+    },
+  },
   "POST /api/v1/me/inbox/read-all": {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
@@ -2499,6 +2517,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
   ["GET /api/v1/me/inbox", U, [200]],
   ["POST /api/v1/me/inbox/read", U],
+  ["POST /api/v1/me/inbox/:id/later", U],
   ["POST /api/v1/me/inbox/read-all", U, [200]],
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/me/inbox/mutes", U, [200]],

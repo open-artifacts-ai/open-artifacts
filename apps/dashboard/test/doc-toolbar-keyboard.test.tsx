@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   phoneToolbarHidden,
   sheetLift,
+  toolbarEdge,
+  toolbarTop,
   trackViewportVar,
   useKeyboardOpen,
 } from "../src/viewer/comments/viewport";
@@ -85,5 +87,124 @@ describe("phone doc toolbar (#2276)", () => {
     t.dispatchEvent(new Event("scroll"));
     expect(kb()).toBe("44px");
     stop();
+  });
+
+  it("publishes the visible area's top (--oa-vv-top), panned or not", () => {
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(844);
+    const stop = trackViewportVar();
+    const top = () =>
+      document.documentElement.style.getPropertyValue("--oa-vv-top");
+    const bottom = () =>
+      document.documentElement.style.getPropertyValue("--oa-vv-bottom");
+    expect(top()).toBe("0px");
+    expect(bottom()).toBe("844px");
+    t.height = 500;
+    t.dispatchEvent(new Event("resize"));
+    expect(top()).toBe("0px");
+    expect(bottom()).toBe("500px");
+    t.offsetTop = 300;
+    t.dispatchEvent(new Event("scroll"));
+    expect(top()).toBe("300px");
+    // Independent of innerHeight: a collapsed Safari bar changes it.
+    vi.stubGlobal("innerHeight", 900);
+    t.dispatchEvent(new Event("scroll"));
+    expect(bottom()).toBe("800px");
+    stop();
+    expect(top()).toBe("");
+    expect(bottom()).toBe("");
+  });
+  it("places the bar on the chosen edge of the visible area", () => {
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(500);
+    expect(toolbarEdge("top")).toEqual({ top: 0 });
+    expect(toolbarEdge("bottom")).toEqual({ bottom: 344 });
+    t.offsetTop = 300;
+    expect(toolbarEdge("top")).toEqual({ top: 300 });
+    expect(toolbarEdge("bottom")).toEqual({ bottom: 44 });
+    // Panned past the layout viewport's bottom: never a negative lift.
+    t.offsetTop = 400;
+    expect(toolbarEdge("bottom")).toEqual({ bottom: 0 });
+  });
+  it("is shown when scrolled with the keyboard open, hidden when scrolled without", () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(500, 300);
+    const { result } = renderHook(() => useKeyboardOpen());
+    expect(result.current).toBe(true);
+    expect(phoneToolbarHidden(result.current)).toBe(false);
+    act(() => {
+      t.height = 844;
+      t.offsetTop = 300;
+      t.dispatchEvent(new Event("resize"));
+    });
+    expect(phoneToolbarHidden(result.current)).toBe(true);
+  });
+
+  it("top edge: under the header while it shows, at the visible top once it scrolls away", () => {
+    expect(toolbarTop(157, 0)).toBe(157);
+    // Panned part way: the header is still the lower edge.
+    expect(toolbarTop(157, 100)).toBe(157);
+    // Panned past the header: the visible top.
+    expect(toolbarTop(157, 200)).toBe(200);
+    // No header on screen: the visible top.
+    expect(toolbarTop(0, 0)).toBe(0);
+  });
+  it("publishes --oa-bar-top from the header's bottom and the visible top", () => {
+    vi.stubGlobal("innerHeight", 844);
+    const t = vv(844);
+    const header = document.createElement("div");
+    header.className = "oa-vt";
+    let bottom = 157;
+    header.getBoundingClientRect = () => ({ bottom }) as DOMRect;
+    document.body.append(header);
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) =>
+      frames.push(f),
+    );
+    const cancelled = vi.fn();
+    vi.stubGlobal("cancelAnimationFrame", cancelled);
+    const watching = new Set<Element>();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe = (e: Element) => watching.add(e);
+        unobserve = (e: Element) => watching.delete(e);
+        disconnect = () => watching.clear();
+      },
+    );
+    const stop = trackViewportVar();
+    expect([...watching]).toEqual([header]);
+    const bar = () =>
+      document.documentElement.style.getPropertyValue("--oa-bar-top");
+    expect(bar()).toBe("157px");
+    t.offsetTop = 300;
+    t.dispatchEvent(new Event("scroll"));
+    expect(bar()).toBe("300px");
+    // The header moved (the page scrolled): follows on a window scroll,
+    // once per frame however many scrolls came.
+    t.offsetTop = 0;
+    bottom = 40;
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new Event("scroll"));
+    expect(frames).toHaveLength(1);
+    expect(bar()).toBe("300px");
+    frames.shift()?.(0);
+    expect(bar()).toBe("40px");
+    window.dispatchEvent(new Event("scroll"));
+    expect(frames).toHaveLength(1);
+    // The title bar remounts: the observer moves to the new node.
+    frames.length = 0;
+    const next = document.createElement("div");
+    next.className = "oa-vt";
+    next.getBoundingClientRect = () => ({ bottom: 90 }) as DOMRect;
+    header.replaceWith(next);
+    t.dispatchEvent(new Event("scroll"));
+    expect([...watching]).toEqual([next]);
+    expect(bar()).toBe("90px");
+    stop();
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(watching.size).toBe(0);
+    next.remove();
+    expect(bar()).toBe("");
   });
 });

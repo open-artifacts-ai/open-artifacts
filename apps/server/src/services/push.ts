@@ -394,6 +394,7 @@ export async function drainPush(env: Env, now = Date.now()): Promise<number> {
   if (!pushOn(env)) return 0;
   let sent = 0;
   try {
+    await queueLaterReturns(env, now);
     const { results } = await stmt(
       env.DB,
       `select id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, created_at
@@ -454,7 +455,10 @@ async function stillWanted(
     if (lvl?.artifact) readable.add(id);
   }
   const kept = rows.filter((r) => readable.has(r.artifact_id));
-  const asks = kept.filter((r) => r.kind === "ask");
+  // "ask:<comment id>" and "later:ask:<comment id>:<until>" both wait on an open ask.
+  const cid = (r: Pending): string =>
+    r.kind === "later" ? (r.key.split(":")[2] ?? "") : r.key.slice(4);
+  const asks = kept.filter((r) => r.kind === "ask" || r.kind === "later");
   const updates = kept.filter((r) => r.kind === "update");
   const open = new Map<string, string>();
   if (asks.length > 0) {
@@ -463,9 +467,9 @@ async function stillWanted(
       `select comment_id, question from artifact_asks
         where addressee = ?1 and open = 1 and comment_id in (select value from json_each(?2))`,
     )
-      .bind(userId, JSON.stringify(asks.map((r) => r.key.slice(4))))
+      .bind(userId, JSON.stringify(asks.map(cid)))
       .all<{ comment_id: string; question: string | null }>();
-    for (const r of results) open.set(`ask:${r.comment_id}`, r.question ?? "");
+    for (const r of results) open.set(r.comment_id, r.question ?? "");
   }
   const items = new Map<string, string>();
   if (updates.length > 0) {
@@ -480,8 +484,8 @@ async function stillWanted(
   }
   const out: Pending[] = [];
   for (const r of kept) {
-    if (r.kind === "ask") {
-      const q = open.get(r.key);
+    if (r.kind === "ask" || r.kind === "later") {
+      const q = open.get(cid(r));
       if (q === undefined) continue;
       out.push({ ...r, excerpt: q ? itemExcerpt(q) : r.excerpt });
     } else if (r.kind === "update") {
@@ -594,6 +598,67 @@ async function drainMember(
     else logWarn("push_send_failed", undefined, { subscription: s.id });
   }
   return ok > 0 ? 1 : 0;
+}
+
+/** A put-off item returns no later than this after its time, or its push is skipped (a long outage). */
+const LATER_WINDOW_MS = 6 * 3600_000;
+
+/**
+ * Items put off with Later (#2762) whose time has come: queue "Back from
+ * later" for push, once each (pushed_at claims the row). Asks only: the
+ * question is read from the open ask; a closed or gone ask queues nothing.
+ * Best effort, never throws.
+ */
+export async function queueLaterReturns(env: Env, now: number): Promise<void> {
+  try {
+    const { results } = await stmt(
+      env.DB,
+      `update inbox_later set pushed_at = ?1
+        where pushed_at is null and until <= ?1 and until > ?2
+          and rowid in (select rowid from inbox_later where pushed_at is null and until <= ?1 and until > ?2 limit 50)
+        returning user_id, item_id, until`,
+    )
+      .bind(now, now - LATER_WINDOW_MS)
+      .all<{ user_id: string; item_id: string; until: number }>();
+    for (const r of results) {
+      if (!r.item_id.startsWith("ask:")) continue;
+      const a = await stmt(
+        env.DB,
+        `select artifact_id, thread_id, question, asker from artifact_asks
+          where comment_id = ?1 and addressee = ?2 and open = 1 limit 1`,
+      )
+        .bind(r.item_id.slice(4), r.user_id)
+        .first<{
+          artifact_id: string;
+          thread_id: string;
+          question: string | null;
+          asker: string | null;
+        }>();
+      if (!a) continue;
+      let actor: StoredActor | null = null;
+      try {
+        actor = a.asker ? (JSON.parse(a.asker) as StoredActor) : null;
+      } catch {
+        actor = null;
+      }
+      await queueBackFromLater(
+        env,
+        r.user_id,
+        {
+          key: `later:${r.item_id}:${r.until}`,
+          artifactId: a.artifact_id,
+          threadId: a.thread_id,
+          askerName: actor?.agent?.name ?? actor?.name ?? "Someone",
+          excerpt: a.question ?? "",
+          askerRef: actor?.agent ? actor.ref : null,
+          agentKey: actor?.agent?.identity?.identityId ?? null,
+        },
+        now,
+      );
+    }
+  } catch (e) {
+    logWarn("push_later_failed", e);
+  }
 }
 
 /**

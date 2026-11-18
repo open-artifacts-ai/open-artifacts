@@ -33,6 +33,9 @@ CREATE TABLE `push_subscriptions` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `push_subscriptions_endpoint_unique` ON `push_subscriptions` (`endpoint`);--> statement-breakpoint
 CREATE INDEX `push_subscriptions_user_idx` ON `push_subscriptions` (`user_id`);--> statement-breakpoint
+ALTER TABLE `inbox_later` ADD `pushed_at` integer;--> statement-breakpoint
+CREATE INDEX `inbox_later_due_idx` ON `inbox_later` (`until`);--> statement-breakpoint
+UPDATE `inbox_later` SET `pushed_at` = `until` WHERE `until` <= cast(strftime('%s', 'now') as integer) * 1000;--> statement-breakpoint
 CREATE TRIGGER `users_end_push`
 AFTER UPDATE OF `status`, `session_epoch` ON `users`
 WHEN new.`status` <> old.`status` OR new.`session_epoch` <> old.`session_epoch`

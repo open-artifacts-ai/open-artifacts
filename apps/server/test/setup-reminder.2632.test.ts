@@ -194,6 +194,9 @@ describe("Don't remind me (#2632)", () => {
     const q = `${REMIND_OFF_PATH}?t=${encodeURIComponent(t)}`;
     const get = await hit("GET", q);
     expect(get.status).toBe(200);
+    const csp = get.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
     expect(await get.text()).toContain("Don&#39;t remind me");
     expect(await setting(noRemindKey(id))).toBeNull();
     expect(

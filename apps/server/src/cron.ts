@@ -23,6 +23,7 @@ import { sweepAuditEvents } from "./services/audit.js";
 import { sweepPictures } from "./services/comment-pictures.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { pullEmailEvents, sweepEmailEvents } from "./services/email-events.js";
+import { sweepInboxLater } from "./services/inbox-later.js";
 import { drainPush } from "./services/push.js";
 import { checkLatestRelease } from "./services/release.js";
 import { sendSetupReminders } from "./services/setup-reminder.js";
@@ -322,6 +323,7 @@ function daily(
       purgeDeleted(env, now),
       sweepUploads(env, now),
       sweepPictures(env, now),
+      sweepInboxLater(env, now),
       sweepEmailEvents(env, now),
       sweepUngrantedClients(env, now),
       // Expired OAuth store rows (reads already skip them) and old tombstones.

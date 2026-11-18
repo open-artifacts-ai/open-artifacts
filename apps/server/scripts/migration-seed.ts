@@ -49,6 +49,7 @@ export const SHAPE = {
   held_requests: 500, // #2577: requests to someone else's agent, held for their person
   held_request_items: 800,
   agent_listens: 300,
+  inbox_later: 2_000, // #2762: needs-you items put off once
   inbox_items: 20_000, // #2512 S2: mentions and updates, a few per active member
   data_writes_total: 1, // the install-wide write counter: one row
   tokens: 30_000,
@@ -642,6 +643,20 @@ export const RULES: Record<string, Rule> = {
     },
   },
   // #2512 S2: the For you inbox's stored items; a third already read.
+  inbox_later: {
+    rows: (c) => c.count("inbox_later"),
+    row(i, c) {
+      const u = c.users[(i * 4003) % c.users.length];
+      if (!u) return null;
+      return {
+        user_id: u.id,
+        item_id: `ask:${c.id("cm")}`,
+        until: Date.now() + c.int(24 * 3_600_000),
+        used: 1,
+        created_at: Date.now() - c.int(3_600_000),
+      };
+    },
+  },
   inbox_items: {
     rows: (c) => c.count("inbox_items"),
     row(i, c) {

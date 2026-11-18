@@ -861,6 +861,10 @@ async function startMocks() {
       () => mainHandlers,
     ),
   );
+  // #2508: pictures in comments.
+  extra.push(
+    ...(await import("./mockPictures")).pictureHandlers(mainHandlers, params),
+  );
   await setupWorker(
     ...extra,
     ...mainHandlers,
