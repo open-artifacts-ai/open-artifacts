@@ -571,6 +571,26 @@ describe("the @ list", () => {
     expect(web.querySelector("b")?.parentElement).toHaveClass("flex-col");
   });
 
+  it("people sit under a third heading, after the agents, in one run of ids", () => {
+    menu([
+      agent("Design", null),
+      agent("Web", "Sam", "held"),
+      {
+        key: "person:u_sam",
+        name: "Sam Okafor",
+        online: false,
+      } as ReturnType<typeof agent>,
+    ]);
+    const box = screen.getByRole("listbox");
+    const people = within(box).getByRole("group", { name: "People" });
+    expect(within(people).getByRole("option")).toHaveTextContent("Sam Okafor");
+    expect(screen.getAllByRole("option").map((o) => o.id)).toEqual([
+      "m-0",
+      "m-1",
+      "m-2",
+    ]);
+  });
+
   it("without teammates' askState the menu has no headings", () => {
     menu([agent("Design", null)]);
     expect(screen.queryByRole("group")).toBeNull();

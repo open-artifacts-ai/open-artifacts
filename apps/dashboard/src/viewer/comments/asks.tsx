@@ -1,5 +1,6 @@
 import type {
   ArtifactAgent,
+  CommentAuthor,
   CommentMention,
   CommentNotified,
   Comment as CommentT,
@@ -37,18 +38,22 @@ import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
 import { PasskeyBlocked } from "./PasskeyParts";
 import { passkeyFailure, passkeyLine } from "./passkey";
+import { isPersonKey } from "./people";
 
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
 export type Extras = {
   mentions: KeyRef[];
+  /** PROVISIONAL (#2780): the people @mentioned, by user id. */
+  people?: string[];
   /** #2508: the pictures attached in the box. */
   pictures?: PictureRef[];
 };
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
+  ...(x.people?.length ? { people: x.people } : {}),
   ...(x.pictures?.length ? { pictures: x.pictures } : {}),
 });
 
@@ -1382,6 +1387,8 @@ type MentionedProps = {
     key: string;
     name: string;
     delivery?: DState;
+    /** PROVISIONAL (#2780): a mentioned person, shown with their initials. */
+    person?: CommentAuthor;
   })[];
   guest?: boolean;
   /** #2229: show each mention's delivery in its chip. */
@@ -1432,7 +1439,11 @@ function mentioned(
         data-mention-chip=""
         className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 align-middle text-[var(--oa-accent-fg)]"
       >
-        {face && <PartyFace p={face} guest={guest} />}
+        {face?.person ? (
+          <AuthorFace a={face.person} small />
+        ) : (
+          face && <PartyFace p={face} guest={guest} />
+        )}
         {body.slice(at, end)}
       </span>,
     );
@@ -1597,11 +1608,15 @@ export function MentionMenu({
         if (a.askState !== "off") onPick(a);
       }}
     >
-      {!isUnknown(a) && (
-        <span
-          aria-hidden="true"
-          className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
-        />
+      {isPersonKey(a.key) ? (
+        <AuthorFace a={{ kind: "user", name: a.name, me: false }} small />
+      ) : (
+        !isUnknown(a) && (
+          <span
+            aria-hidden="true"
+            className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
+          />
+        )
       )}
       <span
         className={`min-w-0 flex-1 ${grouped ? "flex flex-col" : "flex items-center gap-2"}`}
@@ -1612,9 +1627,11 @@ export function MentionMenu({
           {rowName(a)}
         </b>
         <span className={`${MUTED} ${grouped ? "" : "shrink-0"}`}>
-          {grouped && !a.owner
-            ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
-            : stateText(a, all)}
+          {isPersonKey(a.key)
+            ? "Person"
+            : grouped && !a.owner
+              ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
+              : stateText(a, all)}
         </span>
       </span>
     </div>
@@ -1631,12 +1648,19 @@ export function MentionMenu({
       {matches.slice(from, to).map((a, j) => row(a, from + j))}
     </fieldset>
   );
+  // Agents first (yours, then teammates'), then people: each run is contiguous.
   const firstTheirs = matches.findIndex((a) => a.owner);
+  const firstPerson = matches.findIndex((a) => isPersonKey(a.key));
+  const end = firstPerson < 0 ? matches.length : firstPerson;
   return (
     <div
       id={id}
       role="listbox"
-      aria-label="Agents on this page"
+      aria-label={
+        matches.some((a) => isPersonKey(a.key))
+          ? "Agents and people"
+          : "Agents on this page"
+      }
       className="rounded-md border border-border bg-background"
     >
       {matches.length === 0 ? (
@@ -1645,8 +1669,11 @@ export function MentionMenu({
         </p>
       ) : grouped ? (
         <>
-          {firstTheirs > 0 && group("Your agents", 0, firstTheirs)}
-          {group("Teammates' agents on this page", firstTheirs, matches.length)}
+          {firstTheirs !== 0 &&
+            group("Your agents", 0, firstTheirs < 0 ? end : firstTheirs)}
+          {firstTheirs >= 0 &&
+            group("Teammates' agents on this page", firstTheirs, end)}
+          {firstPerson >= 0 && group("People", firstPerson, matches.length)}
         </>
       ) : (
         matches.map(row)
