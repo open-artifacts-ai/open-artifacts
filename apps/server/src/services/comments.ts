@@ -63,6 +63,7 @@ import {
 import { decide, heldAfterEdit, recordHolds } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { activation } from "./analytics.js";
+import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
 import {
   addresseeOf,
   addressees,
@@ -652,7 +653,58 @@ async function threadViews(
       ),
     ),
   );
+  await withWaiting(
+    env,
+    viewer,
+    threads.flatMap((t) => t.comments),
+    out.flatMap((t) => t.comments),
+  );
   return out;
+}
+
+/**
+ * #2512: "waiting" on an open ask put to the viewer by the viewer's own agent
+ * while it is blocked on the bus, by the inbox's rule (ask-waiting.ts). One hub
+ * call for the whole list, none when no such ask is in it; everyone else's view
+ * has no field. `stored[i]` is `views[i]`.
+ */
+async function withWaiting(
+  env: Env,
+  viewer: CommentViewer,
+  stored: StoredComment[],
+  views: Comment[],
+): Promise<void> {
+  const me = viewer.userId;
+  if (!me) return;
+  const open: number[] = [];
+  stored.forEach((c, i) => {
+    const a = c.ask;
+    if (
+      a &&
+      !a.answer &&
+      !a.withdrawn &&
+      !a.closed &&
+      views[i]?.ask?.role !== undefined &&
+      ownAgentId(c.author, me) !== undefined
+    )
+      open.push(i);
+  });
+  if (open.length === 0) return;
+  const waiting = await waitingAgents(
+    env,
+    me,
+    open.map((i) => (stored[i] as StoredComment).author),
+  );
+  for (const i of open) {
+    const c = stored[i] as StoredComment;
+    const since = waitingSince(
+      waiting.get(ownAgentId(c.author, me) as string),
+      c.createdAt,
+    );
+    const ask = views[i]?.ask;
+    if (since !== undefined && ask)
+      ask.waitingSince = new Date(since).toISOString();
+  }
 }
 
 /**
@@ -1080,6 +1132,7 @@ async function commentView(
   );
   await fillReplacedTitles(env, [out], viewer);
   await withPictures(env, [out], new Set(maskedFor(c, viewer) ? [c.id] : []));
+  await withWaiting(env, viewer, [c], [out]);
   return out;
 }
 
