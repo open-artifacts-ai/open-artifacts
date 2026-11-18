@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.208.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.207.0...v0.208.0) (2026-11-18)
+
+
+### Features
+
+* **comments:** attach pictures to a comment ([#2508](https://github.com/open-artifacts-ai/open-artifacts/issues/2508) A2) ([#2655](https://github.com/open-artifacts-ai/open-artifacts/issues/2655)) ([ec44898](https://github.com/open-artifacts-ai/open-artifacts/commit/ec448983f7fc16686fdd01347f73717570ba6171))
+* **inbox:** Later on a Needs-you item, once, and the agent is told ([#2762](https://github.com/open-artifacts-ai/open-artifacts/issues/2762)) ([#2766](https://github.com/open-artifacts-ai/open-artifacts/issues/2766)) ([f1f1c60](https://github.com/open-artifacts-ai/open-artifacts/commit/f1f1c60a7de36c6911391ec243e9d32cd1470b04))
+
+
+### Bug Fixes
+
+* **docs:** no new-version prompt for your own doc edits; chip never greys the screen ([#2750](https://github.com/open-artifacts-ai/open-artifacts/issues/2750), [#2751](https://github.com/open-artifacts-ai/open-artifacts/issues/2751)) ([#2754](https://github.com/open-artifacts-ai/open-artifacts/issues/2754)) ([f8c749e](https://github.com/open-artifacts-ai/open-artifacts/commit/f8c749e1670692fad0c11414159028e535ee0c92))
+* **docs:** phone toolbar stays in view and solid; content clears the status bar ([#2753](https://github.com/open-artifacts-ai/open-artifacts/issues/2753)) ([#2760](https://github.com/open-artifacts-ai/open-artifacts/issues/2760)) ([5a8ffa1](https://github.com/open-artifacts-ai/open-artifacts/commit/5a8ffa109f6ca61efacc3149d3102f27833ba5a7))
+* **docs:** show a doc's title once ([#2756](https://github.com/open-artifacts-ai/open-artifacts/issues/2756)) ([#2758](https://github.com/open-artifacts-ai/open-artifacts/issues/2758)) ([15a5e42](https://github.com/open-artifacts-ai/open-artifacts/commit/15a5e42d884213f6d5b2d97ed899ea6f9d13c0b3))
+* **docs:** the save state settles instead of flickering while typing ([#2752](https://github.com/open-artifacts-ai/open-artifacts/issues/2752)) ([#2755](https://github.com/open-artifacts-ai/open-artifacts/issues/2755)) ([810e391](https://github.com/open-artifacts-ai/open-artifacts/commit/810e3915294f2c5e6786bf3c5daf1a3c42605eab))
+* **foryou:** Later sends the browser's time zone ([#2762](https://github.com/open-artifacts-ai/open-artifacts/issues/2762)) ([#2767](https://github.com/open-artifacts-ai/open-artifacts/issues/2767)) ([327c3ea](https://github.com/open-artifacts-ai/open-artifacts/commit/327c3ea59eaa849c4405f52b88446460ddb4b401))
+* **inbox:** a waiting mark never counts from before the ask ([#2761](https://github.com/open-artifacts-ai/open-artifacts/issues/2761)) ([#2763](https://github.com/open-artifacts-ai/open-artifacts/issues/2763)) ([f9b2f11](https://github.com/open-artifacts-ai/open-artifacts/commit/f9b2f116a13ceab88131b267edf41a7143f8eb4a))
+
 ## [0.207.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.206.0...v0.207.0) (2026-11-18)
 
 
