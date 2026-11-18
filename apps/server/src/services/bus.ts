@@ -107,6 +107,8 @@ export type BusHubRpc = {
   installNow(machineId: string): Promise<number>;
   /** #2552: the instance's named version changed; push it to this hub's sockets. */
   runVersionChanged(): Promise<void>;
+  /** #2759: the member saved their prefs; tell their cap'd sockets when quiet hours end. */
+  ownerAwayChanged(): Promise<void>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */

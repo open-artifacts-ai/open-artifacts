@@ -37,7 +37,7 @@ import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
-import { busOn } from "../services/bus.js";
+import { busHub, busOn } from "../services/bus.js";
 import { docsState } from "../services/docs-available.js";
 import {
   deferItem,
@@ -304,7 +304,15 @@ export function mountMe(app: AppType): void {
     } catch {
       throw new ApiError("bad_request", "Invalid JSON body");
     }
-    return c.json(await putPrefs(c.env, user.id, body));
+    const saved = await putPrefs(c.env, user.id, body);
+    // #2759: their own agents on the bus hear of a changed quiet-hours window.
+    // Their own hub only; a failure never fails the save.
+    try {
+      await busHub(c.env, user.id)?.ownerAwayChanged();
+    } catch (e) {
+      logWarn("bus_owner_away_changed_failed", e);
+    }
+    return c.json(saved);
   });
   // #2512 S4: what the caller muted from browser notifications. A mute stops
   // push only. Reading is the caller's own; changing takes a person in a
