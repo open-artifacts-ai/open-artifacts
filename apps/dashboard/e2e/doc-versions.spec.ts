@@ -137,51 +137,61 @@ for (const scheme of ["light", "dark"] as const)
         await expect(row(page, 8)).toContainText("Version 8");
       });
 
-      test("restore goes through the room, then back to the live doc", async ({
-        page,
-      }, info) => {
-        await open(page, info);
-        await row(page, 3).click();
-        // The older version shows what was saved, not the live editor.
-        await expect(page).toHaveURL(new RegExp(`/a/${LANDING}/v/3`));
-        await expect(page.locator(".ProseMirror")).toHaveCount(0);
-        await shot(page, info, `doc-versions-old-${scheme}-${width}.png`);
-        const restore = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" &&
-            r
-              .url()
-              .endsWith(`/api/v1/artifacts/${LANDING}/doc/versions/3/restore`),
-        );
-        await page
-          .getByRole("button", { name: "Restore", exact: true })
-          .click();
-        await restore;
-        await expect(
-          page.getByText(
-            "Restored v3. Nothing is lost: the doc as it was is kept as v6.",
-          ),
-        ).toBeVisible();
-        await expect(page).toHaveURL(new RegExp(`/a/${LANDING}(\\?|$)`));
-        // The room applied v3's content for every editor (the mock room
-        // stands in an older draft for it).
-        await expect(page.locator(".ProseMirror")).toContainText(
-          "The plan has two parts: copy and design.",
-        );
-        await expect(page.locator(".ProseMirror")).not.toContainText(
-          "three parts",
-        );
-        await expect(row(page, 7)).toContainText("Restored v3");
-        // Only Current is highlighted, though the pointer still rests
-        // where Restore was (over an older row).
-        const tint = (v: number) =>
-          row(page, v).evaluate((b) => getComputedStyle(b).backgroundColor);
-        expect(await tint(3)).toBe("rgba(0, 0, 0, 0)");
-        expect(await tint(6)).toBe("rgba(0, 0, 0, 0)");
-        await expect(row(page, 7)).toHaveAttribute("aria-current", "true");
-        await shot(page, info, `doc-versions-restored-${scheme}-${width}.png`);
-        await axe(page);
-      });
+      test(
+        "restore goes through the room, then back to the live doc",
+        {
+          tag: scheme === "light" && width === 1280 ? "@smoke" : [],
+        },
+        async ({ page }, info) => {
+          await open(page, info);
+          await row(page, 3).click();
+          // The older version shows what was saved, not the live editor.
+          await expect(page).toHaveURL(new RegExp(`/a/${LANDING}/v/3`));
+          await expect(page.locator(".ProseMirror")).toHaveCount(0);
+          await shot(page, info, `doc-versions-old-${scheme}-${width}.png`);
+          const restore = page.waitForRequest(
+            (r: Request) =>
+              r.method() === "POST" &&
+              r
+                .url()
+                .endsWith(
+                  `/api/v1/artifacts/${LANDING}/doc/versions/3/restore`,
+                ),
+          );
+          await page
+            .getByRole("button", { name: "Restore", exact: true })
+            .click();
+          await restore;
+          await expect(
+            page.getByText(
+              "Restored v3. Nothing is lost: the doc as it was is kept as v6.",
+            ),
+          ).toBeVisible();
+          await expect(page).toHaveURL(new RegExp(`/a/${LANDING}(\\?|$)`));
+          // The room applied v3's content for every editor (the mock room
+          // stands in an older draft for it).
+          await expect(page.locator(".ProseMirror")).toContainText(
+            "The plan has two parts: copy and design.",
+          );
+          await expect(page.locator(".ProseMirror")).not.toContainText(
+            "three parts",
+          );
+          await expect(row(page, 7)).toContainText("Restored v3");
+          // Only Current is highlighted, though the pointer still rests
+          // where Restore was (over an older row).
+          const tint = (v: number) =>
+            row(page, v).evaluate((b) => getComputedStyle(b).backgroundColor);
+          expect(await tint(3)).toBe("rgba(0, 0, 0, 0)");
+          expect(await tint(6)).toBe("rgba(0, 0, 0, 0)");
+          await expect(row(page, 7)).toHaveAttribute("aria-current", "true");
+          await shot(
+            page,
+            info,
+            `doc-versions-restored-${scheme}-${width}.png`,
+          );
+          await axe(page);
+        },
+      );
 
       test("a reader: no Save version, no Restore", async ({ page }, info) => {
         await open(page, info, "doc-readonly");
