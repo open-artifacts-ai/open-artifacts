@@ -1215,6 +1215,18 @@ export const OnboardingPatchSchema = z.strictObject({
 });
 export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
 
+/** DELETE R.outsideShareOptouts: the address to take off the list (#2653). */
+export const OutsideShareOptoutRemoveSchema = z.strictObject({
+  email: z.string().min(1).max(320),
+});
+export type OutsideShareOptoutRemove = z.infer<
+  typeof OutsideShareOptoutRemoveSchema
+>;
+/** The answer: whether a row was there to remove. */
+export const OutsideShareOptoutRemoveResultSchema = z.strictObject({
+  removed: z.boolean(),
+});
+
 export const SettingsPatchSchema = SettingsSchema.partial().strict();
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 

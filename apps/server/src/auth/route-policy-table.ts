@@ -143,6 +143,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/settings/login": { org: "members.manage" },
   "POST /api/v1/settings/login/first-invite-seen": { org: "members.manage" },
   "PUT /api/v1/settings/login": { org: "login.manage" },
+  // #2653: owner or admin remove an address from the opt-out list.
+  "DELETE /api/v1/settings/outside-share-optouts": { org: "settings.manage" },
   // P3 T9 spaces API: 404 without the spaces feature. Space routes admit any
   // signed-in caller; the service applies the per-space rule (member, the
   // space's manager, or an org admin; 404 otherwise, never 403 except the

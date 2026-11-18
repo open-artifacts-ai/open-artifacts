@@ -1,6 +1,7 @@
 import {
   type DomainUnprovenDetails,
   LoginSettingsPutSchema,
+  OutsideShareOptoutRemoveSchema,
   R,
   SettingsPatchSchema,
 } from "@oa/shared";
@@ -24,6 +25,7 @@ import {
   soloPlan,
 } from "../services/login.js";
 import { patchSettings, settingsView } from "../services/members.js";
+import { removeOutsideOptout } from "../services/outside.js";
 import { spacesOn } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 import { requireManager } from "./members.js";
@@ -73,6 +75,21 @@ export function mountSettings(app: AppType): void {
         ctx: execCtx(c),
       }),
     );
+  });
+
+  // #2653: a way back for someone who opted out by mistake. This install's
+  // list only (email_optouts, by address hash); an opt-out held by the
+  // platform's hosted-wide list isn't touched here.
+  app.delete(R.outsideShareOptouts, async (c) => {
+    const actor = requireManager(c);
+    const { email } = await jsonBody(c, OutsideShareOptoutRemoveSchema);
+    const removed = await removeOutsideOptout(
+      c.env,
+      email,
+      userActor(actor.id),
+    );
+    if (removed === null) throw new ApiError("bad_request", "Not an address");
+    return c.json({ removed });
   });
 
   // #2520: login settings. Owner or admin read; the owner changes them.

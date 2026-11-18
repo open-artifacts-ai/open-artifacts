@@ -8,8 +8,39 @@ import { authConfig } from "../auth/config.js";
 import type { EffectivePlan } from "../billing/plan.js";
 import { readPlan } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
+import { addressHash } from "../email/share-optout.js";
 import type { Env } from "../env.js";
-import { audit } from "./audit.js";
+import { type AuditActor, audit } from "./audit.js";
+
+/**
+ * Takes an address off this install's "Don't email me again" list (#2653), by
+ * the hash of its normalized form, so outside share emails can reach it again.
+ * One batch: the settings.change audit row (the hash only, never the address;
+ * written only when a row is there) and the delete. This install's list only:
+ * a hosted-wide opt-out lives on the platform and isn't touched. Resolves to
+ * whether a row was removed; null for something that isn't an address.
+ */
+export async function removeOutsideOptout(
+  env: Env,
+  email: string,
+  by: AuditActor,
+): Promise<boolean | null> {
+  const hash = await addressHash(email);
+  if (!hash) return null;
+  const [, del] = await env.DB.batch([
+    audit(env, "settings.change", { type: "settings", id: "instance" }, by, {
+      detail: { removedOptout: hash },
+      when: {
+        sql: "exists (select 1 from email_optouts where address_hash = ?)",
+        args: [hash],
+      },
+    }),
+    stmt(env.DB, "delete from email_optouts where address_hash = ?1").bind(
+      hash,
+    ),
+  ]);
+  return (del?.meta.changes ?? 0) > 0;
+}
 
 export const OUTSIDE_SHARING_KEY = "outside_sharing";
 

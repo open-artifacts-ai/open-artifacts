@@ -1856,6 +1856,14 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("reauth_required"),
     },
   },
+  "DELETE /api/v1/settings/outside-share-optouts": {
+    refuse: invalid(),
+    // An address with no row: settings.manage, then nothing to remove.
+    real: {
+      req: () => ({ path: "", body: { email: "nobody@example.net" } }),
+      allow: ok(200),
+    },
+  },
   "PATCH /api/v1/settings": {
     refuse: invalid(),
     // An empty patch: settings.manage, then nothing to change.
@@ -2439,6 +2447,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/settings/login/first-invite-seen", org("members.manage")],
   ["PUT /api/v1/settings/login", org("login.manage")],
   ["PATCH /api/v1/settings", org("settings.manage")],
+  ["DELETE /api/v1/settings/outside-share-optouts", org("settings.manage")],
   ["GET /api/v1/onboarding", org("onboarding.own"), [200]],
   ["PUT /api/v1/onboarding", org("onboarding.own")],
   ["GET /api/v1/spaces", U, [200]],

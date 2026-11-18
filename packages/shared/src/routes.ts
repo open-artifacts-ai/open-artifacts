@@ -241,6 +241,10 @@ export const R = {
   settings: "/api/v1/settings",
   /** GET -> LoginSettings (owner or admin); PUT LoginSettingsPut -> LoginSettings (owner only, needs a fresh login; 403 domain_unproven, 409 apply_pending). #2520 */
   loginSettings: "/api/v1/settings/login",
+  /**
+   * DELETE { email } -> { removed }: an owner or admin takes an address off this install's "Don't email me again" list (#2653), so outside share emails can reach it again. Audited settings.change with the address hash only. Opt-outs held by the platform's hosted-wide list are not touched here.
+   */
+  outsideShareOptouts: "/api/v1/settings/outside-share-optouts",
   /** POST -> 204: marks the first-invite question answered for the caller. #2520 */
   loginFirstInviteSeen: "/api/v1/settings/login/first-invite-seen",
   /**
