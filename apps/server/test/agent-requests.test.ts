@@ -987,6 +987,133 @@ describe("held on every path, and read nowhere (#2577)", () => {
     expect(lines.join("\n")).not.toContain("reply secret");
   });
 
+  describe("the original leak: whatever fails after a held reply is stored, the receiver's agents never read it (#2733)", () => {
+    type Sab = {
+      /** Throw on a D1 statement containing any of these. */
+      sql?: RegExp;
+      /** Throw on these DO methods (the reply's insert and the participant take still run). */
+      rpc?: string[];
+    };
+    const sabotaged = (x: Sab): Env =>
+      ({
+        ...E,
+        ...(x.sql
+          ? {
+              DB: new Proxy(E.DB, {
+                get(t, k) {
+                  if (k === "prepare")
+                    return (q: string) => {
+                      if (x.sql?.test(q)) throw new Error("D1 down");
+                      return t.prepare(q);
+                    };
+                  const v = Reflect.get(t, k);
+                  return typeof v === "function" ? v.bind(t) : v;
+                },
+              }),
+            }
+          : {}),
+        ...(x.rpc
+          ? {
+              ARTIFACT_RUNTIME: new Proxy(E.ARTIFACT_RUNTIME, {
+                get(t, k) {
+                  if (k === "get")
+                    return (id: DurableObjectId) =>
+                      new Proxy(t.get(id) as object, {
+                        get(st, m) {
+                          if (typeof m === "string" && x.rpc?.includes(m))
+                            return async () => {
+                              throw new Error("DO down");
+                            };
+                          const v = Reflect.get(st, m);
+                          return typeof v === "function"
+                            ? (...a: unknown[]) => Reflect.apply(v, st, a)
+                            : v;
+                        },
+                      });
+                  const v = Reflect.get(t, k);
+                  return typeof v === "function" ? v.bind(t) : v;
+                },
+              }),
+            }
+          : {}),
+      }) as Env;
+    // Each step after the insert on its own, then all of them at once.
+    const cases: [string, Sab][] = [
+      [
+        "the decision (the person's list) can't be read",
+        { sql: /agent_listens/ },
+      ],
+      [
+        "the DO hold write and release fail",
+        { rpc: ["commentsHold", "commentsUnhold"] },
+      ],
+      ["the D1 request rows fail", { sql: /held_requests|held_request_items/ }],
+      [
+        "the notice bookkeeping fails",
+        {
+          rpc: [
+            "commentsReplyTargets",
+            "commentsTargetStates",
+            "commentsThreadReplyRefund",
+          ],
+        },
+      ],
+      [
+        "everything after the insert fails",
+        {
+          sql: /agent_listens|held_requests|held_request_items/,
+          rpc: [
+            "commentsHold",
+            "commentsUnhold",
+            "commentsReplyTargets",
+            "commentsTargetStates",
+            "commentsThreadReplyRefund",
+          ],
+        },
+      ],
+    ];
+    it.each(cases)("%s", async (_name, sab) => {
+      const s = await setup();
+      const t = await post(
+        s.id,
+        typed(owner),
+        owner,
+        "ask Claude",
+        mention(s.claude),
+      );
+      bus.sent = [];
+      let reply: Comment | undefined;
+      await errLines(async () => {
+        reply = (await addReply(
+          sabotaged(sab),
+          s.id,
+          t.id,
+          typed(editor),
+          view(editor),
+          "leak canary words",
+          {},
+          { moderator: true },
+        )) as Comment;
+      });
+      // Never delivered, never readable by the receiver's agents, any list.
+      expect(toOwnerAgent(s.id)).toHaveLength(0);
+      const agentLists = JSON.stringify(await listAs(s.id, asAgent(owner)));
+      expect(agentLists).not.toContain("leak canary words");
+      const viaToken = await (
+        await api(
+          app,
+          R.comments(s.id),
+          (
+            await createPat(E, owner.userId, "leak check")
+          ).token,
+        )
+      ).text();
+      expect(viaToken).not.toContain("leak canary words");
+      // The sender and the receiver's person still read it.
+      await maskedAndSeen(s.id, reply?.id as string, "leak canary words");
+    });
+  });
+
   it("a reply that would be delivered but whose hold can't be let go stays masked and undelivered (#2733)", async () => {
     const s = await setup();
     // The owner's agents hear the editor on this page.
