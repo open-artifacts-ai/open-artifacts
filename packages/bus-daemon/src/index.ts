@@ -7,7 +7,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
-import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
+import {
+  claudeSessionsDir,
+  readSessionFile,
+} from "@oa/bus-adapter-claude-code";
 import {
   MIN_PROMPT_ID_VERSION,
   opencodeVersion,
@@ -36,7 +39,10 @@ import {
   BUS_ROUTES,
   type ClientFrame,
   ClientFrameSchema,
+  type DeliverFrame,
   frameId,
+  GUEST_DELIVERY_KINDS,
+  INSTANCE_SENDER_NAME,
   MAX_WAITING_QUERY,
   type SendFrame,
   type ServerFrame,
@@ -52,6 +58,19 @@ import {
   commOf,
   procStartOf,
 } from "./attest.ts";
+import {
+  CLAUDE_GUESTS_MAX,
+  type ClaudeGuest,
+  claudeConfigFile,
+  claudeProjectsDir,
+  findTranscript,
+  GuestRate,
+  mcpEntryNames,
+  readClaudeGuests,
+  toolPrefixOf,
+  usedToolOf,
+  writeClaudeGuests,
+} from "./claude-guests.ts";
 import {
   CLAUDE_LINKS_MAX,
   type ClaudeLink,
@@ -365,6 +384,14 @@ export type DaemonDeps = {
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
     linksFile?: string;
+    /** #2793 S3b: the guests kept across a restart; default ~/.oa-bus/claude-guests.json. */
+    guestsFile?: string;
+    /** #2793 S3b: Claude's transcripts (`<project>/<session id>.jsonl`); default under the Claude config dir. */
+    projectsDir?: string;
+    /** #2793 S3b: Claude's settings file, where the instance's MCP entry is found by address; default ~/.claude.json. */
+    mcpConfigFile?: string;
+    /** #2793 S3b: the most proof_seen frames one link may have acted on a minute; default 10. */
+    guestRatePerMin?: number;
     /** #2806: adopt sessions found only in the sessions dir; default: this is the default home. */
     discover?: boolean;
     /** #2806: the bus home a session's process was started for (procBusHome). */
@@ -1399,9 +1426,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * so dropping it would lose it for good. No frame goes out now. Kept in
    * claude-links.json with the instance, so a restart keeps it too.
    */
-  const holdProof = (want: string, rec: AgentRecord, hash: string) => {
-    const { pid, procStart } = rec;
-    if (pid === undefined || procStart === undefined) return;
+  const stashProof = (
+    want: string,
+    pid: number,
+    procStart: string,
+    hash: string,
+  ) => {
     const same = (e: ClaudeLink) =>
       e.pid === pid &&
       e.procStart === procStart &&
@@ -1416,11 +1446,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       },
       ...saved.filter((e) => !same(e)),
     ].slice(0, CLAUDE_LINKS_MAX);
+    persistLinks();
+  };
+  const holdProof = (want: string, rec: AgentRecord, hash: string) => {
+    const { pid, procStart } = rec;
+    if (pid === undefined || procStart === undefined) return;
+    stashProof(want, pid, procStart, hash);
     log(
       `held a proof for the instance ${want}: session ${rec.ref} has no instance yet`,
     );
     noteUnbound("unmapped_folder", pid);
-    persistLinks();
   };
   /** Binds the proofs held for a session once it is homed on their instance. */
   const claimHeld = (rec: AgentRecord) => {
@@ -1440,12 +1475,26 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     persistLinks();
     for (const h of hit.hashes) sendLink(rec, h);
   };
-  /** A proof for another instance than the session's is dropped here, never offered to any hub. */
-  const dropProof = (want: string, rec: AgentRecord) => {
+  /**
+   * A proof for another instance than the session's is never offered to any
+   * hub. #2793 S3b: for a Claude session and a link that exists, it is KEPT
+   * (in claude-links.json, for that instance only) and sent nothing: it is how
+   * a later proof_seen from that instance is matched to a session that has
+   * used its tools. It binds nothing and makes no guest by itself.
+   */
+  const dropProof = (want: string, rec: AgentRecord, hash?: string) => {
     log(
       `dropped a proof for the instance ${want}: session ${rec.ref} is homed on ${homedOf(rec) ?? "no instance"}`,
     );
     noteUnbound("wrong_instance", rec.pid);
+    if (
+      hash !== undefined &&
+      rec.kind === "claude-code" &&
+      rec.pid !== undefined &&
+      rec.procStart !== undefined &&
+      lanes.get(want) !== undefined
+    )
+      stashProof(want, rec.pid, rec.procStart, hash);
   };
   /** The hashes a replacing record keeps: only those of a record homed on the same instance. */
   const carryLinks = (
@@ -1517,7 +1566,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           continue;
         }
         if (p.instance !== homedOf(rec)) {
-          dropProof(p.instance, rec);
+          dropProof(p.instance, rec, p.hash);
           continue;
         }
         proofIssues.delete(pid);
@@ -1526,6 +1575,297 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         sendLink(rec, p.hash);
       }
     }
+  };
+  // ---------------------------------------------------------------- #2793 S3b
+  // Guests. A Claude Code session homed on one instance joins another as a
+  // GUEST only after it used that instance's tools. The other hub says it saw
+  // a proof it does not know (proof_seen); the daemon matches the hash against
+  // what it holds for THAT instance, checks the session's own transcript for a
+  // tool_use of that instance's MCP entry, and only then registers the guest
+  // (a name and a kind) and binds the hash. Nothing else makes a guest.
+  const guestsFile = cl.guestsFile ?? join(home(), "claude-guests.json");
+  const projectsDir = cl.projectsDir ?? claudeProjectsDir();
+  const mcpConfigFile = cl.mcpConfigFile ?? claudeConfigFile();
+  const guestRate = new GuestRate(cl.guestRatePerMin ?? 10);
+  /** A guest and the ref it is announced under on its instance (`guest:<session ref>`), once announced. */
+  type Guest = ClaudeGuest & { sent?: string; name?: string };
+  const guestKey = (g: ClaudeGuest) => `${g.pid}:${g.procStart}:${g.instance}`;
+  const guestSet = new Map<string, Guest>();
+  /** guest_up ids awaiting the hub's answer, to their guest. */
+  const guestReq = new Map<string, string>();
+  /** Deliveries to a guest the daemon refused, per link. */
+  const guestRefused = new Map<string, number>();
+  const guestSeen = new BoundedMap<string, true>(2_000);
+  let guestsWritten: string | undefined;
+  const persistGuests = () => {
+    const rows: ClaudeGuest[] = [...guestSet.values()].map((g) => ({
+      pid: g.pid,
+      procStart: g.procStart,
+      instance: g.instance,
+    }));
+    const text = JSON.stringify(rows);
+    if (text === guestsWritten) return;
+    try {
+      writeClaudeGuests(guestsFile, rows);
+      guestsWritten = text;
+    } catch (e) {
+      log(`could not save ${guestsFile}: ${errText(e)}`);
+    }
+  };
+  // A restart restores exactly the persisted set: a guest whose session still
+  // runs on an instance still connected. Held proofs create none.
+  {
+    const kept = readClaudeGuests(guestsFile, undefined, log).filter(
+      (g) =>
+        sameProc(g.pid, g.procStart) && lanes.get(g.instance) !== undefined,
+    );
+    for (const g of kept) guestSet.set(guestKey(g), { ...g });
+    guestsWritten = JSON.stringify(kept);
+  }
+  const guestRecOf = (g: ClaudeGuest): AgentRecord | undefined =>
+    agents
+      .all()
+      .find(
+        (a) =>
+          a.kind === "claude-code" &&
+          a.live &&
+          a.pid === g.pid &&
+          a.procStart === g.procStart,
+      );
+  /** Tells the guest's instance its name and kind; again after a /clear moved the ref. Only a ready link. */
+  const announceGuest = (g: Guest) => {
+    const lane = lanes.get(g.instance);
+    const rec = guestRecOf(g);
+    if (!lane || !rec || !lane.guest || !lane.helloed || lane.revoked) return;
+    const ref = `guest:${rec.ref}`;
+    if (ref.length > 128 || g.sent === ref) return;
+    if (g.sent !== undefined)
+      sendOn(lane, {
+        v: 1,
+        id: frameId(),
+        type: "guest_down",
+        agent_ref: g.sent,
+      });
+    const id = frameId();
+    const sent = sendOn(lane, {
+      v: 1,
+      id,
+      type: "guest_up",
+      agent_ref: ref,
+      kind: "claude-code",
+      proposed_name: fitName(rec.sessionName ?? rec.proposedName, 64),
+    });
+    if (!sent) return;
+    g.sent = ref;
+    guestReq.set(id, guestKey(g));
+    while (guestReq.size > 256)
+      guestReq.delete(guestReq.keys().next().value as string);
+  };
+  const bindGuest = (g: Guest, hash: string) => {
+    const lane = lanes.get(g.instance);
+    if (!lane || g.sent === undefined || !lane.link) return;
+    sendOn(lane, {
+      v: 1,
+      id: frameId(),
+      type: "link_bind",
+      agent_ref: g.sent,
+      hash,
+    });
+  };
+  /** The guest ends: its instance is told (when the link is up) and it is forgotten. */
+  const endGuest = (g: Guest, why: string) => {
+    const lane = lanes.get(g.instance);
+    if (g.sent !== undefined && lane?.helloed && lane.guest)
+      sendOn(lane, {
+        v: 1,
+        id: frameId(),
+        type: "guest_down",
+        agent_ref: g.sent,
+      });
+    guestSet.delete(guestKey(g));
+    log(`a guest session on ${g.instance} ended: ${why}`);
+    ev("guest_end", { instance: g.instance });
+    persistGuests();
+  };
+  /** A guest ends with its session, and with its instance's link (revoked or removed). */
+  const sweepGuests = () => {
+    for (const g of [...guestSet.values()]) {
+      const lane = lanes.get(g.instance);
+      if (!lane || lane.revoked) endGuest(g, "its instance is gone");
+      else if (!sameProc(g.pid, g.procStart)) endGuest(g, "its session ended");
+      else announceGuest(g);
+    }
+  };
+  /** The link of `lane` is revoked or dropped for good: its guests go, nothing at home. */
+  const dropGuestsOf = (name: string) => {
+    for (const g of [...guestSet.values()])
+      if (g.instance === name) {
+        guestSet.delete(guestKey(g));
+        ev("guest_end", { instance: name });
+      }
+    persistGuests();
+  };
+  const guestOnLink = (lane: Lane, ref: string): Guest | undefined => {
+    for (const g of guestSet.values())
+      if (g.instance === lane.name && g.sent === ref) return g;
+    return undefined;
+  };
+  const onProofSeen = async (lane: Lane, hash: string): Promise<void> => {
+    // Never the hash or any text in a log line.
+    const ignore = (why: string) =>
+      log(`ignored a proof_seen from ${lane.name}: ${why}`);
+    if (!lane.guest) return ignore("the link did not list guests");
+    if (!guestRate.admit(lane.name)) {
+      ev("guest_rate_capped", { instance: lane.name });
+      return ignore(
+        `over the rate cap (${guestRate.dropped(lane.name)} dropped)`,
+      );
+    }
+    // Only hashes held for THIS instance, never home's or another's.
+    const held = saved.find(
+      (e) =>
+        (e.instance ?? MAIN_INSTANCE) === lane.name && e.hashes.includes(hash),
+    );
+    if (!held) return ignore("no session holds it for this instance");
+    const rec = agents
+      .all()
+      .find(
+        (a) =>
+          a.kind === "claude-code" &&
+          a.live &&
+          a.pid === held.pid &&
+          a.procStart === held.procStart,
+      );
+    if (!rec) return ignore("its session is not running");
+    const home = homedOf(rec);
+    if (home === undefined || home === lane.name)
+      return ignore("the session is not homed on another instance");
+    const g: ClaudeGuest = {
+      pid: held.pid,
+      procStart: held.procStart,
+      instance: lane.name,
+    };
+    const known = guestSet.get(guestKey(g));
+    if (known) {
+      // Already a guest here: one registration, so only the proof is bound again.
+      announceGuest(known);
+      bindGuest(known, hash);
+      return;
+    }
+    if (guestSet.size >= CLAUDE_GUESTS_MAX)
+      return ignore("too many guest sessions");
+    // The session itself must have called this instance's tools.
+    const sess = readSessionFile(claudeSessions.dir, rec.pid);
+    const file =
+      sess.state === "ok"
+        ? findTranscript(projectsDir, sess.rec.sessionId, rec.cwd)
+        : undefined;
+    const prefixes = mcpEntryNames(mcpConfigFile, lane.cfg.hub, rec.cwd).map(
+      toolPrefixOf,
+    );
+    const used =
+      file !== undefined && prefixes.length > 0
+        ? await usedToolOf(file, prefixes)
+        : false;
+    if (!used)
+      return ignore("the session's transcript shows no call of its tools");
+    // Settled while the transcript was read: still the same running session, and still no guest.
+    if (!guestRecOf(g) || guestSet.has(guestKey(g)) || lane.revoked) return;
+    const made: Guest = { ...g };
+    guestSet.set(guestKey(made), made);
+    persistGuests();
+    log(`session ${rec.ref} joined ${lane.name} as a guest`);
+    ev("guest_join", { instance: lane.name });
+    announceGuest(made);
+    bindGuest(made, hash);
+  };
+  /**
+   * What a guest gets from its instance: only a reply, an @mention or the
+   * answer to its own ask, told by the frame's structured `meta.guest`, from
+   * the instance's reserved sender. Anything else, or an unknown kind, is
+   * dropped. Shown as "from <this machine's own name for the instance>".
+   */
+  const guestDeliver = async (
+    lane: Lane,
+    g: Guest,
+    frame: DeliverFrame,
+  ): Promise<void> => {
+    if (!claimMsg(lane, frame.msg_id)) return;
+    const kind = frame.meta?.guest;
+    if (
+      !lane.guest ||
+      frame.from_name !== INSTANCE_SENDER_NAME ||
+      frame.body === undefined ||
+      kind === undefined ||
+      !(GUEST_DELIVERY_KINDS as readonly string[]).includes(kind)
+    ) {
+      guestRefused.set(lane.name, (guestRefused.get(lane.name) ?? 0) + 1);
+      ev("guest_delivery_dropped", { instance: lane.name });
+      log(
+        `dropped a delivery to a guest from ${lane.name}: not a reply, a mention or an answer`,
+      );
+      return;
+    }
+    const ack = () =>
+      sendOn(lane, { v: 1, id: frameId(), type: "ack", msg_id: frame.msg_id });
+    if (guestSeen.get(frame.msg_id)) {
+      ack();
+      return;
+    }
+    const rec = guestRecOf(g);
+    const tell = rec ? notifiers["claude-code"] : undefined;
+    if (!rec || !tell) return;
+    const told = await tell(
+      rec,
+      stripTerminalControls(`from ${lane.name}: ${frame.body}`),
+      frame.msg_id,
+    ).catch(() => false);
+    if (!told) return;
+    guestSeen.set(frame.msg_id, true);
+    ack();
+  };
+  /** Frames about guests, before any routing: true when handled here. */
+  const guestFrame = (lane: Lane, frame: ServerFrame): boolean => {
+    switch (frame.type) {
+      case "proof_seen":
+        void onProofSeen(lane, frame.hash).catch((e) =>
+          log(`proof_seen from ${lane.name}: ${errText(e)}`),
+        );
+        return true;
+      case "deliver": {
+        const g = guestOnLink(lane, frame.to_ref);
+        if (!g) return false;
+        void guestDeliver(lane, g, frame).catch((e) =>
+          log(`delivery to a guest: ${errText(e)}`),
+        );
+        return true;
+      }
+      case "agent_ok": {
+        const g = guestOnLink(lane, frame.agent_ref);
+        if (!g) return false;
+        guestReq.delete(frame.id);
+        g.name = frame.bus_name;
+        return true;
+      }
+      case "error": {
+        const key = guestReq.get(frame.id);
+        if (key === undefined) return false;
+        guestReq.delete(frame.id);
+        const g = guestSet.get(key);
+        if (g) {
+          g.sent = undefined;
+          endGuest(g, `its instance refused it (${frame.code})`);
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  };
+  /** A link dropped: its guests are announced again on the next one. */
+  const guestsLinkDown = (lane: Lane) => {
+    for (const g of guestSet.values())
+      if (g.instance === lane.name) g.sent = undefined;
   };
   /**
    * A Codex `/rename` (#1748): the thread's name in Codex's session index
@@ -1659,6 +1999,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       tellOwed(s.ref);
     }
     claimProofs();
+    sweepGuests();
     let closed = false;
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
@@ -1797,6 +2138,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       log: lane.main ? log : (m) => log(`${lane.name}: ${m}`),
       ...deps.hub,
       onFrame: (frame) => {
+        if (guestFrame(lane, frame)) return;
         if (!routable(lane, frame)) return;
         switch (frame.type) {
           case "deliver":
@@ -1962,6 +2304,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           case "hello_ok":
             // The machine id and label are already in machine.json.
             lane.applyHello(frame.caps, frame.server_version);
+            // #2793 S3b: this link's guests are announced again (the hub kept them; a restart may have found them first).
+            for (const g of guestSet.values())
+              if (g.instance === lane.name) announceGuest(g);
             // The instance's owner hours and update instruction are main's alone.
             if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
             if (lane.main && lane.runCap) {
@@ -2027,6 +2372,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           log(
             `the instance ${lane.name} revoked this machine; its link is closed`,
           );
+          // Its guests go with its link; every session at home is untouched.
+          dropGuestsOf(lane.name);
           linkDown(lane);
           lane.hub.stop();
           try {
@@ -2116,6 +2463,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ev("hub_disconnect", laneFields(lane));
     // The next link's hello_ok says again which hub this is.
     lane.resetLink();
+    guestsLinkDown(lane);
     if (lane.main) {
       codexAckIds.clear();
       for (const [id, done] of [...switchAcks]) {
@@ -2298,7 +2646,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return { bound: true };
         }
         if (want !== homedOf(rec)) {
-          dropProof(want, rec);
+          dropProof(want, rec, req.hash);
           return { bound: false };
         }
         proofIssues.delete(req.pid);
@@ -2424,6 +2772,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                   : ("not_connected" as const),
                 revoked: l.revoked,
                 agents: live.filter((a) => a.instance === l.name).length,
+                // #2793 S3b: sessions homed elsewhere that used this instance's tools. Names only.
+                guests: [...guestSet.values()]
+                  .filter((g) => g.instance === l.name && g.name !== undefined)
+                  .map((g) => ({
+                    name: stripTerminalControls(g.name as string),
+                  })),
               })),
             }
           : {}),

@@ -154,6 +154,7 @@ export function instanceBlocks(
     link: "connected" | "not_connected";
     revoked: boolean;
     agents: number;
+    guests?: readonly { name: string }[];
   }[],
 ): string[][] {
   const list = listInstances(ctx.home);
@@ -161,7 +162,7 @@ export function instanceBlocks(
   const clean = (t: string) => stripTerminalControls(t).replace(HIDDEN, "");
   const inst = [
     "Instances",
-    ...list.map((i) => {
+    ...list.flatMap((i) => {
       const r = rows.find((x) => x.name === i.name);
       const state = r?.revoked
         ? "revoked"
@@ -170,7 +171,11 @@ export function instanceBlocks(
           : "not connected";
       const addr = clean(canonicalAddress(i.hub) ?? "(address unreadable)");
       const n = r?.agents ?? 0;
-      return `  ${clean(i.name)}${i.main ? " (main)" : ""}  ${addr}  ${state}  ${n} ${n === 1 ? "agent" : "agents"}`;
+      return [
+        `  ${clean(i.name)}${i.main ? " (main)" : ""}  ${addr}  ${state}  ${n} ${n === 1 ? "agent" : "agents"}`,
+        // #2793 S3b: sessions homed elsewhere that used this instance's tools.
+        ...(r?.guests ?? []).map((g) => `    guest session: ${clean(g.name)}`),
+      ];
     }),
   ];
   const map = Object.entries(readFolders(ctx.home).map).sort(([a], [b]) =>
