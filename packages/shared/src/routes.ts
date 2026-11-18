@@ -351,7 +351,7 @@ export const R = {
   /**
    * GET ?q= -> MentionCandidates (#2770): the people who can read this artifact and can be @mentioned,
    * for the owner and editors (everyone else gets none). `q` (1 to 40 characters) matches the start of
-   * a name or an email; at most 8, name and a face only, never an email. Rate limited (429).
+   * the start of a name or of any word in it (an email only when typed in full and exactly); at most 8, a face only, never an email. Rate limited (429).
    */
   artifactMentionCandidates: (id: string) =>
     `${A}/${seg(id)}/mention-candidates`,

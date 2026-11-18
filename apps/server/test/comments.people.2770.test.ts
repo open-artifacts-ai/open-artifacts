@@ -13,6 +13,7 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import {
@@ -22,6 +23,7 @@ import {
   deleteComment,
   editComment,
 } from "../src/services/comments.js";
+import { PERSON_MENTIONS_PER_DAY } from "../src/services/inbox-items.js";
 import { MENTION_SEARCHES_PER_MIN } from "../src/services/mention-candidates.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
@@ -347,6 +349,53 @@ describe("who may be mentioned, and by whom", () => {
   });
 });
 
+describe("who sends, and how many", () => {
+  it("a token, an agent or a grant can't carry people: 400, nothing written; a plain comment with a token is fine", async () => {
+    const id = await mkArtifact();
+    const token = (await createPat(E, owner.userId, "people")).token;
+    const r = await api(app, R.comments(id), token, {
+      method: "POST",
+      body: { anchor: { kind: "note" }, body: "hi", people: [sam.userId] },
+    });
+    expect(r.status).toBe(400);
+    expect(await rows(id, sam)).toEqual([]);
+    const ok = await api(app, R.comments(id), token, {
+      method: "POST",
+      body: { anchor: { kind: "note" }, body: "just a note" },
+    });
+    expect(ok.status).toBe(201);
+    const thread = ((await ok.json()) as { id: string }).id;
+    const rr = await api(app, R.commentReplies(id, thread), token, {
+      method: "POST",
+      body: { body: "re", people: [pat.userId] },
+    });
+    expect(rr.status).toBe(400);
+  });
+
+  it("a sender's daily cap: the comment posts, no more items are written, and it is logged", async () => {
+    const id = await mkArtifact();
+    const day = new Date().toISOString().slice(0, 10);
+    await E.DB.prepare(
+      "insert into counters (key, n, day) values (?, ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
+    )
+      .bind(`prefs:pm:${owner.userId}`, PERSON_MENTIONS_PER_DAY, day)
+      .run();
+    const t = await mention(id, owner, [sam.userId]);
+    expect(t.comments[0]?.people).toHaveLength(1);
+    expect(await rows(id, sam)).toEqual([]);
+    // Another sender is unaffected.
+    const other = await mk("p-owner2");
+    await E.DB.prepare("update users set role = 'admin' where id = ?")
+      .bind(other.userId)
+      .run();
+    await E.DB.prepare("delete from counters where key = ?")
+      .bind(`prefs:pm:${owner.userId}`)
+      .run();
+    await mention(id, owner, [sam.userId], "after the reset");
+    expect(await rows(id, sam)).toHaveLength(1);
+  });
+});
+
 describe("the candidates route", () => {
   const find = (id: string, u: U, q: string) =>
     api(
@@ -373,6 +422,36 @@ describe("the candidates route", () => {
       ((await (await find(id, owner, "p-owner")).json()) as MentionCandidates)
         .items,
     ).toEqual([]);
+  });
+
+  it("names only: an email matches only when typed in full and exactly; a prefix of it matches nothing", async () => {
+    const id = await mkArtifact([sam, pat]);
+    const ids = async (q: string) =>
+      (
+        (await (await find(id, owner, q)).json()) as MentionCandidates
+      ).items.map((i) => i.id);
+    expect(await ids(`sam-rivera-${tag}@x`)).toEqual([]);
+    expect(await ids(`sam-rivera-${tag}@x.co`)).toEqual([]);
+    expect(await ids("@x.com")).toEqual([]);
+    expect(await ids(sam.email.toUpperCase())).toEqual([sam.userId]);
+    // A word inside a name still matches.
+    await E.DB.prepare("update users set name = 'Sam Rivera' where id = ?")
+      .bind(sam.userId)
+      .run();
+    expect(await ids("rivera")).toEqual([sam.userId]);
+  });
+
+  it("a big team with a common prefix: readers are found past the first 40 who can't read", async () => {
+    const readers: U[] = [];
+    for (let i = 0; i < 45; i++) await mk(`zzbig-a${i}`);
+    for (let i = 0; i < 3; i++) readers.push(await mk(`zzbig-z${i}`));
+    const id = await mkArtifact(readers);
+    const items = (
+      (await (await find(id, owner, `zzbig-`)).json()) as MentionCandidates
+    ).items;
+    expect(items.map((i) => i.id).sort()).toEqual(
+      readers.map((r) => r.userId).sort(),
+    );
   });
 
   it("only owner and editors; a viewer, a guest and a signed-out caller get none", async () => {

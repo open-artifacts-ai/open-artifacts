@@ -248,6 +248,7 @@ export function mountComments(app: AppType): void {
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
     mayTarget(raw.data, moderator);
+    peopleByPerson(c, raw.data);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const named = raw.data.guestName;
@@ -285,6 +286,7 @@ export function mountComments(app: AppType): void {
         "toAsker cannot be combined with mentions",
       );
     mayTarget(raw.data, moderator);
+    peopleByPerson(c, raw.data);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const w: CommentWho =
@@ -574,6 +576,19 @@ const execCtx = (
     return undefined;
   }
 };
+
+/**
+ * #2770: people are @mentioned by a person in a browser only. A token, an
+ * agent or a grant carrying `people` is a 400, so no agent can fill someone's
+ * Needs you.
+ */
+function peopleByPerson(c: Context<AppEnv>, b: { people?: unknown[] }): void {
+  if ((b.people?.length ?? 0) > 0 && !interactiveSession(c))
+    throw new ApiError(
+      "bad_request",
+      "people can only be mentioned from the web app, not with a token or an agent",
+    );
+}
 
 /** 403 forbidden for mentions from anyone but the owner and editors. */
 function mayTarget(

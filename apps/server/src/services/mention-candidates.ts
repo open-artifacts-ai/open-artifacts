@@ -1,6 +1,6 @@
 // #2770: the people an owner or editor may @mention on an artifact: members who
 // can read it, as faces (name and the roster's disambiguation, never an email).
-// A search by the start of a name or an email, 8 at most, rate limited.
+// A search by the start of a name or of any word in it (an email only when it is typed in full and exactly), 8 at most, rate limited.
 import {
   type CommentAuthor,
   MENTION_CANDIDATES_MAX,
@@ -18,8 +18,8 @@ import { getUsers } from "./users.js";
 
 /** Searches one member may make per minute. */
 export const MENTION_SEARCHES_PER_MIN = 60;
-/** Rows read before the access check: the check, not the search, is what limits the answer. */
-const SCAN = 40;
+/** Rows read before the access check: enough that a big team's readers aren't crowded out by people who can't read the page. */
+const SCAN = 200;
 
 const likeEscape = (s: string): string => s.replace(/[\\%_]/g, "\\$&");
 
@@ -47,10 +47,10 @@ export async function mentionCandidates(
     `select id from users
       where status = 'active' and id <> ?1
         and (lower(name) like ?2 escape '\\' or lower(name) like '% ' || ?2 escape '\\'
-             or lower(email) like ?2 escape '\\')
+             or lower(email) = ?4)
       order by name, id limit ?3`,
   )
-    .bind(me.id, p, SCAN)
+    .bind(me.id, p, SCAN, q)
     .all<{ id: string }>();
   if (results.length === 0) return { items: [] };
   const users = await getUsers(

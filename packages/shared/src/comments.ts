@@ -408,7 +408,9 @@ const extras = {
    * #2770: people to @mention, by user id (R.artifactMentionCandidates lists them). Owner and
    * editors only (403 forbidden), like mentions; each must be able to read the page, else the
    * same 400 as an unknown agent. At most MENTIONS_MAX with `mentions` together. A mentioned
-   * person gets the comment in "Needs you".
+   * person gets the comment in "Needs you". A person in a browser only: a token, an agent or a
+   * grant that sends `people` gets 400 (so an agent can't fill someone's Needs you). A sender
+   * causes at most 200 such items a day; over it the comment posts and no more items are written.
    */
   people: z.array(key).max(MENTIONS_MAX).optional(),
 };

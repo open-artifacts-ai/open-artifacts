@@ -16,6 +16,7 @@ import { capsReads } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifacts, inboxItems } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
+import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
@@ -23,6 +24,8 @@ import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
 import { getUsers } from "./users.js";
 
+/** Person-mention Needs-you items one sender may cause per day (#2770). */
+export const PERSON_MENTIONS_PER_DAY = 200;
 /** The most characters of a comment an item keeps. */
 export const EXCERPT_MAX = 120;
 /** The items one page of Updates holds. */
@@ -183,6 +186,22 @@ export async function recordCommentItems(
     if (c.author.kind !== "guest")
       for (const userId of c.people ?? []) {
         if (seen.has(userId)) continue;
+        // A sender's daily cap on these items: over it the comment stands, no more items are written.
+        if (
+          c.author.kind === "user" &&
+          (await takeAll(env, [
+            [
+              `prefs:pm:${c.author.ref}`,
+              PERSON_MENTIONS_PER_DAY,
+              new Date().toISOString().slice(0, 10),
+            ],
+          ])) !== -1
+        ) {
+          logWarn("person_mention_capped", undefined, {
+            artifactId: j.artifactId,
+          });
+          continue;
+        }
         seen.add(userId);
         items.push({
           userId,
