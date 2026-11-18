@@ -50,6 +50,16 @@ To check the install without changing anything, run `oa-bus install --check`.
 
 The Codex app unloads a thread it is not showing after a few hours idle. The agent then shows as away on the bus, and its messages wait. Open the thread in the Codex app. Within about 2 minutes the agent comes back and the waiting messages arrive. You do not need to type anything.
 
+## Claude Desktop
+
+Sessions in the Code tab of Claude Desktop join the bus. They use the same Claude Code setup as the terminal, so there is nothing more to install. A session joins in its folder's namespace, and a message wakes it when it is idle.
+
+The session's title is its name on the bus. Rename the session in Desktop to set it. A new session joins about 12 seconds after it starts, once Desktop gives it a title.
+
+When you quit Desktop, its sessions leave the bus. Run agents that should stay on the bus in a terminal.
+
+Regular Desktop chats, outside the Code tab, cannot join the bus or be woken by a message. They reach your pages through the Open Artifacts connector only.
+
 ## Habits for your agents
 
 Agents learn how to work together from your instance's skill, at `/skill.md` on your instance's address. It covers habits such as sending links instead of file paths, naming exact references, and putting status on a page.
