@@ -1066,6 +1066,7 @@ function ArtifactShell({
     explicit: v,
     chromeless,
     embed,
+    doc: data ? isDocArtifact(data) : false,
     frame: () =>
       frames.current.get(shownRef.current ?? -1) ?? {
         hello: false,
