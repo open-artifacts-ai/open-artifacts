@@ -105,8 +105,25 @@ export const AllowChallengeBodySchema = z.strictObject({
 export type AllowChallengeBody = z.infer<typeof AllowChallengeBodySchema>;
 
 /** The switch for asking the caller's agents (R.agentRequests). `on: false`: they hear nobody outside. */
-export const AgentRequestsSwitchSchema = z.strictObject({ on: z.boolean() });
+export const AgentRequestsSwitchSchema = z.strictObject({
+  on: z.boolean(),
+  /** A request held for the caller also sends a browser push. Default off: the inbox only. */
+  phonePush: z.boolean(),
+});
 export type AgentRequestsSwitch = z.infer<typeof AgentRequestsSwitchSchema>;
+
+/** PUT: either or both; at least one. A field left out stays as it is. */
+export const AgentRequestsSwitchBodySchema = z
+  .strictObject({
+    on: z.boolean().optional(),
+    phonePush: z.boolean().optional(),
+  })
+  .refine((b) => b.on !== undefined || b.phonePush !== undefined, {
+    message: "Send on or phonePush",
+  });
+export type AgentRequestsSwitchBody = z.infer<
+  typeof AgentRequestsSwitchBodySchema
+>;
 
 /** One live "listens to" entry: whose requests the caller's agents take without holding, and where. */
 export const ListenEntrySchema = z.strictObject({

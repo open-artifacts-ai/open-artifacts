@@ -782,6 +782,8 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
   lockDetail: integer("lock_detail").notNull().default(0),
   // #2577 S2: 1 = the member's agents hear nobody outside (no holds, mentions refused).
   agentRequestsOff: integer("agent_requests_off").notNull().default(0),
+  // #2577: 1 = a request held for the member also sends a browser push (default: inbox only).
+  phonePush: integer("phone_push").notNull().default(0),
   updatedAt: integer("updated_at").notNull(),
 });
 

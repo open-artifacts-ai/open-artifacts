@@ -31,13 +31,14 @@ import { publicName } from "./agent-display.js";
 import { askInfo } from "./asks.js";
 import { audit, userActor } from "./audit.js";
 import { type CommentNoticeKind, notifyAgent } from "./comment-agents.js";
-import { itemExcerpt } from "./inbox-items.js";
+import { HELD_EXCERPT, itemExcerpt } from "./inbox-items.js";
 import {
   giveBackReceiverSlot,
   isOutsideMember,
   takeReceiverSlot,
 } from "./mention-guards.js";
 import { hasPasskey, listenChallenge, verifyListen } from "./passkeys.js";
+import { HELD_PUSH_PREFIX, queuePush } from "./push.js";
 import { getUser } from "./users.js";
 
 // #2577: asking someone else's agent. The comment posts; its delivery to the
@@ -220,6 +221,43 @@ export async function agentRequestsOn(
     .bind(userId)
     .first<{ off: number }>();
   return !r || r.off !== 1;
+}
+
+/** Whether a request held for the member also sends a browser push. Default off. */
+export async function phonePushOn(env: Env, userId: string): Promise<boolean> {
+  const r = await stmt(
+    env.DB,
+    "select phone_push as p from notification_prefs where user_id = ?1",
+  )
+    .bind(userId)
+    .first<{ p: number }>();
+  return r?.p === 1;
+}
+
+/** Saves the push choice; an unchanged save writes nothing. Audited as agent_requests.switch with `phonePush`. */
+export async function setPhonePush(
+  env: Env,
+  userId: string,
+  on: boolean,
+  now = Date.now(),
+): Promise<boolean> {
+  if ((await phonePushOn(env, userId)) === on) return on;
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      `insert into notification_prefs (user_id, phone_push, updated_at)
+       values (?1, ?2, ?3)
+       on conflict (user_id) do update set phone_push = excluded.phone_push, updated_at = excluded.updated_at`,
+    ).bind(userId, on ? 1 : 0, now),
+    audit(
+      env,
+      "agent_requests.switch",
+      { type: "user", id: userId },
+      userActor(userId),
+      { detail: { phonePush: on } },
+    ),
+  ]);
+  return on;
 }
 
 /**
@@ -544,7 +582,7 @@ async function recordHoldsOnce(
         .first<{ id: string }>();
       if (!req) continue;
       // A new request (one per receiver, sender and page) is audited once.
-      if (!known)
+      if (!known) {
         await audit(
           env,
           "agent_ask.held",
@@ -552,6 +590,24 @@ async function recordHoldsOnce(
           userActor(senderId),
           { detail: { artifactId } },
         ).run();
+        // Browser push only for a member who turned it on; otherwise the inbox alone. Never the words.
+        if (await phonePushOn(env, owner)) {
+          const u = await getUser(env, senderId);
+          await queuePush(
+            env,
+            [owner],
+            {
+              key: `${HELD_PUSH_PREFIX}${req.id}`,
+              kind: "ask",
+              artifactId,
+              threadId: "",
+              askerName: (u && publicName({ name: u.name })) || "Someone",
+              excerpt: HELD_EXCERPT,
+            },
+            now,
+          );
+        }
+      }
       for (const h of held.filter((x) => x.agent.owner === owner))
         await stmt(
           env.DB,
