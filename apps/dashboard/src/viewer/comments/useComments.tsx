@@ -182,11 +182,17 @@ const HELD_QUOTE_MS = 1500;
 export const guestsMayComment = (a: ArtifactSummary) =>
   a.visibility === "public" && a.commenters !== "signed-in";
 
+/**
+ * The server's can.comment wins when present: it already weighs the caller's
+ * cap, and lets a guest with a "Can comment" share comment while the rest of
+ * their account stays read-only. `readOnly` (any cap) only decides when the
+ * server sent no answer.
+ */
 export const canComment = (
   a: ArtifactSummary,
   authed: boolean,
   readOnly = false,
-) => !readOnly && (a.can?.comment ?? (authed || guestsMayComment(a)));
+) => a.can?.comment ?? (!readOnly && (authed || guestsMayComment(a)));
 
 export function useCommentsController({
   artifact,
