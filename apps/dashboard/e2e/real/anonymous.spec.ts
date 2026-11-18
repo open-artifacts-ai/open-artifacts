@@ -8,7 +8,10 @@ import {
   uniq,
 } from "./fixtures";
 
-test("a public artifact opens logged out", async ({ browser, member }) => {
+test("a public artifact opens logged out", { tag: "@smoke" }, async ({
+  browser,
+  member,
+}) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Open ${uniq()}`,
     format: "markdown",

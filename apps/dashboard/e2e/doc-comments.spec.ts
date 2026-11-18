@@ -129,47 +129,56 @@ for (const scheme of ["light", "dark"] as const)
     test.describe(`${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
 
-      test("(a) page-level comments: post with an @-mention, pick an ask, no pins", async ({
-        page,
-      }, info) => {
-        await open(page, info, "&asks=1");
-        // The list opens from the title bar (a column, or a sheet on a phone).
-        await page.getByRole("button", { name: /^Comments/ }).click();
-        const box = composer(page);
-        await expect(box).toBeVisible();
-        // A doc has no pins.
-        await expect(page.getByRole("button", { name: /^Pin/ })).toHaveCount(0);
-        const posted = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" &&
-            r.url().endsWith(`/api/v1/artifacts/${LANDING}/comments`),
-        );
-        await box.click();
-        await page.keyboard.type("Please check this @Cla");
-        await page.getByRole("option", { name: /Claude Code/ }).click();
-        await page.keyboard.type("thanks");
-        await page
-          .getByRole("button", { name: "Comment", exact: true })
-          .click();
-        const body = (await posted).postDataJSON();
-        expect(body).toMatchObject({
-          anchor: { kind: "note" },
-          mentions: [{ key: "agent:claude-code" }],
-        });
-        expect(body.body).toContain("@Claude Code");
-        await expect(page.getByText(/Please check this/).first()).toBeVisible();
-        // An ask for me: pick B.
-        const picked = page.waitForRequest(
-          (r: Request) => r.method() !== "GET" && /\/comments\//.test(r.url()),
-        );
-        await page.getByRole("button", { name: /Compact hero/ }).click();
-        await picked;
-        await expect(
-          page.getByRole("button", { name: "Change" }),
-        ).toBeVisible();
-        await shot(page, info, `doc-comments-${scheme}-${width}.png`);
-        await axe(page);
-      });
+      test(
+        "(a) page-level comments: post with an @-mention, pick an ask, no pins",
+        {
+          tag: scheme === "light" && width === 1280 ? "@smoke" : [],
+        },
+        async ({ page }, info) => {
+          await open(page, info, "&asks=1");
+          // The list opens from the title bar (a column, or a sheet on a phone).
+          await page.getByRole("button", { name: /^Comments/ }).click();
+          const box = composer(page);
+          await expect(box).toBeVisible();
+          // A doc has no pins.
+          await expect(page.getByRole("button", { name: /^Pin/ })).toHaveCount(
+            0,
+          );
+          const posted = page.waitForRequest(
+            (r: Request) =>
+              r.method() === "POST" &&
+              r.url().endsWith(`/api/v1/artifacts/${LANDING}/comments`),
+          );
+          await box.click();
+          await page.keyboard.type("Please check this @Cla");
+          await page.getByRole("option", { name: /Claude Code/ }).click();
+          await page.keyboard.type("thanks");
+          await page
+            .getByRole("button", { name: "Comment", exact: true })
+            .click();
+          const body = (await posted).postDataJSON();
+          expect(body).toMatchObject({
+            anchor: { kind: "note" },
+            mentions: [{ key: "agent:claude-code" }],
+          });
+          expect(body.body).toContain("@Claude Code");
+          await expect(
+            page.getByText(/Please check this/).first(),
+          ).toBeVisible();
+          // An ask for me: pick B.
+          const picked = page.waitForRequest(
+            (r: Request) =>
+              r.method() !== "GET" && /\/comments\//.test(r.url()),
+          );
+          await page.getByRole("button", { name: /Compact hero/ }).click();
+          await picked;
+          await expect(
+            page.getByRole("button", { name: "Change" }),
+          ).toBeVisible();
+          await shot(page, info, `doc-comments-${scheme}-${width}.png`);
+          await axe(page);
+        },
+      );
 
       test("(b) Comment on a selection: a quote, a blank line, then the cursor", async ({
         page,

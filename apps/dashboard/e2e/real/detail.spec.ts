@@ -79,10 +79,9 @@ async function inView(l: Locator) {
   return box as { x: number; y: number; width: number; height: number };
 }
 
-test("library → detail: card, thumbnail and deep links", async ({
-  page,
-  member,
-}) => {
+test("library → detail: card, thumbnail and deep links", {
+  tag: "@smoke",
+}, async ({ page, member }) => {
   const problems = watch(page);
   const tag = uniq();
   const html = {

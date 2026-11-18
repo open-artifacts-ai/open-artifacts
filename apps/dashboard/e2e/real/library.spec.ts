@@ -1,9 +1,8 @@
 import { expect, publishViaApi, test, uniq } from "./fixtures";
 
-test("published artifacts appear; format filter and search narrow them", async ({
-  page,
-  member,
-}) => {
+test("published artifacts appear; format filter and search narrow them", {
+  tag: "@smoke",
+}, async ({ page, member }) => {
   const tag = uniq();
   const notes = `Notes ${tag}`;
   const script = `Script ${tag}`;
