@@ -83,59 +83,65 @@ for (const scheme of ["light", "dark"] as const)
     test.describe(`${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
 
-      test("the doc's versions: labels, agent faces, Save version", async ({
-        page,
-      }, info) => {
-        await open(page, info);
-        await expect(rows(page)).toHaveCount(6);
-        // How each was saved: a restore, automatic ones, names.
-        await expect(row(page, 6)).toContainText("Restored v2");
-        await expect(row(page, 5)).toContainText("Saved automatically");
-        await expect(row(page, 4)).toContainText("Before OA Product edited");
-        await expect(row(page, 3)).toContainText("After review");
-        await expect(row(page, 2)).toContainText("Saved automatically");
-        await expect(row(page, 1)).toContainText("First draft");
-        // An agent's version shows the agent's face (AuthorFace's tile).
-        for (const v of [5, 1])
+      test(
+        "the doc's versions: labels, agent faces, Save version",
+        {
+          tag: scheme === "light" && width === 1280 ? "@smoke" : [],
+        },
+        async ({ page }, info) => {
+          await open(page, info);
+          await expect(rows(page)).toHaveCount(6);
+          // How each was saved: a restore, automatic ones, names.
+          await expect(row(page, 6)).toContainText("Restored v2");
+          await expect(row(page, 5)).toContainText("Saved automatically");
+          await expect(row(page, 4)).toContainText("Before OA Product edited");
+          await expect(row(page, 3)).toContainText("After review");
+          await expect(row(page, 2)).toContainText("Saved automatically");
+          await expect(row(page, 1)).toContainText("First draft");
+          // An agent's version shows the agent's face (AuthorFace's tile).
+          for (const v of [5, 1])
+            await expect(
+              row(page, v).locator('[data-avatar="agent"][data-animal="duck"]'),
+            ).toBeVisible();
           await expect(
-            row(page, v).locator('[data-avatar="agent"][data-animal="duck"]'),
+            row(page, 3).locator('[data-avatar="agent"]'),
+          ).toHaveCount(0);
+          // The box: the mockup's words.
+          const name = page.getByRole("textbox", { name: "Version name" });
+          await expect(name).toHaveAttribute(
+            "placeholder",
+            "Name this version, for example: Before launch",
+          );
+          await expect(
+            page.getByText("Keeps the doc as it is now."),
           ).toBeVisible();
-        await expect(row(page, 3).locator('[data-avatar="agent"]')).toHaveCount(
-          0,
-        );
-        // The box: the mockup's words.
-        const name = page.getByRole("textbox", { name: "Version name" });
-        await expect(name).toHaveAttribute(
-          "placeholder",
-          "Name this version, for example: Before launch",
-        );
-        await expect(
-          page.getByText("Keeps the doc as it is now."),
-        ).toBeVisible();
-        await shot(page, info, `doc-versions-${scheme}-${width}.png`);
-        await axe(page);
-        // A named save.
-        const saved = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" &&
-            r.url().endsWith(`/api/v1/artifacts/${LANDING}/doc/versions`),
-        );
-        await name.fill("Before launch");
-        await page.getByRole("button", { name: "Save version" }).click();
-        expect((await saved).postDataJSON()).toEqual({ name: "Before launch" });
-        await expect(page.getByText("Version saved.")).toBeVisible();
-        await expect(row(page, 7)).toContainText("Before launch");
-        await expect(name).toHaveValue("");
-        // No name: the server's "Version n".
-        const unnamed = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" && r.url().endsWith("/doc/versions"),
-        );
-        await page.getByRole("button", { name: "Save version" }).click();
-        expect((await unnamed).postDataJSON()).toEqual({});
-        await expect(page.getByText("Version saved.").first()).toBeVisible();
-        await expect(row(page, 8)).toContainText("Version 8");
-      });
+          await shot(page, info, `doc-versions-${scheme}-${width}.png`);
+          await axe(page);
+          // A named save.
+          const saved = page.waitForRequest(
+            (r: Request) =>
+              r.method() === "POST" &&
+              r.url().endsWith(`/api/v1/artifacts/${LANDING}/doc/versions`),
+          );
+          await name.fill("Before launch");
+          await page.getByRole("button", { name: "Save version" }).click();
+          expect((await saved).postDataJSON()).toEqual({
+            name: "Before launch",
+          });
+          await expect(page.getByText("Version saved.")).toBeVisible();
+          await expect(row(page, 7)).toContainText("Before launch");
+          await expect(name).toHaveValue("");
+          // No name: the server's "Version n".
+          const unnamed = page.waitForRequest(
+            (r: Request) =>
+              r.method() === "POST" && r.url().endsWith("/doc/versions"),
+          );
+          await page.getByRole("button", { name: "Save version" }).click();
+          expect((await unnamed).postDataJSON()).toEqual({});
+          await expect(page.getByText("Version saved.").first()).toBeVisible();
+          await expect(row(page, 8)).toContainText("Version 8");
+        },
+      );
 
       test(
         "restore goes through the room, then back to the live doc",
