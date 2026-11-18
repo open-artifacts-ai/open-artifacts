@@ -19,6 +19,7 @@ import { injectRuntime } from "./inject.js";
 import {
   CAPTURE_HEADER,
   type ContentViewer,
+  isExpiredContentToken,
   type SignMode,
   verifyCapture,
   verifyContentToken,
@@ -395,6 +396,20 @@ async function serveFile(
   return new Response(obj.body, { headers });
 }
 
+/** A frame whose signed URL expired: plain words, no script, never cached. */
+function expiredPage(): Response {
+  return new Response(
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Expired</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font:16px/1.5 system-ui,sans-serif;padding:2rem;color:#444"><p>This view has expired. Reload the page to see it again.</p></body></html>',
+    {
+      status: 410,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+}
+
 async function serve(
   c: Context<CEnv>,
   id: string,
@@ -415,6 +430,15 @@ async function serve(
     const t = await verifyContentToken(c.env, signed, id, v, dl);
     mode = t?.mode ?? null;
     viewer = t?.viewer ?? null;
+    // An expired link inside the viewer's frame (a restored tab, a page that
+    // reloads itself) gets words instead of a JSON error (#2686).
+    if (
+      !t &&
+      !dl &&
+      c.req.header("sec-fetch-dest") === "iframe" &&
+      (await isExpiredContentToken(c.env, signed, id, v))
+    )
+      return expiredPage();
   } else if (dl) mode = null;
   if (mode === null) throw notFound();
   const path = rest === "__view" ? "__view" : filePath(rest);

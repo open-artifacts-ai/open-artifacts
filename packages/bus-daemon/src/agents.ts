@@ -55,12 +55,19 @@ export const withLinkHash = (
 
 export class AgentTable {
   #byRef = new Map<string, AgentRecord>();
+  /** #2688: when each ref was first seen, ms since the epoch. */
+  #firstSeen = new Map<string, number>();
   up(rec: AgentRecord): AgentRecord {
     this.#byRef.set(rec.ref, rec);
+    if (!this.#firstSeen.has(rec.ref)) this.#firstSeen.set(rec.ref, Date.now());
     return rec;
   }
   down(ref: string): void {
     this.#byRef.delete(ref);
+    this.#firstSeen.delete(ref);
+  }
+  firstSeen(ref: string): number | undefined {
+    return this.#firstSeen.get(ref);
   }
   byRef(ref: string): AgentRecord | undefined {
     return this.#byRef.get(ref);

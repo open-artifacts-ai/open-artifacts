@@ -171,7 +171,9 @@ test("asks: an agent's ask, a person's answer (not a yes), and toAsker replies",
   expect(await refusal(res, 400)).toBe("not_an_ask");
 });
 
-test("live reply: an agent's reply shows with the page open, no reload", async () => {
+test("live reply: an agent's reply shows with the page open, no reload", {
+  tag: "@gate",
+}, async () => {
   await needs("live replies (#2179)", MIN);
   const id = await pageOf("T19 live reply");
   const t = await json<{ id: string }>(

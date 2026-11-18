@@ -5,7 +5,7 @@ import {
   SHARE_OPTOUT_PATH,
   verifyOptoutToken,
 } from "../email/share-optout.js";
-import { fill, oneLine, orgName } from "../email/templates.js";
+import { fill, orgLabel } from "../email/templates.js";
 import type { AppEnv } from "../http/middleware.js";
 import { escapeHtml } from "../mcp/template.js";
 import { getSettings } from "../services/members.js";
@@ -31,7 +31,7 @@ const page = (title: string, body: string, form = "") =>
 /** The install's name for the page's words (its host without one). */
 async function org(c: Context<AppEnv>): Promise<string> {
   const name = (await getSettings(c.env).catch(() => null))?.name;
-  return oneLine(orgName(name, c.env.APP_HOST), 80);
+  return orgLabel(name, c.env.APP_HOST);
 }
 
 const bad = (c: Context<AppEnv>) =>
@@ -42,13 +42,13 @@ export function mountShareOptout(app: AppType): void {
     const t = c.req.query("t") ?? "";
     if (!(await verifyOptoutToken(c.env, t))) return bad(c);
     const v = { org: await org(c) };
-    // This page redeems an install token (v1): it only ever stops this
-    // install's emails, so the per-team wording, whatever the platform's
-    // list is doing. The hosted-wide wording is the platform's page's.
-    const copy = OPTOUT_COPY;
-    const form = `<form method="post" action="${SHARE_OPTOUT_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(fill(copy.confirmButton, v))}</button></form>`;
+    const form = `<form method="post" action="${SHARE_OPTOUT_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(fill(OPTOUT_COPY.confirmButton, v))}</button></form>`;
     return c.html(
-      page(fill(copy.confirmTitle, v), fill(copy.confirmBody, v), form),
+      page(
+        fill(OPTOUT_COPY.confirmTitle, v),
+        fill(OPTOUT_COPY.confirmBody, v),
+        form,
+      ),
       200,
       HEADERS,
     );

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { APP, EMBEDDER_PORT, inUse, portBusy, startServer } from "./fixtures";
 
@@ -28,6 +29,9 @@ function startEmbedder(): Promise<() => Promise<void>> {
 }
 
 export default async function globalSetup() {
+  // Read by devConfig and, in the workers (which inherit this env), by specs
+  // that mint a signed link. A throwaway value, never a real secret.
+  process.env.OA_E2E_SESSION_SECRET ??= randomBytes(32).toString("hex");
   // Before the long server build, so a taken embedder port fails fast.
   if (await portBusy(EMBEDDER_PORT)) throw inUse(EMBEDDER_PORT);
   const stopServer = await startServer();
