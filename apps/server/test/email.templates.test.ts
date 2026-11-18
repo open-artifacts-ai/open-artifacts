@@ -54,7 +54,7 @@ describe("email templates", () => {
   });
 
   it("renders the invite with hostile values", () => {
-    const m = inviteEmail(common);
+    const m = inviteEmail({ ...common, guest: false });
     clean(m);
     expect(m.text).toContain("https://app.example.com/sign-in");
     expect(m.html).toContain('href="https://app.example.com/sign-in"');
@@ -64,7 +64,7 @@ describe("email templates", () => {
   it("a member invite carries the line to paste into an agent; a guest's doesn't (#2632)", () => {
     const line =
       "Set up Open Artifacts for me: follow https://app.example.com/llms.txt";
-    const m = inviteEmail(common);
+    const m = inviteEmail({ ...common, guest: false });
     expect(m.text).toContain(
       "Then connect your agent. Paste this into Claude Code, Codex, Cursor or any other AI agent:",
     );
@@ -98,7 +98,7 @@ describe("email templates", () => {
 
   it("refuses links off the app host", () => {
     for (const appHost of ["x.com/@evil", "evil.com:80@x", "a b"])
-      expect(() => inviteEmail({ ...common, appHost })).toThrow();
+      expect(() => inviteEmail({ ...common, appHost, guest: false })).toThrow();
     for (const path of ["@evil.com/x", ".evil.com/x", "x"])
       expect(() =>
         shareEmail({
@@ -133,7 +133,7 @@ describe("copy (#213)", () => {
   });
 
   const render = (instance: string) => [
-    inviteEmail({ ...common, inviter: "Ada", instance }),
+    inviteEmail({ ...common, inviter: "Ada", instance, guest: false }),
     shareEmail({
       ...common,
       inviter: "Ada",
@@ -167,7 +167,12 @@ describe("copy (#213)", () => {
 
   it("a user named 'me' (the login default) is shown as the full address", () => {
     const inviter = senderName({ name: "me", email: "me@test.invalid" });
-    const m = inviteEmail({ ...common, inviter, instance: "Open Artifacts" });
+    const m = inviteEmail({
+      ...common,
+      inviter,
+      instance: "Open Artifacts",
+      guest: false,
+    });
     expect(m.subject).toBe("me@test.invalid added you to Open Artifacts");
   });
 });
@@ -187,7 +192,13 @@ describe("login copy (review item 11)", () => {
       signIn,
     });
   const invite = (signIn: typeof common.signIn) =>
-    inviteEmail({ ...common, inviter: "Ada", instance: "Acme", signIn });
+    inviteEmail({
+      ...common,
+      inviter: "Ada",
+      instance: "Acme",
+      signIn,
+      guest: false,
+    });
 
   it.each([
     [["email"], "You'll log in with a one-time code sent to new@x.com."],
