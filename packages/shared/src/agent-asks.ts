@@ -103,3 +103,33 @@ export const AllowChallengeBodySchema = z.strictObject({
   level: z.enum(["space", "all"]).default("all"),
 });
 export type AllowChallengeBody = z.infer<typeof AllowChallengeBodySchema>;
+
+/** The switch for asking the caller's agents (R.agentRequests). `on: false`: they hear nobody outside. */
+export const AgentRequestsSwitchSchema = z.strictObject({ on: z.boolean() });
+export type AgentRequestsSwitch = z.infer<typeof AgentRequestsSwitchSchema>;
+
+/** One live "listens to" entry: whose requests the caller's agents take without holding, and where. */
+export const ListenEntrySchema = z.strictObject({
+  id: z.string(),
+  member: z.strictObject({ id: z.string(), name: z.string() }),
+  scope: z.enum(["page", "space", "all"]),
+  /** scope "page": the page. */
+  artifact: z.strictObject({ id: z.string(), title: z.string() }).nullable(),
+  /** scope "space": the shared space. */
+  space: z.strictObject({ id: z.string(), name: z.string() }).nullable(),
+  /** When it ends (ms). */
+  until: z.number(),
+  createdAt: z.number(),
+});
+export type ListenEntry = z.infer<typeof ListenEntrySchema>;
+
+export const ListensListSchema = z.strictObject({
+  entries: z.array(ListenEntrySchema),
+});
+export type ListensList = z.infer<typeof ListensListSchema>;
+
+/** PATCH an entry: end it sooner. Must be after now and before the current end. */
+export const ListenShortenBodySchema = z.strictObject({
+  until: z.number().int(),
+});
+export type ListenShortenBody = z.infer<typeof ListenShortenBodySchema>;

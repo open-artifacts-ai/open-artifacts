@@ -26,6 +26,7 @@ import {
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
 import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
+import { hasConnectedMachine } from "../services/bus.js";
 import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
@@ -35,6 +36,7 @@ import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerBusTools } from "./tools/bus.js";
 import { registerCommentTools } from "./tools/comments.js";
 import { registerDataTools } from "./tools/data.js";
+import { unlinkedNote } from "./unlinked-note.js";
 
 export type McpContext = {
   env: Env;
@@ -349,7 +351,44 @@ function enforceToolPolicy(server: McpServer, t: ToolEnv): void {
       } catch (e) {
         return guard(() => Promise.reject(e));
       }
-      return run(tool, args, ctx);
+      return withUnlinkedNote(name, t, run(tool, args, ctx));
     });
   };
+}
+
+/** The writes that carry the unlinked note (#2688): never a read. */
+const NOTE_TOOLS: ReadonlySet<string> = new Set([
+  "publish_artifact",
+  "add_comment",
+  "artifact_data_set",
+  "artifact_data_update",
+  "artifact_data_delete",
+]);
+
+/**
+ * Appends the unlinked note as its own text item to a SUCCESSFUL write by an
+ * unlinked agent. It runs after the write and can't fail it: any error here
+ * (building the note, reading the agent) leaves the result exactly as it was.
+ */
+async function withUnlinkedNote(
+  name: string | undefined,
+  t: ToolEnv,
+  result: unknown,
+): Promise<unknown> {
+  const r = (await result) as CallToolResult | undefined;
+  try {
+    if (!r || r.isError || !name || !NOTE_TOOLS.has(name)) return r;
+    const why = t.agentNow()?.unlinked;
+    // No proof sent is only worth saying to a member who has a bus machine:
+    // someone who never connected one has nothing to link.
+    if (why === "no_proof" && !(await hasConnectedMachine(t.env, t.user.id)))
+      return r;
+    const note = unlinkedNote(why);
+    return note
+      ? { ...r, content: [...r.content, { type: "text" as const, text: note }] }
+      : r;
+  } catch (e) {
+    logError("mcp_unlinked_note_failed", e);
+    return r;
+  }
 }

@@ -9,7 +9,6 @@ import {
   codexBinFile,
   globalFile,
   isGlobalDir,
-  namespacesFile,
   nearestConfig,
   readGlobalDirs,
   remotesFile,
@@ -66,6 +65,7 @@ import { isDefaultHome, MIN_NODE } from "../steps/service.ts";
 import { codexSkillState } from "../steps/skill.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
+import { approvalsFileFor } from "./namespace.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
 const HEALTHZ_TIMEOUT_MS = 10_000;
@@ -425,7 +425,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
   try {
     const ns = resolveNamespace(ctx.cwd, {
       globalFile: allow,
-      namespacesFile: namespacesFile(ctx.home),
+      namespacesFile: approvalsFileFor(ctx, "."),
       remotesFile: remotesFile(ctx.home),
       recordRemote: false,
       allowMissing: true,
@@ -437,7 +437,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
   // The cwd's own `.oa-bus.json` files, read as the daemon reads them.
   const files = scanConfigFiles(ctx.cwd, {
     globalFile: allow,
-    namespacesFile: namespacesFile(ctx.home),
+    namespacesFile: approvalsFileFor(ctx, "."),
     remotesFile: remotesFile(ctx.home),
   }).filter((f) => f.file !== allow);
   if (files.length > 0) {

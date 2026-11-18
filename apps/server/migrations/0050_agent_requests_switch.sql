@@ -1,0 +1,1 @@
+ALTER TABLE `notification_prefs` ADD `agent_requests_off` integer DEFAULT 0 NOT NULL;

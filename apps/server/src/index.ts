@@ -91,6 +91,7 @@ async function mcpWithPatUnguarded(
     version: null,
     via: { kind: "token", id: pat.tokenId },
     ...(link.identity ? { identity: link.identity } : {}),
+    ...(!link.identity && link.why ? { unlinked: link.why } : {}),
   };
   // Audit rows from these tools name the PAT (by id, never its text).
   return withCred({ kind: "pat", id: pat.tokenId }, () =>
