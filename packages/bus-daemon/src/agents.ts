@@ -44,7 +44,7 @@ export type AgentRecord = {
 };
 
 /** #1984: most proof hashes a session keeps; the hub holds the same number. */
-export const LINK_HASHES_MAX = 4;
+export const LINK_HASHES_MAX = 16;
 
 /** `list` with `hash` newest, a repeat moved to the end, at most LINK_HASHES_MAX. */
 export const withLinkHash = (

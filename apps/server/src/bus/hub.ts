@@ -952,8 +952,12 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
   };
 }
 
-/** #1984: most proofs a live session holds; a newer bind evicts the oldest. */
-export const PROOFS_PER_SESSION = 4;
+/**
+ * #1984: most proofs a live session holds; a newer bind evicts the least
+ * recently used. 16, not 4: Claude may run the helper several times while it
+ * keeps sending an older proof, and evicting that one unlinks every call.
+ */
+export const PROOFS_PER_SESSION = 16;
 
 /**
  * #2110: how long a session closed into away (sessions{closed}: the daemon's
@@ -974,9 +978,12 @@ function dropProofs(sql: SqlStorage, ids: string): void {
 
 /**
  * #1822: adds the hash of `agentId`'s proof to the session's proofs (at most
- * PROOFS_PER_SESSION: the oldest goes) and mints the agent's identity_id at
- * its first bind. Another row holding the same hash loses it, so a hash names
- * one session. `agents.proof_hash` mirrors the newest proof.
+ * PROOFS_PER_SESSION: the least recently used goes) and mints the agent's
+ * identity_id at its first bind. Another row holding the same hash loses it,
+ * so a hash names one session. A hash this session already holds keeps its
+ * place: a daemon's replay after a reconnect must not push out the proof the
+ * session is sending (agentByProof moves that one up on each use).
+ * `agents.proof_hash` mirrors the newest proof.
  */
 function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
   const lost = all<{ agent_id: string }>(
@@ -988,7 +995,9 @@ function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
   sql.exec(
     `insert into agent_proofs (hash, agent_id, seq)
      values (?, ?, (select coalesce(max(seq), 0) + 1 from agent_proofs))
-     on conflict (hash) do update set agent_id = excluded.agent_id, seq = excluded.seq`,
+     on conflict (hash) do update set agent_id = excluded.agent_id,
+       seq = case when agent_proofs.agent_id = excluded.agent_id
+                  then agent_proofs.seq else excluded.seq end`,
     hash,
     agentId,
   );
@@ -4597,7 +4606,7 @@ export class BusHub extends DurableObject<Env> {
    */
   async agentByProof(hash: string): Promise<AgentIdentity | null> {
     if (!LinkProofHashSchema.safeParse(hash).success) return null;
-    return one<AgentIdentity>(
+    const found = one<AgentIdentity>(
       this.ctx.storage.sql,
       `select a.identity_id as identityId, a.namespace, a.name, a.kind
         from agent_proofs p join agents a on a.id = p.agent_id
@@ -4608,6 +4617,16 @@ export class BusHub extends DurableObject<Env> {
       OWNER_ORG_ID,
       this.#now() - PROOF_AWAY_GRACE_MS,
     );
+    // The proof in use becomes its session's newest, so no later bind or
+    // replay evicts it. A no-op when it already is.
+    if (found)
+      this.ctx.storage.sql.exec(
+        `update agent_proofs set seq = (select max(seq) + 1 from agent_proofs)
+          where hash = ?1 and seq < (select max(seq) from agent_proofs
+            where agent_id = (select agent_id from agent_proofs where hash = ?1))`,
+        hash,
+      );
+    return found;
   }
 
   /**

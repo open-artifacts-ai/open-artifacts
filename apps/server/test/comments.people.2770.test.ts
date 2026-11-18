@@ -11,7 +11,7 @@ import {
   newId,
   R,
 } from "@oa/shared";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
@@ -498,8 +498,16 @@ describe("the candidates route", () => {
         "create",
       )
     ).id;
-    for (let i = 0; i < MENTION_SEARCHES_PER_MIN; i++)
-      expect((await find(art2, w, "s")).status).toBe(200);
-    expect((await find(art2, w, "s")).status).toBe(429);
+    // The limit counts per minute of the clock. Frozen, the whole loop is one
+    // minute: a boundary passing mid-loop reset the count and the last request
+    // answered 200 (flaked in CI).
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      for (let i = 0; i < MENTION_SEARCHES_PER_MIN; i++)
+        expect((await find(art2, w, "s")).status).toBe(200);
+      expect((await find(art2, w, "s")).status).toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

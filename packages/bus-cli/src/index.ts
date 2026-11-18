@@ -15,6 +15,8 @@ export type Command = (
       json?: boolean;
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
+  | { cmd: "add"; address: string; name?: string; noOpen: boolean }
+  | { cmd: "use"; name?: string; none: boolean }
   | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
@@ -53,6 +55,8 @@ export type Command = (
 const COMMANDS = new Set([
   "install",
   "login",
+  "add",
+  "use",
   "skill",
   "daemon",
   "mcp",
@@ -94,6 +98,8 @@ const FLAGS: Record<string, string[]> = {
     "json",
   ],
   login: ["instance", "no-open"],
+  add: ["name", "no-open"],
+  use: ["none"],
   skill: ["instance", "check", "json"],
   daemon: ["instance"],
   uninstall: ["purge"],
@@ -117,11 +123,13 @@ export function parse(argv: string[]): Command {
     tokens: true,
     options: {
       instance: { type: "string" },
+      name: { type: "string" },
       home: { type: "string" },
       "token-file": { type: "string" },
       "token-env": { type: "string" },
       for: { type: "string" },
       "no-open": { type: "boolean", default: false },
+      none: { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
@@ -144,9 +152,19 @@ export function parse(argv: string[]): Command {
   if (!COMMANDS.has(cmd)) throw new Error(`unknown command: ${cmd}`);
   const tokenFile = values["token-file"];
   const takes =
-    cmd === "mcp" ? 1 : cmd === "global" ? (rest[0] === "list" ? 1 : 2) : 0;
+    cmd === "mcp" || cmd === "add" || cmd === "use"
+      ? 1
+      : cmd === "global"
+        ? rest[0] === "list"
+          ? 1
+          : 2
+        : 0;
   if (cmd === "mcp" && rest.length === 0)
     throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
+  if (cmd === "add" && rest.length === 0)
+    throw new Error(`usage: ${BUS_CMD} add <address> [--name <name>]`);
+  if (cmd === "use" && rest[0] !== undefined && values.none)
+    throw new Error(`usage: ${BUS_CMD} use [name], or ${BUS_CMD} use --none`);
   if (cmd === "global" && rest.length < takes) throw new Error(GLOBAL_USAGE);
   if (cmd === "namespace") {
     const sub = rest[0];
@@ -184,7 +202,7 @@ export function parse(argv: string[]): Command {
       : rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
   // An empty path or URL must not fall back to the default home or instance.
-  for (const name of ["home", "instance"] as const)
+  for (const name of ["home", "instance", "name"] as const)
     if (values[name] === "") throw new Error(`--${name} needs a value`);
   // A flag the command ignores would run it on something the user did not mean.
   for (const t of tokens) {
@@ -226,9 +244,11 @@ export function parse(argv: string[]): Command {
 
 type Values = {
   instance?: string;
+  name?: string;
   home?: string;
   "token-file"?: string;
   "no-open": boolean;
+  none: boolean;
   yes: boolean;
   check: boolean;
   "no-service": boolean;
@@ -244,6 +264,19 @@ function route(cmd: string, values: Values, positionals: string[]) {
   switch (cmd) {
     case "login":
       return { cmd, hub: values.instance, noOpen: values["no-open"] };
+    case "add":
+      return {
+        cmd,
+        address: positionals[0] as string,
+        ...(values.name ? { name: values.name } : {}),
+        noOpen: values["no-open"],
+      };
+    case "use":
+      return {
+        cmd,
+        ...(positionals[0] ? { name: positionals[0] } : {}),
+        none: values.none,
+      };
     case "skill":
       return {
         cmd,

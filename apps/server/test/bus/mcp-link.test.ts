@@ -131,7 +131,7 @@ describe("linkRequest (#1822)", () => {
         a.userId,
         mcpReq("x", { [LINK_PROOF_HEADER]: v }),
       );
-      expect(Object.keys(r)).toEqual(["req"]);
+      expect(r.identity).toBeUndefined();
       expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     }
     // Only the well-formed unknown one reached the hub.
@@ -150,11 +150,12 @@ describe("linkRequest (#1822)", () => {
       agentByProof: () => Promise.reject(new Error("boom")),
     });
     const f = await linkRequest(failing.ev, a.userId, req());
-    expect(Object.keys(f)).toEqual(["req"]);
+    expect(f.identity).toBeUndefined();
+    expect(f.why).toBe("error");
     const slow = spyHubs({ agentByProof: () => new Promise(() => {}) });
     const t0 = Date.now();
     const s = await linkRequest(slow.ev, a.userId, req());
-    expect(Object.keys(s)).toEqual(["req"]);
+    expect(s.identity).toBeUndefined();
     expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
   });
 
@@ -170,7 +171,7 @@ describe("linkRequest (#1822)", () => {
       a.userId,
       mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
     );
-    expect(Object.keys(r)).toEqual(["req"]);
+    expect(r.identity).toBeUndefined();
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     expect(Date.now() - t0).toBeLessThan(PROOF_LOOKUP_MS + 1500);
     expect(asked).toEqual([]);
@@ -209,6 +210,29 @@ describe("linkRequest (#1822)", () => {
     }
   });
 
+  it("a proof header that is not a proof logs reason malformed with its length only", async () => {
+    const a = await bound(proofOf());
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const bad = "not-a-proof";
+      const r = await linkRequest(
+        spyHubs({ agentByProof: async () => null }).ev,
+        a.userId,
+        mcpReq("x", { [LINK_PROOF_HEADER]: bad }),
+      );
+      expect(r.identity).toBeUndefined();
+      const none = log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("bus_link_lookup_none"));
+      expect(none.map((l) => JSON.parse(l))).toMatchObject([
+        { reason: "malformed", why: `string_len_${bad.length}` },
+      ]);
+      expect(none.join("")).not.toContain(bad);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("#2110: a lookup that never answers waits PROOF_LOOKUP_MS (1.5 s) and logs reason timeout", async () => {
     expect(PROOF_LOOKUP_MS).toBe(1500);
     const proof = proofOf();
@@ -221,7 +245,8 @@ describe("linkRequest (#1822)", () => {
         a.userId,
         mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
       );
-      expect(Object.keys(r)).toEqual(["req"]);
+      expect(r.identity).toBeUndefined();
+      expect(r.why).toBe("timeout");
       expect(Date.now() - t0).toBeGreaterThanOrEqual(PROOF_LOOKUP_MS - 5);
       const none = log.mock.calls
         .map((c) => String(c[0]))
@@ -291,7 +316,7 @@ describe("linkRequest (#1822)", () => {
       a.userId,
       mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
     );
-    expect(Object.keys(r)).toEqual(["req"]);
+    expect(r.identity).toBeUndefined();
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
   });
 

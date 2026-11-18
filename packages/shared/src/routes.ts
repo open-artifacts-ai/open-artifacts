@@ -147,6 +147,12 @@ export const R = {
   /** POST -> 204: quiet this sender's requests for a day; they stay held, and the asker sees nothing different. */
   agentAskHeldNotNow: (id: string) =>
     `/api/v1/me/agent-asks/held/${seg(id)}/not-now`,
+  /** #2577 S2: GET -> AgentRequestsSwitch; PUT AgentRequestsSwitch -> AgentRequestsSwitch. Off: the caller's agents hear nobody outside (nothing is held; a mention or ask of them is refused at post with "Only answers <name>"). Reading is any signed-in person's; saving is a browser session only. Default on. */
+  agentRequests: "/api/v1/me/agent-requests",
+  /** #2577 S2: GET -> ListensList: the caller's live "listens to" entries (people whose requests their agents take without holding). Browser session only. */
+  agentListens: "/api/v1/me/agent-listens",
+  /** PATCH ListenShortenBody { until } -> ListenEntry: ends the entry sooner (never later: a longer one is a new allow). DELETE -> 204: removes it. Both affect future requests only; what was delivered or is held stays. Own entries only (else 404); browser session only. */
+  agentListen: (id: string) => `/api/v1/me/agent-listens/${seg(id)}`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",
   /** PATCH TokenPatch -> Token; DELETE -> 204. Own tokens only (else 404). */
