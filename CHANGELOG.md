@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.212.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.211.0...v0.212.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** owner_away cap, hello_ok field and frame; self shows away-until ([#2759](https://github.com/open-artifacts-ai/open-artifacts/issues/2759)) ([#2788](https://github.com/open-artifacts-ai/open-artifacts/issues/2788)) ([a6d5fa0](https://github.com/open-artifacts-ai/open-artifacts/commit/a6d5fa02408cbf93bce307d4ba97b6168069d431))
+* **comments:** [@mention](https://github.com/mention) a person; a mention of me is Needs you ([#2770](https://github.com/open-artifacts-ai/open-artifacts/issues/2770)) ([#2780](https://github.com/open-artifacts-ai/open-artifacts/issues/2780)) ([33b22fb](https://github.com/open-artifacts-ai/open-artifacts/commit/33b22fb6af4b7fb030f2ac345614a07663090f00))
+
 ## [0.211.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.210.0...v0.211.0) (2026-11-18)
 
 
