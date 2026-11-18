@@ -318,9 +318,10 @@ const robots = (e: unknown) => callWorker(new Request(`${APP}/robots.txt`), e);
  * share_email_messages and of old share_email_events_seen (one D1 batch,
  * counted per statement). The comment-picture sweep (sweepPictures, #2508)
  * adds 1: its select of unattached pictures past the TTL (nothing to delete
- * here, so no second statement).
+ * here, so no second statement). The Later sweep (sweepInboxLater, #2762)
+ * adds 1: one delete.
  */
-const NIGHTLY_QUERIES = 23;
+const NIGHTLY_QUERIES = 24;
 
 /** Another isolate: its own marker check (keyed by the DB binding). */
 const isolate = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>

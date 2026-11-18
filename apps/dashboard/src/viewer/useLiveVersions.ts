@@ -125,6 +125,11 @@ export function useLiveVersions(o: {
   /** /full (the Design's pill copy for announcements). */
   chromeless: boolean;
   embed: boolean;
+  /**
+   * A doc open in the live editor: the room already shows every edit, so a
+   * newer saved version (its own autosave, #2750) is never held or swapped.
+   */
+  doc?: boolean;
   /** The shown frame's state, read when a decision is made. */
   frame: () => FrameState;
   /** A menu or dialog is open (not the side panel). */
@@ -177,6 +182,11 @@ export function useLiveVersions(o: {
       const n = now.current;
       if (n.gone || !n.following || n.shown === undefined) return;
       if (u.version <= n.shown) return;
+      if (n.o.doc) {
+        // Already current: no chip, and no layer to preload (#2751).
+        setShown(u.version);
+        return;
+      }
       const safe = isSafeSwap({
         following: n.following,
         ...n.o.frame(),

@@ -1,4 +1,11 @@
-import { artifactFrame, expect, publishViaApi, test, uniq } from "./fixtures";
+import {
+  artifactFrame,
+  CONTENT_HOST,
+  expect,
+  publishViaApi,
+  test,
+  uniq,
+} from "./fixtures";
 
 // The runtime (packages/runtime) is injected into every HTML artifact.
 const DB_PAGE = `<!doctype html>
@@ -43,9 +50,21 @@ test("viewer iframe has the exact sandbox attribute", async ({
     format: "html",
     content: "<p>hi</p>",
   });
+  const SANDBOX =
+    "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads";
+  // The frame's own document, from the content host (signal: its response).
+  const frameDoc = page.waitForResponse(
+    (r) =>
+      r.url().includes(CONTENT_HOST) &&
+      r.request().resourceType() === "document",
+  );
   await page.goto(`/a/${id}`);
   await expect(page.locator("iframe.oa-vframe")).toHaveAttribute(
     "sandbox",
-    "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads",
+    SANDBOX,
   );
+  // The server's header agrees with the attribute and limits who may frame it.
+  const csp = (await frameDoc).headers()["content-security-policy"] ?? "";
+  expect(csp).toContain(`sandbox ${SANDBOX}`);
+  expect(csp).toContain("frame-ancestors");
 });
