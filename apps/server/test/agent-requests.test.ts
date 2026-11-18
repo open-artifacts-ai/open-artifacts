@@ -1148,6 +1148,46 @@ describe("the inbox", () => {
     expect(await inboxVia(s.id, pat)).toContain("edited secret");
   });
 
+  it("a held thread reply's item reads the placeholder until the allow, through the reply path itself", async () => {
+    const s = await setup();
+    const t = await post(
+      s.id,
+      typed(owner),
+      owner,
+      "ask Claude",
+      mention(s.claude),
+    );
+    const waits: Promise<unknown>[] = [];
+    const after = {
+      version: 1,
+      ctx: { waitUntil: (p: Promise<unknown>) => void waits.push(p) },
+    };
+    await addReply(
+      E,
+      s.id,
+      t.id,
+      typed(editor),
+      view(editor),
+      "reply inbox secret",
+      {},
+      { moderator: true, after } as never,
+    );
+    await Promise.all(waits);
+    const pat = (await createPat(E, owner.userId, "reply token")).token;
+    const seen = await inboxVia(s.id, pat);
+    expect(seen).toContain(HELD_EXCERPT);
+    expect(seen).not.toContain("reply inbox secret");
+    const [r] = await held(s.id);
+    await allow(E, owner.userId, r?.id as string, {
+      level: "once",
+      items: (r?.items ?? []).map((i) => ({
+        commentId: i.commentId,
+        wordsHash: i.wordsHash,
+      })),
+    });
+    expect(await inboxVia(s.id, pat)).toContain("reply inbox secret");
+  });
+
   it("a lapsed hold's item still reads the placeholder", async () => {
     const s = await setup();
     const t = await post(

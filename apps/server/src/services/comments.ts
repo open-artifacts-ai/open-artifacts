@@ -1976,6 +1976,8 @@ async function threadReply(
   // or a guest-role member.
   if (c.author.kind !== "user" || c.author.agent || outsider(viewer)) return c;
   let out = c;
+  // #2577: holds added here; the comment returned always carries them (the inbox stores no words for their people).
+  let heldHere: { agent: HeldAgent; way: string }[] = [];
   try {
     const due = await call(() =>
       stub(env, a.id).commentsThreadReplyTake({
@@ -2044,6 +2046,7 @@ async function threadReply(
           address: { namespace: p.namespace, name: p.name },
         });
     }
+    heldHere = heldNow;
     if (heldNow.length > 0) {
       await call(() =>
         stub(env, a.id).commentsHold({
@@ -2123,6 +2126,22 @@ async function threadReply(
       code: e instanceof ApiError ? e.code : "error",
     });
   }
+  const missing = heldHere.filter(
+    (h) => !out.held?.some((x) => x.key === h.agent.key),
+  );
+  if (missing.length > 0)
+    out = {
+      ...out,
+      held: [
+        ...(out.held ?? []),
+        ...missing.map((h) => ({
+          key: h.agent.key,
+          owner: h.agent.owner,
+          state: "held",
+          way: h.way,
+        })),
+      ],
+    };
   return out;
 }
 
