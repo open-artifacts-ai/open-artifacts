@@ -95,6 +95,10 @@ test("mixed, Later and an answered ask at 1280 light", {
   const rows = p.locator("[data-for-you-item][data-level=needs_you]");
   await expect(rows.first()).toContainText("waiting 4 min");
   await expect(rows.nth(1)).toContainText("Sam Rivera mentioned you");
+  // #2570: the comment's quote on the mention row.
+  await expect(rows.nth(1)).toContainText(
+    '"Can you check the yearly numbers?" · on "Pricing table"',
+  );
   await expect(bell(page)).toHaveAttribute("data-state", "open");
   await axe(page);
   await noSidewaysScroll(page);

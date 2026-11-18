@@ -56,6 +56,7 @@ import {
   unread,
   waitMs,
 } from "./model";
+import { muteErrorCopy } from "./prefsContract";
 import { WaitMark } from "./waiting";
 
 /** Settings › Notifications (today the email switch; slice 2 adds For you's). */
@@ -611,6 +612,8 @@ function Row({
   /** A mute keeps the row; the toast says so and can take it back. */
   const muteWith = (m: { kind: "agent" | "page"; id: string }, title: string) =>
     mute.mutate(m, {
+      onError: (e) =>
+        toast({ title: muteErrorCopy(e, "mute"), tone: "danger" }),
       onSuccess: () =>
         toast({
           title,
