@@ -33,6 +33,9 @@ const digestHex = async (b: Uint8Array): Promise<string> =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", b as BufferSource))]
     .map((x) => x.toString(16).padStart(2, "0"))
     .join("");
+/** Declared dimensions past these are refused (a tiny file can claim a huge picture). */
+const MAX_SIDE = 16_384;
+const MAX_PIXELS = 50_000_000;
 const notFound = () => new ApiError("not_found", "Not found");
 const MB = COMMENT_PICTURE_MAX_BYTES / 1024 / 1024;
 /** The signed PUT's life: ten minutes. */
@@ -256,6 +259,12 @@ export async function putPicture(
         `The bytes are ${read.type.slice(6).toUpperCase()}, not the ${row.type.slice(6).toUpperCase()} they were reserved as.`,
         { reason: "type_mismatch" },
       );
+    if (read.w > MAX_SIDE || read.h > MAX_SIDE || read.w * read.h > MAX_PIXELS)
+      throw new ApiError(
+        "too_large",
+        `A picture can be up to ${MAX_SIDE} pixels on a side and ${MAX_PIXELS / 1_000_000} megapixels.`,
+        { reason: "dimensions" },
+      );
     // The cleaned size is what is stored, and what counts.
     await requireFreeStorage(env, read.bytes.length);
     await env.FILES.put(row.r2_key, read.bytes, {
@@ -404,6 +413,26 @@ export async function getPicture(
   return { body: obj.body, type: row.type, bytes: row.bytes };
 }
 
+/**
+ * The picture's comment, for the GET's held-request check: null when it isn't
+ * attached to one.
+ */
+export async function pictureComment(
+  env: Env,
+  artifactId: string,
+  pictureId: string,
+): Promise<{ threadId: string; commentId: string } | null> {
+  const row = await stmt(
+    env.DB,
+    "select thread_id, comment_id from comment_pictures where id = ?1 and artifact_id = ?2",
+  )
+    .bind(pictureId, artifactId)
+    .first<{ thread_id: string | null; comment_id: string | null }>();
+  if (!row?.thread_id || !row.comment_id || row.comment_id.startsWith("hold:"))
+    return null;
+  return { threadId: row.thread_id, commentId: row.comment_id };
+}
+
 /** Deletes pictures by where they sit (a comment, or a whole thread) and their bytes. */
 async function deleteWhere(
   env: Env,
@@ -434,12 +463,12 @@ export const deleteCommentPictures = (
     ? deleteWhere(env, "thread_id", threadId)
     : deleteWhere(env, "comment_id", commentId);
 
-/** The daily sweep: reservations and uploads no comment used for an hour (and their bytes). */
+/** The daily sweep: reservations and uploads no comment used for an hour, and rows stuck under a "hold:" claim that long (and their bytes). */
 export async function sweepPictures(env: Env, now: number): Promise<number> {
   const { results } = await stmt(
     env.DB,
     `select id, r2_key from comment_pictures
-      where comment_id is null and created_at < ?1 limit 500`,
+      where (comment_id is null or comment_id like 'hold:%') and created_at < ?1 limit 500`,
   )
     .bind(now - COMMENT_PICTURE_PENDING_TTL_MS)
     .all<{ id: string; r2_key: string }>();

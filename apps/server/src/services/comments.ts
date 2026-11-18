@@ -646,15 +646,28 @@ async function threadViews(
   await withPictures(
     env,
     out.flatMap((t) => t.comments),
+    new Set(
+      threads.flatMap((t) =>
+        t.comments.filter((c) => maskedFor(c, viewer)).map((c) => c.id),
+      ),
+    ),
   );
   return out;
 }
 
-/** #2508: each comment's pictures, from their own table (absent when it has none). */
-async function withPictures(env: Env, comments: Comment[]): Promise<void> {
+/**
+ * #2508: each comment's pictures, from their own table (absent when it has
+ * none). Not for a comment `masked` for this viewer: an agent of the person a
+ * request is held for reads a placeholder, so no picture either (#2577).
+ */
+async function withPictures(
+  env: Env,
+  comments: Comment[],
+  masked: Set<string>,
+): Promise<void> {
   const by = await picturesOf(
     env,
-    comments.map((c) => c.id),
+    comments.filter((c) => !masked.has(c.id)).map((c) => c.id),
   );
   for (const c of comments) {
     const p: CommentPicture[] | undefined = by.get(c.id);
@@ -1066,7 +1079,7 @@ async function commentView(
     await ctxFor(env, ids, hasAgent(c), { comments: [c] }),
   );
   await fillReplacedTitles(env, [out], viewer);
-  await withPictures(env, [out]);
+  await withPictures(env, [out], new Set(maskedFor(c, viewer) ? [c.id] : []));
   return out;
 }
 

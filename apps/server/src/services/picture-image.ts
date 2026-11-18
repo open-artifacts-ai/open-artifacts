@@ -6,6 +6,8 @@
 // - PNG: eXIf, tEXt, iTXt, zTXt chunks (and tIME);
 // - WebP: EXIF and XMP chunks, their VP8X flags cleared, the RIFF size fixed;
 // - GIF: comment and application extensions other than the NETSCAPE loop.
+// What stays: JPEG keeps APP0 and APP2; PNG keeps unknown private chunks. EXIF
+// and XMP are removed from every type.
 // A file that doesn't parse as its type is refused, never half-cleaned.
 import type { CommentPictureType } from "@oa/shared";
 
