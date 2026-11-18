@@ -33,6 +33,7 @@ import {
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
 import { hubOf } from "./bus/helpers.js";
+import { listenEachOther } from "./held-listens.js";
 import { api, login } from "./helpers.js";
 
 // #2175: removing an agent from a thread withdraws what its hub still holds for it.
@@ -84,6 +85,7 @@ let editor: U;
 beforeAll(async () => {
   owner = await mk("wh-owner");
   editor = await mk("wh-editor");
+  await listenEachOther(E, [owner.userId, editor.userId]);
 });
 
 async function setup() {

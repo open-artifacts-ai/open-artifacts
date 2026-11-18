@@ -136,6 +136,17 @@ export const R = {
   passkeySettings: "/api/v1/passkeys/settings",
   /** POST PasskeySettingsPatch -> { options, expiresAt }: a challenge bound to exactly that settings change. */
   passkeySettingsChallenge: "/api/v1/passkeys/settings/challenge",
+  /** #2577: GET -> HeldList: the requests to the caller's agents that wait for them, with the current words. Browser session only. */
+  agentAskHeld: "/api/v1/me/agent-asks/held",
+  /** POST AllowBody -> AllowResult: passes exactly the listed held comments (at the words shown) to the caller's agents; "page" and "all" also add a "listens to" entry ("all" needs a passkey). 409 `changed` is never sent: edited comments stay held and count in `changed`. */
+  agentAskHeldAllow: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/allow`,
+  /** POST AllowChallengeBody -> PasskeyChallenge: the passkey prompt for an "all pages" entry ending at `until`. */
+  agentAskHeldAllowChallenge: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/allow/challenge`,
+  /** POST -> 204: quiet this sender's requests for a day; they stay held, and the asker sees nothing different. */
+  agentAskHeldNotNow: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/not-now`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",
   /** PATCH TokenPatch -> Token; DELETE -> 204. Own tokens only (else 404). */

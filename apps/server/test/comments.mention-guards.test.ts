@@ -29,6 +29,7 @@ import {
 } from "../src/services/mention-guards.js";
 import { putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
+import { listenEachOther } from "./held-listens.js";
 import { login } from "./helpers.js";
 
 // #2559: outsiders mention only their own agents; a limit on mentions of other
@@ -72,6 +73,7 @@ let editor: U;
 beforeAll(async () => {
   owner = await mk("mg-owner");
   editor = await mk("mg-editor");
+  await listenEachOther(E, [owner.userId, editor.userId]);
 });
 
 const typed = (u: U): CommentWho => ({

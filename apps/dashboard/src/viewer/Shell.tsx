@@ -33,6 +33,7 @@ import { createBridge, type ScrollPos, type WelcomeGreet } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
 import {
+  AskBeside,
   CommentsBody,
   CompactComments,
   PinBar,
@@ -609,7 +610,7 @@ function Viewer({
       },
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
       onCommentPositions: (p, ghost) => cmtRef.current.onPositions(p, ghost),
-      onCommentOpen: (id) => cmtRef.current.onOpen(id),
+      onCommentOpen: (id, rect) => cmtRef.current.onOpen(id, rect),
       onCommentPin: (p, at) => cmtRef.current.onPin(p, at),
       onCommentEscape: () => cmtRef.current.onEscape(),
       onCommentSelection: (has) => cmtRef.current.onSelection(has),
@@ -964,6 +965,7 @@ function Viewer({
                 allow="clipboard-write"
               />
               {commentsOn && <PinBeside frame={el} />}
+              {commentsOn && <AskBeside frame={el} />}
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||

@@ -149,6 +149,7 @@ export async function recordCommentItems(
 ): Promise<void> {
   try {
     const c = j.comment;
+    const heldFor = heldOwners(c);
     const by = new Map<ItemKind, Set<string>>(
       ORDER.map((k) => [k, new Set<string>()]),
     );
@@ -191,7 +192,8 @@ export async function recordCommentItems(
           threadId: j.threadId,
           commentId: c.id,
           actor: c.author,
-          excerpt: itemExcerpt(c.body),
+          // #2577: never the words of a request held for this person; allow() fills them in.
+          excerpt: heldFor.has(userId) ? HELD_EXCERPT : itemExcerpt(c.body),
           ...(kind === "mention"
             ? { agentName: itemExcerpt(agentOf.get(userId) ?? "your agent") }
             : {}),
@@ -232,17 +234,37 @@ export async function forgetCommentItems(
   }
 }
 
-/** A comment was edited: its mention, reply and comment items show the new text. */
+/** #2577: the excerpt of an item whose comment holds a request for its person, until they allow it. */
+export const HELD_EXCERPT = "A request is waiting for you to allow it";
+
+/** The people a comment holds a request for, in any state (held, releasing, lapsed). */
+export const heldOwners = (c: { held?: { owner: string }[] }): Set<string> =>
+  new Set((c.held ?? []).map((h) => h.owner));
+
+/** A comment was edited: its mention, reply and comment items show the new text, except to people it holds a request for. */
 export async function refreshCommentItems(
   env: Env,
-  j: { artifactId: string; commentId: string; body: string },
+  j: {
+    artifactId: string;
+    commentId: string;
+    body: string;
+    held?: { owner: string }[];
+  },
 ): Promise<void> {
   try {
+    const held = [...heldOwners(j)];
     await stmt(
       env.DB,
-      "update inbox_items set excerpt = ? where artifact_id = ? and comment_id = ? and kind in ('mention', 'reply', 'comment')",
+      `update inbox_items set excerpt = case when user_id in (select value from json_each(?4)) then ?5 else ?1 end
+        where artifact_id = ?2 and comment_id = ?3 and kind in ('mention', 'reply', 'comment')`,
     )
-      .bind(itemExcerpt(j.body), j.artifactId, j.commentId)
+      .bind(
+        itemExcerpt(j.body),
+        j.artifactId,
+        j.commentId,
+        JSON.stringify(held),
+        HELD_EXCERPT,
+      )
       .run();
   } catch (e) {
     logWarn("inbox_items_refresh_failed", e);
@@ -344,6 +366,7 @@ export type ItemRow = {
   artifactId: string;
   title: string;
   threadId: string | null;
+  commentId: string | null;
   actor: string;
   excerpt: string;
   agentName: string | null;
@@ -357,6 +380,7 @@ const cols = {
   artifactId: inboxItems.artifactId,
   title: artifacts.title,
   threadId: inboxItems.threadId,
+  commentId: inboxItems.commentId,
   actor: inboxItems.actor,
   excerpt: inboxItems.excerpt,
   agentName: inboxItems.agentName,

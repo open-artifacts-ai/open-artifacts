@@ -43,6 +43,10 @@ export const InboxItemSchema = z
       "proposal",
       "away",
       "member_set_up",
+      // #2577: someone asked one of your agents and it is held for you.
+      "request",
+      // #2577: someone asked one of your agents and it is held for you.
+      "request",
     ]),
     urgency: z.enum(["waiting", "approval", "plain"]).optional(),
     waitingSince: Iso.optional(),

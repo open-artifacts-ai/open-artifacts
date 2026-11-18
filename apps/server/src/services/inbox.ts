@@ -8,6 +8,7 @@ import { artifactAsks, artifacts } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
+import { receiverCanOpen } from "./agent-requests.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
 import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
@@ -42,7 +43,8 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
     .from(artifactAsks)
     .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
     .where(forMe(caller));
-  return Math.min(r[0]?.n ?? 0, NEEDS_YOU_MAX);
+  const held = await heldRequestRows(env, caller).catch(() => []);
+  return Math.min((r[0]?.n ?? 0) + held.length, NEEDS_YOU_MAX);
 }
 
 export { unreadUpdateCount };
@@ -297,14 +299,83 @@ export async function memberSetUpUpdates(
   return out;
 }
 
-/** The whole inbox response: Needs you (asks) and one page of Updates (mentions of your agents among them). */
+/** Requests to the caller's agents that wait for them, not quieted by "Not now": one row each. */
+const heldRequestRows = async (env: Env, caller: Me, now = Date.now()) => {
+  const rows = (
+    await env.DB.prepare(
+      `select r.id, r.sender_id, r.artifact_id, r.created_at, a.title as title
+         from held_requests r join artifacts a on a.id = r.artifact_id and a.deleted_at is null
+        where r.receiver_id = ?1 and (r.quiet_until is null or r.quiet_until <= ?2)
+          and exists (select 1 from held_request_items i where i.request_id = r.id and i.state = 'held' and i.expires_at > ?2)
+        order by r.last_at limit ?3`,
+    )
+      .bind(caller.user.id, now, NEEDS_YOU_MAX)
+      .all<{
+        id: string;
+        sender_id: string;
+        artifact_id: string;
+        created_at: number;
+        title: string;
+      }>()
+  ).results;
+  // A page the caller can no longer open is not theirs to answer.
+  const open: typeof rows = [];
+  for (const r of rows)
+    if (await receiverCanOpen(env, caller, r.artifact_id)) open.push(r);
+  return open;
+};
+
+/**
+ * #2577: someone asked one of the caller's agents; the request is held for them. One item per
+ * (sender, page), however many requests: the words are read when it opens, never here.
+ */
+export async function heldRequestItems(
+  env: Env,
+  caller: Me,
+): Promise<InboxItem[]> {
+  const rows = await heldRequestRows(env, caller);
+  if (rows.length === 0) return [];
+  const viewer: CommentViewer = {
+    userId: caller.user.id,
+    short: null,
+    guest: isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+  };
+  const faces = await askerFaces(
+    env,
+    viewer,
+    rows.map((r): StoredActor => ({ kind: "user", ref: r.sender_id })),
+  );
+  return rows.map((r, i): InboxItem => {
+    const face = faces[i] as CommentAuthor;
+    return {
+      id: `request:${r.id}`,
+      level: "needs_you",
+      kind: "request",
+      urgency: "approval",
+      waitingSince: iso(new Date(r.created_at).toISOString()),
+      artifact: { id: r.artifact_id, title: r.title },
+      actor: face,
+      text: `${face.name} wants to ask your agent`,
+      href: viewerPath(r.artifact_id),
+      createdAt: new Date(r.created_at).toISOString(),
+      readAt: null,
+    };
+  });
+}
+
+/** The whole inbox response: Needs you (asks and held requests) and one page of Updates. */
 export async function inboxOf(
   env: Env,
   caller: Me,
   cursor?: string,
 ): Promise<Inbox> {
-  const [asks, page, unread, setUp] = await Promise.all([
+  const [asks, requests, page, unread, setUp] = await Promise.all([
     needsYou(env, caller),
+    heldRequestItems(env, caller).catch((e) => {
+      logWarn("inbox_held_requests_failed", e);
+      return [] as InboxItem[];
+    }),
     updatesPage(env, caller, cursor),
     unreadUpdateCount(env, caller),
     // #2632: synthesized lines (no stored row), on the first page only.
@@ -315,7 +386,16 @@ export async function inboxOf(
           return [] as InboxItem[];
         }),
   ]);
-  const list = asks.slice(0, NEEDS_YOU_MAX);
+  // Waiting agents first, then what needs an approval (asks and requests, oldest first), then the rest.
+  const byAge = (a: InboxItem, b: InboxItem) =>
+    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  const list = [
+    ...asks.filter((i) => i.urgency === "waiting"),
+    ...[...asks.filter((i) => i.urgency === "approval"), ...requests].sort(
+      byAge,
+    ),
+    ...asks.filter((i) => i.urgency !== "waiting" && i.urgency !== "approval"),
+  ].slice(0, NEEDS_YOU_MAX);
   const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
     (x, y) => y.createdAt.localeCompare(x.createdAt),
   );
