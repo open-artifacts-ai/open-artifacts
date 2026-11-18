@@ -5879,7 +5879,7 @@ export class BusHub extends DurableObject<Env> {
    * member's own sockets are on this hub. No cap'd socket: nothing is read or
    * armed, so an idle hub stays idle.
    */
-  async #pushOwnerAway(): Promise<void> {
+  async #pushOwnerAway(commit = true): Promise<void> {
     const sockets = this.ctx
       .getWebSockets(DAEMON_TAG)
       .filter((ws) => !isReplaced(ws) && ownerAwayGated(ws));
@@ -5891,12 +5891,13 @@ export class BusHub extends DurableObject<Env> {
     if (state === undefined) {
       // Try again shortly; never leave the sockets with a stale answer.
       this.#armOwnerAway(this.#now() + 60_000);
-      await this.#commitArm();
+      if (commit) await this.#commitArm();
       return;
     }
     for (const ws of sockets) trySendFrame(ws, ownerAwayFrame(state.until));
     this.#armOwnerAway(state.next);
-    await this.#commitArm();
+    // The alarm re-arms itself from #nextDeadline when it ends.
+    if (commit) await this.#commitArm();
   }
 
   /** The member saved their prefs: tell their sockets now (the Worker calls this on their own hub). */
@@ -5915,7 +5916,7 @@ export class BusHub extends DurableObject<Env> {
     // Cleared first: the push re-arms for the next edge.
     this.#armOwnerAway(null);
     try {
-      await this.#pushOwnerAway();
+      await this.#pushOwnerAway(false);
     } catch (e) {
       logError("bus_owner_away_push_failed", e);
       this.#armOwnerAway(now + 60_000);
@@ -8448,6 +8449,7 @@ export class BusHub extends DurableObject<Env> {
       if (heldNext === null || h.at < heldNext) heldNext = h.at;
     const ts = [
       want,
+      this.#ownerAwayDue(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
       min(
         "select min(held_at) as t from receipts where state = 'pending' and held_at is not null",
