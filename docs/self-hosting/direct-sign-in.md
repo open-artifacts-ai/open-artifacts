@@ -55,7 +55,9 @@ Direct login keys everything it signs from `SESSION_SECRET`: one key per purpose
 - **Emailed codes need it.** With a shorter secret, code requests answer 503 `code_unavailable`.
 - **Shorter, older secrets (legacy).** Session and login cookies keep working, signed with the raw secret as before, so nobody is logged out. Emailed codes stay off (503 `code_unavailable`) until you rotate it, so rotate it soon. `/healthz` never reports this: it is public, and naming a weak secret there would help an attacker.
 - **Cookies from before the per-purpose keys** (signed with the raw secret) are still accepted until 1 December 2026. After that date they are refused, and anyone still holding one logs in again once.
-- **Rotating it** signs everyone out and invalidates every pending code. It also breaks every "Don't email me again" link already sent in outside share emails and every unsubscribe link in comment emails: those links are signed with a key derived from it, so they answer "This link doesn't work" until a new email carries a fresh one.
+- **Rotating it** signs everyone out and invalidates every pending code. It also breaks every "Don't email me again" link already sent in outside share emails and every unsubscribe link in comment emails: those links are signed with a key derived from it, so they answer "This link doesn't work" until a new email carries a fresh one. It also changes the keyed hash that stores each "Don't email me again" address (a key derived from it), so people who opted out stop matching and can be emailed again until they opt out again. Rows written before the keyed hash (#2716) are plain SHA-256 of the address and are not affected by a rotation; they are rewritten to keyed the next time that address is shared.
+
+**The opt-out table is not anonymous.** `email_optouts` holds `k1:` plus an HMAC of the address under that derived key, which a dictionary can't reverse without the secret. While rows from before #2716 remain they hold the plain SHA-256 of the address, which a dictionary can reverse, so treat the table (and any log or export of it) as holding addresses.
 
 ## Setting up Google
 

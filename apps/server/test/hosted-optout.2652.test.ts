@@ -12,7 +12,7 @@ import { R, ShareResultSchema } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
-import { addressHash } from "../src/email/share-optout.js";
+import { legacyAddressHash } from "../src/email/share-optout.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import {
@@ -258,7 +258,7 @@ describe("before an outside share email (hosted, the switch on)", () => {
     await env.DB.prepare(
       "insert into email_optouts (address_hash, created_at) values (?, ?)",
     )
-      .bind(await addressHash(to), Date.now())
+      .bind(await legacyAddressHash(to), Date.now())
       .run();
     expect(await share(to)).toMatchObject({
       emailed: false,
@@ -288,7 +288,7 @@ describe("never on self-host, or with the switch off", () => {
       [off, to2],
     ] as const) {
       const mail = w.m.sent.find((x) => x.to === to);
-      expect(links(mail?.html)[1]).toContain("/auth/unsubscribe/shares?t=v1.");
+      expect(links(mail?.html)[1]).toContain("/auth/unsubscribe/shares?t=v2.");
       expect(mail?.text).toContain("Don't email me from");
       expect(mail?.text).toContain("again:");
     }

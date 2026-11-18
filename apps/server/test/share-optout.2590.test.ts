@@ -3,8 +3,10 @@ import { env } from "cloudflare:workers";
 import { R, ShareResultSchema } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { deriveKey } from "../src/auth/keys.js";
 import {
   addressHash,
+  legacyAddressHash,
   optoutUrl,
   SHARE_OPTOUT_PATH,
   signOptoutToken,
@@ -13,6 +15,7 @@ import {
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
+import { hmacSign } from "../src/util/crypto.js";
 import { direct, mailer, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import { fetchAndWait, login } from "./helpers.js";
 
@@ -31,9 +34,24 @@ const HOSTED: Partial<Env> = {
 const hit = (method: string, path: string, e: Env = env as Env) =>
   app.fetch(new Request(`${APP}${path}`, { method }), e, ctx);
 const suppressed = async (email: string) =>
-  (await env.DB.prepare("select 1 from email_optouts where address_hash = ?")
-    .bind(await addressHash(email))
+  (await env.DB.prepare(
+    "select 1 from email_optouts where address_hash in (?, ?)",
+  )
+    .bind(await addressHash(env, email), await legacyAddressHash(email))
     .first()) !== null;
+const keyedRow = async (email: string) =>
+  (await env.DB.prepare("select 1 from email_optouts where address_hash = ?")
+    .bind(await addressHash(env, email))
+    .first()) !== null;
+const legacyRow = async (email: string) =>
+  (await env.DB.prepare("select 1 from email_optouts where address_hash = ?")
+    .bind(await legacyAddressHash(email))
+    .first()) !== null;
+/** A v1 token (the plain SHA-256 of the address), as an old email carries. */
+const legacyToken = async (email: string) => {
+  const h = (await legacyAddressHash(email)) as string;
+  return `v1.${h}.${await hmacSign(await deriveKey(env, "oa:share-optout"), `v1:share-email-off:${h}`)}`;
+};
 const tokenOf = (url: string) => new URL(url).searchParams.get("t") ?? "";
 
 async function world(over: Partial<Env> = HOSTED) {
@@ -75,7 +93,7 @@ describe("the opt-out token", () => {
   it("round trips, names the address's hash, and is one purpose", async () => {
     const email = uniq("tok", "gmail.com");
     const t = await signOptoutToken(env, email);
-    expect(await verifyOptoutToken(env, t)).toBe(await addressHash(email));
+    expect(await verifyOptoutToken(env, t)).toBe(await addressHash(env, email));
     // The link never carries the address.
     expect(t).not.toContain("@");
     expect(t).not.toContain(email.split("@")[0] as string);
@@ -91,14 +109,14 @@ describe("the opt-out token", () => {
       string,
       string,
     ];
-    const hashB = (await addressHash(b)) as string;
+    const hashB = ((await addressHash(env, b)) as string).slice(3);
     // A's signature on B's hash: the wrong address.
     expect(await verifyOptoutToken(env, `${v}.${hashB}.${sigA}`)).toBeNull();
     // A flipped signature, a version bump, extra parts, junk.
     expect(
       await verifyOptoutToken(env, `${v}.${hashA}.${sigA.slice(0, -2)}xx`),
     ).toBeNull();
-    expect(await verifyOptoutToken(env, `v2.${hashA}.${sigA}`)).toBeNull();
+    expect(await verifyOptoutToken(env, `v3.${hashA}.${sigA}`)).toBeNull();
     expect(await verifyOptoutToken(env, `${v}.${hashA}.${sigA}.x`)).toBeNull();
     expect(await verifyOptoutToken(env, "")).toBeNull();
     expect(await verifyOptoutToken(env, "garbage")).toBeNull();
@@ -144,7 +162,7 @@ describe("the opt-out page", () => {
         await env.DB.prepare(
           "select count(*) n from email_optouts where address_hash = ?",
         )
-          .bind(await addressHash(email))
+          .bind(await addressHash(env, email))
           .first<{ n: number }>()
       )?.n,
     ).toBe(1);
@@ -241,7 +259,7 @@ describe("the email and the opt-out", () => {
     );
     expect(mail?.text).toContain("Don't email me from Open Artifacts again:");
     expect(await verifyOptoutToken(env, tokenOf(url))).toBe(
-      await addressHash(to),
+      await addressHash(env, to),
     );
     expect(optoutUrl(env.APP_HOST, tokenOf(url))).toBe(url);
     // One click, and the next share is saved but not emailed.
@@ -280,5 +298,108 @@ describe("the email and the opt-out", () => {
       emailed: false,
       notEmailed: "skipped",
     });
+  });
+});
+
+describe("the keyed hash and the legacy rows (#2716)", () => {
+  const post = (path: string) => hit("POST", path);
+
+  it("the stored key is `k1:` plus an HMAC, not the SHA-256, and another secret gives another key", async () => {
+    const email = uniq("kh", "gmail.com");
+    const keyed = (await addressHash(env, email)) as string;
+    expect(keyed.startsWith("k1:")).toBe(true);
+    expect(keyed).not.toContain((await legacyAddressHash(email)) as string);
+    const other = (await addressHash(
+      { SESSION_SECRET: "another-secret-value-1234567890" },
+      email,
+    )) as string;
+    expect(other).not.toBe(keyed);
+    // A v2 opt-out writes the keyed row, never the legacy one.
+    await post(`${SHARE_OPTOUT_PATH}?t=${await signOptoutToken(env, email)}`);
+    expect(await keyedRow(email)).toBe(true);
+    expect(await legacyRow(email)).toBe(false);
+  });
+
+  it("a v1 token still verifies and its opt-out writes the legacy row", async () => {
+    const email = uniq("v1", "gmail.com");
+    const t = await legacyToken(email);
+    expect(await verifyOptoutToken(env, t)).toBe(
+      await legacyAddressHash(email),
+    );
+    expect((await post(`${SHARE_OPTOUT_PATH}?t=${t}`)).status).toBe(200);
+    expect(await legacyRow(email)).toBe(true);
+    expect(await keyedRow(email)).toBe(false);
+    // A v1 token with a v2-shaped hash, or a v2 with a legacy-shaped one, is refused.
+    const [, h] = t.split(".") as [string, string];
+    expect(await verifyOptoutToken(env, `v2.${h}.x`)).toBeNull();
+  });
+
+  it("a legacy row still suppresses, and the next share to that address rewrites it to keyed (created_at kept)", async () => {
+    const { m, share } = await world({});
+    const to = uniq("lg", "gmail.com");
+    const other = uniq("lgo", "gmail.com");
+    const at = 1_700_000_000_000;
+    for (const a of [to, other])
+      await env.DB.prepare(
+        "insert into email_optouts (address_hash, created_at) values (?, ?)",
+      )
+        .bind(await legacyAddressHash(a), at)
+        .run();
+    expect(await share(to)).toMatchObject({
+      emailed: false,
+      notEmailed: "skipped",
+    });
+    expect(m.sent.filter((x) => x.to === to)).toHaveLength(0);
+    expect(await legacyRow(to)).toBe(false);
+    expect(await keyedRow(to)).toBe(true);
+    expect(
+      (
+        await env.DB.prepare(
+          "select created_at c from email_optouts where address_hash = ?",
+        )
+          .bind(await addressHash(env, to))
+          .first<{ c: number }>()
+      )?.c,
+    ).toBe(at);
+    // Still suppressed after the rewrite; another address's legacy row is untouched.
+    expect(await share(to)).toMatchObject({
+      emailed: false,
+      notEmailed: "skipped",
+    });
+    expect(await legacyRow(other)).toBe(true);
+    expect(await keyedRow(other)).toBe(false);
+  });
+});
+
+describe("every non-send to an outside address that isn't a cap reads 'skipped' (#2716)", () => {
+  const post = (path: string) => hit("POST", path);
+  it("an opt-out and a failed send answer the same; a member and a re-share stay plain", async () => {
+    const down = mailer();
+    const failing = {
+      ...down.env,
+      EMAIL: {
+        send: async () => {
+          throw Object.assign(new Error("boom"), { code: "E_DOWN" });
+        },
+      } as unknown as SendEmail,
+    };
+    const f = await world({ ...HOSTED, ...failing });
+    const failed = await f.share(uniq("fail", "gmail.com"));
+    const { share } = await world();
+    const to = uniq("oo", "gmail.com");
+    await share(to);
+    await post(`${SHARE_OPTOUT_PATH}?t=${await signOptoutToken(env, to)}`);
+    const optedOut = await share(to);
+    expect(failed).toMatchObject({ emailed: false, notEmailed: "skipped" });
+    expect(optedOut).toMatchObject({ emailed: false, notEmailed: "skipped" });
+    // Same shape, no extra field that tells them apart.
+    const shape = (r: object) => Object.keys(r).sort().join(",");
+    expect(shape(optedOut)).toBe(shape(failed));
+    // A member is not an outside address: a plain non-send, no reason.
+    const memberEmail = uniq("mem", "a.com");
+    await login(memberEmail, "member");
+    const plain = await share(memberEmail);
+    expect(plain.emailed).toBe(false);
+    expect(plain.notEmailed).toBeUndefined();
   });
 });

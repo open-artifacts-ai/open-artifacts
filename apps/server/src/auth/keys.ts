@@ -25,6 +25,8 @@ const KEY_OWNERS = {
   "oa:setup-remind-off": "session",
   // #2590 the "Don't email me again" link in outside share emails.
   "oa:share-optout": "session",
+  // #2716 the keyed hash that stores an opted-out address (never the plain sha256).
+  "oa:optout": "session",
   // P3 directory connect: the state cookie binding a consent to its browser.
   "oa:directory-state": "session",
   // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token

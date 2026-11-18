@@ -1036,7 +1036,11 @@ export const shareEmailEventsSeen = sqliteTable("share_email_events_seen", {
 
 /**
  * "Don't email me again" (#2590): an address that opted out of outside share
- * emails, by the SHA-256 of its normalized form (never the address itself).
+ * emails, by `k1:` + an HMAC of its normalized form under a key derived from
+ * SESSION_SECRET ("oa:optout", #2716). Rows from before #2716 hold the plain
+ * SHA-256 hex instead and are rewritten to keyed when that address is next
+ * shared; while any remain the table is NOT anonymous (a dictionary can
+ * reverse a legacy row). Never the address itself.
  */
 export const emailOptouts = sqliteTable("email_optouts", {
   addressHash: text("address_hash").primaryKey(),
