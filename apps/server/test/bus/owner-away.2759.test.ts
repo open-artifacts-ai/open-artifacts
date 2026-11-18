@@ -7,6 +7,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { R } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createApp } from "../../src/app.js";
 import { BusHub } from "../../src/bus/hub.js";
 import {
@@ -87,16 +88,51 @@ const owner = (d: Daemon): Extract<ServerFrame, { type: "owner_away" }>[] =>
   );
 
 describe("hello: caps (#2759)", () => {
-  it("an older daemon (16 caps or fewer, no owner_away) still decodes hello_ok: the 16 caps it always got, never owner_away, no field, no push", async () => {
-    const old = ["ids", "rename"];
-    const { d, ok } = await open(old, { at: day(23) });
-    // hello_ok decoded strictly (the helper's decoder); an older daemon decodes
-    // at most 16 caps, so owner_away is never among them.
-    expect(ok.caps?.length ?? 0).toBeLessThanOrEqual(16);
-    expect(ok.caps).toContain("rename");
+  it("a released daemon's strict hello_ok decoder (at most 16 caps, no owner_away_until) still accepts the hub's hello_ok to a 12-cap hello", async () => {
+    // The last released daemon's hello_ok, pinned: strict, caps capped at 16.
+    const RELEASED_MAX_CAPS = 16;
+    const ReleasedHelloOk = z.strictObject({
+      v: z.literal(1),
+      id: z.string(),
+      type: z.literal("hello_ok"),
+      machine_id: z.string(),
+      machine_label: z.string(),
+      server_version: z.string(),
+      caps: z.array(z.string()).max(RELEASED_MAX_CAPS).optional(),
+      run_version: z.string().nullable().optional(),
+    });
+    const listed = [
+      "rename",
+      "roles",
+      "ids",
+      "mailbox",
+      "links",
+      "reach",
+      "follow",
+      "link",
+      "link_arg",
+      "waiting",
+      "waiting_query",
+      "notice_ack",
+    ];
+    expect(listed).toHaveLength(12);
+    const { d, ok } = await open(listed, { at: day(23) });
+    const raw = d.raw
+      .map((t) => {
+        try {
+          return JSON.parse(t) as { type?: string };
+        } catch {
+          return {};
+        }
+      })
+      .find((f) => f.type === "hello_ok");
+    const parsed = ReleasedHelloOk.safeParse(raw);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    // Never owner_away, whatever else the hub lists.
     expect(ok.caps).not.toContain("owner_away");
     expect(ok.owner_away_until).toBeUndefined();
-    await again(d, old);
+    // No push either: an older daemon refuses unknown frames.
+    await again(d, listed);
     expect(owner(d)).toEqual([]);
   });
 
