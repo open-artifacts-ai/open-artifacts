@@ -497,8 +497,8 @@ export async function notifyAnswered(
 
 /**
  * `ask_later` (#2762): the person put an ask off ("Later"); the asking agent
- * (only it, by its verified bus address, as `ask_answered`) is told by name
- * when they will look at it, so it does not wait on a clock. Fixed text, one waiting
+ * (only it, by its verified bus address, as `ask_answered`) is told when they
+ * will look at it, in fixed words, with who and when as structured fields, so it does not wait on a clock. Fixed text, one waiting
  * notice per ask comment. Never throws.
  */
 export async function notifyAskLater(
@@ -509,8 +509,8 @@ export async function notifyAskLater(
   commentId: string,
   askerId: string,
   asker: AskerAddress | null,
-  /** The person's name and when they will look, as the notice says it ("tomorrow at 8:00"). */
-  who: { name: string | null; when: string },
+  /** The person who put it off, and when they will look (ms), with the time in their words ("tomorrow at 8:00"). */
+  later: { userId: string; until: number; when: string },
 ): Promise<void> {
   const targets = await askerAgents(env, artifactId, askerId, asker);
   if (targets.length === 0) return;
@@ -526,11 +526,14 @@ export async function notifyAskLater(
       url,
       to: { namespace: to.namespace, name: to.name },
       ...(to.identityId ? { toIdentity: to.identityId } : {}),
+      // Fixed words and the time only: no name, nothing a person typed.
       text: [
-        `Open Artifacts: ${who.name ?? "They"} will look at this ${who.when}.`,
+        `Open Artifacts: this ask was put off. It will be looked at ${later.when} (${new Date(later.until).toISOString()}).`,
         url,
         `Thread ${threadId}, comment ${commentId}. Do not wait for an answer before then.`,
       ].join("\n"),
+      userId: later.userId,
+      until: new Date(later.until).toISOString(),
       coalesceKey: `${artifactId}:${commentId}:later`,
       threadId,
       commentId,

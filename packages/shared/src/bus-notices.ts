@@ -61,6 +61,9 @@ export type BusNotice = {
   /** `comment` notices (#1535): the thread and comment the notice is about, server-generated ids only, for list_comments and add_comment. */
   threadId?: string;
   commentId?: string;
+  /** `ask_later` notices (#2762): who put the ask off (their user id, which the agent can resolve) and when they will look (ISO), as data, never as words. */
+  userId?: string;
+  until?: string;
   /**
    * `comment` notices (#1752): the comment target (with `artifactId` and
    * `commentId`) whose delivery state the hub updates when the daemon acks

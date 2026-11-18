@@ -28,7 +28,7 @@ import {
 } from "./inbox-later.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
-import { getUser, idpName } from "./users.js";
+import { getUser } from "./users.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
 export const NEEDS_YOU_MAX = 200;
@@ -493,36 +493,24 @@ export async function deferItem(
   if (!(await recordLater(env, caller.user.id, id, until, now)))
     throw new ApiError("later_used", "You already put this off once.");
   if (item.kind === "ask")
-    await tellAsker(env, caller, id, laterWhen(until, now, zone));
+    await tellAsker(env, caller, id, {
+      until,
+      when: laterWhen(until, now, zone),
+    });
   return {
     ...item,
     later: { until: new Date(until).toISOString(), used: true },
   };
 }
 
-/** The asking agent hears when the person will look at its ask. Never throws. */
+/** The asking agent hears, in fixed words, that its ask was put off and when it will be looked at. Never throws. */
 async function tellAsker(
   env: Env,
   caller: Me,
   itemId: string,
-  when: string,
+  at: { until: number; when: string },
 ): Promise<void> {
   try {
-    // Their name as they show it: display name, else a real SSO name. Never the
-    // email: the asking agent can belong to someone else.
-    const me = await env.DB.prepare(
-      "select name, display_name as displayName, email from users where id = ?",
-    )
-      .bind(caller.user.id)
-      .first<{
-        name: string | null;
-        displayName: string | null;
-        email: string;
-      }>();
-    const shown = me
-      ? me.displayName?.trim() || idpName(me.name, me.email)
-      : null;
-    const who = { name: shown && !shown.includes("@") ? shown : null, when };
     const commentId = itemId.slice("ask:".length);
     const row = await env.DB.prepare(
       `select a.artifact_id, a.thread_id, x.current_version as version
@@ -545,7 +533,7 @@ async function tellAsker(
       commentId,
       c.author.ref,
       await askingAddress(env, row.artifact_id, row.thread_id, c.author),
-      who,
+      { userId: caller.user.id, until: at.until, when: at.when },
     );
   } catch (e) {
     logWarn("inbox_later_notice_failed", e);
