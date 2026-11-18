@@ -492,7 +492,12 @@ export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
 export const MENTION_CANDIDATES_Q_MAX = 40;
 /** The most people one mention candidates answer holds. */
 export const MENTION_CANDIDATES_MAX = 8;
-/** GET R.artifactMentionCandidates (#2770): people who can read the artifact, as faces (kind user, id, name; never an email). */
+/** POST R.artifactMentionCandidates body (#2770): the search, in the body so a typed address never reaches a URL or a log. */
+export const MentionCandidatesBodySchema = z.strictObject({
+  q: z.string().min(1).max(MENTION_CANDIDATES_Q_MAX),
+});
+export type MentionCandidatesBody = z.infer<typeof MentionCandidatesBodySchema>;
+/** The answer to POST R.artifactMentionCandidates (#2770): people who can read the artifact, as faces (kind user, id, name; never an email). */
 export const MentionCandidatesSchema = z.object({
   items: z.array(CommentAuthorSchema).max(MENTION_CANDIDATES_MAX),
 });

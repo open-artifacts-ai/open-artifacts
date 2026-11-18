@@ -4,6 +4,7 @@ import {
   AnswerBodySchema,
   COMMENT_KEY_RE,
   isId,
+  MentionCandidatesBodySchema,
   NewThreadBodySchema,
   ReplyBodySchema,
   TakeBackBodySchema,
@@ -504,8 +505,8 @@ export function mountComments(app: AppType): void {
 
   // #2770: who can be @mentioned: owner and editors, as they alone may mention;
   // everyone else sees none. Guests and outside members name no one.
-  app.get(`${ART}/mention-candidates`, async (c) => {
-    const { id, who: cw, level, artifact } = await open(c, "comments.read");
+  app.post(`${ART}/mention-candidates`, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
     const user = c.var.user;
     if (!user || !modOf(cw, level, artifact)) return c.json({ items: [] });
     const { viewer } = await identity(c, id, false, true);
@@ -514,9 +515,9 @@ export function mountComments(app: AppType): void {
       (await isOutsideMember(c.env, user.id))
     )
       return c.json({ items: [] });
-    return c.json(
-      await mentionCandidates(c.env, id, user, viewer, c.req.query("q") ?? ""),
-    );
+    const raw = MentionCandidatesBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    return c.json(await mentionCandidates(c.env, id, user, viewer, raw.data.q));
   });
 
   // #2035: stop replies in a thread reaching one agent (DELETE), or undo (PUT).

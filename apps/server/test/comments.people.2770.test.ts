@@ -398,11 +398,10 @@ describe("who sends, and how many", () => {
 
 describe("the candidates route", () => {
   const find = (id: string, u: U, q: string) =>
-    api(
-      app,
-      `${R.artifactMentionCandidates(id)}?q=${encodeURIComponent(q)}`,
-      u.cookie,
-    );
+    api(app, R.artifactMentionCandidates(id), u.cookie, {
+      method: "POST",
+      body: { q },
+    });
 
   it("people who can read the page, matched by the start of a name or email, as faces with no email", async () => {
     const id = await mkArtifact([sam, pat]);
@@ -456,22 +455,38 @@ describe("the candidates route", () => {
 
   it("only owner and editors; a viewer, a guest and a signed-out caller get none", async () => {
     const id = await mkArtifact([sam, pat, guest]);
+    // None: an empty answer, or the write refused for a caller who can't comment on this page.
+    const none = async (r: Response) =>
+      r.status === 200 ? ((await r.json()) as MentionCandidates).items : [];
+    expect(await none(await find(id, sam, "pat"))).toEqual([]);
+    expect(await none(await find(id, guest, "pat"))).toEqual([]);
     expect(
-      ((await (await find(id, sam, "pat")).json()) as MentionCandidates).items,
-    ).toEqual([]);
-    expect(
-      ((await (await find(id, guest, "pat")).json()) as MentionCandidates)
-        .items,
-    ).toEqual([]);
-    expect(
-      (await api(app, `${R.artifactMentionCandidates(id)}?q=pat`, null)).status,
+      (
+        await api(app, R.artifactMentionCandidates(id), null, {
+          method: "POST",
+          body: { q: "pat" },
+        })
+      ).status,
     ).toBeGreaterThanOrEqual(401);
+    // The search is a POST: the old GET, with q in the URL, is gone.
+    expect(
+      (await api(app, `${R.artifactMentionCandidates(id)}?q=pat`, owner.cookie))
+        .status,
+    ).toBe(404);
   });
 
-  it("an empty or long search is a 400; the search is rate limited per person", async () => {
+  it("an empty, long or missing search is a 400; the search is rate limited per person", async () => {
     const id = await mkArtifact([sam]);
     expect((await find(id, owner, "")).status).toBe(400);
     expect((await find(id, owner, "a".repeat(41))).status).toBe(400);
+    expect(
+      (
+        await api(app, R.artifactMentionCandidates(id), owner.cookie, {
+          method: "POST",
+          body: {},
+        })
+      ).status,
+    ).toBe(400);
     const w = await mk("busy-owner");
     const art2 = (
       await publish(
