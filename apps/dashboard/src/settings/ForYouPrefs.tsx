@@ -130,11 +130,11 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             </th>
             <td className={td}>Always</td>
             <td className={td}>
-              {/* Browser notifications come in slice 3: shown, not yet usable. */}
+              {/* Drawn off while they wait (slice 3, S5), whatever the server stored. */}
               <Switch
                 label="Needs you in this browser"
                 describedBy="oa-needs-browser"
-                checked={prefs.needsYou.browser}
+                checked={false}
                 disabled
                 onChange={() => {}}
               />
@@ -152,11 +152,11 @@ function Levels({ prefs }: { prefs: NotificationPrefs }) {
             </th>
             <td className={td}>Always</td>
             <td className={td}>
-              {/* v1: updates never reach the browser (updates.browser is fixed false). */}
+              {/* Same: drawn off, whatever updates.browser says. */}
               <Switch
                 label="Updates in this browser"
                 describedBy="oa-updates-browser"
-                checked={prefs.updates.browser}
+                checked={false}
                 disabled
                 onChange={() => {}}
               />

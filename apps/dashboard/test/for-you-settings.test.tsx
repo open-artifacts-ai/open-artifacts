@@ -95,7 +95,7 @@ describe("For you settings", () => {
     expect(puts.filter((c) => c.path === R.meNotificationPrefs)).toEqual([]);
   });
 
-  it("reads updates.browser as a boolean (#2769)", async () => {
+  it("an API-set true never shows the browser switches on while they wait (#2769)", async () => {
     server.use(
       http.get(`*${R.meNotificationPrefs}`, () =>
         HttpResponse.json({
@@ -110,10 +110,13 @@ describe("For you settings", () => {
       ...createHandlers({ events, forYou: "mixed" }),
     );
     const needs = await page();
-    expect(needs).toHaveAttribute("aria-checked", "true");
-    expect(
-      screen.getByRole("switch", { name: "Updates in this browser" }),
-    ).toHaveAttribute("aria-checked", "true");
+    expect(needs).toHaveAttribute("aria-checked", "false");
+    expect(needs).toBeDisabled();
+    const updates = screen.getByRole("switch", {
+      name: "Updates in this browser",
+    });
+    expect(updates).toHaveAttribute("aria-checked", "false");
+    expect(updates).toBeDisabled();
     expect(
       screen.getByRole("combobox", { name: "Interrupt me for" }),
     ).toHaveTextContent("Every ask put to me");
