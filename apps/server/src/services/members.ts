@@ -11,6 +11,7 @@ import {
   type MemberPatch,
   type MemberRemovedDetails,
   type MemberStatus,
+  type Role,
   type Settings,
   type SettingsPatch,
 } from "@oa/shared";
@@ -481,7 +482,7 @@ async function invited(
           recipient: email,
           appHost: env.APP_HOST,
           signIn: signInMethods,
-          guest: isGuestRole(row.role),
+          guest: isGuestRole(row.role as Role),
         }),
       {
         kind: "invite",
