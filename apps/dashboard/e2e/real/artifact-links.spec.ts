@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { BrowserContext, Page } from "@playwright/test";
 import {
   APP,
   artifactFrame,
@@ -13,6 +13,15 @@ import {
 // user activation); otherwise a toast asks first. javascript: and friends are
 // refused; target=_blank and embed mode keep a new tab.
 const OUTSIDE = "https://outside.example";
+
+/** Serves the outside site so nothing leaves the machine. */
+const _serveOutside = (ctx: BrowserContext) =>
+  ctx.route(`${OUTSIDE}/**`, (r) =>
+    r.fulfill({
+      contentType: "text/html",
+      body: `<!doctype html><title>Outside</title><h1 id="out">outside ${new URL(r.request().url()).pathname}</h1>`,
+    }),
+  );
 
 /** Waits for the welcome; retried, since a frame may still be (re)loading. */
 const ready = (page: Page) =>
@@ -87,4 +96,33 @@ test("javascript:, data:, app pages and the content host are refused on a real c
   }
   expect(page.url()).toBe(`${APP}/a/${a.id}`);
   await expect(page.getByText(/^Open link to/)).toHaveCount(0);
+});
+
+test("http asks with a not-secure warning; the port shows when not the default", async ({
+  page,
+  member,
+}, info) => {
+  test.slow();
+  const a = await publishLinks(member.pat, {
+    content: `${LINKS}<script>setTimeout(() => parent.postMessage({ oa: 1, type: "open", url: "http://plain.example:8080/x", nonce: window.__oaShellNonce.n }, "*"), 12000)</script>`,
+  });
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto(`/a/${a.id}`);
+  await expect(artifactFrame(page).locator("#who")).toHaveText("links");
+  await page.waitForTimeout(13_000);
+  await expect(
+    page.getByText("Open link to plain.example:8080?"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Not secure: this site doesn't use HTTPS."),
+  ).toBeVisible();
+  if (info.project.name === "chromium")
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      // Let the theme's colour transitions finish.
+      await page.waitForTimeout(400);
+      await page.screenshot({
+        path: info.outputPath(`open-link-http-390-${scheme}.png`),
+      });
+    }
 });
