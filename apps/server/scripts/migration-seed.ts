@@ -805,6 +805,7 @@ export const RULES: Record<string, Rule> = {
         quiet_end: quiet ? "07:00" : null,
         time_zone: "UTC",
         lock_detail: c.int(2),
+        agent_requests_off: c.int(2),
         updated_at: c.time(),
       };
     },

@@ -1711,6 +1711,9 @@ const code =
 /** #2577: the 404 of a request the caller does not hold (see NO_HELD in services/agent-requests.ts). */
 const noHeld = (r: Answer) =>
   r.code === "not_found" && r.message === "No such held request";
+/** #2577 S2: the 404 of a "listens to" entry the caller does not have (see NO_LISTEN in services/agent-requests.ts). */
+const noListen = (r: Answer) =>
+  r.code === "not_found" && r.message === "No such entry";
 const ok =
   (...s: number[]) =>
   (r: Answer) =>
@@ -2279,6 +2282,28 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: noHeld,
     },
   },
+  // #2577 S2: the switch and the "listens to" list. Browser session of the member only (the switch can be read by any signed-in person); an allowed caller owns no such entry.
+  "PUT /api/v1/me/agent-requests": {
+    real: {
+      req: () => ({ path: "/api/v1/me/agent-requests", body: { on: true } }),
+      allow: ok(200),
+    },
+  },
+  "PATCH /api/v1/me/agent-listens/:id": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-listens/probe",
+        body: { until: Date.now() + 1000 },
+      }),
+      allow: noListen,
+    },
+  },
+  "DELETE /api/v1/me/agent-listens/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/agent-listens/probe" }),
+      allow: noListen,
+    },
+  },
   "POST /api/v1/passkeys/:id/challenge": {
     real: {
       req: () => ({ path: "/api/v1/passkeys/probe/challenge" }),
@@ -2625,6 +2650,11 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/me/agent-asks/held/:id/allow", U],
   ["POST /api/v1/me/agent-asks/held/:id/allow/challenge", U],
   ["POST /api/v1/me/agent-asks/held/:id/not-now", U],
+  ["GET /api/v1/me/agent-requests", U, [200]],
+  ["PUT /api/v1/me/agent-requests", U],
+  ["GET /api/v1/me/agent-listens", U, [200]],
+  ["PATCH /api/v1/me/agent-listens/:id", U],
+  ["DELETE /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/passkeys/:id", U],
   ["POST /api/v1/passkeys/:id/cancel-removal", U],
   ["GET /api/v1/passkeys/settings", U, [200]],
