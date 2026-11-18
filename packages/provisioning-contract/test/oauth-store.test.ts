@@ -66,6 +66,52 @@ describe("R29 and R30", () => {
     ).toBe(false);
   });
 
+  it('R29 also takes DOCS_PREVIEW: "1" turns it on, "" removes it', () => {
+    const requestId = "a".repeat(16);
+    for (const vars of [
+      { DOCS_PREVIEW: "1" },
+      { DOCS_PREVIEW: "" },
+      { OAUTH_STORE: "dual", DOCS_PREVIEW: "1" },
+    ])
+      expect(SetOAuthStoreSchema.safeParse({ requestId, vars }).success).toBe(
+        true,
+      );
+    for (const vars of [
+      { DOCS_PREVIEW: "0" },
+      { DOCS_PREVIEW: "true" },
+      { DOCS_PREVIEW: 1 },
+      { DOCS_PREVIEW: "1", TIER: "team" },
+    ])
+      expect(SetOAuthStoreSchema.safeParse({ requestId, vars }).success).toBe(
+        false,
+      );
+  });
+
+  it("DOCS_PREVIEW round-trips through the job args", () => {
+    expect(
+      oauthStoreJobArgs({ vars: { OAUTH_STORE: "dual", DOCS_PREVIEW: "1" } }),
+    ).toEqual({ vars: { OAUTH_STORE: "dual", DOCS_PREVIEW: "1" } });
+    expect(oauthStoreJobArgs({ vars: { DOCS_PREVIEW: "" } })).toEqual({
+      vars: { DOCS_PREVIEW: "" },
+    });
+    expect(parseOAuthJob({ vars: { DOCS_PREVIEW: "1" } })).toEqual({
+      op: "set",
+      docsPreview: "1",
+    });
+    expect(parseOAuthJob({ vars: { DOCS_PREVIEW: "" } })).toEqual({
+      op: "set",
+      docsPreview: "",
+    });
+    expect(
+      parseOAuthJob({ vars: { OAUTH_STORE: "d1", DOCS_PREVIEW: "1" } }),
+    ).toEqual({ op: "set", mode: "d1", docsPreview: "1" });
+    for (const bad of [
+      { vars: { DOCS_PREVIEW: "0" } },
+      { vars: { DOCS_PREVIEW: "1", TIER: "team" } },
+    ])
+      expect(parseOAuthJob(bad)).toBeNull();
+  });
+
   it("R30 takes a request id and nothing else", () => {
     const requestId = "a".repeat(16);
     expect(OAuthCopySchema.safeParse({ requestId }).success).toBe(true);

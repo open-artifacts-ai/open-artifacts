@@ -58,12 +58,32 @@ export const copyKeyLeftOpen = (j: string) =>
 /** An install with a left key still open. Bind: install id. */
 export const COPY_KEY_LEFT_SQL = `SELECT 1 AS x FROM jobs j WHERE j.install_id = ? AND ${copyKeyLeftOpen("j")} LIMIT 1`;
 
-export type OAuthJob = { op: "set"; mode: OAuthStoreMode } | { op: "copy" };
+/**
+ * R29's DOCS_PREVIEW values (open-artifacts#2641): "1" turns doc creation
+ * open, "" removes the var. Staging only: prod refuses it in the route and
+ * again in provision's metadata guard.
+ */
+export const DOCS_PREVIEW_VALUES = ["1", ""] as const;
+export type DocsPreviewValue = (typeof DOCS_PREVIEW_VALUES)[number];
 
-/** jobs.args of an R29 job. */
+/** A set carries a mode, a docs preview value, or both. */
+export type OAuthJob =
+  | { op: "set"; mode?: OAuthStoreMode; docsPreview?: DocsPreviewValue }
+  | { op: "copy" };
+
+/** jobs.args of an R29 job: only the keys that were sent. */
 export const oauthStoreJobArgs = (b: {
-  vars: { OAUTH_STORE: OAuthStoreMode };
-}) => ({ vars: { OAUTH_STORE: b.vars.OAUTH_STORE } });
+  vars: { OAUTH_STORE?: OAuthStoreMode; DOCS_PREVIEW?: DocsPreviewValue };
+}) => ({
+  vars: {
+    ...(b.vars.OAUTH_STORE !== undefined && {
+      OAUTH_STORE: b.vars.OAUTH_STORE,
+    }),
+    ...(b.vars.DOCS_PREVIEW !== undefined && {
+      DOCS_PREVIEW: b.vars.DOCS_PREVIEW,
+    }),
+  },
+});
 /** jobs.args of an R30 job: never the key or a cursor; counts join it at the end. */
 export const oauthCopyJobArgs = () => ({ oauthCopy: true as const });
 
@@ -76,10 +96,27 @@ export function parseOAuthJob(a: Record<string, unknown>): OAuthJob | null {
   if (oauthCopy === true) return vars === undefined ? { op: "copy" } : null;
   if (oauthCopy !== undefined || !vars || typeof vars !== "object") return null;
   const keys = Object.keys(vars);
-  const mode = (vars as { OAUTH_STORE?: unknown }).OAUTH_STORE;
-  return keys.length === 1 && OAUTH_STORE_MODES.includes(mode as OAuthStoreMode)
-    ? { op: "set", mode: mode as OAuthStoreMode }
-    : null;
+  const { OAUTH_STORE: mode, DOCS_PREVIEW: docs } = vars as {
+    OAUTH_STORE?: unknown;
+    DOCS_PREVIEW?: unknown;
+  };
+  if (
+    keys.length === 0 ||
+    keys.some((k) => k !== "OAUTH_STORE" && k !== "DOCS_PREVIEW")
+  )
+    return null;
+  if (mode !== undefined && !OAUTH_STORE_MODES.includes(mode as OAuthStoreMode))
+    return null;
+  if (
+    docs !== undefined &&
+    !DOCS_PREVIEW_VALUES.includes(docs as DocsPreviewValue)
+  )
+    return null;
+  return {
+    op: "set",
+    ...(mode !== undefined && { mode: mode as OAuthStoreMode }),
+    ...(docs !== undefined && { docsPreview: docs as DocsPreviewValue }),
+  };
 }
 
 /** parseOAuthJob over raw jobs.args; null when it is not one of ours. */

@@ -27,7 +27,7 @@ import {
   RequestIdSchema,
   TokenIdSchema,
 } from "./ids.js";
-import { OAUTH_STORE_MODES } from "./oauth-store.js";
+import { DOCS_PREVIEW_VALUES, OAUTH_STORE_MODES } from "./oauth-store.js";
 import { SLUG_RE, slugRule } from "./slugs.js";
 
 // Design v7 3.3. Times are epoch ms.
@@ -265,11 +265,24 @@ export const redlineCredsJobArgs = (b: RedlineCreds): RedlineCredsJobArgs =>
     ? { revoke: true }
     : { revoke: false, recipientKey: b.recipientKey };
 
-/** R29 (#1008): OAUTH_STORE alone; every flip is one person's yes. */
+/**
+ * R29 (#1008): OAUTH_STORE, and DOCS_PREVIEW (open-artifacts#2641: "1" on,
+ * "" removes it; staging only, the API refuses it on prod). At least one key;
+ * every OAUTH_STORE flip is one person's yes.
+ */
 export const SetOAuthStoreSchema = z
   .object({
     requestId,
-    vars: z.object({ OAUTH_STORE: z.enum(OAUTH_STORE_MODES) }).strict(),
+    vars: z
+      .object({
+        OAUTH_STORE: z.enum(OAUTH_STORE_MODES).optional(),
+        DOCS_PREVIEW: z.enum(DOCS_PREVIEW_VALUES).optional(),
+      })
+      .strict()
+      .refine(
+        (v) => v.OAUTH_STORE !== undefined || v.DOCS_PREVIEW !== undefined,
+        "send OAUTH_STORE, DOCS_PREVIEW or both",
+      ),
   })
   .strict();
 /** R30 (#1008). */
