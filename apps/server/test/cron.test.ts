@@ -103,6 +103,7 @@ describe("purgeDeleted", () => {
       "fulfilled",
       "fulfilled",
       "fulfilled", // sweepPictures (#2508)
+      "fulfilled", // sweepInboxLater (#2762)
       "fulfilled", // sweepEmailEvents (#2650)
       "fulfilled",
       "fulfilled", // sweepOAuthStore (expired rows, old tombstones)

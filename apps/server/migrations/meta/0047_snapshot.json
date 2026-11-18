@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "187ba081-a806-46d4-b6a7-dae774fcd7e9",
+  "id": "c2d6ba87-19a5-45d2-b2d8-289c95db8a4a",
   "prevId": "44fc6d81-37a7-448f-be35-bd76eac47992",
   "tables": {
     "agent_grants": {
@@ -2019,8 +2019,8 @@
         }
       }
     },
-    "inbox_mutes": {
-      "name": "inbox_mutes",
+    "inbox_later": {
+      "name": "inbox_later",
       "columns": {
         "user_id": {
           "name": "user_id",
@@ -2029,26 +2029,27 @@
           "notNull": true,
           "autoincrement": false
         },
-        "kind": {
-          "name": "kind",
+        "item_id": {
+          "name": "item_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
-        "target_id": {
-          "name": "target_id",
-          "type": "text",
+        "until": {
+          "name": "until",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
-        "name": {
-          "name": "name",
-          "type": "text",
+        "used": {
+          "name": "used",
+          "type": "integer",
           "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
         },
         "created_at": {
           "name": "created_at",
@@ -2060,9 +2061,9 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "inbox_mutes_user_id_users_id_fk": {
-          "name": "inbox_mutes_user_id_users_id_fk",
-          "tableFrom": "inbox_mutes",
+        "inbox_later_user_id_users_id_fk": {
+          "name": "inbox_later_user_id_users_id_fk",
+          "tableFrom": "inbox_later",
           "tableTo": "users",
           "columnsFrom": ["user_id"],
           "columnsTo": ["id"],
@@ -2071,18 +2072,13 @@
         }
       },
       "compositePrimaryKeys": {
-        "inbox_mutes_user_id_kind_target_id_pk": {
-          "columns": ["user_id", "kind", "target_id"],
-          "name": "inbox_mutes_user_id_kind_target_id_pk"
+        "inbox_later_user_id_item_id_pk": {
+          "columns": ["user_id", "item_id"],
+          "name": "inbox_later_user_id_item_id_pk"
         }
       },
       "uniqueConstraints": {},
-      "checkConstraints": {
-        "inbox_mutes_kind": {
-          "name": "inbox_mutes_kind",
-          "value": "\"kind\" in ('agent', 'page')"
-        }
-      }
+      "checkConstraints": {}
     },
     "login_codes": {
       "name": "login_codes",
@@ -2139,94 +2135,6 @@
           "name": "login_codes_email_key_request_id_pk"
         }
       },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "notification_prefs": {
-      "name": "notification_prefs",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "needs_you_browser": {
-          "name": "needs_you_browser",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "updates_browser": {
-          "name": "updates_browser",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "browser_all_asks": {
-          "name": "browser_all_asks",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "quiet_start": {
-          "name": "quiet_start",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "quiet_end": {
-          "name": "quiet_end",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "time_zone": {
-          "name": "time_zone",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'UTC'"
-        },
-        "lock_detail": {
-          "name": "lock_detail",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "notification_prefs_user_id_users_id_fk": {
-          "name": "notification_prefs_user_id_users_id_fk",
-          "tableFrom": "notification_prefs",
-          "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
     },

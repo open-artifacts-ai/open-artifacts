@@ -466,11 +466,28 @@ a.oa-lpill-gone {
    the viewer (quota, update) take their height; the viewer fills the rest.
    100vh first for browsers without svh. */
 .oa-bare {
+  /* #2753: viewport-fit=cover lets the page run under the status bar; keep
+     content clear of it (0 on desktop and wherever there is no inset). */
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
   display: flex;
   flex-direction: column;
   height: 100vh;
   /* biome-ignore lint/suspicious/noDuplicateProperties: svh fallback */
   height: 100svh;
+}
+/* #2753: a solid cap under the status bar, so a panned or scrolled page never
+   shows text behind it. No height (nothing drawn) where there is no inset. */
+.oa-bare::before {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--oa-vv-top, 0px);
+  height: env(safe-area-inset-top, 0px);
+  background: var(--oa-bg);
+  z-index: 20;
+  pointer-events: none;
 }
 /* #2172: with a viewer mounted the app never scrolls the document, and clip
    (unlike hidden) can't be scrolled by scrollIntoView or focus either. Only
@@ -1055,8 +1072,12 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
 @media (max-width: 600px) {
   .oa-doc-toolbar {
     position: fixed;
-    inset-inline: 0;
+    /* Clear of the notch in landscape (viewport-fit=cover, #2753). */
+    left: env(safe-area-inset-left, 0px);
+    right: env(safe-area-inset-right, 0px);
     bottom: var(--oa-kb, 0px);
+    /* Solid, with a border on the inner edge: no text shows through (#2753). */
+    box-sizing: border-box;
     /* Under the side panel's sheet (z-index 10 below 960px), which covers
        the doc while it is open; above the doc itself. */
     z-index: 9;
@@ -1090,6 +1111,31 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
       transition: none;
     }
   }
+  /*
+   * #2753: the edge is one switch (TOOLBAR_EDGE in comments/viewport.ts).
+   * Top: the visible area's top (--oa-vv-top is the visual viewport's
+   * offsetTop, so a panned page keeps it in view), below the status bar.
+   */
+  .oa-doc-toolbar[data-edge="top"] {
+    top: max(
+      var(--oa-bar-top, 0px),
+      calc(var(--oa-vv-top, 0px) + env(safe-area-inset-top, 0px))
+    );
+    bottom: auto;
+    padding: 4px 12px;
+    border-top: 0;
+    border-bottom: 1px solid var(--oa-border);
+  }
+  /*
+   * Bottom: the bar's bottom edge on the visible area's bottom
+   * (--oa-vv-bottom = offsetTop + height), so it never depends on
+   * innerHeight, which iOS changes as the page pans.
+   */
+  .oa-doc-toolbar[data-edge="bottom"] {
+    top: var(--oa-vv-bottom, 100svh);
+    bottom: auto;
+    transform: translateY(-100%);
+  }
   /* The keyboard covers the home indicator: no inset under the bar. */
   .oa-doc-toolbar[data-keyboard] {
     padding-bottom: 4px;
@@ -1114,6 +1160,13 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   }
 }
 @media (max-width: 600px) {
+  .oa-doc[data-editable]:has(
+      .oa-doc-toolbar[data-edge="top"]:not([data-hidden])
+    )
+    .oa-doc-scroll {
+    padding-top: 52px;
+    padding-bottom: var(--oa-kb, 0px);
+  }
   .oa-doc-page {
     padding: 28px 16px 64px;
   }

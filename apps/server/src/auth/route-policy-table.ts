@@ -120,6 +120,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/me/inbox": { user: "the caller" },
   "POST /api/v1/me/inbox/read": { user: "the caller" },
   "POST /api/v1/me/inbox/read-all": { user: "the caller" },
+  // #2762: put one of the caller's own Needs-you items off (browser sessions only, handler).
+  "POST /api/v1/me/inbox/:id/later": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
   // #2512 S4: the caller's own notification choices; PUT browser sessions only (handler).
   "GET /api/v1/me/notification-prefs": { user: "the caller" },

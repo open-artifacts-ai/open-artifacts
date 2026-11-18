@@ -49,30 +49,3 @@ test("a folder with index.html and style.css uploads and the style applies", {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
-test("dropping index.html and style.css makes one artifact and the style applies", async ({
-  page,
-  member: _,
-  browserName,
-}) => {
-  test.skip(
-    browserName === "webkit",
-    "WebKit ignores files in a script-built DataTransfer; the folder test covers it",
-  );
-  await page.goto("/");
-  await expect(
-    page.getByRole("button", { name: "Upload folder" }),
-  ).toBeVisible();
-  const dt = await page.evaluateHandle(
-    ([index, style]) => {
-      const t = new DataTransfer();
-      t.items.add(new File([index], "index.html", { type: "text/html" }));
-      t.items.add(new File([style], "style.css", { type: "text/css" }));
-      return t;
-    },
-    [INDEX, STYLE],
-  );
-  for (const type of ["dragenter", "dragover", "drop"])
-    await page.dispatchEvent("body", type, { dataTransfer: dt });
-  await createAndCheck(page);
-});

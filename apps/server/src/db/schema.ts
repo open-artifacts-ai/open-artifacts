@@ -688,6 +688,24 @@ export const inboxItems = sqliteTable(
   ],
 );
 
+// #2762 "Later": a needs-you item the person put off once. One row per (user,
+// item id: "ask:<comment id>" or "request:<id>"); it exists once used, so a
+// second put-off is refused. Until `until` the item sits in Later; after it,
+// back on top of Needs you. The daily sweep drops rows for items that are gone.
+export const inboxLater = sqliteTable(
+  "inbox_later",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    until: integer("until").notNull(),
+    used: integer("used").notNull().default(1),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.itemId] })],
+);
+
 // #2263 passkeys: one row per WebAuthn credential a member registered. It can
 // confirm a pick only once `created_at` is 24 h old (services/passkeys.ts).
 // public_key is the credential's COSE key, base64url; sign_count is the last

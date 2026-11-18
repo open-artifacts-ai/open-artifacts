@@ -20,12 +20,14 @@ export const NOTICE_SENDER = "open-artifacts";
 /** `comment` (#1535): an ask or mention on a comment. */
 /** `commented` (#682): a comment was added to an artifact the agent follows. */
 /** `ask_answered` (#1535): a person answered an ask the agent's member posted. */
+/** `ask_later` (#2762): the person put the agent's ask off; when they will look at it. */
 export type NoticeKind =
   | "shared"
   | "changed"
   | "comment"
   | "commented"
-  | "ask_answered";
+  | "ask_answered"
+  | "ask_later";
 
 /**
  * One notice for one address in one member's bus: the shape the server
@@ -59,6 +61,9 @@ export type BusNotice = {
   /** `comment` notices (#1535): the thread and comment the notice is about, server-generated ids only, for list_comments and add_comment. */
   threadId?: string;
   commentId?: string;
+  /** `ask_later` notices (#2762): who put the ask off (their user id, which the agent can resolve) and when they will look (ISO), as data, never as words. */
+  userId?: string;
+  until?: string;
   /**
    * `comment` notices (#1752): the comment target (with `artifactId` and
    * `commentId`) whose delivery state the hub updates when the daemon acks

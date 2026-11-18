@@ -75,3 +75,23 @@ test("two people and an agent, while editing", async ({ page }) => {
   expect(await flagShown(page, "Sam Okafor")).toBe(false);
   expect(await flagShown(page, "Docs agent")).toBe(false);
 });
+
+// #2756: the title shows once, in the doc, where it is edited. The title bar
+// keeps its h1 for screen readers, but takes no room, and has no rename.
+for (const width of [1280, 390]) {
+  test(`the doc's title is not repeated in the title bar at ${width}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/a/${LANDING}?mock=doc`);
+    await expect(page.locator(".ProseMirror")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(
+      "Landing page",
+    );
+    const h1 = page.getByRole("heading", { level: 1, name: "Landing page" });
+    await expect(h1).toHaveCount(1);
+    const box = await h1.boundingBox();
+    expect(box?.width ?? 0).toBeLessThanOrEqual(1);
+    await expect(page.getByRole("button", { name: "Rename" })).toHaveCount(0);
+  });
+}
