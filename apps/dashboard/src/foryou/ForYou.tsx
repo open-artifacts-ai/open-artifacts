@@ -55,9 +55,9 @@ import {
   safePath,
   unread,
   waitMs,
-  waitText,
 } from "./model";
 import { muteErrorCopy } from "./prefsContract";
+import { WaitMark } from "./waiting";
 
 /** Settings › Notifications (today the email switch; slice 2 adds For you's). */
 export const FOR_YOU_SETTINGS = "/settings/notifications";
@@ -586,15 +586,7 @@ function Face({ x }: { x: InboxItem }) {
 /** A waiting ask's calm mark: a clock and the server's duration. */
 function Urgency({ x }: { x: InboxItem }) {
   const ms = waitMs(x);
-  if (ms !== undefined)
-    return (
-      <span
-        data-for-you-wait=""
-        className={`${CHIP} bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]`}
-      >
-        <span aria-hidden="true">◷</span> {waitText(ms)}
-      </span>
-    );
+  if (ms !== undefined) return <WaitMark ms={ms} />;
   return null;
 }
 
