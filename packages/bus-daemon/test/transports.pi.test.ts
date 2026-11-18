@@ -62,6 +62,25 @@ describe("PiTransport", () => {
     expect(f.body).toBeUndefined();
   });
 
+  it("a server notice's meta rides the pushed frame as data (#2768)", async () => {
+    const push = vi.fn((_ref: string, _f: DaemonFrame) => true);
+    const t = new PiTransport({ push, ackTimeoutMs: 20 });
+    const meta = {
+      kind: "ask_later",
+      user_id: "u_1",
+      until: "2026-11-20T09:00:00Z",
+    };
+    await t.deliver(agent(), { ...mail(), meta });
+    const f = push.mock.calls[0][1] as Extract<
+      DaemonFrame,
+      { type: "deliver" }
+    >;
+    expect(f.meta).toEqual(meta);
+    expect(f.body).toBe("hi");
+    await t.deliver(agent(), mail("mmmmmmmmmmmmmmm2"));
+    expect(push.mock.calls[1][1]).not.toHaveProperty("meta");
+  });
+
   it("no ack within the timeout is a timeout", async () => {
     const t = new PiTransport({ push: () => true, ackTimeoutMs: 30 });
     expect(await t.deliver(agent(), mail())).toEqual({

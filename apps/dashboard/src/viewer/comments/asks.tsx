@@ -6,6 +6,7 @@ import type {
   CommentThread,
   KeyRef,
   MentionDelivery,
+  CommentPictureRef as PictureRef,
 } from "@oa/shared";
 import { viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
@@ -39,10 +40,15 @@ import { passkeyFailure, passkeyLine } from "./passkey";
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
-export type Extras = { mentions: KeyRef[] };
+export type Extras = {
+  mentions: KeyRef[];
+  /** #2508: the pictures attached in the box. */
+  pictures?: PictureRef[];
+};
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
+  ...(x.pictures?.length ? { pictures: x.pictures } : {}),
 });
 
 /** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */

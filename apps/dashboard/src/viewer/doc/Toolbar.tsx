@@ -28,6 +28,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import {
   phoneToolbarHidden,
+  TOOLBAR_EDGE,
   trackViewportVar,
   useKeyboardOpen,
 } from "../comments/viewport";
@@ -353,6 +354,7 @@ export function Toolbar({ editor }: { editor: Editor }) {
         className="oa-doc-toolbar"
         data-more={more ? "" : undefined}
         data-keyboard={keyboard ? "" : undefined}
+        data-edge={TOOLBAR_EDGE}
         data-hidden={phoneToolbarHidden(keyboard) ? "" : undefined}
         role="toolbar"
         aria-label="Formatting"
