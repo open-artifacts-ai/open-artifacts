@@ -8,16 +8,22 @@ export const ACCESS_SECRET = "ACCESS_CLIENT_SECRET";
 const GENERATED = ["SESSION_SECRET", "CONTENT_SIGNING_KEY"];
 const OPTIONAL = "ANALYTICS_TOKEN";
 /** Browser push keys: generated once, never rotated (rotating breaks every subscription). */
-const VAPID = ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY"];
+const PUBLIC = "VAPID_PUBLIC_KEY";
+const PRIVATE = "VAPID_PRIVATE_KEY";
+const VAPID = [PUBLIC, PRIVATE];
 /** OA_SETUP_PUSH_KEYS=off: leave VAPID alone entirely (CI sets it until the owner turns push on). */
 const pushKeys = (ctx: Ctx) =>
   ctx.deps.env.OA_SETUP_PUSH_KEYS?.trim().toLowerCase() !== "off";
-const halfVapid = (have: Set<string>) => {
-  const present = VAPID.filter((n) => have.has(n));
-  return present.length === 1
-    ? `Worker has ${present[0]} but not ${VAPID.find((n) => !have.has(n))}; setup will not overwrite half a push key pair (that would break every subscription). Delete the one that is present with \`wrangler secret delete\` and rerun, or put the missing one back`
+/**
+ * A lone public key is refused: something else made it and replacing it would
+ * break its subscriptions. A lone private key is our own interrupted run (the
+ * private key goes first, and no browser can subscribe without the public one),
+ * so it is regenerated.
+ */
+const lonePublic = (have: Set<string>) =>
+  have.has(PUBLIC) && !have.has(PRIVATE)
+    ? `Worker has ${PUBLIC} but not ${PRIVATE}; setup will not overwrite half a push key pair (that would break every subscription). Delete ${PUBLIC} with \`wrangler secret delete\` and rerun, or put ${PRIVATE} back`
     : undefined;
-};
 const analyticsLink = (ctx: Ctx, accountId?: string) =>
   linkFor(tokenById("analytics", { name: ctx.opts.name }), { accountId });
 /** ANALYTICS_TOKEN from the environment (a dedicated token; never CLOUDFLARE_API_TOKEN). */
@@ -132,13 +138,14 @@ export const secrets: Step = {
       };
     for (const n of GENERATED)
       if (!have.has(n)) await putSecret(ctx, n, random());
-    const half = pushKeys(ctx) ? halfVapid(have) : undefined;
+    const half = pushKeys(ctx) ? lonePublic(have) : undefined;
     if (half) return { status: "action_required", message: half };
-    if (pushKeys(ctx) && !VAPID.some((n) => have.has(n))) {
+    if (pushKeys(ctx) && !have.has(PUBLIC)) {
       // Keys go straight to wrangler's stdin: never to disk, argv or output.
       const pair = await generateVapidPair();
-      await putSecret(ctx, VAPID[0], pair.publicKey);
-      await putSecret(ctx, VAPID[1], pair.privateKey);
+      // Private first: a run cut off between the two leaves a lone private key, which a rerun replaces.
+      await putSecret(ctx, PRIVATE, pair.privateKey);
+      await putSecret(ctx, PUBLIC, pair.publicKey);
     }
     const refuse = () =>
       ctx.notes.push(

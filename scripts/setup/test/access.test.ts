@@ -18,8 +18,8 @@ const SECRETS = [
   "ACCESS_CLIENT_SECRET",
   "SESSION_SECRET",
   "CONTENT_SIGNING_KEY",
-  "VAPID_PUBLIC_KEY",
   "VAPID_PRIVATE_KEY",
+  "VAPID_PUBLIC_KEY",
 ];
 const CONFIG = `${ROOT}/apps/server/wrangler.jsonc`;
 /** The B16-2 scope: prereqs, resources, access, secrets. */

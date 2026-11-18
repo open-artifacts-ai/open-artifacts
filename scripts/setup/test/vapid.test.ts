@@ -77,10 +77,41 @@ describe("OA_SETUP_PUSH_KEYS=off", () => {
 });
 
 describe("self-host push keys (VAPID)", () => {
+  it("a lone private key is replaced without asking", async () => {
+    const w = ready(cloud([...CORE, PRIV]));
+    expect(await run(UPGRADE, w.deps, ROOT)).toBe(0);
+    expect(puts(w)).toEqual([`put ${PRIV}`, `put ${PUB}`]);
+  });
+
+  it("a run cut off after the private key finishes on rerun", async () => {
+    const cfg: NonNullable<Parameters<typeof world>[0]> = {
+      d1: [{ uuid: "d1-live", name: "open-artifacts" }],
+      r2: [{ name: "open-artifacts" }],
+      kv: [{ id: "kv-live", title: "open-artifacts-oauth" }],
+      policies: [POLICY],
+      apps: [app("open-artifacts")],
+      secrets: CORE,
+      worker: VARS,
+      seed: {
+        users: [{ id: "u-owner", email: "owner@example.com", role: "owner" }],
+      },
+      putFails: PUB,
+    };
+    const w = ready(world(cfg));
+    expect(await run(UPGRADE, w.deps, ROOT)).not.toBe(0);
+    expect(puts(w)).toEqual([`put ${PRIV}`]);
+    cfg.putFails = undefined;
+    expect(await run(UPGRADE, w.deps, ROOT)).toBe(0);
+    expect(puts(w)).toEqual([`put ${PRIV}`, `put ${PRIV}`, `put ${PUB}`]);
+    w.ops.length = 0;
+    expect(await run(UPGRADE, w.deps, ROOT)).toBe(0);
+    expect(puts(w)).toEqual([]);
+  });
+
   it("generates the pair on upgrade when the Worker lacks it", async () => {
     const w = ready(cloud(CORE));
     expect(await run(UPGRADE, w.deps, ROOT)).toBe(0);
-    expect(puts(w)).toEqual([`put ${PUB}`, `put ${PRIV}`]);
+    expect(puts(w)).toEqual([`put ${PRIV}`, `put ${PUB}`]);
   });
 
   it("generates the pair on a first full setup", async () => {
@@ -96,8 +127,8 @@ describe("self-host push keys (VAPID)", () => {
     expect(puts(w)).toEqual([]);
   });
 
-  it.each([PUB, PRIV])(
-    "refuses a half pair (only %s) and writes nothing",
+  it.each([PUB])(
+    "refuses a lone public key (%s) and writes nothing",
     async (only) => {
       const w = ready(cloud([...CORE, only]));
       await run(UPGRADE, w.deps, ROOT);
