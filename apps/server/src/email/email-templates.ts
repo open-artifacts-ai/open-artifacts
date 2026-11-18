@@ -68,6 +68,14 @@ export const INVITE_HTML = `<!doctype html>
             </table>
           </td>
         </tr>
+        <!--setup-->
+        <tr>
+          <td class="oa-pad" style="padding:24px 40px 0 40px;font-family:Geist,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <p class="oa-text-2" style="margin:0;font-size:15px;line-height:24px;color:#454C56;">Then connect your agent. Paste this into Claude Code, Codex, Cursor or any agent:</p>
+            <p class="oa-text" style="margin:8px 0 0 0;padding:10px 12px;border-radius:6px;border:1px solid #E0E3E8;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:20px;color:#15181C;word-break:break-all;">{{setupLine}}</p>
+          </td>
+        </tr>
+        <!--/setup-->
         <tr>
           <td class="oa-pad" style="padding:20px 40px 32px 40px;font-family:Geist,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
             <p class="oa-muted" style="margin:0;font-size:13px;line-height:20px;color:#5F6670;">If the button doesn't work, paste this link into your browser:<br><a href="{{signInUrl}}" target="_blank" class="oa-link" style="color:#2350D0;text-decoration:underline;word-break:break-all;">{{signInUrl}}</a></p>
@@ -101,6 +109,11 @@ export const INVITE_TXT = `{{inviterName}} added you to {{instanceName}}
 
 Go to {{instanceName}}:
 {{signInUrl}}
+<!--setup-->
+Then connect your agent. Paste this into Claude Code, Codex, Cursor or any agent:
+
+{{setupLine}}
+<!--/setup-->
 
 --
 

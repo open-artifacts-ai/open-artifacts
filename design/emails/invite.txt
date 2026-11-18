@@ -6,6 +6,11 @@
 
 Go to {{instanceName}}:
 {{signInUrl}}
+<!--setup-->
+Then connect your agent. Paste this into Claude Code, Codex, Cursor or any agent:
+
+{{setupLine}}
+<!--/setup-->
 
 --
 

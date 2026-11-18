@@ -61,6 +61,25 @@ describe("email templates", () => {
     expect(m.text).toContain("new@x.com");
   });
 
+  it("a member invite carries the line to paste into an agent; a guest's doesn't (#2632)", () => {
+    const line =
+      "Set up Open Artifacts for me: follow https://app.example.com/llms.txt";
+    const m = inviteEmail(common);
+    expect(m.text).toContain(
+      "Then connect your agent. Paste this into Claude Code, Codex, Cursor or any agent:",
+    );
+    expect(m.text).toContain(line);
+    expect(m.html).toContain(line);
+    for (const part of [m.text, m.html]) expect(part).not.toContain("setup-->");
+    const g = inviteEmail({ ...common, guest: true });
+    for (const part of [g.text, g.html]) {
+      expect(part).not.toContain("llms.txt");
+      expect(part).not.toContain("connect your agent");
+      expect(part).not.toContain("setup-->");
+    }
+    expect(g.text).toContain("https://app.example.com/sign-in");
+  });
+
   it("renders the share with hostile values", () => {
     const m = shareEmail({
       ...common,

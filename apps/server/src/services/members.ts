@@ -481,6 +481,7 @@ async function invited(
           recipient: email,
           appHost: env.APP_HOST,
           signIn: signInMethods,
+          guest: input.role === "guest",
         }),
       {
         kind: "invite",
