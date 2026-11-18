@@ -15,6 +15,7 @@ import {
 } from "@oa/bus-adapter-opencode/version";
 import {
   ADAPTER_CAPS,
+  type ConfigFile,
   correctedDeliveredText,
   type DaemonFrame,
   excerptOf,
@@ -102,6 +103,12 @@ import {
 } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import type { EventFields } from "./event-log.ts";
+import {
+  changedSuggestionNote,
+  folderHomeLookup,
+  folderKey,
+  unmappedFolderNote,
+} from "./folders.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import { BoundedMap, Lane, Lanes, ResendSet, refOf } from "./hubs.ts";
 import {
@@ -125,7 +132,7 @@ import {
   type Namespace,
   resolveNamespace,
 } from "./namespace.ts";
-import { remotesFile } from "./namespaces.ts";
+import { namespacesFile, remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
   type AttachDeps,
@@ -494,12 +501,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const l of lanes.all()) any = l.hub.cancel(id) || any;
     return any;
   };
-  // Main for every folder only when main is the only instance on this machine.
-  const onlyMain =
-    instHome === undefined || listInstances(instHome).every((i) => i.main);
+  // Without a bus home (tests that bring a config) main serves every folder.
+  // Otherwise the folder map decides, read fresh at each session start: an
+  // `oa-bus add` while sessions are live moves none of them (live records keep
+  // their instance); only sessions that start afterward use the new map.
   const lookup: HomeLookup =
     deps.homeLookup ??
-    (() => (onlyMain ? { instance: MAIN_INSTANCE } : { unmapped: true }));
+    (instHome === undefined
+      ? () => ({ instance: MAIN_INSTANCE })
+      : folderHomeLookup(instHome));
   const unmappedNoted = new Set<string>();
   /**
    * The instance a folder's sessions register on, or undefined: none is
@@ -689,6 +699,38 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   const configIssues = new ConfigIssues();
+  /** #2793: notes for a session's folder (unmapped, changed suggestion), by folder key. Bounded. */
+  const folderNotes = new Map<string, ConfigFile>();
+  const noteFolder = (cwd: string) => {
+    if (instHome === undefined || deps.homeLookup) return;
+    const key = folderKey(cwd);
+    const unmapped = unmappedFolderNote(cwd, instHome);
+    const changed = unmapped ? undefined : changedSuggestionNote(cwd, instHome);
+    const text = unmapped ?? changed;
+    if (text !== undefined && (folderNotes.size < 1000 || folderNotes.has(key)))
+      folderNotes.set(key, {
+        file: key,
+        state: "noted",
+        reason: text,
+        fix: unmapped ? `${BUS_CMD} use` : `optional: run ${BUS_CMD} use`,
+      });
+  };
+  /**
+   * The note for a session's folder. An unmapped folder's note stays until
+   * the folder is mapped; a changed suggestion is handed out once.
+   */
+  const notesFor = (cwd: string): ConfigFile[] => {
+    const key = folderKey(cwd);
+    const n = folderNotes.get(key);
+    if (!n) return [];
+    if (n.fix === `${BUS_CMD} use`) {
+      if ("unmapped" in lookup(cwd)) return [n];
+      folderNotes.delete(key);
+      return [];
+    }
+    folderNotes.delete(key);
+    return [n];
+  };
   /** Config files refused or noted (#1527): `.oa-bus.json` files seen, and the allowlist. */
   const configFiles = (cwd?: string, pending = false) => {
     const g = inspectGlobal();
@@ -707,14 +749,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (rr) within.add(join(rr, ".git"));
     }
     return [
+      ...(cwd !== undefined ? notesFor(cwd) : []),
       ...configIssues.list(within, { pending }),
       ...(a ? [a] : []),
       ...(rm ? [rm] : []),
       ...(g ? [g] : []),
     ];
   };
-  const resolveNs = (cwd: string, allowMissing: boolean) =>
-    (
+  const resolveNs = (cwd: string, allowMissing: boolean) => {
+    // A namespace approval counts on the instance of the folder's home only.
+    const r = lookup(cwd);
+    const approvals =
+      instHome !== undefined && "instance" in r && r.instance !== MAIN_INSTANCE
+        ? namespacesFile(instHome, r.instance)
+        : undefined;
+    return (
       deps.resolveNamespace ??
       ((dir) =>
         resolveNamespace(dir, {
@@ -722,8 +771,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           allowMissing,
           issues: configIssues,
           remotesFile: remotesFile(),
+          ...(approvals !== undefined ? { namespacesFile: approvals } : {}),
         }))
     )(cwd);
+  };
 
   const cl = deps.claude ?? {};
   const listenPath = deps.socketPath ?? socketPath();
@@ -1452,7 +1503,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         continue;
       }
       if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
-      const instance = homeInstance(s.cwd);
+      // The same process reopening keeps the instance it had.
+      const instance =
+        prev && prev.pid === s.pid && prev.procStart === s.procStart
+          ? (prev.instance ?? homeInstance(s.cwd))
+          : homeInstance(s.cwd);
+      noteFolder(s.cwd);
       // /clear: the same process, a new session id. The new ref keeps the
       // old one's address (#1295); the old one is closed below.
       seenAt.set(s.ref, ++seenSeq);
@@ -2237,6 +2293,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         version,
         label: cfg.label,
         ...(config_files.length > 0 ? { config_files } : {}),
+        ...(lanes.multi
+          ? {
+              instances: lanes.all().map((l) => ({
+                name: l.name,
+                link: l.hub.open
+                  ? ("connected" as const)
+                  : ("not_connected" as const),
+                revoked: l.revoked,
+                agents: live.filter((a) => a.instance === l.name).length,
+              })),
+            }
+          : {}),
         hub: hub.open ? "connected" : "connecting",
         ...(hub.open || !hub.lastError ? {} : { hub_error: hub.lastError }),
         hub_ever: main.ever,
@@ -2455,6 +2523,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           };
         attested(pid);
         const instance = homeInstance(cwd);
+        noteFolder(cwd);
         // A Codex thread the user named registers under that name (#1748).
         const codexName =
           hello.kind === "codex"
@@ -2800,6 +2869,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           continue;
         }
         const instance = homeInstance(proven.cwd);
+        noteFolder(proven.cwd);
         agents.up({
           ref: r.ref,
           kind: "codex",

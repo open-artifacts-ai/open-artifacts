@@ -46,6 +46,28 @@ oa-bus doctor
 
 To check the install without changing anything, run `oa-bus install --check`.
 
+## A second instance on the same machine
+
+One bus can serve more than one Open Artifacts instance. Install the bus for your main instance first. Then add the second one from a terminal you are sitting at:
+
+```sh
+oa-bus add https://second.example.com
+```
+
+A browser opens so you can approve this machine. The command shows the full address first, so check it. Then, in each folder that should use the second instance:
+
+```sh
+oa-bus use
+```
+
+It lists your instances and you pick one. A folder you have not picked for sits on no instance. The first session there is told to run `oa-bus use` in that folder. Sessions that were already running keep their instance; only sessions that start after `add` use the new setup.
+
+Each session joins one instance only: the one for its folder. Keys are never shared between instances. A repo can suggest an instance with an `instance` key in its `.oa-bus.json`. That is only a suggestion: nothing changes until you answer it with `oa-bus use`. Only bus 0.216.0 or newer reads that key; an older bus refuses the whole file. `oa-bus doctor` tells you when a repo file has it.
+
+`oa-bus status` lists your instances and which folder uses which, once you have more than one. With only the main instance, nothing changes.
+
+`oa-bus install --alongside` is a different thing: with `--home <dir>` it sets up a separate bus. To use a second instance with your main bus, use `add`.
+
 ## A Codex agent shows as away
 
 The Codex app unloads a thread it is not showing after a few hours idle. The agent then shows as away on the bus, and its messages wait. Open the thread in the Codex app. Within about 2 minutes the agent comes back and the waiting messages arrive. You do not need to type anything.

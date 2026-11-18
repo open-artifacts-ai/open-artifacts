@@ -159,7 +159,8 @@ const noted = new Set<string>();
 /**
  * The line the daemon says once per folder for a session that has no
  * instance yet, or undefined (already said, or the folder is mapped).
- * Slice S3 calls this; it writes nothing.
+ * The daemon calls this for a session that starts in an unmapped folder; it
+ * writes nothing.
  */
 export function unmappedFolderNote(
   cwd: string,
@@ -169,7 +170,7 @@ export function unmappedFolderNote(
   const key = `${h}\0${folderKey(cwd)}`;
   if (noted.has(key)) return undefined;
   noted.add(key);
-  return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use here.`;
+  return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use in this folder.`;
 }
 
 /**
@@ -214,4 +215,35 @@ export function instanceAt(
   list: Instance[],
 ): Instance | undefined {
   return list.find((i) => canonicalAddress(i.hub) === address);
+}
+
+const suggested = new Set<string>();
+const ADDRESS_SHOWN_MAX = 120;
+
+/**
+ * The line the daemon says once per folder and suggestion when the repo
+ * suggests an instance that differs from what the folder last saw, after the
+ * folder was already answered (yes or no). It never moves the session and
+ * writes nothing: `use` is what records the new suggestion. The address is
+ * the canonical (ASCII, xn--) form.
+ */
+export function changedSuggestionNote(
+  cwd: string,
+  h: string = home(),
+): string | undefined {
+  const { folders: f, unusable } = inspectFolders(h);
+  if (unusable) return undefined;
+  const key = folderKey(cwd);
+  const covering = coveringEntry(f, key);
+  if (covering === undefined && f.no[key] === undefined) return undefined;
+  const found = readSuggestion(cwd, covering ? { below: covering.dir } : {});
+  if (found === undefined || found === f.seen[key]) return undefined;
+  // Characters a terminal could act on are never shown.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: strips controls
+  const shown = found.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "");
+  if (shown !== found || shown.length > ADDRESS_SHOWN_MAX) return undefined;
+  const once = `${h}\0${key}\0${found}`;
+  if (suggested.has(once)) return undefined;
+  suggested.add(once);
+  return `This repo now suggests ${shown}. Nothing changed: this folder keeps its answer.`;
 }
