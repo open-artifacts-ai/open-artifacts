@@ -280,7 +280,7 @@ const viewCols = (c: Caller) => ({
         and not exists (select 1 from org_group_mappings ogm join directory_members dm
           on dm.group_id = ogm.group_id and dm.user_id = sm.user_id))
       + ${EVERY_MEMBER_COUNT} else 1 end`,
-  artifactCount: sql<number>`(select count(*) from artifacts a where a.space_id = ${spaces.id} and a.deleted_at is null and not ${sql.raw(untouchedWelcomeSql("a"))})`,
+  artifactCount: sql<number>`(select count(*) from artifacts a where a.space_id = ${spaces.id} and a.deleted_at is null)`,
   smm: sql<string | null>`(select value from settings where key = ${SMM_KEY})`,
 });
 type ViewRow = {

@@ -17,6 +17,8 @@ import {
   TestDirectoryHeldInputSchema,
   type TestHookRefusal,
   type TestOtpOutcome,
+  TestPeoplePurgeInputSchema,
+  type TestPeoplePurgeResult,
   TestSessionInputSchema,
 } from "@oa/shared";
 import { eq } from "drizzle-orm";
@@ -35,7 +37,13 @@ import { oauthEnv } from "../mcp/oauth-store.js";
 import { mcpResource } from "../mcp/server.js";
 import type { AppType } from "../routes/index.js";
 import { revokeUserLive } from "../runtime/revoke.js";
+import { purgeNow } from "../services/artifacts.js";
 import { SYNC_DO_NAME } from "../services/directory.js";
+import {
+  eraseMember,
+  removeMember,
+  SYSTEM_ACTOR,
+} from "../services/members.js";
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
 import { b64urlEncode, sameKey } from "../util/crypto.js";
 import { type HookEnv, testHooksOn } from "./on.js";
@@ -198,6 +206,7 @@ type HookName =
   | "code_caps_reset"
   | "directory_groups"
   | "directory_held"
+  | "people_purge"
   | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
@@ -218,7 +227,9 @@ const hookName = (path: string): HookName =>
               ? "directory_groups"
               : path === TEST_HOOKS.directoryHeld
                 ? "directory_held"
-                : "unknown";
+                : path === TEST_HOOKS.peoplePurge
+                  ? "people_purge"
+                  : "unknown";
 
 // directory_groups seed: `test-` ids with an email exactly under TEST_DOMAIN
 // only, enforced here in SQL too (no LIKE wildcards), so a handler slip can't
@@ -346,6 +357,69 @@ async function audit(
     ),
   ]);
   log(outcome === "ok" ? hook : outcome);
+}
+
+// people_purge (#2680): T19's people only. The prefix (?1, `t19-`, checked by
+// the schema) and TEST_DOMAIN (?2) are both enforced here in SQL with substr
+// (no LIKE wildcards), never the owner by role or by address (?3), never an
+// erased row. ?4 created before (ms), ?5 the cap.
+const PURGE_MATCH = `from users
+  where substr(email, 1, length(?1)) = ?1
+    and substr(email, 1, 4) = 't19-'
+    and substr(email, length(email) - length(?2)) = '@' || ?2
+    and role <> 'owner' and email <> ?3
+    and erased_at is null and created_at < ?4`;
+const PURGE_PICK = `select id, status ${PURGE_MATCH} order by created_at limit ?5`;
+const PURGE_LEFT = `select count(*) as n ${PURGE_MATCH}`;
+const PERSONAL_ARTIFACTS = "select id from artifacts where space_id = ?";
+
+/**
+ * Erases up to `limit` matching people, oldest first: purges every artifact
+ * in their personal space (trashed ones too: erase refuses while any is
+ * left), removes them, then erases them, all as SYSTEM_ACTOR. A person that
+ * fails is counted and skipped.
+ */
+async function purgePeople(
+  env: Env,
+  input: { prefix: string; before: number; limit: number },
+  ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
+): Promise<TestPeoplePurgeResult> {
+  const args = [
+    input.prefix,
+    env.TEST_DOMAIN ?? "",
+    normalizeEmail(env.OWNER_EMAIL ?? "") ?? "",
+    input.before,
+  ] as const;
+  const { results: people } = await env.DB.prepare(PURGE_PICK)
+    .bind(...args, input.limit)
+    .all<{ id: string; status: string }>();
+  let erased = 0;
+  let failed = 0;
+  for (const p of people) {
+    try {
+      const { results: arts } = await env.DB.prepare(PERSONAL_ARTIFACTS)
+        .bind(p.id)
+        .all<{ id: string }>();
+      for (const a of arts) await purgeNow(env, a.id);
+      if (p.status !== "removed")
+        await removeMember(env, p.id, SYSTEM_ACTOR, ctx);
+      await eraseMember(env, p.id, SYSTEM_ACTOR, ctx);
+      erased++;
+    } catch (e) {
+      failed++;
+      console.log(
+        JSON.stringify({
+          evt: "test_hook.people_purge_failed",
+          id: p.id,
+          e: String(e),
+        }),
+      );
+    }
+  }
+  const left = await env.DB.prepare(PURGE_LEFT)
+    .bind(...args)
+    .first<{ n: number }>();
+  return { erased, failed, left: left?.n ?? 0 };
 }
 
 /**
@@ -686,6 +760,17 @@ export function mountTestHooks(app: AppType): void {
       }
       await audit(env, hook, ip, "ok", { email });
       return c.json({ held });
+    }
+
+    if (hook === "people_purge") {
+      const input = TestPeoplePurgeInputSchema.safeParse(body);
+      if (!input.success) {
+        await audit(env, hook, ip, "refused");
+        return refused("bad_input");
+      }
+      const out = await purgePeople(env, input.data, execCtx(c));
+      await audit(env, hook, ip, "ok");
+      return c.json(out);
     }
 
     if (hook === "audit") {

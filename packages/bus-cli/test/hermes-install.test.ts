@@ -26,6 +26,7 @@ import {
 } from "../src/steps/adapters.ts";
 import {
   HERMES_MARKER,
+  HERMES_ROOTS_FILE,
   hermesEnabled,
   hermesHome,
   hermesPluginDir,
@@ -246,6 +247,87 @@ describe("installAdapters: hermes", () => {
     expect(readFileSync(join(dest, "plugin.yaml"), "utf8")).toContain(
       "name: oa-bus",
     );
+  });
+});
+
+describe("installAdapters: hermes owner settings and remembered chats", () => {
+  const CONFIG =
+    "plugins:\n  entries:\n    oa-bus:\n      allow_gateway_injection: true\n      settings:\n        wake: [telegram]\n";
+
+  it("leaves config.yaml, and so allow_gateway_injection, byte for byte as it was", async () => {
+    const { deps, home, dest } = setup({
+      before: (h) => put(join(h, ".hermes/config.yaml"), CONFIG),
+    });
+    await installAdapters(deps); // fresh
+    put(join(dest, "bus.py"), "X = 'edited'\n");
+    await installAdapters(deps); // upgrade
+    expect(readFileSync(join(home, ".hermes/config.yaml"), "utf8")).toBe(
+      CONFIG,
+    );
+    expect(ls(join(home, ".hermes")).sort()).toEqual([
+      "config.yaml",
+      "plugins",
+    ]);
+  });
+
+  it("never writes allow_gateway_injection anywhere in the cli", () => {
+    const hits: string[] = [];
+    const walk = (d: string) => {
+      for (const n of readdirSync(d)) {
+        const p = join(d, n);
+        if (lstatSync(p).isDirectory()) walk(p);
+        else if (
+          p.endsWith(".ts") &&
+          readFileSync(p, "utf8").includes("allow_gateway_injection")
+        )
+          hits.push(p);
+      }
+    };
+    walk(join(import.meta.dirname, "../src"));
+    expect(hits).toEqual([]);
+  });
+
+  it("never ships gateway_roots.json from the package folder", async () => {
+    const { deps, dest } = setup();
+    put(join(deps.assets.hermes as string, HERMES_ROOTS_FILE), "{}");
+    await installAdapters(deps);
+    expect(existsSync(join(dest, HERMES_ROOTS_FILE))).toBe(false);
+  });
+
+  it("keeps the plugin's remembered chats across an upgrade, owner-only, and stays current with them", async () => {
+    const { deps, dest } = setup();
+    await installAdapters(deps);
+    put(join(dest, HERMES_ROOTS_FILE), '{"r":{}}');
+    // The file does not make the folder stale.
+    const inode = lstatSync(dest).ino;
+    await installAdapters(deps);
+    expect(lstatSync(dest).ino).toBe(inode);
+    put(join(dest, "bus.py"), "X = 'edited'\n"); // now stale
+    await installAdapters(deps);
+    expect(readFileSync(join(dest, HERMES_ROOTS_FILE), "utf8")).toBe(
+      '{"r":{}}',
+    );
+    expect(lstatSync(join(dest, HERMES_ROOTS_FILE)).mode & 0o777).toBe(0o600);
+  });
+
+  it("drops a remembered-chats link instead of following it", async () => {
+    const { deps, dest } = setup();
+    await installAdapters(deps);
+    const elsewhere = join(tmp("oa-hermes-else-"), "x.json");
+    put(elsewhere, "secret");
+    symlinkSync(elsewhere, join(dest, HERMES_ROOTS_FILE));
+    put(join(dest, "bus.py"), "X = 'edited'\n");
+    await installAdapters(deps);
+    expect(existsSync(join(dest, HERMES_ROOTS_FILE))).toBe(false);
+    expect(readFileSync(elsewhere, "utf8")).toBe("secret");
+  });
+
+  it("removes the folder, remembered chats included, on uninstall", async () => {
+    const { deps, dest } = setup();
+    await installAdapters(deps);
+    put(join(dest, HERMES_ROOTS_FILE), "{}");
+    await uninstallAdapters(deps);
+    expect(existsSync(dest)).toBe(false);
   });
 });
 

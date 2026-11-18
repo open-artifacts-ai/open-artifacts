@@ -51,6 +51,9 @@ export const status = (over: Partial<StatusReply> = {}): StatusReply => ({
   hub: "connected",
   namespace: NS,
   namespaces: [{ namespace: NS, agents: [] }],
+  // A current daemon always says which Claude sessions are linked (#2688).
+  claude_sessions: [],
+  unbound_proofs: [],
   ...over,
 });
 

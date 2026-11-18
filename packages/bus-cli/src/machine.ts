@@ -48,3 +48,12 @@ export function readMachine(home: string): Machine {
   } catch {}
   return { state: "bad" };
 }
+
+/** A hub address as its origin (a ws or wss one as http or https); the address itself when it is not a URL. */
+export const originOf = (hub: string): string => {
+  try {
+    return new URL(hub.replace(/^ws(s?):/, "http$1:")).origin;
+  } catch {
+    return hub;
+  }
+};

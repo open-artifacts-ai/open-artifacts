@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.199.7](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.6...v0.199.7) (2026-11-17)
+
+
+### Bug Fixes
+
+* **viewer:** a guest with a Can comment share can comment ([#2702](https://github.com/open-artifacts-ai/open-artifacts/issues/2702)) ([#2703](https://github.com/open-artifacts-ai/open-artifacts/issues/2703)) ([8555a53](https://github.com/open-artifacts-ai/open-artifacts/commit/8555a532796d784f89f65934b6b14bebb975a066))
+
+## [0.199.6](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.5...v0.199.6) (2026-11-17)
+
+
+### Bug Fixes
+
+* **bus:** say which Claude sessions are not linked, and why ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2698](https://github.com/open-artifacts-ai/open-artifacts/issues/2698)) ([3d26c48](https://github.com/open-artifacts-ai/open-artifacts/commit/3d26c48beaa0e1e941059d16e3a25041e65b862c))
+
+## [0.199.5](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.4...v0.199.5) (2026-11-17)
+
+
+### Bug Fixes
+
+* **bus:** link the instance's Claude entry at every scope, and say when it can't ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2694](https://github.com/open-artifacts-ai/open-artifacts/issues/2694)) ([2c6f7f5](https://github.com/open-artifacts-ai/open-artifacts/commit/2c6f7f54aff613a0be079c6c775dd0d3dc708776))
+
+## [0.199.4](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.3...v0.199.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* **viewer:** recover a frame whose signed URL expired ([#2686](https://github.com/open-artifacts-ai/open-artifacts/issues/2686)) ([#2690](https://github.com/open-artifacts-ai/open-artifacts/issues/2690)) ([de02318](https://github.com/open-artifacts-ai/open-artifacts/commit/de02318bb878ba9a6c3d99ec6a8dc4d99017cd1e))
+
+## [0.199.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.2...v0.199.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **t19:** erase each run's people on rl-a, and old runs' leftovers ([#2680](https://github.com/open-artifacts-ai/open-artifacts/issues/2680)) ([#2683](https://github.com/open-artifacts-ai/open-artifacts/issues/2683)) ([8f9d84c](https://github.com/open-artifacts-ai/open-artifacts/commit/8f9d84ce8a4d4c95a573bf441a97f600b94c0337))
+
+## [0.199.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.1...v0.199.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **onboarding:** seed the Welcome after sign-in, not during it ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632)) ([#2667](https://github.com/open-artifacts-ai/open-artifacts/issues/2667)) ([adf3628](https://github.com/open-artifacts-ai/open-artifacts/commit/adf362852cb03079a68661849f3487ce705912d4))
+
+## [0.199.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.0...v0.199.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **bus:** Hermes shows as live from session start and wakes for mail ([#2647](https://github.com/open-artifacts-ai/open-artifacts/issues/2647)) ([#2648](https://github.com/open-artifacts-ai/open-artifacts/issues/2648)) ([d434a84](https://github.com/open-artifacts-ai/open-artifacts/commit/d434a840675c134a5415361f9436b673beb43246))
+
+## [0.199.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.198.0...v0.199.0) (2026-11-16)
+
+
+### Features
+
+* **members:** a Setup column and Copy the setup line ([#2632](https://github.com/open-artifacts-ai/open-artifacts/issues/2632) slice 2) ([#2638](https://github.com/open-artifacts-ai/open-artifacts/issues/2638)) ([d60657e](https://github.com/open-artifacts-ai/open-artifacts/commit/d60657eae3af618fb06f9b246329764eb171861b))
+
 ## [0.198.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.197.0...v0.198.0) (2026-11-16)
 
 
