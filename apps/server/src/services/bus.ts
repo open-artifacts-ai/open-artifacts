@@ -1802,6 +1802,22 @@ async function fanOutRunVersion(
     ids = r.results.map((x) => x.id);
   } catch (e) {
     logError("bus_run_version_members_failed", e);
+    // A new change whose first read failed: the cron starts it from the
+    // beginning, replacing any older change's cursor.
+    if (cursor === null)
+      try {
+        await stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        )
+          .bind(
+            RUN_VERSION_FANOUT_KEY,
+            JSON.stringify({ after: "", gen: crypto.randomUUID() }),
+          )
+          .run();
+      } catch (e2) {
+        logError("bus_run_version_cursor_failed", e2);
+      }
     return;
   }
   const more = ids.length > page;
