@@ -114,6 +114,9 @@ let stop: (() => void) | null = null;
  */
 export function trackViewportVar(): () => void {
   const root = document.documentElement;
+  // The title bar being watched for size changes (it may remount).
+  let ro: ResizeObserver | null = null;
+  let watched: Element | null = null;
   const set = () => {
     root.style.setProperty("--oa-vvh", `${viewHeight() / 100}px`);
     // The phone sheet is fixed to the layout viewport: lift it above the keyboard.
@@ -129,6 +132,11 @@ export function trackViewportVar(): () => void {
         Math.max(0, window.visualViewport?.offsetTop ?? 0),
       )}px`,
     );
+    if (header !== watched && ro) {
+      if (watched) ro.unobserve(watched);
+      if (header) ro.observe(header);
+      watched = header;
+    }
     // The doc toolbar's top edge: the visible area's top, panned or not.
     root.style.setProperty(
       "--oa-vv-top",
@@ -136,22 +144,30 @@ export function trackViewportVar(): () => void {
     );
   };
   if (users++ === 0) {
+    if (typeof ResizeObserver === "function")
+      ro = new ResizeObserver(() => later());
     set();
     const off = onViewport(set);
-    // The title bar moves with the page and with its own wrapping.
-    window.addEventListener("scroll", set, true);
-    window.addEventListener("resize", set);
-    const header = document.querySelector(".oa-vt");
-    const ro =
-      header && typeof ResizeObserver === "function"
-        ? new ResizeObserver(set)
-        : null;
-    if (header) ro?.observe(header);
+    // The title bar moves with the page and with its own wrapping: scrolls
+    // come in bursts, so those run once per frame.
+    let frame = 0;
+    const later = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        set();
+      });
+    };
+    window.addEventListener("scroll", later, true);
+    window.addEventListener("resize", later);
     stop = () => {
       off();
-      window.removeEventListener("scroll", set, true);
-      window.removeEventListener("resize", set);
+      window.removeEventListener("scroll", later, true);
+      window.removeEventListener("resize", later);
+      if (frame) cancelAnimationFrame(frame);
       ro?.disconnect();
+      ro = null;
+      watched = null;
     };
   }
   return () => {

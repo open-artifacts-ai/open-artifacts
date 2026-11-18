@@ -158,20 +158,53 @@ describe("phone doc toolbar (#2276)", () => {
     let bottom = 157;
     header.getBoundingClientRect = () => ({ bottom }) as DOMRect;
     document.body.append(header);
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) =>
+      frames.push(f),
+    );
+    const cancelled = vi.fn();
+    vi.stubGlobal("cancelAnimationFrame", cancelled);
+    const watching = new Set<Element>();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe = (e: Element) => watching.add(e);
+        unobserve = (e: Element) => watching.delete(e);
+        disconnect = () => watching.clear();
+      },
+    );
     const stop = trackViewportVar();
+    expect([...watching]).toEqual([header]);
     const bar = () =>
       document.documentElement.style.getPropertyValue("--oa-bar-top");
     expect(bar()).toBe("157px");
     t.offsetTop = 300;
     t.dispatchEvent(new Event("scroll"));
     expect(bar()).toBe("300px");
-    // The header moved (the page scrolled): follows on a window scroll.
+    // The header moved (the page scrolled): follows on a window scroll,
+    // once per frame however many scrolls came.
     t.offsetTop = 0;
     bottom = 40;
-    window.dispatchEvent(new Event("scroll"));
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new Event("scroll"));
+    expect(frames).toHaveLength(1);
+    expect(bar()).toBe("300px");
+    frames.shift()?.(0);
     expect(bar()).toBe("40px");
+    window.dispatchEvent(new Event("scroll"));
+    expect(frames).toHaveLength(1);
+    // The title bar remounts: the observer moves to the new node.
+    frames.length = 0;
+    const next = document.createElement("div");
+    next.className = "oa-vt";
+    next.getBoundingClientRect = () => ({ bottom: 90 }) as DOMRect;
+    header.replaceWith(next);
+    t.dispatchEvent(new Event("scroll"));
+    expect([...watching]).toEqual([next]);
+    expect(bar()).toBe("90px");
     stop();
-    header.remove();
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(watching.size).toBe(0);
+    next.remove();
     expect(bar()).toBe("");
   });
 });
