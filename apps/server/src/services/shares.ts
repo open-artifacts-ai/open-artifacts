@@ -29,6 +29,7 @@ import { stmt } from "../db/stmt.js";
 import { EmailSkipped, emailEnabled, sendEmail } from "../email/send.js";
 import {
   addressHash,
+  keyedAddressHash,
   optoutUrl,
   signOptoutToken,
 } from "../email/share-optout.js";
@@ -39,7 +40,7 @@ import {
 } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logInfo, logWarn } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
@@ -158,7 +159,11 @@ const shareAudit = (
   );
 
 const SAME_SHARE = `SELECT email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ? AND can_comment = ?`;
-const OPTED_OUT = "select 1 as x from email_optouts where address_hash = ?1";
+const OPTED_OUT =
+  "select 1 as x from email_optouts where address_hash in (?1, ?2)";
+// Any keyed opt-out row ("k1:..."): a range on the primary key, so it is indexed.
+const KEYED_ROW_EXISTS =
+  "select 1 as x from email_optouts where address_hash >= 'k1:' and address_hash < 'k1;' limit 1";
 const IS_USER = "select 1 as x from users where email = ? limit 1";
 // Only a lapsed guest (removed by the last-share cleanup): an admin or
 // directory removal clears guest_lapsed and stays removed (P3 T6).
@@ -370,10 +375,28 @@ async function emailShare(
     outsideAddr = outside;
     // "Don't email me again": an address that opted out gets no outside share
     // email (#2590). Across hosted would be a call to the platform here.
+    // The plain SHA-256 row still counts (rows from before #2820 stay), and
+    // with INSTALL_OPTOUT_KEY the keyed one too (a null binds as no match).
     const optOutHash = outside ? await addressHash(email) : null;
+    const keyedHash = outside ? await keyedAddressHash(env, email) : null;
+    // Fail closed (#2820): keyed rows exist but this invocation has no usable
+    // key, so it can't tell who opted out. Send nothing rather than email
+    // someone who did. One indexed read, only on this no-key path.
+    if (
+      outside &&
+      keyedHash === null &&
+      (await stmt(env.DB, KEYED_ROW_EXISTS).first()) !== null
+    ) {
+      logError(
+        env.INSTALL_OPTOUT_KEY?.trim()
+          ? "optout_key_invalid"
+          : "optout_key_missing",
+      );
+      return { emailed: false, notEmailed: "skipped" };
+    }
     if (
       optOutHash &&
-      (await stmt(env.DB, OPTED_OUT).bind(optOutHash).first())
+      (await stmt(env.DB, OPTED_OUT).bind(optOutHash, keyedHash).first())
     ) {
       // The sharer is not told a recipient opted out (that choice is the
       // recipient's): the result says "skipped", as for any other non-send to

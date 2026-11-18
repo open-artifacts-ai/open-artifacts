@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.217.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.216.0...v0.217.0) (2026-11-18)
+
+
+### Features
+
+* **agents:** the held-requests switch and the listens-to list ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577) slice 2) ([#2843](https://github.com/open-artifacts-ai/open-artifacts/issues/2843)) ([f9f12fb](https://github.com/open-artifacts-ai/open-artifacts/commit/f9f12fb8ebc163a6db5f9e1b75aef8fd5c1a3ad0))
+* **mcp:** an unlinked agent is told so on every write ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2841](https://github.com/open-artifacts-ai/open-artifacts/issues/2841)) ([c1f6103](https://github.com/open-artifacts-ai/open-artifacts/commit/c1f61034bcb9ae02880c795504974b1a4173e83b))
+
+## [0.216.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.215.0...v0.216.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** instance store and oa-bus add ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S1) ([#2833](https://github.com/open-artifacts-ai/open-artifacts/issues/2833)) ([41b4290](https://github.com/open-artifacts-ai/open-artifacts/commit/41b4290fc182f94108e19ce776506fe3402e014b))
+* **sharing:** key the opt-out hash with the install's own key ([#2820](https://github.com/open-artifacts-ai/open-artifacts/issues/2820)) ([#2829](https://github.com/open-artifacts-ai/open-artifacts/issues/2829)) ([d5e3bb6](https://github.com/open-artifacts-ai/open-artifacts/commit/d5e3bb6eb32e3e57834383b204c306acd31edb50))
+
+
+### Bug Fixes
+
+* **bus:** the proof a session is sending is never evicted; proofs wait for a late join ([#2811](https://github.com/open-artifacts-ai/open-artifacts/issues/2811)) ([cd1ac11](https://github.com/open-artifacts-ai/open-artifacts/commit/cd1ac1135e070277e00d0b8753f65922fc1f9159))
+* **sharing:** an opt-out can't be told apart from a failed send ([#2716](https://github.com/open-artifacts-ai/open-artifacts/issues/2716)) ([#2821](https://github.com/open-artifacts-ai/open-artifacts/issues/2821)) ([b6fae13](https://github.com/open-artifacts-ai/open-artifacts/commit/b6fae13d0c37cd2fbeca22072505fb51c3978256))
+
 ## [0.215.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.214.1...v0.215.0) (2026-11-18)
 
 
