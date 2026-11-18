@@ -775,12 +775,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let linksWritten: string | undefined = JSON.stringify(saved);
   const seedLinks = (rec: AgentRecord) => {
     if (rec.linkHashes !== undefined || rec.pid === undefined) return;
+    // A proof for another instance than the one the session is homed on is never replayed.
     const hit = saved.find(
-      (e) => e.pid === rec.pid && e.procStart === rec.procStart,
+      (e) =>
+        e.pid === rec.pid &&
+        e.procStart === rec.procStart &&
+        (e.instance ?? MAIN_INSTANCE) === homedOf(rec),
     );
     if (!hit) return;
-    // A proof for another instance than the one the session is homed on is never replayed.
-    if ((hit.instance ?? MAIN_INSTANCE) !== homedOf(rec)) return;
     rec.linkHashes = [...hit.hashes];
     saved = saved.filter((e) => e !== hit);
   };
@@ -1314,6 +1316,54 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const homedOf = (rec: AgentRecord): string | undefined =>
     rec.instance ?? (lanes.multi ? undefined : MAIN_INSTANCE);
+  /**
+   * A proof for a session that is homed nowhere yet (its folder is unmapped) is
+   * held, keyed by pid, start time and instance, and sent on that instance's
+   * link once the session is homed there. Claude never runs its helper again,
+   * so dropping it would lose it for good. No frame goes out now. Kept in
+   * claude-links.json with the instance, so a restart keeps it too.
+   */
+  const holdProof = (want: string, rec: AgentRecord, hash: string) => {
+    const { pid, procStart } = rec;
+    if (pid === undefined || procStart === undefined) return;
+    const same = (e: ClaudeLink) =>
+      e.pid === pid &&
+      e.procStart === procStart &&
+      (e.instance ?? MAIN_INSTANCE) === want;
+    const hit = saved.find(same);
+    saved = [
+      {
+        pid,
+        procStart,
+        hashes: withLinkHash(hit?.hashes, hash),
+        ...(want !== MAIN_INSTANCE ? { instance: want } : {}),
+      },
+      ...saved.filter((e) => !same(e)),
+    ].slice(0, CLAUDE_LINKS_MAX);
+    log(
+      `held a proof for the instance ${want}: session ${rec.ref} has no instance yet`,
+    );
+    noteUnbound("unmapped_folder", pid);
+    persistLinks();
+  };
+  /** Binds the proofs held for a session once it is homed on their instance. */
+  const claimHeld = (rec: AgentRecord) => {
+    const home = homedOf(rec);
+    if (home === undefined || rec.pid === undefined) return;
+    const hit = saved.find(
+      (e) =>
+        e.pid === rec.pid &&
+        e.procStart === rec.procStart &&
+        (e.instance ?? MAIN_INSTANCE) === home,
+    );
+    if (!hit) return;
+    saved = saved.filter((e) => e !== hit);
+    proofIssues.delete(rec.pid);
+    for (const h of hit.hashes)
+      rec.linkHashes = withLinkHash(rec.linkHashes, h);
+    persistLinks();
+    for (const h of hit.hashes) sendLink(rec, h);
+  };
   /** A proof for another instance than the session's is dropped here, never offered to any hub. */
   const dropProof = (want: string, rec: AgentRecord) => {
     log(
@@ -1333,14 +1383,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * `mcp-proof` calls that bound nothing. Causes and times only: never a proof,
    * a hash or a header.
    */
-  const proofIssues = new Map<number, "proof_timed_out" | "proof_refused">();
+  const proofIssues = new Map<
+    number,
+    "proof_timed_out" | "proof_refused" | "proof_unmapped"
+  >();
   const unboundProofs: {
     at: number;
     cause:
       | "no_live_record"
       | "process_mismatch"
       | "no_process_start"
-      | "wrong_instance";
+      | "wrong_instance"
+      | "unmapped_folder";
   }[] = [];
   const noteUnbound = (
     cause: (typeof unboundProofs)[number]["cause"],
@@ -1352,7 +1406,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proofIssues.delete(pid);
       proofIssues.set(
         pid,
-        cause === "no_live_record" ? "proof_timed_out" : "proof_refused",
+        cause === "no_live_record"
+          ? "proof_timed_out"
+          : cause === "unmapped_folder"
+            ? "proof_unmapped"
+            : "proof_refused",
       );
       while (proofIssues.size > PENDING_PROOF_MAX) {
         const oldest = proofIssues.keys().next().value;
@@ -1362,6 +1420,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
   };
   const claimProofs = () => {
+    for (const rec of agents.all())
+      if (rec.kind === "claude-code" && rec.live) claimHeld(rec);
     if (pendingProofs.size === 0) return;
     const now = Date.now();
     for (const [key, p] of pendingProofs)
@@ -1376,6 +1436,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       for (const [key, p] of [...pendingProofs]) {
         if (p.pid !== pid || p.procStart !== rec.procStart) continue;
         pendingProofs.delete(key);
+        if (homedOf(rec) === undefined) {
+          holdProof(p.instance, rec, p.hash);
+          continue;
+        }
         if (p.instance !== homedOf(rec)) {
           dropProof(p.instance, rec);
           continue;
@@ -2148,6 +2212,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
         // #2793 S4: a proof binds only on its own instance's hub, for a
         // session homed there. Anything else is dropped before any hub sees it.
+        if (homedOf(rec) === undefined) {
+          holdProof(want, rec, req.hash);
+          return { bound: true };
+        }
         if (want !== homedOf(rec)) {
           dropProof(want, rec);
           return { bound: false };

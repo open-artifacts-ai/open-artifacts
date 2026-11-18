@@ -40,6 +40,8 @@ const CAUSE: Record<string, string> = {
   proof_timed_out:
     "its helper's proof arrived before the session was recorded and expired",
   proof_refused: "the process its helper named did not match this session",
+  proof_unmapped:
+    "its folder is not tied to an instance yet; the proof is held and binds once you run `oa-bus use`",
 };
 
 /** Calls that linked nothing: the daemon's own ring, then the helper's own log. */
@@ -53,6 +55,8 @@ const UNBOUND: Record<string, string> = {
   process_not_matched:
     "the daemon could not match the process to a live session (a reused pid, or an unreadable start time)",
   bad_instance: "the helper names an instance that is not a valid name",
+  unmapped_folder:
+    "the session's folder is not tied to an instance yet, so the proof is held until it is",
   wrong_instance:
     "the proof was for another instance than the session's, so it was dropped",
   daemon_unreachable: "the daemon did not answer in time, or is not running",

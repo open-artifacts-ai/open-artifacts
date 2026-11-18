@@ -199,7 +199,7 @@ export function claudeProofChecks(
     out.push({
       level: "warn",
       lines: [
-        `${cc} the ${safeText(e.name)} entry (${e.scope} scope) points at ${safeUrl(e.url)}, not ${instance ? instance.hub : origin}/mcp, so it can't be linked.`,
+        `${cc} the ${safeText(e.name)} entry (${e.scope} scope) points at ${safeUrl(e.url)}, not ${safeUrl(`${instance ? instance.hub : origin}/mcp`)}, so it can't be linked.`,
       ],
     });
   return out;

@@ -2,7 +2,7 @@
 // instance's hub, only for a session homed there, and never reaches two hubs.
 // Two fake hubs; two Claude session files (one in an A folder, one in a B
 // folder). Waits are signals (a frame arriving), never sleeps.
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonLinkProof } from "@oa/bus-ipc";
@@ -229,4 +229,89 @@ describe("one proof per instance (#2793 S4)", () => {
       expect(h.raw.join("\n")).not.toContain(HASH_B);
     },
   );
+});
+
+describe("a proof for an unmapped session is held, not lost (#2793 S4)", () => {
+  it("held while unmapped, kept in claude-links.json, bound on its own instance's link once homed", async () => {
+    const hubB = await fakeHub();
+    const home = mkdtempSync(join(tmpdir(), "ob-2793-s4h-"));
+    mkdirSync(join(home, "instances"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "instances", "b.json"),
+      JSON.stringify({
+        name: "b",
+        hub: hubB.origin,
+        machine_id: "",
+        label: "laptop",
+        machine_token: TOKEN_B,
+      }),
+      { mode: 0o600 },
+    );
+    const sessions = mkdtempSync(join(tmpdir(), "ob-2793-s4h-s-"));
+    session(sessions, 4343, "sb", "/b/proj");
+    const linksFile = join(
+      mkdtempSync(join(tmpdir(), "ob-2793-s4h-l-")),
+      "claude-links.json",
+    );
+    const start = (mapped: boolean) =>
+      daemonHarness({
+        instancesHome: home,
+        homeLookup: (cwd) =>
+          cwd.startsWith("/b/") && mapped
+            ? { instance: "b" }
+            : cwd.startsWith("/b/")
+              ? { unmapped: true }
+              : { instance: "main" },
+        claude: {
+          sessionsDir: sessions,
+          socketsDir: join(sessions, "r"),
+          linksFile,
+          syncMs: 20,
+          procStart: () => "t0",
+          isRunning: () => true,
+        },
+        transports: { "claude-code": async () => ({ ok: true }) },
+      });
+    // 1. Unmapped: the proof is accepted and held; no frame goes to any hub.
+    const first = await start(false);
+    await vi.waitFor(() => expect(first.daemon.hubs.get("b")?.open).toBe(true));
+    first.toDaemon(helloOk);
+    await vi.waitFor(() =>
+      expect(first.daemon.agents.byRef("sb")?.live).toBe(true),
+    );
+    expect(await proof(first, 4343, HASH_B, "b")).toBe(true);
+    await vi.waitFor(() =>
+      expect(readFileSync(linksFile, "utf8")).toContain(HASH_B),
+    );
+    expect(JSON.parse(readFileSync(linksFile, "utf8")).links).toMatchObject([
+      { pid: 4343, instance: "b", hashes: [HASH_B] },
+    ]);
+    expect(first.of("link_bind")).toEqual([]);
+    expect(hubB.of("link_bind")).toEqual([]);
+    await first.daemon.stop();
+    // 2. Mapped (a restart): the held proof binds on B's link, never on main's.
+    const second = await start(true);
+    await vi.waitFor(() =>
+      expect(second.daemon.hubs.get("b")?.open).toBe(true),
+    );
+    second.toDaemon(helloOk);
+    hubB.send(helloOk);
+    await vi.waitFor(() =>
+      expect(hubB.of("agent_up").length).toBeGreaterThan(0),
+    );
+    const up = hubB.of("agent_up").at(-1);
+    hubB.send({
+      id: up?.id,
+      type: "agent_ok",
+      agent_ref: "sb",
+      bus_name: "name-sb",
+    });
+    await vi.waitFor(() => expect(hubB.of("link_bind")).toHaveLength(1));
+    expect(hubB.of("link_bind")[0]).toMatchObject({
+      agent_ref: "sb",
+      hash: HASH_B,
+    });
+    expect(second.of("link_bind")).toEqual([]);
+    expect(first.of("link_bind")).toEqual([]);
+  });
 });
