@@ -141,18 +141,28 @@ describe("instance key file checks (#2793 S1b)", () => {
     expect(() =>
       saveInstance({ ...c, name: "two", hub: "https://t.example.com" }, h),
     ).toThrow(/real folder/);
-    expect(listInstances(h).map((i) => i.name)).toEqual(["main"]);
+    expect(listInstances(h).map((i) => i.name)).toEqual(["work"]);
   });
 
   posixOnly("refuses a key file owned by someone else", () => {
     const h = scratch();
     saveInstance(c, h);
-    const mine = instanceChecks.uid();
-    const spy = vi
-      .spyOn(instanceChecks, "uid")
-      .mockReturnValue((mine ?? 0) + 1);
+    const file = instanceFile("work", h);
+    const real = instanceChecks.lstat;
+    const spy = vi.spyOn(instanceChecks, "lstat").mockImplementation(((
+      p: string,
+    ) => {
+      const st = real(p);
+      return p === file
+        ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, {
+            uid: st.uid + 1,
+          })
+        : st;
+    }) as typeof real);
     try {
-      expect(() => credentialsFor("work", h)).toThrow(/belong to you/);
+      expect(() => credentialsFor("work", h)).toThrow(
+        /cannot read .*work\.json: it must belong to you/,
+      );
     } finally {
       spy.mockRestore();
     }
@@ -165,7 +175,9 @@ describe("instance key file checks (#2793 S1b)", () => {
       .spyOn(instanceChecks, "uid")
       .mockReturnValue((process.getuid?.() ?? 0) + 1);
     try {
-      expect(() => credentialsFor("work", h)).toThrow(/belong to you/);
+      expect(() => credentialsFor("work", h)).toThrow(
+        /instances must belong to you/,
+      );
     } finally {
       spy.mockRestore();
     }
@@ -176,6 +188,23 @@ describe("instance key file checks (#2793 S1b)", () => {
     saveInstance(c, h);
     chmodSync(join(h, "instances"), 0o755);
     expect(() => credentialsFor("work", h)).toThrow(/chmod 700/);
+  });
+
+  posixOnly("an open instances folder keeps the folder unmapped", () => {
+    const h = scratch();
+    vi.stubEnv("OA_BUS_HOME", h);
+    writeFileSync(
+      join(h, "machine.json"),
+      JSON.stringify({ hub: "https://m.example.com", machine_token: TOKEN }),
+      { mode: 0o600 },
+    );
+    saveInstance(c, h);
+    chmodSync(join(h, "instances"), 0o755);
+    expect(listInstances(h).map((i) => i.name)).toEqual(["main", "work"]);
+    expect(defaultHomeLookup("/any/where")).toEqual({ unmapped: true });
+    expect(addProblem("again", "https://w.example.com", h)).toMatch(
+      /open to other users/,
+    );
   });
 
   posixOnly("refuses a key file with group or other bits", () => {

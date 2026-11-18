@@ -88,10 +88,25 @@ function readInstanceFile(file: string): string {
       `${file} is readable by other users: run \`chmod 600 ${file}\``,
     );
   // O_NOFOLLOW closes the gap between the check and the read.
-  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  // O_NONBLOCK keeps a swapped-in FIFO from hanging the open.
+  const fd = openSync(
+    file,
+    constants.O_RDONLY |
+      (constants.O_NOFOLLOW ?? 0) |
+      (constants.O_NONBLOCK ?? 0),
+  );
   try {
-    if (!fstatSync(fd).isFile())
-      throw new StartError("CREDENTIALS_UNREADABLE", `${file} is not a file`);
+    const fs = fstatSync(fd);
+    const owner = instanceChecks.uid();
+    if (
+      !fs.isFile() ||
+      (owner !== undefined && fs.uid !== owner) ||
+      fs.mode & 0o077
+    )
+      throw new StartError(
+        "CREDENTIALS_UNREADABLE",
+        `${file} changed while it was being read: run \`${BUS_CMD} add\` again`,
+      );
     return readFileSync(fd, "utf8");
   } finally {
     closeSync(fd);
@@ -138,8 +153,13 @@ function mainAddress(h: string): string | undefined {
 function addedNames(h: string): string[] {
   let files: string[];
   try {
-    // A folder that fails the checks lists nothing; credentialsFor says why.
-    checkDir(instancesDir(h));
+    // A folder that fails the checks still lists its names, so a folder is
+    // never mapped to main by guess; credentialsFor says why it fails.
+    try {
+      checkDir(instancesDir(h));
+    } catch (e) {
+      if (!(e instanceof StartError)) throw e;
+    }
     files = readdirSync(instancesDir(h));
   } catch {
     return [];
@@ -264,9 +284,18 @@ export function addProblem(
     canonicalAddress(main) === want
   )
     return `that address is already this machine's main instance`;
-  for (const i of listInstances(h))
+  for (const i of listInstances(h)) {
+    if (!i.main && !i.hub) {
+      try {
+        credentialsFor(i.name, h);
+      } catch (e) {
+        if (e instanceof StartError) return e.message;
+      }
+      return `instance ${i.name} cannot be read, so the address cannot be checked: fix or remove ${instanceFile(i.name, h)} first`;
+    }
     if (!i.main && want !== undefined && canonicalAddress(i.hub) === want)
       return `that address is already the instance ${i.name}`;
+  }
   return undefined;
 }
 
