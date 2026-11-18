@@ -626,7 +626,7 @@ describe("the skill step (#2624)", () => {
     const step = stepOf(old);
     expect(step).toContain("has no `skill` command");
     expect(step).not.toContain("skill --check");
-    expect(step).toContain(`save ${origin}/skill.md the way your harness`);
+    expect(step).toContain(`Save ${origin}/skill.md the way your harness`);
     const at = renderLlms(HOST, {
       bus: true,
       pin: { ...PIN, version: SKILL_COMMAND_MIN_BUS },
@@ -637,7 +637,9 @@ describe("the skill step (#2624)", () => {
   it("no pin: no checked command, an oa-bus already here, or save it by hand", () => {
     const step = stepOf(renderLlms(HOST, { bus: true, pin: null }));
     expect(step).toContain("`oa-bus skill --check --instance");
-    expect(step).toContain(`save ${origin}/skill.md the way your harness`);
+    expect(step).toContain(
+      `Otherwise, save ${origin}/skill.md the way your harness`,
+    );
     expect(step).not.toMatch(/npm install|dist\/index\.js/);
     expect(step).toContain("still applies if the bus step failed");
   });

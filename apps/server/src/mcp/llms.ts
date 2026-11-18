@@ -132,12 +132,15 @@ const skillStep = (origin: string, pin: BusPin | null, plugin: boolean) => {
     'When the check passes, or you have saved the file yourself, tell the person: "The Open Artifacts skill is installed for {harness}." ({harness} is the name of your agent tool.)';
   const follow = `Then read ${origin}${SKILL_PATH} now and follow it from now on.`;
   const manual = `If the installer doesn't know your harness (the check finds none of its harnesses), or these commands can't run, save ${origin}${SKILL_PATH} the way your harness keeps skills, and tell the person where you saved it.`;
+  const saveByHand = `Save ${origin}${SKILL_PATH} the way your harness keeps skills, and tell the person where you saved it.`;
   const checkCmd = `skill --check --instance ${origin}`;
   const installCmd = `skill --instance ${origin}`;
   const bySkill =
     pin && pinHasSkillCommand(pin.version)
       ? `Run this. Like the bus step, it downloads a checked copy of the bus and runs from that. It prints one line per harness with where the skill is saved, and exits 0 only if it is saved for all of them:\n\n${busInstallBlock(origin, pin, checkCmd)}\n\nIf it exits non-zero, save the skill with this, which changes nothing about the bus, then run the check again:\n\n${busInstallBlock(origin, pin, installCmd)}\n\nIf a command fails or prints MISMATCH, don't try another way to run the bus: ${manual}`
-      : `${pin ? `This instance's pinned bus (version ${pin.version}) has no \`skill\` command, so there is no command to run for this.` : "This build has no checked bus release, so there is no command to run from a checked copy. If `oa-bus` is already on this machine, `oa-bus " + checkCmd + "` prints where the skill is saved and `oa-bus " + installCmd + "` saves it. Otherwise"} ${pin ? manual : manual.charAt(0).toLowerCase() + manual.slice(1)}`;
+      : pin
+        ? `This instance's pinned bus (version ${pin.version}) has no \`skill\` command, so there is no command to run for this. ${saveByHand}`
+        : `This build has no checked bus release, so there is no command to run from a checked copy. If \`oa-bus\` is already on this machine, \`oa-bus ${checkCmd}\` prints where the skill is saved and \`oa-bus ${installCmd}\` saves it. Otherwise, ${saveByHand.charAt(0).toLowerCase()}${saveByHand.slice(1)}`;
   const stands =
     "This step still applies if the bus step failed or was refused.";
   if (plugin) {
