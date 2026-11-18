@@ -82,6 +82,12 @@ export type SendingEvent = {
   terminal: boolean;
 };
 
+const markSeen = (env: Env, eventId: string, now: number) =>
+  stmt(
+    env.DB,
+    "insert into share_email_events_seen (event_id, created_at) values (?1, ?2) on conflict (event_id) do nothing",
+  ).bind(eventId, now);
+
 const BOUNCED = "cf.email.sending.message.bounced";
 const COMPLAINED = "cf.email.sending.message.complained";
 
@@ -96,6 +102,8 @@ export async function applySendingEvent(
   env: Env,
   ev: SendingEvent,
   now = Date.now(),
+  /** The platform event id behind this call (the pull): recorded as seen in the same D1 batch as the pause, so a re-served event can't extend it twice. */
+  seenEventId?: string,
 ): Promise<boolean> {
   if (ev.kind === "bounced" && !ev.terminal) return false;
   // A first read that throws (rather than rejects) must reach the caller's
@@ -126,15 +134,15 @@ export async function applySendingEvent(
       .first<{ n: number }>();
     if ((n?.n ?? 0) < BOUNCES_TO_PAUSE) return false;
   }
-  await stmt(
+  const pause = stmt(
     env.DB,
     `insert into share_email_pauses (user_id, until_at, reason, created_at)
      values (?1, ?2, ?3, ?4)
      on conflict (user_id) do update set
        until_at = max(until_at, excluded.until_at), reason = excluded.reason`,
-  )
-    .bind(row.user_id, now + SENDER_PAUSE_MS, ev.kind, now)
-    .run();
+  ).bind(row.user_id, now + SENDER_PAUSE_MS, ev.kind, now);
+  if (seenEventId) await env.DB.batch([pause, markSeen(env, seenEventId, now)]);
+  else await pause.run();
   logInfo("sender_paused", { userId: row.user_id, reason: ev.kind });
   return true;
 }
@@ -201,19 +209,21 @@ export async function pullEmailEvents(env: Env): Promise<number> {
         .first();
       if (!seen) {
         if (
-          await applySendingEvent(env, {
-            messageId: e.messageId,
-            kind: e.kind,
-            terminal: e.bounceType === "hard",
-          })
+          await applySendingEvent(
+            env,
+            {
+              messageId: e.messageId,
+              kind: e.kind,
+              terminal: e.bounceType === "hard",
+            },
+            Date.now(),
+            e.eventId,
+          )
         )
           paused++;
-        await stmt(
-          env.DB,
-          "insert into share_email_events_seen (event_id, created_at) values (?1, ?2) on conflict (event_id) do nothing",
-        )
-          .bind(e.eventId, Date.now())
-          .run();
+        // Already in the pause's batch when one was written; this covers the
+        // events that changed nothing.
+        await markSeen(env, e.eventId, Date.now()).run();
       }
       done.push(e.eventId);
     } catch (err) {

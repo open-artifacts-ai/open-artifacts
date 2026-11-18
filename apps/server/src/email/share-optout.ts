@@ -57,6 +57,24 @@ export const optoutUrl = (appHost: string, token: string): string =>
   `https://${appHost}${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(token)}`;
 
 /**
+ * OA Product's wording when the platform's hosted-wide list is on (#2652): the
+ * opt-out covers every team on Open Artifacts, so no {org}.
+ */
+export const OPTOUT_COPY_HOSTED = {
+  link: "Don't email me again",
+  confirmTitle: "Stop these emails?",
+  confirmBody:
+    "We won't email you again when someone shares a page with you, from any team on Open Artifacts.",
+  confirmButton: "Don't email me again",
+  doneTitle: "You won't get these emails again.",
+  doneBody:
+    "Pages shared with you still open when you log in. We just won't email you about them.",
+  badTitle: "This link is not valid",
+  badBody:
+    "This link doesn't work. Open the most recent email from us and use the link there.",
+} as const;
+
+/**
  * OA Product's wording (one place). {org} is the instance's name (its host
  * when it has none): the opt-out covers this install only.
  */

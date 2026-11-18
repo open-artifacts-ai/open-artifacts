@@ -238,13 +238,26 @@ export async function refundAll(env: Env, caps: Cap[]): Promise<void> {
   await env.DB.batch(caps.map(([k, , b]) => stmt(env.DB, REFUND).bind(k, b)));
 }
 
+/**
+ * Thrown by a `render` that decided, once the daily caps had passed, that the
+ * email must not go (the hosted opt-out list said no, or could not answer):
+ * the slots are given back and sendEmail reports false with `outcome.skipped`.
+ */
+export class EmailSkipped extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
 /** True if EMAIL and EMAIL_FROM are both configured. */
 export const emailEnabled = (env: Env): boolean =>
   !!env.EMAIL && !!env.EMAIL_FROM;
 
 /**
  * Sends `render()` to the (already validated) address `to` on behalf of
- * `userId`. Rendering runs inside the guard, so a template error is `false`.
+ * `userId`. Rendering runs inside the guard, after the daily caps have
+ * passed (a refused email renders nothing, and so spends nothing a render may
+ * ask for); a template error is `false` and gives the slots back.
  * With `artifactId`, one email per (artifact, recipient) per day, so removing
  * and re-adding a share can't re-mail. Counter keys never hold the address
  * (a SHA-256 hex stands in). Sign-in codes pass `caps: []`: auth/codes.ts
@@ -254,7 +267,7 @@ export async function sendEmail(
   env: Env,
   userId: string | null,
   to: string,
-  render: () => EmailContent,
+  render: () => EmailContent | Promise<EmailContent>,
   opts: {
     kind: EmailKind;
     artifactId?: string;
@@ -268,12 +281,13 @@ export async function sendEmail(
      * no caller forgets it. `undefined` reads settings here (bounded).
      */
     instance: string | null | undefined;
-    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. `timedOut`: the send timed out, so the email may still arrive. `messageId`: the provider's id for the sent email. */
+    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. `timedOut`: the send timed out, so the email may still arrive. `skipped`: the render declined (EmailSkipped). `messageId`: the provider's id for the sent email. */
     outcome?: {
       limited?: boolean;
       reason?: string;
       timedOut?: boolean;
       messageId?: string;
+      skipped?: boolean;
     };
     /** Caps taken before the usual ones (outside shares, #2590), each with the reason it reports. */
     extraCaps?: { cap: Cap; reason: string }[];
@@ -284,12 +298,6 @@ export async function sendEmail(
   if (!EMAIL || !EMAIL_FROM || !SINGLE_ADDRESS.test(to)) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let content: EmailContent;
-  try {
-    content = render();
-  } catch {
-    logFailed(opts.kind, "render");
-    return false;
-  }
   try {
     let caps = opts.caps;
     if (!caps) {
@@ -324,6 +332,18 @@ export async function sendEmail(
           opts.outcome.reason = extra[refused]?.reason;
       }
       logFailed(opts.kind, "rate_limited");
+      return false;
+    }
+    try {
+      content = await render();
+    } catch (e) {
+      // Nothing was sent: the slots go back.
+      await refundAll(env, caps).catch(() => {});
+      if (e instanceof EmailSkipped) {
+        if (opts.outcome) opts.outcome.skipped = true;
+        return false;
+      }
+      logFailed(opts.kind, "render");
       return false;
     }
     const instance =

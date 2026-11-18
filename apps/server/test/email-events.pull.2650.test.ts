@@ -395,6 +395,45 @@ describe("processed, then acknowledged", () => {
     expect(await pausedUntil(a.member.id)).not.toBeNull();
   });
 
+  it("the pause and the seen id are one D1 batch: a write that fails leaves neither, and a re-served complaint extends the pause once", async () => {
+    const a = await sender();
+    const [id] = await a.sentIds(1);
+    const ev1 = ev(id as string, "complained");
+    let failBatch = true;
+    const broken = {
+      ...a.e,
+      DB: new Proxy(a.e.DB, {
+        get(t, k) {
+          if (k === "batch" && failBatch)
+            return async () => {
+              throw new Error("D1 down");
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    } as Env;
+    const g = gateServing([{ events: [ev1] }]);
+    await pull(g.gate, broken, pullEmailEvents);
+    expect(g.acks).toEqual([]);
+    expect(await pausedUntil(a.member.id)).toBeNull();
+    expect(
+      await env.DB.prepare(
+        "select 1 from share_email_events_seen where event_id = ?",
+      )
+        .bind(ev1.eventId)
+        .first(),
+    ).toBeNull();
+    failBatch = false;
+    const g2 = gateServing([{ events: [ev1] }, { events: [ev1] }]);
+    expect(await pull(g2.gate, broken, pullEmailEvents)).toBe(1);
+    const until = await pausedUntil(a.member.id);
+    expect(until).not.toBeNull();
+    // Served again, ack lost: no second extension.
+    expect(await pull(g2.gate, broken, pullEmailEvents)).toBe(0);
+    expect(await pausedUntil(a.member.id)).toBe(until);
+  });
+
   it("nothing to acknowledge, nothing sent; a refused ack never throws", async () => {
     const a = await sender();
     const none = gateServing([{ events: [] }]);
