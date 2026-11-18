@@ -24,6 +24,7 @@ Transactional emails in the Studio direction (see `../DIRECTION.md`). Each one h
 | `{{artifactTitle}}` | share | The artifact's title |
 | `{{artifactFormat}}` | share | Human-readable format: `HTML page`, `Markdown doc`, `Code`, `PDF` |
 | `{{role}}` | share | `Viewer` or `Editor` |
+| `{{setupLine}}` | invite | The line to paste into an agent: `Set up Open Artifacts for me: follow https://{{appHost}}/llms.txt`. Only in a member invite: the server drops everything between `<!--setup-->` and `<!--/setup-->` (markers included) for a guest |
 
 **Escape every value.** Backend must HTML-escape each value before substituting it into the `.html` files (titles and names are user-controlled), and must not escape values going into the `.txt` files or the subject. URLs must be absolute `https:` URLs; reject anything else.
 
