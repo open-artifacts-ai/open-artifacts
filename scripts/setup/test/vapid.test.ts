@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { vapidHeader } from "../../../apps/server/src/services/web-push.ts";
 import { run } from "../src/index.ts";
 import { generateVapidPair } from "../src/vapid.ts";
 import { ROOT } from "./fakes.ts";
@@ -36,6 +35,20 @@ const ready = (w: W) => {
   return w;
 };
 const puts = (w: W) => w.ops.filter((o) => o.startsWith("put "));
+
+// Loaded by path: a static import would pull the Worker server code into the
+// scripts typecheck, which has no Worker types.
+const WEB_PUSH = new URL(
+  "../../../apps/server/src/services/web-push.ts",
+  import.meta.url,
+).href;
+type VapidHeader = (
+  env: Record<string, string>,
+  endpoint: string,
+) => Promise<string>;
+const loadVapidHeader = async () =>
+  ((await import(/* @vite-ignore */ WEB_PUSH)) as { vapidHeader: VapidHeader })
+    .vapidHeader;
 
 describe("OA_SETUP_PUSH_KEYS=off", () => {
   const off = (w: W) => {
@@ -113,12 +126,12 @@ describe("self-host push keys (VAPID)", () => {
     const { publicKey, privateKey } = await generateVapidPair();
     expect(Buffer.from(publicKey, "base64url")).toHaveLength(65);
     expect(Buffer.from(privateKey, "base64url")).toHaveLength(32);
-    const header = await vapidHeader(
+    const header = await (await loadVapidHeader())(
       {
         VAPID_PUBLIC_KEY: publicKey,
         VAPID_PRIVATE_KEY: privateKey,
         APP_HOST: "app.example.com",
-      } as never,
+      },
       "https://push.example.net/send/abc",
     );
     const m = header.match(/^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=(.+)$/);
