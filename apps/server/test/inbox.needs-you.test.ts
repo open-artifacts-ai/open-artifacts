@@ -315,6 +315,53 @@ describe("GET R.meInbox: Needs you", () => {
     expect(item?.waitingSince).toBe(new Date(began).toISOString());
   });
 
+  it("a bad askedAt keeps the hub's wait start and does not take the inbox down", async () => {
+    const u = await mk("i-badat");
+    const own = await publish(
+      E,
+      u.member,
+      { title: "badat", format: "html", content: "<p>x</p>" } as never,
+      null,
+      undefined,
+      "create",
+    );
+    const t = await addThread(
+      E,
+      { id: own.id, format: "html", currentVersion: 1 } as never,
+      {
+        kind: "user",
+        id: u.userId,
+        agent: {
+          name: "Claude",
+          identity: {
+            identityId: "idn-badat",
+            name: "Scout",
+            kind: "claude-code",
+          },
+        },
+      } as never,
+      view(u),
+      {
+        anchor: { kind: "note" },
+        body: "go?",
+        ask: { question: "go?", options: OPTS, to: [{ key: u.userId }] },
+      },
+      { moderator: true },
+    );
+    const began = Date.now() - 2 * 86_400_000;
+    await waitingAgent(u, "idn-badat", began);
+    await E.DB.prepare(
+      "update artifact_asks set asked_at = 'not a date' where comment_id = ?",
+    )
+      .bind(t.comments[0]?.id)
+      .run();
+    const [item] = (await inbox(u)).needsYou.filter(
+      (i) => i.artifact?.id === own.id,
+    );
+    expect(item?.urgency).toBe("waiting");
+    expect(item?.waitingSince).toBe(new Date(began).toISOString());
+  });
+
   it("an agent of someone else waiting on its owner is not waiting on me", async () => {
     await waitingAgent(owner, "idn-theirs", Date.parse("2026-11-14T07:00:00Z"));
     const id = await mkArtifact();

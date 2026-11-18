@@ -160,8 +160,14 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
     // status may be older than the ask (#2761).
     const began =
       idn && actor.ref === caller.user.id ? waiting.get(idn) : undefined;
+    // A bad askedAt (NaN) must not take the inbox down: the hub's own start stands.
+    const askedMs = Date.parse(r.askedAt);
     const since =
-      began === undefined ? undefined : Math.max(began, Date.parse(r.askedAt));
+      began === undefined
+        ? undefined
+        : Number.isNaN(askedMs)
+          ? began
+          : Math.max(began, askedMs);
     const urgency =
       since !== undefined ? "waiting" : r.confirm === 1 ? "approval" : "plain";
     return {
