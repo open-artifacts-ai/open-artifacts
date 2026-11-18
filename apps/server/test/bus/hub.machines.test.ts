@@ -98,6 +98,7 @@ const RPC_ALLOWLIST = [
   "ownerAwayChanged",
   "pendingProposalSources",
   "ping",
+  "proofMissReason",
   "proposeLink",
   "proposeReach",
   "proposeRole",

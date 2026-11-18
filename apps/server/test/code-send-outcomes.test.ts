@@ -175,7 +175,7 @@ describe("deliverCode: one code_send line per outcome", () => {
           deliverCode(e, authConfig(e), to, await emailKey(e, to), "i", IP),
         false,
       ),
-    ).toEqual([{ evt: "code_send", outcome: "ineligible" }]);
+    ).toEqual([{ evt: "code_send", outcome: "ineligible", why: "no_share" }]);
   });
 
   it("pool_full", async () => {

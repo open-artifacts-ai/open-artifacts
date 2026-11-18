@@ -25,7 +25,7 @@ const READS: Record<string, string> = {
   "services/hosted-optout.ts: hostedOptoutOn":
     "tightens (#2652): only a hosted install, once the platform switched it on, asks the platform's opt-out list before an outside share email (fail closed) and reports opt-outs to it; self-host never calls it",
   "services/login.ts: loginEditable":
-    "tightens (#2520): only a hosted install whose invocation carries the platform's LOGIN gate may change its login domains; self-host sets them in setup, hosted without the gate (prod, until it is bound) changes nothing",
+    "tightens (#2520, #2802): only a hosted install whose invocation carries the platform's LOGIN gate and LOGIN_EDITABLE prop may change its login domains; self-host sets them in setup, hosted without the gate (prod, until it is bound) changes nothing",
   "services/shares.ts: emailShare":
     "tightens (#2590): hosted sends from our own domain, so outside share emails have daily limits (per member, per instance, lower in a trial); self-host sends as before, without them",
   "routes/codes.ts: (anonymous)":
