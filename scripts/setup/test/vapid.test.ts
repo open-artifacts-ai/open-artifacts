@@ -37,6 +37,32 @@ const ready = (w: W) => {
 };
 const puts = (w: W) => w.ops.filter((o) => o.startsWith("put "));
 
+describe("OA_SETUP_PUSH_KEYS=off", () => {
+  const off = (w: W) => {
+    w.deps.env.OA_SETUP_PUSH_KEYS = "off";
+    return ready(w);
+  };
+  it("touches no VAPID secret on upgrade, and a half pair does not block it", async () => {
+    for (const have of [CORE, [...CORE, PUB]]) {
+      const w = off(cloud(have));
+      expect(await run(UPGRADE, w.deps, ROOT)).toBe(0);
+      expect(puts(w)).toEqual([]);
+      const j = w.lines
+        .map((l) => JSON.parse(l))
+        .find((x) => x.step === "secrets");
+      expect(j.status).not.toBe("action_required");
+    }
+  });
+  it("on (unset), generates once: a second upgrade puts nothing", async () => {
+    const w = ready(cloud(CORE));
+    await run(UPGRADE, w.deps, ROOT);
+    expect(puts(w)).toHaveLength(2);
+    w.ops.length = 0;
+    await run(UPGRADE, w.deps, ROOT);
+    expect(puts(w)).toEqual([]);
+  });
+});
+
 describe("self-host push keys (VAPID)", () => {
   it("generates the pair on upgrade when the Worker lacks it", async () => {
     const w = ready(cloud(CORE));

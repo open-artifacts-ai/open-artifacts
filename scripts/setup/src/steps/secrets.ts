@@ -9,6 +9,9 @@ const GENERATED = ["SESSION_SECRET", "CONTENT_SIGNING_KEY"];
 const OPTIONAL = "ANALYTICS_TOKEN";
 /** Browser push keys: generated once, never rotated (rotating breaks every subscription). */
 const VAPID = ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY"];
+/** OA_SETUP_PUSH_KEYS=off: leave VAPID alone entirely (CI sets it until the owner turns push on). */
+const pushKeys = (ctx: Ctx) =>
+  ctx.deps.env.OA_SETUP_PUSH_KEYS?.trim().toLowerCase() !== "off";
 const halfVapid = (have: Set<string>) => {
   const present = VAPID.filter((n) => have.has(n));
   return present.length === 1
@@ -106,7 +109,7 @@ export const secrets: Step = {
           `${OPTIONAL} set; the exported value is re-put on the next run`,
         );
       return GENERATED.every((n) => have.has(n)) &&
-        VAPID.every((n) => have.has(n)) &&
+        (!pushKeys(ctx) || VAPID.every((n) => have.has(n))) &&
         have.has(OPTIONAL)
         ? "done"
         : "todo";
@@ -115,7 +118,7 @@ export const secrets: Step = {
       !ctx.opts.interactive || ctx.opts.upgrade || state.analyticsSkipped;
     const done =
       GENERATED.every((n) => have.has(n)) &&
-      VAPID.every((n) => have.has(n)) &&
+      (!pushKeys(ctx) || VAPID.every((n) => have.has(n))) &&
       (quiet || have.has(OPTIONAL));
     return done ? "done" : "todo";
   },
@@ -129,9 +132,9 @@ export const secrets: Step = {
       };
     for (const n of GENERATED)
       if (!have.has(n)) await putSecret(ctx, n, random());
-    const half = halfVapid(have);
+    const half = pushKeys(ctx) ? halfVapid(have) : undefined;
     if (half) return { status: "action_required", message: half };
-    if (!VAPID.some((n) => have.has(n))) {
+    if (pushKeys(ctx) && !VAPID.some((n) => have.has(n))) {
       // Keys go straight to wrangler's stdin: never to disk, argv or output.
       const pair = await generateVapidPair();
       await putSecret(ctx, VAPID[0], pair.publicKey);
