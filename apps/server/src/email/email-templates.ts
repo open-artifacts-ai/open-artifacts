@@ -314,7 +314,7 @@ export const SETUP_REMINDER_HTML = `<!doctype html>
         </tr>
         <tr>
           <td class="oa-pad" style="padding:20px 40px 32px 40px;font-family:Geist,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-            <p class="oa-muted" style="margin:0;font-size:13px;line-height:20px;color:#5F6670;">You got this because {{recipientEmail}} joined {{instanceName}} and no agent is connected yet. This is the only reminder. <a href="{{offUrl}}" target="_blank" class="oa-link" style="color:#2350D0;text-decoration:underline;">Don't remind me</a></p>
+            <p class="oa-muted" style="margin:0;font-size:13px;line-height:20px;color:#5F6670;">You got this because you joined {{instanceName}} as {{recipientEmail}} and no agent is connected yet. This is the only reminder. <a href="{{offUrl}}" target="_blank" class="oa-link" style="color:#2350D0;text-decoration:underline;">Don't remind me</a></p>
             <p class="oa-muted" style="margin:8px 0 0 0;font-size:13px;line-height:20px;color:#5F6670;">Sent by Open Artifacts, self-hosted at {{appHost}}.</p>
           </td>
         </tr>
@@ -335,7 +335,7 @@ You joined {{instanceName}} three days ago. One step is left: paste this into yo
 
 --
 
-You got this because {{recipientEmail}} joined {{instanceName}} and no agent is connected yet. This is the only reminder.
+You got this because you joined {{instanceName}} as {{recipientEmail}} and no agent is connected yet. This is the only reminder.
 
 Don't remind me:
 {{offUrl}}

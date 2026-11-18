@@ -6,7 +6,7 @@ You joined {{instanceName}} three days ago. One step is left: paste this into yo
 
 --
 
-You got this because {{recipientEmail}} joined {{instanceName}} and no agent is connected yet. This is the only reminder.
+You got this because you joined {{instanceName}} as {{recipientEmail}} and no agent is connected yet. This is the only reminder.
 
 Don't remind me:
 {{offUrl}}
