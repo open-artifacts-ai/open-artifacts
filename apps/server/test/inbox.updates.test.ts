@@ -164,7 +164,7 @@ describe("inbox updates: what is written", () => {
       (i) => i.artifact?.id === id && i.kind === "mention",
     );
     expect(m?.level).toBe("update");
-    expect(m?.text).toMatch(/^Sam mentioned Scout on /);
+    expect(m?.text).toMatch(/ mentioned Scout on doc$/);
     expect(inb.counts.unreadUpdates).toBeGreaterThanOrEqual(1);
     const r = await api(app, R.meInboxRead, me.cookie, {
       method: "POST",
