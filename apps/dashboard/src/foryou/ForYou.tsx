@@ -498,7 +498,7 @@ function ForYouPanel({
         {updates.length === 0 && !more && (
           <p
             data-for-you-updates-empty=""
-            className="m-0 px-[18px] py-4 text-center text-[15.5px] font-semibold"
+            className="m-0 px-[18px] py-3 text-left text-[13.5px] text-[var(--oa-text-muted)]"
           >
             No updates yet.
           </p>
