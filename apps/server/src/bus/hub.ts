@@ -379,6 +379,8 @@ const ownerAwayGated = (ws: WebSocket): boolean => {
 /** #2759: how long a hello waits for the member's quiet hours before it answers without them. */
 const OWNER_AWAY_READ_MS = 300;
 const OWNER_AWAY_DUE_KEY = "owner_away_due";
+/** The soonest the next quiet-hours edge is armed, so a bad edge cannot loop the alarm. */
+const OWNER_AWAY_MIN_GAP_MS = 60_000;
 /** The `owner_away` push: when quiet hours end (ms), or null outside them. */
 const ownerAwayFrame = (until: number | null) =>
   ({
@@ -5858,13 +5860,16 @@ export class BusHub extends DurableObject<Env> {
       );
       return;
     }
+    // Never sooner than a minute out: an edge at or before now (a row with
+    // start equal to end, a zone edge) must not loop the alarm on D1 reads.
+    const at = Math.max(next, this.#now() + OWNER_AWAY_MIN_GAP_MS);
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
       OWNER_ORG_ID,
       OWNER_AWAY_DUE_KEY,
-      String(next),
+      String(at),
     );
-    this.#arm(next);
+    this.#arm(at);
   }
 
   #ownerAwayDue(): number | null {

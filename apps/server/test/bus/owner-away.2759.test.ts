@@ -193,6 +193,46 @@ describe("owner_away_until and the push", () => {
   });
 });
 
+describe("an edge at or before now never loops the alarm", () => {
+  const dueOf = async (userId: string) =>
+    runInDurableObject(await hubOf(userId), (_i, st) => ({
+      due: Number(
+        st.storage.sql
+          .exec("select value from meta where key = 'owner_away_due'")
+          .toArray()[0]?.value ?? Number.NaN,
+      ),
+      alarm: st.storage.getAlarm(),
+    }));
+
+  it("start equal to end (a row prefs refuse): the next edge is armed at least a minute out, and stays so after an alarm", async () => {
+    const at = day(12);
+    const { who, d } = await open(CAP, {
+      quiet: { start: "08:00", end: "08:00" },
+      at,
+    });
+    await waitFor(d, "owner_away");
+    let s = await dueOf(who.userId);
+    expect(s.due).toBeGreaterThanOrEqual(at + 60_000);
+    expect(await s.alarm).toBeGreaterThanOrEqual(at + 60_000);
+    // The alarm fires a minute later: still not due now, still not looping.
+    const later = at + 61_000;
+    await setClock(who.userId, later);
+    await runDurableObjectAlarm(await hubOf(who.userId));
+    s = await dueOf(who.userId);
+    expect(s.due).toBeGreaterThanOrEqual(later + 60_000);
+    expect(await s.alarm).toBeGreaterThanOrEqual(later + 60_000);
+  });
+
+  it("the prefs save refuses start equal to end with a 400", async () => {
+    const a = await open(CAP, { quiet: null, at: day(12) });
+    const r = await api(app, R.meNotificationPrefs, a.who.cookie, {
+      method: "PUT",
+      body: { ...DEFAULT_PREFS, quietHours: { start: "08:00", end: "08:00" } },
+    });
+    expect(r.status).toBe(400);
+  });
+});
+
 describe("a prefs save and other members' hubs", () => {
   const put = (cookie: string, quietHours: typeof QUIET | null) =>
     api(app, R.meNotificationPrefs, cookie, {
