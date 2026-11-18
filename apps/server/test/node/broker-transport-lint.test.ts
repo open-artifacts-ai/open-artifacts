@@ -34,6 +34,8 @@ const FETCHES: Record<string, string> = {
   "services/usage.ts: query: GRAPHQL": "Cloudflare GraphQL analytics",
   "services/analytics.ts: sendActivation: captureUrl(env)":
     "PostHog capture (activation events, #2479): hosted only, only with a POSTHOG_KEY secret; never a broker",
+  "services/web-push.ts: sendPush: sub.endpoint":
+    "a member's browser push service (#2512 S5): fcm.googleapis.com, Mozilla autopush, *.push.apple.com or *.notify.windows.com only (pushEndpointOk); only with a VAPID key pair",
   "services/release.ts: checkLatestRelease: alias":
     "the default fetcher for the GitHub releases API and latest-release page",
 };

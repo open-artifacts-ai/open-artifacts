@@ -27,6 +27,7 @@ import {
   usePasskeyAnswer,
   useTakeBackAsk,
 } from "../../api/comments";
+import { AskWaiting, askWaitingSince } from "../../foryou/waiting";
 import { AppLink } from "../../library/AppLink";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
@@ -540,6 +541,12 @@ export function AskFrom({
         </>
       )}{" "}
       asks{askedWho(ask.to, mine)}
+      {askWaitingSince(c) && (
+        <>
+          {" "}
+          <AskWaiting c={c} />
+        </>
+      )}
       {when && (
         <span title={exactDate(c.createdAt)}>
           {" · "}
