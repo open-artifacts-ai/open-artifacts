@@ -77,8 +77,10 @@ import {
   type Config,
   claudeReturnDir,
   home,
+  isDefaultHome,
   prepareReturnDir,
   prepareSocketDir,
+  procBusHome,
   readConfig,
   revokedMarker,
   StartError,
@@ -161,7 +163,7 @@ import {
   removeReports,
 } from "./update/reports.ts";
 import { startSelfCheck } from "./update/selfcheck.ts";
-import { Updater } from "./update/updater.ts";
+import { Updater, type UpdaterDeps } from "./update/updater.ts";
 
 export * from "./agents.ts";
 export * from "./attest.ts";
@@ -278,6 +280,10 @@ export type DaemonDeps = {
     deadlineMs?: number;
     /** Tests only: how long a `switching` report waits for the hub's answer. */
     ackMs?: number;
+    /** Tests only: the updater's clock, release fetch and proof check. */
+    now?: () => number;
+    fetch?: UpdaterDeps["fetch"];
+    verify?: UpdaterDeps["verify"];
   };
   /** How often the bound socket is checked; default 60 s. */
   socketCheckMs?: number;
@@ -330,6 +336,10 @@ export type DaemonDeps = {
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
     linksFile?: string;
+    /** #2806: adopt sessions found only in the sessions dir; default: this is the default home. */
+    discover?: boolean;
+    /** #2806: the bus home a session's process was started for (procBusHome). */
+    homeOf?: (pid: number) => string | null | undefined;
   };
   opencode?: {
     /** TUI presence files; default ~/.oa-bus/opencode-tui. */
@@ -621,6 +631,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   prepareSocketDir(listenPath, returnDir);
   const startOfPid = cl.procStart ?? claudeProcStartOf;
   const running = cl.isRunning ?? isRunning;
+  /** #2806: adopt unseen sessions from the scan (the default home only). */
+  const discoverClaude = cl.discover ?? isDefaultHome();
+  const claudeHomeOf = cl.homeOf ?? procBusHome;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
     procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
@@ -1229,6 +1242,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const s of live) {
       const prev = agents.byRef(s.ref);
       if (prev && prev.kind !== "claude-code") continue;
+      // #2806: ~/.claude/sessions lists every Claude session on the machine.
+      // Only the default home adopts one it has not met; a second home keeps
+      // to the sessions its own adapter said hello for, so it never announces
+      // another bus's sessions to its hub or delivers into them.
+      if (!prev && !discoverClaude) continue;
+      // The default home also leaves a session started for another home alone,
+      // where it can read the process's OA_BUS_HOME.
+      if (!prev) {
+        const h = claudeHomeOf(s.pid);
+        if (typeof h === "string" && h !== home()) continue;
+      }
       // Admitted before its session file existed: learn the process start
       // now (live or already closed by a tick that could not see the file),
       // so a later /clear in this process is recognised (#1295).
@@ -2870,7 +2894,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     );
   hub.start();
   ev("daemon_start", { version: deps.version, pid: process.pid });
-  // #2552: the self-check after a switch, and the loop (off until PR 6).
+  // #2552: the self-check after a switch, and the loop (on for a version the instance names).
   const upd = deps.update;
   // Decided once: a folder that is not x.y.z (unknown-<ts>, a workspace) never updates.
   const found = upd ? runningVersion(upd.entryFile, home()) : undefined;
@@ -2935,6 +2959,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         log,
         ...(upd.enabled !== undefined ? { enabled: upd.enabled } : {}),
         ...(upd.every ? { every: upd.every } : {}),
+        ...(upd.now ? { now: upd.now } : {}),
+        ...(upd.fetch ? { fetch: upd.fetch } : {}),
+        ...(upd.verify ? { verify: upd.verify } : {}),
       })
     : undefined;
   updaterRef = updater;

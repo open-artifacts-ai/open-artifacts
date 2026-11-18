@@ -24,6 +24,11 @@
       "import": "./dist/email-events.js",
       "default": "./dist/email-events.js"
     },
+    "./login-domains": {
+      "types": "./dist/login-domains.d.ts",
+      "import": "./dist/login-domains.js",
+      "default": "./dist/login-domains.js"
+    },
     "./optouts": {
       "types": "./dist/optouts.d.ts",
       "import": "./dist/optouts.js",

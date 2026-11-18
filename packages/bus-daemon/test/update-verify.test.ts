@@ -238,10 +238,11 @@ describe("verifyRelease (offline)", () => {
 describe("checkManifest", () => {
   const P = PINS as Pins;
   const commit = "a".repeat(40);
-  const base = { name: "@open-artifacts/bus", version: "1.2.3" };
-  const c = (pkg: object, v = "1.2.3") =>
+  // A release below MIN_COMMIT_VERSION, where the commit is optional.
+  const base = { name: "@open-artifacts/bus", version: "0.212.0" };
+  const c = (pkg: object, v = "0.212.0") =>
     code(() => checkManifest(pkg as never, P, v, commit));
-  it("accepts name and version alone for today's releases", () => {
+  it("accepts name and version alone below MIN_COMMIT_VERSION", () => {
     expect(c(base)).toBe("none");
   });
   it("accepts a matching oaBus commit", () => {
@@ -253,7 +254,7 @@ describe("checkManifest", () => {
   });
   it("refuses a wrong name, version or commit, or a malformed commit", () => {
     expect(c({ ...base, name: "x" })).toBe("wrong_package");
-    expect(c({ ...base, version: "1.2.4" })).toBe("wrong_package");
+    expect(c({ ...base, version: "0.212.1" })).toBe("wrong_package");
     expect(c({ ...base, oaBus: { commit: "b".repeat(40) } })).toBe(
       "wrong_package",
     );
@@ -271,6 +272,11 @@ describe("checkManifest", () => {
       "wrong_package",
     );
     expect(c({ ...ok, oaBus: { commit } }, v)).toBe("none");
+    // The floor is the first release npm serves with the commit (#2552).
+    expect(v).toBe("0.213.0");
+    const later = { name: base.name, version: "0.214.0" };
+    expect(c(later, "0.214.0")).toBe("wrong_package");
+    expect(c({ ...later, oaBus: { commit } }, "0.214.0")).toBe("none");
   });
 });
 

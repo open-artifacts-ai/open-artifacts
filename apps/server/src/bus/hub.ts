@@ -4623,6 +4623,42 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * Why `hash` resolves to no session (agentByProof gave null), for the log
+   * only: "unbound" (no session holds it), "closed" (its session is closed or
+   * away past PROOF_AWAY_GRACE_MS), "unlinked" (no identity), "revoked" (its
+   * machine is revoked) or "other". Never the hash, an id or a name. Worker only.
+   */
+  async proofMissReason(
+    hash: string,
+  ): Promise<"unbound" | "closed" | "unlinked" | "revoked" | "other"> {
+    if (!LinkProofHashSchema.safeParse(hash).success) return "other";
+    const r = one<{
+      live: number;
+      away: number | null;
+      identity: string | null;
+      revoked: number | null;
+    }>(
+      this.ctx.storage.sql,
+      `select a.live, a.away_since as away, a.identity_id as identity,
+              m.revoked_at as revoked
+         from agent_proofs p join agents a on a.id = p.agent_id
+         left join machines m on m.id = a.machine_id
+        where p.hash = ? and a.org_id = ? limit 1`,
+      hash,
+      OWNER_ORG_ID,
+    );
+    if (!r) return "unbound";
+    if (r.revoked !== null) return "revoked";
+    if (r.identity === null) return "unlinked";
+    if (
+      r.live !== 1 &&
+      (r.away === null || r.away <= this.#now() - PROOF_AWAY_GRACE_MS)
+    )
+      return "closed";
+    return "other";
+  }
+
+  /**
    * #1890: the identity of the agent at (namespace, name) in this member's own
    * hub, live or away, or null. Returns ONLY the opaque identity id and the
    * kind, nothing else from the hub. A live row wins, then the latest one.
