@@ -16,6 +16,7 @@ import {
   allowChallenge,
   decide,
   HELD_PER_PAIR_MAX,
+  listenBinding,
   listHeld,
   notNow,
 } from "../src/services/agent-requests.js";
@@ -28,6 +29,7 @@ import {
 import {
   addReply,
   addThread,
+  answerAsk,
   artifactAgents,
   type CommentViewer,
   type CommentWho,
@@ -36,7 +38,11 @@ import {
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { inboxOf, needsYouCount } from "../src/services/inbox.js";
-import { putShare } from "../src/services/shares.js";
+import {
+  giveBackReceiverSlot,
+  takeReceiverSlot,
+} from "../src/services/mention-guards.js";
+import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 
@@ -132,7 +138,8 @@ async function setup(
   await follow(E, editor.userId, { namespace: "ns-e", name: "Codex" }, a.id);
   const list = await artifactAgents(E, a.id, editor.userId);
   const claude = list.find((x) => x.name.startsWith("Claude"))?.key as string;
-  return { id: a.id, claude };
+  const codex = list.find((x) => x.name.startsWith("Codex"))?.key as string;
+  return { id: a.id, claude, codex };
 }
 
 const post = (
@@ -440,7 +447,7 @@ describe("allow", () => {
     const until = Date.now() + 30 * 86_400_000;
     await expect(
       allow(E, owner.userId, r?.id as string, { level: "all", items, until }),
-    ).rejects.toMatchObject({ code: "passkey_required" });
+    ).rejects.toMatchObject({ code: "no_passkey" });
     await expect(
       allow(E, owner.userId, r?.id as string, {
         level: "all",
@@ -657,7 +664,7 @@ describe("all pages in a space", () => {
     });
     await expect(
       allow(E, owner.userId, r?.id as string, { level: "space", items, until }),
-    ).rejects.toMatchObject({ code: "passkey_required" });
+    ).rejects.toMatchObject({ code: "no_passkey" });
     await expect(
       allow(E, owner.userId, r?.id as string, {
         level: "space",
@@ -858,6 +865,197 @@ describe("the sender's hourly limit comes before the hold (#2577)", () => {
       mention(s.claude),
     );
     expect(await held(s.id)).toHaveLength(1);
+  });
+});
+
+describe("review fixes (#2577, OA Axe W)", () => {
+  const itemsOf = (
+    r: { items: { commentId: string; wordsHash: string }[] } | undefined,
+  ) =>
+    (r?.items ?? []).map((i) => ({
+      commentId: i.commentId,
+      wordsHash: i.wordsHash,
+    }));
+
+  it("a receiver who can no longer open the page sees nothing, and an allow is a 404 that withdraws the items", async () => {
+    const s = await setup();
+    // The owner asks the editor's agent: held for the editor.
+    await post(s.id, typed(owner), owner, "for your agent", mention(s.codex));
+    const mine = async () =>
+      (await listHeld(E, editor.userId)).requests.filter(
+        (r) => r.artifact.id === s.id,
+      );
+    const [r] = await mine();
+    expect(r?.items).toHaveLength(1);
+    const me = callerOf(editor.member) as Parameters<typeof inboxOf>[1];
+    const inboxItems = async () =>
+      (await inboxOf(E, me)).needsYou.filter(
+        (i) => i.kind === "request" && i.artifact?.id === s.id,
+      );
+    expect(await inboxItems()).toHaveLength(1);
+    // The share is removed: the editor can no longer open the page.
+    await deleteShare(E, owner.member, s.id, editor.email);
+    expect(await mine()).toHaveLength(0);
+    expect(await inboxItems()).toHaveLength(0);
+    await expect(
+      allow(E, editor.userId, r?.id as string, {
+        level: "once",
+        items: itemsOf(r),
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    const left = await E.DB.prepare(
+      "select state from held_request_items where request_id = ?",
+    )
+      .bind(r?.id)
+      .all<{ state: string }>();
+    expect(left.results.every((x) => x.state === "withdrawn")).toBe(true);
+  });
+
+  it("allow once and this page need no passkey, even for a member who has one; all pages and a space do", async () => {
+    const s = await setup();
+    await post(s.id, typed(editor), editor, "x", mention(s.claude));
+    const [r] = await held(s.id);
+    await E.DB.prepare(
+      `insert into passkeys (id, user_id, credential_id, public_key, alg, label, created_at)
+       values (?, ?, ?, 'pk', -7, 'test', ?)`,
+    )
+      .bind(newId(), owner.userId, `cred-${newId()}`, Date.now())
+      .run();
+    try {
+      // The page level: no assertion, and it works.
+      const out = await allow(E, owner.userId, r?.id as string, {
+        level: "page",
+        items: itemsOf(r),
+      });
+      expect(out.sent).toBe(1);
+      expect(
+        (
+          await E.DB.prepare(
+            "select count(*) as n from agent_listens where owner_id = ? and member_id = ? and scope = 'page' and artifact_id = ?",
+          )
+            .bind(owner.userId, editor.userId, s.id)
+            .first<{ n: number }>()
+        )?.n,
+      ).toBe(1);
+      // All pages still ask for the assertion.
+      await post(s.id, typed(editor), editor, "y", mention(s.claude)); // listed now: delivers
+      await E.DB.prepare("delete from agent_listens where owner_id = ?")
+        .bind(owner.userId)
+        .run();
+      await post(s.id, typed(editor), editor, "z", mention(s.claude));
+      const [r2] = await held(s.id);
+      await expect(
+        allow(E, owner.userId, r2?.id as string, {
+          level: "all",
+          items: itemsOf(r2),
+          until: Date.now() + 30 * 86_400_000,
+        }),
+      ).rejects.toMatchObject({ code: "passkey_required" });
+    } finally {
+      await E.DB.prepare("delete from passkeys where user_id = ?")
+        .bind(owner.userId)
+        .run();
+    }
+  });
+
+  it("a space-level passkey binding names its space", () => {
+    const until = Date.now() + 86_400_000;
+    expect(listenBinding("space", until, "sp_a")).not.toBe(
+      listenBinding("space", until, "sp_b"),
+    );
+    expect(listenBinding("space", until, "sp_a")).toBe(
+      listenBinding("space", until, "sp_a"),
+    );
+    expect(listenBinding("all", until)).toBe(`all:${until}`);
+    expect(listenBinding("page", until)).toBe(`page:${until}`);
+  });
+
+  it("the receiver's agent or token cannot answer an ask while it is held for them", async () => {
+    const s = await setup();
+    const t = await addThread(
+      E,
+      art(s.id),
+      typed(editor),
+      view(editor),
+      {
+        anchor: NOTE,
+        body: "Which?",
+        ask: {
+          question: "Which export?",
+          options: [
+            { id: "a", label: "A" },
+            { id: "b", label: "B" },
+          ],
+          to: [{ key: s.claude }],
+        },
+      },
+      { moderator: true },
+    );
+    await expect(
+      answerAsk(
+        E,
+        s.id,
+        t.id,
+        t.comments[0]?.id as string,
+        token(owner),
+        asAgent(owner),
+        "a",
+        undefined,
+        { interactive: false },
+        { canDecide: true, guest: false },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("a receiver slot taken for an allow that delivered nothing is given back", async () => {
+    const hour = new Date().toISOString().slice(0, 13);
+    const n = async () =>
+      (
+        await E.DB.prepare("select n from counters where key = ? and day = ?")
+          .bind(`notice:mention:to:${owner.userId}`, hour)
+          .first<{ n: number }>()
+      )?.n ?? 0;
+    const before = await n();
+    expect(await takeReceiverSlot(E, owner.userId)).toBe(true);
+    expect(await n()).toBe(before + 1);
+    await giveBackReceiverSlot(E, owner.userId);
+    expect(await n()).toBe(before);
+  });
+
+  it("a guest-role member of the page's space makes the page open: the list never applies, and no page counts", async () => {
+    const launch = `sp_${newId().slice(0, 10)}`;
+    await E.DB.prepare(
+      "insert into spaces (id, kind, name, created_at) values (?, 'shared', 'Guesty', ?)",
+    )
+      .bind(launch, Date.now())
+      .run();
+    const guestLogin = await login(`ar-guest-${tag}@x.com`, "guest");
+    for (const u of [owner.userId, editor.userId, guestLogin.userId])
+      await E.DB.prepare(
+        "insert or ignore into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', ?)",
+      )
+        .bind(launch, u, Date.now())
+        .run();
+    const s = await setup({}, OWNER_AGENT);
+    await E.DB.prepare("update artifacts set space_id = ? where id = ?")
+      .bind(launch, s.id)
+      .run();
+    await E.DB.prepare(
+      `insert into agent_listens (id, owner_id, member_id, scope, space_id, until, created_via, created_at)
+       values (?, ?, ?, 'space', ?, ?, 'allow_space', ?)`,
+    )
+      .bind(
+        newId(),
+        owner.userId,
+        editor.userId,
+        launch,
+        Date.now() + 86_400_000,
+        Date.now(),
+      )
+      .run();
+    expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
+    await post(s.id, typed(editor), editor, "x", mention(s.claude));
+    expect((await held(s.id))[0]?.space?.pagesCovered).toBe(0);
   });
 });
 

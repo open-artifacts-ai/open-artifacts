@@ -660,3 +660,84 @@ describe("toAsker and picks by guests (#2592)", () => {
     expect(out.ask?.picks?.map((x) => x.optionId)).toEqual(["wide"]);
   });
 });
+
+describe("reply toAsker and the list (#2577)", () => {
+  /** The owner stops listening to these people (restored by `relist`). */
+  const unlist = (...ids: string[]) =>
+    E.DB.prepare(
+      `delete from agent_listens where owner_id = ?1 and member_id in (select value from json_each(?2))`,
+    )
+      .bind(owner.userId, JSON.stringify(ids))
+      .run();
+  const relist = async (...ids: string[]) => {
+    for (const m of ids)
+      await E.DB.prepare(
+        `insert into agent_listens (id, owner_id, member_id, scope, artifact_id, until, created_via, created_at)
+         values (?1, ?2, ?3, 'all', null, ?4, 'settings', ?5)`,
+      )
+        .bind(
+          newId(),
+          owner.userId,
+          m,
+          Date.now() + 300 * 86_400_000,
+          Date.now(),
+        )
+        .run();
+  };
+  const heldFor = (artifactId: string) =>
+    E.DB.prepare(
+      "select count(*) as n from held_requests where receiver_id = ? and sender_id = ? and artifact_id = ?",
+    );
+
+  it("a person not on the list and not asked is held, not delivered", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    await unlist(editor.userId);
+    try {
+      bus.clear();
+      const res = await reply(s.id, t.id, editor, { toAsker: true });
+      expect(res.status).toBe(201);
+      expect(toAsker()).toHaveLength(0);
+      expect(
+        (
+          await heldFor(s.id)
+            .bind(owner.userId, editor.userId, s.id)
+            .first<{ n: number }>()
+        )?.n,
+      ).toBe(1);
+    } finally {
+      await relist(editor.userId);
+    }
+  });
+
+  it("a person the ask was put to is delivered without the list", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner); // to: viewer
+    await unlist(viewer.userId);
+    try {
+      bus.clear();
+      const res = await reply(s.id, t.id, viewer, { toAsker: true });
+      expect(res.status).toBe(201);
+      expect(toAsker().map((x) => x.userId)).toEqual([owner.userId]);
+      expect(
+        (
+          await heldFor(s.id)
+            .bind(owner.userId, viewer.userId, s.id)
+            .first<{ n: number }>()
+        )?.n,
+      ).toBe(0);
+    } finally {
+      await relist(viewer.userId);
+    }
+  });
+
+  it("a person on the list is delivered", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    bus.clear();
+    expect((await reply(s.id, t.id, editor, { toAsker: true })).status).toBe(
+      201,
+    );
+    expect(toAsker().map((x) => x.userId)).toEqual([owner.userId]);
+  });
+});

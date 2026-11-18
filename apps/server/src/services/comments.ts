@@ -1879,6 +1879,7 @@ async function resolveToAsker(
   env: Env,
   artifactId: string,
   threadId: string,
+  who: CommentWho,
 ): Promise<Resolved> {
   const t = await call(() => stub(env, artifactId).commentsGet(threadId));
   const root = t.comments[0];
@@ -1893,12 +1894,43 @@ async function resolveToAsker(
     root.author.ref,
     await askingAddress(env, artifactId, threadId, root.author),
   );
+  // #2577: the asking agent's person takes a reply only from someone on their
+  // list, or from a person the ask was put to; else the delivery is held for them.
+  const heldFor: { agent: HeldAgent; way: string }[] = [];
+  let wake = to;
+  if (
+    who.kind === "user" &&
+    typedByPerson(who) &&
+    to.length > 0 &&
+    !isAsked(root.ask, who, root.author.ref)
+  ) {
+    const mine = to.filter((a) => a.userId !== who.id);
+    const receiver = mine[0]?.userId;
+    if (
+      receiver &&
+      (await decide(env, who.id, receiver, artifactId)) === "hold"
+    ) {
+      // The sender's hourly limit comes first: over it, nothing is held.
+      const gate = new MentionGate(env, who.id);
+      if (await gate.takeSender())
+        for (const a of mine)
+          heldFor.push({ agent: heldAgentOf(a), way: "reply" });
+      wake = to.filter((a) => a.userId === who.id);
+    }
+  }
   return {
-    extras: to.length ? { asker: to.map((a) => storedAgent(a)) } : undefined,
-    agents: to.map((agent) => ({ agent, kind: "asker" as const })),
+    extras:
+      wake.length || heldFor.length
+        ? {
+            ...(wake.length ? { asker: wake.map((a) => storedAgent(a)) } : {}),
+            ...(heldFor.length ? { held: heldFor } : {}),
+          }
+        : undefined,
+    agents: wake.map((agent) => ({ agent, kind: "asker" as const })),
     follow: [],
-    mentions: to.map((a) => a.key),
+    mentions: wake.map((a) => a.key),
     mentionKind: "asker",
+    ...(heldFor.length ? { held: heldFor } : {}),
     // The asker's agents are not named one by one: the asking agent joins by its own comment.
     participants: [],
   };
@@ -2104,7 +2136,7 @@ async function addReplyInner(
         "bad_request",
         "toAsker cannot be combined with mentions or ask",
       );
-    r = await resolveToAsker(env, artifactId, threadId);
+    r = await resolveToAsker(env, artifactId, threadId, who);
   } else {
     // The reply's rate-limit charge is inside the DO write, so the lookups
     // come first here (parallel, bounded: about one LINK_LOOKUP_MS).
@@ -2208,7 +2240,7 @@ async function storedAsk(
   const c = t.comments.find((x) => x.id === commentId);
   const ask = c?.ask;
   if (!c || !ask) throw new ApiError("not_found", "Not found");
-  return { ask, status: t.status, author: c.author.ref };
+  return { ask, status: t.status, author: c.author.ref, held: c.held ?? [] };
 }
 
 /** Whether `who` is one of the people the ask was put to (as the DO decides). */
@@ -2327,12 +2359,23 @@ export async function answerAsk(
   // A guest (role or guest cap) picks nothing; a restricted or capped member still can.
   if (viewer.guest === true || (await guestWho(env, who)))
     throw new ApiError("forbidden", "Only the people asked can answer");
-  const { ask, status, author } = await storedAsk(
+  const { ask, status, author, held } = await storedAsk(
     env,
     artifactId,
     threadId,
     commentId,
   );
+  // #2577: an ask held for this person's agents is not theirs to answer blind:
+  // their agent or token reads a placeholder, so it cannot pick on it.
+  if (
+    viewer.agent !== undefined &&
+    viewer.userId !== null &&
+    held.some((h) => h.state === "held" && h.owner === viewer.userId)
+  )
+    throw new ApiError(
+      "forbidden",
+      "This request is waiting for your person to allow it",
+    );
   if (ask.replacedBy)
     throw new ApiError(
       "replaced",

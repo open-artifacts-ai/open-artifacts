@@ -566,12 +566,14 @@ describe("notice tier", () => {
       expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
     });
 
-    it("a viewer's browser reply gets the everyone-else line", async () => {
+    it("another member's browser reply gets the everyone-else line", async () => {
       const s = await setup();
       const v = await mk("t-viewer");
+      // #2577: a person the owner does not list is held; a listed editor is delivered.
+      await listenEachOther(E, [owner.userId, v.userId]);
       await api(app, R.shares(s.id), owner.cookie, {
         method: "PUT",
-        body: { email: v.email, role: "viewer" },
+        body: { email: v.email, role: "editor" },
       });
       const t = await askFrom(s.id, mcpWho(owner), s.claude);
       bus.sent = [];

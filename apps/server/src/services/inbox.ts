@@ -8,6 +8,7 @@ import { artifactAsks, artifacts } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
+import { receiverCanOpen } from "./agent-requests.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
 import { getSettings } from "./members.js";
@@ -242,8 +243,8 @@ export async function memberSetUpUpdates(
 
 /** The whole inbox response. Later and the cursor are the next slices. */
 /** Requests to the caller's agents that wait for them, not quieted by "Not now": one row each. */
-const heldRequestRows = async (env: Env, caller: Me, now = Date.now()) =>
-  (
+const heldRequestRows = async (env: Env, caller: Me, now = Date.now()) => {
+  const rows = (
     await env.DB.prepare(
       `select r.id, r.sender_id, r.artifact_id, r.created_at, a.title as title
          from held_requests r join artifacts a on a.id = r.artifact_id and a.deleted_at is null
@@ -260,6 +261,12 @@ const heldRequestRows = async (env: Env, caller: Me, now = Date.now()) =>
         title: string;
       }>()
   ).results;
+  // A page the caller can no longer open is not theirs to answer.
+  const open: typeof rows = [];
+  for (const r of rows)
+    if (await receiverCanOpen(env, caller, r.artifact_id)) open.push(r);
+  return open;
+};
 
 /**
  * #2577: someone asked one of the caller's agents; the request is held for them. One item per

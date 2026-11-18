@@ -12,7 +12,12 @@ import {
   LISTEN_PAGE_MS,
   newId,
 } from "@oa/shared";
-import { accessLevel, callerOf, meetsLevel } from "../auth/authz.js";
+import {
+  accessLevel,
+  type Caller,
+  callerOf,
+  meetsLevel,
+} from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -23,7 +28,11 @@ import { sha256Hex } from "../util/crypto.js";
 import { askInfo } from "./asks.js";
 import { audit, userActor } from "./audit.js";
 import { type CommentNoticeKind, notifyAgent } from "./comment-agents.js";
-import { isOutsideMember, takeReceiverSlot } from "./mention-guards.js";
+import {
+  giveBackReceiverSlot,
+  isOutsideMember,
+  takeReceiverSlot,
+} from "./mention-guards.js";
 import { hasPasskey, listenChallenge, verifyListen } from "./passkeys.js";
 import { getUser } from "./users.js";
 
@@ -55,7 +64,35 @@ export async function pageIsOpen(
   )
     .bind(artifactId)
     .first();
-  return !!g;
+  if (g) return true;
+  return spaceHasGuest(env, artifactId);
+}
+
+/** A guest-role member of the page's space reaches the page through the space. */
+async function spaceHasGuest(env: Env, artifactId: string): Promise<boolean> {
+  return !!(await stmt(
+    env.DB,
+    `select 1 as x from artifacts a join space_members sm on sm.space_id = a.space_id
+       join users u on u.id = sm.user_id
+      where a.id = ?1 and u.role = 'guest' limit 1`,
+  )
+    .bind(artifactId)
+    .first());
+}
+
+/** Whether the receiver can still open the page (a removed share or a revoked space seat ends it): their held requests there are theirs no longer to answer. */
+export async function receiverCanOpen(
+  env: Env,
+  caller: Caller | string,
+  artifactId: string,
+): Promise<boolean> {
+  let c: Caller;
+  if (typeof caller === "string") {
+    const u = await getUser(env, caller);
+    if (!u) return false;
+    c = callerOf(u);
+  } else c = caller;
+  return !!(await accessLevel(env, c, artifactId));
 }
 
 /** The shared space a page is in now, if any (a personal space is not offered: it is one person's). */
@@ -80,6 +117,8 @@ export async function spaceWithCover(
 ): Promise<{ id: string; name: string; pagesCovered: number } | null> {
   const sp = await spaceOf(env, artifactId);
   if (!sp) return null;
+  // A guest in the space reaches every page in it: the list covers none.
+  if (await pageIsOpen(env, artifactId)) return { ...sp, pagesCovered: 0 };
   const n = await stmt(
     env.DB,
     `select count(*) as n from artifacts a
@@ -377,7 +416,12 @@ export async function listHeld(
       sender_email: string;
     }>();
   const out: HeldRequest[] = [];
+  const me = await getUser(env, receiverId);
+  const caller = me ? callerOf(me) : null;
   for (const r of reqs) {
+    // A page the receiver can no longer open is not theirs to answer.
+    if (!caller || !(await receiverCanOpen(env, caller, r.artifact_id)))
+      continue;
     const { results: rows } = await stmt(
       env.DB,
       `select id, request_id, thread_id, comment_id, agent_key, way, created_at from held_request_items
@@ -428,8 +472,13 @@ const KIND: Record<string, CommentNoticeKind> = {
 };
 
 /** The binding of a passkey prompt for a "listens to" entry. */
-export const listenBinding = (level: "page" | "space" | "all", until: number) =>
-  `${level}:${until}`;
+export const listenBinding = (
+  level: "page" | "space" | "all",
+  until: number,
+  /** A space-level binding names its space: an assertion for one space is no use for another. */
+  spaceId?: string,
+) =>
+  level === "space" ? `space:${spaceId ?? ""}:${until}` : `${level}:${until}`;
 
 /** The 404 text of a request that is not the caller's (the authz matrix tells it from a capped caller's plain 404). */
 export const NO_HELD = "No such held request";
@@ -457,11 +506,18 @@ export async function allowChallenge(
   const r = await requestOf(env, receiverId, requestId);
   if (until <= now || until > now + LISTEN_MAX_MS)
     throw new ApiError("bad_request", "`until` is at most a year from now");
+  let spaceId: string | undefined;
+  if (level === "space") {
+    const sp = await spaceOf(env, r.artifact_id);
+    if (!sp)
+      throw new ApiError("bad_request", "This page is not in a shared space");
+    spaceId = sp.id;
+  }
   return listenChallenge(
     env,
     receiverId,
     r.sender_id,
-    listenBinding(level, until),
+    listenBinding(level, until, spaceId),
     now,
   );
 }
@@ -504,6 +560,17 @@ export async function allow(
   now = Date.now(),
 ): Promise<AllowResult> {
   const req = await requestOf(env, receiverId, requestId);
+  // The receiver must still be able to open the page: else the request is
+  // not theirs to answer, and what was held for them is withdrawn.
+  if (!(await receiverCanOpen(env, receiverId, req.artifact_id))) {
+    await stmt(
+      env.DB,
+      "update held_request_items set state = 'withdrawn' where request_id = ?1 and state = 'held'",
+    )
+      .bind(requestId)
+      .run();
+    throw new ApiError("not_found", NO_HELD);
+  }
   const open = await pageIsOpen(env, req.artifact_id);
   if (body.level === "page" && open)
     throw new ApiError(
@@ -528,21 +595,21 @@ export async function allow(
     if (until <= now || until > now + LISTEN_MAX_MS)
       throw new ApiError("bad_request", "`until` is at most a year from now");
   }
-  if (body.level !== "once") {
-    // Any list add needs the passkey when the member has one; all pages always.
-    const has = await hasPasskey(env, receiverId, now);
-    if (body.level === "all" || body.level === "space" || has) {
-      if (!body.assertion)
-        throw new ApiError("passkey_required", "This needs your passkey");
-      await verifyListen(
-        env,
-        receiverId,
-        req.sender_id,
-        listenBinding(body.level, until),
-        body.assertion,
-        now,
-      );
-    }
+  // Once and this page need no passkey. All pages and a whole space do, and a
+  // member without a usable passkey cannot make them at all (409 no_passkey).
+  if (body.level === "all" || body.level === "space") {
+    if (!(await hasPasskey(env, receiverId, now)))
+      throw new ApiError("no_passkey", "Add a passkey in your settings first");
+    if (!body.assertion)
+      throw new ApiError("passkey_required", "This needs your passkey");
+    await verifyListen(
+      env,
+      receiverId,
+      req.sender_id,
+      listenBinding(body.level, until, space?.id),
+      body.assertion,
+      now,
+    );
   }
   const wanted = new Map(body.items.map((i) => [i.commentId, i.wordsHash]));
   const { results: rows } = await stmt(
@@ -609,6 +676,8 @@ export async function allow(
       }),
     );
     if (!rel.ok) {
+      // Nothing was delivered: the receiver's slot goes back.
+      await giveBackReceiverSlot(env, receiverId, now);
       result.changed++;
       continue;
     }
