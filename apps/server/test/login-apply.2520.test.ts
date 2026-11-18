@@ -352,7 +352,7 @@ describe("refusals", () => {
     const err = await errOf(r);
     expect(err.code).toBe("login_unavailable");
     expect(err.message).toBe(
-      "We couldn't reach the platform. Nothing changed. Try again shortly.",
+      "We couldn't save the change. Nothing changed. Try again in a minute.",
     );
     expect(seen).toEqual([]);
     expect(await auditRows(u.userId)).toBe(0);

@@ -93,7 +93,7 @@ export const UNCONFIRMED =
   "We couldn't confirm the change. It may still take effect in a few minutes. Check back before trying again.";
 /** The request never left this install (no gate, no signing key, a stale stub): nothing changed. */
 export const NOT_SENT =
-  "We couldn't reach the platform. Nothing changed. Try again shortly.";
+  "We couldn't save the change. Nothing changed. Try again in a minute.";
 
 const unavailable = () => new ApiError("login_unavailable", UNCONFIRMED);
 const notSent = () => new ApiError("login_unavailable", NOT_SENT);
