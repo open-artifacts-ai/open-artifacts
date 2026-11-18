@@ -244,7 +244,10 @@ describe("ci.yml public-only job", () => {
     expect(job["timeout-minutes"]).toBe(5);
     expect(job.if).toBeUndefined();
     const runs = job.steps.map((s: { run?: string }) => s.run).filter(Boolean);
-    expect(runs).toEqual(["bash scripts/ci/public-only-guard.sh"]);
+    expect(runs).toHaveLength(1);
+    // The guard asks git what is tracked, so the workspace must be trusted.
+    expect(runs[0]).toContain("safe.directory");
+    expect(runs[0]).toMatch(/^bash scripts\/ci\/public-only-guard\.sh$/m);
   });
   it("leaves every required job blocking", () => {
     for (const j of [
