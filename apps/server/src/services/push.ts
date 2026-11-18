@@ -356,26 +356,25 @@ export function pushPayload(
   let body: string;
   let heading = title;
   const mentions = needs.filter(isPersonMention).length;
-  if (needs.length > 1) {
-    // Design v10, "Several at once": counts only, safe on a lock screen too.
-    const asks = needs.length - mentions;
-    const parts = [
-      asks > 0 ? `${asks} ${asks === 1 ? "ask" : "asks"}` : "",
-      mentions > 0
-        ? `${mentions} ${mentions === 1 ? "mention" : "mentions"}`
-        : "",
-    ].filter(Boolean);
-    heading = `${needs.length} things need you`;
-    body = parts.join(", ");
-  } else if (needs.length > 0) {
-    const mention = isPersonMention(lead as { key: string });
-    const asks = detail
-      ? mention
-        ? `${lead.asker_name} mentioned you: ${lead.excerpt}`
-        : `${lead.asker_name} asks: ${lead.excerpt}`
-      : "";
-    // One item (several are the counts above).
-    body = detail ? asks : mention ? DEFAULT_MENTION_BODY : DEFAULT_BODY;
+  const m = needs.length;
+  const mention = isPersonMention(lead as { key: string });
+  // The latest Needs-you item's own words (lock-screen detail only).
+  const latest = detail
+    ? mention
+      ? `${lead.asker_name} mentioned you: ${lead.excerpt}`
+      : `${lead.asker_name} asks: ${lead.excerpt}`
+    : "";
+  if (m > 1) {
+    // Several at once. Detail off: the count in the title, nothing else (no
+    // names, no words). Detail on: the latest item's words and how many more.
+    if (detail) body = `${latest} and ${m - 1} more`;
+    else {
+      heading =
+        mentions > 0 ? `${m} things are waiting` : `${m} asks are waiting`;
+      body = "";
+    }
+  } else if (m === 1) {
+    body = detail ? latest : mention ? DEFAULT_MENTION_BODY : DEFAULT_BODY;
   } else {
     const what = detail ? `${lead.asker_name}: ${lead.excerpt}` : "";
     body =
@@ -580,11 +579,15 @@ async function drainMember(
     const waiting = keys.length
       ? await agentsWaitingOn(env, userId, keys)
       : new Map<string, number>();
+    // "Waiting asks and approvals": a mention interrupts only with "every ask
+    // put to me" (browserAllAsks), so it is dropped here.
     due = due.filter(
       (r) =>
         r.kind !== "ask" ||
-        isPersonMention(r) ||
-        (r.asker_ref === userId && !!r.agent_key && waiting.has(r.agent_key)),
+        (!isPersonMention(r) &&
+          r.asker_ref === userId &&
+          !!r.agent_key &&
+          waiting.has(r.agent_key)),
     );
   }
   if (due.length === 0) return 0;

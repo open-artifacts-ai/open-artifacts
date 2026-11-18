@@ -669,8 +669,8 @@ describe("sending", () => {
     expect(sent).toHaveLength(1);
     const p = JSON.parse(await decrypt((sent[0] as Sent).body, b));
     expect(p.count).toBe(2);
-    expect(p.title).toBe("2 things need you");
-    expect(p.body).toBe("2 asks");
+    expect(p.title).toBe("2 asks are waiting");
+    expect(p.body).toBe("");
     expect(p.href).toBe(`/a/${PUB}?thread=t2`);
   });
 
@@ -1439,7 +1439,7 @@ describe("a person's @-mention of the member (#2781)", () => {
 
   it("writing the item queues a Needs-you push; the lock screen says only that someone mentioned you", async () => {
     const { E } = await world();
-    const { u, b } = await enroll(E, { browserAllAsks: false });
+    const { u, b } = await enroll(E);
     const { sent } = fakePush();
     await mention(E, u.userId, "pm1");
     expect(await pendingCount(u.userId)).toBe(1);
@@ -1485,10 +1485,9 @@ describe("a person's @-mention of the member (#2781)", () => {
     expect(await pendingCount(none.userId)).toBe(0);
   });
 
-  it("quiet hours hold it; the waiting-asks-only filter is for asks and never drops it", async () => {
+  it("quiet hours hold it, and one push goes when they end", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E, {
-      browserAllAsks: false,
       quietHours: { start: "22:00", end: "07:00" },
     });
     const { sent } = fakePush();
@@ -1507,6 +1506,21 @@ describe("a person's @-mention of the member (#2781)", () => {
     await drainPush(E, morning);
     expect(mineOf(sent, b)).toHaveLength(1);
     expect((await bodyOf(sent, b)).body).toBe(DEFAULT_MENTION_BODY);
+  });
+
+  it("'Interrupt me for': a mention pushes only with 'every ask put to me'; 'waiting asks and approvals' drops it", async () => {
+    const { E } = await world();
+    const every = await enroll(E, { browserAllAsks: true });
+    const waiting = await enroll(E, { browserAllAsks: false });
+    const { sent } = fakePush();
+    await mention(E, every.u.userId, "pm4e");
+    await mention(E, waiting.u.userId, "pm4w");
+    await env.DB.prepare("update push_pending set send_after = 0").run();
+    await drainPush(E, Date.now());
+    expect(mineOf(sent, every.b)).toHaveLength(1);
+    expect(mineOf(sent, waiting.b)).toHaveLength(0);
+    // Dropped, not held: nothing left waiting for the second member.
+    expect(await pendingCount(waiting.u.userId)).toBe(0);
   });
 
   it("mutes: the page only. A muted page is not pushed; a person has no agent to mute", async () => {
@@ -1589,51 +1603,91 @@ describe("a person's @-mention of the member (#2781)", () => {
     );
   });
 
-  it("a bundle that holds a mention: 'N things need you', 'X asks, Y mentions', counts only, even with lock-screen detail", async () => {
+  it("asks-only bundle: detail off is only '<N> asks are waiting'; detail on is the latest ask and 'and N more'", async () => {
     const { E } = await world();
     for (const lockScreenDetail of [false, true]) {
       const { u, b } = await enroll(E, { lockScreenDetail });
       const { sent } = fakePush();
-      await queuePush(E, [u.userId], item("ask:pm9a"), T0);
-      await queuePush(E, [u.userId], item("ask:pm9b"), T0);
-      await queuePush(E, [u.userId], item("ask:pm9c"), T0);
-      await mention(E, u.userId, "pm9", { name: "Ann" });
+      await queuePush(E, [u.userId], item("ask:b1", { excerpt: "First?" }), T0);
+      await queuePush(
+        E,
+        [u.userId],
+        item("ask:b2", { excerpt: "Second?" }),
+        T0,
+      );
+      await queuePush(
+        E,
+        [u.userId],
+        item("ask:b3", { excerpt: "Latest?" }),
+        T0,
+      );
       await env.DB.prepare("update push_pending set send_after = 0").run();
       await drainPush(E, Date.now());
       expect(mineOf(sent, b)).toHaveLength(1);
       const p = await bodyOf(sent, b);
-      expect(p.title).toBe("4 things need you");
-      expect(p.body).toBe("3 asks, 1 mention");
-      expect(JSON.stringify(p)).not.toContain("Ann");
-      expect(JSON.stringify(p)).not.toContain("waiting for your answer");
+      if (lockScreenDetail) {
+        expect(p.title).toBe("Open Artifacts");
+        expect(p.body).toBe("Scout asks: Latest? and 2 more");
+      } else {
+        expect(p.title).toBe("3 asks are waiting");
+        expect(p.body).toBe("");
+        expect(JSON.stringify(p)).not.toContain("Scout");
+        expect(JSON.stringify(p)).not.toContain("Latest?");
+      }
     }
   });
 
-  it("singular and mention-only bundles read right; an asks-only bundle uses the same format", async () => {
+  it("mixed bundle (asks and a mention): detail off '<N> things are waiting'; detail on the latest item's words and 'and N more'", async () => {
     const { E } = await world();
-    const { u, b } = await enroll(E);
-    const { sent } = fakePush();
-    await queuePush(E, [u.userId], item("ask:pm10a"), T0);
-    await mention(E, u.userId, "pm10");
-    await env.DB.prepare("update push_pending set send_after = 0").run();
-    await drainPush(E, Date.now());
-    let p = await bodyOf(sent, b, 0);
-    expect([p.title, p.body]).toEqual([
-      "2 things need you",
-      "1 ask, 1 mention",
-    ]);
-    await mention(E, u.userId, "pm11");
-    await mention(E, u.userId, "pm12");
-    await env.DB.prepare("update push_pending set send_after = 0").run();
-    await drainPush(E, Date.now() + BUNDLE_MS);
-    p = await bodyOf(sent, b, 1);
-    expect([p.title, p.body]).toEqual(["2 things need you", "2 mentions"]);
-    // Asks alone are as before.
-    await queuePush(E, [u.userId], item("ask:pm13a"), T0);
-    await queuePush(E, [u.userId], item("ask:pm13b"), T0);
-    await env.DB.prepare("update push_pending set send_after = 0").run();
-    await drainPush(E, Date.now() + 2 * BUNDLE_MS);
-    p = await bodyOf(sent, b, 2);
-    expect([p.title, p.body]).toEqual(["2 things need you", "2 asks"]);
+    for (const lockScreenDetail of [false, true]) {
+      const { u, b } = await enroll(E, { lockScreenDetail });
+      const { sent } = fakePush();
+      await queuePush(E, [u.userId], item("ask:x1", { excerpt: "Old?" }), T0);
+      await queuePush(E, [u.userId], item("ask:x2", { excerpt: "Older?" }), T0);
+      await mention(E, u.userId, "pm9", {
+        name: "Ann",
+        excerpt: "yearly numbers?",
+      });
+      await env.DB.prepare(
+        "update push_pending set send_after = 0, created_at = created_at - (case key when 'person:pm9' then 0 else 5000 end) where user_id = ?",
+      )
+        .bind(u.userId)
+        .run();
+      await drainPush(E, Date.now());
+      expect(mineOf(sent, b)).toHaveLength(1);
+      const p = await bodyOf(sent, b);
+      if (lockScreenDetail) {
+        expect(p.body).toBe("Ann mentioned you: yearly numbers? and 2 more");
+      } else {
+        expect(p.title).toBe("3 things are waiting");
+        expect(p.body).toBe("");
+        expect(JSON.stringify(p)).not.toContain("Ann");
+        expect(JSON.stringify(p)).not.toContain("yearly");
+      }
+    }
+  });
+
+  it("mention-only bundle: detail off '<N> things are waiting'; detail on the latest mention and 'and N more'", async () => {
+    const { E } = await world();
+    for (const lockScreenDetail of [false, true]) {
+      const { u, b } = await enroll(E, { lockScreenDetail });
+      const { sent } = fakePush();
+      await mention(E, u.userId, "pm20", { name: "Ann", excerpt: "first" });
+      await mention(E, u.userId, "pm21", { name: "Bo", excerpt: "second" });
+      await env.DB.prepare(
+        "update push_pending set send_after = 0, created_at = created_at - (case key when 'person:pm20' then 5000 else 0 end) where user_id = ?",
+      )
+        .bind(u.userId)
+        .run();
+      await drainPush(E, Date.now());
+      expect(mineOf(sent, b)).toHaveLength(1);
+      const p = await bodyOf(sent, b);
+      if (lockScreenDetail)
+        expect(p.body).toBe("Bo mentioned you: second and 1 more");
+      else {
+        expect(p.title).toBe("2 things are waiting");
+        expect(p.body).toBe("");
+      }
+    }
   });
 });
