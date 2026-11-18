@@ -171,6 +171,11 @@ describe("POST agent-listens", () => {
       add({ memberId, scope: "page", artifactId, until: 30, via: "settings" });
     // A member who cannot open the page.
     expect((await send(id, mate2.userId)).status).toBe(400);
+    // A viewer-only member: an entry would never apply, so it is refused.
+    const v = await mk("la-viewer");
+    await putShare(E, owner.member, id, { email: v.email, role: "viewer" });
+    expect((await send(id, v.userId)).status).toBe(400);
+    expect(await rows(v.userId)).toHaveLength(0);
     // Public.
     await E.DB.prepare(
       "update artifacts set visibility = 'public' where id = ?1",

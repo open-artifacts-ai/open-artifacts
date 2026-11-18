@@ -1192,8 +1192,11 @@ export async function addListens(
     const m = id && id !== ownerId ? await getUser(env, id) : null;
     if (!m || (await isOutsideMember(env, id)))
       throw refuse("Not a teammate you can add");
-    if (artifactId && !(await accessLevel(env, callerOf(m), artifactId)))
-      throw refuse("That person cannot open this page");
+    if (artifactId) {
+      const acc = await accessLevel(env, callerOf(m), artifactId);
+      if (!acc || !meetsLevel(acc.level, "editor"))
+        throw refuse("That person cannot edit this page");
+    }
   }
 
   const stmts: D1PreparedStatement[] = [];
