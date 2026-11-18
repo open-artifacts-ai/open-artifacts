@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.205.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.205.0...v0.205.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **comments:** the ask card beside a mark holds every one-click change, not only picks ([#2736](https://github.com/open-artifacts-ai/open-artifacts/issues/2736)) ([#2737](https://github.com/open-artifacts-ai/open-artifacts/issues/2737)) ([36fb87f](https://github.com/open-artifacts-ai/open-artifacts/commit/36fb87fe2ee6b0ab3c28efc60471c564efb06f6c))
+
 ## [0.205.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.204.0...v0.205.0) (2026-11-18)
 
 
