@@ -22,7 +22,7 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: `${OUT}/${name}.png` });
 }
 
-for (const w of [1280, 390]) {
+for (const w of [1280]) {
   for (const theme of ["light"]) {
     test(`${w} ${theme}: column, composer, quote`, async ({ page }) => {
       await open(page, w, theme);

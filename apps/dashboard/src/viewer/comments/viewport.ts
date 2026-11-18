@@ -38,6 +38,36 @@ export function sheetLift(): number {
   return Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
 }
 
+/** Which edge of the visible area the phone doc toolbar sits on. One switch. */
+export type ToolbarEdge = "top" | "bottom";
+export const TOOLBAR_EDGE: ToolbarEdge = "top";
+
+/**
+ * Where the fixed toolbar goes (layout-viewport px) so it sits on `edge` of
+ * the visible area: top is the visual viewport's offsetTop, bottom the gap
+ * under its bottom edge. Both follow the pan, so neither ends up behind the
+ * keyboard.
+ */
+export function toolbarEdge(
+  edge: ToolbarEdge,
+): { top: number } | { bottom: number } {
+  const vv = window.visualViewport;
+  if (edge === "top") return { top: Math.max(0, vv?.offsetTop ?? 0) };
+  return {
+    bottom: vv
+      ? Math.max(0, window.innerHeight - (vv.offsetTop + vv.height))
+      : 0,
+  };
+}
+
+/**
+ * The top edge of the phone doc toolbar (#2753): under the viewer's title bar
+ * while that is in view, at the visible top once it scrolls away. Both are in
+ * layout-viewport px.
+ */
+export const toolbarTop = (headerBottom: number, visibleTop: number) =>
+  Math.max(headerBottom, visibleTop);
+
 /** The composer's cap in px: its own cap, or 40% of what is visible. */
 export function fieldCap(own: number): number {
   return Math.min(own, viewHeight() * 0.4 || Number.POSITIVE_INFINITY);
@@ -84,14 +114,61 @@ let stop: (() => void) | null = null;
  */
 export function trackViewportVar(): () => void {
   const root = document.documentElement;
+  // The title bar being watched for size changes (it may remount).
+  let ro: ResizeObserver | null = null;
+  let watched: Element | null = null;
   const set = () => {
     root.style.setProperty("--oa-vvh", `${viewHeight() / 100}px`);
     // The phone sheet is fixed to the layout viewport: lift it above the keyboard.
     root.style.setProperty("--oa-kb", `${sheetLift()}px`);
+    // The doc toolbar's bottom edge, from the visual viewport alone.
+    root.style.setProperty("--oa-vv-bottom", `${viewBottom()}px`);
+    // The toolbar's top: under the title bar while it shows, else the top.
+    const header = document.querySelector(".oa-vt");
+    root.style.setProperty(
+      "--oa-bar-top",
+      `${toolbarTop(
+        header?.getBoundingClientRect().bottom ?? 0,
+        Math.max(0, window.visualViewport?.offsetTop ?? 0),
+      )}px`,
+    );
+    if (header !== watched && ro) {
+      if (watched) ro.unobserve(watched);
+      if (header) ro.observe(header);
+      watched = header;
+    }
+    // The doc toolbar's top edge: the visible area's top, panned or not.
+    root.style.setProperty(
+      "--oa-vv-top",
+      `${Math.max(0, window.visualViewport?.offsetTop ?? 0)}px`,
+    );
   };
   if (users++ === 0) {
+    if (typeof ResizeObserver === "function")
+      ro = new ResizeObserver(() => later());
     set();
-    stop = onViewport(set);
+    const off = onViewport(set);
+    // The title bar moves with the page and with its own wrapping: scrolls
+    // come in bursts, so those run once per frame.
+    let frame = 0;
+    const later = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        set();
+      });
+    };
+    window.addEventListener("scroll", later, true);
+    window.addEventListener("resize", later);
+    stop = () => {
+      off();
+      window.removeEventListener("scroll", later, true);
+      window.removeEventListener("resize", later);
+      if (frame) cancelAnimationFrame(frame);
+      ro?.disconnect();
+      ro = null;
+      watched = null;
+    };
   }
   return () => {
     if (--users > 0) return;
@@ -99,6 +176,9 @@ export function trackViewportVar(): () => void {
     stop = null;
     root.style.removeProperty("--oa-vvh");
     root.style.removeProperty("--oa-kb");
+    root.style.removeProperty("--oa-vv-top");
+    root.style.removeProperty("--oa-bar-top");
+    root.style.removeProperty("--oa-vv-bottom");
   };
 }
 
