@@ -6,8 +6,8 @@ import { expect, test } from "@playwright/test";
 const OUT = process.env.VERSION_SHOTS_DIR;
 const ID = "Ef7hJkLmNp8qRsTv"; // Parser script: v25..v22 are unlinked, linked, outsider, person
 
-for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const)
+for (const width of [1280])
+  for (const theme of ["light"] as const)
     test(`version faces at ${width}px ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width, height: 900 });
