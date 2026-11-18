@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.219.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.219.0...v0.219.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **agents:** a held reply stays masked when the hold write fails ([#2733](https://github.com/open-artifacts-ai/open-artifacts/issues/2733)) ([#2850](https://github.com/open-artifacts-ai/open-artifacts/issues/2850)) ([bbd27ec](https://github.com/open-artifacts-ai/open-artifacts/commit/bbd27ecb0dd104998ca437edaece3e5bf8d0770a))
+
+## [0.219.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.218.0...v0.219.0) (2026-11-18)
+
+
+### Features
+
+* **agents:** askState on the page's agent list ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577) slice 2) ([#2845](https://github.com/open-artifacts-ai/open-artifacts/issues/2845)) ([95d0319](https://github.com/open-artifacts-ai/open-artifacts/commit/95d0319a7e9ba3b30afdca41cd12bc3b4cbf21c6))
+
+
+### Bug Fixes
+
+* **bus:** safer reads of instance key files ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S1b) ([#2835](https://github.com/open-artifacts-ai/open-artifacts/issues/2835)) ([5e7b557](https://github.com/open-artifacts-ai/open-artifacts/commit/5e7b557d301ff0fa971ac8cb5a4689f24c55a60d))
+
 ## [0.218.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.217.0...v0.218.0) (2026-11-18)
 
 

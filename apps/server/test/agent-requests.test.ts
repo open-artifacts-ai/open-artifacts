@@ -1,12 +1,21 @@
 import { env } from "cloudflare:workers";
 import {
   type BusNotice,
+  type Comment,
   type Member,
   newId,
   R,
   type CommentThread as Thread,
 } from "@oa/shared";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createApp } from "../src/app.js";
 import { callerOf } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
@@ -803,6 +812,373 @@ describe("held on every path, and read nowhere (#2577)", () => {
         (i) => i.kind === "ask" && i.artifact?.id === s.id,
       ),
     ).toHaveLength(0);
+  });
+
+  /** An env whose D1 refuses every write to the held request tables (#2733). */
+  const noHoldRows = (): Env =>
+    ({
+      ...E,
+      DB: new Proxy(E.DB, {
+        get(t, k) {
+          if (k === "prepare")
+            return (sql: string) => {
+              if (/held_requests|held_request_items/.test(sql))
+                throw new Error("D1 down");
+              return t.prepare(sql);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    }) as Env;
+  /** An env whose DO refuses to let go of a reply's up-front hold. */
+  const noUnhold = (): Env =>
+    ({
+      ...E,
+      ARTIFACT_RUNTIME: new Proxy(E.ARTIFACT_RUNTIME, {
+        get(t, k) {
+          if (k === "get")
+            return (id: DurableObjectId) =>
+              new Proxy(t.get(id) as object, {
+                get(stubTarget, m) {
+                  if (m === "commentsUnhold")
+                    return async () => {
+                      throw new Error("DO down");
+                    };
+                  const v = Reflect.get(stubTarget, m);
+                  // An RPC method is not a plain function: call it, don't bind it.
+                  return typeof v === "function"
+                    ? (...args: unknown[]) => Reflect.apply(v, stubTarget, args)
+                    : v;
+                },
+              });
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    }) as Env;
+  const errLines = async (fn: () => Promise<unknown>) => {
+    const lines: string[] = [];
+    const spies = (["log", "warn", "error"] as const).map((k) =>
+      vi.spyOn(console, k).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      }),
+    );
+    try {
+      await fn();
+    } finally {
+      for (const x of spies) x.mockRestore();
+    }
+    return lines;
+  };
+  const maskedAndSeen = async (
+    id: string,
+    commentId: string,
+    words: string,
+  ) => {
+    const agent = (await listAs(id, asAgent(owner)))[0]?.comments.find(
+      (c) => c.id === commentId,
+    );
+    expect(JSON.stringify(agent)).not.toContain(words);
+    const person = (await listAs(id, view(owner)))[0]?.comments.find(
+      (c) => c.id === commentId,
+    );
+    expect(JSON.stringify(person)).toContain(words);
+    const sender = (await listAs(id, view(editor)))[0]?.comments.find(
+      (c) => c.id === commentId,
+    );
+    expect(JSON.stringify(sender)).toContain(words);
+  };
+
+  it("a mention whose D1 hold rows fail to write is still masked and undelivered; the failure is logged once, with no words (#2733)", async () => {
+    const s = await setup();
+    let t: Thread | undefined;
+    const lines = await errLines(async () => {
+      t = (await addThread(
+        noHoldRows(),
+        art(s.id),
+        typed(editor),
+        view(editor),
+        { anchor: NOTE, body: "mention secret", mentions: [{ key: s.claude }] },
+        { moderator: true },
+      )) as Thread;
+    });
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
+    await maskedAndSeen(s.id, t?.comments[0]?.id as string, "mention secret");
+    expect(await held(s.id)).toHaveLength(0);
+    const evts = lines.filter((l) => l.includes("hold_write_failed"));
+    expect(evts).toHaveLength(1);
+    expect(evts[0]).not.toContain("mention secret");
+  });
+
+  it("an ask whose D1 hold rows fail to write is still masked and undelivered (#2733)", async () => {
+    const s = await setup();
+    let t: Thread | undefined;
+    const lines = await errLines(async () => {
+      t = (await addThread(
+        noHoldRows(),
+        art(s.id),
+        typed(editor),
+        view(editor),
+        {
+          anchor: NOTE,
+          body: "ask body secret",
+          ask: {
+            question: "ask question secret?",
+            options: [
+              { id: "a", label: "ask yes secret" },
+              { id: "b", label: "ask no secret" },
+            ],
+            to: [{ key: s.claude }],
+          },
+        },
+        { moderator: true },
+      )) as Thread;
+    });
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
+    const agent = JSON.stringify(
+      (await listAs(s.id, asAgent(owner)))[0]?.comments[0],
+    );
+    for (const w of [
+      "ask body secret",
+      "ask question secret",
+      "ask yes secret",
+    ])
+      expect(agent).not.toContain(w);
+    const person = JSON.stringify(
+      (await listAs(s.id, view(owner)))[0]?.comments[0],
+    );
+    expect(person).toContain("ask question secret");
+    expect(t?.comments[0]?.body).toContain("ask body secret");
+    expect(lines.filter((l) => l.includes("hold_write_failed"))).toHaveLength(
+      1,
+    );
+  });
+
+  it("a held thread reply whose D1 hold rows fail to write is still masked and undelivered (#2733)", async () => {
+    const s = await setup();
+    const t = await post(
+      s.id,
+      typed(owner),
+      owner,
+      "ask Claude",
+      mention(s.claude),
+    );
+    bus.sent = [];
+    let reply: Comment | undefined;
+    const lines = await errLines(async () => {
+      reply = (await addReply(
+        noHoldRows(),
+        s.id,
+        t.id,
+        typed(editor),
+        view(editor),
+        "reply secret",
+        {},
+        { moderator: true },
+      )) as Comment;
+    });
+    expect(toOwnerAgent(s.id)).toHaveLength(0);
+    await maskedAndSeen(s.id, reply?.id as string, "reply secret");
+    expect(await held(s.id)).toHaveLength(0);
+    expect(lines.filter((l) => l.includes("hold_write_failed"))).toHaveLength(
+      1,
+    );
+    expect(lines.join("\n")).not.toContain("reply secret");
+  });
+
+  describe("the original leak: whatever fails after a held reply is stored, the receiver's agents never read it (#2733)", () => {
+    type Sab = {
+      /** Throw on a D1 statement containing any of these. */
+      sql?: RegExp;
+      /** Throw on these DO methods (the reply's insert and the participant take still run). */
+      rpc?: string[];
+    };
+    const sabotaged = (x: Sab): Env =>
+      ({
+        ...E,
+        ...(x.sql
+          ? {
+              DB: new Proxy(E.DB, {
+                get(t, k) {
+                  if (k === "prepare")
+                    return (q: string) => {
+                      if (x.sql?.test(q)) throw new Error("D1 down");
+                      return t.prepare(q);
+                    };
+                  const v = Reflect.get(t, k);
+                  return typeof v === "function" ? v.bind(t) : v;
+                },
+              }),
+            }
+          : {}),
+        ...(x.rpc
+          ? {
+              ARTIFACT_RUNTIME: new Proxy(E.ARTIFACT_RUNTIME, {
+                get(t, k) {
+                  if (k === "get")
+                    return (id: DurableObjectId) =>
+                      new Proxy(t.get(id) as object, {
+                        get(st, m) {
+                          if (typeof m === "string" && x.rpc?.includes(m))
+                            return async () => {
+                              throw new Error("DO down");
+                            };
+                          const v = Reflect.get(st, m);
+                          return typeof v === "function"
+                            ? (...a: unknown[]) => Reflect.apply(v, st, a)
+                            : v;
+                        },
+                      });
+                  const v = Reflect.get(t, k);
+                  return typeof v === "function" ? v.bind(t) : v;
+                },
+              }),
+            }
+          : {}),
+      }) as Env;
+    // Each step after the insert on its own, then all of them at once.
+    const cases: [string, Sab][] = [
+      [
+        "the decision (the person's list) can't be read",
+        { sql: /agent_listens/ },
+      ],
+      [
+        "the DO hold write and release fail",
+        { rpc: ["commentsHold", "commentsUnhold"] },
+      ],
+      ["the D1 request rows fail", { sql: /held_requests|held_request_items/ }],
+      [
+        "the notice bookkeeping fails",
+        {
+          rpc: [
+            "commentsReplyTargets",
+            "commentsTargetStates",
+            "commentsThreadReplyRefund",
+          ],
+        },
+      ],
+      [
+        "everything after the insert fails",
+        {
+          sql: /agent_listens|held_requests|held_request_items/,
+          rpc: [
+            "commentsHold",
+            "commentsUnhold",
+            "commentsReplyTargets",
+            "commentsTargetStates",
+            "commentsThreadReplyRefund",
+          ],
+        },
+      ],
+    ];
+    it.each(cases)("%s", async (_name, sab) => {
+      const s = await setup();
+      const t = await post(
+        s.id,
+        typed(owner),
+        owner,
+        "ask Claude",
+        mention(s.claude),
+      );
+      bus.sent = [];
+      let reply: Comment | undefined;
+      await errLines(async () => {
+        reply = (await addReply(
+          sabotaged(sab),
+          s.id,
+          t.id,
+          typed(editor),
+          view(editor),
+          "leak canary words",
+          {},
+          { moderator: true },
+        )) as Comment;
+      });
+      // Never delivered, never readable by the receiver's agents, any list.
+      expect(toOwnerAgent(s.id)).toHaveLength(0);
+      const agentLists = JSON.stringify(await listAs(s.id, asAgent(owner)));
+      expect(agentLists).not.toContain("leak canary words");
+      const viaToken = await (
+        await api(
+          app,
+          R.comments(s.id),
+          (
+            await createPat(E, owner.userId, "leak check")
+          ).token,
+        )
+      ).text();
+      expect(viaToken).not.toContain("leak canary words");
+      // The sender and the receiver's person still read it.
+      await maskedAndSeen(s.id, reply?.id as string, "leak canary words");
+    });
+  });
+
+  it("a reply that would be delivered but whose hold can't be let go stays masked and undelivered (#2733)", async () => {
+    const s = await setup();
+    // The owner's agents hear the editor on this page.
+    await E.DB.prepare(
+      `insert into agent_listens (id, owner_id, member_id, scope, artifact_id, until, created_via, created_at)
+       values (?1, ?2, ?3, 'page', ?4, ?5, 'settings', ?6)`,
+    )
+      .bind(
+        newId(),
+        owner.userId,
+        editor.userId,
+        s.id,
+        Date.now() + 86_400_000,
+        Date.now(),
+      )
+      .run();
+    try {
+      const t = await post(
+        s.id,
+        typed(owner),
+        owner,
+        "ask Claude",
+        mention(s.claude),
+      );
+      bus.sent = [];
+      let reply: Comment | undefined;
+      const lines = await errLines(async () => {
+        reply = (await addReply(
+          noUnhold(),
+          s.id,
+          t.id,
+          typed(editor),
+          view(editor),
+          "reply unreleased",
+          {},
+          { moderator: true },
+        )) as Comment;
+      });
+      expect(toOwnerAgent(s.id)).toHaveLength(0);
+      await maskedAndSeen(s.id, reply?.id as string, "reply unreleased");
+      expect(
+        lines.filter((l) => l.includes("hold_release_failed")),
+      ).toHaveLength(1);
+      // Control: with the release working, the same reply is delivered and readable.
+      bus.sent = [];
+      const ok = await addReply(
+        E,
+        s.id,
+        t.id,
+        typed(editor),
+        view(editor),
+        "reply released",
+        {},
+        { moderator: true },
+      );
+      expect(toOwnerAgent(s.id).length).toBeGreaterThan(0);
+      const seen = (await listAs(s.id, asAgent(owner)))[0]?.comments.find(
+        (c) => c.id === ok.id,
+      );
+      expect(JSON.stringify(seen)).toContain("reply released");
+    } finally {
+      await E.DB.prepare("delete from agent_listens where artifact_id = ?")
+        .bind(s.id)
+        .run();
+    }
   });
 
   it("over the hold caps nothing is written to D1, but the comment is still masked and undelivered", async () => {
