@@ -534,6 +534,17 @@ export function AskFrom({
         </>
       )}{" "}
       asks{askedWho(ask.to, mine)}
+      {ask.confirm === "passkey" && !ask.closed && (
+        <>
+          {" "}
+          <span
+            data-ask-approval=""
+            className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-warning-soft)] px-[7px] font-[family-name:var(--oa-font-mono)] text-[length:var(--oa-text-xs)] font-medium whitespace-nowrap text-[var(--oa-warning)]"
+          >
+            <span aria-hidden="true">🔑</span> Approval
+          </span>
+        </>
+      )}
       {when && (
         <span title={exactDate(c.createdAt)}>
           {" · "}
