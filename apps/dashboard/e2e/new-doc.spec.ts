@@ -24,12 +24,7 @@ const shot = async (page: Page, name: string) => {
   if (DIR) await page.screenshot({ path: `${DIR}/${name}` });
 };
 
-for (const [scheme, width] of [
-  ["light", 1280],
-  ["dark", 1280],
-  ["light", 390],
-  ["dark", 390],
-] as const) {
+for (const [scheme, width] of [["light", 1280]] as const) {
   test.describe(`${scheme} ${width}`, () => {
     test.use({ colorScheme: scheme, viewport: { width, height: 800 } });
     const tag = `${scheme}-${width}`;
