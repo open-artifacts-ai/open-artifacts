@@ -5868,16 +5868,14 @@ export class BusHub extends DurableObject<Env> {
       this.#arm(due);
       return;
     }
+    // Clear before the await: a `switching` report stored meanwhile sets its
+    // own due, and setUpdateDue below keeps the earlier of the two.
+    this.#setUpdateDue(null);
     try {
       const next = await markStopped(this.env, userId, now);
-      // A `switching` report during the await may have set an earlier due:
-      // clear only the value read before; setUpdateDue keeps the earlier one.
-      const stored = this.#updateDue();
-      if (stored === due) this.#setUpdateDue(null);
       if (next !== null) this.#setUpdateDue(next + 1);
-      else if (stored !== due && stored !== null) this.#arm(stored);
     } catch (e) {
-      this.#arm(now + 60_000);
+      this.#setUpdateDue(now + 60_000);
       logError("bus_update_stopped_failed", e);
     }
   }
