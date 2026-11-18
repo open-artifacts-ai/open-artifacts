@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.214.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.213.0...v0.214.0) (2026-11-18)
+
+
+### Features
+
+* **auth:** an owner's proven login domain is applied through the platform ([#2520](https://github.com/open-artifacts-ai/open-artifacts/issues/2520)) ([#2802](https://github.com/open-artifacts-ai/open-artifacts/issues/2802)) ([bff38cc](https://github.com/open-artifacts-ai/open-artifacts/commit/bff38cc08761ddcaea320f0491e4aaa6c6870931))
+* **bus:** a proof miss logs why (unbound, closed, unlinked, revoked) ([#2810](https://github.com/open-artifacts-ai/open-artifacts/issues/2810)) ([316ca2d](https://github.com/open-artifacts-ai/open-artifacts/commit/316ca2deb4c4ee219518fc27a02108e94ce5fc3c))
+* **bus:** the updater loop is on; machines move only to a version the instance names ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2812](https://github.com/open-artifacts-ai/open-artifacts/issues/2812)) ([af2fdd3](https://github.com/open-artifacts-ai/open-artifacts/commit/af2fdd3893b032034ec750f5b75dc4046e815798))
+* **sharing:** a recipient can undo their own opt-out from the signed link ([#2653](https://github.com/open-artifacts-ai/open-artifacts/issues/2653)) ([#2815](https://github.com/open-artifacts-ai/open-artifacts/issues/2815)) ([40de200](https://github.com/open-artifacts-ai/open-artifacts/commit/40de20064147935a51e2f086bc26cf960eefac5c))
+
+
+### Bug Fixes
+
+* **auth:** log why a login code wasn't sent ([#2656](https://github.com/open-artifacts-ai/open-artifacts/issues/2656)) ([#2813](https://github.com/open-artifacts-ai/open-artifacts/issues/2813)) ([2b4af1c](https://github.com/open-artifacts-ai/open-artifacts/commit/2b4af1cd6612d809c55ce23dbe7c1d89c763cee5))
+* **bus-cli:** status and doctor point an update at the checked install, never npx ([#2803](https://github.com/open-artifacts-ai/open-artifacts/issues/2803)) ([e764428](https://github.com/open-artifacts-ai/open-artifacts/commit/e764428075aaf0a9091ce3aacb8e4f63d5831850))
+* **bus:** a second bus home never claims Claude sessions it only scanned ([#2806](https://github.com/open-artifacts-ai/open-artifacts/issues/2806)) ([#2807](https://github.com/open-artifacts-ai/open-artifacts/issues/2807)) ([31aa44e](https://github.com/open-artifacts-ai/open-artifacts/commit/31aa44ee6190fbaf970634ff095a193e46d145db))
+* **bus:** page the run-version fan-out; the cron drains the rest ([#2719](https://github.com/open-artifacts-ai/open-artifacts/issues/2719)) ([#2800](https://github.com/open-artifacts-ai/open-artifacts/issues/2800)) ([2425970](https://github.com/open-artifacts-ai/open-artifacts/commit/24259703c463a25f1de82ce31f7bf47e16a7d0a4))
+
 ## [0.213.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.212.0...v0.213.0) (2026-11-18)
 
 
