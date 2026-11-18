@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.218.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.217.0...v0.218.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** folder map, oa-bus use, per-instance approvals ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S2) ([#2834](https://github.com/open-artifacts-ai/open-artifacts/issues/2834)) ([1688b3e](https://github.com/open-artifacts-ai/open-artifacts/commit/1688b3e56e7f944149f7dca8650c8e9bbab1310c))
+
 ## [0.217.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.216.0...v0.217.0) (2026-11-18)
 
 
