@@ -21,7 +21,9 @@ for (const theme of ["light", "dark"] as const) {
     }
     await sw.click();
     await expect(sw).toHaveAttribute("aria-checked", "true");
-    await expect(card).toContainText("Paused. Every machine stays");
+    await expect(card).toContainText(
+      "Paused. Every machine on this instance stays",
+    );
     await expect(sw).toBeEnabled();
     if (OUT) {
       await card.screenshot({ path: `${OUT}/${theme}-on.png` });

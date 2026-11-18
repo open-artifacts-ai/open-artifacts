@@ -185,7 +185,7 @@ export const UPDATES_COPY = {
   title: "Updates",
   label: "Pause updates",
   off: "Machines update the bus by themselves, 24 hours after this instance gets a new release. If this instance names a version, they move to that one instead. Anyone can still turn updates off on their own machine.",
-  on: "Paused. Every machine stays on the version it has now, until you turn this off.",
+  on: "Paused. Every machine on this instance stays on the version it has now, until you turn this off.",
 } as const;
 
 /** Only the owner is told the state (the read omits it for everyone else), so only the owner sees this. */
