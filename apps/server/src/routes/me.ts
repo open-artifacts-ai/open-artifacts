@@ -292,7 +292,7 @@ export function mountMe(app: AppType): void {
     const who = caller(c);
     if (who.kind !== "user")
       throw new ApiError("unauthorized", "Login required");
-    const { until } = await jsonBody(c, InboxLaterBodySchema);
+    const { until, timeZone } = await jsonBody(c, InboxLaterBodySchema);
     const minute = new Date().toISOString().slice(0, 16);
     if (
       (await takeAll(c.env, [
@@ -303,7 +303,9 @@ export function mountMe(app: AppType): void {
         "rate_limited",
         "Too many changes. Try again shortly.",
       );
-    return c.json(await deferItem(c.env, who, c.req.param("id"), until));
+    return c.json(
+      await deferItem(c.env, who, c.req.param("id"), until, timeZone),
+    );
   });
   app.post(R.meInboxReadAll, async (c) => {
     const user = requireUser(c);

@@ -3,23 +3,73 @@
 // here copies it. Never touches artifact_asks.
 import type { Env } from "../env.js";
 
-/** One hour ahead, or the next 08:00 (UTC until the person's time zone is stored). */
+type Parts = { y: number; mo: number; d: number; h: number; mi: number };
+
+/** The wall clock in `zone` at the instant `ms`. */
+function wall(ms: number, zone: string): Parts {
+  const f = new Intl.DateTimeFormat("en-US", {
+    timeZone: zone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+  });
+  const p: Record<string, number> = {};
+  for (const x of f.formatToParts(new Date(ms)))
+    if (x.type !== "literal") p[x.type] = Number(x.value);
+  return {
+    y: p.year as number,
+    mo: p.month as number,
+    d: p.day as number,
+    h: (p.hour as number) % 24,
+    mi: p.minute as number,
+  };
+}
+
+/** The instant at which `zone`'s wall clock reads y-mo-d h:mi (DST-safe: two passes). */
+function instantAt(zone: string, y: number, mo: number, d: number, h: number) {
+  let guess = Date.UTC(y, mo - 1, d, h);
+  for (let i = 0; i < 2; i++) {
+    const w = wall(guess, zone);
+    const shown = Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi);
+    guess += Date.UTC(y, mo - 1, d, h) - shown;
+  }
+  return guess;
+}
+
+/**
+ * One hour ahead, or the next 08:00 on the person's clock in `zone` (an IANA
+ * name; UTC when none is known): today's if still ahead, else tomorrow's.
+ */
 export function laterUntil(
   which: "hour" | "morning",
   now: number,
-  /** The offset of the person's zone from UTC, minutes (0: UTC). */
-  offsetMin = 0,
+  zone = "UTC",
 ): number {
   if (which === "hour") return now + 60 * 60_000;
-  const local = new Date(now + offsetMin * 60_000);
-  const next = Date.UTC(
-    local.getUTCFullYear(),
-    local.getUTCMonth(),
-    local.getUTCDate(),
+  const w = wall(now, zone);
+  const today = instantAt(zone, w.y, w.mo, w.d, 8);
+  if (today > now) return today;
+  // Tomorrow's date by calendar arithmetic, then its 08:00 in the zone.
+  const t = new Date(Date.UTC(w.y, w.mo - 1, w.d + 1));
+  return instantAt(
+    zone,
+    t.getUTCFullYear(),
+    t.getUTCMonth() + 1,
+    t.getUTCDate(),
     8,
   );
-  const at = next > local.getTime() ? next : next + 86_400_000;
-  return at - offsetMin * 60_000;
+}
+
+/** "tomorrow at 8:00" or "at 14:30": when they will look, on their clock. */
+export function laterWhen(until: number, now: number, zone = "UTC"): string {
+  const u = wall(until, zone);
+  const n = wall(now, zone);
+  const clock = `${u.h}:${String(u.mi).padStart(2, "0")}`;
+  const sameDay = u.y === n.y && u.mo === n.mo && u.d === n.d;
+  return `${sameDay ? "" : "tomorrow "}at ${clock}${zone === "UTC" ? " UTC" : ""}`;
 }
 
 /** The person's put-off items: item id -> until (ms). */

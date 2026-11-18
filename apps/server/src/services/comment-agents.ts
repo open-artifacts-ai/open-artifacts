@@ -497,8 +497,8 @@ export async function notifyAnswered(
 
 /**
  * `ask_later` (#2762): the person put an ask off ("Later"); the asking agent
- * (only it, by its verified bus address, as `ask_answered`) is told when they
- * will look at it, so it does not wait on a clock. Fixed text, one waiting
+ * (only it, by its verified bus address, as `ask_answered`) is told by name
+ * when they will look at it, so it does not wait on a clock. Fixed text, one waiting
  * notice per ask comment. Never throws.
  */
 export async function notifyAskLater(
@@ -509,13 +509,12 @@ export async function notifyAskLater(
   commentId: string,
   askerId: string,
   asker: AskerAddress | null,
-  /** When they will look at it, ms. */
-  until: number,
+  /** The person's name and when they will look, as the notice says it ("tomorrow at 8:00"). */
+  who: { name: string; when: string },
 ): Promise<void> {
   const targets = await askerAgents(env, artifactId, askerId, asker);
   if (targets.length === 0) return;
   const url = appOrigin(env) + viewerPath(artifactId);
-  const when = new Date(until).toISOString().slice(0, 16).replace("T", " ");
   const scope = newDeliveryScope();
   for (const to of targets) {
     const n: BusNotice = {
@@ -528,7 +527,7 @@ export async function notifyAskLater(
       to: { namespace: to.namespace, name: to.name },
       ...(to.identityId ? { toIdentity: to.identityId } : {}),
       text: [
-        `Open Artifacts: your user will look at your ask after ${when} UTC.`,
+        `Open Artifacts: ${who.name} will look at this ${who.when}.`,
         url,
         `Thread ${threadId}, comment ${commentId}. Do not wait for an answer before then.`,
       ].join("\n"),

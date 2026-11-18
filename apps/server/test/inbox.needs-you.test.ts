@@ -15,7 +15,11 @@ import {
   setStatus,
 } from "../src/services/comments.js";
 import { needsYou } from "../src/services/inbox.js";
-import { laterUntil, sweepInboxLater } from "../src/services/inbox-later.js";
+import {
+  laterUntil,
+  laterWhen,
+  sweepInboxLater,
+} from "../src/services/inbox-later.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { hubOf } from "./bus/helpers.js";
@@ -458,14 +462,66 @@ describe("Later (#2762)", () => {
       }
     ).inbox.needsYou;
 
-  it("laterUntil: an hour on; the next 08:00, today if it is still ahead", () => {
+  it("laterUntil: an hour on; the next 08:00 on the person's clock, today if still ahead", () => {
     const noon = Date.UTC(2026, 10, 18, 12, 0);
     expect(laterUntil("hour", noon)).toBe(noon + 3_600_000);
     expect(laterUntil("morning", noon)).toBe(Date.UTC(2026, 10, 19, 8));
     const five = Date.UTC(2026, 10, 18, 5, 0);
     expect(laterUntil("morning", five)).toBe(Date.UTC(2026, 10, 18, 8));
-    // In a zone 2 h ahead of UTC, 08:00 there is 06:00 UTC.
-    expect(laterUntil("morning", five, 120)).toBe(Date.UTC(2026, 10, 18, 6));
+    // Paris in November is UTC+1: 08:00 there is 07:00 UTC; at 12:00 UTC it is tomorrow's.
+    expect(laterUntil("morning", five, "Europe/Paris")).toBe(
+      Date.UTC(2026, 10, 18, 7),
+    );
+    expect(laterUntil("morning", noon, "Europe/Paris")).toBe(
+      Date.UTC(2026, 10, 19, 7),
+    );
+    // New York in November is UTC-5, and summer time (UTC-4) is honoured.
+    expect(laterUntil("morning", noon, "America/New_York")).toBe(
+      Date.UTC(2026, 10, 19, 13),
+    );
+    expect(
+      laterUntil("morning", Date.UTC(2026, 5, 18, 20), "America/New_York"),
+    ).toBe(Date.UTC(2026, 5, 19, 12));
+    // A zone whose clock is already past 08:00 while UTC's is not.
+    expect(laterUntil("morning", five, "Asia/Tokyo")).toBe(
+      Date.UTC(2026, 10, 18, 23),
+    );
+  });
+
+  it("laterWhen: 'tomorrow at 8:00' or 'at 14:30', on their clock", () => {
+    const noon = Date.UTC(2026, 10, 18, 12, 0);
+    expect(
+      laterWhen(
+        laterUntil("morning", noon, "Europe/Paris"),
+        noon,
+        "Europe/Paris",
+      ),
+    ).toBe("tomorrow at 8:00");
+    expect(laterWhen(noon + 2.5 * 3_600_000, noon, "Europe/Paris")).toBe(
+      "at 15:30",
+    );
+    expect(laterWhen(noon + 3_600_000, noon)).toBe("at 13:00 UTC");
+  });
+
+  it("the body's timeZone is used, and an unknown zone is a 400", async () => {
+    const u = await mk("l-tz");
+    const id = await mkArtifact([u]);
+    const t = await ask(id, [u]);
+    const itemId = `ask:${t.comments[0]?.id}`;
+    expect(
+      (await later(u, itemId, { until: "hour", timeZone: "Mars/Base" })).status,
+    ).toBe(400);
+    const r = await later(u, itemId, {
+      until: "morning",
+      timeZone: "Asia/Tokyo",
+    });
+    expect(r.status).toBe(200);
+    const at = Date.parse(
+      ((await r.json()) as { later: { until: string } }).later.until,
+    );
+    // 08:00 in Tokyo is 23:00 UTC, within a day of now.
+    expect(new Date(at).getUTCHours()).toBe(23);
+    expect(new Date(at).getUTCMinutes()).toBe(0);
   });
 
   it.each(["hour", "morning"] as const)(

@@ -1467,17 +1467,19 @@ describe("ask_answered notice (#1535)", () => {
     expect(n.text).toContain(`Thread ${t.id}, comment ${cid}.`);
   });
 
-  it("Later tells the asking agent only, with fixed text and the ids (#2762)", async () => {
+  it("Later tells the asking agent only, by name and in the person's zone (#2762)", async () => {
     const s = await setup();
     const { t, cid } = await askFrom(owner, s.id);
     bus.clear();
-    const until = Date.now();
+    // 12:00 UTC is 14:00 in Paris in summer: an hour on is "at 15:00", the morning "tomorrow at 8:00".
+    const noon = Date.UTC(2026, 5, 18, 12, 0);
     await deferItem(
       E,
       callerOf(viewer.member) as never,
       `ask:${cid}`,
       "hour",
-      until,
+      "Europe/Paris",
+      noon,
     );
     const sent = bus.sent.filter((x) => x.notice.kind === "ask_later");
     // The owner's Claude only; the editor's Codex hears nothing.
@@ -1486,12 +1488,36 @@ describe("ask_answered notice (#1535)", () => {
     expect(userId).toBe(owner.userId);
     expect(n.to).toEqual({ namespace: "ns-owner", name: "Claude" });
     expect(n.coalesceKey).toBe(`${s.id}:${cid}:later`);
-    const at = new Date(until + 3_600_000)
-      .toISOString()
-      .slice(0, 16)
-      .replace("T", " ");
-    expect(n.text).toContain(`after ${at} UTC`);
+    expect(n.text).toMatch(
+      /^Open Artifacts: .+ will look at this at 15:00\.\n/,
+    );
+    expect(n.text).not.toContain("your user");
     expect(n.text).toContain(`Thread ${t.id}, comment ${cid}.`);
+    // The next morning, on their clock; with no zone known, UTC says so.
+    const b = await askFrom(owner, s.id);
+    bus.clear();
+    await deferItem(
+      E,
+      callerOf(viewer.member) as never,
+      `ask:${b.cid}`,
+      "morning",
+      "Europe/Paris",
+      noon,
+    );
+    expect(bus.sent.at(-1)?.notice.text).toContain(
+      "will look at this tomorrow at 8:00.",
+    );
+    const c = await askFrom(owner, s.id);
+    bus.clear();
+    await deferItem(
+      E,
+      callerOf(viewer.member) as never,
+      `ask:${c.cid}`,
+      "hour",
+      undefined,
+      noon,
+    );
+    expect(bus.sent.at(-1)?.notice.text).toContain("at 13:00 UTC.");
     // A person's ask has no agent to tell.
     bus.clear();
     const mine = await addThread(

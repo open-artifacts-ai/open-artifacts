@@ -20,10 +20,15 @@ import {
   repairAsks,
 } from "./comments.js";
 import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
-import { laterRows, laterUntil, recordLater } from "./inbox-later.js";
+import {
+  laterRows,
+  laterUntil,
+  laterWhen,
+  recordLater,
+} from "./inbox-later.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
-import { getUser } from "./users.js";
+import { effectiveName, getUser } from "./users.js";
 
 /** The most items the Needs-you list holds (the contract's cap). */
 export const NEEDS_YOU_MAX = 200;
@@ -461,14 +466,17 @@ export async function inboxOf(
  * #2762 POST /me/inbox/:id/later: puts one Needs-you item off, once. 404: not
  * one of theirs (an update, someone else's, gone). 409 later_used: put off
  * before (a return from Later cannot be put off again). The asking agent, if
- * the item is its ask, is told when they will look at it. Time: "hour" is one
- * hour on; "morning" the next 08:00 UTC (the person's zone is not stored yet).
+ * the item is its ask, is told by name when they will look at it. Time:
+ * "hour" is one hour on; "morning" the next 08:00 in `timeZone` (the
+ * browser's), else UTC (their saved zone, S4's prefs, is not stored yet).
  */
 export async function deferItem(
   env: Env,
   caller: Me,
   id: string,
   which: "hour" | "morning",
+  /** The person's IANA zone (the browser's); absent: UTC until their saved zone is stored. */
+  timeZone?: string,
   now = Date.now(),
 ): Promise<InboxItem> {
   const away = await laterRows(env, caller.user.id);
@@ -480,10 +488,12 @@ export async function deferItem(
   ]);
   const item = [...asks, ...requests].find((i) => i.id === id);
   if (!item) throw new ApiError("not_found", "Not found");
-  const until = laterUntil(which, now);
+  const zone = timeZone ?? "UTC";
+  const until = laterUntil(which, now, zone);
   if (!(await recordLater(env, caller.user.id, id, until, now)))
     throw new ApiError("later_used", "You already put this off once.");
-  if (item.kind === "ask") await tellAsker(env, caller, id, until);
+  if (item.kind === "ask")
+    await tellAsker(env, caller, id, laterWhen(until, now, zone));
   return {
     ...item,
     later: { until: new Date(until).toISOString(), used: true },
@@ -495,9 +505,25 @@ async function tellAsker(
   env: Env,
   caller: Me,
   itemId: string,
-  until: number,
+  when: string,
 ): Promise<void> {
   try {
+    // Their own name, as they show it: display name, else the SSO name, else the email.
+    const me = await env.DB.prepare(
+      "select name, display_name as displayName, email from users where id = ?",
+    )
+      .bind(caller.user.id)
+      .first<{
+        name: string | null;
+        displayName: string | null;
+        email: string;
+      }>();
+    const who = {
+      name: me
+        ? effectiveName({ ...me, name: me.name ?? "" })
+        : caller.user.email,
+      when,
+    };
     const commentId = itemId.slice("ask:".length);
     const row = await env.DB.prepare(
       `select a.artifact_id, a.thread_id, x.current_version as version
@@ -520,7 +546,7 @@ async function tellAsker(
       commentId,
       c.author.ref,
       await askingAddress(env, row.artifact_id, row.thread_id, c.author),
-      until,
+      who,
     );
   } catch (e) {
     logWarn("inbox_later_notice_failed", e);
