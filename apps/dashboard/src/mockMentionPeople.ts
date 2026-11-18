@@ -1,7 +1,7 @@
 // PROVISIONAL (#2780): mock-only person @mentions, over the shared mocks
 // (which do not know `people` yet). Delete with src/viewer/comments/people.ts
 // once the shared mocks serve the route.
-// - GET mention-candidates?q= lists people by the start of a name or of any
+// - POST mention-candidates { q } lists people by the start of a name or of any
 //   word in it (never an email), at most 8.
 // - A new thread or reply keeps its `people`, and the list shows them.
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
@@ -25,7 +25,7 @@ const matches = (name: string, q: string) =>
 
 /** A server without #2780: the route is absent (404), so no people are offered. */
 export const mentionPeopleAbsentHandlers = (): HttpHandler[] => [
-  http.get("*/api/v1/artifacts/:id/mention-candidates", () =>
+  http.post("*/api/v1/artifacts/:id/mention-candidates", () =>
     HttpResponse.json(
       { error: { code: "not_found", message: "Not found" } },
       { status: 404 },
@@ -63,19 +63,28 @@ export function mentionPeopleHandlers(next: HttpHandler[]): HttpHandler[] {
     return HttpResponse.json(out, { status: res.status });
   };
   return [
-    http.get("*/api/v1/artifacts/:id/mention-candidates", ({ request }) => {
-      const q = new URL(request.url).searchParams.get("q")?.trim() ?? "";
-      if (q === "" || q.length > 40)
-        return HttpResponse.json(
-          {
-            error: { code: "bad_request", message: "q is 1 to 40 characters" },
-          },
-          { status: 400 },
-        );
-      return HttpResponse.json({
-        items: MOCK_PEOPLE.filter((p) => matches(p.name, q)).slice(0, 8),
-      });
-    }),
+    http.post(
+      "*/api/v1/artifacts/:id/mention-candidates",
+      async ({ request }) => {
+        const body = (await request.json().catch(() => null)) as {
+          q?: string;
+        } | null;
+        const q = body?.q?.trim() ?? "";
+        if (q === "" || q.length > 40)
+          return HttpResponse.json(
+            {
+              error: {
+                code: "bad_request",
+                message: "q is 1 to 40 characters",
+              },
+            },
+            { status: 400 },
+          );
+        return HttpResponse.json({
+          items: MOCK_PEOPLE.filter((p) => matches(p.name, q)).slice(0, 8),
+        });
+      },
+    ),
     http.post("*/api/v1/artifacts/:id/comments", ({ request }) =>
       keep(request),
     ),

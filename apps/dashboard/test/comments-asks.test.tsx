@@ -2282,7 +2282,7 @@ describe("@ picker details", () => {
     });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
     expect(await within(c).findByRole("alert")).toHaveTextContent(
-      "Mention at most 10 agents and people in one comment.",
+      "Mention at most 10 agents or people in one comment.",
     );
     expect(posts).toHaveLength(0);
   });

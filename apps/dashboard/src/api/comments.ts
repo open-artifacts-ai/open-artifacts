@@ -783,7 +783,7 @@ export function commentError(
   ctx?: ErrorContext,
 ): string {
   if (e instanceof TooManyMentions)
-    return `Mention at most ${MENTIONS_MAX} agents and people in one comment.`;
+    return `Mention at most ${MENTIONS_MAX} agents or people in one comment.`;
   const code = e instanceof ApiClientError ? e.code : null;
   // A capped (guest or restricted) member's writes are refused as read-only:
   // the server answers 404, and says nothing about a missing comment.

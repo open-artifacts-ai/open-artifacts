@@ -129,8 +129,8 @@ describe("@ lists people with the agents (#2770)", () => {
     const qs: string[] = [];
     serve();
     server.use(
-      http.get(CAND, ({ request }) => {
-        qs.push(new URL(request.url).searchParams.get("q") ?? "");
+      http.post(CAND, async ({ request }) => {
+        qs.push(((await request.json()) as { q: string }).q);
         return HttpResponse.json({
           // An email is never shown, even if one rode along.
           items: [{ ...DANA, email: "dana@acme.test" }, DANIELLE],
@@ -158,9 +158,21 @@ describe("@ lists people with the agents (#2770)", () => {
   it("picks with the keyboard, shows a pill, and sends the id in people", async () => {
     serve();
     server.use(
-      http.get(CAND, () => HttpResponse.json({ items: [DANA, DANIELLE] })),
+      http.post(CAND, () => HttpResponse.json({ items: [DANA, DANIELLE] })),
     );
-    const posts = calls("POST");
+    const all = calls("POST");
+    // The candidates search is a POST too: only comments count here.
+    const posts = {
+      get length() {
+        return this.list.length;
+      },
+      get list() {
+        return all.filter((c) => !c.path.endsWith("/mention-candidates"));
+      },
+      get 0() {
+        return this.list[0];
+      },
+    };
     mount(viewerPath(OWNED));
     const { c, b } = await box();
     type(b, "@da");
@@ -191,8 +203,20 @@ describe("@ lists people with the agents (#2770)", () => {
 
   it("mixes an agent and a person in one comment", async () => {
     serve();
-    server.use(http.get(CAND, () => HttpResponse.json({ items: [DANA] })));
-    const posts = calls("POST");
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [DANA] })));
+    const all = calls("POST");
+    // The candidates search is a POST too: only comments count here.
+    const posts = {
+      get length() {
+        return this.list.length;
+      },
+      get list() {
+        return all.filter((c) => !c.path.endsWith("/mention-candidates"));
+      },
+      get 0() {
+        return this.list[0];
+      },
+    };
     mount(viewerPath(OWNED));
     const { c, b } = await box();
     type(b, "@dana");
@@ -217,8 +241,8 @@ describe("@ lists people with the agents (#2770)", () => {
     });
     const aborted: string[] = [];
     server.use(
-      http.get(CAND, async ({ request }) => {
-        const q = new URL(request.url).searchParams.get("q");
+      http.post(CAND, async ({ request }) => {
+        const q = ((await request.json()) as { q: string }).q;
         if (q === "s") {
           request.signal.addEventListener("abort", () => aborted.push("s"));
           await slow;
@@ -256,8 +280,20 @@ describe("@ lists people with the agents (#2770)", () => {
       online: true,
     }));
     serve(many);
-    server.use(http.get(CAND, () => HttpResponse.json({ items: [DANA] })));
-    const posts = calls("POST");
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [DANA] })));
+    const all = calls("POST");
+    // The candidates search is a POST too: only comments count here.
+    const posts = {
+      get length() {
+        return this.list.length;
+      },
+      get list() {
+        return all.filter((c) => !c.path.endsWith("/mention-candidates"));
+      },
+      get 0() {
+        return this.list[0];
+      },
+    };
     mount(viewerPath(OWNED));
     const { c, b } = await box();
     type(b, `${many.map((a) => `@${a.name}`).join(" ")} @dana`);
@@ -265,7 +301,7 @@ describe("@ lists people with the agents (#2770)", () => {
       expect(within(c).getAllByRole("option")).toHaveLength(1),
     );
     expect(
-      within(c).getByText(/mention up to 10 agents and people/),
+      within(c).getByText(/mention up to 10 agents or people/),
     ).toBeTruthy();
     // Picking adds nothing at the cap.
     fireEvent.mouseDown(within(c).getByRole("option"));

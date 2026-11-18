@@ -994,7 +994,7 @@ function Composer({
       )}
       {found && atCap && (
         <p role="status" className={`${TXT} text-muted-foreground`}>
-          You can mention up to {MENTIONS_MAX} agents and people in one comment.
+          You can mention up to {MENTIONS_MAX} agents or people in one comment.
           Remove one to add another.
         </p>
       )}

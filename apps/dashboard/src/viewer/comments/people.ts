@@ -24,7 +24,7 @@ export const MENTION_CANDIDATES_Q_MAX = 40;
 /** The most people one candidates answer holds. */
 export const MENTION_CANDIDATES_MAX = 8;
 
-/** GET ?q= -> { items }: people who can read the page, as faces (never an email). */
+/** POST { q } -> { items }: people who can read the page, as faces (never an email). */
 export const artifactMentionCandidates = (id: string) =>
   `${R.artifactAgents(id).replace(/\/agents$/, "")}/mention-candidates`;
 
@@ -107,8 +107,10 @@ export function useMentionCandidates(
     retry: false,
     staleTime: 30_000,
     queryFn: ({ signal }) =>
-      api.get(
-        `${artifactMentionCandidates(id)}?q=${encodeURIComponent(settled)}`,
+      api.send(
+        "POST",
+        artifactMentionCandidates(id),
+        { q: settled },
         MentionCandidatesSchema,
         signal,
       ),
