@@ -94,15 +94,24 @@ describe("phone doc toolbar (#2276)", () => {
     const stop = trackViewportVar();
     const top = () =>
       document.documentElement.style.getPropertyValue("--oa-vv-top");
+    const bottom = () =>
+      document.documentElement.style.getPropertyValue("--oa-vv-bottom");
     expect(top()).toBe("0px");
+    expect(bottom()).toBe("844px");
     t.height = 500;
     t.dispatchEvent(new Event("resize"));
     expect(top()).toBe("0px");
+    expect(bottom()).toBe("500px");
     t.offsetTop = 300;
     t.dispatchEvent(new Event("scroll"));
     expect(top()).toBe("300px");
+    // Independent of innerHeight: a collapsed Safari bar changes it.
+    vi.stubGlobal("innerHeight", 900);
+    t.dispatchEvent(new Event("scroll"));
+    expect(bottom()).toBe("800px");
     stop();
     expect(top()).toBe("");
+    expect(bottom()).toBe("");
   });
   it("places the bar on the chosen edge of the visible area", () => {
     vi.stubGlobal("innerHeight", 844);

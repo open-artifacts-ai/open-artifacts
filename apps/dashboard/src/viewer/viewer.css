@@ -481,7 +481,8 @@ a.oa-lpill-gone {
 .oa-bare::before {
   content: "";
   position: fixed;
-  inset-inline: 0;
+  left: 0;
+  right: 0;
   top: var(--oa-vv-top, 0px);
   height: env(safe-area-inset-top, 0px);
   background: var(--oa-bg);
@@ -1071,7 +1072,9 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
 @media (max-width: 600px) {
   .oa-doc-toolbar {
     position: fixed;
-    inset-inline: 0;
+    /* Clear of the notch in landscape (viewport-fit=cover, #2753). */
+    left: env(safe-area-inset-left, 0px);
+    right: env(safe-area-inset-right, 0px);
     bottom: var(--oa-kb, 0px);
     /* Solid, with a border on the inner edge: no text shows through (#2753). */
     box-sizing: border-box;
@@ -1119,6 +1122,16 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
     padding: 4px 12px;
     border-top: 0;
     border-bottom: 1px solid var(--oa-border);
+  }
+  /*
+   * Bottom: the bar's bottom edge on the visible area's bottom
+   * (--oa-vv-bottom = offsetTop + height), so it never depends on
+   * innerHeight, which iOS changes as the page pans.
+   */
+  .oa-doc-toolbar[data-edge="bottom"] {
+    top: var(--oa-vv-bottom, 100svh);
+    bottom: auto;
+    transform: translateY(-100%);
   }
   /* The keyboard covers the home indicator: no inset under the bar. */
   .oa-doc-toolbar[data-keyboard] {

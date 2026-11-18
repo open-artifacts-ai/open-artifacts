@@ -40,7 +40,7 @@ export function sheetLift(): number {
 
 /** Which edge of the visible area the phone doc toolbar sits on. One switch. */
 export type ToolbarEdge = "top" | "bottom";
-export const TOOLBAR_EDGE: ToolbarEdge = "top";
+export const TOOLBAR_EDGE: ToolbarEdge = "bottom";
 
 /**
  * Where the fixed toolbar goes (layout-viewport px) so it sits on `edge` of
@@ -110,6 +110,8 @@ export function trackViewportVar(): () => void {
     root.style.setProperty("--oa-vvh", `${viewHeight() / 100}px`);
     // The phone sheet is fixed to the layout viewport: lift it above the keyboard.
     root.style.setProperty("--oa-kb", `${sheetLift()}px`);
+    // The doc toolbar's bottom edge, from the visual viewport alone.
+    root.style.setProperty("--oa-vv-bottom", `${viewBottom()}px`);
     // The doc toolbar's top edge: the visible area's top, panned or not.
     root.style.setProperty(
       "--oa-vv-top",
@@ -127,6 +129,7 @@ export function trackViewportVar(): () => void {
     root.style.removeProperty("--oa-vvh");
     root.style.removeProperty("--oa-kb");
     root.style.removeProperty("--oa-vv-top");
+    root.style.removeProperty("--oa-vv-bottom");
   };
 }
 

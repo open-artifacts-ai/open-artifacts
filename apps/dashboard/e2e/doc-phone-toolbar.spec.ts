@@ -9,7 +9,6 @@ import { startRoom, stopRoom } from "./room";
 const ID = "Cd5fGhJkLm6nPqRs";
 const DIR = process.env.SHOTS_DIR;
 const { defaultBrowserType: _d, ...phone } = devices["iPhone 14"];
-const EDGE = process.env.TOOLBAR_EDGE ?? "top";
 
 let room: ChildProcess | undefined;
 test.afterEach(async () => {
@@ -52,16 +51,23 @@ for (const scheme of ["light", "dark"] as const) {
     const box = (page: Page) =>
       page.getByRole("toolbar", { name: "Formatting" }).boundingBox();
 
-    for (const [name, top] of [
-      ["unscrolled", 0],
-      ["scrolled", 200],
+    for (const [edge, name, top] of [
+      ["top", "unscrolled", 0],
+      ["top", "scrolled", 200],
+      ["bottom", "unscrolled", 0],
+      ["bottom", "scrolled", 200],
     ] as const) {
-      test(`keyboard open, ${name}: the bar sits on the visible ${EDGE} edge, solid`, async ({
+      test(`keyboard open, ${name}: the bar sits on the visible ${edge} edge, solid`, async ({
         page,
       }, info) => {
         await open(page, info);
         await vv(page, 336, top);
         const bar = page.getByRole("toolbar", { name: "Formatting" });
+        // The switch: TOOLBAR_EDGE is the default; both edges are covered.
+        await bar.evaluate(
+          (e, edge) => e.setAttribute("data-edge", edge),
+          edge,
+        );
         await expect(bar).toBeVisible();
         const b = (await box(page)) as NonNullable<
           Awaited<ReturnType<typeof box>>
@@ -72,13 +78,13 @@ for (const scheme of ["light", "dark"] as const) {
         });
         expect(b.y).toBeGreaterThanOrEqual(vis.top - 1);
         expect(b.y + b.height).toBeLessThanOrEqual(vis.bottom + 1);
-        if (EDGE === "top") expect(b.y).toBeLessThanOrEqual(vis.top + 1);
+        if (edge === "top") expect(b.y).toBeLessThanOrEqual(vis.top + 1);
         else expect(b.y + b.height).toBeGreaterThanOrEqual(vis.bottom - 1);
         const bg = await bar.evaluate(
           (e) => getComputedStyle(e).backgroundColor,
         );
         expect(bg).not.toMatch(/rgba\(.*, 0\)|transparent/);
-        await shot(page, `keyboard-${name}`);
+        await shot(page, `keyboard-${edge}-${name}`);
       });
     }
 
@@ -94,3 +100,32 @@ for (const scheme of ["light", "dark"] as const) {
     });
   });
 }
+
+// Landscape: headless has no notch, so these only show the layout holds
+// (nothing overflows sideways) and give the shots; the insets are env().
+test.describe("landscape 844x390", () => {
+  test.use({ ...phone, viewport: { width: 844, height: 390 } });
+  const noSideScroll = (page: Page) =>
+    page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    );
+  test("the viewer", async ({ page }, info) => {
+    room = await startRoom(info, page, ["--hello", "edit"]);
+    await page.goto(`/a/${ID}?mock=doc`);
+    await expect(page.locator(".ProseMirror")).toBeVisible();
+    expect(await noSideScroll(page)).toBe(true);
+    if (DIR) {
+      mkdirSync(DIR, { recursive: true });
+      await page.screenshot({ path: `${DIR}/landscape-viewer-light.png` });
+    }
+  });
+  test("the library", async ({ page }) => {
+    await page.goto("/?view=grid");
+    await expect(page.locator(".lib-card").first()).toBeVisible();
+    expect(await noSideScroll(page)).toBe(true);
+    if (DIR) {
+      mkdirSync(DIR, { recursive: true });
+      await page.screenshot({ path: `${DIR}/landscape-library-light.png` });
+    }
+  });
+});

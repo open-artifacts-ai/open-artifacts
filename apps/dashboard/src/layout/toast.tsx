@@ -56,6 +56,19 @@ export const dismissToast = (id: string) => void sonner.dismiss(id);
 export function Toaster() {
   return (
     <Sonner
+      // Clear of the notch and home indicator (viewport-fit=cover, #2753).
+      offset={{
+        right: "max(24px, env(safe-area-inset-right))",
+        bottom: "max(24px, env(safe-area-inset-bottom))",
+        left: "max(24px, env(safe-area-inset-left))",
+        top: "max(24px, env(safe-area-inset-top))",
+      }}
+      mobileOffset={{
+        right: "max(16px, env(safe-area-inset-right))",
+        bottom: "max(16px, env(safe-area-inset-bottom))",
+        left: "max(16px, env(safe-area-inset-left))",
+        top: "max(16px, env(safe-area-inset-top))",
+      }}
       toastOptions={{
         closeButtonAriaLabel: "Dismiss",
         classNames: {
