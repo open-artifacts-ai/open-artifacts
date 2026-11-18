@@ -1200,11 +1200,26 @@ export default function oaBus(pi: Pi): void {
         });
     try {
       // #2768: a server notice's fields ride as data in `details`, never in the text.
-      const meta = f.meta;
+      // Only the known keys, as short id-shaped strings, whoever wrote the frame.
+      const raw: unknown = f.meta;
+      const meta: Record<string, string> = {};
+      if (raw && typeof raw === "object")
+        for (const k of [
+          "kind",
+          "artifact_id",
+          "comment_id",
+          "thread_id",
+          "user_id",
+          "until",
+        ]) {
+          const v = (raw as Record<string, unknown>)[k];
+          if (typeof v === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(v))
+            meta[k] = v;
+        }
       show("oa_bus", content, {
         msg_id: msgId,
         from,
-        ...(meta && typeof meta === "object" ? { meta } : {}),
+        ...(meta.kind ? { meta } : {}),
       });
     } catch {
       shown.delete(msgId);
