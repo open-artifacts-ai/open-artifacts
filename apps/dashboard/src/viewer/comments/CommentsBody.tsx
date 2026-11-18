@@ -1713,6 +1713,9 @@ export function PinBeside({ frame }: { frame: HTMLElement | null }) {
   );
 }
 
+/** How long the card beside a mark takes no pick after it appears. */
+export const ASK_BESIDE_HOLD_MS = 700;
+
 /**
  * #2426: an unanswered ask the reader clicked in the page opens its card right
  * beside the mark, over the page, drawn here and not in the sandboxed frame. It
@@ -1737,6 +1740,17 @@ export function AskBeside({ frame }: { frame: HTMLElement | null }) {
     return () => ro.disconnect();
   }, [at?.id]);
   const open = !!at;
+  // #2426 review: page script can place this card, so for a moment after it
+  // appears (or moves, or opens again) it takes no pick: a click the reader
+  // meant for the page cannot land on an option. `at` is a new object on every
+  // open, so every open starts the delay over.
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    setArmed(false);
+    if (!at) return;
+    const t = setTimeout(() => setArmed(true), ASK_BESIDE_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [at]);
   useEffect(() => {
     if (!open) return;
     const key = (e: KeyboardEvent) => {
@@ -1810,6 +1824,7 @@ export function AskBeside({ frame }: { frame: HTMLElement | null }) {
         }
         guest={api.guest}
         boxed={false}
+        holdPicks={!armed}
         body={
           showsAskBody(c.body, c.ask.question) ? (
             <div className={`break-words ${CTXT}`} data-ask-body="">

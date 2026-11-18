@@ -65,6 +65,10 @@ export const needsMe = (ask: AskT): boolean => {
   );
 };
 
+/** A risky ask: a passkey-confirm ask, or any option with an `action`. It is only answered in the pane. */
+export const isRiskyAsk = (ask: AskT): boolean =>
+  ask.confirm === "passkey" || ask.options.some((o) => !!o.action);
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
@@ -631,7 +635,13 @@ export function AskBlock({
   from = true,
   boxed = true,
   openCard,
+  holdPicks = false,
 }: {
+  /**
+   * #2426 review: the card beside a mark takes no pick yet (its options show
+   * disabled). Only that card sets it; the pane never does.
+   */
+  holdPicks?: boolean;
   /** The "X asks you" line; off where the card's header already says it (#2486). */
   from?: boolean;
   /** The ask's own ring; off where the thread's card is the box (#2486). */
@@ -783,7 +793,7 @@ export function AskBlock({
   const decider = ask.decider;
   // A risky ask (an action option or a passkey) shows no one else: no who-line,
   // weigh-ins or take back. It is the asker's own user's call.
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const risky = isRiskyAsk(ask);
   const deciderLine =
     !decider || risky
       ? null
@@ -998,6 +1008,7 @@ export function AskBlock({
                     } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
                       !canAnswer ||
+                      holdPicks ||
                       answer.isPending ||
                       sel ||
                       (locked && !sel) ||
@@ -1006,6 +1017,7 @@ export function AskBlock({
                     aria-pressed={sel}
                     data-option={o.id}
                     onClick={() => {
+                      if (holdPicks) return;
                       setErr(null);
                       setLastPick(o.id);
                       const v = {

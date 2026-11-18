@@ -16,7 +16,7 @@ import { ApiClientError } from "../../api/client";
 import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
-import { asksForMe } from "./asks";
+import { asksForMe, isRiskyAsk } from "./asks";
 import { type Decision, decisionsOf } from "./decisionsModel";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
 import { lostKey, putLost } from "./lostPosts";
@@ -205,6 +205,14 @@ export const canComment = (
 /** #2426: an unanswered ask for the viewer, on a quote or a pin (a whole-page ask stays in the list). */
 const isAskForMe = (t: CommentThread) =>
   t.anchor.kind !== "note" && asksForMe([t]).length > 0;
+
+/**
+ * #2426 review: only a plain ask opens beside its mark. A risky one (a passkey
+ * confirm or an option with an action) is answered in the pane, where the page
+ * cannot choose where the options sit.
+ */
+const opensBeside = (t: CommentThread) =>
+  isAskForMe(t) && !t.comments.some((c) => c.ask && isRiskyAsk(c.ask));
 
 export function useCommentsController({
   artifact,
@@ -567,8 +575,11 @@ export function useCommentsController({
     // #2426: an unanswered ask opens its card beside the mark, where there is
     // room for it (on a phone too: it sits below or above the mark); the shell re-checks that it is one (the frame can forge).
     const t = threadsRef.current.find((x) => x.id === tid);
-    if (rect && t && isAskForMe(t)) {
-      setAskAt({ id: tid, rect });
+    if (rect && t && opensBeside(t)) {
+      // Another thread while a card is up closes it: the card never moves
+      // from one thread to another under the pointer. The same thread again
+      // is a fresh card (its delay starts over).
+      setAskAt((cur) => (cur && cur.id !== tid ? null : { id: tid, rect }));
       return;
     }
     setAskAt(null);

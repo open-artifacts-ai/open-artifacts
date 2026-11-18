@@ -9,7 +9,8 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installHarness, mount, server } from "./harness";
+import { ASK_BESIDE_HOLD_MS } from "../src/viewer/comments/CommentsBody";
+import { installHarness, mount, server, wait } from "./harness";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Opts = {
@@ -208,6 +209,7 @@ describe("asks inside the page (#2426)", () => {
     expect(
       screen.queryByRole("complementary", { name: "Comments" }),
     ).toBeNull();
+    await wait(ASK_BESIDE_HOLD_MS + 150);
     fireEvent.click(within(card).getByRole("button", { name: /List only/ }));
     await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
   });
@@ -277,5 +279,96 @@ describe("asks inside the page (#2426)", () => {
     await click("t1");
     await waitFor(() => expect(beside()).not.toBeNull());
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  describe("a page cannot steal a click (#2426 review)", () => {
+    const answerSpy = () => {
+      const picks: unknown[] = [];
+      server.use(
+        http.post(
+          `*${R.commentAnswer(OWNED, "t1", "c-t1")}`,
+          async ({ request }) => {
+            picks.push(await request.json());
+            return HttpResponse.json({});
+          },
+        ),
+      );
+      return picks;
+    };
+    const cardReady = async () => {
+      const card = await waitFor(() => {
+        const el = beside();
+        if (!el) throw new Error("no card");
+        return el as HTMLElement;
+      });
+      return within(card).getByRole("button", { name: /List only/ });
+    };
+
+    it("takes no pick for the first 700 ms, then takes one", async () => {
+      const picks = answerSpy();
+      serve([thread("t1")]);
+      mount(viewerPath(OWNED));
+      await hello();
+      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
+      await click("t1");
+      const opt = await cardReady();
+      expect(opt).toBeDisabled();
+      fireEvent.click(opt);
+      await wait(150);
+      expect(picks).toEqual([]);
+      await wait(ASK_BESIDE_HOLD_MS);
+      expect(opt).not.toBeDisabled();
+      fireEvent.click(opt);
+      await waitFor(() => expect(picks).toEqual([{ optionId: "a" }]));
+    });
+
+    it("a second open of the same thread starts the delay over", async () => {
+      serve([thread("t1")]);
+      mount(viewerPath(OWNED));
+      await hello();
+      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
+      await click("t1");
+      const opt = await cardReady();
+      await wait(ASK_BESIDE_HOLD_MS + 100);
+      expect(opt).not.toBeDisabled();
+      await click("t1", { ...RECT, x: 200 });
+      await waitFor(() => expect(opt).toBeDisabled());
+      await wait(ASK_BESIDE_HOLD_MS + 100);
+      expect(opt).not.toBeDisabled();
+    });
+
+    it("an open for another thread closes the card, not moves it", async () => {
+      serve([thread("t1"), thread("t2")]);
+      mount(viewerPath(OWNED));
+      await hello();
+      await waitFor(() => expect(sent()?.length).toBe(2));
+      await click("t1");
+      await waitFor(() => expect(beside()).not.toBeNull());
+      await click("t2");
+      await waitFor(() => expect(beside()).toBeNull());
+    });
+
+    it.each([
+      [
+        "an option with an action",
+        {
+          options: [
+            { id: "a", label: "List only", action: "merge" },
+            { id: "b", label: "Side by side" },
+          ],
+        },
+      ],
+      ["a passkey-confirm ask", { confirm: "passkey" }],
+    ])("%s never opens beside: the pane takes it", async (_n, over) => {
+      serve([thread("t1", {}, over)]);
+      mount(viewerPath(OWNED));
+      await hello();
+      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
+      await click("t1");
+      expect(
+        await screen.findByRole("complementary", { name: "Comments" }),
+      ).toBeInTheDocument();
+      expect(beside()).toBeNull();
+    });
   });
 });
