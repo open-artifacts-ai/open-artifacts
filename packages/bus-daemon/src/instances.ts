@@ -2,17 +2,19 @@ import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  constants,
   existsSync,
+  fstatSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
-  statSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BUS_CMD, isMachineToken } from "@oa/bus-protocol";
 import {
   type Config,
@@ -33,6 +35,68 @@ export type Instance = { name: string; hub: string; main: boolean };
 export type HomeLookup = (
   cwd: string,
 ) => { instance: string } | { unmapped: true };
+
+/** The file checks, injectable so a test can play another owner. */
+export const instanceChecks = {
+  lstat: lstatSync,
+  uid: (): number | undefined => process.getuid?.(),
+};
+
+const posix = () => process.platform !== "win32";
+
+/**
+ * instances/ must be a real directory (never a link), ours, mode 0700.
+ * Throws a StartError; a missing folder throws ENOENT for the caller.
+ */
+function checkDir(dir: string, fixMode = false): void {
+  if (!posix()) return;
+  const st = instanceChecks.lstat(dir);
+  if (st.isSymbolicLink() || !st.isDirectory())
+    throw new StartError(
+      "CREDENTIALS_UNREADABLE",
+      `${dir} must be a real folder, not a link: remove it and run \`${BUS_CMD} add\` again`,
+    );
+  const uid = instanceChecks.uid();
+  if (uid !== undefined && st.uid !== uid)
+    throw new StartError("CREDENTIALS_UNREADABLE", `${dir} must belong to you`);
+  if (!fixMode && st.mode & 0o077)
+    throw new StartError(
+      "CREDENTIALS_OPEN",
+      `${dir} is open to other users: run \`chmod 700 ${dir}\``,
+    );
+}
+
+/** The text of one instance file, after the folder and file checks. Never follows a link. */
+function readInstanceFile(file: string): string {
+  if (!posix()) return readFileSync(file, "utf8");
+  checkDir(dirname(file));
+  const st = instanceChecks.lstat(file);
+  if (st.isSymbolicLink() || !st.isFile())
+    throw new StartError(
+      "CREDENTIALS_UNREADABLE",
+      `${file} must be a regular file, not a link`,
+    );
+  const uid = instanceChecks.uid();
+  if (uid !== undefined && st.uid !== uid)
+    throw new StartError(
+      "CREDENTIALS_UNREADABLE",
+      `cannot read ${file}: it must belong to you`,
+    );
+  if (st.mode & 0o077)
+    throw new StartError(
+      "CREDENTIALS_OPEN",
+      `${file} is readable by other users: run \`chmod 600 ${file}\``,
+    );
+  // O_NOFOLLOW closes the gap between the check and the read.
+  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    if (!fstatSync(fd).isFile())
+      throw new StartError("CREDENTIALS_UNREADABLE", `${file} is not a file`);
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
 
 const NAME_RE = /^[a-z0-9-]{1,32}$/;
 
@@ -74,6 +138,8 @@ function mainAddress(h: string): string | undefined {
 function addedNames(h: string): string[] {
   let files: string[];
   try {
+    // A folder that fails the checks lists nothing; credentialsFor says why.
+    checkDir(instancesDir(h));
     files = readdirSync(instancesDir(h));
   } catch {
     return [];
@@ -100,7 +166,7 @@ export function listInstances(h: string = home()): Instance[] {
   for (const name of added) {
     let hub = "";
     try {
-      const r = JSON.parse(readFileSync(instanceFile(name, h), "utf8")) as {
+      const r = JSON.parse(readInstanceFile(instanceFile(name, h))) as {
         hub?: unknown;
       };
       if (typeof r.hub === "string") hub = r.hub;
@@ -127,16 +193,16 @@ export function credentialsFor(name: string, h: string = home()): Config {
     );
   let text: string;
   try {
-    if (process.platform !== "win32" && statSync(file).mode & 0o077)
-      throw new StartError(
-        "CREDENTIALS_OPEN",
-        `${file} is readable by other users: run \`chmod 600 ${file}\``,
-      );
-    text = readFileSync(file, "utf8");
+    text = readInstanceFile(file);
   } catch (e) {
     if (e instanceof StartError) throw e;
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") throw notThere();
+    if (code === "ELOOP")
+      throw new StartError(
+        "CREDENTIALS_UNREADABLE",
+        `${file} must be a regular file, not a link`,
+      );
     if (code === "EACCES" || code === "EPERM")
       throw new StartError(
         "CREDENTIALS_UNREADABLE",
@@ -232,6 +298,8 @@ export function saveInstance(
   const dir = instancesDir(h);
   mkdirSync(h, { recursive: true, mode: 0o700 });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Check before chmod: chmod follows a link. Our own looser folder is fixed.
+  checkDir(dir, true);
   chmodSync(dir, 0o700);
   const tmp = join(dir, `.${c.name}.${randomBytes(8).toString("hex")}.tmp`);
   const fd = openSync(tmp, "wx", 0o600);

@@ -1,10 +1,20 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addProblem,
+  credentialsFor,
   defaultHomeLookup,
+  instanceChecks,
+  instanceFile,
   instancesDir,
   listInstances,
   saveInstance,
@@ -87,5 +97,114 @@ describe("instance store", () => {
     expect(addProblem("work", "https://x.example.com", h)).toMatch(/exists/);
     expect(addProblem("two", "https://w.example.com/", h)).toMatch(/work/);
     expect(() => saveInstance({ ...c, name: "two" }, h)).toThrow(/work/);
+  });
+});
+
+describe("instance key file checks (#2793 S1b)", () => {
+  const c = {
+    name: "work",
+    hub: "https://w.example.com",
+    machine_id: "",
+    label: "l",
+    machine_token: TOKEN,
+  };
+  const posixOnly = process.platform === "win32" ? it.skip : it;
+
+  posixOnly("reads a file saved by saveInstance", () => {
+    const h = scratch();
+    saveInstance(c, h);
+    expect(credentialsFor("work", h).machine_token).toBe(TOKEN);
+    expect(listInstances(h).map((i) => i.name)).toEqual(["work"]);
+  });
+
+  posixOnly("refuses a symlinked key file", () => {
+    const h = scratch();
+    saveInstance(c, h);
+    const real = join(h, "real.json");
+    writeFileSync(real, "{}", { mode: 0o600 });
+    rmSync(instanceFile("work", h));
+    symlinkSync(real, instanceFile("work", h));
+    expect(() => credentialsFor("work", h)).toThrow(/not a link/);
+    expect(listInstances(h).find((i) => i.name === "work")?.hub).toBe("");
+  });
+
+  posixOnly("refuses a symlinked instances folder", () => {
+    const h = scratch();
+    const other = scratch();
+    saveInstance(c, h);
+    const elsewhere = join(other, "instances");
+    mkdirSync(elsewhere, { mode: 0o700 });
+    writeFileSync(join(elsewhere, "work.json"), "{}", { mode: 0o600 });
+    rmSync(join(h, "instances"), { recursive: true });
+    symlinkSync(elsewhere, join(h, "instances"));
+    expect(() => credentialsFor("work", h)).toThrow(/real folder/);
+    expect(() =>
+      saveInstance({ ...c, name: "two", hub: "https://t.example.com" }, h),
+    ).toThrow(/real folder/);
+    expect(listInstances(h).map((i) => i.name)).toEqual(["main"]);
+  });
+
+  posixOnly("refuses a key file owned by someone else", () => {
+    const h = scratch();
+    saveInstance(c, h);
+    const mine = instanceChecks.uid();
+    const spy = vi
+      .spyOn(instanceChecks, "uid")
+      .mockReturnValue((mine ?? 0) + 1);
+    try {
+      expect(() => credentialsFor("work", h)).toThrow(/belong to you/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  posixOnly("refuses a folder owned by someone else", () => {
+    const h = scratch();
+    saveInstance(c, h);
+    const spy = vi
+      .spyOn(instanceChecks, "uid")
+      .mockReturnValue((process.getuid?.() ?? 0) + 1);
+    try {
+      expect(() => credentialsFor("work", h)).toThrow(/belong to you/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  posixOnly("refuses an instances folder with group or other bits", () => {
+    const h = scratch();
+    saveInstance(c, h);
+    chmodSync(join(h, "instances"), 0o755);
+    expect(() => credentialsFor("work", h)).toThrow(/chmod 700/);
+  });
+
+  posixOnly("refuses a key file with group or other bits", () => {
+    const h = scratch();
+    saveInstance(c, h);
+    chmodSync(instanceFile("work", h), 0o644);
+    expect(() => credentialsFor("work", h)).toThrow(/chmod 600/);
+  });
+
+  posixOnly(
+    "saveInstance keeps the folder 0700 and the file 0600",
+    async () => {
+      const h = scratch();
+      saveInstance(c, h);
+      const { statSync } = await import("node:fs");
+      expect(statSync(join(h, "instances")).mode & 0o777).toBe(0o700);
+      expect(statSync(instanceFile("work", h)).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it("a home with only machine.json lists main and is unaffected", () => {
+    const h = scratch();
+    writeFileSync(
+      join(h, "machine.json"),
+      JSON.stringify({ hub: "https://m.example.com" }),
+      { mode: 0o600 },
+    );
+    expect(listInstances(h)).toEqual([
+      { name: "main", hub: "https://m.example.com", main: true },
+    ]);
   });
 });
