@@ -3,11 +3,11 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -173,10 +173,12 @@ export function credentialsFor(name: string, h: string = home()): Config {
  * Until the folder map (slice S2): a lone main instance serves every folder;
  * with more than one, a folder is unmapped and gets no connection by guess.
  */
-export const defaultHomeLookup: HomeLookup = (_cwd) =>
-  listInstances().length === 1
+export const defaultHomeLookup: HomeLookup = (_cwd) => {
+  const l = listInstances();
+  return l.length === 1 && l[0]?.main
     ? { instance: MAIN_INSTANCE }
     : { unmapped: true };
+};
 
 /** Why `name` at `address` cannot be added, or undefined when it can. */
 export function addProblem(
@@ -256,9 +258,11 @@ export function saveInstance(
   closeSync(fd);
   try {
     chmodSync(tmp, 0o600);
-    renameSync(tmp, instanceFile(c.name, h));
+    // linkSync refuses to overwrite, so a concurrent add of the same name loses.
+    linkSync(tmp, instanceFile(c.name, h));
   } catch (e) {
     unlinkSync(tmp);
     throw e;
   }
+  unlinkSync(tmp);
 }

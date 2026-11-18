@@ -14,11 +14,12 @@ const SHOWN_MAX = 120;
 // Control, format and line-separator characters: never shown.
 const HIDDEN = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
-/** What a person sees of an address: no control or colour codes, capped. */
+/** What a person sees of an address: no control or colour codes. Never cut. */
 export function showAddress(address: string): string {
-  const clean = stripTerminalControls(address).replace(HIDDEN, "");
-  return clean.length > SHOWN_MAX ? `${clean.slice(0, SHOWN_MAX)}...` : clean;
+  return stripTerminalControls(address).replace(HIDDEN, "");
 }
+
+class SaveFailed extends Error {}
 
 /**
  * The address as the instance's origin and path, or a reason it is refused.
@@ -43,6 +44,9 @@ export function parseAddress(
     return { refused: "the address must have no query or fragment" };
   const hub = canonicalAddress(u.href);
   if (!hub) return { refused: "that is not an address" };
+  // The whole address must be readable before the browser opens: never cut it.
+  if (showAddress(hub).length > SHOWN_MAX)
+    return { refused: "the address is too long to show in full" };
   return { hub, host: u.host };
 }
 
@@ -91,21 +95,30 @@ export async function add(
       sleep: ctx.sleep,
       now: ctx.now,
       print: ctx.print,
-      save: (r) =>
-        saveInstance(
-          {
-            name,
-            hub: r.hub,
-            machine_id: "",
-            label: r.label,
-            machine_token: r.machineToken,
-          },
-          ctx.home,
-        ),
+      save: (r) => {
+        try {
+          saveInstance(
+            {
+              name,
+              hub: r.hub,
+              machine_id: "",
+              label: r.label,
+              machine_token: r.machineToken,
+            },
+            ctx.home,
+          );
+        } catch (e) {
+          throw new SaveFailed((e as Error).message);
+        }
+      },
     });
   } catch (e) {
     if (e instanceof RedirectRefused || e instanceof LoginFailed)
       return refuse(e.message);
+    if (e instanceof SaveFailed)
+      return refuse(
+        `the hub approved this machine but the key was not saved: ${e.message}`,
+      );
     throw e;
   }
   say(ctx, `Added ${name}.`);

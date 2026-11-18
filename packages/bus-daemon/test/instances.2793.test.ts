@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,9 +11,17 @@ import {
 } from "../src/instances.ts";
 
 const TOKEN = `oa_machine_${"a".repeat(28)}7f3a`;
-const scratch = () => mkdtempSync(join(tmpdir(), "ob-inst-"));
+const made: string[] = [];
+const scratch = () => {
+  const d = mkdtempSync(join(tmpdir(), "ob-inst-"));
+  made.push(d);
+  return d;
+};
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+});
 
 describe("defaultHomeLookup (#2793 S1)", () => {
   it("maps every folder to main when it is the only instance, else unmapped", () => {
@@ -35,6 +43,25 @@ describe("defaultHomeLookup (#2793 S1)", () => {
       },
       h,
     );
+    expect(defaultHomeLookup("/any/where")).toEqual({ unmapped: true });
+  });
+});
+
+describe("defaultHomeLookup without main (#2793 S1)", () => {
+  it("is unmapped when only an added instance exists and there is no machine.json", () => {
+    const h = scratch();
+    vi.stubEnv("OA_BUS_HOME", h);
+    saveInstance(
+      {
+        name: "work",
+        hub: "https://w.example.com",
+        machine_id: "",
+        label: "l",
+        machine_token: TOKEN,
+      },
+      h,
+    );
+    expect(listInstances(h).map((i) => i.name)).toEqual(["work"]);
     expect(defaultHomeLookup("/any/where")).toEqual({ unmapped: true });
   });
 });

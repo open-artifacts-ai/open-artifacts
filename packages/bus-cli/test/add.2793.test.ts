@@ -16,7 +16,12 @@ import { CODE, fakeCtx, TOKEN } from "./fake.ts";
 const OTHER = `oa_machine_${"b".repeat(28)}7f3a`;
 const approvalServer = (
   host: string,
-  over: { redirect?: string; token?: string } = {},
+  over: {
+    redirect?: string;
+    redirectPoll?: string;
+    token?: string;
+    onPoll?: () => void;
+  } = {},
 ) =>
   vi.fn(async (url: string | URL | Request) => {
     const u = String(url);
@@ -33,6 +38,12 @@ const approvalServer = (
         expires_in: 600,
         interval: 5,
       });
+    if (over.redirectPoll)
+      return new Response(null, {
+        status: 302,
+        headers: { location: over.redirectPoll },
+      });
+    over.onPoll?.();
     return Response.json({
       status: "approved",
       machine_token: over.token ?? TOKEN,
@@ -97,6 +108,57 @@ describe("oa-bus add (#2793 S1)", () => {
     ).toMatchObject({ redirect: "manual" });
     expect(existsSync(join(ctx.home, "instances"))).toBe(false);
     expect(existsSync(join(ctx.home, "machine.json"))).toBe(false);
+  });
+
+  it("refuses a redirect on the token poll and saves nothing", async () => {
+    const ctx = term(
+      approvalServer("https://a.example.com", {
+        redirectPoll: "https://evil.example.net/bus/device/token",
+      }),
+    );
+    expect(
+      await add(
+        { address: "https://a.example.com", name: "work", noOpen: true },
+        ctx,
+      ),
+    ).toBe(1);
+    expect(ctx.err().join("\n")).toMatch(/redirected/);
+    expect(existsSync(join(ctx.home, "instances"))).toBe(false);
+  });
+
+  it("says so when the key is approved but cannot be saved", async () => {
+    let ctx: ReturnType<typeof term>;
+    const fetch = approvalServer("https://a.example.com", {
+      onPoll: () => {
+        mkdirSync(join(ctx.home, "instances"), { recursive: true });
+        writeFileSync(join(ctx.home, "instances", "work.json"), "{}");
+      },
+    });
+    ctx = term(fetch);
+    expect(
+      await add(
+        { address: "https://a.example.com", name: "work", noOpen: true },
+        ctx,
+      ),
+    ).toBe(1);
+    expect(ctx.err().join("\n")).toMatch(
+      /approved this machine but the key was not saved/,
+    );
+  });
+
+  it("refuses an address whose host is too long to show in full", async () => {
+    const long = `https://artifacts.leourbina.com.${"a".repeat(90)}.evil.example`;
+    expect(parseAddress(long)).toEqual({
+      refused: "the address is too long to show in full",
+    });
+    const fetch = approvalServer("https://a.example.com");
+    const ctx = term(fetch);
+    expect(await add({ address: long, name: "work", noOpen: true }, ctx)).toBe(
+      1,
+    );
+    expect(ctx.err().join("\n")).toMatch(/too long to show in full/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(existsSync(join(ctx.home, "instances"))).toBe(false);
   });
 
   it("saves the key 0600 in its own file with its own address, never machine.json", async () => {
@@ -221,13 +283,13 @@ describe("oa-bus add (#2793 S1)", () => {
     expect(order).toEqual(["open:true"]);
   });
 
-  it("strips control and colour codes and caps length", () => {
+  it("strips control and colour codes and never cuts", () => {
     expect(
       showAddress("https://a.example.com/\u001b[31mred\u001b]52;c;eA==\u0007​"),
     ).toBe("https://a.example.com/red");
     expect(
-      showAddress(`https://a.example.com/${"x".repeat(500)}`).length,
-    ).toBeLessThan(130);
+      showAddress(`https://a.example.com/${"x".repeat(500)}`),
+    ).toHaveLength(22 + 500);
   });
 
   it("allows only https, or http on loopback", () => {
