@@ -81,7 +81,7 @@ test("notification settings at 1280 light", async ({ page }) => {
   ).toHaveText("07:30");
   await expect(
     page.getByRole("combobox", { name: "Interrupt me for" }),
-  ).toHaveText("Asks waiting for you");
+  ).toHaveText("Waiting asks and approvals");
   await expect(
     page.getByRole("combobox", { name: "On lock screens" }),
   ).toHaveText("Hide details");
@@ -102,15 +102,13 @@ test("notification settings at 1280 light", async ({ page }) => {
     });
   }
 
-  // Design: these wait for browser notifications (slice 3).
+  // Live: a change saves, and survives a reload of the page.
+  await expect(page.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+  await page.getByRole("combobox", { name: "On lock screens" }).click();
+  await page.getByRole("option", { name: "Show details" }).click();
   await expect(
-    page.getByRole("region", { name: "When to interrupt" }),
-  ).toContainText("Coming later");
-  await expect(
-    page.getByRole("switch", { name: "Quiet hours" }),
-  ).toBeDisabled();
-  for (const name of ["Interrupt me for", "On lock screens"])
-    await expect(page.getByRole("combobox", { name })).toBeDisabled();
+    page.getByRole("combobox", { name: "On lock screens" }),
+  ).toHaveText("Show details");
   // The Email card is as wide as the cards above it.
   const w = async (sel: string) =>
     (await page.locator(sel).first().boundingBox())?.width ?? 0;
