@@ -95,7 +95,7 @@ export function mountShareOptout(app: AppType): void {
     if (!hash) return bad(c);
     if (action === "undo") {
       // Only this address's row, by the token's hash. Idempotent: the audit
-      // row (the hash only, never the address) is written only when a row was
+      // row (no hash, no address) is written only when a row was
       // there. This install's list only: a hosted-wide opt-out lives on the
       // platform's own /unsubscribe page and is not touched here.
       await c.env.DB.batch([
@@ -105,7 +105,8 @@ export function mountShareOptout(app: AppType): void {
           { type: "settings", id: "instance" },
           { kind: "system", id: null },
           {
-            detail: { by: "recipient", optoutRemoved: hash },
+            // No hash: an owner who knows an address could hash it and match the row (#2815).
+            detail: { by: "recipient", optoutRemoved: true },
             when: {
               sql: "exists (select 1 from email_optouts where address_hash = ?)",
               args: [hash],

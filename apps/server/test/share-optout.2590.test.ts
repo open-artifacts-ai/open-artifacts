@@ -296,13 +296,6 @@ describe("the recipient's undo (#2653)", () => {
     );
   const undo = (t: string) => form({ t, action: "undo" });
   const optOut = (t: string) => form({ t });
-  const rowsFor = (hash: string | null) =>
-    env.DB.prepare(
-      "select actor_id, detail from audit_events where action = 'settings.change' and instr(detail, ?) > 0",
-    )
-      .bind(hash)
-      .all<{ actor_id: string | null; detail: string }>();
-
   it("the done page offers Undo; Undo removes only that address's row and says you'll get the emails again", async () => {
     const email = uniq("un", "gmail.com");
     const other = uniq("ot", "gmail.com");
@@ -333,26 +326,39 @@ describe("the recipient's undo (#2653)", () => {
     expect(await suppressed(email)).toBe(false);
   });
 
-  it("is idempotent, and audits once per row actually removed: the hash, by the recipient, never the address", async () => {
+  it("is idempotent, and audits once per row actually removed: by the recipient, with no hash and no address", async () => {
     const email = uniq("au", "gmail.com");
     const t = await signOptoutToken(env, email);
     const hash = (await addressHash(email)) as string;
+    const audits = async () =>
+      (
+        await env.DB.prepare(
+          "select actor_id, target_id, detail from audit_events where action = 'settings.change' and instr(detail, 'optoutRemoved') > 0",
+        ).all<{ actor_id: string | null; target_id: string; detail: string }>()
+      ).results;
+    const before = (await audits()).length;
+    // The opt-out itself writes no audit row.
     await optOut(t);
+    expect((await audits()).length).toBe(before);
     await undo(t);
     await undo(t);
-    const rows = (await rowsFor(hash)).results;
+    const rows = (await audits()).slice(before);
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
       by: "recipient",
-      optoutRemoved: hash,
+      optoutRemoved: true,
     });
-    expect(rows[0]?.detail).not.toContain(email);
+    // Neither the hash nor the address is anywhere in the audit log.
+    const all = await env.DB.prepare(
+      "select count(*) n from audit_events where instr(detail, ?1) > 0 or instr(detail, ?2) > 0 or instr(target_id, ?1) > 0 or instr(target_id, ?2) > 0",
+    )
+      .bind(hash, email)
+      .first<{ n: number }>();
+    expect(all?.n).toBe(0);
     // Undoing an address that never opted out writes nothing.
-    const never = uniq("nv", "gmail.com");
-    await undo(await signOptoutToken(env, never));
-    expect(
-      (await rowsFor((await addressHash(never)) as string)).results,
-    ).toEqual([]);
+    const n = (await audits()).length;
+    await undo(await signOptoutToken(env, uniq("nv", "gmail.com")));
+    expect((await audits()).length).toBe(n);
   });
 
   it("a later visit to the same link, while opted out, shows the page with Undo, and a GET changes nothing", async () => {
