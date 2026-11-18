@@ -356,33 +356,26 @@ export function pushPayload(
   let body: string;
   let heading = title;
   const mentions = needs.filter(isPersonMention).length;
-  if (needs.length > 1 && mentions > 0) {
+  if (needs.length > 1) {
     // Design v10, "Several at once": counts only, safe on a lock screen too.
     const asks = needs.length - mentions;
     const parts = [
       asks > 0 ? `${asks} ${asks === 1 ? "ask" : "asks"}` : "",
-      `${mentions} ${mentions === 1 ? "mention" : "mentions"}`,
+      mentions > 0
+        ? `${mentions} ${mentions === 1 ? "mention" : "mentions"}`
+        : "",
     ].filter(Boolean);
     heading = `${needs.length} things need you`;
     body = parts.join(", ");
   } else if (needs.length > 0) {
-    const m = needs.length;
     const mention = isPersonMention(lead as { key: string });
     const asks = detail
       ? mention
         ? `${lead.asker_name} mentioned you: ${lead.excerpt}`
         : `${lead.asker_name} asks: ${lead.excerpt}`
       : "";
-    body =
-      m === 1
-        ? detail
-          ? asks
-          : mention
-            ? DEFAULT_MENTION_BODY
-            : DEFAULT_BODY
-        : detail
-          ? `${m} things are waiting for you. Latest: ${asks}`
-          : `${m} things are waiting for your answer`;
+    // One item (several are the counts above).
+    body = detail ? asks : mention ? DEFAULT_MENTION_BODY : DEFAULT_BODY;
   } else {
     const what = detail ? `${lead.asker_name}: ${lead.excerpt}` : "";
     body =

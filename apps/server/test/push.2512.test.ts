@@ -669,7 +669,8 @@ describe("sending", () => {
     expect(sent).toHaveLength(1);
     const p = JSON.parse(await decrypt((sent[0] as Sent).body, b));
     expect(p.count).toBe(2);
-    expect(p.body).toBe("2 things are waiting for your answer");
+    expect(p.title).toBe("2 things need you");
+    expect(p.body).toBe("2 asks");
     expect(p.href).toBe(`/a/${PUB}?thread=t2`);
   });
 
@@ -1608,7 +1609,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     }
   });
 
-  it("singular and mention-only bundles read right; an ask-only bundle and every single item keep their text", async () => {
+  it("singular and mention-only bundles read right; an asks-only bundle uses the same format", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E);
     const { sent } = fakePush();
@@ -1633,7 +1634,6 @@ describe("a person's @-mention of the member (#2781)", () => {
     await env.DB.prepare("update push_pending set send_after = 0").run();
     await drainPush(E, Date.now() + 2 * BUNDLE_MS);
     p = await bodyOf(sent, b, 2);
-    expect(p.body).toBe("2 things are waiting for your answer");
-    expect(p.title).toBe("Open Artifacts");
+    expect([p.title, p.body]).toEqual(["2 things need you", "2 asks"]);
   });
 });
