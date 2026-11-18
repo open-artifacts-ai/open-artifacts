@@ -253,6 +253,10 @@ export const orgName = (name: string | null | undefined, host: string) => {
   return n && !urlish(n) ? n : host;
 };
 
+/** The name the email footer and the opt-out pages both show: one line, at most 80 characters. */
+export const orgLabel = (name: string | null | undefined, host: string) =>
+  oneLine(orgName(name, host), 80);
+
 const OUTSIDE_TXT = `{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.
 
 {{pageTitle}}
@@ -269,13 +273,14 @@ You got this email because {{senderName}} ({{senderEmail}}) shared a page with y
 `;
 
 const OUTSIDE_HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{senderName}} shared a page with you</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{senderName}} shared a page with you</title>
+<style>@media (prefers-color-scheme: dark){body{background:#131518 !important;color:#e8eaed !important}.oa-btn{background:#e8eaed !important;color:#131518 !important}.oa-foot,.oa-foot a{color:#aab0bb !important}}</style></head>
 <body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <p>{{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts.</p>
 <p style="font-weight:600">{{pageTitle}}</p>
 <p>{{openLine}}</p>
-<p><a href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
-<p style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. <a href="{{optOutUrl}}" style="color:#5d636e">{{optOutLabel}}</a></p>
+<p><a class="oa-btn" href="{{pageUrl}}" style="display:inline-block;padding:10px 18px;background:#131518;color:#fff;text-decoration:none;border-radius:8px">Open the page</a></p>
+<p class="oa-foot" style="color:#5d636e">You got this email because {{senderName}} ({{senderEmail}}) shared a page with you on Open Artifacts. <a href="{{optOutUrl}}" style="color:#5d636e">{{optOutLabel}}</a></p>
 </body></html>
 `;
 
@@ -333,7 +338,7 @@ export function outsideShareEmail(
       openLine,
       optOutUrl: optOut,
       optOutLabel: fill(OPTOUT_COPY.link, {
-        org: oneLine(orgName(p.instance, p.appHost), 80),
+        org: orgLabel(p.instance, p.appHost),
       }),
     },
   );

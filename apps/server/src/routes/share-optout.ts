@@ -5,7 +5,7 @@ import {
   SHARE_OPTOUT_PATH,
   verifyOptoutToken,
 } from "../email/share-optout.js";
-import { fill, oneLine, orgName } from "../email/templates.js";
+import { fill, orgLabel } from "../email/templates.js";
 import type { AppEnv } from "../http/middleware.js";
 import { escapeHtml } from "../mcp/template.js";
 import { getSettings } from "../services/members.js";
@@ -31,7 +31,7 @@ const page = (title: string, body: string, form = "") =>
 /** The install's name for the page's words (its host without one). */
 async function org(c: Context<AppEnv>): Promise<string> {
   const name = (await getSettings(c.env).catch(() => null))?.name;
-  return oneLine(orgName(name, c.env.APP_HOST), 80);
+  return orgLabel(name, c.env.APP_HOST);
 }
 
 const bad = (c: Context<AppEnv>) =>
