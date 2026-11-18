@@ -15,6 +15,7 @@ export type Command = (
       json?: boolean;
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
+  | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string }
@@ -52,6 +53,7 @@ export type Command = (
 const COMMANDS = new Set([
   "install",
   "login",
+  "skill",
   "daemon",
   "mcp",
   "mcp-proof",
@@ -92,6 +94,7 @@ const FLAGS: Record<string, string[]> = {
     "json",
   ],
   login: ["instance", "no-open"],
+  skill: ["instance", "check", "json"],
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file"],
@@ -241,6 +244,13 @@ function route(cmd: string, values: Values, positionals: string[]) {
   switch (cmd) {
     case "login":
       return { cmd, hub: values.instance, noOpen: values["no-open"] };
+    case "skill":
+      return {
+        cmd,
+        hub: values.instance,
+        check: values.check,
+        ...(values.json ? { json: true } : {}),
+      };
     case "daemon":
       return { cmd, hub: values.instance };
     case "mcp": {

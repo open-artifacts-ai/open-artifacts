@@ -216,10 +216,15 @@ async function loadAccess(
   artifactId: string,
   opts: { allowDeleted?: boolean },
 ): Promise<Access | null> {
+  return accessOf(c, await accessQuery(env, c, artifactId), opts);
+}
+
+/** The one statement that reads an artifact, its space, the caller's share and space rank. */
+function accessQuery(env: Env, c: Caller, artifactId: string) {
   const db = getDb(env);
   const user = c.kind === "user" ? c.user : null;
   const email = user ? callerEmail(user) : null;
-  const rows = await db
+  return db
     .select({
       a: artifacts,
       shareRole: shareRoleSql(),
@@ -243,6 +248,15 @@ async function loadAccess(
     )
     .where(eq(artifacts.id, artifactId))
     .limit(1);
+}
+
+type AccessRows = Awaited<ReturnType<typeof accessQuery>>;
+
+function accessOf(
+  c: Caller,
+  rows: AccessRows,
+  opts: { allowDeleted?: boolean },
+): Access | null {
   const row = rows[0];
   if (!row) return null;
   const space: SpaceInput = {
@@ -260,6 +274,32 @@ async function loadAccess(
         commenter: row.shareRole === "commenter",
       }
     : null;
+}
+
+/**
+ * accessLevel for many callers on one artifact in a few D1 round trips (a
+ * batch of up to 50 statements each) instead of one per caller. No request
+ * cache: it is for background writers (the inbox).
+ */
+export async function accessLevels(
+  env: Env,
+  callers: Caller[],
+  artifactId: string,
+): Promise<(Access | null)[]> {
+  const out: (Access | null)[] = [];
+  for (let i = 0; i < callers.length; i += 50) {
+    const chunk = callers.slice(i, i + 50);
+    const qs = chunk.map((c) => accessQuery(env, c, artifactId));
+    const res =
+      qs.length === 1
+        ? [await qs[0]]
+        : await getDb(env).batch(
+            qs as unknown as [(typeof qs)[0], ...typeof qs],
+          );
+    for (const [j, c] of chunk.entries())
+      out.push(accessOf(c, res[j] as AccessRows, {}));
+  }
+  return out;
 }
 
 /** An artifact's space as decide() reads it; a missing row reads as personal. */

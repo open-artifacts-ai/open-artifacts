@@ -563,6 +563,7 @@ export function copy(
       "Commands",
       "  install      Approve this machine, wire your harnesses, start the daemon (the default)",
       "  login        Approve this machine again",
+      "  skill        Save this instance's skill for your harnesses (--check only reports)",
       "  uninstall    Remove what install added",
       "  status       Who is on the bus, from this folder",
       "  logs         The daemon log",
@@ -770,6 +771,21 @@ export function copy(
           ? `${HARNESS_LABEL[h]} ${clip(version, 40)} wired`
           : `${HARNESS_LABEL[h]} wired`,
       ),
+    /** #2688: one doctor or status line with its glyph, then its notes indented 3. */
+    check: (
+      level: "pass" | "warn" | "fail" | "info",
+      head: string,
+      notes: string[] = [],
+    ) => [
+      level === "pass"
+        ? done(head)
+        : level === "warn"
+          ? warn(head)
+          : level === "fail"
+            ? fail(head)
+            : head,
+      ...notes.map(next),
+    ],
     notWired: (h: HarnessName) => [
       fail(`${HARNESS_LABEL[h]} is not wired`),
       next(`Run ${bus} to wire it.`),

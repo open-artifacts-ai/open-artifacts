@@ -16,6 +16,7 @@ import { ApiClientError } from "../../api/client";
 import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
+import { asksForMe, isRiskyAsk } from "./asks";
 import { type Decision, decisionsOf } from "./decisionsModel";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
 import { lostKey, putLost } from "./lostPosts";
@@ -39,6 +40,7 @@ export type Lost = {
   focusEnd?: boolean;
 };
 
+export type Rect = { x: number; y: number; width: number; height: number };
 export type PinPoint = { x: number; y: number; page?: number };
 /** A comment being started: on selected text, or on a placed pin (the server stamps the pin's contentHash). */
 export type Draft = { anchor: SelectionAnchor } | { pin: PinPoint } | null;
@@ -104,6 +106,12 @@ export type CommentsApi = {
    * clicked, in frame-viewport pixels. Null: the box is in the comments list.
    */
   pinBeside: { x: number; y: number } | null;
+  /**
+   * #2426: an unanswered ask the reader clicked in the page, whose card opens
+   * beside its mark (`rect`: the mark's box in frame-viewport pixels).
+   */
+  askBeside: { id: string; rect: Rect } | null;
+  closeAsk: () => void;
   /** Close the draft. `posted`: keep its quote painted until the list carries the new thread (#1834). */
   cancelDraft: (posted?: boolean) => void;
   /** A new comment that failed after its box closed: the draft opens again with its text and the error. */
@@ -132,7 +140,7 @@ export type CommentsApi = {
     p: { id: string; state: FramePosition["state"]; top: number | null }[],
     ghost?: { x: number; y: number },
   ) => void;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, rect?: Rect) => void;
   onPin: (p: PinPoint, at?: { x: number; y: number }) => void;
   /** Esc in the frame: leaves pin mode (page code can send it; it only ever leaves). */
   onEscape: () => void;
@@ -160,7 +168,7 @@ export type CommentsApi = {
  * dialogs set `aria-modal="true"` and `data-state="open"`; the alert dialog is
  * matched by role for anything else.
  */
-const MODAL_OR_FIELD =
+export const MODAL_OR_FIELD =
   "input, textarea, select, [aria-modal='true'], [data-state='open'][role='dialog'], [role='alertdialog']";
 
 const Ctx = createContext<CommentsApi | null>(null);
@@ -182,11 +190,29 @@ const HELD_QUOTE_MS = 1500;
 export const guestsMayComment = (a: ArtifactSummary) =>
   a.visibility === "public" && a.commenters !== "signed-in";
 
+/**
+ * The server's can.comment wins when present: it already weighs the caller's
+ * cap, and lets a guest with a "Can comment" share comment while the rest of
+ * their account stays read-only. `readOnly` (any cap) only decides when the
+ * server sent no answer.
+ */
 export const canComment = (
   a: ArtifactSummary,
   authed: boolean,
   readOnly = false,
-) => !readOnly && (a.can?.comment ?? (authed || guestsMayComment(a)));
+) => a.can?.comment ?? (!readOnly && (authed || guestsMayComment(a)));
+
+/** #2426: an unanswered ask for the viewer, on a quote or a pin (a whole-page ask stays in the list). */
+const isAskForMe = (t: CommentThread) =>
+  t.anchor.kind !== "note" && asksForMe([t]).length > 0;
+
+/**
+ * #2426 review: only a plain ask opens beside its mark. A risky one (a passkey
+ * confirm or an option with an action) is answered in the pane, where the page
+ * cannot choose where the options sit.
+ */
+const opensBeside = (t: CommentThread) =>
+  isAskForMe(t) && !t.comments.some((c) => c.ask && isRiskyAsk(c.ask));
 
 export function useCommentsController({
   artifact,
@@ -252,6 +278,7 @@ export function useCommentsController({
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
   const [draftSeed, setDraftSeed] = useState<Lost | null>(null);
+  const [askAt, setAskAt] = useState<{ id: string; rect: Rect } | null>(null);
   const [pinAt, setPinAt] = useState<{ x: number; y: number } | null>(null);
   // #1834: a draft that was just posted stays painted until the refetched list
   // carries its thread, so posting turns the draft highlight into the thread's
@@ -332,6 +359,7 @@ export function useCommentsController({
           active,
           contentHash,
           pinFormat ? threadBadge(!authed || readOnly) : undefined,
+          isAskForMe,
         ),
         pin,
         quote,
@@ -478,7 +506,10 @@ export function useCommentsController({
     [getBridge],
   );
   const onAway = useCallback(() => {
-    if (gates.current.away()) dropDraft(false);
+    if (gates.current.away()) {
+      dropDraft(false);
+      setAskAt(null);
+    }
   }, [dropDraft]);
   // A pointer down in the shell, outside the comments surface and the offers
   // to comment, ends the selection (the frame sees its own).
@@ -537,8 +568,21 @@ export function useCommentsController({
         : next,
     );
   }, []);
-  const onOpen = useCallback((tid: string) => {
+  const threadsRef = useRef(threads);
+  threadsRef.current = threads;
+  const onOpen = useCallback((tid: string, rect?: Rect) => {
     if (!gates.current.open() || !ids.current.has(tid)) return;
+    // #2426: an unanswered ask opens its card beside the mark, where there is
+    // room for it (on a phone too: it sits below or above the mark); the shell re-checks that it is one (the frame can forge).
+    const t = threadsRef.current.find((x) => x.id === tid);
+    if (rect && t && opensBeside(t)) {
+      // Another thread while a card is up closes it: the card never moves
+      // from one thread to another under the pointer. The same thread again
+      // is a fresh card (its delay starts over).
+      setAskAt((cur) => (cur && cur.id !== tid ? null : { id: tid, rect }));
+      return;
+    }
+    setAskAt(null);
     setActive(tid);
     surface.current();
   }, []);
@@ -588,6 +632,8 @@ export function useCommentsController({
       revealDone,
       draft,
       pinBeside: besideOk && draft && "pin" in draft ? pinAt : null,
+      askBeside: askAt,
+      closeAsk: () => setAskAt(null),
       cancelDraft: (posted = false) => {
         dirty.current = false;
         typed.current = false;
@@ -666,6 +712,7 @@ export function useCommentsController({
       revealed,
       draft,
       pinAt,
+      askAt,
       besideOk,
       draftSeed,
       showResolved,

@@ -43,6 +43,10 @@ export const InboxItemSchema = z
       "proposal",
       "away",
       "member_set_up",
+      // #2577: someone asked one of your agents and it is held for you.
+      "request",
+      // #2577: someone asked one of your agents and it is held for you.
+      "request",
     ]),
     urgency: z.enum(["waiting", "approval", "plain"]).optional(),
     waitingSince: Iso.optional(),
@@ -66,6 +70,8 @@ export const InboxItemSchema = z
       })
       .optional(),
     text: z.string(),
+    /** A mention, reply or comment: the comment's plain text, at most 120 characters. In-app only, never in a push. */
+    excerpt: z.string().max(120).optional(),
     href: SameOriginPath,
     createdAt: Iso,
     readAt: Iso.nullable(),

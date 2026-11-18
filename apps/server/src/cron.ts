@@ -20,8 +20,11 @@ import {
   sweepLostIndexJobs,
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
+import { sweepPictures } from "./services/comment-pictures.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
+import { pullEmailEvents, sweepEmailEvents } from "./services/email-events.js";
 import { checkLatestRelease } from "./services/release.js";
+import { sendSetupReminders } from "./services/setup-reminder.js";
 import { directoryMode } from "./services/spaces.js";
 import { clearSuspended, markSuspended } from "./services/suspend.js";
 import { sweepUploads } from "./services/uploads.js";
@@ -158,6 +161,12 @@ async function run(
       // frozen), so its alarm stops too, and nothing is minted. Nothing is
       // disconnected or deleted: the binding and the synced rows stay, and
       // sync resumes with the tier.
+      // Hosted, once switched on: pull the bounce and complaint events the
+      // platform holds for this install (#2650). Never throws.
+      if (env.HOSTED === "1" && env.EMAIL_EVENTS_PULL === "on")
+        ctx.waitUntil(
+          pullEmailEvents(env).catch((e) => logError("cron_task_failed", e)),
+        );
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });
@@ -301,6 +310,8 @@ function daily(
     Promise.allSettled([
       purgeDeleted(env, now),
       sweepUploads(env, now),
+      sweepPictures(env, now),
+      sweepEmailEvents(env, now),
       sweepUngrantedClients(env, now),
       // Expired OAuth store rows (reads already skip them) and old tombstones.
       sweepOAuthStore(env, now),
@@ -311,6 +322,8 @@ function daily(
       env.HOSTED === "1" ? null : checkLatestRelease(env, now),
       expirePending(env, now, { cron: true }),
       sweepAuditEvents(env, now),
+      // #2632: the one setup reminder, three days after a first login.
+      sendSetupReminders(env, now),
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a
       // lost one.
       directoryMode(env) === "off" ? null : kickSync(env, "cron"),

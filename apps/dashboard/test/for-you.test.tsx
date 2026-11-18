@@ -234,6 +234,35 @@ describe("For you", () => {
     expect(ids).toEqual(["ask:short", "ask:long"]);
   });
 
+  it("an update's menu offers Mark as read, Stop following, Mute; Mark as read clears the dot and Mark all read", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    const row = panel.querySelector(
+      '[data-for-you-item="itm:reply1"]',
+    ) as HTMLElement;
+    expect(row.querySelector("[data-unread-dot]")).not.toBeNull();
+    fireEvent.pointerDown(
+      within(row).getByRole("button", { name: "More actions" }),
+      { button: 0, pointerType: "mouse" },
+    );
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((m) => m.textContent),
+    ).toEqual(["Mark as read", "Stop following this page", "Mute OA Design"]);
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: "Mark as read" }),
+    );
+    await waitFor(() =>
+      expect(row.querySelector("[data-unread-dot]")).toBeNull(),
+    );
+    expect(
+      within(panel).queryByRole("button", { name: "Mark all read" }),
+    ).toBeNull();
+  });
+
   it("a mute keeps the row and says so quietly", async () => {
     forYou("mixed");
     mount("/");
@@ -273,6 +302,22 @@ describe("For you", () => {
     ).toBeInTheDocument();
     expect(panel).toHaveTextContent(
       "When an agent asks you something or someone replies to you, it shows here.",
+    );
+  });
+
+  it("nothing needs you: the away summary, and Show them marks it read so it goes", async () => {
+    forYou("calm");
+    mount("/");
+    const panel = await openPanel();
+    expect(
+      within(panel).getByText("Nothing is waiting on you."),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByText(/^6 updates on 3 pages since 22:00/),
+    ).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "Show them" }));
+    await waitFor(() =>
+      expect(within(panel).queryByText("While you were away")).toBeNull(),
     );
   });
 

@@ -4,9 +4,18 @@ import { describe, expect, it } from "vitest";
 import { root, sandbox, script, write } from "./stubs.ts";
 
 const pnpm = 'echo "PW_DIR=$PLAYWRIGHT_HTML_OUTPUT_DIR" >> "$STUB_LOG"';
+const EVENT = { GITHUB_EVENT_NAME: "workflow_dispatch" };
 const run = (arg: string, env: Record<string, string> = {}) => {
   const sb = sandbox({ pnpm, sudo: '"$@"' });
-  return { ...sb.run(["bash", script("e2e.sh"), arg], { env }), sb };
+  // The event is always set here, never inherited: a pull request's CI job
+  // has GITHUB_EVENT_NAME=pull_request, which would put e2e.sh in smoke mode.
+  // These tests are the whole-suite behaviour; the smoke is in check-ci.test.ts.
+  return {
+    ...sb.run(["bash", script("e2e.sh"), arg], {
+      env: { ...EVENT, ...env },
+    }),
+    sb,
+  };
 };
 
 describe("e2e.sh", () => {
@@ -15,7 +24,7 @@ describe("e2e.sh", () => {
     const out = join(sb.dir, "out");
     write(out, "");
     const r = sb.run(["bash", script("e2e.sh"), "version"], {
-      env: { GITHUB_OUTPUT: out },
+      env: { ...EVENT, GITHUB_OUTPUT: out },
     });
     expect(r.code).toBe(0);
     const pkg = JSON.parse(
@@ -52,7 +61,7 @@ describe("e2e.sh", () => {
     for (let i = 0; i < 2; i++)
       expect(
         sb.run(["bash", script("e2e.sh"), "hosts"], {
-          env: { HOSTS_FILE: hosts },
+          env: { ...EVENT, HOSTS_FILE: hosts },
         }).code,
       ).toBe(0);
     expect(readFileSync(hosts, "utf8")).toBe(
@@ -82,7 +91,11 @@ describe("e2e.sh", () => {
     for (const suite of ["mock", "real"]) {
       const sb = sandbox({ pnpm: blob });
       const r = sb.run(["bash", script("e2e.sh"), suite], {
-        env: { E2E_SHARD: "3/4", E2E_BLOB_DIR: join(sb.dir, "blobs") },
+        env: {
+          ...EVENT,
+          E2E_SHARD: "3/4",
+          E2E_BLOB_DIR: join(sb.dir, "blobs"),
+        },
       });
       expect(r.code).toBe(0);
       const config = suite === "real" ? " -c playwright.real.config.ts" : "";
@@ -108,7 +121,7 @@ describe("e2e.sh", () => {
     const blobs = join(sb.dir, "blobs");
     write(join(blobs, "real", "shard-1.zip"), "");
     const r = sb.run(["bash", script("e2e.sh"), "merge"], {
-      env: { E2E_BLOB_DIR: blobs },
+      env: { ...EVENT, E2E_BLOB_DIR: blobs },
     });
     expect(r.code).toBe(0);
     expect(sb.log()).toEqual([
@@ -126,7 +139,7 @@ describe("e2e.sh", () => {
     const blob = 'echo "BLOB=$PLAYWRIGHT_BLOB_OUTPUT_FILE" >> "$STUB_LOG"';
     const sb = sandbox({ pnpm: blob });
     const r = sb.run(["bash", script("e2e.sh"), "spaces"], {
-      env: { E2E_SHARD: "3/4", E2E_BLOB_DIR: join(sb.dir, "blobs") },
+      env: { ...EVENT, E2E_SHARD: "3/4", E2E_BLOB_DIR: join(sb.dir, "blobs") },
     });
     expect(r.code).toBe(0);
     expect(sb.log()).toEqual([

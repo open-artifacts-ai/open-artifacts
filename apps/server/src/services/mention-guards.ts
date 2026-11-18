@@ -2,7 +2,7 @@ import { inDomains } from "@oa/auth-core";
 import { callerOf, capOfCaller } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { isGuestRole, isInstanceOwner } from "../auth/policy.js";
-import { type Cap, takeAll } from "../email/send.js";
+import { type Cap, refundAll, takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { getUser } from "./users.js";
 
@@ -52,6 +52,33 @@ export async function isOutsideMember(
   return !inDomains(domains, user.email.slice(user.email.lastIndexOf("@") + 1));
 }
 
+/** #2577: one delivery to a person's agents after an allow: a slot of the receiver's hourly limit. False: over it. */
+export async function takeReceiverSlot(
+  env: Env,
+  receiverId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const hour = new Date(now).toISOString().slice(0, 13);
+  const to: Cap = [
+    `notice:mention:to:${receiverId}`,
+    MENTIONS_PER_RECEIVER_PER_HOUR,
+    hour,
+  ];
+  return (await takeAll(env, [to])) === -1;
+}
+
+/** #2577: gives back a slot takeReceiverSlot took when nothing was delivered. */
+export async function giveBackReceiverSlot(
+  env: Env,
+  receiverId: string,
+  now = Date.now(),
+): Promise<void> {
+  const hour = new Date(now).toISOString().slice(0, 13);
+  await refundAll(env, [
+    [`notice:mention:to:${receiverId}`, MENTIONS_PER_RECEIVER_PER_HOUR, hour],
+  ]);
+}
+
 /**
  * One comment's draw on the mention limits. The sender's slot is taken once
  * per comment, on its first wake of another person's agent; the receiver's
@@ -67,6 +94,26 @@ export class MentionGate {
     private senderId: string,
     private now = Date.now(),
   ) {}
+
+  /**
+   * #2577: the sender's slot alone, for a request that is held (nothing is
+   * woken, so no receiver slot). Once per comment, like take(). False: the
+   * sender is over their hourly limit, so nothing is held either.
+   */
+  async takeSender(): Promise<boolean> {
+    if (this.blocked) return false;
+    if (this.sent) return true;
+    const hour = new Date(this.now).toISOString().slice(0, 13);
+    const from: Cap = [
+      `notice:mention:from:${this.senderId}`,
+      MENTIONS_PER_SENDER_PER_HOUR,
+      hour,
+    ];
+    const full = await takeAll(this.env, [from]);
+    if (full === -1) this.sent = true;
+    else this.blocked = true;
+    return full === -1;
+  }
 
   async take(receiverId: string): Promise<boolean> {
     if (this.blocked) return false;

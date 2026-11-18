@@ -14,7 +14,15 @@ import { type FakeGoogle, fakeGoogle } from "./fixtures/fake-google.js";
 // unproven-live; this is where they run. Every refusal sits next to its two
 // successes: B's own token signs in at B, A's signs in at A.
 const app = createApp();
-const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+// Work the app hands to waitUntil (a first sign-in seeds the welcome page,
+// http/seed-welcome.ts) is awaited after each test. Dropped, it kept running
+// and logging past the file's end: "Closing rpc while onUserConsoleLog was
+// pending" (#2700).
+const background: Promise<unknown>[] = [];
+const ctx = {
+  waitUntil: (p: Promise<unknown>) => background.push(p),
+  passThroughOnException() {},
+} as never;
 const SESSION = sessionCookieName(env);
 
 const CID_A = "cid-a.apps.googleusercontent.com";
@@ -42,7 +50,11 @@ let g: FakeGoogle;
 beforeEach(async () => {
   g = await fakeGoogle();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(async () => {
+  // Before the fake Google's fetch spy is restored: the work may still fetch.
+  await Promise.allSettled(background.splice(0));
+  vi.restoreAllMocks();
+});
 
 const get = (e: Env, path: string, cookie?: string) =>
   app.fetch(

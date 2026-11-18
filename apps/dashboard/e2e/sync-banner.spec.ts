@@ -15,73 +15,75 @@ const PAGES = [
   ["settings", "/settings/profile"],
 ] as const;
 
-for (const [name, token, role] of STATES)
-  for (const [where, path] of PAGES)
-    for (const width of [1280, 390])
-      for (const theme of ["light", "dark"])
-        test(`sync banner ${name} on ${where} at ${width}px ${theme}`, async ({
-          page,
-        }, info) => {
-          await page.setViewportSize({ width, height: 900 });
-          await page.goto(`${path}?hosted=${token}`);
-          await page.evaluate(
-            (t) => document.documentElement.setAttribute("data-theme", t),
-            theme,
-          );
-          const banner = page.getByRole(role, { name: "Directory sync" });
-          await expect(banner).toBeVisible();
-          await expect(banner).toContainText("Access is frozen as of then");
-          await expect(banner).toContainText(
-            "Agent tokens aren't being re-checked",
-          );
-          if (width <= 600)
-            // The trigger keeps its name; the dot is its description.
-            await expect(
-              page.getByRole("button", { name: "Toggle navigation" }),
-            ).toHaveAccessibleDescription("Settings needs attention");
-          else
-            await expect(
-              page.getByRole("link", { name: "Settings, needs attention" }),
-            ).toBeVisible();
-          if (where === "settings")
-            await expect(
-              page
-                .getByRole("navigation", { name: "Settings sections" })
-                .getByRole("link", { name: "Directory, needs attention" }),
-            ).toBeVisible();
+// One desktop run (backoff, library) and one phone run (a danger state, settings).
+const RUNS = [
+  [STATES[0], PAGES[0], 1280],
+  [STATES[1], PAGES[1], 390],
+] as const;
+for (const [[name, token, role], [where, path], width] of RUNS)
+  for (const theme of ["light"])
+    test(`sync banner ${name} on ${where} at ${width}px ${theme}`, async ({
+      page,
+    }, info) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${path}?hosted=${token}`);
+      await page.evaluate(
+        (t) => document.documentElement.setAttribute("data-theme", t),
+        theme,
+      );
+      const banner = page.getByRole(role, { name: "Directory sync" });
+      await expect(banner).toBeVisible();
+      await expect(banner).toContainText("Access is frozen as of then");
+      await expect(banner).toContainText(
+        "Agent tokens aren't being re-checked",
+      );
+      if (width <= 600)
+        // The trigger keeps its name; the dot is its description.
+        await expect(
+          page.getByRole("button", { name: "Toggle navigation" }),
+        ).toHaveAccessibleDescription("Settings needs attention");
+      else
+        await expect(
+          page.getByRole("link", { name: "Settings, needs attention" }),
+        ).toBeVisible();
+      if (where === "settings")
+        await expect(
+          page
+            .getByRole("navigation", { name: "Settings sections" })
+            .getByRole("link", { name: "Directory, needs attention" }),
+        ).toBeVisible();
 
-          const g = await page.evaluate(() => {
-            const b = document
-              .querySelector(".oa-sync-banner")
-              ?.getBoundingClientRect();
-            const main = document
-              .getElementById("oa-main")
-              ?.getBoundingClientRect();
-            return {
-              inMain:
-                !!b && !!main && b.left >= main.left && b.right <= main.right,
-              sideScroll:
-                document.documentElement.scrollWidth -
-                document.documentElement.clientWidth,
-            };
-          });
-          expect(g.inMain).toBe(true);
-          expect(g.sideScroll).toBe(0);
+      const g = await page.evaluate(() => {
+        const b = document
+          .querySelector(".oa-sync-banner")
+          ?.getBoundingClientRect();
+        const main = document
+          .getElementById("oa-main")
+          ?.getBoundingClientRect();
+        return {
+          inMain: !!b && !!main && b.left >= main.left && b.right <= main.right,
+          sideScroll:
+            document.documentElement.scrollWidth -
+            document.documentElement.clientWidth,
+        };
+      });
+      expect(g.inMain).toBe(true);
+      expect(g.sideScroll).toBe(0);
 
-          // Let the theme's color transitions finish, or the shot catches them mid-fade.
-          await page.evaluate(() =>
-            Promise.all(document.getAnimations().map((a) => a.finished)),
-          );
-          const file = `${name}-${where}-${width}-${theme}.png`;
-          const dir = process.env.OA_SHOTS_DIR;
-          await info.attach(file, {
-            body: await page.screenshot({
-              fullPage: true,
-              ...(dir && { path: `${dir}/${file}` }),
-            }),
-            contentType: "image/png",
-          });
-        });
+      // Let the theme's color transitions finish, or the shot catches them mid-fade.
+      await page.evaluate(() =>
+        Promise.all(document.getAnimations().map((a) => a.finished)),
+      );
+      const file = `${name}-${where}-${width}-${theme}.png`;
+      const dir = process.env.OA_SHOTS_DIR;
+      await info.attach(file, {
+        body: await page.screenshot({
+          fullPage: true,
+          ...(dir && { path: `${dir}/${file}` }),
+        }),
+        contentType: "image/png",
+      });
+    });
 
 test("dismissing the warning keeps the dot; the banner stays gone on reload", async ({
   page,

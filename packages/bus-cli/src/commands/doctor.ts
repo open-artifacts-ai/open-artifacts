@@ -32,6 +32,7 @@ import {
   codexProxyProblem,
   type Harness,
   opencodeProxyProblem,
+  skippedProxyEntries,
 } from "../steps/adapters.ts";
 import {
   claudePluginsState,
@@ -39,6 +40,17 @@ import {
   cmpVersion,
   MIN_CLAUDE,
 } from "../steps/claude-plugins.ts";
+import {
+  claudeProofChecks,
+  lastAutoFix,
+  safeText,
+} from "../steps/claude-proof-check.ts";
+import {
+  hubOrigin,
+  sessionChecks,
+  sseCheck,
+  sseEntries,
+} from "../steps/claude-sessions.ts";
 import {
   codexConfig,
   codexHome,
@@ -65,6 +77,12 @@ const sameOrigin = (url: string, hub: string) => {
     return false;
   }
 };
+
+const skipDeps = (ctx: Ctx) => ({
+  home: ctx.userHome,
+  busHome: ctx.home,
+  env: ctx.env,
+});
 
 type Health = Healthz & { error?: string };
 
@@ -318,6 +336,33 @@ export async function doctor(ctx: Ctx): Promise<number> {
         fail(c.pluginsDoctorMissing(plugins.missing));
       else if (plugins?.unconfigured) warn(c.pluginsDoctorUnconfigured());
       else if (plugins) pass(c.pluginsDoctor());
+      // #2688: each entry for the instance, at every scope, and what the last automatic fix did.
+      if (hub !== undefined) {
+        for (const chk of claudeProofChecks(ctx, hub))
+          if (chk.level === "pass") pass(chk.lines[0] as string);
+          else if (chk.level === "warn") warn(chk.lines);
+          else if (chk.level === "info") say(ctx, chk.lines);
+          else fail(chk.lines);
+        const fixed = lastAutoFix(ctx);
+        if (fixed) say(ctx, fixed);
+      }
+      // #2688: which live sessions are not linked, and why; and an sse entry, which can't link.
+      if (hub !== undefined)
+        for (const name of sseEntries(ctx, hubOrigin(hub) ?? "")) {
+          const k = sseCheck(ctx, name);
+          warn(c.check(k.level, k.head, k.notes));
+        }
+      for (const chk of sessionChecks(
+        ctx,
+        probe.state === "up" ? probe.st : undefined,
+        hub,
+      )) {
+        const ls = c.check(chk.level, chk.head, chk.notes);
+        if (chk.level === "pass") pass(ls[0] as string);
+        else if (chk.level === "warn") warn(ls);
+        else if (chk.level === "info") say(ctx, ls);
+        else fail(ls);
+      }
     }
     if (h === "opencode") {
       const gone = opencodeProxyProblem({
@@ -327,6 +372,10 @@ export async function doctor(ctx: Ctx): Promise<number> {
         which: ctx.which,
       });
       if (gone) fail(c.opencodeProxyMissing(gone.name, gone.missing));
+      if (hub !== undefined)
+        for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
+          if (k.harness === "OpenCode")
+            warn([`OpenCode: ${safeText(k.note, 400)}`]);
     }
     if (h === "codex") {
       codexChecks(ctx, { pass, warn });
@@ -337,6 +386,9 @@ export async function doctor(ctx: Ctx): Promise<number> {
         which: ctx.which,
       });
       if (gone) fail(c.codexProxyMissing(gone.name, gone.missing));
+      if (hub !== undefined)
+        for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
+          if (k.harness === "Codex") warn([`Codex: ${safeText(k.note, 400)}`]);
     }
     if (h === "openclaw") say(ctx, c.openclawDmNote());
   }

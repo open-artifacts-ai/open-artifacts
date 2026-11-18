@@ -46,6 +46,10 @@ export const SHAPE = {
   reserved_artifacts: 1_000,
   uploads: 100_000,
   artifact_asks: 3_000, // asks are rare: about one live artifact in a hundred
+  held_requests: 500, // #2577: requests to someone else's agent, held for their person
+  held_request_items: 800,
+  agent_listens: 300,
+  inbox_items: 20_000, // #2512 S2: mentions and updates, a few per active member
   data_writes_total: 1, // the install-wide write counter: one row
   tokens: 30_000,
   passkeys: 2_000, // #2263
@@ -53,12 +57,18 @@ export const SHAPE = {
   passkey_settings: 1_000,
   agent_grants: 50_000,
   bus_machines: 20_000,
+  bus_machine_updates: 10_000,
   bus_device_codes: 500,
   login_codes: 2_000,
   oauth_kv: 100_000,
   counters: 5_000,
   creator_months: 5_000, // hosted only: one per creator and UTC month
   settings: 20,
+  share_email_messages: 20_000, // #2650: outside share emails of the last 30 days
+  share_email_events_seen: 20_000, // #2650: processed platform event ids of the last 30 days
+  share_email_pauses: 20, // #2650: members paused after a bounce or complaint
+  comment_pictures: 20_000, // #2508: one comment in a few carries a picture
+  email_optouts: 2_000, // #2590: an address that chose "Don't email me again"
   audit_events: 1_000_000,
 } as const;
 
@@ -83,6 +93,8 @@ export interface Ctx {
   sharedSpaces: string[];
   artifacts: { id: string; owner: string; deleted: boolean }[];
   groups: { id: string; email: string }[];
+  /** Bus machine ids already written (bus_machine_updates points at them). */
+  busMachines: string[];
 }
 
 export interface Rule {
@@ -484,6 +496,61 @@ export const RULES: Record<string, Rule> = {
       };
     },
   },
+  comment_pictures: {
+    rows: (c) => c.count("comment_pictures"),
+    row(i, c) {
+      const a = c.artifacts[i % c.artifacts.length];
+      if (!a) return null;
+      const id = c.id("cp");
+      const attached = c.rand() < 0.97;
+      return {
+        id,
+        artifact_id: a.id,
+        user_id: a.owner,
+        type: c.pick(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+        r2_key: `comment-pictures/${a.id}/${id}`,
+        bytes: 10_000 + c.int(2_000_000),
+        w: 100 + c.int(2_400),
+        h: 100 + c.int(2_400),
+        expected_sha256: null,
+        alt: null,
+        comment_id: attached ? `c${i}` : null,
+        thread_id: attached ? `t${i}` : null,
+        created_at: c.time(),
+        received_at: c.time(),
+      };
+    },
+  },
+  share_email_messages: {
+    rows: (c) => c.count("share_email_messages"),
+    row(i, c) {
+      const u = c.users[i % c.users.length];
+      if (!u) return null;
+      return {
+        message_id: c.id("msg"),
+        user_id: u.id,
+        created_at: c.time(),
+        bounced_at: c.rand() < 0.01 ? c.time() : null,
+      };
+    },
+  },
+  share_email_events_seen: {
+    rows: (c) => c.count("share_email_events_seen"),
+    row: (_i, c) => ({ event_id: c.id("ev"), created_at: c.time() }),
+  },
+  share_email_pauses: {
+    rows: (c) => Math.min(c.count("share_email_pauses"), c.users.length),
+    row(i, c) {
+      const u = c.users[i];
+      if (!u) return null;
+      return {
+        user_id: u.id,
+        until_at: c.time(),
+        reason: c.pick(["bounced", "failed", "complained"]),
+        created_at: c.time(),
+      };
+    },
+  },
   // FREE_DATA_DAILY_WRITES_TOTAL: the install's single counter row.
   data_writes_total: {
     rows: (c) => c.count("data_writes_total"),
@@ -509,6 +576,89 @@ export const RULES: Record<string, Rule> = {
         addressee: u.id,
         open: answered || c.rand() < 0.2 ? 0 : 1,
         answered,
+      };
+    },
+  },
+  // #2577: held requests to someone else's agent, their items and the "listens to" list.
+  held_requests: {
+    rows: (c) => c.count("held_requests"),
+    row(i, c) {
+      const a = c.artifacts[(i * 83) % c.artifacts.length];
+      const r = c.users[(i * 6007) % c.users.length];
+      const u = c.users[(i * 4021 + 1) % c.users.length];
+      if (!a || !r || !u || r.id === u.id) return null;
+      const t = Date.now() - c.int(7 * 86_400_000);
+      return {
+        id: `hrq_${i}`,
+        receiver_id: r.id,
+        sender_id: u.id,
+        artifact_id: a.id,
+        created_at: t,
+        last_at: t,
+        quiet_until: null,
+      };
+    },
+  },
+  held_request_items: {
+    rows: (c) => c.count("held_request_items"),
+    row(i, c) {
+      const n = c.count("held_requests");
+      return {
+        id: c.id("hi"),
+        request_id: `hrq_${i % n}`,
+        thread_id: c.id("th"),
+        comment_id: c.id("cm"),
+        agent_key: `agent:seed${i}`,
+        way: c.pick(["mention", "reply", "ask"]),
+        state: "held",
+        created_at: Date.now(),
+        expires_at: Date.now() + 7 * 86_400_000,
+      };
+    },
+  },
+  agent_listens: {
+    rows: (c) => c.count("agent_listens"),
+    row(i, c) {
+      const a = c.artifacts[(i * 71) % c.artifacts.length];
+      const o = c.users[(i * 5003) % c.users.length];
+      const m = c.users[(i * 3989 + 1) % c.users.length];
+      if (!a || !o || !m || o.id === m.id) return null;
+      const all = i % 3 === 0;
+      return {
+        id: c.id("al"),
+        owner_id: o.id,
+        member_id: m.id,
+        scope: all ? "all" : "page",
+        artifact_id: all ? null : a.id,
+        until: Date.now() + 30 * 86_400_000,
+        created_via: "allow_page",
+        created_at: Date.now(),
+        removed_at: null,
+      };
+    },
+  },
+  // #2512 S2: the For you inbox's stored items; a third already read.
+  inbox_items: {
+    rows: (c) => c.count("inbox_items"),
+    row(i, c) {
+      const a = c.artifacts[(i * 89) % c.artifacts.length];
+      const u = c.users[(i * 7919) % c.users.length];
+      if (!a || !u) return null;
+      const kind = c.pick(["reply", "comment", "share", "decision", "mention"]);
+      return {
+        id: c.id("ib"),
+        user_id: u.id,
+        kind,
+        level: "update",
+        key: `${kind}:${c.id("cm")}`,
+        artifact_id: a.id,
+        thread_id: c.id("th"),
+        comment_id: c.id("cm"),
+        actor: '{"kind":"user","ref":"seed","name":"Seed"}',
+        excerpt: `seed item ${i}`,
+        agent_name: kind === "mention" ? "Scout" : null,
+        created_at: Date.now() - c.int(30 * 86_400_000),
+        read_at: c.rand() < 0.33 ? Date.now() : null,
       };
     },
   },
@@ -592,14 +742,39 @@ export const RULES: Record<string, Rule> = {
     row(i, c) {
       const u = c.users[(i * 7) % c.users.length];
       if (!u) return null;
+      const id = c.id("bm");
+      c.busMachines.push(id);
       return {
-        id: c.id("bm"),
+        id,
         user_id: u.id,
         label: `machine ${i}`,
         token_hash: `${c.id("bh")}${i}`,
         created_at: c.time(),
         last_used_at: c.rand() < 0.7 ? c.time() : null,
         revoked_at: c.rand() < 0.2 ? c.time() : null,
+      };
+    },
+  },
+  // #2552: the latest update report of some machines (one row each).
+  bus_machine_updates: {
+    rows: (c) => Math.min(c.count("bus_machine_updates"), c.busMachines.length),
+    row(i, c) {
+      const id = c.busMachines[i];
+      if (id === undefined) return null;
+      const at = c.time();
+      const switching = c.rand() < 0.1;
+      return {
+        machine_id: id,
+        event: switching ? "switching" : "updated",
+        from_version: "0.186.0",
+        to_version: "0.187.0",
+        reason: "ok",
+        detail: null,
+        rescue_version: 1,
+        reported_at: at,
+        switching_at: switching ? at : null,
+        last_hello_at: at,
+        stopped_at: null,
       };
     },
   },
@@ -680,6 +855,13 @@ export const RULES: Record<string, Rule> = {
       user_id: `u${Math.floor(i / 12)}`,
       source: c.pick(["version", "data"]),
       first_at: c.time(),
+    }),
+  },
+  email_optouts: {
+    rows: (c) => c.count("email_optouts"),
+    row: (i, c) => ({
+      address_hash: `${i.toString(16).padStart(64, "0")}`,
+      created_at: c.time(),
     }),
   },
   settings: {
@@ -819,6 +1001,7 @@ function context(scale: number): Ctx {
     sharedSpaces: [],
     artifacts: [],
     groups: [],
+    busMachines: [],
   };
 }
 

@@ -56,6 +56,7 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  needsMe,
   newProblems,
   nextAskFor,
   removeMention,
@@ -78,6 +79,7 @@ import {
   useLostDrafts,
   useLostPost,
 } from "./lostPosts";
+import { Markdown } from "./Markdown";
 import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged } from "./model";
 import { takeNoteQuote, useNoteQuote } from "./noteQuote";
@@ -92,11 +94,16 @@ import {
   usePictureDrawer,
 } from "./pictures/drawer";
 import { CommentPictures } from "./pictures/view";
-import { besideWidth, placeBeside } from "./pinPlacement";
+import { besideWidth, placeBeside, placeBesideRect } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
-import { type CommentsApi, type Lost, useCommentsApi } from "./useComments";
+import {
+  type CommentsApi,
+  type Lost,
+  MODAL_OR_FIELD,
+  useCommentsApi,
+} from "./useComments";
 import {
   fieldCap,
   keyboardInset,
@@ -1822,6 +1829,130 @@ export function PinBeside({ frame }: { frame: HTMLElement | null }) {
         flat
         key={JSON.stringify("pin" in api.draft ? api.draft.pin : null)}
         api={api}
+      />
+    </section>
+  );
+}
+
+/** How long the card beside a mark takes no pick after it appears. */
+export const ASK_BESIDE_HOLD_MS = 700;
+
+/**
+ * #2426: an unanswered ask the reader clicked in the page opens its card right
+ * beside the mark, over the page, drawn here and not in the sandboxed frame. It
+ * is the pane's own AskBlock, so the pick goes the same way (the server records
+ * it, a passkey ask asks for the passkey). Esc or a click outside closes it.
+ */
+export function AskBeside({ frame }: { frame: HTMLElement | null }) {
+  const api = useCommentsApi();
+  const at = api.askBeside;
+  const ref = useRef<HTMLElement>(null);
+  const [h, setH] = useState(200);
+  const { closeAsk } = api;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the card mounts when an ask is opened (`at?.id`)
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => el.offsetHeight && setH(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [at?.id]);
+  const open = !!at;
+  // #2426 review: page script can place this card, so for a moment after it
+  // appears (or moves, or opens again) it takes no pick: a click the reader
+  // meant for the page cannot land on an option. `at` is a new object on every
+  // open, so every open starts the delay over.
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    setArmed(false);
+    if (!at) return;
+    const t = setTimeout(() => setArmed(true), ASK_BESIDE_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [at]);
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing || e.defaultPrevented) return;
+      const t = e.target;
+      if (t instanceof HTMLElement && t.closest(MODAL_OR_FIELD) !== null)
+        return;
+      closeAsk();
+    };
+    const down = (e: PointerEvent) => {
+      const t = e.target;
+      if (
+        t instanceof Element &&
+        (ref.current?.contains(t) ||
+          t.closest("[role='menu'],[role='dialog'],[role='alertdialog']"))
+      )
+        return;
+      closeAsk();
+    };
+    document.addEventListener("keydown", key);
+    document.addEventListener("pointerdown", down, true);
+    return () => {
+      document.removeEventListener("keydown", key);
+      document.removeEventListener("pointerdown", down, true);
+    };
+  }, [open, closeAsk]);
+  const thread = at ? api.threads.find((t) => t.id === at.id) : undefined;
+  const c =
+    thread?.comments.find((k) => k.ask && needsMe(k.ask)) ??
+    thread?.comments.find((k) => k.ask);
+  if (!at || !frame || !thread || !c?.ask) return null;
+  const w = besideWidth(frame.clientWidth);
+  const { left, top } = placeBesideRect(
+    at.rect,
+    { w: frame.clientWidth, h: frame.clientHeight },
+    { w, h },
+  );
+  const nextAsk = nextAskFor(api, thread.id);
+  return (
+    <section
+      ref={ref}
+      aria-label="Ask"
+      data-oa-keep-selection=""
+      data-ask-beside=""
+      style={{
+        left: frame.offsetLeft + left,
+        top: frame.offsetTop + top,
+        width: w,
+      }}
+      className="absolute z-20 max-h-[calc(100%-16px)] overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-xl"
+    >
+      <AskBlock
+        artifactId={api.artifactId}
+        thread={thread}
+        c={c}
+        next={
+          nextAsk
+            ? () => {
+                closeAsk();
+                api.reveal(nextAsk);
+              }
+            : undefined
+        }
+        reply={
+          api.canComment
+            ? () => {
+                closeAsk();
+                api.select(thread.id, true);
+              }
+            : undefined
+        }
+        guest={api.guest}
+        boxed={false}
+        holdPicks={!armed}
+        body={
+          showsAskBody(c.body, c.ask.question) ? (
+            <div className={`break-words ${CTXT}`} data-ask-body="">
+              <Markdown body={c.body} />
+            </div>
+          ) : undefined
+        }
       />
     </section>
   );

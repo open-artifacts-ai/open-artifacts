@@ -79,6 +79,7 @@ describe("the published oa-bus package", () => {
         "proof.py",
         "roots.py",
         "sockpath.py",
+        "state.py",
         "tools.py",
         "wrap.py",
       ].map((f) => `package/assets/oa_bus/${f}`),
