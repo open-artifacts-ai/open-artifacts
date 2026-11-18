@@ -112,6 +112,9 @@ describe("the opt-out page", () => {
     const path = `${SHARE_OPTOUT_PATH}?t=${encodeURIComponent(t)}`;
     const g = await hit("GET", path);
     expect(g.status).toBe(200);
+    const csp = g.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
     const html = await g.text();
     expect(html).toContain('<form method="post"');
     expect(html).toContain("Stop emails from Open Artifacts?");
