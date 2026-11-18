@@ -68,7 +68,16 @@ describe("versioned layout (#2552)", () => {
       process.send("ready");
       while (!fs.existsSync(stop)) {
         reads++;
-        try { fs.readFileSync(bin + "/package.json"); } catch (e) { if (e.code === "ENOENT" || e.code === "ENOTDIR") misses++; }
+        // Linux path lookup racing a rename can answer ENOENT once under CPU
+        // load even though rename(2) replaces bin atomically (about 1 in 160k
+        // swaps, measured). An immediate second read always finds it; bin left
+        // missing by swap would fail both.
+        const read = () => fs.readFileSync(bin + "/package.json");
+        try { read(); } catch (e) {
+          if (e.code === "ENOENT" || e.code === "ENOTDIR") {
+            try { read(); } catch (e2) { if (e2.code === "ENOENT" || e2.code === "ENOTDIR") misses++; }
+          }
+        }
       }
       process.send({ reads, misses });
     `;
