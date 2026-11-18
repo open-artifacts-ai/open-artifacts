@@ -642,7 +642,7 @@ async function lookupProof(
   // #2110: one line per lookup that gives no identity, so a flapping link is
   // visible. Reason and elapsed ms only: never the proof, its hash or a token.
   const none = (
-    reason: "timeout" | "miss" | "no_machine" | "error",
+    reason: "timeout" | "miss" | "no_machine" | "error" | "malformed",
     why?: string,
   ) => {
     logInfo("bus_link_lookup_none", {
@@ -654,7 +654,16 @@ async function lookupProof(
   };
   try {
     const p = LinkProofSchema.safeParse(proof);
-    if (!busOn(env) || !p.success) return null;
+    if (!busOn(env)) return null;
+    // A proof that is not one (a helper's output changed, a header mangled on
+    // the way): logged with its shape only, never its value.
+    if (!p.success)
+      return none(
+        "malformed",
+        typeof proof === "string"
+          ? `string_len_${Math.min(proof.length, 512)}`
+          : typeof proof,
+      );
     // One bound for the whole lookup, the machine read included, so a slow
     // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
     const r = await within(
