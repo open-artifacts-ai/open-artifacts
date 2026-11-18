@@ -102,15 +102,13 @@ test("notification settings at 1280 light", async ({ page }) => {
     });
   }
 
-  // Design: these wait for browser notifications (slice 3).
+  // Live: quiet hours, interrupts and lock screens are usable.
   await expect(
     page.getByRole("region", { name: "When to interrupt" }),
-  ).toContainText("Coming later");
-  await expect(
-    page.getByRole("switch", { name: "Quiet hours" }),
-  ).toBeDisabled();
+  ).not.toContainText("Coming later");
+  await expect(page.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
   for (const name of ["Interrupt me for", "On lock screens"])
-    await expect(page.getByRole("combobox", { name })).toBeDisabled();
+    await expect(page.getByRole("combobox", { name })).toBeEnabled();
   // The Email card is as wide as the cards above it.
   const w = async (sel: string) =>
     (await page.locator(sel).first().boundingBox())?.width ?? 0;
