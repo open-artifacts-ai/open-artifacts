@@ -10,6 +10,8 @@ import {
   type HeldWay,
   LISTEN_MAX_MS,
   LISTEN_PAGE_MS,
+  type ListenEntry,
+  type ListensList,
   newId,
 } from "@oa/shared";
 import {
@@ -177,16 +179,224 @@ export async function listensTo(
   return !(await pageIsOpen(env, artifactId));
 }
 
-/** Another person's agent is asked by `senderId`: deliver now (they are on the list) or hold it for their person. */
+/**
+ * Another person's agent is asked by `senderId`: deliver now (they are on the
+ * list), hold it for their person, or "off": their switch is off (#2577 S2),
+ * so their agents hear nobody outside and nothing is held. Never called for
+ * the person's own agents.
+ */
 export async function decide(
   env: Env,
   senderId: string,
   receiverId: string,
   artifactId: string,
-): Promise<"deliver" | "hold"> {
+): Promise<"deliver" | "hold" | "off"> {
+  if (!(await agentRequestsOn(env, receiverId))) return "off";
   return (await listensTo(env, receiverId, senderId, artifactId))
     ? "deliver"
     : "hold";
+}
+
+/** The refusal text when a mention or ask names an agent whose person has the switch off. */
+export async function onlyAnswers(
+  env: Env,
+  receiverId: string,
+): Promise<string> {
+  const u = await getUser(env, receiverId);
+  return `Only answers ${u ? (u.name ?? u.email) : "its owner"}`;
+}
+
+/** Whether the member's agents take requests from other people (held or listed). Default on. */
+export async function agentRequestsOn(
+  env: Env,
+  userId: string,
+): Promise<boolean> {
+  const r = await stmt(
+    env.DB,
+    "select agent_requests_off as off from notification_prefs where user_id = ?1",
+  )
+    .bind(userId)
+    .first<{ off: number }>();
+  return !r || r.off !== 1;
+}
+
+/**
+ * The member's switch. Turning it off leaves what is held, and what was
+ * allowed, as it is; the gate just stops holding and refuses new mentions.
+ * Audited as agent_requests.switch; an unchanged save writes nothing.
+ */
+export async function setAgentRequests(
+  env: Env,
+  userId: string,
+  on: boolean,
+  now = Date.now(),
+): Promise<boolean> {
+  if ((await agentRequestsOn(env, userId)) === on) return on;
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      `insert into notification_prefs (user_id, agent_requests_off, updated_at)
+       values (?1, ?2, ?3)
+       on conflict (user_id) do update set agent_requests_off = excluded.agent_requests_off, updated_at = excluded.updated_at`,
+    ).bind(userId, on ? 0 : 1, now),
+    audit(
+      env,
+      "agent_requests.switch",
+      { type: "user", id: userId },
+      userActor(userId),
+      { detail: { on } },
+    ),
+  ]);
+  return on;
+}
+
+type ListenRow = {
+  id: string;
+  member_id: string;
+  scope: "page" | "space" | "all";
+  artifact_id: string | null;
+  space_id: string | null;
+  until: number;
+  created_at: number;
+};
+
+/** The member's live "listens to" entries (not removed, not ended), newest first, with who and where by name. */
+export async function listListens(
+  env: Env,
+  ownerId: string,
+  now = Date.now(),
+): Promise<ListensList> {
+  const { results } = await stmt(
+    env.DB,
+    `select id, member_id, scope, artifact_id, space_id, until, created_at from agent_listens
+      where owner_id = ?1 and removed_at is null and until > ?2
+      order by created_at desc, id limit 500`,
+  )
+    .bind(ownerId, now)
+    .all<ListenRow>();
+  const entries: ListenEntry[] = [];
+  for (const r of results) {
+    const m = await getUser(env, r.member_id);
+    if (!m) continue;
+    const art = r.artifact_id
+      ? await stmt(env.DB, "select id, title from artifacts where id = ?1")
+          .bind(r.artifact_id)
+          .first<{ id: string; title: string }>()
+      : null;
+    const sp = r.space_id
+      ? await stmt(env.DB, "select id, name from spaces where id = ?1")
+          .bind(r.space_id)
+          .first<{ id: string; name: string }>()
+      : null;
+    entries.push({
+      id: r.id,
+      member: { id: m.id, name: m.name ?? m.email },
+      scope: r.scope,
+      artifact: art ?? null,
+      space: sp ?? null,
+      until: r.until,
+      createdAt: r.created_at,
+    });
+  }
+  return { entries };
+}
+
+const NO_LISTEN = "No such entry";
+
+async function ownEntry(
+  env: Env,
+  ownerId: string,
+  id: string,
+  now: number,
+): Promise<ListenRow> {
+  const r = await stmt(
+    env.DB,
+    `select id, member_id, scope, artifact_id, space_id, until, created_at from agent_listens
+      where id = ?1 and owner_id = ?2 and removed_at is null and until > ?3`,
+  )
+    .bind(id, ownerId, now)
+    .first<ListenRow>();
+  if (!r) throw new ApiError("not_found", NO_LISTEN);
+  return r;
+}
+
+/**
+ * Removes one entry. Future requests from that person are held again; what was
+ * delivered stays delivered and what is held stays held. Audited as
+ * agent_listens.remove (the entry's person as the target).
+ */
+export async function removeListen(
+  env: Env,
+  ownerId: string,
+  id: string,
+  now = Date.now(),
+): Promise<void> {
+  const r = await ownEntry(env, ownerId, id, now);
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      "update agent_listens set removed_at = ?1 where id = ?2 and owner_id = ?3 and removed_at is null",
+    ).bind(now, id, ownerId),
+    audit(
+      env,
+      "agent_listens.remove",
+      { type: "user", id: r.member_id },
+      userActor(ownerId),
+      {
+        detail: {
+          level: r.scope,
+          until: r.until,
+          ...(r.artifact_id ? { artifactId: r.artifact_id } : {}),
+        },
+      },
+    ),
+  ]);
+}
+
+/**
+ * Ends one entry sooner: `until` must be after now and before the current end
+ * (a longer one is a new allow, with its own passkey). Audited as
+ * agent_listens.shorten with the old and new end.
+ */
+export async function shortenListen(
+  env: Env,
+  ownerId: string,
+  id: string,
+  until: number,
+  now = Date.now(),
+): Promise<ListenEntry> {
+  const r = await ownEntry(env, ownerId, id, now);
+  if (until <= now || until >= r.until)
+    throw new ApiError(
+      "bad_request",
+      "Pick a time after now and before the entry's end",
+      { path: "until", reason: "range" },
+    );
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      "update agent_listens set until = ?1 where id = ?2 and owner_id = ?3 and removed_at is null and until > ?1",
+    ).bind(until, id, ownerId),
+    audit(
+      env,
+      "agent_listens.shorten",
+      { type: "user", id: r.member_id },
+      userActor(ownerId),
+      {
+        detail: {
+          level: r.scope,
+          from: r.until,
+          until,
+          ...(r.artifact_id ? { artifactId: r.artifact_id } : {}),
+        },
+      },
+    ),
+  ]);
+  const e = (await listListens(env, ownerId, now)).entries.find(
+    (x) => x.id === id,
+  );
+  if (!e) throw new ApiError("not_found", NO_LISTEN);
+  return e;
 }
 
 /**
