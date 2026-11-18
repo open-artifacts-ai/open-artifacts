@@ -729,6 +729,9 @@ describe("DocEditor", () => {
       ),
     );
     const frame = JSON.stringify({ type: "error", code: "doc_too_large" });
+    // The server refuses an edit it received: wait for the room's batched send
+    // (a timer) before the error, so a slow runner cannot flush it after.
+    await waitFor(() => expect(first.sentUpdates).toHaveLength(1));
     act(() => first.frame(frame));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "This doc is full (2 MB).",
@@ -738,7 +741,7 @@ describe("DocEditor", () => {
     const second = p.made.last as NonNullable<typeof p.made.last>;
     expect(second.doc).not.toBe(first.doc);
     expect(first.destroyed).toBe(true);
-    expect(first.sentUpdates).toHaveLength(0);
+    expect(first.sentUpdates).toHaveLength(1);
     act(() => second.connect());
     await waitFor(() =>
       expect(document.querySelector(".ProseMirror")?.textContent).not.toContain(
@@ -753,7 +756,8 @@ describe("DocEditor", () => {
     ).toBe("false");
     // A repeat error does not rebuild again.
     act(() => second.frame(frame));
-    await new Promise((r) => setTimeout(r, 20));
+    // The rebuild is queued with setTimeout(0); a timer queued now runs after it.
+    await new Promise((r) => setTimeout(r, 0));
     expect(p.made.last).toBe(second);
   });
 

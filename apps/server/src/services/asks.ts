@@ -49,6 +49,12 @@ export type AskInfo = {
   confirm: number;
 };
 
+/** Whether `userId` holds a row for the ask on `c` (the same people as the index's rows). */
+export const holdsRow = (c: StoredComment, userId: string): boolean => {
+  const a = c.ask;
+  return !!a && rowPeople(a.to, a.decider, askInfo(c).confirm).includes(userId);
+};
+
 /** The inbox fields of the ask on `c` (the caller checked it has one). */
 export const askInfo = (c: StoredComment): AskInfo => ({
   question: c.ask?.question ?? "",
@@ -64,7 +70,7 @@ export const askInfo = (c: StoredComment): AskInfo => ({
  * Who holds a row for an ask: its addressees and decider, but a risky ask
  * (confirm = 1) only its decider, as no one else's pick can stand in (#2512).
  */
-const rowPeople = (
+export const rowPeople = (
   to: StoredParty[],
   decider: string | undefined,
   confirm: number,
