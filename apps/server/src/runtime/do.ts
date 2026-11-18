@@ -83,6 +83,7 @@ import {
   refundThreadReply,
   refundThreadReplyCount,
   releaseHeld,
+  releaseHeldTargets,
   replyCount,
   rootId,
   type StoredActor,
@@ -2561,9 +2562,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     at: string;
     exclude: string[];
     skipPage?: boolean;
+    /** #2733: hold every other person's participant for this comment in the same step (fail closed). */
+    hold?: { commentId: string; author: string };
   }): StoredParticipant[] {
     this.ensureSchema();
-    return this.ctx.storage.transactionSync(() =>
+    const out = this.ctx.storage.transactionSync(() =>
       takeThreadReply(
         this.sql,
         a.threadId,
@@ -2571,8 +2574,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
         a.at,
         THREAD_REPLY_NOTICES_MAX,
         a.skipPage === true,
+        a.hold,
       ),
     );
+    if (a.hold && out.some((p) => p.owner !== a.hold?.author))
+      this.broadcastComments();
+    return out;
+  }
+
+  /** #2733: lets go of the holds a reply took up front, for the agents the service may deliver to. */
+  commentsUnhold(a: { commentId: string; keys: string[] }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      releaseHeldTargets(this.sql, a.commentId, a.keys),
+    );
+    this.broadcastComments();
   }
 
   /** #2035: the participant agents of `threadIds`, removed ones included (the service decides what shows). */
@@ -2625,23 +2641,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() =>
       withdrawTargets(this.sql, a.threadId, a.key, a.targets),
     );
-    this.broadcastComments();
-  }
-
-  /**
-   * #2577: holds the delivery of an existing comment to agents of other people
-   * (a thread reply's wake: the comment is already stored).
-   */
-  commentsHold(a: {
-    threadId: string;
-    commentId: string;
-    held: { agent: HeldAgent; way: string }[];
-  }): void {
-    this.ensureSchema();
-    this.ctx.storage.transactionSync(() => {
-      for (const h of a.held)
-        addHeld(this.sql, a.threadId, a.commentId, h.agent, h.way);
-    });
     this.broadcastComments();
   }
 
@@ -2970,7 +2969,7 @@ type RpcMethods =
   | "commentsAskAuthors"
   | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
-  | "commentsHold"
+  | "commentsUnhold"
   | "commentsHeldCanon"
   | "commentsRelease"
   | "commentsFinishHeld"

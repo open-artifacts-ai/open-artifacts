@@ -23,7 +23,7 @@ import {
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logInfo, logWarn } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import type { HeldAgent } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
 import { sha256Hex } from "../util/crypto.js";
@@ -463,7 +463,13 @@ export async function heldAfterEdit(
   }
 }
 
-/** The D1 side of a hold: one request row per (receiver, sender, page) and an item per held agent. Never throws. */
+/**
+ * The D1 side of a hold: one request row per (receiver, sender, page) and an
+ * item per held agent. Never throws. The words are masked by the hold in the
+ * DO, written with the comment, so a failure here (retried once, then logged
+ * as hold_write_failed with no content) leaves the comment masked and
+ * undelivered; only the receiver's list of requests to allow is missing.
+ */
 export async function recordHolds(
   env: Env,
   senderId: string,
@@ -473,6 +479,32 @@ export async function recordHolds(
   held: { agent: HeldAgent; way: string }[],
   now = Date.now(),
 ): Promise<void> {
+  for (let i = 0; i < 2; i++)
+    if (
+      await recordHoldsOnce(
+        env,
+        senderId,
+        artifactId,
+        threadId,
+        commentId,
+        held,
+        now,
+      )
+    )
+      return;
+  logError("hold_write_failed", undefined, { artifactId });
+}
+
+/** One try at recordHolds' D1 writes; false when it threw. */
+async function recordHoldsOnce(
+  env: Env,
+  senderId: string,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  held: { agent: HeldAgent; way: string }[],
+  now: number,
+): Promise<boolean> {
   try {
     for (const owner of new Set(held.map((h) => h.agent.owner))) {
       const n = await stmt(
@@ -538,8 +570,9 @@ export async function recordHolds(
           )
           .run();
     }
-  } catch (e) {
-    logWarn("held_record_failed", e, { artifactId });
+    return true;
+  } catch {
+    return false;
   }
 }
 

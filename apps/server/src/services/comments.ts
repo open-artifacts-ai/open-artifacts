@@ -2147,6 +2147,26 @@ async function resolveToAsker(
   };
 }
 
+/** #2733: lets go of the holds a reply took up front; retried once. False when it failed (they stay held: masked, undelivered). Logs a fixed event, no content. Never throws. */
+async function unholdOnce(
+  env: Env,
+  artifactId: string,
+  commentId: string,
+  keys: string[],
+): Promise<boolean> {
+  for (let i = 0; i < 2; i++)
+    try {
+      await call(() =>
+        stub(env, artifactId).commentsUnhold({ commentId, keys }),
+      );
+      return true;
+    } catch {
+      // once more
+    }
+  logError("hold_release_failed", undefined, { artifactId });
+  return false;
+}
+
 /**
  * #1900: a reply from a person (a signed-in member typing or calling without an
  * agent, or a guest) tells the thread's participant agents, except the ones
@@ -2182,6 +2202,9 @@ async function threadReply(
         exclude: r.agents.map((x) => x.agent.key),
         // A reply that @-mentions someone is for them (#1968).
         skipPage: r.agents.length > 0,
+        // #2733: every other person's agent is held for this reply in the same
+        // step (masked at once); the ones we may deliver to are let go below.
+        hold: { commentId: c.id, author: c.author.ref },
       }),
     );
     if (due.length === 0) return c;
@@ -2246,16 +2269,26 @@ async function threadReply(
         });
     }
     heldHere = heldNow;
-    if (heldNow.length > 0) {
-      await call(() =>
-        stub(env, a.id).commentsHold({
-          threadId,
-          commentId: c.id,
-          held: heldNow,
-        }),
-      ).catch(() => undefined);
-      await recordHolds(env, c.author.ref, a.id, threadId, c.id, heldNow);
+    // #2733: the holds were taken with the participants (fail closed). Let go
+    // of the other people's agents we decided not to hold: if that write
+    // fails (once retried) they stay held, masked and undelivered, so they are
+    // dropped from `reached` and the notice never goes out.
+    const release = due
+      .filter(
+        (p) =>
+          p.owner !== c.author.ref &&
+          !heldNow.some((h) => h.agent.key === p.key),
+      )
+      .map((p) => p.key);
+    if (release.length > 0) {
+      const freed = await unholdOnce(env, a.id, c.id, release);
+      if (!freed)
+        for (let i = reached.length - 1; i >= 0; i--)
+          if (release.includes((reached[i] as RosterAgent).key))
+            reached.splice(i, 1);
     }
+    if (heldNow.length > 0)
+      await recordHolds(env, c.author.ref, a.id, threadId, c.id, heldNow);
     // The rows exist (queued) before any notice goes out, as a mention's do, so
     // a daemon's ack that beats the write below still finds its row to settle.
     await call(() =>

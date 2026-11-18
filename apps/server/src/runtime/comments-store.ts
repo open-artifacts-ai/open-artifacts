@@ -753,6 +753,20 @@ export function addHeld(
   );
 }
 
+/** #2733: lets go of the holds a reply took up front for agents it may deliver to (only holds still in state "held"). */
+export function releaseHeldTargets(
+  sql: SqlStorage,
+  commentId: string,
+  keys: string[],
+): void {
+  for (const key of keys)
+    sql.exec(
+      "delete from comment_targets where comment_id = ? and kind = 'held' and key = ? and state = 'held'",
+      commentId,
+      key,
+    );
+}
+
 /**
  * #2577: everything the placeholder hides, as one string: the comment's words,
  * an ask's question, options and recommendation, the thread's quote and the
@@ -1104,6 +1118,13 @@ export function takeThreadReply(
   max: number,
   /** The comment @-mentions someone: agents that joined only as the page's publisher are skipped (#1968). */
   skipPage = false,
+  /**
+   * #2733: fail closed. Every participant that belongs to another person than
+   * `author` is held for this comment in the same step that takes them, so the
+   * words are masked for them from the moment the reply is told about; the
+   * service then lets go (releaseHeldTargets) of the ones it may deliver to.
+   */
+  hold?: { commentId: string; author: string },
 ): StoredParticipant[] {
   if (threadStatus(sql, threadId) !== "open") return [];
   const total =
@@ -1133,6 +1154,14 @@ export function takeThreadReply(
       at,
     );
     room--;
+    if (hold && r.owner !== hold.author)
+      addHeld(
+        sql,
+        threadId,
+        hold.commentId,
+        { key: r.key, name: r.name, owner: r.owner, namespace: r.namespace },
+        "reply",
+      );
     out.push({
       kind: "agent",
       key: r.key,
