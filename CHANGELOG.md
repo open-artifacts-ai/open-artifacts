@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.215.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.214.1...v0.215.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** a proof header that is not a proof logs reason=malformed (length only) ([#2826](https://github.com/open-artifacts-ai/open-artifacts/issues/2826)) ([f4a0c5f](https://github.com/open-artifacts-ai/open-artifacts/commit/f4a0c5fcc74276c92f9989cb28ce583407de3c19))
+
 ## [0.214.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.214.0...v0.214.1) (2026-11-18)
 
 
