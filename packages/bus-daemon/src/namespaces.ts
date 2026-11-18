@@ -9,9 +9,10 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { home } from "./config.ts";
 import { sameDir } from "./global.ts";
+import { MAIN_INSTANCE, nameProblem } from "./instances.ts";
 import { readOwnFile } from "./own-file.ts";
 
 /**
@@ -21,8 +22,20 @@ import { readOwnFile } from "./own-file.ts";
  * a directory listed here with exactly that namespace (#1525): a cloned repo
  * cannot move its agents into another team's namespace on its own.
  */
-export const namespacesFile = (h = home()): string =>
-  join(h, "namespaces.json");
+export const namespacesFile = (
+  h = home(),
+  instance: string = MAIN_INSTANCE,
+): string => {
+  if (instance !== MAIN_INSTANCE && nameProblem(instance))
+    throw new Error(`not an instance name: ${instance}`);
+  // Main keeps its file. An approval on one instance is none on another (#2793).
+  return join(
+    h,
+    instance === MAIN_INSTANCE
+      ? "namespaces.json"
+      : `namespaces.${instance}.json`,
+  );
+};
 
 export type Approval = { dir: string; namespace: string };
 
@@ -72,8 +85,14 @@ export function isApproved(
 }
 
 /** Replaces the approvals: 0600, written to a new file then renamed, never through a symlink. */
-export function writeApprovals(entries: readonly Approval[], h = home()): void {
-  writePrivate(h, "namespaces.json", { approved: entries });
+export function writeApprovals(
+  entries: readonly Approval[],
+  h = home(),
+  instance: string = MAIN_INSTANCE,
+): void {
+  writePrivate(h, basename(namespacesFile(h, instance)), {
+    approved: entries,
+  });
 }
 
 /**
@@ -119,7 +138,7 @@ export function writeRemotes(entries: readonly Approval[], h = home()): void {
   writePrivate(h, "remotes.json", { recorded: entries });
 }
 
-function writePrivate(h: string, name: string, body: object): void {
+export function writePrivate(h: string, name: string, body: object): void {
   mkdirSync(h, { recursive: true, mode: 0o700 });
   chmodSync(h, 0o700);
   const tmp = join(h, `.${name}.${randomBytes(8).toString("hex")}.tmp`);
