@@ -153,6 +153,18 @@ describe("display-name dialog", () => {
     expect(await dialog()).toBeInTheDocument();
   });
 
+  it("Escape dismisses it, an outside click doesn't", async () => {
+    serveMe(needsName());
+    mount("/");
+    const d = await dialog();
+    fireEvent.pointerDown(document.body);
+    fireEvent.mouseDown(document.body);
+    fireEvent.click(document.body);
+    expect(screen.getByRole("dialog", { name: TITLE })).toBeInTheDocument();
+    fireEvent.keyDown(d, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("closing it moves focus to the page heading, not <body>", async () => {
     serveMe(needsName());
     mount("/");
