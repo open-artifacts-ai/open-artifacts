@@ -91,6 +91,7 @@ function counted(): { env: Env; n: Counts } {
 
 const APP = "https://app.localhost";
 let token = "";
+let userId = "";
 const call = (e: Env, path: string, init: RequestInit = {}) =>
   fetchAndWait(
     worker as never,
@@ -116,6 +117,7 @@ const publish = async (e: Env, body: unknown) => {
 beforeAll(async () => {
   const u = await login("cpu-budget@example.com", "owner");
   token = (await createPat(env as Env, u.userId, "cpu")).token;
+  userId = u.userId;
   for (let i = 0; i < 30; i++)
     await publish(env as Env, {
       title: `cpu budget ${i}`,
@@ -222,6 +224,29 @@ describe("reads", () => {
     expect(page.nextCursor).toBeTruthy();
     expect(n.r2 + n.do).toBe(0);
     expect(n.d1).toBeLessThanOrEqual(3);
+  });
+
+  it("list 25 with an open ask on every card for me: the waiting mark adds one D1 read, no R2/DO, one hub call at most (#2512)", async () => {
+    // Own-agent asks (no machine connected: the mark finds nobody waiting and
+    // never opens the hub), on all 25 cards.
+    await env.DB.prepare(
+      `insert or ignore into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm)
+       select id, 'th-' || id, 'cm-' || id, ?1, 1, 0, 'q?', json_object('kind', 'user', 'ref', ?1, 'name', 'Me', 'agent', json_object('name', 'Claude', 'identity', json_object('identityId', 'idn-cpu', 'name', 'Scout', 'kind', 'claude-code'))), '2026-11-18T10:00:00.000Z', 0
+         from artifacts where owner_id = ?1 and deleted_at is null`,
+    )
+      .bind(userId)
+      .run();
+    const { env: e, n } = counted();
+    const r = await call(e, "/api/v1/artifacts?limit=25");
+    expect(r.status).toBe(200);
+    const page = (await r.json()) as {
+      items: { asksForYou?: number }[];
+    };
+    expect(page.items.every((i) => (i.asksForYou ?? 0) === 1)).toBe(true);
+    expect(n.r2 + n.do).toBe(0);
+    // The three of a plain list, plus the one read of my asks (and the
+    // connected-machine check that stops before any hub).
+    expect(n.d1).toBeLessThanOrEqual(5);
   });
 
   it("search: constant D1 calls, no R2/DO", async () => {

@@ -761,6 +761,44 @@ export const pickAssertions = sqliteTable(
   ],
 );
 
+// #2512 S4: a member's notification choices. No row: the defaults (browser
+// off, quiet hours off, time zone UTC, lock screen hides details). quiet_*
+// are both set or both null; time_zone is an IANA name (checked on write).
+export const notificationPrefs = sqliteTable("notification_prefs", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  needsYouBrowser: integer("needs_you_browser").notNull().default(0),
+  updatesBrowser: integer("updates_browser").notNull().default(0),
+  browserAllAsks: integer("browser_all_asks").notNull().default(0),
+  quietStart: text("quiet_start"),
+  quietEnd: text("quiet_end"),
+  timeZone: text("time_zone").notNull().default("UTC"),
+  lockDetail: integer("lock_detail").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// #2512 S4: what a member muted from browser notifications. A mute stops push
+// only; the items stay in the list. kind "agent": target_id is the agent's bus
+// identity id and name its name when muted; kind "page": target_id is the
+// artifact id (its name is read live).
+export const inboxMutes = sqliteTable(
+  "inbox_mutes",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    targetId: text("target_id").notNull(),
+    name: text("name"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.kind, t.targetId] }),
+    check("inbox_mutes_kind", inList("kind", ["agent", "page"])),
+  ],
+);
+
 // #2263 a member's "ask for a passkey to approve" switches. No row: the
 // defaults (every action on, every pick off). ask_command is always 1.
 export const passkeySettings = sqliteTable("passkey_settings", {
