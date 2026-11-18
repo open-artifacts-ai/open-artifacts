@@ -96,7 +96,8 @@ export async function readUpdateState(
       env.DB,
       `insert into settings (key, value) values (?1, ?2)
        on conflict(key) do update set value = excluded.value
-        where json_extract(settings.value, '$.version') is not ?3`,
+        where not json_valid(settings.value)
+           or json_extract(settings.value, '$.version') is not ?3`,
     )
       .bind(VERSION_SINCE_KEY, value, release)
       .run();

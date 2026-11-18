@@ -143,6 +143,16 @@ describe("following the instance (#2552)", () => {
     );
   });
 
+  it("a malformed first-sight record heals instead of failing every read", async () => {
+    await setKey(VERSION_SINCE_KEY, "{not json");
+    const { target } = await open("1.2.0", "1.0.0");
+    expect(target).toBeNull();
+    expect(JSON.parse((await getKey(VERSION_SINCE_KEY)) as string)).toEqual({
+      version: "1.2.0",
+      since: NOW,
+    });
+  });
+
   it("the soak ends by alarm: the connected machine is then told the default", async () => {
     const { d, stub } = await open("1.2.0", "1.0.0", SOAK_MS - 60_000);
     expect(pushes(d)).toEqual([null]);
