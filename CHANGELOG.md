@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.211.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.210.0...v0.211.0) (2026-11-18)
+
+
+### Features
+
+* **foryou:** waiting mark on the page's ask and the Library card ([#1910](https://github.com/open-artifacts-ai/open-artifacts/issues/1910)) ([#2779](https://github.com/open-artifacts-ai/open-artifacts/issues/2779)) ([173e13f](https://github.com/open-artifacts-ai/open-artifacts/commit/173e13f77fe79804ff6c8c6c268f502b78242652))
+
+## [0.210.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.209.0...v0.210.0) (2026-11-18)
+
+
+### Features
+
+* **inbox:** "While you were away" after quiet hours ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512)) ([#2772](https://github.com/open-artifacts-ai/open-artifacts/issues/2772)) ([8d3ba33](https://github.com/open-artifacts-ai/open-artifacts/commit/8d3ba3368d14bb490498e0dcd82a9df8e44fbf54))
+* **notifications:** browser push sender ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) S5) ([#2774](https://github.com/open-artifacts-ai/open-artifacts/issues/2774)) ([eb73217](https://github.com/open-artifacts-ai/open-artifacts/commit/eb732179feb9387a1c4766ca5f992ac6dc8a6c3e))
+
+## [0.209.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.208.0...v0.209.0) (2026-11-18)
+
+
+### Features
+
+* **asks:** the waiting mark on the page's ask card and the Library card ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512)) ([#2778](https://github.com/open-artifacts-ai/open-artifacts/issues/2778)) ([c5e4db1](https://github.com/open-artifacts-ai/open-artifacts/commit/c5e4db1e13c0d0cb1077c6ad3990140a46270dcb))
+* **bus:** notices carry structured fields to the agent as data ([#2768](https://github.com/open-artifacts-ai/open-artifacts/issues/2768)) ([#2771](https://github.com/open-artifacts-ai/open-artifacts/issues/2771)) ([e8d8ca9](https://github.com/open-artifacts-ai/open-artifacts/commit/e8d8ca9efc3169e9d10f78d9ad10214bbbd25ac2))
+* **notifications:** settings, quiet hours and mutes server ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) S4) ([#2769](https://github.com/open-artifacts-ai/open-artifacts/issues/2769)) ([ffb6d1b](https://github.com/open-artifacts-ai/open-artifacts/commit/ffb6d1b8bf9af91b430f2be728861def649169cd))
+
 ## [0.208.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.207.0...v0.208.0) (2026-11-18)
 
 

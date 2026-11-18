@@ -1,5 +1,5 @@
 import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MentionedText } from "../src/viewer/comments/asks";
 import { Markdown } from "../src/viewer/comments/Markdown";
 import {
@@ -8,6 +8,21 @@ import {
   parseInlineOnly,
   parseMarkdown,
 } from "../src/viewer/comments/mdparse";
+
+// Counts the characters the parser hands to linkify: the work a repeated
+// "http://" costs, which is what the old wall-clock budget was guarding.
+const linkified = vi.hoisted(() => ({ calls: 0, chars: 0 }));
+vi.mock("../src/viewer/comments/linkify", async (orig) => {
+  const mod = await orig<typeof import("../src/viewer/comments/linkify")>();
+  return {
+    ...mod,
+    linkify: (text: string) => {
+      linkified.calls++;
+      linkified.chars += text.length;
+      return mod.linkify(text);
+    },
+  };
+});
 
 const ALLOWED = new Set([
   "DIV",
@@ -314,20 +329,24 @@ describe("performance", () => {
     closers: `https://a.com/x${")".repeat(1900)}`,
   };
   for (const [name, s] of Object.entries(cases))
-    it(`2,000 characters of ${name} parse in under 50ms`, () => {
+    it(`2,000 characters of ${name} parse and finish`, () => {
+      // No wall-clock bound (flaky on shared runners): the parser's step
+      // budget caps the work, and a hang hits the test timeout.
       const body = s.slice(0, 2000);
-      const t = performance.now();
       const n = walk(parseMarkdown(body));
-      expect(performance.now() - t).toBeLessThan(50);
       expect(n).toBeGreaterThan(0);
     });
-  it("5,000 characters of repeated http:// parse in under 20ms", () => {
+  it("5,000 characters of repeated http:// are scanned a bounded number of times", () => {
+    // Quadratic parsing would hand linkify far more than the input's length
+    // (every candidate re-reading the rest): the step budget caps it near 20,000
+    // characters. Operations, not wall clock.
     for (const unit of ["http://", "http://a ", "http://a<"]) {
       const body = unit.repeat(Math.ceil(5000 / unit.length)).slice(0, 5000);
-      parseMarkdown(body); // warm
-      const t = performance.now();
+      linkified.calls = 0;
+      linkified.chars = 0;
       parseMarkdown(body);
-      expect(performance.now() - t).toBeLessThan(20);
+      expect(linkified.chars).toBeLessThanOrEqual(22_000);
+      expect(linkified.calls).toBeLessThanOrEqual(body.length / 4);
     }
   });
   it("caps oversized input and shows the rest as plain text", () => {

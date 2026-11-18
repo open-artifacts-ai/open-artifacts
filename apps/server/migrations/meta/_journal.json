@@ -337,6 +337,20 @@
       "when": 1794994101034,
       "tag": "0047_inbox_later",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1794999370682,
+      "tag": "0048_notification_prefs",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1794999806634,
+      "tag": "0049_push",
+      "breakpoints": true
     }
   ]
 }

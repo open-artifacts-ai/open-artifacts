@@ -199,7 +199,7 @@ const TAKE = `insert into counters (key, n, day) values (?1, 1, ?2)
 /** Daily cron: drops email, sign-in-code and bus notice (#1292) counters from before today (they reset anyway). */
 export async function sweepEmailCounters(env: Env, now = Date.now()) {
   await env.DB.prepare(
-    "delete from counters where (key like 'email:%' or key like 'code:%' or key like 'notice:%') and day < ?",
+    "delete from counters where (key like 'email:%' or key like 'code:%' or key like 'notice:%' or key like 'prefs:%') and day < ?",
   )
     .bind(utcDay(now))
     .run();

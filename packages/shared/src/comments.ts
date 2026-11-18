@@ -141,6 +141,8 @@ export const CommentAskSchema = z
     chosenBy: CommentAuthorSchema.optional(),
     /** #2381: the viewer's part: they decide, weigh in, or neither (absent). */
     role: z.enum(["decide", "weigh"]).optional(),
+    /** #2512: when the viewer's own agent began waiting on this open ask (ISO). Only on an open ask the viewer's own agent posted, while it is blocked; absent for everyone else. */
+    waitingSince: z.string().optional(),
     /** #2381: the asker's own user may say "I'll decide this" (decider is someone else, no decision yet). */
     canTakeBack: z.boolean().optional(),
     /** #2381: the latest pick of each person, oldest first. The decider's is the decision's source. */

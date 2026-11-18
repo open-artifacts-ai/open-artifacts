@@ -865,6 +865,10 @@ async function startMocks() {
   extra.push(
     ...(await import("./mockPictures")).pictureHandlers(mainHandlers, params),
   );
+  // #1910: &waiting=1 carries the waiting fields.
+  extra.unshift(
+    ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),
+  );
   await setupWorker(
     ...extra,
     ...mainHandlers,

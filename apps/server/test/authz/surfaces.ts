@@ -1786,6 +1786,63 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
   },
+  // #2512 S4: mutes. A body that names nothing is a 400 past the guard; an unmute of nothing is 204.
+  "POST /api/v1/me/inbox/mutes": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: {} }),
+      allow: code("bad_request"),
+    },
+  },
+  "DELETE /api/v1/me/inbox/mutes/:kind/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/inbox/mutes/page/none" }),
+      allow: ok(204),
+    },
+  },
+  // #2512 S4: the caller's own choices; the defaults saved back change nothing.
+  "PUT /api/v1/me/notification-prefs": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          needsYou: { inApp: true, browser: false },
+          updates: { inApp: true, browser: false },
+          browserAllAsks: false,
+          quietHours: null,
+          timeZone: "UTC",
+          lockScreenDetail: false,
+        },
+      }),
+      allow: ok(200),
+    },
+  },
+  "POST /api/v1/me/push/subscriptions": {
+    refuse: {
+      req: async () => ({ path: "", body: {} }),
+      allow: code("push_unavailable"),
+    },
+    real: {
+      req: () => ({ path: "", body: {} }),
+      allow: code("push_unavailable"),
+    },
+  },
+  "PATCH /api/v1/me/push/subscriptions/:id": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/push/subscriptions/x",
+        body: { needsYou: true },
+      }),
+      allow: code("push_unavailable"),
+    },
+  },
+  "DELETE /api/v1/me/push/subscriptions/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/push/subscriptions/x" }),
+      allow: code("push_unavailable"),
+    },
+  },
   // #1292: the caller's own picks; a real write sets none (the default).
   "PUT /api/v1/bus/share-notices": {
     refuse: invalid(),
@@ -2474,6 +2531,17 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/me/inbox/:id/later", U],
   ["POST /api/v1/me/inbox/read-all", U, [200]],
   ["PATCH /api/v1/me", U],
+  ["GET /api/v1/me/inbox/mutes", U, [200]],
+  ["POST /api/v1/me/inbox/mutes", U],
+  ["DELETE /api/v1/me/inbox/mutes/:kind/:id", U],
+  ["GET /api/v1/me/notification-prefs", U, [200]],
+  ["PUT /api/v1/me/notification-prefs", U],
+  // #2512 S5: no VAPID key pair in the matrix's env, so push is off: 404 push_unavailable for everyone signed in.
+  ["GET /api/v1/me/push/key", U, [404]],
+  ["GET /api/v1/me/push/subscriptions", U, [404]],
+  ["POST /api/v1/me/push/subscriptions", U, [404]],
+  ["PATCH /api/v1/me/push/subscriptions/:id", U, [404]],
+  ["DELETE /api/v1/me/push/subscriptions/:id", U, [404]],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
   ["GET /api/v1/members", org("members.manage"), [200]],

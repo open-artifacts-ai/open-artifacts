@@ -6,6 +6,8 @@ import {
   NotificationPrefsSchema,
   PushPayloadSchema,
   PushSubscribeBodySchema,
+  PushSubscriptionPatchBodySchema,
+  PushSubscriptionsSchema,
 } from "../src/index.js";
 
 const item = {
@@ -79,6 +81,37 @@ describe("notifications contract", () => {
       ).toBe(false);
     },
   );
+
+  it("updates.browser is a switch; a browser has its own switches", () => {
+    expect(
+      NotificationPrefsSchema.safeParse({
+        ...prefs,
+        updates: { inApp: true, browser: true },
+      }).success,
+    ).toBe(true);
+    expect(
+      PushSubscriptionsSchema.safeParse({
+        items: [
+          {
+            id: "s1",
+            label: "Chrome on this Mac",
+            createdAt: "2026-11-18T10:00:00Z",
+            lastSentAt: null,
+            needsYou: true,
+            updates: false,
+          },
+        ],
+      }).success,
+    ).toBe(true);
+    expect(PushSubscriptionPatchBodySchema.safeParse({}).success).toBe(false);
+    expect(
+      PushSubscriptionPatchBodySchema.safeParse({ updates: true }).success,
+    ).toBe(true);
+    expect(
+      PushSubscriptionPatchBodySchema.safeParse({ x: 1, updates: true })
+        .success,
+    ).toBe(false);
+  });
 
   it("rejects bad quiet hours and push endpoints", () => {
     expect(

@@ -559,10 +559,34 @@ const ErrorFrame = z.strictObject({
   message: WellFormedText.pipe(z.string().max(1024)),
 });
 
+/** An id inside a notice's `meta`: ASCII, no spaces or controls, bounded. */
+const NOTICE_META_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 const Notice = z.strictObject({
   size: z.number().int().gt(LIMITS.inlineBodyBytes).max(LIMITS.maxMessageBytes),
   msg_id: MsgIdSchema,
 });
+
+/**
+ * #2768 (BUS_CAPS.noticeMeta): the structured fields of a server notice, as
+ * data. Every string is bounded and id- or token-shaped, so a daemon can hand
+ * it to a harness without it being text anyone wrote.
+ */
+export const NoticeMetaSchema = z.strictObject({
+  kind: z.string().regex(/^[a-z_]{1,32}$/),
+  artifact_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  comment_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  thread_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  user_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  /** ISO 8601 date-time, UTC (`2026-11-18T09:00:00.000Z`). */
+  until: z
+    .string()
+    .max(40)
+    .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?Z$/)
+    .refine((v) => !Number.isNaN(Date.parse(v)), "invalid date")
+    .optional(),
+});
+export type NoticeMeta = z.infer<typeof NoticeMetaSchema>;
 
 const Deliver = z
   .strictObject({
@@ -582,7 +606,13 @@ const Deliver = z
     namespace: WireNamespaceSchema,
     body: InlineBodySchema.optional(),
     notice: Notice.optional(),
+    /** Only from the reserved sender, only with BUS_CAPS.noticeMeta (#2768). */
+    meta: NoticeMetaSchema.optional(),
   })
+  .refine(
+    (f) => f.meta === undefined || f.from_name === INSTANCE_SENDER_NAME,
+    "meta only from the instance",
+  )
   .refine(
     (f) => (f.body === undefined) !== (f.notice === undefined),
     "body xor notice",

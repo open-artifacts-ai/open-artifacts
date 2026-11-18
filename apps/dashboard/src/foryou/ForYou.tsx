@@ -55,8 +55,8 @@ import {
   safePath,
   unread,
   waitMs,
-  waitText,
 } from "./model";
+import { WaitMark } from "./waiting";
 
 /** Settings › Notifications (today the email switch; slice 2 adds For you's). */
 export const FOR_YOU_SETTINGS = "/settings/notifications";
@@ -495,6 +495,14 @@ function ForYouPanel({
             <span>{updates.length}</span>
           )}
         </h3>
+        {updates.length === 0 && !more && (
+          <p
+            data-for-you-updates-empty=""
+            className="m-0 px-[18px] py-3 text-left text-[13.5px] text-[var(--oa-text-muted)]"
+          >
+            No updates yet.
+          </p>
+        )}
         <ul className="m-0 list-none p-0">
           {updates.map((x) => row(x))}
           {more && (
@@ -577,15 +585,7 @@ function Face({ x }: { x: InboxItem }) {
 /** A waiting ask's calm mark: a clock and the server's duration. */
 function Urgency({ x }: { x: InboxItem }) {
   const ms = waitMs(x);
-  if (ms !== undefined)
-    return (
-      <span
-        data-for-you-wait=""
-        className={`${CHIP} bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]`}
-      >
-        <span aria-hidden="true">◷</span> {waitText(ms)}
-      </span>
-    );
+  if (ms !== undefined) return <WaitMark ms={ms} />;
   return null;
 }
 

@@ -702,8 +702,13 @@ export const inboxLater = sqliteTable(
     until: integer("until").notNull(),
     used: integer("used").notNull().default(1),
     createdAt: integer("created_at").notNull(),
+    // #2512 S5: when its return was queued for push (null: not yet).
+    pushedAt: integer("pushed_at"),
   },
-  (t) => [primaryKey({ columns: [t.userId, t.itemId] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.itemId] }),
+    index("inbox_later_due_idx").on(t.until),
+  ],
 );
 
 // #2263 passkeys: one row per WebAuthn credential a member registered. It can
@@ -758,6 +763,98 @@ export const pickAssertions = sqliteTable(
       "pick_assertions_kind_check",
       sql`${t.kind} in ('register', 'pick', 'settings', 'remove')`,
     ),
+  ],
+);
+
+// #2512 S4: a member's notification choices. No row: the defaults (browser
+// off, quiet hours off, time zone UTC, lock screen hides details). quiet_*
+// are both set or both null; time_zone is an IANA name (checked on write).
+export const notificationPrefs = sqliteTable("notification_prefs", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  needsYouBrowser: integer("needs_you_browser").notNull().default(0),
+  updatesBrowser: integer("updates_browser").notNull().default(0),
+  browserAllAsks: integer("browser_all_asks").notNull().default(0),
+  quietStart: text("quiet_start"),
+  quietEnd: text("quiet_end"),
+  timeZone: text("time_zone").notNull().default("UTC"),
+  lockDetail: integer("lock_detail").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// #2512 S4: what a member muted from browser notifications. A mute stops push
+// only; the items stay in the list. kind "agent": target_id is the agent's bus
+// identity id and name its name when muted; kind "page": target_id is the
+// artifact id (its name is read live).
+export const inboxMutes = sqliteTable(
+  "inbox_mutes",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    targetId: text("target_id").notNull(),
+    name: text("name"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.kind, t.targetId] }),
+    check("inbox_mutes_kind", inList("kind", ["agent", "page"])),
+  ],
+);
+
+// #2512 S5: one row per browser a member turned notifications on in. An
+// endpoint belongs to one member at a time (registering it again for another
+// member removes the first's row). The rows go with the member's sessions
+// (the users_end_push trigger in the migration).
+export const pushSubscriptions = sqliteTable(
+  "push_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull().unique(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    label: text("label"),
+    // This browser's own switches (design v10): Needs-you and Updates on it.
+    needsYou: integer("needs_you").notNull().default(1),
+    updates: integer("updates").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    lastSentAt: integer("last_sent_at"),
+  },
+  (t) => [index("push_subscriptions_user_idx").on(t.userId)],
+);
+
+// #2512 S5: Needs-you items waiting to be pushed. One row per (member, key);
+// send_after holds them for the 10-minute bundle and for quiet hours. The
+// cron tick drains it; a row is deleted as it is claimed.
+export const pushPending = sqliteTable(
+  "push_pending",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    kind: text("kind").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    // Plain text, control characters stripped, only shown with lockScreenDetail.
+    askerName: text("asker_name").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // Set when the asker is the member's own agent: who waits on whom.
+    askerRef: text("asker_ref"),
+    agentKey: text("agent_key"),
+    sendAfter: integer("send_after").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("push_pending_key_idx").on(t.userId, t.key),
+    index("push_pending_due_idx").on(t.sendAfter),
+    check("push_pending_kind", inList("kind", ["ask", "later", "update"])),
   ],
 );
 

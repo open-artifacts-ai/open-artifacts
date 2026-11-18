@@ -22,6 +22,7 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
+import { queueUpdatePush } from "./push.js";
 import { getUsers } from "./users.js";
 
 /** Person-mention Needs-you items one sender may cause per day (#2770). */
@@ -126,6 +127,17 @@ export async function writeInboxItems(
           ),
         ),
       );
+    // #2512 S5: browser push for each Update, for those who turned it on. A
+    // Needs-you item (a person @mentioned, #2770) is not an Update: its push is #2781.
+    for (const r of rows.filter((x) => x.level !== "needs_you"))
+      await queueUpdatePush(env, r.userId, {
+        key: r.key,
+        artifactId: r.artifactId,
+        threadId: r.threadId ?? "",
+        askerName: r.actor.agent?.name ?? r.actor.name ?? "Someone",
+        excerpt: r.excerpt,
+        agentKey: r.actor.agent?.identity?.identityId ?? null,
+      });
   } catch (e) {
     logWarn("inbox_items_write_failed", e);
   }
@@ -263,6 +275,11 @@ export async function forgetCommentItems(
           env.DB,
           "delete from inbox_items where artifact_id = ? and thread_id = ?",
         ).bind(j.artifactId, j.threadId),
+        // #2512 S5: what was queued for push goes with it.
+        stmt(
+          env.DB,
+          "delete from push_pending where artifact_id = ? and thread_id = ?",
+        ).bind(j.artifactId, j.threadId),
       ]);
     else
       await env.DB.batch([
@@ -274,6 +291,11 @@ export async function forgetCommentItems(
         stmt(
           env.DB,
           "delete from inbox_items where artifact_id = ? and comment_id = ?",
+        ).bind(j.artifactId, j.commentId),
+        stmt(
+          env.DB,
+          `delete from push_pending where artifact_id = ?1 and key in
+             ('ask:' || ?2, 'reply:' || ?2, 'comment:' || ?2, 'mention:' || ?2, 'person:' || ?2)`,
         ).bind(j.artifactId, j.commentId),
       ]);
   } catch (e) {
@@ -300,19 +322,26 @@ export async function refreshCommentItems(
 ): Promise<void> {
   try {
     const held = [...heldOwners(j)];
-    await stmt(
-      env.DB,
-      `update inbox_items set excerpt = case when user_id in (select value from json_each(?4)) then ?5 else ?1 end
-        where artifact_id = ?2 and comment_id = ?3 and kind in ('mention', 'reply', 'comment')`,
-    )
-      .bind(
-        itemExcerpt(j.body),
-        j.artifactId,
-        j.commentId,
-        JSON.stringify(held),
-        HELD_EXCERPT,
-      )
-      .run();
+    const words = [
+      itemExcerpt(j.body),
+      j.artifactId,
+      j.commentId,
+      JSON.stringify(held),
+      HELD_EXCERPT,
+    ];
+    await env.DB.batch([
+      stmt(
+        env.DB,
+        `update inbox_items set excerpt = case when user_id in (select value from json_each(?4)) then ?5 else ?1 end
+          where artifact_id = ?2 and comment_id = ?3 and kind in ('mention', 'reply', 'comment')`,
+      ).bind(...words),
+      // #2512 S5: what is queued for push shows the new words too.
+      stmt(
+        env.DB,
+        `update push_pending set excerpt = case when user_id in (select value from json_each(?4)) then ?5 else ?1 end
+          where artifact_id = ?2 and key in ('reply:' || ?3, 'comment:' || ?3, 'mention:' || ?3)`,
+      ).bind(...words),
+    ]);
   } catch (e) {
     logWarn("inbox_items_refresh_failed", e);
   }
@@ -435,6 +464,33 @@ const cols = {
   readAt: inboxItems.readAt,
 };
 
+/** The unread updates that arrived in [from, to) and the distinct pages they are on (#2512, "While you were away"). */
+export async function awayCount(
+  env: Env,
+  caller: Me,
+  from: number,
+  to: number,
+): Promise<{ count: number; pages: number }> {
+  const r = await getDb(env)
+    .select({
+      n: sql<number>`count(*)`,
+      p: sql<number>`count(distinct ${inboxItems.artifactId})`,
+    })
+    .from(inboxItems)
+    .innerJoin(artifacts, eq(artifacts.id, inboxItems.artifactId))
+    .where(
+      and(
+        mineOn(caller, "update"),
+        isNull(inboxItems.readAt),
+        sql`${inboxItems.createdAt} >= ${from} and ${inboxItems.createdAt} < ${to}`,
+      ),
+    );
+  return { count: r[0]?.n ?? 0, pages: r[0]?.p ?? 0 };
+}
+
+/** The settings row that says which "While you were away" window the person has read (its start, ms). */
+export const awayReadKey = (userId: string) => `inbox:away_read:${userId}`;
+
 /** How many unread updates I have: one indexed query. */
 export async function unreadUpdateCount(env: Env, caller: Me): Promise<number> {
   const r = await getDb(env)
@@ -514,9 +570,23 @@ export async function markRead(
   userId: string,
   ids: string[],
 ): Promise<number> {
-  const uniq = [...new Set(ids)];
+  const uniq = [...new Set(ids)].filter((id) => !id.startsWith("away:"));
   const now = Date.now();
   let n = 0;
+  // "While you were away" is not a stored row: reading it keeps the window's start.
+  for (const id of new Set(ids)) {
+    if (!id.startsWith("away:")) continue;
+    const at = Date.parse(id.slice("away:".length));
+    if (Number.isNaN(at)) continue;
+    const r = await env.DB.prepare(
+      `insert into settings (key, value) values (?1, ?2)
+       on conflict (key) do update set value = excluded.value
+         where cast(settings.value as integer) < cast(excluded.value as integer)`,
+    )
+      .bind(awayReadKey(userId), String(at))
+      .run();
+    n += r.meta.changes ?? 0;
+  }
   for (let i = 0; i < uniq.length; i += CHUNK) {
     const part = uniq.slice(i, i + CHUNK);
     const r = await env.DB.prepare(

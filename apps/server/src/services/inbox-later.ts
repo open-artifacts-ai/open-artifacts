@@ -2,42 +2,7 @@
 // until); the item itself is still the open ask or held request, so nothing
 // here copies it. Never touches artifact_asks.
 import type { Env } from "../env.js";
-
-type Parts = { y: number; mo: number; d: number; h: number; mi: number };
-
-/** The wall clock in `zone` at the instant `ms`. */
-function wall(ms: number, zone: string): Parts {
-  const f = new Intl.DateTimeFormat("en-US", {
-    timeZone: zone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-  });
-  const p: Record<string, number> = {};
-  for (const x of f.formatToParts(new Date(ms)))
-    if (x.type !== "literal") p[x.type] = Number(x.value);
-  return {
-    y: p.year as number,
-    mo: p.month as number,
-    d: p.day as number,
-    h: (p.hour as number) % 24,
-    mi: p.minute as number,
-  };
-}
-
-/** The instant at which `zone`'s wall clock reads y-mo-d h:mi (DST-safe: two passes). */
-function instantAt(zone: string, y: number, mo: number, d: number, h: number) {
-  let guess = Date.UTC(y, mo - 1, d, h);
-  for (let i = 0; i < 2; i++) {
-    const w = wall(guess, zone);
-    const shown = Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi);
-    guess += Date.UTC(y, mo - 1, d, h) - shown;
-  }
-  return guess;
-}
+import { instantAt, wall } from "./zone-time.js";
 
 /**
  * One hour ahead, or the next 08:00 on the person's clock in `zone` (an IANA

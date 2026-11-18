@@ -6,6 +6,7 @@ import type {
   StoredParty,
   StoredThread,
 } from "../runtime/comments-store.js";
+import { queueAskPush } from "./push.js";
 
 /**
  * The asks index (#1623): artifact_asks, in D1, so the library can count and
@@ -48,6 +49,12 @@ export type AskInfo = {
   confirm: number;
 };
 
+/** Whether `userId` holds a row for the ask on `c` (the same people as the index's rows). */
+export const holdsRow = (c: StoredComment, userId: string): boolean => {
+  const a = c.ask;
+  return !!a && rowPeople(a.to, a.decider, askInfo(c).confirm).includes(userId);
+};
+
 /** The inbox fields of the ask on `c` (the caller checked it has one). */
 export const askInfo = (c: StoredComment): AskInfo => ({
   question: c.ask?.question ?? "",
@@ -63,7 +70,7 @@ export const askInfo = (c: StoredComment): AskInfo => ({
  * Who holds a row for an ask: its addressees and decider, but a risky ask
  * (confirm = 1) only its decider, as no one else's pick can stand in (#2512).
  */
-const rowPeople = (
+export const rowPeople = (
   to: StoredParty[],
   decider: string | undefined,
   confirm: number,
@@ -88,9 +95,10 @@ export const indexAsk = (
   /** #2577: people whose agent the ask is held for: their row stays closed and empty until they allow it. */
   held: ReadonlySet<string> = new Set(),
 ) =>
-  guarded("create", artifactId, () =>
-    env.DB.batch(
-      rowPeople(to, decider, info.confirm).map((who) =>
+  guarded("create", artifactId, async () => {
+    const people = rowPeople(to, decider, info.confirm);
+    await env.DB.batch(
+      people.map((who) =>
         held.has(who)
           ? stmt(
               env.DB,
@@ -109,8 +117,18 @@ export const indexAsk = (
               info.confirm,
             ),
       ),
-    ),
-  );
+    );
+    // #2512 S5: browser push for each person it now waits on; best effort.
+    await queueAskPush(
+      env,
+      people,
+      held,
+      artifactId,
+      threadId,
+      commentId,
+      info,
+    );
+  });
 
 /** An answer closes the ask for everyone it was put to. */
 export const indexAnswered = (

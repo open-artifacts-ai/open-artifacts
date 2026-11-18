@@ -54,6 +54,14 @@ export interface Env {
   OPTOUT_PLATFORM?: string;
   /** Secret, held by hosted installs only: the key of h1 = HMAC(key, address), what the install sends the platform instead of an address (#2652). */
   OPTOUT_HASH_KEY?: string;
+  /**
+   * The instance's Web Push key pair (#2512 S5), base64url: the 65-byte
+   * uncompressed P-256 public point and the 32-byte private scalar. Secrets
+   * the platform sets on hosted and setup sets on self-host; the code never
+   * makes one. Either missing: push is off and every push route answers 404.
+   */
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
   /** The platform's public unsubscribe page (on the sign-up host), the base of every outside share email's opt-out link (#2652). Unset with the switch on: no email goes out. */
   OPTOUT_UNSUBSCRIBE_URL?: string;
   /**
