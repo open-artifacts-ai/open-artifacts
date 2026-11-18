@@ -800,7 +800,7 @@ export function answerError(e: unknown, ctx?: ErrorContext): string {
       : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
   // #2864: no ask needs a passkey. An old server's passkey_required is a plain error.
   if (e instanceof ApiClientError && e.code === "passkey_required")
-    return "Couldn't send your answer. Try again, or answer in your agent's terminal.";
+    return "Couldn't send your answer. Reload the page and try again.";
   const status = e instanceof ApiClientError ? e.status : 0;
   if (e instanceof ApiClientError && e.code === "not_decider")
     return "You can't decide this any more: you can't edit this page. The person who asked can take it back.";

@@ -1049,9 +1049,9 @@ describe("#2864 no passkey on asks", () => {
     await within(c).findByRole("button", { name: /Side by side/ });
     fireEvent.click(opt(c, "b"));
     expect(await within(c).findByRole("alert")).toHaveTextContent(
-      /Couldn't send your answer/,
+      "Couldn't send your answer. Reload the page and try again.",
     );
-    expect(c.textContent).not.toMatch(/Pick again|Add a passkey/);
+    expect(c.textContent).not.toMatch(/Pick again|Add a passkey|terminal/);
     expect(challenged).toBe(0);
     expect(webauthn.getAssertion).not.toHaveBeenCalled();
     expect(opt(c, "b")).toBeEnabled();

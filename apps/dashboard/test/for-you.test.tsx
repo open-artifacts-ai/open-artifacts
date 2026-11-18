@@ -631,9 +631,9 @@ describe("an ask opened in the panel", () => {
     const { card } = await openAsk("Ship the changelog?");
     fireEvent.click(within(card).getByRole("button", { name: /Ship it/ }));
     expect(await within(card).findByRole("alert")).toHaveTextContent(
-      /Couldn't send your answer/,
+      "Couldn't send your answer. Reload the page and try again.",
     );
-    expect(card).not.toHaveTextContent(/Pick again|passkey/i);
+    expect(card).not.toHaveTextContent(/Pick again|passkey|terminal/i);
   });
 
   it("a risky ask shows no passkey line or prompt (#2864)", async () => {
