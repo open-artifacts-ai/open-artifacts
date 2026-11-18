@@ -175,7 +175,6 @@ export const useReadAll = () =>
 export const failedToast = (e: unknown) =>
   toast({ title: errorCopy(e, "Couldn't save that."), tone: "danger" });
 
-/** Put off once: the server answers the deferred item, which joins Later. A failure puts the row back and says so. */
 /** The browser's IANA zone, so "morning" is 08:00 where the person is (#2762). */
 const laterBody = (
   until: "hour" | "morning",
@@ -184,6 +183,7 @@ const laterBody = (
   return timeZone ? { until, timeZone } : { until };
 };
 
+/** Put off once: the server answers the deferred item, which joins Later. A failure puts the row back and says so. */
 export const useLater = () => {
   const qc = useQueryClient();
   return useEdit(
