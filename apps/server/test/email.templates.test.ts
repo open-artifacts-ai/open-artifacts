@@ -66,7 +66,7 @@ describe("email templates", () => {
       "Set up Open Artifacts for me: follow https://app.example.com/llms.txt";
     const m = inviteEmail(common);
     expect(m.text).toContain(
-      "Then connect your agent. Paste this into Claude Code, Codex, Cursor or any agent:",
+      "Then connect your agent. Paste this into Claude Code, Codex, Cursor or any other AI agent:",
     );
     expect(m.text).toContain(line);
     expect(m.html).toContain(line);
