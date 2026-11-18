@@ -86,6 +86,8 @@ export type OrgAction =
   | "directory.disconnect"
   /** Probe the auth and directory brokers (R.adminBrokerCheck): the org owner. */
   | "broker.check"
+  /** Name (or clear) the version the instance's bus machines run (R.busRunVersion, #2552): the org owner, in a cookie session. */
+  | "bus.run_version"
   /** See why configured sign-in is off (Me.instance.signIn.problems): the org owner. */
   | "signin.problems"
   /** See and dismiss the install-wide guest summary (Me.notices.guestSummary): the org owner. */
@@ -554,6 +556,8 @@ export function orgCan(
     case "directory.disconnect":
     // The broker check: owner only (it spends broker rate limit).
     case "broker.check":
+    // The version the instance tells its machines to run (#2552).
+    case "bus.run_version":
     // Sign-in config problems: the owner, who can fix them (review item 35).
     case "signin.problems":
     // The install-wide guest summary and its dismissal (parity 2).

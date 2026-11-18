@@ -73,3 +73,39 @@ export function queueReport(home: string, r: Report): void {
     rmSync(tmp, { force: true });
   }
 }
+
+/** Removes reports already sent (the first equal entry each); the rest stay queued. */
+export function removeReports(home: string, sent: Report[]): void {
+  if (sent.length === 0) return;
+  const tmp = `${reportFile(home)}.${process.pid}.tmp`;
+  try {
+    const left = [...readReports(home)];
+    for (const r of sent) {
+      const i = left.findIndex(
+        (x) =>
+          x.event === r.event &&
+          x.from === r.from &&
+          x.to === r.to &&
+          x.reason === r.reason &&
+          x.at === r.at,
+      );
+      if (i >= 0) left.splice(i, 1);
+    }
+    writeFileSync(tmp, `${JSON.stringify(left)}\n`, { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, reportFile(home));
+  } catch {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** The rescue shim's version, from its own first line; 0 when there is none. */
+export function readRescueVersion(home: string): number {
+  try {
+    const head = readFileSync(join(home, "rescue.mjs"), "utf8").slice(0, 200);
+    const n = /Rescue shim (\d{1,6})\./.exec(head)?.[1];
+    return n === undefined ? 0 : Number(n);
+  } catch {
+    return 0;
+  }
+}

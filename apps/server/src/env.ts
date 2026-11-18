@@ -128,6 +128,15 @@ export interface Env {
    */
   ANON_WRITES_PER_MIN?: string;
   /**
+   * An unsupported preview: "1" opens doc creation as if DOC_SWITCH.creation
+   * were true (docCreationOpen), so docs can be tried before the switch ships.
+   * A plain runtime var: the release bundle honours it, so a prod install must
+   * never carry it (this repo's public configs and the setup steps do not;
+   * the cloud deploy and provisioner refuse it). docsAvailable's paid-plan
+   * rule still applies.
+   */
+  DOCS_PREVIEW?: string;
+  /**
    * Per-doc data limit in bytes (dataLimits; empty or unset: the plan's
    * default). Clamped to 256 KB on Free, 1920 KB on Paid.
    */

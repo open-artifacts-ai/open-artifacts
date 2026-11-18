@@ -149,6 +149,18 @@ export const BusLinksSchema = z.strictObject({
 });
 export type BusLinks = z.infer<typeof BusLinksSchema>;
 
+/** PUT R.busRunVersion: the version machines are told to run, or null for none. */
+export const BusRunVersionPutSchema = z.strictObject({
+  version: z
+    .string()
+    .max(32)
+    .regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
+    .nullable(),
+  /** Needed to name a version lower than the one already named (a return to an older one). */
+  stepBack: z.boolean().optional(),
+});
+export type BusRunVersionPut = z.infer<typeof BusRunVersionPutSchema>;
+
 /** PUT R.busLinks: link namespaces `a` and `b` (any order; two different ones). */
 export const BusLinkPutSchema = z.strictObject({
   a: BusAddressSchema.shape.namespace,

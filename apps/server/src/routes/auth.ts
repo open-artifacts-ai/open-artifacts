@@ -35,9 +35,9 @@ import { signInMode } from "../auth/sign-in.js";
 import { SignInRefused } from "../directory/signin.js";
 import { ApiError, toErrorResponse } from "../http/errors.js";
 import { FAVICON_TAGS } from "../http/head.js";
+import { seedWelcomeAfter } from "../http/seed-welcome.js";
 import { onGoogleSignIn } from "../services/directory.js";
 import { admit } from "../services/identity.js";
-import { seedWelcome } from "../services/onboarding.js";
 import {
   getMismatchOwner,
   getUserWithEpoch,
@@ -185,7 +185,7 @@ export function mountAuth(app: AppType): void {
         return refuse(next);
       }
       // #2632: a member's own Welcome, once (Access sign-in too); never throws.
-      await seedWelcome(c.env, user);
+      await seedWelcomeAfter(c, user);
       const now = Date.now();
       const sess = sessionCookie(
         await signSession(c.env, user.id, now, {
@@ -311,7 +311,7 @@ export function mountAuth(app: AppType): void {
         return toSignIn(r.reason, id.next, clear, "google");
       }
       // #2287, #2632: every member's own Welcome, once; never throws.
-      await seedWelcome(c.env, r.user);
+      await seedWelcomeAfter(c, r.user);
       try {
         await onGoogleSignIn(c.env, r.user);
       } catch (e) {

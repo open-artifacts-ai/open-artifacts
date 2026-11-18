@@ -26,11 +26,9 @@ const axeRun = async (page: Page): Promise<string[]> => {
   });
 };
 
-test("adding a member confirms with the login link and copies it", async ({
-  page,
-  context,
-  baseURL,
-}) => {
+test("adding a member confirms with the login link and copies it", {
+  tag: "@smoke",
+}, async ({ page, context, baseURL }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/settings/members");
   await page.getByRole("button", { name: "Add member" }).click();
@@ -57,7 +55,9 @@ test("adding a member confirms with the login link and copies it", async ({
   await expect(dialog).toBeHidden();
 });
 
-test("sharing confirms with the artifact link", async ({ page }) => {
+test("sharing confirms with the artifact link", { tag: "@smoke" }, async ({
+  page,
+}) => {
   await page.goto("/");
   await page.getByRole("link", { name: "Landing page" }).first().click();
   await page.waitForURL(/\/a\//);

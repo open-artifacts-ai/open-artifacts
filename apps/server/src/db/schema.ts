@@ -544,6 +544,8 @@ export const artifactAsks = sqliteTable(
     askedAt: text("asked_at"),
     // 1 when the ask needs a passkey or names a risky action (#2263).
     confirm: integer("confirm"),
+    // 1 while the ask is held for the addressed agent's person to allow (#2577): no question, no inbox row.
+    held: integer("held").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.artifactId, t.commentId, t.addressee] }),
@@ -551,6 +553,138 @@ export const artifactAsks = sqliteTable(
     index("artifact_asks_open_idx")
       .on(t.addressee, t.artifactId)
       .where(sql`${t.open} = 1`),
+  ],
+);
+
+// #2577: someone else's agent was asked. The comment posts; its delivery to the
+// receiver's agents is held until the receiver allows it. One row per
+// (receiver, sender, artifact); the DO holds the facts (the held targets and
+// the words). D1 keeps ids, counts and times only, never the words.
+export const heldRequests = sqliteTable(
+  "held_requests",
+  {
+    id: text("id").primaryKey(),
+    receiverId: text("receiver_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    senderId: text("sender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at").notNull(),
+    lastAt: integer("last_at").notNull(),
+    // "Not now": the receiver hears of this sender's requests again after this (ms).
+    quietUntil: integer("quiet_until"),
+  },
+  (t) => [
+    uniqueIndex("held_requests_pair_idx").on(
+      t.receiverId,
+      t.senderId,
+      t.artifactId,
+    ),
+    index("held_requests_receiver_idx").on(t.receiverId, t.lastAt),
+  ],
+);
+
+// One row per held comment and agent of the receiver. `way` is how it got in.
+export const heldRequestItems = sqliteTable(
+  "held_request_items",
+  {
+    id: text("id").primaryKey(),
+    requestId: text("request_id")
+      .notNull()
+      .references(() => heldRequests.id, { onDelete: "cascade" }),
+    threadId: text("thread_id").notNull(),
+    commentId: text("comment_id").notNull(),
+    agentKey: text("agent_key").notNull(),
+    way: text("way").notNull(),
+    // held | allowed | lapsed | withdrawn
+    state: text("state").notNull().default("held"),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("held_items_comment_idx").on(t.commentId, t.agentKey),
+    index("held_items_request_idx").on(t.requestId, t.state),
+    index("held_items_expiry_idx").on(t.state, t.expiresAt),
+    check("held_items_way", inList("way", ["mention", "reply", "ask", "page"])),
+    check(
+      "held_items_state",
+      inList("state", ["held", "allowed", "lapsed", "withdrawn"]),
+    ),
+  ],
+);
+
+// #2577: whose requests a person's agents take without asking (the "listens
+// to" list). Never trusted from the row alone: every use re-checks that the
+// member is still on the team, can still edit the page, and that the page is
+// not open to guests or to anyone with the link (services/agent-requests.ts).
+export const agentListens = sqliteTable(
+  "agent_listens",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    memberId: text("member_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    artifactId: text("artifact_id").references(() => artifacts.id, {
+      onDelete: "cascade",
+    }),
+    // scope "space": the shared space whose pages it covers (while a page is in it).
+    spaceId: text("space_id").references(() => spaces.id, {
+      onDelete: "cascade",
+    }),
+    until: integer("until").notNull(),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at").notNull(),
+    removedAt: integer("removed_at"),
+  },
+  (t) => [
+    index("agent_listens_owner_idx").on(t.ownerId, t.memberId),
+    check("agent_listens_scope", inList("scope", ["page", "space", "all"])),
+  ],
+);
+
+// #2512 S2: the For you inbox's stored items (mentions and updates). Asks are
+// not here: they come from artifact_asks. `key` makes a write idempotent: one
+// row per (user, key), e.g. "reply:<comment id>", "share:<created at>".
+export const inboxItems = sqliteTable(
+  "inbox_items",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    level: text("level").notNull(),
+    key: text("key").notNull(),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    threadId: text("thread_id"),
+    commentId: text("comment_id"),
+    // The actor's StoredActor (or a guest/user stub), as JSON.
+    actor: text("actor").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // A mention's agent ("{author} mentioned {agent} on {page}"); null otherwise.
+    agentName: text("agent_name"),
+    createdAt: integer("created_at").notNull(),
+    readAt: integer("read_at"),
+  },
+  (t) => [
+    uniqueIndex("inbox_items_key_idx").on(t.userId, t.key),
+    index("inbox_items_read_idx").on(t.userId, t.readAt),
+    index("inbox_items_created_idx").on(t.userId, t.createdAt),
+    check(
+      "inbox_items_kind",
+      inList("kind", ["mention", "reply", "comment", "share", "decision"]),
+    ),
+    check("inbox_items_level", inList("level", ["needs_you", "update"])),
   ],
 );
 
@@ -659,6 +793,27 @@ export const busMachines = sqliteTable(
   (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
 );
 
+// #2552 the latest update report of each machine (BUS_CAPS.runVersion): one
+// row, replaced by the next report. The bus hub writes it; Settings > Machines
+// reads it later. switching_at / last_hello_at / stopped_at carry "the bus
+// stopped": a machine whose latest report is `switching` and that has not said
+// hello for 5 minutes gets stopped_at (no notice yet).
+export const busMachineUpdates = sqliteTable("bus_machine_updates", {
+  machineId: text("machine_id")
+    .primaryKey()
+    .references(() => busMachines.id, { onDelete: "cascade" }),
+  event: text("event").notNull(),
+  fromVersion: text("from_version").notNull(),
+  toVersion: text("to_version").notNull(),
+  reason: text("reason").notNull(),
+  detail: text("detail"),
+  rescueVersion: integer("rescue_version").notNull().default(0),
+  reportedAt: integer("reported_at").notNull(),
+  switchingAt: integer("switching_at"),
+  lastHelloAt: integer("last_hello_at"),
+  stoppedAt: integer("stopped_at"),
+});
+
 // #1291 pending device-flow codes, 10 minutes each. device_code_hash is the
 // sha256 of the CLI's polling secret; user_code is the short code the person
 // sees on the approval page (useless without a session that can connect).
@@ -761,6 +916,15 @@ export const shareEmailMessages = sqliteTable("share_email_messages", {
  */
 export const shareEmailEventsSeen = sqliteTable("share_email_events_seen", {
   eventId: text("event_id").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
+/**
+ * "Don't email me again" (#2590): an address that opted out of outside share
+ * emails, by the SHA-256 of its normalized form (never the address itself).
+ */
+export const emailOptouts = sqliteTable("email_optouts", {
+  addressHash: text("address_hash").primaryKey(),
   createdAt: integer("created_at").notNull(),
 });
 

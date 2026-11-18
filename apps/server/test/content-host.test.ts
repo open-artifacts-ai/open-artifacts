@@ -254,6 +254,50 @@ describe("content host serving", () => {
     expect((await call(`${v9}__view`)).status).toBe(404);
   });
 
+  it("an expired but correctly signed token in a frame gets the expiry page (#2686)", async () => {
+    const id = await pubSite();
+    const old = await signContentPrefix(env, id, 1, Date.now() - 601_000);
+    const r = await call(`${old}__view`, {
+      headers: { "sec-fetch-dest": "iframe", "sec-fetch-mode": "navigate" },
+    });
+    expect(r.status).toBe(410);
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    expect(r.headers.get("content-type")).toContain("text/html");
+    expect(r.headers.get("content-security-policy")).toContain(
+      "frame-ancestors",
+    );
+    expect(r.headers.get("x-content-type-options")).toBe("nosniff");
+    const body = await r.text();
+    expect(body).toContain(
+      "This view has expired. Reload the page to see it again.",
+    );
+    expect(body).not.toContain("<script");
+    expect(body).not.toContain("hi</body>");
+  });
+
+  it("expired tokens keep the plain 404 outside a frame, when forged or when a download", async () => {
+    const id = await pubSite();
+    const old = await signContentPrefix(env, id, 1, Date.now() - 601_000);
+    const hdr = (d: string) => ({ headers: { "sec-fetch-dest": d } });
+    expect((await call(`${old}__view`)).status).toBe(404);
+    expect((await call(`${old}__view`, hdr("document"))).status).toBe(404);
+    expect((await call(`${old}style.css`, hdr("style"))).status).toBe(404);
+    expect((await call(`${old}style.css?dl=1`, hdr("iframe"))).status).toBe(
+      404,
+    );
+    // Wrong signature (tampered expiry), wrong version, wrong artifact.
+    const forged = old.replace(/\/c\/(\d+)\./, (_, e) => `/c/${+e - 1}.`);
+    expect((await call(`${forged}__view`, hdr("iframe"))).status).toBe(404);
+    expect(
+      (await call(`${old.replace("/v1/", "/v2/")}__view`, hdr("iframe")))
+        .status,
+    ).toBe(404);
+    // A malformed token is not an expired one.
+    expect(
+      (await call(`/c/1.AAAA/${id}/v1/__view`, hdr("iframe"))).status,
+    ).toBe(404);
+  });
+
   it("deleted artifacts 404 even with a valid token", async () => {
     const id = await pubSite();
     const prefix = await signContentPrefix(env, id, 1);

@@ -2,9 +2,9 @@ import { expect, freshEmail, loginAs, test, uniq } from "./fixtures";
 
 const TITLE = "What do you like to be called?";
 
-test("a new user names themselves in the dialog, and Profile shows it", async ({
-  page,
-}) => {
+test("a new user names themselves in the dialog, and Profile shows it", {
+  tag: "@smoke",
+}, async ({ page }) => {
   // Dev login names the user after the email's local part: not a real name.
   await loginAs(page, freshEmail("dn"), "member", { named: false });
   await page.goto("/");
