@@ -29,6 +29,7 @@ import {
   thisBrowser,
   thisSubscription,
   turnOn,
+  useMeId,
   usePatchSubscription,
   usePushKey,
   usePushSubscriptions,
@@ -112,7 +113,8 @@ function Levels({
   const blocked = supported && perm === "denied";
   // This browser's own row, from the list (S5, #2774).
   const subs = usePushSubscriptions(pushKey !== null && supported);
-  const mine = thisSubscription(subs.data);
+  const userId = useMeId();
+  const mine = thisSubscription(subs.data, userId);
   const note =
     pushKey === null
       ? null
@@ -232,6 +234,7 @@ function NeedsYouBrowser({
   onRefused: (p: NotificationPermission) => void;
 }) {
   const save = useSavePrefs();
+  const userId = useMeId();
   const qc = useQueryClient();
   const patch = usePatchSubscription();
   const [busy, setBusy] = useState(false);
@@ -246,7 +249,7 @@ function NeedsYouBrowser({
     if (!next || !pushKey) return;
     setBusy(true);
     try {
-      await turnOn(pushKey, thisBrowser());
+      await turnOn(pushKey, thisBrowser(), userId);
       await qc.invalidateQueries({ queryKey: pushSubsKey });
       if (!prefs.needsYou.browser)
         await save.mutateAsync({

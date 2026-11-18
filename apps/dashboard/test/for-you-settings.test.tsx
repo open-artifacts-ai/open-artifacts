@@ -2,7 +2,7 @@
 // (R.meNotificationPrefs, R.meInboxMutes) and this browser's notifications
 // (R.mePushKey, R.mePushSubscriptions, PATCH R.mePushSubscription, #2774).
 import { NotificationPrefsSchema, R } from "@oa/shared";
-import { createHandlers } from "@oa/shared/mocks";
+import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,8 @@ import {
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
+
+const ME_ID = fixtures.me.user.id;
 
 /** A browser that can do web push, with our worker and its subscription faked. */
 function fakePush(start: NotificationPermission, answer = start) {
@@ -240,7 +242,10 @@ describe("For you settings", () => {
 
 /** This browser's subscription on the server, with its switches (PROVISIONAL #2774). */
 function subscribed(over: Record<string, unknown> = {}, patchStatus = 200) {
-  localStorage.setItem("oa.push.subscription", "sub_9");
+  localStorage.setItem(
+    "oa.push.subscription.v2",
+    JSON.stringify({ userId: ME_ID, id: "sub_9" }),
+  );
   let item = {
     id: "sub_9",
     label: "Chrome on this Mac",
@@ -430,7 +435,7 @@ describe("this browser's notifications (slice 3, S5)", () => {
     ]) {
       expect(el).toHaveAttribute("aria-checked", "false");
       expect(el).toBeDisabled();
-      expect(el).toHaveAccessibleDescription("Not set up on this server");
+      expect(el).toHaveAccessibleDescription("Not set up here yet");
     }
     expect(
       screen.getByText("Browser notifications aren't available here."),
@@ -540,5 +545,74 @@ describe("the mock's per-browser switches (PROVISIONAL #2774)", () => {
       body: JSON.stringify({ updates: true }),
     });
     expect(gone.status).toBe(404);
+  });
+});
+
+describe("a subscription left by someone else (Axe)", () => {
+  const KEY = "oa.push.subscription.v2";
+  const keep = (userId: string) =>
+    localStorage.setItem(KEY, JSON.stringify({ userId, id: "sub_9" }));
+  const live = async () => {
+    const f = fakePush("granted");
+    await f.pushManager.subscribe();
+    return f;
+  };
+
+  it("another member signs in: the browser's subscription goes, and Settings shows it off", async () => {
+    keep("someone-else");
+    const f = await live();
+    server.use(
+      http.get(`*${R.mePushSubscriptions}`, () =>
+        HttpResponse.json({ items: [] }),
+      ),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    mount("/settings/notifications");
+    const sw = await needs();
+    await waitFor(async () =>
+      expect(await f.pushManager.getSubscription()).toBeNull(),
+    );
+    expect(localStorage.getItem(KEY)).toBeNull();
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    expect(localStorage.getItem("oa.push.subscription")).toBeNull();
+  });
+
+  it("an old unscoped id is never read as this member's", async () => {
+    localStorage.setItem("oa.push.subscription", "sub_9");
+    const sub = subscribed();
+    localStorage.removeItem(KEY);
+    localStorage.setItem("oa.push.subscription", "sub_9");
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const sw = await page();
+    await waitFor(() => expect(sw).toBeEnabled());
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    expect(localStorage.getItem("oa.push.subscription")).toBeNull();
+  });
+
+  it("the same member reloading keeps it", async () => {
+    keep(ME_ID);
+    const f = await live();
+    const sub = subscribed();
+    keep(ME_ID);
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    mount("/settings/notifications");
+    const sw = await needs();
+    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+    expect(await f.pushManager.getSubscription()).not.toBeNull();
+    expect(localStorage.getItem(KEY)).not.toBeNull();
+  });
+
+  it("a list that fails to load removes nothing", async () => {
+    keep("someone-else");
+    const f = await live();
+    server.use(
+      http.get(`*${R.mePushSubscriptions}`, () => err("internal", 500)),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    mount("/settings/notifications");
+    await needs();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await f.pushManager.getSubscription()).not.toBeNull();
+    expect(localStorage.getItem(KEY)).not.toBeNull();
   });
 });

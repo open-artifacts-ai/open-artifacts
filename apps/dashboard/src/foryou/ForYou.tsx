@@ -72,6 +72,8 @@ import {
   pushSupported,
   thisBrowser,
   turnOn,
+  useDropForeignSubscription,
+  useMeId,
   useNotificationOpen,
   usePushKey,
   useThisBrowserOn,
@@ -101,6 +103,8 @@ export function NotificationOpen() {
     [navigate],
   );
   useNotificationOpen(go);
+  // Axe: a subscription left by another member on this browser is dropped.
+  useDropForeignSubscription();
   return null;
 }
 
@@ -577,6 +581,7 @@ function ForYouPanel({
  * the browser's own prompt needs; "Not now" hides it for good.
  */
 function PushNudge({ needsYou }: { needsYou: InboxItem[] }) {
+  const userId = useMeId();
   const key = usePushKey(pushSupported());
   const prefs = usePrefs(!!key.data);
   const savePrefs = useSavePrefs();
@@ -598,7 +603,7 @@ function PushNudge({ needsYou }: { needsYou: InboxItem[] }) {
   const turn = async () => {
     setBusy(true);
     try {
-      await turnOn(key.data as string, thisBrowser());
+      await turnOn(key.data as string, thisBrowser(), userId);
       // As the Settings switch does: Needs you reaches the browser now.
       const p = prefs.data;
       if (p && !p.needsYou.browser)

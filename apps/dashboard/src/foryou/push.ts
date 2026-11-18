@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { ApiClientError, api } from "../api/client";
+import { useMe } from "../auth/useMe";
 import { safePath } from "./model";
 import {
   type PushSubscriptionItem,
@@ -25,8 +26,37 @@ import {
 
 export const SW_URL = "/sw.js";
 export const SW_SCOPE = "/notifications/sw/";
-/** This browser's subscription id on the server (to remove it from here). */
-const SUB_KEY = "oa.push.subscription";
+/**
+ * This browser's subscription on the server, with the member it belongs to:
+ * `{ userId, id }`, so one member's id is never read as another's (Axe). The
+ * old unscoped key ("oa.push.subscription") is ignored and cleared.
+ */
+const SUB_KEY = "oa.push.subscription.v2";
+const OLD_SUB_KEY = "oa.push.subscription";
+
+type StoredSub = { userId: string; id: string };
+
+function storedSub(): StoredSub | null {
+  try {
+    localStorage.removeItem(OLD_SUB_KEY);
+    const v = JSON.parse(localStorage.getItem(SUB_KEY) ?? "null") as unknown;
+    const o = v as Partial<StoredSub> | null;
+    return o && typeof o.userId === "string" && typeof o.id === "string"
+      ? { userId: o.userId, id: o.id }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredSub() {
+  try {
+    localStorage.removeItem(SUB_KEY);
+    localStorage.removeItem(OLD_SUB_KEY);
+  } catch {
+    // Session only.
+  }
+}
 const NUDGE_KEY = "oa.push.nudge.dismissed";
 
 /** OA Product's words (#2512, slice 3) and Design's (screens, tab 3), word for word. */
@@ -48,7 +78,7 @@ export const PUSH_WORDS = {
     `An agent waited ${d} for you today. Get told the moment one is waiting?`,
   onFor: (browser: string) => `On for ${browser}`,
   /** The server has no push key: both switches stay off. */
-  noKey: "Not set up on this server",
+  noKey: "Not set up here yet",
   /** Updates needs this browser subscribed first. */
   turnOnFirst: "Turn on Needs you here first",
 } as const;
@@ -162,7 +192,19 @@ export class PermissionRefused extends Error {
 }
 
 /** Turn on in this browser: call from a click only (the browser asks then). */
-export async function turnOn(publicKey: string, label: string) {
+export async function turnOn(publicKey: string, label: string, userId: string) {
+  turningOn = true;
+  try {
+    return await subscribeHere(publicKey, label, userId);
+  } finally {
+    turningOn = false;
+  }
+}
+
+/** A turn-on is under way: the reconcile below leaves the browser alone. */
+let turningOn = false;
+
+async function subscribeHere(publicKey: string, label: string, userId: string) {
   const p = await Notification.requestPermission();
   if (p !== "granted") throw new PermissionRefused(p);
   const reg = await registration();
@@ -187,7 +229,7 @@ export async function turnOn(publicKey: string, label: string) {
     z.object({ id: z.string() }),
   );
   try {
-    localStorage.setItem(SUB_KEY, id);
+    localStorage.setItem(SUB_KEY, JSON.stringify({ userId, id }));
   } catch {
     // Session only: Settings still sees the browser's own subscription.
   }
@@ -198,13 +240,8 @@ export async function turnOn(publicKey: string, label: string) {
 export async function turnOff(): Promise<boolean> {
   const sub = await currentSubscription();
   await sub?.unsubscribe().catch(() => false);
-  let id: string | null = null;
-  try {
-    id = localStorage.getItem(SUB_KEY);
-    localStorage.removeItem(SUB_KEY);
-  } catch {
-    id = null;
-  }
+  const id = storedSub()?.id ?? null;
+  clearStoredSub();
   if (id) await api.send("DELETE", R.mePushSubscription(id), undefined);
   const left = await api.get(
     R.mePushSubscriptions,
@@ -242,13 +279,8 @@ const bounded = <T>(p: Promise<T>, ms: number) =>
 export async function forgetThisBrowser(
   stepMs = SIGN_OUT_STEP_MS,
 ): Promise<void> {
-  let id: string | null = null;
-  try {
-    id = localStorage.getItem(SUB_KEY);
-    localStorage.removeItem(SUB_KEY);
-  } catch {
-    id = null;
-  }
+  const id = storedSub()?.id ?? null;
+  clearStoredSub();
   if (id) {
     const stop = new AbortController();
     await bounded(
@@ -274,13 +306,16 @@ export async function forgetThisBrowser(
 
 export const pushSubsKey = ["push-subscriptions"] as const;
 
-/** This browser's subscription id on the server, if it kept one. */
-export function thisSubscriptionId(): string | null {
-  try {
-    return localStorage.getItem(SUB_KEY);
-  } catch {
-    return null;
-  }
+/** This browser's subscription id on the server, if it kept one for this member. */
+export function thisSubscriptionId(userId: string): string | null {
+  const st = storedSub();
+  return st && st.userId === userId ? st.id : null;
+}
+
+/** The signed-in member's id, or "" before they are known. */
+export function useMeId(): string {
+  const me = useMe();
+  return me.status === "authed" ? me.me.user.id : "";
 }
 
 /** PROVISIONAL (#2774): every browser the member turned notifications on in, with its switches. */
@@ -295,8 +330,9 @@ export const usePushSubscriptions = (enabled = true) =>
 /** This browser's own row in the list, by the id it kept (undefined: not subscribed). */
 export const thisSubscription = (
   list: PushSubscriptionList | undefined,
+  userId: string,
 ): PushSubscriptionItem | undefined => {
-  const id = thisSubscriptionId();
+  const id = userId ? thisSubscriptionId(userId) : null;
   return id ? list?.items.find((x) => x.id === id) : undefined;
 };
 
@@ -397,4 +433,49 @@ export function useNotificationOpen(go: (path: string) => void) {
     c.addEventListener("message", on);
     return () => c.removeEventListener("message", on);
   }, [go, qc]);
+}
+
+/**
+ * Axe: a browser subscription belongs to the member who turned it on. When a
+ * session ends without the sign-out button (it expired, cookies were cleared)
+ * and another member signs in on this profile, the old member's subscription
+ * would still deliver here. Once this member's list is read: if the browser
+ * has a subscription that isn't one of theirs (the kept id is another
+ * member's, or isn't in their list), remove it from the browser (the push
+ * service then answers 410 and the server drops the row) and forget the id.
+ * Never throws; each step is bounded; a list that hasn't loaded, or failed,
+ * removes nothing. Returns true when it removed one.
+ */
+export async function dropForeignSubscription(
+  userId: string,
+  list: { id: string }[],
+  stepMs = SIGN_OUT_STEP_MS,
+): Promise<boolean> {
+  if (!userId || turningOn) return false;
+  const st = storedSub();
+  if (st && st.userId === userId && list.some((x) => x.id === st.id))
+    return false;
+  const sub = await bounded(currentSubscription(), stepMs);
+  if (turningOn) return false;
+  clearStoredSub();
+  if (!sub) return false;
+  await bounded(sub.unsubscribe(), stepMs);
+  return true;
+}
+
+/** Mount once in the signed-in app: runs dropForeignSubscription when this member's list is read. */
+export function useDropForeignSubscription() {
+  const me = useMe();
+  const authed = me.status === "authed";
+  const userId = authed ? me.me.user.id : "";
+  const key = usePushKey(authed && pushSupported());
+  const subs = usePushSubscriptions(!!key.data && authed && pushSupported());
+  const qc = useQueryClient();
+  const items = subs.isSuccess && !subs.isFetching ? subs.data.items : null;
+  useEffect(() => {
+    if (!items || !userId) return;
+    void dropForeignSubscription(userId, items).then((gone) => {
+      if (gone) void qc.invalidateQueries({ queryKey: pushSubsKey });
+    });
+  }, [items, userId, qc]);
 }

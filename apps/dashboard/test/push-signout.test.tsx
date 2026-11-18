@@ -24,7 +24,10 @@ beforeEach(() => {
     configurable: true,
     value: { getRegistration: async () => reg },
   });
-  localStorage.setItem("oa.push.subscription", "sub_1");
+  localStorage.setItem(
+    "oa.push.subscription.v2",
+    JSON.stringify({ userId: "u1", id: "sub_1" }),
+  );
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -46,7 +49,7 @@ describe("forgetThisBrowser", () => {
       "unsubscribe",
     ]);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem("oa.push.subscription")).toBeNull();
+    expect(localStorage.getItem("oa.push.subscription.v2")).toBeNull();
   });
 
   it("a failing delete still unsubscribes, and never throws", async () => {
