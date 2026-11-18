@@ -142,7 +142,8 @@ describe("GET R.meInbox: Needs you", () => {
     expect(JSON.stringify(it0)).not.toContain("Option A");
     const all = await inbox(me);
     expect(all.later).toEqual([]);
-    expect(all.updates).toEqual([]);
+    // S2: the share that gave me the page is an update; asks never are.
+    expect(all.updates.every((u) => u.kind === "share")).toBe(true);
     expect(all.cursor).toBeNull();
   });
 
@@ -299,7 +300,8 @@ describe("GET R.meInbox: Needs you", () => {
     await ask(id, [u]);
     const r = await api(app, R.me, u.cookie);
     const j = (await r.json()) as Me;
-    expect(j.inbox).toEqual({ needsYou: 2, unreadUpdates: 0 });
+    // S2: the share that gave u the page is the one unread update.
+    expect(j.inbox).toEqual({ needsYou: 2, unreadUpdates: 1 });
     expect((await inbox(u)).counts.needsYou).toBe(2);
   });
 

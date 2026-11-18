@@ -26,10 +26,9 @@ async function createAndCheck(page: Page) {
   );
 }
 
-test("a folder with index.html and style.css uploads and the style applies", async ({
-  page,
-  member: _,
-}) => {
+test("a folder with index.html and style.css uploads and the style applies", {
+  tag: "@smoke",
+}, async ({ page, member: _ }) => {
   const dir = mkdtempSync(join(tmpdir(), "oa-e2e-upload-"));
   const site = join(dir, "site");
   mkdirSync(site);

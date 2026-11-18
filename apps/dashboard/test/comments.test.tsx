@@ -948,6 +948,29 @@ describe("comments: actions", () => {
     expect(posts).toHaveLength(0);
   });
 
+  it("the phone sheet closes on Esc with an empty note box, and on its × even with a field focused", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    const opener = () =>
+      screen.findByRole("button", { name: "Comments, 1 open" });
+    fireEvent.click(await opener());
+    let sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const box = await within(sheet).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    box.focus();
+    fireEvent.keyDown(box, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(await opener());
+    sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const again = await within(sheet).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    again.focus();
+    fireEvent.click(screen.getByRole("button", { name: "Close comments" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("#2118: Esc in the note box keeps the draft and does not close the phone sheet", async () => {
     viewport(400);
     mount(viewerPath(OWNED));

@@ -222,12 +222,9 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Four shards on every event: since the 180-job plan (2026-11-16) a pull
-    // request no longer saves concurrency with two, and two set its wait.
+    // Four shards on every event but a pull request, which runs the one-shard
+    // smoke (see "pull request smoke" below for the exact expressions).
     const SHARDS = [1, 2, 3, 4];
-    expect(job.strategy.matrix.shard).toEqual(SHARDS);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
     expect(job["timeout-minutes"]).toBe(15);
     expect(job.strategy["fail-fast"]).toBe(false);
     // Browsers and their OS deps come baked into the image, pinned by digest:
@@ -317,6 +314,172 @@ describe("ci.yml", () => {
     // The deleted hosted package has no step left.
     expect(ci("e2e.sh")).not.toContain("provisioning");
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
+  });
+  // The pull request smoke: pull requests run only the @smoke tests on one
+  // shard; the merge queue and every other event run the whole suite on four.
+  describe("pull request smoke", () => {
+    const job = () => w.jobs["e2e-shard"];
+    it("only the pull_request event gets one shard; anything else gets four", () => {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job().strategy.matrix.shard).toBe(
+        "${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1, 2, 3, 4]') }}",
+      );
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job().env.E2E_SHARD).toBe(
+        "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 1 || 4 }}",
+      );
+      // Decided inside the job: no job-level if (a skipped job passes a
+      // required check), and the aggregate and its name are unchanged.
+      expect(job().if).toBeUndefined();
+      expect(w.jobs.e2e.needs).toEqual(["e2e-shard"]);
+      // The workflow never names the filter: only e2e.sh applies it.
+      expect(JSON.stringify(job())).not.toContain("@smoke");
+      expect(JSON.stringify(job())).not.toContain("--grep");
+    });
+    // Runs e2e.sh with a stand-in pnpm that records its arguments. For
+    // `--list` it prints `list` (default: two tests) and exits `listExit`.
+    const LIST2 = JSON.stringify({
+      suites: [{ specs: [{}], suites: [{ specs: [{}] }] }],
+    });
+    const run = (
+      suite: string,
+      event: string | undefined,
+      o: { list?: string; listExit?: number } = {},
+    ) => {
+      const dir = mkdtempSync(join(tmpdir(), "e2e-smoke-"));
+      const log = join(dir, "args");
+      writeFileSync(join(dir, "list.json"), o.list ?? LIST2);
+      writeFileSync(
+        join(dir, "pnpm"),
+        `#!/usr/bin/env bash\necho "$*" >> "${log}"\ncase " $* " in *" --list "*) cat "${join(dir, "list.json")}"; exit ${o.listExit ?? 0};; esac\n`,
+        { mode: 0o755 },
+      );
+      const env: Record<string, string> = {
+        PATH: `${dir}:${process.env.PATH}`,
+        HOME: dir,
+      };
+      if (event !== undefined) env.GITHUB_EVENT_NAME = event;
+      const r = spawnSync("bash", [join(root, "scripts/ci/e2e.sh"), suite], {
+        env,
+        encoding: "utf8",
+      });
+      const calls = existsSync(log)
+        ? readFileSync(log, "utf8").trim().split("\n")
+        : [];
+      return { status: r.status, calls, stderr: r.stderr };
+    };
+    // The playwright runs (not the lists, not the runtime build before them).
+    const ran = (r: ReturnType<typeof run>) =>
+      r.calls
+        .filter((c) => c.includes("playwright test") && !c.includes("--list"))
+        .join("\n");
+    it("a pull request lists, then runs @smoke on the mock and real suites (real: Chromium only)", () => {
+      const mock = run("mock", "pull_request");
+      expect(mock.status).toBe(0);
+      expect(mock.calls.some((c) => c.includes("--grep @smoke --list"))).toBe(
+        true,
+      );
+      expect(ran(mock)).toContain("playwright test --grep @smoke");
+      expect(mock.calls.join("\n")).not.toContain("--project");
+      const real = run("real", "pull_request");
+      expect(real.status).toBe(0);
+      // The list and the run use the same config and project.
+      expect(real.calls.join("\n")).toContain(
+        "playwright test -c playwright.real.config.ts --grep @smoke --project chromium --list",
+      );
+      expect(ran(real)).toContain("--grep @smoke --project chromium");
+    });
+    it("a smoke selection of 0 tests, an unreadable list, or a failed list fails before the run", () => {
+      for (const suite of ["mock", "real"]) {
+        for (const o of [
+          { list: JSON.stringify({ suites: [] }) },
+          { list: JSON.stringify({ suites: [{ specs: [] }] }) },
+          { list: "not json" },
+          { list: "" },
+          { list: JSON.stringify({}) },
+          { list: LIST2, listExit: 1 },
+          // Playwright exits 0 for an empty selection with --shard, so exit
+          // codes alone prove nothing: a zero count is what must fail.
+          { list: JSON.stringify({ suites: [] }), listExit: 0 },
+        ]) {
+          const r = run(suite, "pull_request", o);
+          expect(r.status, `${suite} ${JSON.stringify(o)}`).not.toBe(0);
+          expect(r.stderr).toContain("e2e:");
+          expect(ran(r), `${suite} ${JSON.stringify(o)}`).toBe("");
+        }
+      }
+    });
+    it("a pull request skips spaces, ui and landing", () => {
+      for (const suite of ["spaces", "ui", "landing"]) {
+        const r = run(suite, "pull_request");
+        expect(r.status).toBe(0);
+        expect(r.calls, suite).toEqual([]);
+      }
+    });
+    it("every other event, an empty or a missing one runs everything and never lists", () => {
+      for (const event of [
+        "merge_group",
+        "workflow_dispatch",
+        "push",
+        "pull_request_target",
+        "Pull_Request",
+        "pull_request ",
+        "",
+        undefined,
+      ]) {
+        for (const suite of ["mock", "real"]) {
+          // Even a list that would be empty changes nothing here.
+          const r = run(suite, event, { list: "", listExit: 1 });
+          const all = r.calls.join("\n");
+          expect(r.status, `${suite} on ${event}`).toBe(0);
+          expect(all, `${suite} on ${event}`).toContain("playwright test");
+          expect(all, `${suite} on ${event}`).not.toContain("--list");
+          expect(all, `${suite} on ${event}`).not.toContain("@smoke");
+          expect(all, `${suite} on ${event}`).not.toContain("--grep");
+          expect(all, `${suite} on ${event}`).not.toContain("--project");
+        }
+        for (const suite of ["spaces", "ui", "landing"])
+          expect(run(suite, event).calls, `${suite} on ${event}`).not.toEqual(
+            [],
+          );
+      }
+    });
+    it("the workflow and the script never rely on Playwright's empty-selection exit", () => {
+      expect(ci("e2e.sh")).not.toContain("--pass-with-no-tests");
+      expect(ci("e2e.sh")).not.toContain("passWithNoTests");
+      const cfgs = readdirSync(join(root, "apps/dashboard")).filter((f) =>
+        f.startsWith("playwright"),
+      );
+      for (const c of cfgs)
+        expect(read(`apps/dashboard/${c}`)).not.toContain("passWithNoTests");
+    });
+    it("the smoke set is not empty and not large", () => {
+      const dir = join(root, "apps/dashboard/e2e");
+      const files: string[] = [];
+      const walk = (d: string) => {
+        for (const e of readdirSync(d, { withFileTypes: true })) {
+          const p = join(d, e.name);
+          if (e.isDirectory()) {
+            if (e.name !== "staging") walk(p);
+          } else if (e.name.endsWith(".spec.ts")) files.push(p);
+        }
+      };
+      walk(dir);
+      const tagged = files.reduce(
+        (n, f) => n + (readFileSync(f, "utf8").match(/"@smoke"/g) ?? []).length,
+        0,
+      );
+      // Source count: a few looped tests carry a tag on one iteration only.
+      expect(tagged).toBeGreaterThan(0);
+      expect(tagged).toBeLessThanOrEqual(60);
+      // Nothing in the browser suites outside mock and real carries the tag.
+      expect(
+        files.filter(
+          (f) =>
+            /"@smoke"/.test(readFileSync(f, "utf8")) && f.includes("/spaces/"),
+        ),
+      ).toEqual([]);
+    });
   });
   describe("release-only fast path", () => {
     const REQUIRED = [

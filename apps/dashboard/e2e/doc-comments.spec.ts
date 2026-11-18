@@ -2,8 +2,9 @@
 // bridge and no pins: the list opens, a new comment with an @-mention posts,
 // an ask's pick posts. (b) "Comment" on a selection puts it in the
 // whole-page composer as a Markdown quote, then a blank line, then the
-// cursor; several lines become one quoted paragraph each. At 1280 and 390,
-// light and dark, with axe. Writes PNGs to SHOTS_DIR when set.
+// cursor. Light at 1280 with axe (the multi-line quote and the touch chip
+// are unit tests: test/selection-comment.test.tsx). Writes PNGs to SHOTS_DIR
+// when set.
 import type { ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { expect, type Page, type Request, test } from "@playwright/test";
@@ -124,156 +125,81 @@ const select = (
     { from, to, part },
   );
 
-for (const scheme of ["light", "dark"] as const)
-  for (const width of [1280, 390])
-    test.describe(`${scheme} ${width}`, () => {
-      test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
+// One theme and one size: the flow is the same at every one (#2711).
+const scheme = "light";
+const width = 1280;
+test.describe(`${scheme} ${width}`, () => {
+  test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
 
-      test("(a) page-level comments: post with an @-mention, pick an ask, no pins", async ({
-        page,
-      }, info) => {
-        await open(page, info, "&asks=1");
-        // The list opens from the title bar (a column, or a sheet on a phone).
-        await page.getByRole("button", { name: /^Comments/ }).click();
-        const box = composer(page);
-        await expect(box).toBeVisible();
-        // A doc has no pins.
-        await expect(page.getByRole("button", { name: /^Pin/ })).toHaveCount(0);
-        const posted = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" &&
-            r.url().endsWith(`/api/v1/artifacts/${LANDING}/comments`),
-        );
-        await box.click();
-        await page.keyboard.type("Please check this @Cla");
-        await page.getByRole("option", { name: /Claude Code/ }).click();
-        await page.keyboard.type("thanks");
-        await page
-          .getByRole("button", { name: "Comment", exact: true })
-          .click();
-        const body = (await posted).postDataJSON();
-        expect(body).toMatchObject({
-          anchor: { kind: "note" },
-          mentions: [{ key: "agent:claude-code" }],
-        });
-        expect(body.body).toContain("@Claude Code");
-        await expect(page.getByText(/Please check this/).first()).toBeVisible();
-        // An ask for me: pick B.
-        const picked = page.waitForRequest(
-          (r: Request) => r.method() !== "GET" && /\/comments\//.test(r.url()),
-        );
-        await page.getByRole("button", { name: /Compact hero/ }).click();
-        await picked;
-        await expect(
-          page.getByRole("button", { name: "Change" }),
-        ).toBeVisible();
-        await shot(page, info, `doc-comments-${scheme}-${width}.png`);
-        await axe(page);
+  test(
+    "(a) page-level comments: post with an @-mention, pick an ask, no pins",
+    { tag: "@smoke" },
+    async ({ page }, info) => {
+      await open(page, info, "&asks=1");
+      // The list opens from the title bar (a column, or a sheet on a phone).
+      await page.getByRole("button", { name: /^Comments/ }).click();
+      const box = composer(page);
+      await expect(box).toBeVisible();
+      // A doc has no pins.
+      await expect(page.getByRole("button", { name: /^Pin/ })).toHaveCount(0);
+      const posted = page.waitForRequest(
+        (r: Request) =>
+          r.method() === "POST" &&
+          r.url().endsWith(`/api/v1/artifacts/${LANDING}/comments`),
+      );
+      await box.click();
+      await page.keyboard.type("Please check this @Cla");
+      await page.getByRole("option", { name: /Claude Code/ }).click();
+      await page.keyboard.type("thanks");
+      await page.getByRole("button", { name: "Comment", exact: true }).click();
+      const body = (await posted).postDataJSON();
+      expect(body).toMatchObject({
+        anchor: { kind: "note" },
+        mentions: [{ key: "agent:claude-code" }],
       });
+      expect(body.body).toContain("@Claude Code");
+      await expect(page.getByText(/Please check this/).first()).toBeVisible();
+      // An ask for me: pick B.
+      const picked = page.waitForRequest(
+        (r: Request) => r.method() !== "GET" && /\/comments\//.test(r.url()),
+      );
+      await page.getByRole("button", { name: /Compact hero/ }).click();
+      await picked;
+      await expect(page.getByRole("button", { name: "Change" })).toBeVisible();
+      await shot(page, info, `doc-comments-${scheme}-${width}.png`);
+      await axe(page);
+    },
+  );
 
-      test("(b) Comment on a selection: a quote, a blank line, then the cursor", async ({
-        page,
-      }, info) => {
-        await open(page, info, "");
-        // Part of one line: "landing page".
-        await select(page, "We ship", "We ship", [16, 28]);
-        const button = page.locator(".oa-doc-selcomment").getByRole("button", {
-          name: "Comment",
-        });
-        await expect(button).toBeVisible();
-        await shot(page, info, `doc-comment-selection-${scheme}-${width}.png`);
-        await button.click();
-        const box = composer(page);
-        await expect(box).toBeFocused();
-        await expect(box).toHaveValue("> landing page\n\n");
-        // The cursor is after the blank line: typing goes there.
-        await page.keyboard.type("Is this the right name?");
-        await expect(box).toHaveValue(
-          "> landing page\n\nIs this the right name?",
-        );
-        await shot(page, info, `doc-comment-quoted-${scheme}-${width}.png`);
-        const posted = page.waitForRequest(
-          (r: Request) =>
-            r.method() === "POST" &&
-            r.url().endsWith(`/api/v1/artifacts/${LANDING}/comments`),
-        );
-        await page
-          .getByRole("button", { name: "Comment", exact: true })
-          .click();
-        expect((await posted).postDataJSON()).toMatchObject({
-          anchor: { kind: "note" },
-          body: "> landing page\n\nIs this the right name?",
-        });
-        await axe(page);
-      });
-
-      test("(b) several lines become one quoted paragraph each, ahead of anything typed", async ({
-        page,
-      }, info) => {
-        await open(page, info, "");
-        // Where the list sits beside the doc (1280), a note typed first
-        // stays after the quote; on a phone the sheet covers the doc, so
-        // the selection comes first there.
-        const beside = width > 600;
-        if (beside) {
-          await page.getByRole("button", { name: /^Comments/ }).click();
-          await composer(page).click();
-          await page.keyboard.type("Typed first.");
-        }
-        await select(page, "Checklist", "Final copy");
-        await page
-          .locator(".oa-doc-selcomment")
-          .getByRole("button", { name: "Comment" })
-          .click();
-        await expect(composer(page)).toHaveValue(
-          `> Checklist\n>\n> Final copy reviewed\n>\n> Hero image exported\n>\n> Analytics events checked\n\n${beside ? "Typed first." : ""}`,
-        );
-        await expect(composer(page)).toBeFocused();
-      });
-
-      test("(b) a reader can comment on a selection too", async ({
-        page,
-      }, info) => {
-        await open(page, info, "-readonly");
-        await select(page, "We ship", "We ship", [16, 28]);
-        await page
-          .locator(".oa-doc-selcomment")
-          .getByRole("button", { name: "Comment" })
-          .click();
-        await expect(composer(page)).toHaveValue("> landing page\n\n");
-      });
+  test("(b) Comment on a selection: a quote, a blank line, then the cursor", async ({
+    page,
+  }, info) => {
+    await open(page, info, "");
+    // Part of one line: "landing page".
+    await select(page, "We ship", "We ship", [16, 28]);
+    const button = page.locator(".oa-doc-selcomment").getByRole("button", {
+      name: "Comment",
     });
-
-// On a touch screen the system's Copy menu sits above a selection: the
-// chip goes below it.
-for (const scheme of ["light", "dark"] as const)
-  test.describe(`touch ${scheme} 390`, () => {
-    test.use({
-      colorScheme: scheme,
-      viewport: { width: 390, height: 900 },
-      hasTouch: true,
-      isMobile: true,
+    await expect(button).toBeVisible();
+    await shot(page, info, `doc-comment-selection-${scheme}-${width}.png`);
+    await button.click();
+    const box = composer(page);
+    await expect(box).toBeFocused();
+    await expect(box).toHaveValue("> landing page\n\n");
+    // The cursor is after the blank line: typing goes there.
+    await page.keyboard.type("Is this the right name?");
+    await expect(box).toHaveValue("> landing page\n\nIs this the right name?");
+    await shot(page, info, `doc-comment-quoted-${scheme}-${width}.png`);
+    const posted = page.waitForRequest(
+      (r: Request) =>
+        r.method() === "POST" &&
+        r.url().endsWith(`/api/v1/artifacts/${LANDING}/comments`),
+    );
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    expect((await posted).postDataJSON()).toMatchObject({
+      anchor: { kind: "note" },
+      body: "> landing page\n\nIs this the right name?",
     });
-    test("the Comment chip sits below the selection", async ({
-      page,
-    }, info) => {
-      await open(page, info, "");
-      expect(
-        await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
-      ).toBe(true);
-      await select(page, "We ship", "We ship", [16, 28]);
-      const chip = page.locator(".oa-doc-selcomment");
-      await expect(chip).toBeVisible();
-      const sel = await page.evaluate(() => {
-        const r = getSelection()?.getRangeAt(0).getBoundingClientRect();
-        return r ? { top: r.top, bottom: r.bottom } : null;
-      });
-      const box = await chip.boundingBox();
-      expect(sel && box).toBeTruthy();
-      if (!sel || !box) return;
-      expect(box.y).toBeGreaterThanOrEqual(sel.bottom);
-      await shot(page, info, `doc-comment-selection-touch-${scheme}-390.png`);
-      await chip.getByRole("button", { name: "Comment" }).tap();
-      await expect(composer(page)).toHaveValue("> landing page\n\n");
-    });
+    await axe(page);
   });
+});

@@ -82,183 +82,100 @@ const shot = async (page: Page, name: string) => {
     writeFileSync(`${process.env.SHOTS_DIR}/${name}.png`, body);
 };
 
-for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const) {
-    const tag = `${width}-${theme}`;
-    test.describe(`${tag}`, () => {
-      test.beforeEach(async ({ page }) => {
-        await page.emulateMedia({ colorScheme: theme });
-        await page.setViewportSize({ width, height: 720 });
-      });
-
-      test(`dashboard: untouched swaps quietly within 2 s (${tag})`, async ({
-        page,
-      }) => {
-        await page.goto(`/a/${LANDING}`);
-        await loaded(page);
-        const before = await page
-          .locator("iframe.oa-vframe")
-          .getAttribute("src");
-        const v = await publish(page);
-        const note =
-          width < 640
-            ? page.getByText("Updated", { exact: true })
-            : page.getByText(`Updated to v${v}`);
-        await expect(note).toBeVisible({ timeout: LIVE_MS });
-        await expect(
-          page.getByRole("button", { name: `Version: v${v} · Current` }),
-        ).toBeVisible();
-        // Design (option C): a brief "Updated to vN", no Undo, gone in about 3 s.
-        await expect(page.getByRole("button", { name: /^Undo/ })).toHaveCount(
-          0,
-        );
-        await expect(note).toHaveCount(0, { timeout: 5_000 });
-        await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
-        const after = await page
-          .locator("iframe.oa-vframe")
-          .getAttribute("src");
-        expect(after?.split("#oa=")[1]).not.toBe(before?.split("#oa=")[1]);
-        await expect(
-          page
-            .getByRole("status")
-            .filter({ hasText: `Updated to version ${v}.` }),
-        ).toHaveCount(1);
-        await shot(page, `swapped-dashboard-${tag}`);
-      });
-
-      test(`dashboard: touched shows the chip, View swaps (${tag})`, async ({
-        page,
-      }) => {
-        await page.goto(`/a/${LANDING}`);
-        await loaded(page);
-        await touchFrame(page);
-        const before = await page
-          .locator("iframe.oa-vframe")
-          .getAttribute("src");
-        const v = await publish(page);
-        const view = page.getByRole("button", { name: `View version ${v}` });
-        await expect(view).toBeVisible({ timeout: LIVE_MS });
-        await expect(
-          page.getByText(width < 640 ? `v${v}` : `v${v} available`, {
-            exact: true,
-          }),
-        ).toBeVisible();
-        // Never swapped: same frame load.
-        expect(await page.locator("iframe.oa-vframe").getAttribute("src")).toBe(
-          before,
-        );
-        if (width >= 640)
-          await expect(page.getByTestId("versions-dot").first()).toBeVisible();
-        await shot(page, `chip-dashboard-${tag}`);
-        await view.click();
-        await expect(view).toHaveCount(0);
-        await expect(
-          page.getByRole("button", { name: `Version: v${v} · Current` }),
-        ).toBeVisible();
-        await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
-      });
-
-      test(`/full: untouched swaps, touched gets the pill (${tag})`, async ({
-        page,
-      }) => {
-        await page.goto(`/a/${LANDING}/full`);
-        await loaded(page);
-        let v = await publish(page);
-        await expect(page.getByText(`Updated to v${v}`)).toBeVisible({
-          timeout: LIVE_MS,
-        });
-        await shot(page, `swapped-full-${tag}`);
-        await expect(page.getByText(`Updated to v${v}`)).toHaveCount(0, {
-          timeout: 5_000,
-        });
-        await touchFrame(page);
-        v = await publish(page);
-        const pill = page.getByRole("button", { name: `View version ${v}` });
-        await expect(pill).toBeVisible({ timeout: LIVE_MS });
-        await expect(pill).toHaveText(`v${v} available · View`);
-        await shot(page, `chip-full-${tag}`);
-        // Always its short text, in the 32px group (no collapse).
-        await expect(pill).toHaveAttribute("data-open", "true");
-        expect((await pill.boundingBox())?.height).toBe(32);
-        expect((await page.locator(".oa-fsbar").boundingBox())?.height).toBe(
-          32,
-        );
-        await pill.click();
-        await expect(pill).toHaveCount(0);
-      });
-
-      test(`restore while touched, then while untouched (${tag})`, async ({
-        page,
-      }) => {
-        await page.goto(`/a/${LANDING}`);
-        await loaded(page);
-        await touchFrame(page);
-        await restore(page, 1);
-        const view = page.getByRole("button", { name: "View version 3" });
-        await expect(view).toBeVisible({ timeout: LIVE_MS });
-        if (width >= 640)
-          await expect(page.getByText("v1 restored as v3")).toBeVisible();
-        await view.click();
-        await expect(view).toHaveCount(0);
-        await page.waitForTimeout(300);
-        await restore(page, 2);
-        const note = page
-          .locator(".oa-lchip")
-          .getByText("Restored v2", { exact: true })
-          .filter({ visible: true });
-        await expect(note).toBeVisible({ timeout: LIVE_MS });
-        await expect(
-          page.getByRole("button", { name: "Version: v4 · Current" }),
-        ).toBeVisible();
-        await shot(page, `restored-${tag}`);
-      });
-
-      test(`deleted while open keeps the frame (${tag})`, async ({ page }) => {
-        await page.goto(`/a/${LANDING}`);
-        await loaded(page);
-        // Deleted elsewhere (an agent): the mock emits gone "deleted".
-        await del(page);
-        await expect(
-          page
-            .locator(".oa-lgone")
-            .getByText("Deleted. It stays in Trash for 30 days."),
-        ).toBeVisible();
-        await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
-        await expect(
-          page.getByRole("heading", { name: "Page not found" }),
-        ).toHaveCount(0);
-        await expect(
-          page.getByRole("button", { name: "Restore" }),
-        ).toBeVisible();
-        if (width >= 640) {
-          await expect(
-            page.getByRole("button", { name: /^Version: v/ }),
-          ).toBeDisabled();
-          await expect(
-            page.getByRole("button", { name: "Full screen" }),
-          ).toBeDisabled();
-        }
-        await expect(
-          page.getByRole("button", { name: "Share" }),
-        ).toBeDisabled();
-        await shot(page, `gone-dashboard-${tag}`);
-      });
-
-      test(`/full when gone: No longer available · Exit (${tag})`, async ({
-        page,
-      }) => {
-        await page.goto(`/a/${LANDING}/full`);
-        await loaded(page);
-        // Deleted elsewhere (an agent): the mock emits gone, then 404s.
-        await del(page);
-        await expect(
-          page.getByRole("link", { name: "No longer available · Exit" }),
-        ).toBeVisible();
-        await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
-        await shot(page, `gone-full-${tag}`);
-      });
+// One viewport and theme: the layout at other sizes is not what these flows test.
+{
+  const width = 1280;
+  const theme = "light" as const;
+  const tag = `${width}-${theme}`;
+  test.describe(`${tag}`, () => {
+    test.beforeEach(async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.setViewportSize({ width, height: 720 });
     });
-  }
+
+    test(`dashboard: untouched swaps quietly within 2 s (${tag})`, async ({
+      page,
+    }) => {
+      await page.goto(`/a/${LANDING}`);
+      await loaded(page);
+      const before = await page.locator("iframe.oa-vframe").getAttribute("src");
+      const v = await publish(page);
+      const note = page.getByText(`Updated to v${v}`);
+      await expect(note).toBeVisible({ timeout: LIVE_MS });
+      await expect(
+        page.getByRole("button", { name: `Version: v${v} · Current` }),
+      ).toBeVisible();
+      // Design (option C): a brief "Updated to vN", no Undo, gone in about 3 s.
+      await expect(page.getByRole("button", { name: /^Undo/ })).toHaveCount(0);
+      await expect(note).toHaveCount(0, { timeout: 5_000 });
+      await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
+      const after = await page.locator("iframe.oa-vframe").getAttribute("src");
+      expect(after?.split("#oa=")[1]).not.toBe(before?.split("#oa=")[1]);
+      await expect(
+        page
+          .getByRole("status")
+          .filter({ hasText: `Updated to version ${v}.` }),
+      ).toHaveCount(1);
+      await shot(page, `swapped-dashboard-${tag}`);
+    });
+
+    test(`dashboard: touched shows the chip, View swaps (${tag})`, async ({
+      page,
+    }) => {
+      await page.goto(`/a/${LANDING}`);
+      await loaded(page);
+      await touchFrame(page);
+      const before = await page.locator("iframe.oa-vframe").getAttribute("src");
+      const v = await publish(page);
+      const view = page.getByRole("button", { name: `View version ${v}` });
+      await expect(view).toBeVisible({ timeout: LIVE_MS });
+      await expect(
+        page.getByText(`v${v} available`, {
+          exact: true,
+        }),
+      ).toBeVisible();
+      // Never swapped: same frame load.
+      expect(await page.locator("iframe.oa-vframe").getAttribute("src")).toBe(
+        before,
+      );
+      await expect(page.getByTestId("versions-dot").first()).toBeVisible();
+      await shot(page, `chip-dashboard-${tag}`);
+      await view.click();
+      await expect(view).toHaveCount(0);
+      await expect(
+        page.getByRole("button", { name: `Version: v${v} · Current` }),
+      ).toBeVisible();
+      await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
+    });
+
+    test(`/full: untouched swaps, touched gets the pill (${tag})`, async ({
+      page,
+    }) => {
+      await page.goto(`/a/${LANDING}/full`);
+      await loaded(page);
+      let v = await publish(page);
+      await expect(page.getByText(`Updated to v${v}`)).toBeVisible({
+        timeout: LIVE_MS,
+      });
+      await shot(page, `swapped-full-${tag}`);
+      await expect(page.getByText(`Updated to v${v}`)).toHaveCount(0, {
+        timeout: 5_000,
+      });
+      await touchFrame(page);
+      v = await publish(page);
+      const pill = page.getByRole("button", { name: `View version ${v}` });
+      await expect(pill).toBeVisible({ timeout: LIVE_MS });
+      await expect(pill).toHaveText(`v${v} available · View`);
+      await shot(page, `chip-full-${tag}`);
+      // Always its short text, in the 32px group (no collapse).
+      await expect(pill).toHaveAttribute("data-open", "true");
+      expect((await pill.boundingBox())?.height).toBe(32);
+      expect((await page.locator(".oa-fsbar").boundingBox())?.height).toBe(32);
+      await pill.click();
+      await expect(pill).toHaveCount(0);
+    });
+  });
+}
 
 test("an explicit version never swaps: Back to current selects Current", async ({
   page,

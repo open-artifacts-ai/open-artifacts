@@ -1671,6 +1671,9 @@ const code =
   (...c: string[]) =>
   (r: Answer) =>
     c.includes(r.code);
+/** #2577: the 404 of a request the caller does not hold (see NO_HELD in services/agent-requests.ts). */
+const noHeld = (r: Answer) =>
+  r.code === "not_found" && r.message === "No such held request";
 const ok =
   (...s: number[]) =>
   (r: Answer) =>
@@ -1715,6 +1718,18 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       req: () => ({ path: "", body: { displayName: "Probe" } }),
       allow: ok(200),
     },
+  },
+  // #2512 S2: the caller's own inbox items; ids that are not theirs change nothing.
+  "POST /api/v1/me/inbox/read": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { ids: [] } }),
+      allow: ok(200),
+    },
+  },
+  "POST /api/v1/me/inbox/read-all": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(200) },
+    real: { req: () => ({ path: "" }), allow: ok(200) },
   },
   // #1292: the caller's own picks; a real write sets none (the default).
   "PUT /api/v1/bus/share-notices": {
@@ -2122,6 +2137,36 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("reauth_required"),
     },
   },
+  // #2577: the receiver's held requests. A browser session of the receiver
+  // only; an allowed caller has no such request, so a 404 with its own text before
+  // anything is written (a capped caller's 404 from the cap guard says "Not found").
+  "POST /api/v1/me/agent-asks/held/:id/allow": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-asks/held/probe/allow",
+        body: {
+          level: "once",
+          items: [{ commentId: "c1", wordsHash: "0".repeat(64) }],
+        },
+      }),
+      allow: noHeld,
+    },
+  },
+  "POST /api/v1/me/agent-asks/held/:id/allow/challenge": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-asks/held/probe/allow/challenge",
+        body: { until: Date.now() + 86_400_000 },
+      }),
+      allow: noHeld,
+    },
+  },
+  "POST /api/v1/me/agent-asks/held/:id/not-now": {
+    real: {
+      req: () => ({ path: "/api/v1/me/agent-asks/held/probe/not-now" }),
+      allow: noHeld,
+    },
+  },
   "POST /api/v1/passkeys/:id/challenge": {
     real: {
       req: () => ({ path: "/api/v1/passkeys/probe/challenge" }),
@@ -2370,6 +2415,8 @@ const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
   ["GET /api/v1/me/inbox", U, [200]],
+  ["POST /api/v1/me/inbox/read", U],
+  ["POST /api/v1/me/inbox/read-all", U, [200]],
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
@@ -2449,6 +2496,11 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/passkeys/register/challenge", U],
   ["POST /api/v1/passkeys/register/finish", U],
   ["POST /api/v1/passkeys/:id/challenge", U],
+  // #2577: held requests to the caller's agents. A browser session only.
+  ["GET /api/v1/me/agent-asks/held", U, [200]],
+  ["POST /api/v1/me/agent-asks/held/:id/allow", U],
+  ["POST /api/v1/me/agent-asks/held/:id/allow/challenge", U],
+  ["POST /api/v1/me/agent-asks/held/:id/not-now", U],
   ["DELETE /api/v1/passkeys/:id", U],
   ["POST /api/v1/passkeys/:id/cancel-removal", U],
   ["GET /api/v1/passkeys/settings", U, [200]],
@@ -2558,6 +2610,8 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/code/link",
   "GET /auth/unsubscribe/comments",
   "POST /auth/unsubscribe/comments",
+  "GET /auth/unsubscribe/setup-reminder",
+  "POST /auth/unsubscribe/setup-reminder",
   "GET /auth/unsubscribe/shares",
   "POST /auth/unsubscribe/shares",
   "POST /auth/logout",

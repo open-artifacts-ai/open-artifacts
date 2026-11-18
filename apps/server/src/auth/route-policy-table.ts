@@ -91,6 +91,13 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /auth/unsubscribe/comments": {
     public: "comment email unsubscribe (RFC 8058 one-click); signed token",
   },
+  // #2632 "Don't remind me" in the setup reminder: same shape, one flag.
+  "GET /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out (RFC 8058 one-click); signed token",
+  },
   // #2590 "Don't email me again" in outside share emails: a signed token (one
   // address, one purpose) is the only credential; GET changes nothing.
   "GET /auth/unsubscribe/shares": {
@@ -111,6 +118,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/me": { user: "the caller" },
   // #2512: the caller's own For you inbox (their open asks).
   "GET /api/v1/me/inbox": { user: "the caller" },
+  "POST /api/v1/me/inbox/read": { user: "the caller" },
+  "POST /api/v1/me/inbox/read-all": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
   // #1292: the caller's own share-notice picks; PUT browser sessions only (handler).
   "GET /api/v1/bus/share-notices": { org: "mcp.connect" },
@@ -333,6 +342,17 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "PATCH /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
   "POST /api/v1/passkeys/settings/challenge": {
     user: "the caller's passkey settings",
+  },
+  // #2577: the receiver's side of asking someone else's agent; the handlers refuse anything but a browser session.
+  "GET /api/v1/me/agent-asks/held": { user: "the caller's held requests" },
+  "POST /api/v1/me/agent-asks/held/:id/allow": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/allow/challenge": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/not-now": {
+    user: "the caller's held requests",
   },
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },

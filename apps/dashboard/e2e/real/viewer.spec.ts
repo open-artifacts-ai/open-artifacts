@@ -1,7 +1,10 @@
 import { artifactFrame, expect, publishViaApi, test, uniq } from "./fixtures";
 import { minimalPdf } from "./pdf";
 
-test("markdown renders a heading", async ({ page, member }) => {
+test("markdown renders a heading", { tag: "@smoke" }, async ({
+  page,
+  member,
+}) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Report ${uniq()}`,
     format: "markdown",
@@ -68,7 +71,7 @@ test("a PDF shows page 1", async ({ page, member }) => {
   await expect(frame.locator(".oa-pdf-count")).toHaveText("1");
 });
 
-test("HTML runs its script", async ({ page, member }) => {
+test("HTML runs its script", { tag: "@smoke" }, async ({ page, member }) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Page ${uniq()}`,
     format: "html",

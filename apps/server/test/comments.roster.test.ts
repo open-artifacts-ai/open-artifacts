@@ -30,6 +30,7 @@ import {
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
+import { listenEachOther } from "./held-listens.js";
 import { api, fetchAndWait, login } from "./helpers.js";
 
 // #1535: the roster adds the VIEWER's own running agents, a mention makes the
@@ -117,6 +118,7 @@ function hubs(byUser: Record<string, unknown[]>) {
 async function setup() {
   const owner = await mk("r-owner");
   const editor = await mk("r-editor");
+  await listenEachOther(E, [owner.userId, editor.userId]);
   const a = await publish(
     E,
     owner.member,
