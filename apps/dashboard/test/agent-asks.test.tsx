@@ -13,6 +13,7 @@ import {
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { allowedText, endDate, leftoverText } from "../src/foryou/held";
+import { agentAsksOn, forYouVariant } from "../src/mockForYou";
 import { MentionMenu } from "../src/viewer/comments/asks";
 import { calls, events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
@@ -453,6 +454,22 @@ describe("Settings: who can ask my agents", () => {
     ).toBeInTheDocument();
   });
 
+  it("the switch hint shows on and off, and the fine print sits under the list", async () => {
+    await settings();
+    expect(
+      await screen.findByText(/^On: anyone not on your list waits for you/),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /^Your agents are told to bring merging, deploying, deleting, sharing and making a page public back to you.*list doesn't apply on pages open to guests or to anyone with the link\.$/,
+      ),
+    ).toBeInTheDocument();
+    // Remove is a link-styled button.
+    expect(
+      screen.getByRole("button", { name: "Remove Maya Chen" }),
+    ).toHaveClass("underline");
+  });
+
   it("an empty list says what to expect", async () => {
     server.use(
       http.get(`*${R.agentListens}`, () => HttpResponse.json({ entries: [] })),
@@ -466,6 +483,19 @@ describe("Settings: who can ask my agents", () => {
         { timeout: FIRST_LOAD_MS },
       ),
     ).toBeInTheDocument();
+  });
+});
+
+describe("the mock switches", () => {
+  const q = (s: string) => new URLSearchParams(s);
+  it("?mock=foryou&foryou=held shows the held row, like ?mock=agent-asks", () => {
+    for (const s of ["mock=foryou&foryou=held", "mock=agent-asks"]) {
+      expect(forYouVariant(q(s))).toBe("held");
+      expect(agentAsksOn(q(s))).toBe(true);
+    }
+    expect(forYouVariant(q("mock=foryou"))).toBe("mixed");
+    expect(agentAsksOn(q("mock=foryou"))).toBe(false);
+    expect(forYouVariant(q("mock=bus"))).toBeUndefined();
   });
 });
 
@@ -510,6 +540,40 @@ describe("the @ list", () => {
     expect(screen.getByRole("option", { name: /Payroll/ })).toHaveTextContent(
       "Ana's agent · only answers Ana",
     );
+  });
+
+  it("groups yours and teammates' agents, with 'yours' on your own, in one listbox", () => {
+    menu([
+      agent("Design", null, undefined),
+      agent("Web", "Sam", "held"),
+      agent("Docs", "Maya", "listening"),
+    ]);
+    const box = screen.getByRole("listbox");
+    expect(
+      within(box).getByRole("group", { name: "Your agents" }),
+    ).toBeInTheDocument();
+    expect(
+      within(box).getByRole("group", {
+        name: "Teammates' agents on this page",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Design/ })).toHaveTextContent(
+      /yours/,
+    );
+    // Options only are selectable, in one run of ids.
+    expect(screen.getAllByRole("option").map((o) => o.id)).toEqual([
+      "m-0",
+      "m-1",
+      "m-2",
+    ]);
+    // The name sits above its line, so a long name isn't squeezed to "OA ...".
+    const web = screen.getByRole("option", { name: /Web/ });
+    expect(web.querySelector("b")?.parentElement).toHaveClass("flex-col");
+  });
+
+  it("without teammates' askState the menu has no headings", () => {
+    menu([agent("Design", null)]);
+    expect(screen.queryByRole("group")).toBeNull();
   });
 
   it("an agent whose person turned asking off can't be picked", () => {

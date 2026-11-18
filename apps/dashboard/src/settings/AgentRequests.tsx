@@ -20,6 +20,10 @@ import { errorText, muted, SettingsCard, WriteLock } from "./ui";
 
 export const REQUESTS_OFF =
   "Off: your agents only answer you, and teammates are told so.";
+export const REQUESTS_ON =
+  "On: anyone not on your list waits for you to allow them.";
+export const LISTENS_FINE_PRINT =
+  "Your agents are told to bring merging, deploying, deleting, sharing and making a page public back to you, and those need your own answer on an ask. The list doesn't apply on pages open to guests or to anyone with the link.";
 export const LISTENS_EMPTY =
   "Nobody yet. When a teammate asks one of your agents, you choose how much to allow, and they show up here.";
 
@@ -74,7 +78,7 @@ export function AgentRequests() {
           </WriteLock>
         </div>
         <p id="oa-ask-off" className={`m-0 ${muted}`}>
-          {on ? "" : `${REQUESTS_OFF} Your list is kept but not used.`}
+          {on ? REQUESTS_ON : `${REQUESTS_OFF} Your list is kept but not used.`}
         </p>
         {sw.isError && (
           <p role="alert" className={errorText}>
@@ -117,8 +121,9 @@ export function AgentRequests() {
                 </span>
                 <WriteLock>
                   <Button
-                    variant="ghost"
+                    variant="link"
                     size="sm"
+                    className="h-auto p-0 text-[length:var(--oa-text-xs)] underline"
                     aria-label={`Remove ${e.member.name}`}
                     disabled={remove.isPending && remove.variables === e.id}
                     onClick={() =>
@@ -143,6 +148,7 @@ export function AgentRequests() {
             ))}
           </ul>
         )}
+        <p className={`m-0 ${muted}`}>{LISTENS_FINE_PRINT}</p>
       </SettingsCard>
     </>
   );

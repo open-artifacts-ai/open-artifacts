@@ -1501,10 +1501,11 @@ const isOnline = (a: ArtifactAgent) =>
 const isUnknown = (a: ArtifactAgent) => a.state === undefined && !a.online;
 const rankOf = (a: ArtifactAgent) => (isOnline(a) ? 0 : isUnknown(a) ? 2 : 1);
 
-/** Online first, then away, then agents with no state (the bus did not answer); each alphabetical. */
+/** The viewer's own agents first, then teammates' (#2577); within each: online, then away, then agents with no state (the bus did not answer); each alphabetical. */
 export function sortAgents(agents: readonly ArtifactAgent[]): ArtifactAgent[] {
   return [...agents].sort(
     (x, y) =>
+      Number(!!x.owner) - Number(!!y.owner) ||
       rankOf(x) - rankOf(y) ||
       x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
   );
@@ -1578,6 +1579,59 @@ export function MentionMenu({
   active: number;
   onPick: (a: ArtifactAgent) => void;
 }) {
+  // #2577: with teammates' agents in the list, two labelled groups say whose is whose.
+  const grouped = matches.some((a) => a.owner && a.askState);
+  const row = (a: ArtifactAgent, i: number) => (
+    <div
+      key={a.key}
+      id={`${id}-${i}`}
+      role="option"
+      tabIndex={-1}
+      aria-selected={i === active}
+      aria-disabled={a.askState === "off" ? true : undefined}
+      className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)] ${a.askState === "off" ? "opacity-60" : ""}`}
+      // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
+      onMouseDown={(e) => {
+        e.preventDefault();
+        // Asking is off for this agent's person: it can't be picked.
+        if (a.askState !== "off") onPick(a);
+      }}
+    >
+      {!isUnknown(a) && (
+        <span
+          aria-hidden="true"
+          className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
+        />
+      )}
+      <span
+        className={`min-w-0 flex-1 ${grouped ? "flex flex-col" : "flex items-center gap-2"}`}
+      >
+        <b
+          className={`min-w-0 ${grouped ? "" : "flex-1"} truncate ${a.state === "away" ? MUTED : ""}`}
+        >
+          {rowName(a)}
+        </b>
+        <span className={`${MUTED} ${grouped ? "" : "shrink-0"}`}>
+          {grouped && !a.owner
+            ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
+            : stateText(a, all)}
+        </span>
+      </span>
+    </div>
+  );
+  const group = (label: string, from: number, to: number) => (
+    <fieldset key={label} className="m-0 min-w-0 border-0 p-0">
+      <legend className="sr-only">{label}</legend>
+      <p
+        aria-hidden="true"
+        className={`m-0 px-2 pt-1.5 pb-0.5 font-[family-name:var(--oa-font-mono)] text-[11px] tracking-[.06em] uppercase ${MUTED}`}
+      >
+        {label}
+      </p>
+      {matches.slice(from, to).map((a, j) => row(a, from + j))}
+    </fieldset>
+  );
+  const firstTheirs = matches.findIndex((a) => a.owner);
   return (
     <div
       id={id}
@@ -1589,37 +1643,13 @@ export function MentionMenu({
         <p className={`p-2 ${TXT} ${MUTED}`}>
           No agent works on this page with that name.
         </p>
+      ) : grouped ? (
+        <>
+          {firstTheirs > 0 && group("Your agents", 0, firstTheirs)}
+          {group("Teammates' agents on this page", firstTheirs, matches.length)}
+        </>
       ) : (
-        matches.map((a, i) => (
-          <div
-            key={a.key}
-            id={`${id}-${i}`}
-            role="option"
-            tabIndex={-1}
-            aria-selected={i === active}
-            aria-disabled={a.askState === "off" ? true : undefined}
-            className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)]`}
-            // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
-            onMouseDown={(e) => {
-              e.preventDefault();
-              // Asking is off for this agent's person: it can't be picked.
-              if (a.askState !== "off") onPick(a);
-            }}
-          >
-            {!isUnknown(a) && (
-              <span
-                aria-hidden="true"
-                className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
-              />
-            )}
-            <b
-              className={`min-w-0 flex-1 truncate ${a.state === "away" ? MUTED : ""}`}
-            >
-              {rowName(a)}
-            </b>
-            <span className={MUTED}>{stateText(a, all)}</span>
-          </div>
-        ))
+        matches.map(row)
       )}
     </div>
   );

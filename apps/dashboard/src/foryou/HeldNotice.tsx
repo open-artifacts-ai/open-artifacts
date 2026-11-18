@@ -9,6 +9,7 @@ import { useAllowHeld, useNotNow } from "../api/agentAsks";
 import { errorCopy } from "../api/errorCopy";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
+import { AuthorFace, initials } from "../viewer/comments/AuthorFace";
 import {
   allowedText,
   endDate,
@@ -19,6 +20,7 @@ import {
   UNTIL_CHOICES,
   untilOf,
 } from "./held";
+import { clock } from "./model";
 
 const BTN =
   "inline-flex min-h-8 cursor-pointer items-center rounded-[7px] border px-2.5 text-[12.5px] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-[var(--oa-focus)] disabled:cursor-default disabled:opacity-60";
@@ -26,10 +28,8 @@ const PRIMARY = `${BTN} border-[var(--oa-accent)] bg-[var(--oa-accent)] text-[va
 const PLAIN = `${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`;
 const NOTE = "m-0 text-[12.5px] text-[var(--oa-text-muted)]";
 
-const clock = (ms: number) => {
-  const d = new Date(ms);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
+/** The time as the rest of For you shows it. */
+const clockOf = (ms: number) => clock(new Date(ms).toISOString());
 
 const plural = (n: number) => `${n} ${n === 1 ? "request" : "requests"}`;
 
@@ -228,15 +228,24 @@ export function HeldCard({
 
   return (
     <div data-held-notice="" className="grid gap-2.5">
-      <div>
-        <b className="block text-[14px] font-semibold">
-          {r.sender.name} wants to ask your agent
-        </b>
+      <div className="grid gap-1">
+        <div className="flex items-center gap-2 text-[13px] text-[var(--oa-text-muted)]">
+          <span
+            aria-hidden="true"
+            className="grid size-[22px] flex-none place-items-center rounded-full border border-[var(--oa-border)] bg-[var(--oa-sunken)] text-[9.5px] font-semibold text-[var(--oa-text)]"
+          >
+            {initials(r.sender.name)}
+          </span>
+          <b className="font-normal">{r.sender.name} wants to ask your agent</b>
+        </div>
+        <div className="flex items-center gap-2">
+          <AuthorFace
+            a={{ kind: "agent", name: agent, linked: false, me: false }}
+          />
+          <b className="text-[16px] font-semibold">{agent}</b>
+        </div>
         <small className="block text-[12.5px] text-[var(--oa-text-muted)]">
-          {agent}
-        </small>
-        <small className="block text-[12.5px] text-[var(--oa-text-muted)]">
-          {`on "${r.artifact.title}" · ${plural(r.items.length)}`}
+          {`on "${r.artifact.title}" \u00b7 ${plural(r.items.length)}`}
         </small>
       </div>
       <ul className="m-0 grid list-none gap-1.5 p-0">
@@ -262,13 +271,13 @@ export function HeldCard({
               </div>
             )}
             <small className="block text-[12px] text-[var(--oa-text-muted)]">
-              {`${who} wrote · ${clock(i.createdAt)}`}
+              {`${who} wrote · ${clockOf(i.createdAt)}`}
             </small>
           </li>
         ))}
       </ul>
       {r.open && (
-        <p className={NOTE}>
+        <p className="m-0 rounded-md bg-[var(--oa-warning-soft)] px-2.5 py-2 text-[12.5px] text-[var(--oa-warning)]">
           Anyone with the link can read {agent}'s reply on this page.
         </p>
       )}
