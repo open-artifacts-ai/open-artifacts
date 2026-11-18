@@ -207,7 +207,7 @@ export const setupLine = (origin: string) =>
  * guest can't publish, so theirs doesn't.
  */
 export function inviteEmail(
-  p: Common & SignIn & { guest?: boolean },
+  p: Common & SignIn & { guest: boolean },
 ): EmailContent {
   const { origin, values } = common(p);
   const member = !p.guest;
