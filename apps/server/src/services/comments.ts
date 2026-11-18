@@ -1170,11 +1170,17 @@ const after = (at: string, since: string): boolean =>
   Date.parse(at) > Date.parse(since);
 
 /** #2688: the viewer wrote this ask (as themselves, or as this agent). A person reads every ask of their own. */
-const askedByCaller = (c: StoredComment, viewer: CommentViewer): boolean =>
-  c.author.kind === "user" &&
-  viewer.userId !== null &&
-  c.author.ref === viewer.userId &&
-  askedByViewer(c, viewer);
+const askedByCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
+  if (c.author.kind !== "user") return false;
+  if (viewer.userId === null || c.author.ref !== viewer.userId) return false;
+  const mine = c.author.agent;
+  const a = viewer.agent;
+  // An ask posted while the agent was unlinked has no identity: the same name
+  // on the same connection, whether the caller is linked now or not.
+  if (a && mine && !mine.identity)
+    return mine.name === a.name && mine.via === (a.via ? viaKey(a.via) : null);
+  return askedByViewer(c, viewer);
+};
 
 /** #2688: this comment @mentions the viewer: their agent (same identity; the same name when either has none), or them. */
 const mentionsCaller = (c: StoredComment, viewer: CommentViewer): boolean => {

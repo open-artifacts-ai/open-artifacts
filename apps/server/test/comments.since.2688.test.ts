@@ -256,6 +256,36 @@ describe("answeredSince (#2688)", () => {
     ).toEqual([]);
   });
 
+  it("an ask posted while unlinked is found by the same connection, linked or not, and not by another connection", async () => {
+    const id = await setup();
+    const unlinked: AgentAttr = {
+      name: "Claude",
+      version: null,
+      via: { kind: "token", id: "conn1" },
+    };
+    const a = await askBy(
+      id,
+      asAgent(owner, unlinked),
+      viewerOf(owner),
+      "Late?",
+    );
+    await answerIt(id, a);
+    const since = { answeredSince: iso(0) };
+    const ids = async (v: AgentAttr) =>
+      (await compact(id, viewerOf(owner, v), since)).answers?.map(
+        (x) => x.commentId,
+      );
+    expect(await ids(unlinked)).toEqual([a.commentId]);
+    const linked = agentOf(owner, "Claude");
+    expect(await ids({ ...linked, via: unlinked.via })).toEqual([a.commentId]);
+    expect(
+      await ids({ ...linked, via: { kind: "token", id: "conn2" } }),
+    ).toEqual([]);
+    expect(
+      await ids({ ...unlinked, via: { kind: "token", id: "conn2" } }),
+    ).toEqual([]);
+  });
+
   it("without compact it returns the full threads that hold a match", async () => {
     const id = await setup();
     const mine = agentOf(owner, "Claude");
