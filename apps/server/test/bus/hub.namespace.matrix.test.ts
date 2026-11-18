@@ -644,6 +644,8 @@ describe("RPC surface", () => {
       "expireLinkProposalsOf",
       "expireRoleProposalsOf",
       "identityOf",
+      // #2552: a fieldless frame to one machine of the member; the named version changed.
+      "installNow",
       "listLinks",
       "listReach",
       "listRoleProposals",
@@ -658,6 +660,7 @@ describe("RPC surface", () => {
       "putReach",
       "putRole",
       "revokeMachine",
+      "runVersionChanged",
       "snapshot",
       "viewLinkProposal",
       "viewReachProposal",
