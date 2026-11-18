@@ -414,8 +414,12 @@ export function copy(
       warn(
         `Update available: ${cutMiddle(hub, 19, more)} (this machine runs ${cutMiddle(mine, 19, more)})`,
       ),
-      next(`Have your agent run "Install the bus" from`),
-      next(`${origin.replace(/\/+$/, "")}/llms.txt.`),
+      next(`Ask your agent to follow "Install the bus" in`),
+      next(
+        origin
+          ? `${origin.replace(/\/+$/, "")}/llms.txt.`
+          : "your instance's llms.txt.",
+      ),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
     hubProblem: (problem: string) => [

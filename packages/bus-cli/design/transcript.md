@@ -598,7 +598,7 @@ removed and is clipped as an unknown kind is:
 ```
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 [[warning]]![[/warning]]  Update available: 0.47.0 (this machine runs 0.46.3)
-   Have your agent run "Install the bus" from
+   Ask your agent to follow "Install the bus" in
    https://bus.example.com/llms.txt.
 ```
 
