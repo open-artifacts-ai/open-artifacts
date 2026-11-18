@@ -125,6 +125,7 @@ describe("reply ids in the daemon", () => {
       "ack_confirm",
       "run_version",
       "notice_meta",
+      "owner_away",
     ]);
   });
 

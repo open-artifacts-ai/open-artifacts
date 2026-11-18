@@ -135,11 +135,22 @@ export const BUS_CAPS = {
    * the whole frame. A daemon without it gets the text alone.
    */
   noticeMeta: "notice_meta",
+  /**
+   * Owner away (#2759): `hello_ok.owner_away_until` and the `owner_away` push
+   * tell a person's own agents when their quiet hours end. The hub sends the
+   * field and the frame only to a socket whose hello listed it, and lists it
+   * in `hello_ok.caps`; a strict older decoder would refuse either.
+   */
+  ownerAway: "owner_away",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 
-/** Most tokens one hello may list. */
-export const MAX_CAPS = 16;
+/**
+ * Most tokens one hello may list. BUS_CAPS outgrew 16 (#2759), so this is 32.
+ * A daemon's own hello list stays at 16 or fewer, since an older hub refuses a
+ * longer one.
+ */
+export const MAX_CAPS = 32;
 
 /** One capability token: lowercase, starts with a letter, at most 32 chars. */
 export const CapTokenSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);

@@ -84,7 +84,11 @@ export async function sweepInboxLater(env: Env, _now: number): Promise<number> {
           select 1 from held_requests h
            where h.id = substr(inbox_later.item_id, 9)
              and h.receiver_id = inbox_later.user_id))
-       or (item_id not like 'ask:%' and item_id not like 'request:%')`,
+       or (item_id like 'mention:%' and not exists (
+          select 1 from inbox_items i
+           where i.id = substr(inbox_later.item_id, 9)
+             and i.user_id = inbox_later.user_id and i.read_at is null))
+       or (item_id not like 'ask:%' and item_id not like 'request:%' and item_id not like 'mention:%')`,
   ).run();
   return r.meta.changes ?? 0;
 }

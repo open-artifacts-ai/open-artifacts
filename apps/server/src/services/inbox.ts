@@ -1,10 +1,10 @@
 import type { CommentAuthor, Inbox, InboxItem } from "@oa/shared";
 import { viewerPath } from "@oa/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { type Caller, capOfCaller, listFilterSql } from "../auth/authz.js";
 import { capsReads, isGuestRole } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
-import { artifactAsks, artifacts } from "../db/schema.js";
+import { artifactAsks, artifacts, inboxItems } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
@@ -20,7 +20,12 @@ import {
   repairAsks,
 } from "./comments.js";
 import { awayItem } from "./inbox-away.js";
-import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
+import {
+  type ItemRow,
+  mentionsOfMe,
+  unreadUpdateCount,
+  updatesPage,
+} from "./inbox-items.js";
 import {
   laterRows,
   laterUntil,
@@ -70,7 +75,25 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
     () => new Map<string, number>(),
   );
   const shown = held.filter((h) => (away.get(`request:${h.id}`) ?? 0) <= now);
-  return Math.min((r[0]?.n ?? 0) + shown.length, NEEDS_YOU_MAX);
+  // #2770: people who @mentioned me, unread and not put off.
+  const m = await getDb(env)
+    .select({ n: sql<number>`count(*)` })
+    .from(inboxItems)
+    .innerJoin(artifacts, eq(artifacts.id, inboxItems.artifactId))
+    .where(
+      and(
+        listFilterSql(caller, "all"),
+        eq(inboxItems.userId, caller.user.id),
+        eq(inboxItems.level, "needs_you"),
+        isNull(inboxItems.readAt),
+        sql`${artifacts.deletedAt} is null`,
+        sql`not exists (select 1 from inbox_later l where l.user_id = ${caller.user.id} and l.item_id = 'mention:' || ${inboxItems.id} and l.until > ${now})`,
+      ),
+    );
+  return Math.min(
+    (r[0]?.n ?? 0) + shown.length + (m[0]?.n ?? 0),
+    NEEDS_YOU_MAX,
+  );
 }
 
 export { unreadUpdateCount };
@@ -224,7 +247,10 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
 const textOf = (r: ItemRow, name: string): string => {
   switch (r.kind) {
     case "mention":
-      return `${name} mentioned ${r.agentName ?? "your agent"} on ${r.title}`;
+      // #2770: no agent named: the person themself was mentioned.
+      return r.agentName === null
+        ? `${name} mentioned you on ${r.title}`
+        : `${name} mentioned ${r.agentName} on ${r.title}`;
     case "reply":
       return `${name} replied: ${r.excerpt}`;
     case "comment":
@@ -386,44 +412,62 @@ export async function heldRequestItems(
   });
 }
 
+/** The key an item sits under in inbox_later: an ask's and a request's id are theirs; a stored mention's is "mention:" and its id. */
+const laterKey = (i: Pick<InboxItem, "id" | "kind">): string =>
+  i.kind === "mention" ? `mention:${i.id}` : i.id;
+
 /** The whole inbox response: Needs you (asks and held requests) and one page of Updates. */
 export async function inboxOf(
   env: Env,
   caller: Me,
   cursor?: string,
 ): Promise<Inbox> {
-  const [asks, requests, page, unread, setUp, awayRow] = await Promise.all([
-    needsYou(env, caller),
-    heldRequestItems(env, caller).catch((e) => {
-      logWarn("inbox_held_requests_failed", e);
-      return [] as InboxItem[];
-    }),
-    updatesPage(env, caller, cursor),
-    unreadUpdateCount(env, caller),
-    // #2632: synthesized lines (no stored row), on the first page only.
-    cursor
-      ? Promise.resolve([] as InboxItem[])
-      : memberSetUpUpdates(env, caller).catch((e) => {
-          logWarn("inbox_member_set_up_failed", e);
-          return [] as InboxItem[];
-        }),
-    // "While you were away": the quiet-hours summary, on the first page only.
-    cursor
-      ? Promise.resolve(null)
-      : awayItem(env, caller).catch((e) => {
-          logWarn("inbox_away_failed", e);
-          return null;
-        }),
-  ]);
+  const [asks, requests, mentionRows, page, unread, setUp, awayRow] =
+    await Promise.all([
+      needsYou(env, caller),
+      heldRequestItems(env, caller).catch((e) => {
+        logWarn("inbox_held_requests_failed", e);
+        return [] as InboxItem[];
+      }),
+      // #2770: people who @mentioned me, still waiting.
+      mentionsOfMe(env, caller).catch((e) => {
+        logWarn("inbox_mentions_failed", e);
+        return [] as ItemRow[];
+      }),
+      updatesPage(env, caller, cursor),
+      unreadUpdateCount(env, caller),
+      // #2632: synthesized lines (no stored row), on the first page only.
+      cursor
+        ? Promise.resolve([] as InboxItem[])
+        : memberSetUpUpdates(env, caller).catch((e) => {
+            logWarn("inbox_member_set_up_failed", e);
+            return [] as InboxItem[];
+          }),
+      // "While you were away": the quiet-hours summary, on the first page only.
+      cursor
+        ? Promise.resolve(null)
+        : awayItem(env, caller).catch((e) => {
+            logWarn("inbox_away_failed", e);
+            return null;
+          }),
+    ]);
   // Waiting agents first, then what needs an approval (asks and requests, oldest first), then the rest.
   const byAge = (a: InboxItem, b: InboxItem) =>
     a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  const mentions = (await itemsOf(env, caller, mentionRows)).map(
+    (i): InboxItem => ({ ...i, level: "needs_you", urgency: "plain" }),
+  );
   const ordered = [
     ...asks.filter((i) => i.urgency === "waiting"),
     ...[...asks.filter((i) => i.urgency === "approval"), ...requests].sort(
       byAge,
     ),
-    ...asks.filter((i) => i.urgency !== "waiting" && i.urgency !== "approval"),
+    ...[
+      ...asks.filter(
+        (i) => i.urgency !== "waiting" && i.urgency !== "approval",
+      ),
+      ...mentions,
+    ].sort(byAge),
   ];
   // #2762: put-off items sit in Later until their time, then return on top,
   // once, marked backFromLater (they cannot be put off again).
@@ -436,7 +480,7 @@ export async function inboxOf(
   const back: InboxItem[] = [];
   const rest: InboxItem[] = [];
   for (const i of ordered) {
-    const until = away.get(i.id);
+    const until = away.get(laterKey(i));
     if (until === undefined) rest.push(i);
     else if (until > now)
       laterList.push({
@@ -487,17 +531,22 @@ export async function deferItem(
   now = Date.now(),
 ): Promise<InboxItem> {
   const away = await laterRows(env, caller.user.id);
-  if (away.has(id))
-    throw new ApiError("later_used", "You already put this off once.");
-  const [asks, requests] = await Promise.all([
+  const [asks, requests, mentionRows] = await Promise.all([
     needsYou(env, caller),
     heldRequestItems(env, caller).catch(() => [] as InboxItem[]),
+    mentionsOfMe(env, caller).catch(() => [] as ItemRow[]),
   ]);
-  const item = [...asks, ...requests].find((i) => i.id === id);
+  const mentions = (await itemsOf(env, caller, mentionRows)).map(
+    (i): InboxItem => ({ ...i, level: "needs_you", urgency: "plain" }),
+  );
+  const item = [...asks, ...requests, ...mentions].find((i) => i.id === id);
   if (!item) throw new ApiError("not_found", "Not found");
+  const key = laterKey(item);
+  if (away.has(key))
+    throw new ApiError("later_used", "You already put this off once.");
   const zone = timeZone ?? "UTC";
   const until = laterUntil(which, now, zone);
-  if (!(await recordLater(env, caller.user.id, id, until, now)))
+  if (!(await recordLater(env, caller.user.id, key, until, now)))
     throw new ApiError("later_used", "You already put this off once.");
   if (item.kind === "ask")
     await tellAsker(env, caller, id, {

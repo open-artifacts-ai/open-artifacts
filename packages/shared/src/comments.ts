@@ -310,6 +310,8 @@ export const CommentSchema = z.object({
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
+  /** #2770: the people this comment @mentions (their faces), absent when none. */
+  people: z.array(CommentAuthorSchema).optional(),
   /** #2035: the thread's agents a person's reply also told, with delivery. Members only. */
   notified: z.array(CommentNotifiedSchema).optional(),
   /** #2559: a non-fatal notice on the POST response only (a mention over the limit); never stored. */
@@ -404,6 +406,15 @@ export type AskInput = z.infer<typeof AskInputSchema>;
 /** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions: owner and editors only (403 forbidden). */
 const extras = {
   mentions: z.array(KeyRefSchema).max(MENTIONS_MAX).optional(),
+  /**
+   * #2770: people to @mention, by user id (R.artifactMentionCandidates lists them). Owner and
+   * editors only (403 forbidden), like mentions; each must be able to read the page, else the
+   * same 400 as an unknown agent. At most MENTIONS_MAX with `mentions` together. A mentioned
+   * person gets the comment in "Needs you". A person in a browser only: a token, an agent or a
+   * grant that sends `people` gets 400 (so an agent can't fill someone's Needs you). A sender
+   * causes at most 200 such items a day; over it the comment posts and no more items are written.
+   */
+  people: z.array(key).max(MENTIONS_MAX).optional(),
 };
 
 /** POST R.comments body. */
@@ -478,6 +489,21 @@ export const ArtifactAgentSchema = z.object({
   owner: z.string().nullable().optional(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
+
+/** The longest `q` a mention candidates search takes. */
+export const MENTION_CANDIDATES_Q_MAX = 40;
+/** The most people one mention candidates answer holds. */
+export const MENTION_CANDIDATES_MAX = 8;
+/** POST R.artifactMentionCandidates body (#2770): the search, in the body so a typed address never reaches a URL or a log. */
+export const MentionCandidatesBodySchema = z.strictObject({
+  q: z.string().min(1).max(MENTION_CANDIDATES_Q_MAX),
+});
+export type MentionCandidatesBody = z.infer<typeof MentionCandidatesBodySchema>;
+/** The answer to POST R.artifactMentionCandidates (#2770): people who can read the artifact, as faces (kind user, id, name; never an email). */
+export const MentionCandidatesSchema = z.object({
+  items: z.array(CommentAuthorSchema).max(MENTION_CANDIDATES_MAX),
+});
+export type MentionCandidates = z.infer<typeof MentionCandidatesSchema>;
 
 /** MCP list_comments. Bounded like REST: at most 500 threads, 200 replies each (`truncated`). */
 export const ListCommentsInputSchema = z.strictObject({
