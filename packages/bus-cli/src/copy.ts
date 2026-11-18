@@ -408,11 +408,18 @@ export function copy(
     ],
     // Status and doctor, when the hub runs a newer release (C26h). Each
     // version is cut to 19, so the line stays within 80 columns.
-    updateAvailable: (hub: string, mine: string) => [
+    // The update goes through the instance's checked install step, never an
+    // unchecked npx download.
+    updateAvailable: (hub: string, mine: string, origin: string) => [
       warn(
         `Update available: ${cutMiddle(hub, 19, more)} (this machine runs ${cutMiddle(mine, 19, more)})`,
       ),
-      next(`Run ${BUS_CMD}@latest install.`),
+      next(`Ask your agent to follow "Install the bus" in`),
+      next(
+        origin
+          ? `${origin.replace(/\/+$/, "")}/llms.txt.`
+          : "your instance's llms.txt.",
+      ),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
     hubProblem: (problem: string) => [
