@@ -240,8 +240,12 @@ const RENAME_WINDOW_MS = 60_000;
 const RENAME_WINDOW_MAX = 3;
 /** A registration the hub rate-limited is retried this late, or on the next reconnect. */
 const LIMITED_RETRY_MS = 5 * 60_000;
-/** #1822: how long and how many proofs wait for a record that does not exist yet. */
-const PENDING_PROOF_MS = 60_000;
+/**
+ * #1822: how long and how many proofs wait for a record that does not exist
+ * yet. Ten minutes: Claude Desktop runs the helper at connect, before its
+ * session joins the bus (a name chosen later, a slow first sync).
+ */
+const PENDING_PROOF_MS = 10 * 60_000;
 const PENDING_PROOF_MAX = 64;
 /** #2688: a Claude session seen this recently may not have run its helper yet. */
 const LINK_GRACE_MS = 2 * 60_000;
