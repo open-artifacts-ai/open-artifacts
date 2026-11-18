@@ -1,7 +1,18 @@
+# Allowlist: only what the bus tests and the workspace install need.
+# Untracked local files (.claude, .pi, .env*) never reach the image.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig*.json
+!vitest.config.ts
+!scripts/test
+!apps/*/package.json
+!packages/*/package.json
+!scripts/*/package.json
+!tests/*/package.json
+!packages/bus-*
 **/node_modules
-.git
 **/dist
-**/.wrangler
-.env*
+**/.env*
 **/.dev.vars*
-coverage

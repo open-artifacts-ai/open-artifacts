@@ -18,13 +18,19 @@ call the script as is. Docker is the only requirement.
 - The container has its own empty home (`/home/tester`): no `~/.oa-bus`, no
   `~/.claude*`, no other instance, no other bus.
 - No host mounts and no host environment variables are passed in. The repo is
-  copied into the image; `node_modules`, `.git` and `.env*` are left out.
+  copied into the image through an allowlist (`Dockerfile.dockerignore`); `node_modules`, `.git`, `.env*` and local
+  files such as `.claude` are left out.
 - There is no systemd or launchd. The daemon runs as a plain process inside
   the test.
 - Tests that need a hub use local fake hubs on 127.0.0.1.
 
 Tests in this folder run only when `OA_BUS_DOCKER=1`, which `run.sh` sets. The
 normal host vitest run skips them.
+
+## Cleanup
+
+The image is tagged per run and removed when the script exits. The pnpm
+download layer is cached between runs. To free it, run `docker image prune`.
 
 ## Limits
 

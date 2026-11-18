@@ -1,9 +1,7 @@
 // Smoke test for the Docker harness (#2793 S0): two local fake hubs and one
 // daemon with a scratch home, connected to hub A only. It runs only inside
 // the container (run.sh sets OA_BUS_DOCKER=1); the host vitest run skips it.
-import { existsSync, mkdtempSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeAll, daemonHarness, stopAll, wsServer } from "../helpers.ts";
 
@@ -30,8 +28,6 @@ describe.skipIf(process.env.OA_BUS_DOCKER !== "1")(
       hubB.wss.on("connection", () => {
         bConnections++;
       });
-      const scratch = mkdtempSync(join(tmpdir(), "oa-scratch-home-"));
-      process.env.OA_BUS_HOME = scratch;
       const a = await daemonHarness();
       await vi.waitFor(() => expect(a.upgrades.length).toBe(1));
       expect(a.daemon.hub.open).toBe(true);
