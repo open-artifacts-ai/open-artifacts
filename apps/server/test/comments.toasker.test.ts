@@ -11,6 +11,7 @@ import {
 } from "@oa/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
@@ -579,12 +580,18 @@ describe("toAsker and picks by guests (#2592)", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(bus.sent).toEqual([]);
     expect(toAsker()).toEqual([]);
-    const ok = await replyBy(s.id, t.id, asPerson(viewer), view(viewer));
+    // A typed reply (#2559): a person's own words in the web app.
+    const ok = await replyBy(
+      s.id,
+      t.id,
+      { kind: "user", id: viewer.userId, typed: true },
+      view(viewer),
+    );
     expect(ok.mentions?.[0]?.delivery).toBe("delivered");
     expect(toAsker()).toHaveLength(1);
   });
 
-  it("a guest cap refuses toAsker too; a restricted member's reply still delivers", async () => {
+  it("a guest cap refuses toAsker too; a restricted member's typed reply is held (not on the list, not asked, #2577)", async () => {
     const s = await setup();
     const t = await askBy(s.id, asAgent(owner), owner);
     bus.clear();
@@ -606,11 +613,11 @@ describe("toAsker and picks by guests (#2592)", () => {
     const ok = await replyBy(
       s.id,
       t.id,
-      { kind: "user", id: r },
+      { kind: "user", id: r, typed: true },
       { userId: r, short: null, capped: true },
     );
     expect(ok.body).toBe("Use the wide one");
-    expect(toAsker()).toHaveLength(1);
+    expect(toAsker()).toHaveLength(0);
     const g = await capped("guest");
     await expect(
       replyBy(
@@ -728,6 +735,41 @@ describe("reply toAsker and the list (#2577)", () => {
       ).toBe(0);
     } finally {
       await relist(viewer.userId);
+    }
+  });
+
+  it("a token's toAsker reply wakes nobody else's agent and holds nothing, listed, asked or not", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner); // to: viewer
+    await unlist(editor.userId, viewer.userId);
+    try {
+      for (const [who, why] of [
+        [editor, "not listed, not asked"],
+        [viewer, "asked"],
+      ] as const) {
+        bus.clear();
+        const pat = (await createPat(E, who.userId, `${why} token`)).token;
+        const res = await api(app, R.commentReplies(s.id, t.id), pat, {
+          method: "POST",
+          body: { body: `token reply, ${why}`, toAsker: true },
+        });
+        expect(res.status, why).toBe(201);
+        expect(toAsker(), why).toHaveLength(0);
+        expect(
+          bus.sent.filter((x) => x.userId === owner.userId),
+          why,
+        ).toEqual([]);
+        expect(
+          (
+            await heldFor(s.id)
+              .bind(owner.userId, who.userId, s.id)
+              .first<{ n: number }>()
+          )?.n,
+          why,
+        ).toBe(0);
+      }
+    } finally {
+      await relist(editor.userId, viewer.userId);
     }
   });
 

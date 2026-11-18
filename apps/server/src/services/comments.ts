@@ -1898,7 +1898,12 @@ async function resolveToAsker(
   // list, or from a person the ask was put to; else the delivery is held for them.
   const heldFor: { agent: HeldAgent; way: string }[] = [];
   let wake = to;
-  if (
+  // #2559: a reply no person typed (a token or an agent) wakes only the asking
+  // agents of its own author, an addressee included; it holds nothing, since
+  // it carries no person's request.
+  if (who.kind === "user" && !typedByPerson(who))
+    wake = to.filter((a) => a.userId === who.id);
+  else if (
     who.kind === "user" &&
     typedByPerson(who) &&
     to.length > 0 &&
