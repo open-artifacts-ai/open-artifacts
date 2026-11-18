@@ -91,6 +91,13 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /auth/unsubscribe/comments": {
     public: "comment email unsubscribe (RFC 8058 one-click); signed token",
   },
+  // #2632 "Don't remind me" in the setup reminder: same shape, one flag.
+  "GET /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out (RFC 8058 one-click); signed token",
+  },
   "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).
