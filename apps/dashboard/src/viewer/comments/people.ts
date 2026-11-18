@@ -1,57 +1,24 @@
-// PROVISIONAL (#2780): the shapes of the server's person @mentions, mirrored
-// here until packages/shared carries them. When #2780 is merged, delete this
-// file and import the same names from @oa/shared (CommentSchema,
-// CommentThreadSchema, CommentListSchema, MentionCandidatesSchema,
-// R.artifactMentionCandidates, MENTION_CANDIDATES_Q_MAX); `Comment.people`
-// and the `people` body field become typed there.
+// Client helpers for person @mentions; the server shapes are in @oa/shared.
 import {
   type ArtifactAgent,
   type CommentAuthor,
-  CommentAuthorSchema,
   type CommentMention,
+  MENTION_CANDIDATES_Q_MAX,
+  MentionCandidatesSchema,
   R,
-  CommentSchema as SharedComment,
-  CommentListSchema as SharedList,
-  CommentThreadSchema as SharedThread,
 } from "@oa/shared";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { z } from "zod";
+import type { z } from "zod";
 import { api } from "../../api/client";
-
-/** The longest `q` a candidates search takes. */
-export const MENTION_CANDIDATES_Q_MAX = 40;
-/** The most people one candidates answer holds. */
-export const MENTION_CANDIDATES_MAX = 8;
-
-/** POST { q } -> { items }: people who can read the page, as faces (never an email). */
-export const artifactMentionCandidates = (id: string) =>
-  `${R.artifactAgents(id).replace(/\/agents$/, "")}/mention-candidates`;
-
-export const MentionCandidatesSchema = z.object({
-  items: z.array(CommentAuthorSchema).max(MENTION_CANDIDATES_MAX),
-});
-
-export const CommentSchema = SharedComment.extend({
-  people: z.array(CommentAuthorSchema).optional(),
-});
-export const CommentThreadSchema = SharedThread.extend({
-  comments: z.array(CommentSchema),
-});
-export const CommentListSchema = SharedList.extend({
-  threads: z.array(CommentThreadSchema),
-});
-
-/** The people a posted comment @mentions (`Comment.people`). */
-export const peopleOf = (c: object): CommentAuthor[] =>
-  (c as { people?: CommentAuthor[] }).people ?? [];
 
 /** A comment's mentions as the text chips draw them: its agents, then its people (with their initials). */
 export const mentionsWithPeople = (c: {
   mentions?: readonly CommentMention[];
+  people?: readonly CommentAuthor[];
 }): (CommentMention & { person?: CommentAuthor })[] => [
   ...(c.mentions ?? []),
-  ...peopleOf(c).map((p) => ({
+  ...(c.people ?? []).map((p) => ({
     key: personAsAgent(p).key,
     name: p.name,
     person: p,
@@ -109,7 +76,7 @@ export function useMentionCandidates(
     queryFn: ({ signal }) =>
       api.send(
         "POST",
-        artifactMentionCandidates(id),
+        R.artifactMentionCandidates(id),
         { q: settled },
         MentionCandidatesSchema,
         signal,

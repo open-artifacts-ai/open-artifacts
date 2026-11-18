@@ -45,7 +45,7 @@ const MUTED = "text-muted-foreground";
 /** What the composer sends beyond the text. */
 export type Extras = {
   mentions: KeyRef[];
-  /** PROVISIONAL (#2780): the people @mentioned, by user id. */
+  /** The people @mentioned, by user id. */
   people?: string[];
   /** #2508: the pictures attached in the box. */
   pictures?: PictureRef[];
@@ -1387,7 +1387,7 @@ type MentionedProps = {
     key: string;
     name: string;
     delivery?: DState;
-    /** PROVISIONAL (#2780): a mentioned person, shown with their initials. */
+    /** A mentioned person, shown with their initials. */
     person?: CommentAuthor;
   })[];
   guest?: boolean;

@@ -600,7 +600,7 @@ function Composer({
     )
       void agentsQ.refetch();
   };
-  // PROVISIONAL (#2780): people join the agents in one list. The server
+  // People join the agents in one list. The server
   // answers only for the owner and editors (everyone else gets none).
   const peopleOn = mentionable && api.canMention && api.canComment;
   const [picked, setPicked] = useState<CommentAuthor[]>([]);
@@ -729,7 +729,7 @@ function Composer({
       const mentions = keys
         .filter((k) => !isPersonKey(k))
         .map((key) => ({ key }));
-      // PROVISIONAL (#2780): people go by id, apart from agents.
+      // People go by id, apart from agents.
       const people = peopleIds(keys);
       const pictureRefs = withPictures ? pics.refs : [];
       if (instant) {
