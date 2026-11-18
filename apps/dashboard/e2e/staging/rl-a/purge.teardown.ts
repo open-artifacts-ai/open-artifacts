@@ -33,7 +33,9 @@ async function drain(prefix: string, before: number, stop: number) {
   return total;
 }
 
-test("erase this run's people, and older runs' left behind", async () => {
+test("erase this run's people, and older runs' left behind", {
+  tag: "@gate",
+}, async () => {
   test.setTimeout(BUDGET_MS + 60_000);
   const now = Date.now();
   const stop = now + BUDGET_MS;

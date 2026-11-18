@@ -8,6 +8,12 @@ import { defineConfig, devices } from "@playwright/test";
 // RUN): set here, in the main process, before any worker starts.
 process.env.T19_RUN ??= randomBytes(3).toString("hex");
 
+// The release gate runs only the cases tagged { tag: "@gate" } (the short happy
+// path: sign in, a page, a comment, sharing, a guest or second member, plus the
+// guard and the purge that bracket them). The nightly runs every case. Change
+// the gate set by editing the tags, here beside the tests; the workflow in
+// open-artifacts-cloud (redline-staging.yml) selects with --grep @gate and
+// fails a selection that matches nothing.
 export default defineConfig({
   testDir: "e2e/staging",
   timeout: 60_000,
