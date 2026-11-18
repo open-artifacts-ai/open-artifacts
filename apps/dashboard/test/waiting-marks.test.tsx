@@ -8,7 +8,7 @@ const NOW = Date.parse("2026-11-18T12:00:00Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
 const MIN = 60_000;
 
-// PROVISIONAL (#2778): the mock variants carry the two optional fields.
+// Cards carry the two optional #2778 fields.
 const card = (waiting?: object) =>
   ({
     id: "a1",

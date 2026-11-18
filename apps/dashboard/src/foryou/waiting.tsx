@@ -1,13 +1,6 @@
 import type { ArtifactSummary, Comment } from "@oa/shared";
 import { waitText } from "./model";
 
-// PROVISIONAL (#2778): the two optional fields below arrive in @oa/shared with
-// that PR. Until it merges the schemas strip them, so nothing shows. When it
-// merges, delete the two types and the casts in the two readers: the swap is
-// this file.
-type WaitingSince = { ask?: { waitingSince?: string } };
-type Waiting = { waiting?: { count: number; oldestSince: string } };
-
 /** ms since an ISO time, or undefined when absent or unreadable. */
 function sinceMs(iso: string | undefined, now: number): number | undefined {
   if (!iso) return undefined;
@@ -15,13 +8,12 @@ function sinceMs(iso: string | undefined, now: number): number | undefined {
   return Number.isNaN(t) ? undefined : Math.max(0, now - t);
 }
 
-/** PROVISIONAL (#2778): `comment.ask.waitingSince`. */
+/** `comment.ask.waitingSince` (#2778). */
 export const askWaitingSince = (c: Comment): string | undefined =>
-  (c as Comment & WaitingSince).ask?.waitingSince;
+  c.ask?.waitingSince;
 
-/** PROVISIONAL (#2778): `ArtifactSummary.waiting`. */
-export const libraryWaiting = (a: ArtifactSummary) =>
-  (a as ArtifactSummary & Waiting).waiting;
+/** `ArtifactSummary.waiting` (#2778). */
+export const libraryWaiting = (a: ArtifactSummary) => a.waiting;
 
 /** The calm "◷ waiting 4 min" mark, the same one For you shows. */
 export function WaitMark({
