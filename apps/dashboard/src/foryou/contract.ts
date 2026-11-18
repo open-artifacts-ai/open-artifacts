@@ -40,7 +40,8 @@ export function readItem(raw: unknown): Item | null {
   const p = InboxItemSchema.safeParse(raw);
   if (!p.success || !shown(p.data)) return null;
   const excerpt = excerptOf(raw);
-  return excerpt ? { ...p.data, excerpt } : p.data;
+  // The schema may now pass a raw excerpt through: a blank one is dropped.
+  return { ...p.data, excerpt };
 }
 
 /** Keeps the items it can show; drops the rest. */
