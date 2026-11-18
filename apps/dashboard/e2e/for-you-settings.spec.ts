@@ -114,13 +114,13 @@ test("notification settings at 1280 light", async ({ page }) => {
     });
   }
 
-  // Design (#2674): quiet hours, interrupts and lock screens wait under "Coming later".
+  // Live: quiet hours, interrupts and lock screens are usable.
   await expect(
-    page.getByRole("combobox", { name: "Interrupt me for" }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("switch", { name: "Quiet hours" }),
-  ).toBeDisabled();
+    page.getByRole("region", { name: "When to interrupt" }),
+  ).not.toContainText("Coming later");
+  await expect(page.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+  for (const name of ["Interrupt me for", "On lock screens"])
+    await expect(page.getByRole("combobox", { name })).toBeEnabled();
   // The Email card is as wide as the cards above it.
   const w = async (sel: string) =>
     (await page.locator(sel).first().boundingBox())?.width ?? 0;

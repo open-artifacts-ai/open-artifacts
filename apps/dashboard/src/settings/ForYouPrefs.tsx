@@ -80,24 +80,16 @@ export function ForYouPrefs() {
   );
 }
 
-/**
- * What a save sends: the whole prefs, in the browser's zone ("morning" and
- * quiet hours are in it). Design (#2674): while quiet hours wait under
- * "Coming later", they are never sent on.
- */
-export const prefsToSave = (
-  next: NotificationPrefs,
-  live = INTERRUPTS_LIVE,
-): NotificationPrefs => ({
+/** What a save sends: the whole prefs, in the browser's zone ("morning" and quiet hours are in it). */
+export const prefsToSave = (next: NotificationPrefs): NotificationPrefs => ({
   ...next,
-  quietHours: live ? next.quietHours : null,
   timeZone: browserTimeZone(),
 });
 
-function useSave(live: boolean) {
+function useSave() {
   const save = useSavePrefs();
   return (next: NotificationPrefs) =>
-    save.mutate(prefsToSave(next, live), {
+    save.mutate(prefsToSave(next), {
       onError: () =>
         toast({ title: "Couldn't save. Try again.", tone: "danger" }),
     });
@@ -337,14 +329,6 @@ function patchFailed(e: unknown, qc: QueryClient) {
   toast({ title: "Couldn't save. Try again.", tone: "danger" });
 }
 
-/**
- * Design (#2512 slice 2 review): quiet hours, "Interrupt me for" and "On lock
- * screens" only matter once browser notifications ship (slice 3); the server
- * doesn't use them yet (no prefs route, no away status). Until then they show,
- * disabled, under one "Coming later" line (Design, #2674: they stay so until the away wiring ships).
- */
-export const INTERRUPTS_LIVE = false;
-
 function Interrupts({
   prefs,
   unavailable,
@@ -353,22 +337,21 @@ function Interrupts({
   /** No push key on the server, or a browser that can't notify (Design). */
   unavailable: boolean;
 }) {
-  const live = INTERRUPTS_LIVE && !unavailable;
-  const save = useSave(live);
-  // Design (#2674): while "Coming later" is on, quiet hours are drawn off,
-  // whatever the server stored.
-  const quiet = live ? prefs.quietHours : null;
+  // Live (#2674), except where this server or browser can't notify (Design).
+  const live = !unavailable;
+  const save = useSave();
+  const quiet = prefs.quietHours;
   const end = quiet?.end ?? QUIET_DEFAULT.end;
   return (
     <section
       aria-label="When to interrupt"
-      aria-describedby={live ? undefined : "oa-interrupts-later"}
+      aria-describedby={unavailable ? "oa-interrupts-later" : undefined}
       className={BOX}
       data-interrupts={live ? "live" : "later"}
     >
-      {!live && (
+      {unavailable && (
         <p id="oa-interrupts-later" className={`m-0 pb-2 ${muted}`}>
-          {unavailable ? PUSH_WORDS.unavailableHere : "Coming later"}
+          {PUSH_WORDS.unavailableHere}
         </p>
       )}
       <div className={ROW}>
@@ -377,8 +360,7 @@ function Interrupts({
             Quiet hours
           </b>
           <p id="oa-quiet-hint" className={`m-0 ${muted}`}>
-            Nothing interrupts between these times. It waits in the inbox. Your
-            own agents see "away until {end}" and can plan around it.
+            Nothing interrupts between these times. It waits in the inbox.
           </p>
         </div>
         <div className="flex flex-none items-center gap-2">

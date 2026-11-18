@@ -531,6 +531,14 @@ function ForYouPanel({
             <span>{updates.length}</span>
           )}
         </h3>
+        {updates.length === 0 && !more && (
+          <p
+            data-for-you-updates-empty=""
+            className="m-0 px-[18px] py-3 text-left text-[13.5px] text-[var(--oa-text-muted)]"
+          >
+            No updates yet.
+          </p>
+        )}
         <ul className="m-0 list-none p-0">
           {updates.map((x) => row(x))}
           {more && (
