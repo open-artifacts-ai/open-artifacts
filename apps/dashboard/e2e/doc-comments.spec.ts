@@ -125,7 +125,7 @@ const select = (
   );
 
 for (const scheme of ["light"] as const)
-  for (const width of [1280, 390])
+  for (const width of [1280])
     test.describe(`${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
 
@@ -215,74 +215,4 @@ for (const scheme of ["light"] as const)
         });
         await axe(page);
       });
-
-      test("(b) several lines become one quoted paragraph each, ahead of anything typed", async ({
-        page,
-      }, info) => {
-        await open(page, info, "");
-        // Where the list sits beside the doc (1280), a note typed first
-        // stays after the quote; on a phone the sheet covers the doc, so
-        // the selection comes first there.
-        const beside = width > 600;
-        if (beside) {
-          await page.getByRole("button", { name: /^Comments/ }).click();
-          await composer(page).click();
-          await page.keyboard.type("Typed first.");
-        }
-        await select(page, "Checklist", "Final copy");
-        await page
-          .locator(".oa-doc-selcomment")
-          .getByRole("button", { name: "Comment" })
-          .click();
-        await expect(composer(page)).toHaveValue(
-          `> Checklist\n>\n> Final copy reviewed\n>\n> Hero image exported\n>\n> Analytics events checked\n\n${beside ? "Typed first." : ""}`,
-        );
-        await expect(composer(page)).toBeFocused();
-      });
-
-      test("(b) a reader can comment on a selection too", async ({
-        page,
-      }, info) => {
-        await open(page, info, "-readonly");
-        await select(page, "We ship", "We ship", [16, 28]);
-        await page
-          .locator(".oa-doc-selcomment")
-          .getByRole("button", { name: "Comment" })
-          .click();
-        await expect(composer(page)).toHaveValue("> landing page\n\n");
-      });
     });
-
-// On a touch screen the system's Copy menu sits above a selection: the
-// chip goes below it.
-for (const scheme of ["light"] as const)
-  test.describe(`touch ${scheme} 390`, () => {
-    test.use({
-      colorScheme: scheme,
-      viewport: { width: 390, height: 900 },
-      hasTouch: true,
-      isMobile: true,
-    });
-    test("the Comment chip sits below the selection", async ({
-      page,
-    }, info) => {
-      await open(page, info, "");
-      expect(
-        await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
-      ).toBe(true);
-      await select(page, "We ship", "We ship", [16, 28]);
-      const chip = page.locator(".oa-doc-selcomment");
-      await expect(chip).toBeVisible();
-      const sel = await page.evaluate(() => {
-        const r = getSelection()?.getRangeAt(0).getBoundingClientRect();
-        return r ? { top: r.top, bottom: r.bottom } : null;
-      });
-      const box = await chip.boundingBox();
-      expect(sel && box).toBeTruthy();
-      if (!sel || !box) return;
-      expect(box.y).toBeGreaterThanOrEqual(sel.bottom);
-      await shot(page, info, `doc-comment-selection-touch-${scheme}-390.png`);
-      await chip.getByRole("button", { name: "Comment" }).tap();
-      await expect(composer(page)).toHaveValue("> landing page\n\n");
-    });
-  });

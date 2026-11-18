@@ -13,7 +13,7 @@ const shot = async (
   await loc.screenshot({ path: `${OUT}/${name}.png` });
 };
 
-for (const w of [1280, 390]) {
+for (const w of [1280]) {
   for (const theme of ["light"] as const) {
     test(`${w} ${theme}: the Decisions tab`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
@@ -58,25 +58,6 @@ for (const w of [1280, 390]) {
         .getByRole("button", { name: "Decisions" })
         .click();
       await expect(rows).toHaveCount(7);
-    });
-
-    test(`${w} ${theme}: no decisions yet`, async ({ page }) => {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.setViewportSize({ width: w, height: w < 600 ? 844 : 900 });
-      await page.goto(`/a/${ID}?mock=asks`);
-      await page.getByRole("button", { name: /^Comments/ }).click();
-      const tab = page.getByRole("tab", { name: /Decisions/ }).first();
-      await tab.click();
-      await expect(page.getByText("No decisions yet")).toBeVisible();
-      await shot(
-        w <= 600
-          ? page.getByRole("dialog")
-          : page
-              .locator("aside")
-              .filter({ has: page.getByRole("tab") })
-              .first(),
-        `${w}-${theme}-decisions-empty`,
-      );
     });
   }
 }

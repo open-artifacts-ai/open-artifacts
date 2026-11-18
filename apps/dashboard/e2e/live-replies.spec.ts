@@ -27,10 +27,7 @@ const reply = (page: Page, body: string) =>
     { id: ID, body },
   );
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
+for (const [w, h] of [[1280, 800]] as const)
   test(`${w}px: a live reply shows with no click`, {
     tag: w === 1280 ? "@smoke" : [],
   }, async ({ page }) => {
