@@ -79,14 +79,14 @@ export function usePictureDrawer(artifactId: string) {
     [],
   );
 
-  /** Takes a picture back out and says why (too many MB, or too many pixels). */
-  const tooBig = useCallback((key: string, name: string, size: number) => {
+  /** Takes a picture back out and says why. */
+  const refuse = useCallback((key: string, note: string) => {
     setItems((xs) => {
       const gone = xs.find((x) => x.key === key);
       if (gone) URL.revokeObjectURL(gone.preview);
       return xs.filter((x) => x.key !== key);
     });
-    setNotes((n) => [...n, PICTURE_WORDS.tooBig(name, megabytes(size))]);
+    setNotes((n) => (n.includes(note) ? n : [...n, note]));
   }, []);
 
   const upload = useCallback(
@@ -112,8 +112,19 @@ export function usePictureDrawer(artifactId: string) {
       } catch (e) {
         if ((e as { name?: string }).name === "AbortError") return;
         // too_large (10 MB, or "dimensions"): the same words as the size check.
-        if ((e as { code?: string }).code === "too_large") {
-          tooBig(key, name, blob.size);
+        const err = e as {
+          code?: string;
+          details?: { reason?: string };
+          reason?: string;
+        };
+        if (err.code === "too_large") {
+          refuse(key, PICTURE_WORDS.tooBig(name, megabytes(blob.size)));
+          return;
+        }
+        // The server's own refusal of a kind (HEIC, or not a picture).
+        if (err.code === "unsupported_format") {
+          const heic = (err.reason ?? err.details?.reason) === "heic";
+          refuse(key, heic ? PICTURE_WORDS.heic : PICTURE_WORDS.notPicture);
           return;
         }
         patch(key, { status: "failed" });
@@ -121,7 +132,7 @@ export function usePictureDrawer(artifactId: string) {
         live.current.delete(key);
       }
     },
-    [artifactId, patch, tooBig],
+    [artifactId, patch, refuse],
   );
 
   const add = useCallback(
@@ -162,7 +173,10 @@ export function usePictureDrawer(artifactId: string) {
             return;
           }
           if (s.blob.size > PICTURE_BYTES_MAX) {
-            tooBig(key, f.name || "Picture", s.blob.size);
+            refuse(
+              key,
+              PICTURE_WORDS.tooBig(f.name || "Picture", megabytes(s.blob.size)),
+            );
             return;
           }
           patch(key, { blob: s.blob, w: s.w, h: s.h });
@@ -171,7 +185,7 @@ export function usePictureDrawer(artifactId: string) {
       }
       setNotes(next);
     },
-    [upload, patch, tooBig],
+    [upload, patch, refuse],
   );
 
   const remove = (key: string) => {

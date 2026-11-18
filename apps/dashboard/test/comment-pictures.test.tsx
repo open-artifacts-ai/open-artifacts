@@ -52,7 +52,14 @@ vi.mock("../src/api/commentPictures", async (orig) => {
         method: "PUT",
         body: new Uint8Array(await blob.arrayBuffer()),
       });
-      if (!res.ok) throw new Error(`upload ${res.status}`);
+      if (!res.ok) {
+        const e = (await res.json().catch(() => null))?.error ?? {};
+        throw new real.PictureUploadError(
+          res.status,
+          e.code,
+          e.details?.reason,
+        );
+      }
       onProgress(1);
     },
   };
@@ -181,6 +188,92 @@ describe("the drawer", () => {
       ]),
     );
     expect(result.current.items).toHaveLength(0);
+  });
+
+  it("the server's too_large (reason too_large) on the reservation: named, not attached", async () => {
+    server.use(
+      http.post(`*${PICTURE_ROUTES.upload(OWNED)}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "too_large",
+              message: "A picture can be up to 10 MB.",
+              details: { reason: "too_large" },
+            },
+          },
+          { status: 413 },
+        ),
+      ),
+    );
+    const { result } = renderHook(() => usePictureDrawer(OWNED));
+    await act(() => result.current.add([png("big.png")]));
+    await waitFor(() => expect(result.current.notes).toHaveLength(1));
+    expect(result.current.notes[0]).toContain('"big.png"');
+    expect(result.current.notes[0]).toContain("The limit is 10 MB a picture.");
+    expect(result.current.items).toHaveLength(0);
+  });
+
+  it("the server's too_large with reason dimensions on the PUT: the same words, not attached", async () => {
+    server.use(
+      http.put("http://localhost/__upload/x", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "too_large",
+              message: "A picture can be up to 16384 pixels on a side.",
+              details: { reason: "dimensions" },
+            },
+          },
+          { status: 413 },
+        ),
+      ),
+      ...uploads(),
+    );
+    const { result } = renderHook(() => usePictureDrawer(OWNED));
+    await act(() => result.current.add([png("wide.png")]));
+    await waitFor(() => expect(result.current.notes).toHaveLength(1));
+    expect(result.current.notes[0]).toContain("The limit is 10 MB a picture.");
+    expect(result.current.items).toHaveLength(0);
+    expect(result.current.failed).toBe(0);
+  });
+
+  it("the server's unsupported_format (reason heic) shows the HEIC words", async () => {
+    server.use(
+      http.post(`*${PICTURE_ROUTES.upload(OWNED)}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "unsupported_format",
+              message: "HEIC",
+              details: { reason: "heic" },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    const { result } = renderHook(() => usePictureDrawer(OWNED));
+    await act(() => result.current.add([png("a.png")]));
+    await waitFor(() =>
+      expect(result.current.notes).toEqual([PICTURE_WORDS.heic]),
+    );
+    expect(result.current.items).toHaveLength(0);
+  });
+
+  it("removing a picture takes it out of the box and the refs", async () => {
+    server.use(...uploads());
+    const { result } = renderHook(() => usePictureDrawer(OWNED));
+    await act(() => result.current.add([png("a.png"), png("b.png")]));
+    await waitFor(() => expect(result.current.refs).toHaveLength(2));
+    act(() => result.current.remove(result.current.items[0]?.key ?? ""));
+    expect(result.current.items).toHaveLength(1);
+    expect(result.current.refs).toHaveLength(1);
+  });
+
+  it("a picture with a mention says it needs words", () => {
+    const { result } = renderHook(() => usePictureDrawer(OWNED));
+    const r = render(<PictureNotes d={result.current} needWords />);
+    expect(r.container.textContent).toBe(PICTURE_WORDS.needWords);
   });
 
   it("another kind of file is refused out loud, never silently", async () => {
