@@ -10,13 +10,7 @@ import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { agentsWaitingOn } from "./bus.js";
 import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
-import {
-  type ItemRow,
-  unreadMentionCount,
-  unreadMentions,
-  unreadUpdateCount,
-  updatesPage,
-} from "./inbox-items.js";
+import { type ItemRow, unreadUpdateCount, updatesPage } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
 import { getUser } from "./users.js";
@@ -48,10 +42,7 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
     .from(artifactAsks)
     .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
     .where(forMe(caller));
-  return Math.min(
-    (r[0]?.n ?? 0) + (await unreadMentionCount(env, caller)),
-    NEEDS_YOU_MAX,
-  );
+  return Math.min(r[0]?.n ?? 0, NEEDS_YOU_MAX);
 }
 
 export { unreadUpdateCount };
@@ -209,7 +200,7 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
 const textOf = (r: ItemRow, name: string): string => {
   switch (r.kind) {
     case "mention":
-      return `${name} mentioned you: ${r.excerpt}`;
+      return `${name} mentioned ${r.excerpt} on ${r.title}`;
     case "reply":
       return `${name} replied: ${r.excerpt}`;
     case "comment":
@@ -243,7 +234,7 @@ async function itemsOf(
     const face = faces[i] as CommentAuthor;
     return {
       id: r.id,
-      level: r.kind === "mention" ? "needs_you" : "update",
+      level: "update",
       kind: r.kind,
       artifact: { id: r.artifactId, title: r.title },
       actor: face,
@@ -303,15 +294,14 @@ export async function memberSetUpUpdates(
   return out;
 }
 
-/** The whole inbox response: Needs you (asks, then mentions) and one page of Updates. */
+/** The whole inbox response: Needs you (asks) and one page of Updates (mentions of your agents among them). */
 export async function inboxOf(
   env: Env,
   caller: Me,
   cursor?: string,
 ): Promise<Inbox> {
-  const [asks, mentionRows, page, unread, setUp] = await Promise.all([
+  const [asks, page, unread, setUp] = await Promise.all([
     needsYou(env, caller),
-    unreadMentions(env, caller),
     updatesPage(env, caller, cursor),
     unreadUpdateCount(env, caller),
     // #2632: synthesized lines (no stored row), on the first page only.
@@ -322,10 +312,7 @@ export async function inboxOf(
           return [] as InboxItem[];
         }),
   ]);
-  const list = [...asks, ...(await itemsOf(env, caller, mentionRows))].slice(
-    0,
-    NEEDS_YOU_MAX,
-  );
+  const list = asks.slice(0, NEEDS_YOU_MAX);
   const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
     (x, y) => y.createdAt.localeCompare(x.createdAt),
   );

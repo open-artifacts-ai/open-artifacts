@@ -1,5 +1,6 @@
-// #2512 S2: the stored half of the For you inbox: mentions (Needs you) and
-// updates (replies, comments, shares, decisions). Asks live in artifact_asks.
+// #2512 S2: the stored half of the For you inbox: updates (mentions of your
+// agent, replies, comments, shares, decisions). Asks live in artifact_asks;
+// a mention held for "Allow" is #2577's own Needs-you item, not one here.
 // Writes are best effort, run after the comment is stored, and idempotent on
 // (user, key), so a retry or a repeat writes one row. Never throws.
 import { newId, stripNameControls } from "@oa/shared";
@@ -40,8 +41,8 @@ export const itemExcerpt = (s: string): string => {
     : `${cps.slice(0, EXCERPT_MAX - 1).join("")}…`;
 };
 
-const levelOf = (kind: ItemKind) =>
-  kind === "mention" ? "needs_you" : "update";
+/** Every stored item is an Update (a mention of your agent included). */
+const levelOf = (_kind: ItemKind) => "update";
 
 export type NewItem = {
   userId: string;
@@ -131,9 +132,17 @@ export async function recordCommentItems(
     const by = new Map<ItemKind, Set<string>>(
       ORDER.map((k) => [k, new Set<string>()]),
     );
+    // A mention of your agent, by someone else, once per owner. The item
+    // keeps the agent's name as its excerpt ("{author} mentioned {agent} on
+    // {page}"). Your own mention of your own agent: writeInboxItems skips the
+    // actor. A guest author gives none.
+    const agentOf = new Map<string, string>();
     if (c.author.kind !== "guest")
       for (const m of c.mentions ?? [])
-        if (m.owner) by.get("mention")?.add(m.owner);
+        if (m.owner) {
+          by.get("mention")?.add(m.owner);
+          if (!agentOf.has(m.owner)) agentOf.set(m.owner, m.name);
+        }
     if (j.reply) {
       const t = await runtimeStub(env, j.artifactId).commentsGet(j.threadId);
       for (const x of t.comments)
@@ -162,7 +171,10 @@ export async function recordCommentItems(
           threadId: j.threadId,
           commentId: c.id,
           actor: c.author,
-          excerpt: itemExcerpt(c.body),
+          excerpt:
+            kind === "mention"
+              ? itemExcerpt(agentOf.get(userId) ?? "your agent")
+              : itemExcerpt(c.body),
           at: Number.isNaN(at) ? Date.now() : at,
         });
       }
@@ -284,30 +296,6 @@ const cols = {
   createdAt: inboxItems.createdAt,
   readAt: inboxItems.readAt,
 };
-
-/** My unread mentions, oldest first (they join Needs you). */
-export async function unreadMentions(env: Env, caller: Me): Promise<ItemRow[]> {
-  return (await getDb(env)
-    .select(cols)
-    .from(inboxItems)
-    .innerJoin(artifacts, eq(artifacts.id, inboxItems.artifactId))
-    .where(and(mineOn(caller, "needs_you"), isNull(inboxItems.readAt)))
-    .orderBy(inboxItems.createdAt, inboxItems.id)
-    .limit(200)) as ItemRow[];
-}
-
-/** How many mentions wait for me: one indexed query. */
-export async function unreadMentionCount(
-  env: Env,
-  caller: Me,
-): Promise<number> {
-  const r = await getDb(env)
-    .select({ n: sql<number>`count(*)` })
-    .from(inboxItems)
-    .innerJoin(artifacts, eq(artifacts.id, inboxItems.artifactId))
-    .where(and(mineOn(caller, "needs_you"), isNull(inboxItems.readAt)));
-  return r[0]?.n ?? 0;
-}
 
 /** How many unread updates I have: one indexed query. */
 export async function unreadUpdateCount(env: Env, caller: Me): Promise<number> {

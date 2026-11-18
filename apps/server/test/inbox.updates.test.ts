@@ -135,42 +135,68 @@ describe("inbox updates: what is written", () => {
     expect((await ups(me, id))[0]?.kind).toBe("reply");
   });
 
-  it("a mention is a Needs-you item for the agent's owner, after plain asks, and clears when read", async () => {
+  it("someone else's mention of your agent is an Update for its owner (not Needs you), and clears when read", async () => {
     const id = await mkArtifact();
-    const c = {
+    const mention = (author: { ref: string; name: string }) => ({
       id: `c-${newId()}`,
       body: "ping",
-      author: { kind: "user", ref: other.userId, name: "other" },
+      author: { kind: "user", ...author },
       createdAt: new Date().toISOString(),
       editedAt: null,
       mentions: [
         { key: "k", name: "Scout", state: "queued", owner: me.userId },
       ],
-    };
+    });
     await recordCommentItems(E, {
       artifactId: id,
       threadId: "th1",
-      comment: c as never,
+      comment: mention({ ref: other.userId, name: "Sam" }) as never,
       reply: false,
     });
     const rows = (await rowsOf(id)).filter((r) => r.kind === "mention");
     expect(rows).toEqual([
-      expect.objectContaining({ u: me.userId, level: "needs_you" }),
+      expect.objectContaining({ u: me.userId, level: "update" }),
     ]);
     const inb = await inbox(me);
-    const m = inb.needsYou.find((i) => i.artifact?.id === id);
-    expect(m?.kind).toBe("mention");
-    expect(m?.level).toBe("needs_you");
-    expect(inb.counts.needsYou).toBeGreaterThanOrEqual(1);
-    // The mention does not count as an update.
-    expect(inb.updates.filter((i) => i.artifact?.id === id)).toEqual([]);
+    // Not in Needs you, not in its count.
+    expect(inb.needsYou.filter((i) => i.artifact?.id === id)).toEqual([]);
+    const m = inb.updates.find(
+      (i) => i.artifact?.id === id && i.kind === "mention",
+    );
+    expect(m?.level).toBe("update");
+    expect(m?.text).toMatch(/^Sam mentioned Scout on /);
+    expect(inb.counts.unreadUpdates).toBeGreaterThanOrEqual(1);
     const r = await api(app, R.meInboxRead, me.cookie, {
       method: "POST",
       body: { ids: [m?.id] },
     });
     expect(await r.json()).toEqual({ read: 1 });
     expect(
-      (await inbox(me)).needsYou.filter((i) => i.artifact?.id === id),
+      (await inbox(me)).updates.find((i) => i.id === m?.id)?.readAt,
+    ).not.toBeNull();
+  });
+
+  it("your own mention of your own agent gives no item", async () => {
+    const id = await mkArtifact();
+    await recordCommentItems(E, {
+      artifactId: id,
+      threadId: "th1",
+      comment: {
+        id: `c-${newId()}`,
+        body: "ping",
+        author: { kind: "user", ref: me.userId, name: "me" },
+        createdAt: new Date().toISOString(),
+        editedAt: null,
+        mentions: [
+          { key: "k", name: "Scout", state: "queued", owner: me.userId },
+        ],
+      } as never,
+      reply: false,
+    });
+    expect(
+      (await rowsOf(id)).filter(
+        (r) => r.u === me.userId && r.kind === "mention",
+      ),
     ).toEqual([]);
   });
 
