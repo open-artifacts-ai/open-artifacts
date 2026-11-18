@@ -26,11 +26,13 @@ import {
   VERSION,
 } from "../version.gen.js";
 import {
+  alongsideCommand,
   BUS_CHECK_STOP,
   type BusPin,
   busInstallBlock,
   busNoPin,
   pinHasSkillCommand,
+  secondInstanceName,
 } from "./bus-install.js";
 import { SKILL_PATH, skillEnabled } from "./skill.js";
 import { skillOrigin } from "./skill-common.js";
@@ -168,10 +170,10 @@ const setupSteps = (
   plugin: boolean,
   skillMin: string | null,
 ): string[] => [
-  `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
+  `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat. ${secondInstanceName(origin)}`,
   `**Install the bus.** ${
     pin
-      ? `Run these in a shell, in order. They download one copy of the bus (version ${pin.version}), check it against this instance's pin, and run the installer from that checked copy. Never run \`npx @open-artifacts/bus\` instead: it would download a second copy that nobody checked.\n\n${busInstallBlock(origin, pin)}\n\n${BUS_CHECK_STOP}`
+      ? `Run these in a shell, in order. They download one copy of the bus (version ${pin.version}), check it against this instance's pin, and run the installer from that checked copy. Never run \`npx @open-artifacts/bus\` instead: it would download a second copy that nobody checked.\n\n${busInstallBlock(origin, pin)}\n\nOn a machine already set up for a different instance, run this instead, so the two buses don't share a home:\n\n${busInstallBlock(origin, pin, alongsideCommand(origin))}\n\n${BUS_CHECK_STOP}`
       : busNoPin(pinWhy)
   } The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
   ...(skill ? [skillStep(origin, pin, plugin, skillMin)] : []),

@@ -34,6 +34,25 @@ export const busInstallBlock = (
   ].join("\n");
 };
 
+/**
+ * #2806: a machine already set up for another instance (`oa-bus status` prints
+ * the Hub it is approved for) runs this instance's bus next to it: the
+ * installer's `--alongside` with its own home. The one place #2793 swaps for
+ * `oa-bus add`.
+ */
+export const hostLabel = (origin: string): string => {
+  let host = origin;
+  try {
+    host = new URL(origin).hostname;
+  } catch {}
+  return host.split(".")[0]?.replace(/[^A-Za-z0-9-]/g, "-") || "instance";
+};
+export const alongsideCommand = (origin: string): string =>
+  `install --alongside --home ~/.oa-bus-${hostLabel(origin)} --instance ${origin}`;
+/** Connect step: the entry name for a machine that already has another instance's. */
+export const secondInstanceName = (origin: string): string =>
+  `If this machine is already set up for a different instance (\`oa-bus status\` prints the Hub it is approved for), name this MCP entry \`open-artifacts-${hostLabel(origin)}\` instead of \`open-artifacts\`.`;
+
 /** Build facts that go into the text: printable ASCII only, short. */
 export const cleanWhy = (s: string): string =>
   s

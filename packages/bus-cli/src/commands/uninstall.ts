@@ -12,6 +12,7 @@ import {
 import { readMachine } from "../machine.ts";
 import {
   readAssets,
+  removeClaudeProof,
   uninstallAdapters,
   unshownNotes,
 } from "../steps/adapters.ts";
@@ -161,6 +162,15 @@ export async function uninstall(
   // A second bus set up with --alongside never wired a harness: leave the configs
   // unless one points at this home, which is then the only bus (#1443).
   if (wiredTo(ctx)) await unwire(ctx);
+  else {
+    // #2806: it did add its own proof helper to the Claude entries; only that goes.
+    const notes: string[] = [];
+    removeClaudeProof(
+      { home: ctx.userHome, busHome: ctx.home, env: ctx.env },
+      notes,
+    );
+    for (const n of notes) say(ctx, [n]);
+  }
 
   if (!opts.purge) {
     say(ctx, "", c.kept(tilde(ctx, join(ctx.home, "machine.json"))));

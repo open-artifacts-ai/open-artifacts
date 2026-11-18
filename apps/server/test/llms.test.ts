@@ -541,6 +541,22 @@ describe("the bus install step (#2543)", () => {
     expect(step).not.toContain(".bin/oa-bus");
   });
 
+  it("a second instance gets its own entry name and the checked block with --alongside (#2806)", () => {
+    const origin = skillOrigin(HOST);
+    const label = HOST.split(".")[0];
+    const txt = renderLlms(HOST, { bus: true, pin: PIN });
+    expect(txt).toContain(
+      `If this machine is already set up for a different instance (\`oa-bus status\` prints the Hub it is approved for), name this MCP entry \`open-artifacts-${label}\` instead of \`open-artifacts\`.`,
+    );
+    const step = stepOf(txt);
+    expect(step).toContain(
+      `dist/index.js" install --alongside --home ~/.oa-bus-${label} --instance ${origin}`,
+    );
+    // Both installers are the same checked block: the check and audit come first.
+    expect(step.match(/npm audit signatures &&/g)).toHaveLength(2);
+    expect(txt).not.toContain("—");
+  });
+
   it("without a pin: no install line at all, and why", () => {
     const txt = renderLlms(HOST, {
       bus: true,

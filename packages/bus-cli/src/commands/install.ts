@@ -23,12 +23,18 @@ import { spinner } from "../live.ts";
 import { originOf, readMachine } from "../machine.ts";
 import {
   checkAdapters,
+  claudeProof,
   type Harness,
   installAdapters,
   readAssets,
   unshownNotes,
 } from "../steps/adapters.ts";
 import { installClaudePlugins } from "../steps/claude-plugins.ts";
+import {
+  claudeConfigFile,
+  proofReport,
+  readRecord as readProofRecord,
+} from "../steps/claude-proof.ts";
 import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { noteMade, pruneMade } from "../steps/leftovers.ts";
@@ -496,7 +502,9 @@ export const installSteps = (
     },
     apply: (ctx) => loginStep(ctx, opts),
   },
-  ...(secondHome ? [] : [harnessesStepDef(opts, bus)]),
+  ...(secondHome
+    ? [claudeProofStepDef(opts, bus)]
+    : [harnessesStepDef(opts, bus)]),
   {
     name: "daemon",
     label: "Daemon answering",
@@ -513,6 +521,59 @@ export const installSteps = (
     apply: (ctx) => daemonStep(ctx, opts.noService),
   },
 ];
+
+/**
+ * #2806: a second bus (--alongside) touches no harness setting but this one:
+ * the proof helper on the Claude entries that point at its own instance, run
+ * for its own home. Notes only, never a stop. One bus for several instances
+ * (#2793) keeps this per-instance piece.
+ */
+function claudeProofStepDef(opts: InstallOpts, bus: string): Step<Ctx> {
+  const hubOf = (ctx: Ctx) => {
+    const hub = opts.hub ? originOf(opts.hub) : machineOrigin(ctx);
+    return hub || undefined;
+  };
+  return {
+    name: "claude-proof",
+    label: "Claude proof helper",
+    failed: "Claude proof helper missing",
+    action: `Run ${bus} to add it.`,
+    check: async (ctx) => {
+      const hub = hubOf(ctx);
+      if (!hub) return "done";
+      const rec = readProofRecord(join(ctx.home, "install.json"));
+      const r = proofReport(
+        rec.config ?? claudeConfigFile(ctx.userHome, ctx.env),
+        hub,
+        { recorded: rec.proofs, busHome: ctx.home },
+      );
+      return r.entries.some(
+        (e) =>
+          e.scope !== "project" &&
+          (e.state === "missing" || e.state === "unrecorded"),
+      )
+        ? "todo"
+        : "done";
+    },
+    apply: async (ctx) => {
+      const hub = hubOf(ctx);
+      if (!hub) return true;
+      const notes: string[] = [];
+      claudeProof(
+        {
+          home: ctx.userHome,
+          busHome: ctx.home,
+          env: ctx.env,
+          hub,
+          busBin: ctx.service.cli(),
+        },
+        notes,
+      );
+      for (const n of notes) say(ctx, [n]);
+      return true;
+    },
+  };
+}
 
 function harnessesStepDef(opts: InstallOpts, bus: string): Step<Ctx> {
   return {

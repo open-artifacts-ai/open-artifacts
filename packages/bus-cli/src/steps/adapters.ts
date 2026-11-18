@@ -486,7 +486,10 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
 }
 
 /** The proof helper of the instance's Claude entry (#1822); never stops the install. */
-function claudeProof(deps: AdapterDeps, notes: string[]) {
+export function claudeProof(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "busBin" | "hub">,
+  notes: string[],
+) {
   if (deps.hub === undefined) return;
   try {
     notes.push(
@@ -496,6 +499,20 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
   } catch (e) {
     notes.push(
       `could not add the proof helper to the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/** #2806: takes only this bus home's proof helper off the Claude entries (a second bus has no other Claude setting). */
+export function removeClaudeProof(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env">,
+  notes: string[],
+) {
+  try {
+    uninstallProof(proofIo(deps), movedHome(deps));
+  } catch (e) {
+    notes.push(
+      `could not take the proof helper off the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 }
@@ -903,13 +920,7 @@ const install: Record<Harness, Step> = {
 const uninstall: Record<Harness, Step> = {
   async claude(deps, notes) {
     // The user's entry goes back first; it is not the oa_bus entry below.
-    try {
-      uninstallProof(proofIo(deps), movedHome(deps));
-    } catch (e) {
-      notes.push(
-        `could not take the proof helper off the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
+    removeClaudeProof(deps, notes);
     const path = paths(deps).claude;
     // Nothing to remove: say nothing was removed, whatever the CLI exits with.
     // A file that cannot be read is no proof of that: the CLI gets its turn.
