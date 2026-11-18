@@ -147,6 +147,7 @@ describe("GET /llms.txt", () => {
     const txt = await guide(E({ BUS_HUB: undefined }));
     expect(txt.startsWith(`# Open Artifacts at ${HOST}\n`)).toBe(true);
     expect([...sections(txt).keys()]).toEqual([
+      "If you can't run commands",
       "Connect",
       "Restart",
       "Verify",
@@ -169,6 +170,7 @@ describe("GET /llms.txt", () => {
   it("bus on: a numbered Setup steps section first, with connect then the bus install as one sequence", async () => {
     const txt = await guide(E({ HOSTED: undefined }));
     expect([...sections(txt).keys()]).toEqual([
+      "If you can't run commands",
       "Setup steps",
       "Connect",
       "Restart",
@@ -188,6 +190,9 @@ describe("GET /llms.txt", () => {
       "6. **Ask what to call you.** Ask your person what to call you. Suggest a short name from the project, such as \"Acme Web\". Tell them it's the name they'll type after @ in comments. Set it, then check that the bus `self` tool shows it.",
     );
     expect(steps).toContain("`/rename <name>`");
+    expect(steps).toContain(
+      "Code tab of Claude Desktop, to rename the session in Desktop",
+    );
     expect(steps).toContain("`/name <name>`");
     expect(steps).toContain(
       "After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.",
@@ -220,6 +225,22 @@ describe("GET /llms.txt", () => {
       ),
     ).toHaveLength(1);
     expect(steps).toContain("Open Artifacts is connected, but the bus isn't");
+  });
+
+  it("a chat app gets connector steps for the person, and what a chat can't do", async () => {
+    for (const e of [E({ BUS_HUB: undefined }), E({ HOSTED: undefined })]) {
+      const chat =
+        sections(await guide(e)).get("If you can't run commands") ?? "";
+      expect(chat).toContain("Claude chat or ChatGPT");
+      expect(chat).toContain(`with the address ${skillOrigin(HOST)}/mcp and`);
+      expect(chat).toContain("add Open Artifacts as a custom connector");
+      expect(chat).toContain("a chat can't join the bus");
+      expect(chat).toContain("Code tab of Claude Desktop");
+      expect(chat).toContain(
+        "https://open-artifacts.com/docs/claude-and-chatgpt/",
+      );
+      expect(chat).not.toMatch(/token|\u2014/i);
+    }
   });
 
   it("bus off (no hub, or hosted without the bus feature): no Agent bus section", async () => {
