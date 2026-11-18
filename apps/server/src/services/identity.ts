@@ -296,10 +296,31 @@ export const googleNewRowOk = (cfg: AuthConfig, isOwner: boolean): boolean =>
 const admitted = (user: Member | null): AdmitResult =>
   user ? { ok: true, user } : { ok: false, reason: "removed" };
 
+/**
+ * Why a code isn't allowed, for the log only (#2656): a fixed word, never the
+ * address. bad_address: not an address. row_inactive: the row is removed or
+ * suspended. linked: the row has a Google link. invite_expired: a never-signed-in
+ * invite past its window. domain_codes_off / domain_no_join: the address is in
+ * the login domains, where codes are off or a new address can't join. not_guest:
+ * a member or admin row outside the domains (they never sign in by code).
+ * no_share: no row and no live share. outsider_off: the owner's outside-sharing
+ * switch is off.
+ */
+export type CodeWhy =
+  | "bad_address"
+  | "row_inactive"
+  | "linked"
+  | "invite_expired"
+  | "domain_codes_off"
+  | "domain_no_join"
+  | "not_guest"
+  | "no_share"
+  | "outsider_off";
+
 export type CodeEligibility =
   | { kind: "member"; userId: string | null; role: Role }
   | { kind: "guest"; userId: string | null }
-  | { kind: "none"; reason?: "invite_expired" };
+  | { kind: "none"; reason?: "invite_expired"; why: CodeWhy };
 
 /** The user row codeRule reads, by email (?1). */
 export const ELIGIBILITY = `select u.id, u.role, u.status,
@@ -325,13 +346,13 @@ export async function codeEligibility(
   rawEmail: string,
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
-  if (!email) return { kind: "none" };
+  if (!email) return { kind: "none", why: "bad_address" };
   const row = await stmt(env.DB, ELIGIBILITY)
     .bind(email)
     .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
   // The same lapse as a Google sign-in (#2520): no code for an expired invite.
   if (row && row.status === "active" && inviteLapsed(row, Date.now()))
-    return { kind: "none", reason: "invite_expired" };
+    return { kind: "none", reason: "invite_expired", why: "invite_expired" };
   const rule = await codeRule(cfg, email, row, async () =>
     Boolean(await stmt(env.DB, SHARED).bind(email).first()),
   );
@@ -340,7 +361,7 @@ export async function codeEligibility(
     rule.kind === "guest" &&
     (await outsiderLoginOff(env, rule.userId, email))
   )
-    return { kind: "none" };
+    return { kind: "none", why: "outsider_off" };
   return rule;
 }
 
@@ -357,23 +378,27 @@ export async function linkEligibility(
   rawEmail: string,
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
-  if (!email) return { kind: "none" };
+  if (!email) return { kind: "none", why: "bad_address" };
   const row = await stmt(env.DB, ELIGIBILITY)
     .bind(email)
     .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
   if (!row) {
-    return (await stmt(env.DB, SHARED).bind(email).first()) &&
-      !(await outsiderLoginOff(env, null, email))
-      ? { kind: "guest", userId: null }
-      : { kind: "none" };
+    if (!(await stmt(env.DB, SHARED).bind(email).first()))
+      return { kind: "none", why: "no_share" };
+    return (await outsiderLoginOff(env, null, email))
+      ? { kind: "none", why: "outsider_off" }
+      : { kind: "guest", userId: null };
   }
-  if (row.status !== "active" || row.linked || !row.id) return { kind: "none" };
+  if (row.status !== "active" || !row.id)
+    return { kind: "none", why: "row_inactive" };
+  if (row.linked) return { kind: "none", why: "linked" };
   if (inviteLapsed(row, Date.now()))
-    return { kind: "none", reason: "invite_expired" };
+    return { kind: "none", reason: "invite_expired", why: "invite_expired" };
   if (await unsharedGuest(env, { id: row.id, role: row.role }))
-    return { kind: "none" };
+    return { kind: "none", why: "no_share" };
   if (isGuestRole(row.role)) {
-    if (await outsiderLoginOff(env, row.id, email)) return { kind: "none" };
+    if (await outsiderLoginOff(env, row.id, email))
+      return { kind: "none", why: "outsider_off" };
     return { kind: "guest", userId: row.id };
   }
   return { kind: "member", userId: row.id, role: row.role };
@@ -399,20 +424,24 @@ export async function codeRule(
   row: CodeRow | null,
   shared: () => Promise<boolean>,
 ): Promise<CodeEligibility> {
-  if (row && (row.status !== "active" || row.linked)) return { kind: "none" };
+  if (row && row.status !== "active")
+    return { kind: "none", why: "row_inactive" };
+  if (row?.linked) return { kind: "none", why: "linked" };
   const domain = email.slice(email.lastIndexOf("@") + 1);
   if (inDomains(cfg.domains, domain)) {
-    if (!cfg.domainCodes) return { kind: "none" };
+    if (!cfg.domainCodes) return { kind: "none", why: "domain_codes_off" };
     if (row) return { kind: "member", userId: row.id, role: row.role };
     return cfg.domainJoin === "member"
       ? { kind: "member", userId: null, role: "member" }
-      : { kind: "none" };
+      : { kind: "none", why: "domain_no_join" };
   }
   if (row)
     return isGuestRole(row.role)
       ? { kind: "guest", userId: row.id }
-      : { kind: "none" };
-  return (await shared()) ? { kind: "guest", userId: null } : { kind: "none" };
+      : { kind: "none", why: "not_guest" };
+  return (await shared())
+    ? { kind: "guest", userId: null }
+    : { kind: "none", why: "no_share" };
 }
 
 /**
