@@ -6,12 +6,12 @@ import { deriveKey } from "../auth/keys.js";
 import type { Env } from "../env.js";
 import { escapeHtml } from "../mcp/template.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
+import { SETUP_REMINDER_HTML, SETUP_REMINDER_TXT } from "./email-templates.js";
 import { type EmailContent, fill, oneLine } from "./templates.js";
 
 export const REMIND_COPY = {
+  // The email's own words are in design/emails/setup-reminder.*.
   subject: "Your agent isn't connected to {{instance}} yet",
-  body: "You joined {{instance}} three days ago. One step is left: paste this into your agent.",
-  stop: "Don't remind me",
   confirmTitle: "Stop setup reminders from {{instance}}?",
   confirmButton: "Don't remind me",
   offTitle: "Setup reminders are off",
@@ -58,32 +58,45 @@ export async function verifyRemindOffToken(
   return ok ? userId : null;
 }
 
-/** The reminder: the design's words, the setup line, and "Don't remind me". */
+/**
+ * The reminder, on the invite email's template (design/emails/setup-reminder.*):
+ * the design's subject and body, the setup line, and "Don't remind me".
+ */
 export function setupReminderEmail(p: {
   instance: string;
+  recipient: string;
+  /** The app origin (appOrigin); every link points only here. */
+  origin: string;
   /** The line to paste (templates.ts setupLine). */
   setupLine: string;
   /** Absolute "Don't remind me" link on the app origin. */
   offUrl: string;
 }): EmailContent {
-  const values = { instance: oneLine(p.instance, 80) };
-  const subject = oneLine(fill(REMIND_COPY.subject, values), 150);
-  const body = fill(REMIND_COPY.body, values);
-  const e = escapeHtml;
-  const text = `${body}\n\n${p.setupLine}\n\n--\n\n${REMIND_COPY.stop}: ${p.offUrl}\n`;
-  const html = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>${e(subject)}</title></head>
-<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-<p>${e(body)}</p>
-<p style="padding:10px 12px;border:1px solid #E0E3E8;border-radius:6px;font:13px/20px ui-monospace,Menlo,Consolas,monospace;word-break:break-all">${e(p.setupLine)}</p>
-<p style="color:#5d636e"><a href="${e(p.offUrl)}">${e(REMIND_COPY.stop)}</a></p>
-</body></html>`;
+  const url = new URL(p.origin);
+  const off = new URL(p.offUrl);
+  if (off.origin !== url.origin) throw new Error("off link off the app host");
+  const values = {
+    instanceName: oneLine(p.instance, 80),
+    recipientEmail: oneLine(p.recipient, 320),
+    appHost: url.host,
+    logoUrl: new URL("/email/logo@2x.png", url.origin).href,
+    setupLine: oneLine(p.setupLine, 2000),
+    offUrl: off.href,
+  };
+  const line = escapeHtml(values.setupLine);
   return {
-    subject,
-    text,
-    html,
+    subject: oneLine(
+      fill(REMIND_COPY.subject, { instance: values.instanceName }),
+      150,
+    ),
+    text: fill(SETUP_REMINDER_TXT, values),
+    // The setup line may wrap only after a "/" (never inside "https").
+    html: fill(SETUP_REMINDER_HTML, values, escapeHtml).replace(
+      `>${line}<`,
+      `>${line.replace(/\//g, "/<wbr>")}<`,
+    ),
     headers: {
-      "List-Unsubscribe": `<${p.offUrl}>`,
+      "List-Unsubscribe": `<${off.href}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
   };

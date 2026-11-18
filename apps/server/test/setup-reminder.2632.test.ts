@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { newId } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import {
   REMIND_OFF_PATH,
@@ -70,6 +70,14 @@ describe("setup reminder (#2632)", () => {
     await setKey(noRemindKey(optedOut.id));
     const done = await signedIn("member", 4);
     await setKey(`onboarding:completed:${done.id}`);
+    const owner = await signedIn("member", 4);
+    await env.DB.prepare("update users set role = 'owner' where id = ?")
+      .bind(owner.id)
+      .run();
+    const suspended = await signedIn("member", 4);
+    await env.DB.prepare("update users set status = 'suspended' where id = ?")
+      .bind(suspended.id)
+      .run();
 
     expect(await sendSetupReminders(E, NOW)).toBe(2);
     const sent = m.sent as unknown as Sent[];
@@ -79,17 +87,28 @@ describe("setup reminder (#2632)", () => {
     const mail = sent.find((s) => s.to === due.email) as Sent;
     expect(mail.subject).toMatch(/^Your agent isn't connected to .+ yet$/);
     expect(mail.text).toMatch(
-      /^You joined .+ three days ago\. One step is left: paste this into your agent\./,
+      /You joined .+ three days ago\. One step is left: paste this into your agent\./,
     );
+    expect(mail.html).toMatch(/:\/<wbr>\/<wbr>[^<]+\/<wbr>llms\.txt</);
+    expect(mail.html).toContain("/email/logo@2x.png");
     expect(mail.text).toMatch(
       /Set up Open Artifacts for me: follow https?:\/\/[^\s]+\/llms\.txt/,
     );
-    expect(mail.text).toContain(`Don't remind me: `);
+    expect(mail.text).toContain("Don't remind me:");
     expect(mail.headers?.["List-Unsubscribe"]).toMatch(
       new RegExp(`${REMIND_OFF_PATH}\\?t=`),
     );
     expect(Number(await setting(remindedKey(due.id)))).toBe(NOW);
-    for (const u of [tooSoon, tooOld, guest, agent, optedOut, done])
+    for (const u of [
+      tooSoon,
+      tooOld,
+      guest,
+      agent,
+      optedOut,
+      done,
+      owner,
+      suspended,
+    ])
       expect(await setting(remindedKey(u.id))).toBeNull();
 
     // Never twice; the one who was too soon gets theirs a day later.
@@ -114,6 +133,25 @@ describe("setup reminder (#2632)", () => {
     const u = await signedIn("member", -36);
     expect(await sendSetupReminders(E, now)).toBe(0);
     expect(await setting(remindedKey(u.id))).toBeNull();
+  });
+
+  it("a send that times out keeps the claim: it may have arrived", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const now = NOW + 60 * DAY;
+      const u = await signedIn("member", -56);
+      const E = {
+        ...env,
+        EMAIL_FROM: "noreply@mail.example.com",
+        EMAIL: { send: () => new Promise(() => {}) },
+      } as unknown as Env;
+      const run = sendSetupReminders(E, now);
+      await vi.runAllTimersAsync();
+      expect(await run).toBe(0);
+      expect(Number(await setting(remindedKey(u.id)))).toBe(now);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("with email off, nothing is claimed or sent", async () => {

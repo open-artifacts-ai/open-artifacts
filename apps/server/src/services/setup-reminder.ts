@@ -65,15 +65,27 @@ export async function sendSetupReminders(
     if (!results.length) return 0;
     const instance = (await getSettings(env)).name;
     const origin = appOrigin(env);
+    const release = (id: string) =>
+      stmt(env.DB, "delete from settings where key = ?1")
+        .bind(remindedKey(id))
+        .run();
     for (const u of results) {
-      // Claim first, so two runs can't both send; released if it didn't go.
+      // Claim first, so two runs can't both send.
       const claim = await stmt(env.DB, CLAIM)
         .bind(remindedKey(u.id), String(now))
         .run();
       if (!claim.meta.changes) continue;
-      const offUrl = `${origin}${REMIND_OFF_PATH}?t=${encodeURIComponent(
-        await signRemindOffToken(env, u.id),
-      )}`;
+      let offUrl: string;
+      try {
+        offUrl = `${origin}${REMIND_OFF_PATH}?t=${encodeURIComponent(
+          await signRemindOffToken(env, u.id),
+        )}`;
+      } catch (e) {
+        // Nothing went out: let the next day try again.
+        await release(u.id);
+        throw e;
+      }
+      const outcome: { timedOut?: boolean } = {};
       const ok = await sendEmail(
         env,
         null,
@@ -81,16 +93,16 @@ export async function sendSetupReminders(
         () =>
           setupReminderEmail({
             instance,
+            recipient: u.email,
+            origin,
             setupLine: setupLine(origin),
             offUrl,
           }),
-        { kind: "setup_reminder", instance, now },
+        { kind: "setup_reminder", instance, now, outcome },
       );
       if (ok) sent++;
-      else
-        await stmt(env.DB, "delete from settings where key = ?1")
-          .bind(remindedKey(u.id))
-          .run();
+      // A timeout may still have delivered it: keep the claim (once means once).
+      else if (!outcome.timedOut) await release(u.id);
     }
   } catch (e) {
     logWarn("setup_reminder_failed", {

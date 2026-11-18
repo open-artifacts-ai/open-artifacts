@@ -149,7 +149,7 @@ describe("invite email", () => {
     expect(g.status).toBe(201);
     const to = (a: string) => m.sent.find((x) => x.to === a) as Sent;
     expect(to(member).text).toContain(line);
-    expect(to(member).html).toContain(line);
+    expect(to(member).html).toContain(line.replace(/\//g, "/<wbr>"));
     expect(to(guest).text).toContain("https://app.localhost/sign-in");
     for (const part of [to(guest).text, to(guest).html]) {
       expect(part).not.toContain("llms.txt");
