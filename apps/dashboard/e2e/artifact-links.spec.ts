@@ -100,6 +100,35 @@ test("a forged navigate to anything but an artifact view is ignored", async ({
   await expect(page).toHaveURL(`${APP}/a/${POLL}/v/1`);
 });
 
+test.describe("embed mode", () => {
+  test("the link opens a new tab; the framed shell stays", async ({
+    page,
+    context,
+  }) => {
+    await context.route(
+      (u) => u.href.startsWith(ATTACKER),
+      (r) =>
+        r.fulfill({
+          contentType: "text/html",
+          body: `<!doctype html><iframe src="${APP}/a/${POLL}/full" style="width:800px;height:600px;border:0"></iframe>`,
+        }),
+    );
+    await page.goto(ATTACKER);
+    const a = await contentFrame(page, POLL);
+    await expect
+      .poll(() => a.evaluate(() => typeof window.__forge))
+      .toBe("function");
+    const [tab] = await Promise.all([
+      context.waitForEvent("page"),
+      a.locator("#go").click(),
+    ]);
+    await expect.poll(() => tab.url()).toBe(`${APP}/a/${POLL}`);
+    expect(await tab.evaluate(() => window.opener)).toBeNull();
+    const shell = page.frames().find((f) => f.url().startsWith(`${APP}/a/`));
+    expect(shell?.url()).toBe(`${APP}/a/${POLL}/full`);
+  });
+});
+
 declare global {
   interface Window {
     __forge: (url: string) => void;
