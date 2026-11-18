@@ -136,6 +136,17 @@ export const R = {
   passkeySettings: "/api/v1/passkeys/settings",
   /** POST PasskeySettingsPatch -> { options, expiresAt }: a challenge bound to exactly that settings change. */
   passkeySettingsChallenge: "/api/v1/passkeys/settings/challenge",
+  /** #2577: GET -> HeldList: the requests to the caller's agents that wait for them, with the current words. Browser session only. */
+  agentAskHeld: "/api/v1/me/agent-asks/held",
+  /** POST AllowBody -> AllowResult: passes exactly the listed held comments (at the words shown) to the caller's agents; "page" and "all" also add a "listens to" entry ("all" needs a passkey). 409 `changed` is never sent: edited comments stay held and count in `changed`. */
+  agentAskHeldAllow: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/allow`,
+  /** POST AllowChallengeBody -> PasskeyChallenge: the passkey prompt for an "all pages" entry ending at `until`. */
+  agentAskHeldAllowChallenge: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/allow/challenge`,
+  /** POST -> 204: quiet this sender's requests for a day; they stay held, and the asker sees nothing different. */
+  agentAskHeldNotNow: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/not-now`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",
   /** PATCH TokenPatch -> Token; DELETE -> 204. Own tokens only (else 404). */
@@ -147,6 +158,25 @@ export const R = {
   /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
   busMachines: "/api/v1/bus/machines",
   busPing: "/api/v1/bus/ping",
+  /**
+   * PUT { version: "x.y.z" | null } -> 204 (#2552): the version the instance
+   * tells its machines to run; null names none (the default). Owner only, in
+   * an interactive cookie session (a PAT, OAuth grant or machine token gets
+   * 404); audited bus.run_version.set (with `stepBack`). Only a strict x.y.z
+   * is accepted. 409 conflict with details `{ reason }`: `older_version` (lower
+   * than the one named, without `stepBack: true`) or `ahead_of_server` (newer
+   * than this server).
+   */
+  busRunVersion: "/api/v1/bus/run-version",
+  /**
+   * POST -> 204 (#2552): "Install now" for one of the caller's own machines.
+   * No body: it names no version. The machine installs only the version it
+   * already staged and the instance names. An interactive cookie session of
+   * the machine's own member (else 404); 409 `machine_offline` when no socket
+   * took it; audited bus.install_now.
+   */
+  busMachineInstallNow: (id: string) =>
+    `/api/v1/bus/machines/${seg(id)}/install-now`,
   /** DELETE -> 204: revoke one of the caller's machines (idempotent; another member's or unknown: 404). */
   busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
   /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */

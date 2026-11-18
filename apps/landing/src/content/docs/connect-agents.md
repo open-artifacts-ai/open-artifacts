@@ -9,6 +9,8 @@ Every instance serves one MCP server at `https://<your-app-host>/mcp` over Strea
 - **OAuth.** Clients that support MCP OAuth need only the URL. They register themselves, and you log in through your instance's login page.
 - **Personal access token.** For clients and scripts without OAuth, create a token in the dashboard under **Settings → Connections** and send it as `Authorization: Bearer oa_pat_…`. Tokens can be revoked at any time.
 
+Scripts that call `/mcp` or `/api/v1` should send their own User-Agent, for example `User-Agent: my-script/1`. Some hosts refuse a library's default one, such as Python urllib's `Python-urllib/3.x`, with `403` and the body `error code: 1010`, before the token is checked.
+
 Setup's `agent-config` step prints each snippet below with your URL filled in, and the dashboard's **Settings → Connections** page shows them too. The examples use `artifacts.example.com` and the default server name, `open-artifacts`; setup names the server after its `--name` flag.
 
 Claude Code, Cursor, and OpenCode use OAuth, so their snippets are only the URL: no token, no header. A token is for a client without OAuth. Setup saves the owner's token to `~/.open-artifacts/<host-slug>-pat-token` (mode 0600; the host slug is the app host lowercased, with every run of other characters turned into `-`). The token variants below read that file; replace `<token file>` with its absolute path. Never paste a token into a command, a config file, or a chat.

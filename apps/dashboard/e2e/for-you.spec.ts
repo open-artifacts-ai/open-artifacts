@@ -78,9 +78,9 @@ async function start(
 
 for (const width of [1280, 390])
   for (const theme of ["light", "dark"] as const) {
-    test(`mixed, Later and an answered ask at ${width} ${theme}`, async ({
-      page,
-    }) => {
+    test(`mixed, Later and an answered ask at ${width} ${theme}`, {
+      tag: width === 1280 && theme === "light" ? "@smoke" : [],
+    }, async ({ page }) => {
       const shot = await start(page, width, theme);
       await expect(bell(page)).toHaveAccessibleName("For you, 2 need you");
       await expect(page.locator("[data-bell-count]")).toHaveText("2");

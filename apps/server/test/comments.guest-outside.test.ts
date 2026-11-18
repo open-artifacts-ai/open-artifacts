@@ -23,8 +23,9 @@ import {
   type CommentWho,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
-import { putShare } from "../src/services/shares.js";
+import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
+import { listenEachOther } from "./held-listens.js";
 import { login } from "./helpers.js";
 
 // Guests count as outside for agent wake-ups, with no AUTH_DOMAINS set.
@@ -66,6 +67,7 @@ beforeAll(async () => {
   owner = await mk("go-owner", "member");
   guest = await mk("go-guest", "guest");
   member = await mk("go-member", "member");
+  await listenEachOther(E, [owner.userId, member.userId]);
 });
 
 const LINKED: AgentAttr = {
@@ -140,13 +142,14 @@ describe("a guest wakes no agent, with no AUTH_DOMAINS", () => {
     expect(bus.sent).toEqual([]);
   });
 
-  it("a plain note on an agent's page wakes nothing; a member's does", async () => {
+  it("a plain note on an agent's page wakes nothing; a member's is held (the page is open to a guest, #2577)", async () => {
     const s = await setup();
     const t = await post(s.id, guest);
     expect(t.comments[0]?.body).toBe("hi");
     expect(bus.sent).toEqual([]);
+    // The list never applies on a page open to a guest: only "Allow once" does.
     await post(s.id, member);
-    expect(bus.sent.map((x) => x.notice.to.name)).toEqual(["Claude"]);
+    expect(bus.sent).toEqual([]);
   });
 
   it("a reply wakes no agent already in the thread", async () => {
@@ -166,7 +169,7 @@ describe("a guest wakes no agent, with no AUTH_DOMAINS", () => {
     expect(bus.sent).toEqual([]);
   });
 
-  it("a follower notice is not sent for a guest's comment; a member's is", async () => {
+  it("a follower notice is not sent for a guest's comment; a member's is, on a page with no guest (#2577)", async () => {
     const s = await setup();
     await post(s.id, guest, {}, { after: { version: 1 } });
     expect(bus.sent).toEqual([]);
@@ -190,6 +193,8 @@ describe("a guest wakes no agent, with no AUTH_DOMAINS", () => {
     await follow(E, owner.userId, { namespace: "ns-o", name: "Pi" }, plain.id);
     await post(plain.id, guest, {}, { after: { version: 1 } });
     expect(bus.sent).toEqual([]);
+    // While a guest has a share the page is open (#2577): the list never applies, so drop the share first.
+    await deleteShare(E, owner.member, plain.id, guest.email);
     await post(plain.id, member, {}, { after: { version: 1 } });
     expect(bus.sent.map((x) => [x.notice.kind, x.notice.to.name])).toEqual([
       ["commented", "Pi"],

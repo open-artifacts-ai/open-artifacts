@@ -26,7 +26,12 @@ import {
   storedShare,
 } from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
-import { emailEnabled, sendEmail } from "../email/send.js";
+import { EmailSkipped, emailEnabled, sendEmail } from "../email/send.js";
+import {
+  addressHash,
+  optoutUrl,
+  signOptoutToken,
+} from "../email/share-optout.js";
 import {
   outsideShareEmail,
   senderName,
@@ -39,7 +44,16 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { apiFormat } from "./doc-format.js";
+import { pausedUntil, recordShareEmail } from "./email-events.js";
 import { inBackground, notifyShared } from "./follows.js";
+import {
+  hostedOptoutOn,
+  OptoutUnavailableError,
+  optoutHash,
+  optoutPlatform,
+  platformUnsubscribeUrl,
+} from "./hosted-optout.js";
+import { recordShareItem } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
@@ -144,6 +158,7 @@ const shareAudit = (
   );
 
 const SAME_SHARE = `SELECT email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ? AND can_comment = ?`;
+const OPTED_OUT = "select 1 as x from email_optouts where address_hash = ?1";
 const IS_USER = "select 1 as x from users where email = ? limit 1";
 // Only a lapsed guest (removed by the last-share cleanup): an admin or
 // directory removal clears guest_lapsed and stays removed (P3 T6).
@@ -262,6 +277,19 @@ export async function putShare(
   // #1292: a new direct share tells the recipient's picked agents, after
   // the response; ids and the link only.
   if (created) await inBackground(ctx, notifyShared(env, user.id, email, id));
+  // #2512 S2: a member the page is shared with sees it in their inbox.
+  if (created)
+    await inBackground(
+      ctx,
+      recordShareItem(env, {
+        artifactId: id,
+        title: artifact.title,
+        email,
+        sharer: user.id,
+        sharerName: senderName(user),
+        createdAt: row.createdAt,
+      }),
+    );
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
   return {
@@ -285,14 +313,18 @@ async function emailed(
     emailed: boolean;
     notEmailed?: NonNullable<ShareResult["notEmailed"]>;
     limit?: number;
+    pausedUntil?: string;
   }>,
-): Promise<Pick<ShareResult, "emailed" | "notEmailed" | "limit">> {
+): Promise<
+  Pick<ShareResult, "emailed" | "notEmailed" | "limit" | "pausedUntil">
+> {
   if (!created) return { emailed: false };
   const r = await send();
   return {
     emailed: r.emailed,
     ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
     ...(r.limit !== undefined ? { limit: r.limit } : {}),
+    ...(r.pausedUntil ? { pausedUntil: r.pausedUntil } : {}),
   };
 }
 
@@ -317,6 +349,7 @@ async function emailShare(
   emailed: boolean;
   notEmailed?: NonNullable<ShareResult["notEmailed"]>;
   limit?: number;
+  pausedUntil?: string;
 }> {
   if (!emailEnabled(env)) return { emailed: false };
   try {
@@ -330,19 +363,92 @@ async function emailShare(
     // hosted's: a self-hosted install sends it, without limits. Anyone else (a login domain's address) gets the normal share
     // email, with its role line, as on main.
     const outside = outsideAddress(env, email);
+    // "Don't email me again": an address that opted out gets no outside share
+    // email (#2590). Across hosted would be a call to the platform here.
+    const optOutHash = outside ? await addressHash(email) : null;
+    if (
+      optOutHash &&
+      (await stmt(env.DB, OPTED_OUT).bind(optOutHash).first())
+    ) {
+      // The sharer is not told a recipient opted out (that choice is the
+      // recipient's): the result says "skipped"; the log has the reason.
+      logInfo("share_email_skipped", {
+        reason: "recipient_opted_out",
+        artifactId: artifact.id,
+      });
+      return { emailed: false, notEmailed: "skipped" };
+    }
+    // Hosted, once the platform has switched it on (#2652): the platform's
+    // list is the source of truth and is asked before every outside email,
+    // once the daily limits have passed (a refused email never spends a
+    // mint); no answer, or a mint refused over its daily cap, means no email
+    // (fail closed). The link is the platform's own unsubscribe page,
+    // carrying the token it minted for this email.
+    const hostedWide = outside && hostedOptoutOn(env);
+    const skip = (reason: string): never => {
+      logInfo("share_email_skipped", { reason, artifactId: artifact.id });
+      throw new EmailSkipped(reason);
+    };
+    const platformLink = async (): Promise<string> => {
+      const h1 = await optoutHash(env, email);
+      if (!h1) return skip("optout_unconfigured");
+      try {
+        if (await optoutPlatform.impl.check(env, h1))
+          return skip("platform_opted_out");
+        const token = await optoutPlatform.impl.mint(env, h1);
+        const url = platformUnsubscribeUrl(env, token);
+        return url ?? skip("optout_unconfigured");
+      } catch (e) {
+        if (e instanceof EmailSkipped) throw e;
+        logWarn("optout_platform_failed", e, { artifactId: artifact.id });
+        const why = e instanceof OptoutUnavailableError ? e.why : "";
+        return skip(
+          why === "capped"
+            ? "optout_mint_capped"
+            : why === "timeout"
+              ? "optout_timeout"
+              : "optout_unavailable",
+        );
+      }
+    };
+    const localOptOutUrl =
+      outside && !hostedWide
+        ? optoutUrl(env.APP_HOST, await signOptoutToken(env, email))
+        : "";
     const hosted = env.HOSTED === "1";
     // No user row. An outside address (#2590) gets the outside email, under
     // its own daily limits (apart from the usual ones; the share is saved
     // whatever they say). Anyone else (an address at a login domain, an
     // Access install) gets the normal share email, with its role line.
+    // A bounce or complaint on this member's earlier outside share email
+    // pauses them for 7 days (#2650): the share is saved, nothing is sent, and
+    // the sharer is told only "skipped".
+    const paused = outside ? await pausedUntil(env, user.id) : null;
+    if (paused !== null) {
+      logInfo("share_email_skipped", {
+        reason: "sender_paused",
+        artifactId: artifact.id,
+      });
+      // The sender's own pause, never which recipient bounced.
+      return {
+        emailed: false,
+        notEmailed: "sender_paused",
+        pausedUntil: new Date(paused).toISOString(),
+      };
+    }
     const day = new Date().toISOString().slice(0, 10);
     const trial = planOfMember(user)?.tier === "trial";
-    const outcome: { limited?: boolean; reason?: string } = {};
+    const outcome: {
+      limited?: boolean;
+      reason?: string;
+      skipped?: boolean;
+      messageId?: string;
+    } = {};
     const sent = await sendEmail(
       env,
       user.id,
       email,
-      () =>
+      async () =>
         outside
           ? outsideShareEmail({
               inviter: senderName(user),
@@ -354,6 +460,8 @@ async function emailShare(
               path: viewerPath(artifact.id),
               signIn: reach.methods,
               cantSignIn: reach.recipient?.reason,
+              optOutUrl: hostedWide ? await platformLink() : localOptOutUrl,
+              hostedWide,
             })
           : shareEmail({
               inviter: senderName(user),
@@ -397,7 +505,15 @@ async function emailShare(
             ],
       },
     );
-    if (sent) return { emailed: true };
+    if (sent) {
+      // Which member sent it, so a bounce or complaint can pause them.
+      if (outside && outcome.messageId)
+        await recordShareEmail(env, outcome.messageId, user.id).catch((e) =>
+          logWarn("share_email_record_failed", e),
+        );
+      return { emailed: true };
+    }
+    if (outcome.skipped) return { emailed: false, notEmailed: "skipped" };
     if (!outcome.limited) return { emailed: false };
     // The number a member_limit or instance_limit refusal hit, for the page.
     if (outcome.reason === "member_limit")

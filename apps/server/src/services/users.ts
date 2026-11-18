@@ -429,6 +429,30 @@ export async function getMismatchOwner(
   );
 }
 
+/**
+ * Many members by id in a few D1 round trips (batches of 50 statements): the
+ * same statement and rules as getUser. Missing or refused ids are absent.
+ */
+export async function getUsers(
+  env: Env,
+  ids: string[],
+): Promise<Map<string, Member>> {
+  const out = new Map<string, Member>();
+  const sql = billingActive(env) ? USER_BY_ID_HOSTED : USER_BY_ID;
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk = ids.slice(i, i + 50);
+    const res = await env.DB.batch(
+      chunk.map((id) => stmt(env.DB, sql).bind(id, 0)),
+    );
+    chunk.forEach((id, j) => {
+      const row = (res[j]?.results as UserByIdRow[] | undefined)?.[0] ?? null;
+      const u = withEpoch(env, row)?.user;
+      if (u) out.set(id, u);
+    });
+  }
+  return out;
+}
+
 export async function getUser(env: Env, id: string): Promise<Member | null> {
   return (await getUserWithEpoch(env, id))?.user ?? null;
 }

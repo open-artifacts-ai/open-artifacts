@@ -127,10 +127,9 @@ const publishVersion = (pat: string, id: string, n: number) =>
     expect(r.ok).toBe(true);
   });
 
-test("publish v2 while v1 is open: it swaps in within about 2 s", async ({
-  page,
-  member,
-}) => {
+test("publish v2 while v1 is open: it swaps in within about 2 s", {
+  tag: "@smoke",
+}, async ({ page, member }) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Live ${uniq()}`,
     format: "html",

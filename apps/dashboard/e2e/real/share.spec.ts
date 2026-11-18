@@ -25,11 +25,9 @@ async function shareViaApi(pat: string, id: string, email: string) {
   expect(res.ok, await res.text()).toBe(true);
 }
 
-test("owner shares with Bob as viewer; Bob sees it in Shared; revoked, Bob gets a 404", async ({
-  page,
-  member,
-  browser,
-}) => {
+test("owner shares with Bob as viewer; Bob sees it in Shared; revoked, Bob gets a 404", {
+  tag: "@smoke",
+}, async ({ page, member, browser }) => {
   const title = `Plan ${uniq()}`;
   const { id } = await publishViaApi(member.pat, {
     title,

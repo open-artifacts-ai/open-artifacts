@@ -34,9 +34,9 @@ for (const [scheme, width] of [
     test.use({ colorScheme: scheme, viewport: { width, height: 800 } });
     const tag = `${scheme}-${width}`;
 
-    test("New doc opens a blank doc with the cursor in it", async ({
-      page,
-    }) => {
+    test("New doc opens a blank doc with the cursor in it", {
+      tag: tag === "light-1280" ? "@smoke" : [],
+    }, async ({ page }) => {
       await page.goto("/?mock=newdoc");
       await expect(
         page.getByText("Your agents can make docs too."),
@@ -73,9 +73,9 @@ for (const [scheme, width] of [
       await shot(page, `new-doc-titled-${tag}.png`);
     });
 
-    test("an existing doc opens with the cursor in the body", async ({
-      page,
-    }) => {
+    test("an existing doc opens with the cursor in the body", {
+      tag: tag === "light-1280" ? "@smoke" : [],
+    }, async ({ page }) => {
       await page.goto("/a/Cd5fGhJkLm6nPqRs?mock=doc");
       await expect(page.locator(".ProseMirror")).toBeFocused();
     });

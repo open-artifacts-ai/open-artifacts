@@ -536,6 +536,32 @@ export const StatusReply = z.object({
   ),
   /** Config files refused or noted (#1527). Absent from older daemons, and when there are none. */
   config_files: z.array(ConfigFile).optional(),
+  /**
+   * #2688: each live Claude session and whether its `mcp-proof` helper linked it.
+   * Names, folders and cause codes only; never a proof, a hash or a header.
+   * Absent from older daemons.
+   */
+  claude_sessions: z
+    .array(
+      z.object({
+        name: z.string(),
+        cwd: z.string(),
+        /** `linked`, `unlinked`, or `starting` (seen only moments ago, so its helper may not have run yet). Strings, so a newer daemon's new value still parses. */
+        state: z.string(),
+        /** Why an `unlinked` session is: the helper never called, or its proof expired or was refused. */
+        cause: z.string().optional(),
+      }),
+    )
+    .optional(),
+  /** #2688: the daemon's recent `mcp-proof` calls that could not bind a session, newest last (a few). */
+  unbound_proofs: z
+    .array(
+      z.object({
+        at: z.number(),
+        cause: z.string(),
+      }),
+    )
+    .optional(),
   /** Messages sent from this machine the hub delivered after the 5 s window, within the last hour. */
   late: z
     .array(

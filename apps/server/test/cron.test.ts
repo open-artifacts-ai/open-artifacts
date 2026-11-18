@@ -103,6 +103,7 @@ describe("purgeDeleted", () => {
       "fulfilled",
       "fulfilled",
       "fulfilled", // sweepPictures (#2508)
+      "fulfilled", // sweepEmailEvents (#2650)
       "fulfilled",
       "fulfilled", // sweepOAuthStore (expired rows, old tombstones)
       "fulfilled", // C3: reindexStale
@@ -111,6 +112,7 @@ describe("purgeDeleted", () => {
       "fulfilled", // checkLatestRelease (B3)
       "fulfilled", // expirePending (P3 T12 directory confirm)
       "fulfilled", // sweepAuditEvents (400-day audit retention)
+      "fulfilled", // sendSetupReminders (#2632)
       "fulfilled", // kickSync (P3 T13; a no-op with sync off)
       "fulfilled", // marks the day for RECOVERY_CRON's daily slot (O1)
     ]);

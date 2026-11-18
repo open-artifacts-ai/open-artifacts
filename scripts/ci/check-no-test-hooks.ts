@@ -21,6 +21,7 @@ const HOOK_PATHS = [
   "/__test/code-caps/reset",
   "/__test/directory-groups",
   "/__test/directory-held",
+  "/__test/people-purge",
   "/__test/x",
 ];
 const METHODS = ["GET", "POST"];

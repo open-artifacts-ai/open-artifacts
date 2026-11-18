@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { besideWidth, placeBeside } from "../src/viewer/comments/pinPlacement";
+import {
+  besideWidth,
+  placeBeside,
+  placeBesideRect,
+} from "../src/viewer/comments/pinPlacement";
 
 const frame = { w: 940, h: 700 };
 const box = { w: 320, h: 180 };
@@ -33,5 +37,45 @@ describe("the box beside a new flag (#2019)", () => {
     const p = placeBeside({ x: 250, y: 480 }, narrow, { w, h: 180 });
     expect(p.left).toBeGreaterThanOrEqual(8);
     expect(p.left + w).toBeLessThanOrEqual(narrow.w - 8);
+  });
+});
+
+describe("the card beside an ask's mark (#2426)", () => {
+  const r = { x: 100, y: 200, width: 60, height: 18 };
+  const onScreen = (
+    p: { left: number; top: number },
+    f: typeof frame,
+    b: typeof box,
+  ) =>
+    p.left >= 8 &&
+    p.top >= 8 &&
+    p.left + b.w <= f.w - 8 &&
+    p.top + b.h <= f.h - 8;
+  it("sits below the mark, so the quote stays readable", () => {
+    const p = placeBesideRect(r, frame, box);
+    expect(p.top).toBeGreaterThanOrEqual(r.y + r.height);
+    expect(onScreen(p, frame, box)).toBe(true);
+  });
+  it("goes above a mark near the bottom", () => {
+    const p = placeBesideRect({ ...r, y: 600 }, frame, box);
+    expect(p.top + box.h).toBeLessThanOrEqual(600);
+  });
+  it("at 390px wide it stays on screen, below or above the mark", () => {
+    const narrow = { w: 390, h: 700 };
+    const b = { w: besideWidth(narrow.w), h: 180 };
+    for (const y of [100, 650]) {
+      const p = placeBesideRect(
+        { x: 150, y, width: 60, height: 18 },
+        narrow,
+        b,
+      );
+      expect(onScreen(p, narrow, b)).toBe(true);
+    }
+    expect(
+      placeBesideRect({ x: 150, y: 100, width: 60, height: 18 }, narrow, b).top,
+    ).toBeGreaterThan(118);
+    expect(
+      placeBesideRect({ x: 150, y: 650, width: 60, height: 18 }, narrow, b).top,
+    ).toBeLessThan(650);
   });
 });
