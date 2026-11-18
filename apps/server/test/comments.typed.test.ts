@@ -24,6 +24,7 @@ import { addThread } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
 import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { listenEachOther } from "./held-listens.js";
 import { api as baseApi, login } from "./helpers.js";
 
 const api = (
@@ -81,6 +82,7 @@ let ownerBlankPat: string;
 beforeAll(async () => {
   owner = await mk("t-owner");
   editor = await mk("t-editor");
+  await listenEachOther(E, [owner.userId, editor.userId]);
   ownerPat = (await createPat(E, owner.userId, "owner token")).token;
   ownerBlankPat = (await createPat(E, owner.userId, "")).token;
   for (const u of [owner, editor]) await connectedMachine(real.DB, u.userId);

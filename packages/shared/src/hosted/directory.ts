@@ -265,6 +265,7 @@ export const AuditActionSchema = z.enum([
   "passkey.remove",
   "passkey.remove_cancel",
   "passkey.settings",
+  "agent_ask.held",
   "agent_ask.allow",
   "agent_ask.not_now",
   "agent_listens.add",

@@ -29,6 +29,7 @@ import {
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
 import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { listenEachOther } from "./held-listens.js";
 import { api as baseApi, errOf, login } from "./helpers.js";
 
 const api = (
@@ -90,6 +91,7 @@ beforeAll(async () => {
   owner = await mk("t-owner");
   editor = await mk("t-editor");
   viewer = await mk("t-viewer");
+  await listenEachOther(E, [owner.userId, editor.userId, viewer.userId]);
   for (const u of [owner, editor]) await connectedMachine(real.DB, u.userId);
 });
 
@@ -129,7 +131,7 @@ async function setup(extra: Record<string, unknown> = {}) {
   });
   for (const [u, role] of [
     [editor, "editor"],
-    [viewer, "viewer"],
+    [viewer, "editor"],
   ] as const)
     await api(app, R.shares(id), owner.cookie, {
       method: "PUT",

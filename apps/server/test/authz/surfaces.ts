@@ -1671,6 +1671,9 @@ const code =
   (...c: string[]) =>
   (r: Answer) =>
     c.includes(r.code);
+/** #2577: the 404 of a request the caller does not hold (see NO_HELD in services/agent-requests.ts). */
+const noHeld = (r: Answer) =>
+  r.code === "not_found" && r.message === "No such held request";
 const ok =
   (...s: number[]) =>
   (r: Answer) =>
@@ -2123,10 +2126,8 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     },
   },
   // #2577: the receiver's held requests. A browser session of the receiver
-  // only; an allowed caller has no such request, so 404 before anything is written.
-  "GET /api/v1/me/agent-asks/held": {
-    real: { req: () => ({ path: "" }), allow: ok(200) },
-  },
+  // only; an allowed caller has no such request, so a 404 with its own text before
+  // anything is written (a capped caller's 404 from the cap guard says "Not found").
   "POST /api/v1/me/agent-asks/held/:id/allow": {
     real: {
       req: () => ({
@@ -2136,7 +2137,7 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
           items: [{ commentId: "c1", wordsHash: "0".repeat(64) }],
         },
       }),
-      allow: code("not_found"),
+      allow: noHeld,
     },
   },
   "POST /api/v1/me/agent-asks/held/:id/allow/challenge": {
@@ -2145,13 +2146,13 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
         path: "/api/v1/me/agent-asks/held/probe/allow/challenge",
         body: { until: Date.now() + 86_400_000 },
       }),
-      allow: code("not_found"),
+      allow: noHeld,
     },
   },
   "POST /api/v1/me/agent-asks/held/:id/not-now": {
     real: {
       req: () => ({ path: "/api/v1/me/agent-asks/held/probe/not-now" }),
-      allow: code("not_found"),
+      allow: noHeld,
     },
   },
   "POST /api/v1/passkeys/:id/challenge": {

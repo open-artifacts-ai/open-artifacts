@@ -173,6 +173,14 @@ describe("holding", () => {
     expect(r?.items).toHaveLength(1);
     expect(r?.items[0]?.body).toBe("where does the 42% come from?");
     expect(t.comments[0]?.body).toContain("42%");
+    // A new request is audited once, however many comments follow.
+    await post(s.id, typed(editor), editor, "and again?", mention(s.claude));
+    const { results: audited } = await env.DB.prepare(
+      "select target_id from audit_events where action = 'agent_ask.held' and actor_id = ?1 and target_id = ?2",
+    )
+      .bind(editor.userId, owner.userId)
+      .all<{ target_id: string }>();
+    expect(audited).toHaveLength(1);
   });
 
   it("the receiver's agents read a placeholder in every list; the person and the asker read the words", async () => {

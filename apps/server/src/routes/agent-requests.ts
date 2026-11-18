@@ -39,14 +39,14 @@ export function mountAgentRequests(app: AppType): void {
     return c.json(await listHeld(c.env, user.id));
   });
 
-  app.post(R.agentAskHeldAllow(":id"), async (c) => {
+  app.post(`${R.agentAskHeld}/:id/allow`, async (c) => {
     const user = member(c);
     const id = idOf(c);
     const body = await jsonBody(c, AllowBodySchema);
     return c.json(await allow(c.env, user.id, id, body));
   });
 
-  app.post(R.agentAskHeldAllowChallenge(":id"), async (c) => {
+  app.post(`${R.agentAskHeld}/:id/allow/challenge`, async (c) => {
     const user = member(c);
     const id = idOf(c);
     const body = await jsonBody(c, AllowChallengeBodySchema);
@@ -55,7 +55,7 @@ export function mountAgentRequests(app: AppType): void {
     );
   });
 
-  app.post(R.agentAskHeldNotNow(":id"), async (c) => {
+  app.post(`${R.agentAskHeld}/:id/not-now`, async (c) => {
     const user = member(c);
     await notNow(c.env, user.id, idOf(c));
     return c.body(null, 204);

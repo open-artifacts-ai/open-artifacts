@@ -47,6 +47,7 @@ import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { listenEachOther } from "./held-listens.js";
 import { api as baseApi, errOf, login } from "./helpers.js";
 
 /** The app called with this file's env (its stub bus hubs). */
@@ -116,6 +117,12 @@ beforeAll(async () => {
   editor = await mk("a-editor");
   viewer = await mk("a-viewer");
   stranger = await mk("a-stranger");
+  await listenEachOther(E, [
+    owner.userId,
+    editor.userId,
+    viewer.userId,
+    stranger.userId,
+  ]);
 });
 
 const NOTE = { kind: "note" };

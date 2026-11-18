@@ -141,6 +141,12 @@ export async function recordHolds(
         (n?.pair ?? 0) >= HELD_PER_PAIR_MAX
       )
         continue;
+      const known = await stmt(
+        env.DB,
+        "select 1 as x from held_requests where receiver_id = ?1 and sender_id = ?2 and artifact_id = ?3",
+      )
+        .bind(owner, senderId, artifactId)
+        .first();
       await stmt(
         env.DB,
         `insert into held_requests (id, receiver_id, sender_id, artifact_id, created_at, last_at)
@@ -156,6 +162,15 @@ export async function recordHolds(
         .bind(owner, senderId, artifactId)
         .first<{ id: string }>();
       if (!req) continue;
+      // A new request (one per receiver, sender and page) is audited once.
+      if (!known)
+        await audit(
+          env,
+          "agent_ask.held",
+          { type: "user", id: owner },
+          userActor(senderId),
+          { detail: { artifactId } },
+        ).run();
       for (const h of held.filter((x) => x.agent.owner === owner))
         await stmt(
           env.DB,
@@ -328,6 +343,9 @@ const KIND: Record<string, CommentNoticeKind> = {
 export const listenBinding = (level: "page" | "space" | "all", until: number) =>
   `${level}:${until}`;
 
+/** The 404 text of a request that is not the caller's (the authz matrix tells it from a capped caller's plain 404). */
+export const NO_HELD = "No such held request";
+
 async function requestOf(env: Env, receiverId: string, id: string) {
   const r = await stmt(
     env.DB,
@@ -335,7 +353,7 @@ async function requestOf(env: Env, receiverId: string, id: string) {
   )
     .bind(id, receiverId)
     .first<{ id: string; sender_id: string; artifact_id: string }>();
-  if (!r) throw new ApiError("not_found", "Not found");
+  if (!r) throw new ApiError("not_found", NO_HELD);
   return r;
 }
 
