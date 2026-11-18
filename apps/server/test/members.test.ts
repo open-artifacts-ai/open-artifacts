@@ -67,6 +67,8 @@ describe("GET /api/v1/me", () => {
       mcpUrl: "http://app.localhost/mcp",
       emailEnabled: false,
       plan: "free",
+      // #1100: docs are on, and a free self-host needs Workers Paid for them.
+      docs: "needs_paid",
       update: null,
       hosted: false,
       tier: null,

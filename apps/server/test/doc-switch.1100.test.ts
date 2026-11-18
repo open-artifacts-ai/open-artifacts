@@ -10,7 +10,8 @@ import { docsAvailable, docsState } from "../src/services/docs-available.js";
 import { api, errOf, login } from "./helpers.js";
 import { close, connect, textOf, tool } from "./mcp-helpers.js";
 
-// #1100: creating docs is off until edit_doc and the doc room ship.
+// #1100: creating docs shipped open. The "off" suite closes the switch to
+// keep the kill switch working: flipping it back must hide docs everywhere.
 const app = createApp();
 let client: Client;
 let cookie: string;
@@ -24,8 +25,19 @@ afterAll(async () => {
   await close(client);
 });
 
+it("DOC_SWITCH.creation ships open", () => {
+  expect(DOC_SWITCH.creation).toBe(true);
+});
+
 describe("doc creation switch (off)", () => {
-  it("DOC_SWITCH.creation is off, so no deployment has docs", () => {
+  beforeAll(() => {
+    DOC_SWITCH.creation = false;
+  });
+  afterAll(() => {
+    DOC_SWITCH.creation = true;
+  });
+
+  it("with DOC_SWITCH.creation off, no deployment has docs", () => {
     expect(DOC_SWITCH.creation).toBe(false);
     for (const e of [{}, { PLAN: "paid" }, { HOSTED: "1" }])
       expect(docsAvailable(e)).toBe(false);

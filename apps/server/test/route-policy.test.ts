@@ -11,7 +11,7 @@ import {
 } from "../src/auth/route-policy.js";
 import { contentApp } from "../src/content/app.js";
 import manifest from "../src/mcp/tool-manifest.json";
-import { docToolOff } from "../src/services/doc-switch.js";
+import { DOC_GATED_TOOLS, docToolOff } from "../src/services/doc-switch.js";
 import { api, login } from "./helpers.js";
 import { connect, textOf, tool } from "./mcp-helpers.js";
 
@@ -124,9 +124,10 @@ describe("enforcement", () => {
     },
   );
 
-  // Doc-gated tools are not offered while the switch is off (here); the matrix covers them.
+  // Doc-gated tools are offered only where docs are available (not on this
+  // free self-host); the authz matrix covers them.
   const artifactTools = Object.entries(TOOL_POLICY).filter(
-    ([name, p]) => "artifact" in p && !docToolOff(name),
+    ([name, p]) => "artifact" in p && !DOC_GATED_TOOLS.includes(name),
   );
   it.each(artifactTools)("a non-member's %s → not_found", async (name) => {
     const c = await connect(strangerPat);

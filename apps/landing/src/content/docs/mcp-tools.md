@@ -34,6 +34,19 @@ Only the artifact's creator can change `visibility`, `capabilities`, or `dataWri
 
 It returns the artifact's `id`, the new `version` (the current one for a settings-only update), and its view URL.
 
+## Docs
+
+A doc is a page people and agents edit together, live. Create one with `publish_artifact` and `format` `doc`, passing the first Markdown as `content`. Docs need a hosted instance or a self-host on Workers Paid; elsewhere the call fails with docs_need_paid. A doc is one file, so `files`, `entry`, `language`, `capabilities` and `dataWriters` are refused.
+
+`edit_doc` changes a doc with small anchored operations, so it never overwrites what people are typing. Read the doc with `get_artifact` first, then send up to 50 operations, applied together or not at all:
+
+- `{ "op": "replace", "quote", "with" }`
+- `{ "op": "insert", "after" | "before": quote, "markdown" }`, or `{ "op": "insert", "at": "start" | "end", "markdown" }`
+- `{ "op": "delete", "quote" }`
+- `{ "op": "format", "quote", "mark" }`: inline marks (`bold`, `italic`, `strike`, `code`, `link` with `href`), block types (`paragraph`, `heading1` to `heading3`, `blockquote`, `codeBlock`, `bulletList`, `orderedList`, `taskList`), or `remove: true` to take an inline mark off.
+
+A quote is the text people see and must match exactly one place; add `prefix` and `suffix` to pick one (quote_ambiguous, quote_not_found). Optional `expectedVersion` refuses with version_conflict when another version is current. A whole-content publish (`content`, `files` or `edits`) to an existing doc fails with use_edit_doc. `restore_version` on a doc saves unsaved edits first, then applies the old version as one live edit.
+
 ## Large files
 
 Inline `content` and `files` are capped at {LIMIT_INLINE} in total. Send anything larger as an upload, one file at a time. A file can be up to {LIMIT_FILE}, and one publish up to {LIMIT_PUBLISH}.
