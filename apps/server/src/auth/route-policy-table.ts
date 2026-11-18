@@ -121,6 +121,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/me/inbox/read": { user: "the caller" },
   "POST /api/v1/me/inbox/read-all": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
+  // #2512 S4: the caller's own notification choices; PUT browser sessions only (handler).
+  "GET /api/v1/me/notification-prefs": { user: "the caller" },
+  "PUT /api/v1/me/notification-prefs": { user: "the caller" },
   // #1292: the caller's own share-notice picks; PUT browser sessions only (handler).
   "GET /api/v1/bus/share-notices": { org: "mcp.connect" },
   "PUT /api/v1/bus/share-notices": { org: "mcp.connect" },

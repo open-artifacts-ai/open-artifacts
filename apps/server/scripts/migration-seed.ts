@@ -55,6 +55,7 @@ export const SHAPE = {
   passkeys: 2_000, // #2263
   pick_assertions: 1_000,
   passkey_settings: 1_000,
+  notification_prefs: 5_000, // #2512 S4: members who changed a notification choice
   agent_grants: 50_000,
   bus_machines: 20_000,
   bus_machine_updates: 10_000,
@@ -689,6 +690,24 @@ export const RULES: Record<string, Rule> = {
         expires_at: at + 120_000,
         used_at: c.rand() < 0.5 ? at + 1000 : null,
         created_at: at,
+      };
+    },
+  },
+  notification_prefs: {
+    rows: (c) => Math.min(c.count("notification_prefs"), c.users.length),
+    row(i, c) {
+      const u = c.users[i];
+      if (!u) return null;
+      const quiet = c.rand() < 0.4;
+      return {
+        user_id: u.id,
+        needs_you_browser: c.int(2),
+        browser_all_asks: c.int(2),
+        quiet_start: quiet ? "22:00" : null,
+        quiet_end: quiet ? "07:00" : null,
+        time_zone: "UTC",
+        lock_detail: c.int(2),
+        updated_at: c.time(),
       };
     },
   },

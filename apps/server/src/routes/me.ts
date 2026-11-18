@@ -44,6 +44,7 @@ import {
 import { markAllRead, markRead } from "../services/inbox-items.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
+import { getPrefs, putPrefs } from "../services/notification-prefs.js";
 import { instanceOwnerName } from "../services/onboarding.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
@@ -281,6 +282,24 @@ export function mountMe(app: AppType): void {
     if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
     const { ids } = await jsonBody(c, InboxReadBodySchema);
     return c.json({ read: await markRead(c.env, user.id, ids) });
+  });
+  // #2512 S4: the caller's own notification choices. Reading is any signed-in
+  // person's; saving takes a person in a browser (never a token, a grant or an
+  // agent), so no agent can open the lock screen or turn off quiet hours.
+  app.get(R.meNotificationPrefs, async (c) => {
+    const user = requireUser(c);
+    return c.json(await getPrefs(c.env, user.id));
+  });
+  app.put(R.meNotificationPrefs, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new ApiError("bad_request", "Invalid JSON body");
+    }
+    return c.json(await putPrefs(c.env, user.id, body));
   });
   app.post(R.meInboxReadAll, async (c) => {
     const user = requireUser(c);

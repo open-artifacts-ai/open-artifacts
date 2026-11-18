@@ -743,6 +743,22 @@ export const pickAssertions = sqliteTable(
   ],
 );
 
+// #2512 S4: a member's notification choices. No row: the defaults (browser
+// off, quiet hours off, time zone UTC, lock screen hides details). quiet_*
+// are both set or both null; time_zone is an IANA name (checked on write).
+export const notificationPrefs = sqliteTable("notification_prefs", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  needsYouBrowser: integer("needs_you_browser").notNull().default(0),
+  browserAllAsks: integer("browser_all_asks").notNull().default(0),
+  quietStart: text("quiet_start"),
+  quietEnd: text("quiet_end"),
+  timeZone: text("time_zone").notNull().default("UTC"),
+  lockDetail: integer("lock_detail").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(),
+});
+
 // #2263 a member's "ask for a passkey to approve" switches. No row: the
 // defaults (every action on, every pick off). ask_command is always 1.
 export const passkeySettings = sqliteTable("passkey_settings", {
