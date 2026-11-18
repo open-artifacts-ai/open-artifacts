@@ -335,6 +335,7 @@ describe("bus option (#1293)", () => {
     expect(me.busOn).toBeUndefined();
     expect(me.canConnect).toBeUndefined();
     expect(await json(await call("GET", R.busMachines))).toEqual({
+      updatesPaused: false,
       machines: [],
     });
     expect(await json(await call("GET", R.busAgents))).toEqual({
