@@ -112,7 +112,7 @@ describe("status lists Claude sessions and their link state (#2688)", () => {
     expect(
       await daemonLinkProof({ path: h.socketPath, pid: 9999, hash: HASH }),
     ).toBe(true);
-    later(2 * 60_000);
+    later(11 * 60_000);
     // Status itself expires it: no timer to wait on.
     const ring = (await status(h)).unbound_proofs;
     expect(ring?.at(-1)).toMatchObject({ cause: "no_live_record" });
