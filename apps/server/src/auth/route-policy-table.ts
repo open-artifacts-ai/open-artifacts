@@ -342,6 +342,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     { anon401: COMMENT },
   ),
   [`GET ${ARTS}/agents`]: art("comments.read"),
+  // #2770: the people an owner or editor may @mention; everyone else gets none (handler).
+  [`POST ${ARTS}/mention-candidates`]: art("comments.write"),
   // #2035: stop (or undo) a thread's reply notices to one agent. The floor is
   // comments.write (never a guest or restricted cap); the service allows only
   // the agent's person and the owner.

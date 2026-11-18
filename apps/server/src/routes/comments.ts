@@ -4,6 +4,7 @@ import {
   AnswerBodySchema,
   COMMENT_KEY_RE,
   isId,
+  MentionCandidatesBodySchema,
   NewThreadBodySchema,
   ReplyBodySchema,
   TakeBackBodySchema,
@@ -50,6 +51,8 @@ import {
   takeBackAsk,
   withdrawAsk,
 } from "../services/comments.js";
+import { mentionCandidates } from "../services/mention-candidates.js";
+import { isGuestMember, isOutsideMember } from "../services/mention-guards.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
 
@@ -246,6 +249,7 @@ export function mountComments(app: AppType): void {
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
     mayTarget(raw.data, moderator);
+    peopleByPerson(c, raw.data);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const named = raw.data.guestName;
@@ -274,19 +278,23 @@ export function mountComments(app: AppType): void {
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
     // toAsker stands alone (400), before the owner-and-editor check on mentions.
-    if (raw.data.toAsker && (raw.data.mentions?.length ?? 0) > 0)
+    if (
+      raw.data.toAsker &&
+      (raw.data.mentions?.length ?? 0) + (raw.data.people?.length ?? 0) > 0
+    )
       throw new ApiError(
         "bad_request",
         "toAsker cannot be combined with mentions",
       );
     mayTarget(raw.data, moderator);
+    peopleByPerson(c, raw.data);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const w: CommentWho =
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, toAsker } = raw.data;
+    const { mentions, people, toAsker } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -294,7 +302,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, toAsker, pictures: raw.data.pictures },
+      { mentions, people, toAsker, pictures: raw.data.pictures },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },
@@ -495,6 +503,23 @@ export function mountComments(app: AppType): void {
     );
   });
 
+  // #2770: who can be @mentioned: owner and editors, as they alone may mention;
+  // everyone else sees none. Guests and outside members name no one.
+  app.post(`${ART}/mention-candidates`, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const user = c.var.user;
+    if (!user || !modOf(cw, level, artifact)) return c.json({ items: [] });
+    const { viewer } = await identity(c, id, false, true);
+    if (
+      (await isGuestMember(c.env, user.id)) ||
+      (await isOutsideMember(c.env, user.id))
+    )
+      return c.json({ items: [] });
+    const raw = MentionCandidatesBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    return c.json(await mentionCandidates(c.env, id, user, viewer, raw.data.q));
+  });
+
   // #2035: stop replies in a thread reaching one agent (DELETE), or undo (PUT).
   // The agent's own person or the artifact's owner; the service enforces it.
   for (const [method, removed] of [
@@ -553,9 +578,25 @@ const execCtx = (
   }
 };
 
+/**
+ * #2770: people are @mentioned by a person in a browser only. A token, an
+ * agent or a grant carrying `people` is a 400, so no agent can fill someone's
+ * Needs you.
+ */
+function peopleByPerson(c: Context<AppEnv>, b: { people?: unknown[] }): void {
+  if ((b.people?.length ?? 0) > 0 && !interactiveSession(c))
+    throw new ApiError(
+      "bad_request",
+      "people can only be mentioned from the web app, not with a token or an agent",
+    );
+}
+
 /** 403 forbidden for mentions from anyone but the owner and editors. */
-function mayTarget(b: { mentions?: unknown[] }, moderator: boolean): void {
-  if ((b.mentions?.length ?? 0) > 0 && !moderator)
+function mayTarget(
+  b: { mentions?: unknown[]; people?: unknown[] },
+  moderator: boolean,
+): void {
+  if ((b.mentions?.length ?? 0) + (b.people?.length ?? 0) > 0 && !moderator)
     throw new ApiError("forbidden", "Only the owner and editors can mention");
 }
 

@@ -348,6 +348,13 @@ export const R = {
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/withdraw`,
   /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */
   artifactAgents: (id: string) => `${A}/${seg(id)}/agents`,
+  /**
+   * POST MentionCandidatesBody (`{ q }`) -> MentionCandidates (#2770; a POST so a typed address stays out of URLs and logs): the people who can read this artifact and can be @mentioned,
+   * for the owner and editors (everyone else gets none). `q` (1 to 40 characters) matches the start of
+   * the start of a name or of any word in it (an email only when typed in full and exactly); at most 8, a face only, never an email. Rate limited (429).
+   */
+  artifactMentionCandidates: (id: string) =>
+    `${A}/${seg(id)}/mention-candidates`,
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,

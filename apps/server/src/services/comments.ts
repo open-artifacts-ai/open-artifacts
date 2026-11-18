@@ -15,6 +15,7 @@ import {
   type CommentPictureRef,
   isId,
   type KeyRef,
+  MENTIONS_MAX,
   type MentionDelivery,
   type ReplacesRef,
   type CommentThread as Thread,
@@ -735,6 +736,7 @@ function userIds(c: StoredComment, into: Set<string>): void {
   if (c.author.kind === "user") into.add(c.author.ref);
   for (const m of c.mentions ?? []) if (m.owner) into.add(m.owner);
   for (const m of c.notified ?? []) if (m.owner) into.add(m.owner);
+  for (const id of c.people ?? []) into.add(id);
   if (!c.ask) return;
   for (const p of c.ask.to) into.add(p.kind === "user" ? p.key : p.owner);
   if (c.ask.answer?.by.kind === "user") into.add(c.ask.answer.by.ref);
@@ -1092,6 +1094,13 @@ const commentOfRaw = (
           })),
         }
       : {}),
+    ...(c.people?.length
+      ? {
+          people: c.people.map((id) =>
+            authorView({ kind: "user", ref: id }, viewer, users),
+          ),
+        }
+      : {}),
     ...(c.mentions?.length
       ? {
           mentions: c.mentions.map((m, i) => ({
@@ -1272,6 +1281,8 @@ const emailPeople = (
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
+  /** #2770: people to @mention, by user id. */
+  people?: string[];
   ask?: AskInput;
   /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
   toAsker?: boolean;
@@ -1297,6 +1308,8 @@ type Resolved = {
   /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
   follow: RosterAgent[];
   mentions: string[];
+  /** #2770: the people @mentioned, resolved (each can read the artifact). */
+  people?: string[];
   /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
   mentionKind: "mention" | "asker";
   participants: StoredParticipant[];
@@ -1444,8 +1457,15 @@ async function resolveExtras(
     mentionKind: "mention",
     participants: [],
   };
-  const wantsTargets = (x.mentions?.length ?? 0) > 0;
+  const wantsPeople = (x.people?.length ?? 0) > 0;
+  const wantsTargets = (x.mentions?.length ?? 0) > 0 || wantsPeople;
   if (!wantsTargets && !x.ask) return none;
+  // #2770: people count toward the same per-comment mention cap as agents.
+  if ((x.mentions?.length ?? 0) + (x.people?.length ?? 0) > MENTIONS_MAX)
+    throw new ApiError(
+      "bad_request",
+      `A comment mentions at most ${MENTIONS_MAX} agents and people together`,
+    );
   // An ask notifies agents too: the same rule as mentions.
   if ((wantsTargets || x.ask) && !opts.moderator)
     throw new ApiError(
@@ -1490,6 +1510,32 @@ async function resolveExtras(
   const mentioned: RosterAgent[] = [];
   for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
     mentioned.push(await agentOf(key));
+  // #2770: people by user id, never through the agent resolver. A guest or an
+  // outside member names no one. Each must be able to read the artifact now;
+  // anyone else (unknown, removed, no access) is the same refusal, so the
+  // answer never says whether they exist.
+  const people: string[] = [];
+  if (wantsPeople) {
+    if (
+      viewerId &&
+      ((await isGuestMember(env, viewerId)) ||
+        (await isOutsideMember(env, viewerId)))
+    )
+      throw new ApiError(
+        "forbidden",
+        "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
+      );
+    for (const id of new Set(x.people)) {
+      const user = isId(id) ? await getUser(env, id) : null;
+      if (
+        !user ||
+        (user.status ?? "active") !== "active" ||
+        !(await accessLevel(env, callerOf(user), artifactId))
+      )
+        throw unknownKey(id);
+      people.push(user.id);
+    }
+  }
   let ask: NewExtras["ask"];
   let crossReplace: ReplacesRef | undefined;
   const asked: RosterAgent[] = [];
@@ -1641,9 +1687,11 @@ async function resolveExtras(
       ...(mentioned.length
         ? { mentions: mentioned.map((m) => storedAgent(m)) }
         : {}),
+      ...(people.length ? { people } : {}),
       ...(held.length ? { held } : {}),
     },
     held,
+    people,
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
     mentionKind: "mention",
