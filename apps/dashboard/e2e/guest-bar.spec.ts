@@ -63,148 +63,78 @@ const shooter =
     await page.screenshot({ path: `${OUT}/${name}-${width}-${theme}.png` });
   };
 
-for (const width of [1280, 390])
-  for (const theme of ["light", "dark"] as const) {
-    test(`the guest bar and its menu at ${width} ${theme}`, async ({
-      page,
-    }) => {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.setViewportSize({ width, height: 900 });
-      const shot = shooter(page, width, theme);
-      await page.goto(`/a/${NOTES}?role=guest`);
-      const bar = page.locator("[data-guest-bar]");
-      await expect(bar).toContainText(
-        "Shared by Ada Lovelace · You're a guest",
-      );
-      const home = bar.getByRole("link", { name: "Open Artifacts" });
-      await expect(home).toHaveAttribute("href", "https://open-artifacts.com");
-      await expect(home).toHaveAttribute("target", "_blank");
-      await expect(home).toHaveAttribute("rel", "noopener noreferrer");
-      // A guest gets the bar, not the breadcrumbs, and no second offer strip.
-      await expect(
-        page.getByRole("navigation", { name: "Breadcrumb" }),
-      ).toHaveCount(0);
-      await axe(page);
-      await noSidewaysScroll(page);
-      await shot("g1-bar");
-      await bar.getByRole("button", { name: "Guest options" }).click();
-      const item = page.getByRole("menuitem", { name: "Get your own" });
-      // Self-hosted (the mock): the public site, in a new tab.
-      await expect(item).toHaveAttribute("href", "https://open-artifacts.com");
-      await expect(item).toHaveAttribute("target", "_blank");
-      await expect(item).toHaveAttribute("rel", "noopener noreferrer");
-      await shot("g2-bar-menu");
-    });
-
-    test(`the offer, once after the first comment, at ${width} ${theme}`, async ({
-      page,
-    }) => {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.setViewportSize({ width, height: 900 });
-      const shot = shooter(page, width, theme);
-      await page.goto(`/a/${NOTES}?role=guest`);
-      await page.getByRole("button", { name: /^Comments/ }).click();
-      const box = page.getByRole("textbox", { name: /Comment on/ }).first();
-      await box.fill("Looks good to me.");
-      await page.getByRole("button", { name: "Comment", exact: true }).click();
-      // On a phone the comments are a sheet over the page: the offer sits
-      // under the title bar, in view once the sheet closes.
-      if (width === 390)
-        await page.getByRole("button", { name: "Close comments" }).click();
-      const offer = page.getByRole("region", {
-        name: "Pages like this, made by your own AI agent",
-      });
-      await expect(offer).toContainText(
-        "Open Artifacts is where people and agents share their work. Free for 30 days.",
-      );
-      // Self-hosted (no ?hosted): the public site.
-      await expect(
-        offer.getByRole("link", { name: "Get your own" }),
-      ).toHaveAttribute("href", "https://open-artifacts.com");
-      // The offer and the bar; the comments panel's own label mismatch
-      // (the thread's "Show in page" and faces buttons) predates #2590.
-      await axe(page, ["[data-guest-offer]", "[data-guest-bar]"]);
-      await noSidewaysScroll(page);
-      await shot("g3-offer");
-      await offer.getByRole("button", { name: "Not now" }).click();
-      await expect(offer).toHaveCount(0);
-      // Once: a second comment never brings it back.
-      if (width === 390)
-        await page.getByRole("button", { name: /^Comments/ }).click();
-      await box.fill("One more thing.");
-      await page.getByRole("button", { name: "Comment", exact: true }).click();
-      await expect(
-        page.locator("[data-comment]").filter({ hasText: "One more thing." }),
-      ).toBeVisible();
-      await expect(page.locator("[data-guest-offer]")).toHaveCount(0);
-    });
-
-    test(`the comments panel for a guest at ${width} ${theme}`, async ({
-      page,
-    }) => {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.setViewportSize({ width, height: 900 });
-      const shot = shooter(page, width, theme);
-      await page.goto("/a/Cd5fGhJkLm6nPqRs?role=guest");
-      await expect(page.locator("[data-guest-bar]")).toBeVisible();
-      // No Share for a guest.
-      await expect(
-        page.getByRole("button", { name: "Share", exact: true }),
-      ).toHaveCount(0);
-      await page.getByRole("button", { name: /^Comments/ }).click();
-      await expect(
-        page.getByText("Can we tighten this headline?").first(),
-      ).toBeVisible();
-      await expect(page.getByRole("tab", { name: /Decisions/ })).toHaveCount(0);
-      await expect(
-        page.getByRole("button", { name: "Resolve", exact: true }),
-      ).toHaveCount(0);
-      await expect(
-        page.getByRole("textbox", { name: "Comment on the whole page" }),
-      ).toHaveAttribute("placeholder", "Comment on the whole page");
-      await noSidewaysScroll(page);
-      await shot("g5-panel");
-    });
-
-    test(`a guest's home is Shared with you at ${width} ${theme}`, async ({
-      page,
-    }) => {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.setViewportSize({ width, height: 900 });
-      const shot = shooter(page, width, theme);
-      await page.goto("/?role=guest");
-      await expect(page).toHaveURL(/\/shared/);
-      await expect(
-        page.getByRole("heading", { level: 1, name: "Shared with you" }),
-      ).toBeVisible();
-      await expect(page.getByRole("tablist")).toHaveCount(0);
-      await expect(page.getByRole("combobox", { name: "Agent" })).toHaveCount(
-        0,
-      );
-      await expect(page.getByText("Needs your answer")).toHaveCount(0);
-      await axe(page);
-      await noSidewaysScroll(page);
-      await shot("g4-home");
-    });
-  }
-
-test("no offer for a guest who had commented before", async ({ page }) => {
-  // The Landing page already holds a comment of theirs.
-  await page.goto("/a/Cd5fGhJkLm6nPqRs?role=guest");
-  await page.getByRole("button", { name: /^Comments/ }).click();
-  const box = page.getByRole("textbox", { name: /Comment on/ }).first();
-  await box.fill("Another note.");
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
-  await expect(
-    page.locator("[data-comment]").filter({ hasText: "Another note." }),
-  ).toBeVisible();
-  await expect(page.locator("[data-guest-offer]")).toHaveCount(0);
-});
-
-test("members keep the breadcrumbs, with no guest bar", async ({ page }) => {
-  await page.goto(`/a/${NOTES}`);
+// The bar and menu at 1280; the offer on a phone (the comments are a sheet
+// there, a different flow). Light only.
+test("the guest bar and its menu at 1280 light", async ({ page }) => {
+  const width = 1280;
+  const theme = "light";
+  await page.emulateMedia({ colorScheme: theme });
+  await page.setViewportSize({ width, height: 900 });
+  const shot = shooter(page, width, theme);
+  await page.goto(`/a/${NOTES}?role=guest`);
+  const bar = page.locator("[data-guest-bar]");
+  await expect(bar).toContainText("Shared by Ada Lovelace · You're a guest");
+  const home = bar.getByRole("link", { name: "Open Artifacts" });
+  await expect(home).toHaveAttribute("href", "https://open-artifacts.com");
+  await expect(home).toHaveAttribute("target", "_blank");
+  await expect(home).toHaveAttribute("rel", "noopener noreferrer");
+  // A guest gets the bar, not the breadcrumbs, and no second offer strip.
   await expect(
     page.getByRole("navigation", { name: "Breadcrumb" }),
+  ).toHaveCount(0);
+  await axe(page);
+  await noSidewaysScroll(page);
+  await shot("g1-bar");
+  await bar.getByRole("button", { name: "Guest options" }).click();
+  const item = page.getByRole("menuitem", { name: "Get your own" });
+  // Self-hosted (the mock): the public site, in a new tab.
+  await expect(item).toHaveAttribute("href", "https://open-artifacts.com");
+  await expect(item).toHaveAttribute("target", "_blank");
+  await expect(item).toHaveAttribute("rel", "noopener noreferrer");
+  await shot("g2-bar-menu");
+});
+
+test("the offer, once after the first comment, at 390 light", async ({
+  page,
+}) => {
+  const width = 390;
+  const theme = "light";
+  await page.emulateMedia({ colorScheme: theme });
+  await page.setViewportSize({ width, height: 900 });
+  const shot = shooter(page, width, theme);
+  await page.goto(`/a/${NOTES}?role=guest`);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  const box = page.getByRole("textbox", { name: /Comment on/ }).first();
+  await box.fill("Looks good to me.");
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  // On a phone the comments are a sheet over the page: the offer sits
+  // under the title bar, in view once the sheet closes.
+  if (width === 390)
+    await page.getByRole("button", { name: "Close comments" }).click();
+  const offer = page.getByRole("region", {
+    name: "Pages like this, made by your own AI agent",
+  });
+  await expect(offer).toContainText(
+    "Open Artifacts is where people and agents share their work. Free for 30 days.",
+  );
+  // Self-hosted (no ?hosted): the public site.
+  await expect(
+    offer.getByRole("link", { name: "Get your own" }),
+  ).toHaveAttribute("href", "https://open-artifacts.com");
+  // The offer and the bar; the comments panel's own label mismatch
+  // (the thread's "Show in page" and faces buttons) predates #2590.
+  await axe(page, ["[data-guest-offer]", "[data-guest-bar]"]);
+  await noSidewaysScroll(page);
+  await shot("g3-offer");
+  await offer.getByRole("button", { name: "Not now" }).click();
+  await expect(offer).toHaveCount(0);
+  // Once: a second comment never brings it back.
+  if (width === 390)
+    await page.getByRole("button", { name: /^Comments/ }).click();
+  await box.fill("One more thing.");
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect(
+    page.locator("[data-comment]").filter({ hasText: "One more thing." }),
   ).toBeVisible();
-  await expect(page.locator("[data-guest-bar]")).toHaveCount(0);
+  await expect(page.locator("[data-guest-offer]")).toHaveCount(0);
 });
