@@ -236,7 +236,10 @@ export class Updater {
         this.stepBackHeld = i;
         return { kind: "retry_later" };
       }
-      return await this.switchTo(i.version, false);
+      const r = await this.switchTo(i.version, false);
+      // #2719: the one-swap lock (or a hub that did not answer) holds it too.
+      if (r.kind === "retry_later") this.stepBackHeld = i;
+      return r;
     }
     if (s.staged?.version === i.version && s.staged.manifest) {
       if (treeMatches(versionDir(home, i.version), s.staged.manifest))
@@ -546,25 +549,44 @@ export class Updater {
       return { kind: "retry_later" };
     // The wait above can be long: `off`, a newer run, a cleared name or a
     // different staged tree may have landed in it.
+    // #2719: the hub's "stopped" clock runs from the `switching` it acked; a
+    // backing out says `held` so that clock is replaced, not left to expire.
+    const backOut = (reason: string): void =>
+      queueReport(home, {
+        event: "ready_24h", // "held" on the wire
+        from: running,
+        to: version,
+        reason,
+        at: this.now(),
+      });
     const after = readPolicy(home);
-    if (after.unreadable || after.off) return { kind: "retry_later" };
-    if (staged && !person && this.named !== version)
+    if (after.unreadable || after.off) {
+      backOut("other");
       return { kind: "retry_later" };
+    }
+    if (staged && !person && this.named !== version) {
+      backOut("nothing_staged");
+      return { kind: "retry_later" };
+    }
     if (
       staged &&
       (after.staged?.version !== version ||
         JSON.stringify(after.staged.manifest) !== JSON.stringify(proven) ||
         !after.staged.manifest ||
         !treeMatches(versionDir(home, version), after.staged.manifest))
-    )
+    ) {
+      backOut("staged_changed");
       return { kind: "proof_refused", code: "staged_changed" };
+    }
     if (
       staged &&
       [after.newestRun, after.current, running].some(
         (v) => v !== undefined && compareVersions(version, v) !== 1,
       )
-    )
+    ) {
+      backOut("not_forward");
       return { kind: "refused", reason: "not_forward" };
+    }
     try {
       setPending(home, { from: running, to: version, startedAt: now });
       recordAttempt(home, now);
@@ -578,6 +600,7 @@ export class Updater {
       this.d.log(
         `update ${version}: could not switch: ${e instanceof Error ? e.message : String(e)}`,
       );
+      backOut("other");
       return { kind: "disabled" };
     }
     prune(home, [running, version, s.previous]);

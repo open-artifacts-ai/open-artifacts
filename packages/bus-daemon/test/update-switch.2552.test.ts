@@ -882,6 +882,30 @@ describe("review fixes (#2552)", () => {
     expect(currentVersion(home)).toBe("0.9.0");
   });
 
+  it("an instance step back that meets the one-swap lock is held and retried (#2719)", async () => {
+    const { home } = world();
+    let release: (v: boolean) => void = () => {};
+    const gate = new Promise<boolean>((r) => {
+      release = r;
+    });
+    const exit = vi.fn();
+    let n = 0;
+    const u = ups(home, {
+      exit,
+      announceSwitch: async () => (n++ === 0 ? gate : true),
+    });
+    const first = u.instruct({ version: "0.9.0", stepBack: true });
+    expect(await u.instruct({ version: "0.9.0", stepBack: true })).toEqual({
+      kind: "retry_later",
+    });
+    release(false);
+    expect(await first).toEqual({ kind: "retry_later" });
+    expect(exit).not.toHaveBeenCalled();
+    await u.tick();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(currentVersion(home)).toBe("0.9.0");
+  });
+
   it("a running version that is not x.y.z never runs the updater, and never throws", async () => {
     const { home } = world();
     let scheduled = 0;
@@ -1052,6 +1076,32 @@ describe("the instance's install_now and announced switches (#2552)", () => {
     expect(currentVersion(w.home)).toBe("1.0.0");
     expect(readPolicy(w.home).pending).toBeUndefined();
     expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("backing out after the hub's ack queues a report that goes out as held (#2719)", async () => {
+    let home = "";
+    const w = build({
+      announce: () => {
+        const j = JSON.parse(readFileSync(join(home, "update.json"), "utf8"));
+        writeFileSync(
+          join(home, "update.json"),
+          JSON.stringify({ ...j, off: true }),
+        );
+        return true;
+      },
+    });
+    home = w.home;
+    await w.u.instructFromInstance("1.1.0");
+    expect(await w.u.installNowFromInstance()).toEqual({
+      kind: "retry_later",
+    });
+    expect(readReports(home)).toEqual([
+      expect.objectContaining({
+        event: "ready_24h",
+        from: "1.0.0",
+        to: "1.1.0",
+      }),
+    ]);
   });
 
   it("a second switch while one awaits the hub gets retry_later; one swap only", async () => {
