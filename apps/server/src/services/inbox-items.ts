@@ -129,7 +129,7 @@ export async function writeInboxItems(
       );
     // #2512 S5: browser push for each Update, for those who turned it on. A
     // Needs-you item (a person @mentioned, #2770) is not an Update: its push is #2781.
-    for (const r of rows.filter((x) => x.level !== "needs_you"))
+    for (const r of rows.filter((x) => !x.key.startsWith("person:")))
       await queueUpdatePush(env, r.userId, {
         key: r.key,
         artifactId: r.artifactId,
