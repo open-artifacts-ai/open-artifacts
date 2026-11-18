@@ -285,6 +285,40 @@ const LinkBound = z.strictObject({
   type: z.literal("link_bound"),
 });
 
+/**
+ * #2793 S3b (`BUS_CAPS.guest`): a Claude Code session homed on another
+ * instance uses this instance's tools, so it is registered here as a GUEST.
+ * Only the name and the kind: no address, folder, namespace, global flag or
+ * role. The hub keeps it apart from every roster; a guest is reached only by
+ * the three structured deliveries (`meta.guest`). Answered by `agent_ok`.
+ */
+const GuestUp = z.strictObject({
+  ...base,
+  type: z.literal("guest_up"),
+  agent_ref: AgentRefSchema,
+  kind: z.literal("claude-code"),
+  proposed_name: WellFormedText.pipe(z.string().min(1).max(256)),
+});
+
+/** The guest's session ended (or the person removed the instance). No answer. */
+const GuestDown = z.strictObject({
+  ...base,
+  type: z.literal("guest_down"),
+  agent_ref: AgentRefSchema,
+});
+
+/**
+ * A tools/call carried a proof this hub resolves to no session
+ * (`BUS_CAPS.guest`). Sent only to the daemons of the member whose credential
+ * made the call. The hash only; the daemon matches it against what it holds
+ * for this instance.
+ */
+const ProofSeen = z.strictObject({
+  ...base,
+  type: z.literal("proof_seen"),
+  hash: LinkProofHashSchema,
+});
+
 /** #2079: most refs one `waiting_query` names. */
 export const MAX_WAITING_QUERY = 64;
 
@@ -582,6 +616,10 @@ const ErrorFrame = z.strictObject({
   message: WellFormedText.pipe(z.string().max(1024)),
 });
 
+/** #2793 S3b: the only deliveries a guest session ever gets, by structured field. */
+export const GUEST_DELIVERY_KINDS = ["reply", "mention", "answer"] as const;
+export type GuestDeliveryKind = (typeof GUEST_DELIVERY_KINDS)[number];
+
 /** An id inside a notice's `meta`: ASCII, no spaces or controls, bounded. */
 const NOTICE_META_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
@@ -601,6 +639,12 @@ export const NoticeMetaSchema = z.strictObject({
   comment_id: z.string().regex(NOTICE_META_ID_RE).optional(),
   thread_id: z.string().regex(NOTICE_META_ID_RE).optional(),
   user_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  /**
+   * #2793 S3b (`BUS_CAPS.guest`): what a delivery to a GUEST session is: a
+   * reply, an @mention, or the answer to the guest's own ask. The hub sets it
+   * only on those; a daemon delivers nothing else to a guest.
+   */
+  guest: z.enum(GUEST_DELIVERY_KINDS).optional(),
   /** ISO 8601 date-time, UTC (`2026-11-18T09:00:00.000Z`). */
   until: z
     .string()
@@ -673,6 +717,8 @@ export const CLIENT_FRAMES = [
   "link_bind",
   "waiting_query",
   "update_report",
+  "guest_up",
+  "guest_down",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -695,6 +741,7 @@ export const SERVER_FRAMES = [
   "install_now",
   "update_ack",
   "owner_away",
+  "proof_seen",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -715,6 +762,8 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   LinkBind,
   WaitingQuery,
   UpdateReport,
+  GuestUp,
+  GuestDown,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -737,6 +786,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   InstallNow,
   UpdateAck,
   OwnerAwayPush,
+  ProofSeen,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -756,6 +806,8 @@ export const FrameSchema = z.discriminatedUnion("type", [
   LinkBind,
   WaitingQuery,
   UpdateReport,
+  GuestUp,
+  GuestDown,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -776,6 +828,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   InstallNow,
   UpdateAck,
   OwnerAwayPush,
+  ProofSeen,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -788,6 +841,8 @@ export type RefuseFrame = z.infer<typeof Refuse>;
 export type HelloFrame = z.infer<typeof Hello>;
 export type RenameFrame = z.infer<typeof Rename>;
 export type RenamedFrame = z.infer<typeof Renamed>;
+export type ProofSeenFrame = z.infer<typeof ProofSeen>;
+export type GuestUpFrame = z.infer<typeof GuestUp>;
 export type UpdateReportFrame = z.infer<typeof UpdateReport>;
 export type FollowEntryWire = z.infer<typeof FollowEntry>;
 
