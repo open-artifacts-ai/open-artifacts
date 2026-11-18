@@ -563,9 +563,13 @@ export async function memberSetups(
        and ${NOT_A_WELCOME}`,
     ),
   ]);
-  const keys = new Set(
-    (settings.results as { key: string }[]).map((r) => r.key),
+  const values = new Map(
+    (settings.results as { key: string; value: string }[]).map((r) => [
+      r.key,
+      r.value,
+    ]),
   );
+  const keys = new Set(values.keys());
   const connected = new Set(
     (agents.results as { id: string }[]).map((r) => r.id),
   );
@@ -584,10 +588,13 @@ export async function memberSetups(
       keys.has(completedKey(m.id)) ||
       (isInstanceOwner(m) && keys.has(COMPLETED_KEY)) ||
       p.done === 5;
+    // When the one reminder went (setup-reminder.ts writes the time).
+    const reminded = Number(values.get(`onboarding:reminded:${m.id}`));
     out.set(m.id, {
       state: set ? "set" : m.lastSeenAt === null ? "invited" : "partial",
       done: p.done,
       ...(!set && p.stalled ? { stalled: p.stalled } : {}),
+      ...(reminded > 0 ? { remindedAt: new Date(reminded).toISOString() } : {}),
     });
   }
   return out;

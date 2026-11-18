@@ -13,7 +13,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { docsNeedPaid, docsUnavailable } from "./doc-format.js";
-import { DOC_SWITCH } from "./doc-switch.js";
+import { docCreationOpen } from "./doc-switch.js";
 import { docsAvailable } from "./docs-available.js";
 
 /** Who an edit counts as: the agent behind the credential, else the person. */
@@ -53,7 +53,7 @@ export async function editDoc(
       { path: "id", reason: "not_a_doc" },
     );
   if (!docsAvailable(env))
-    throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+    throw docCreationOpen(env) ? docsNeedPaid() : docsUnavailable();
   if (
     body.expectedVersion !== undefined &&
     body.expectedVersion !== artifact.currentVersion
@@ -98,7 +98,7 @@ async function docRoom(env: Env, user: Member, id: string) {
       reason: "not_a_doc",
     });
   if (!docsAvailable(env))
-    throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+    throw docCreationOpen(env) ? docsNeedPaid() : docsUnavailable();
   const rooms = env.DOC_ROOM;
   if (!rooms)
     throw new ApiError("storage_unavailable", "Doc rooms are unavailable");

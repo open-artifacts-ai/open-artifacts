@@ -37,8 +37,10 @@ export const BROKER_PROPS = {
 
 /** The ctx.props key carrying the billing gate (platform BillingGate, #849). */
 export const BILLING_PROPS = "BILLING";
+/** The ctx.props key carrying the login gate (platform LoginGate: login-domain changes and the opt-out list, #2652). */
+export const LOGIN_PROPS = "LOGIN";
 
-type Gates = Partial<Record<BrokerName | "billing", BrokerGate>>;
+type Gates = Partial<Record<BrokerName | "billing" | "login", BrokerGate>>;
 
 const invocation = new AsyncLocalStorage<Gates>();
 
@@ -62,6 +64,8 @@ function gatesOf(ctx: { props?: unknown } | null | undefined): Gates {
   }
   const b = (props as Record<string, unknown>)[BILLING_PROPS];
   if (isGate(b)) out.billing = b;
+  const l = (props as Record<string, unknown>)[LOGIN_PROPS];
+  if (isGate(l)) out.login = l;
   return out;
 }
 
@@ -88,6 +92,13 @@ export function withoutBrokerProps<T>(f: () => T): T {
  */
 export const billingGate = (): BrokerGate | null =>
   invocation.getStore()?.billing ?? null;
+
+/**
+ * This invocation's login gate (ctx.props.LOGIN), or null. Like billing, no
+ * binding and no HTTPS fallback: only the platform's gate reaches it.
+ */
+export const loginGate = (): BrokerGate | null =>
+  invocation.getStore()?.login ?? null;
 
 const bindingOf = (env: Env, which: BrokerName): Fetcher | undefined =>
   which === "auth" ? env.BROKER : env.DIRECTORY_BROKER;

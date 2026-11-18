@@ -1140,6 +1140,85 @@ describe("pins", () => {
     expect(last("comment.positions")).not.toHaveProperty("ghost");
   });
 
+  describe("asks (#2426)", () => {
+    const pinThread = (extra: object = {}) => ({
+      id: "p1",
+      n: 1,
+      anchor: {
+        kind: "pin" as const,
+        version: 1,
+        x: 0.5,
+        y: 0.25,
+        contentHash: "h",
+      },
+      ...extra,
+    });
+    const pin = () => roots.at(-1)?.querySelector<HTMLElement>(".pin") ?? null;
+
+    it("the runtime's copy of the ask protocol matches the shared one", async () => {
+      const { SHELL_ASK_RECT } = await import("../src/comments.js");
+      const { PROTOCOL_ASK_MARK } = await import("@oa/shared");
+      expect(SHELL_ASK_RECT).toBe(PROTOCOL_ASK_MARK);
+    });
+
+    it("an ask pin is amber, named Ask, and a plain pin is neither", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [pinThread({ ask: true })],
+      });
+      expect(pin()?.classList.contains("ask")).toBe(true);
+      expect(pin()?.tagName).toBe("BUTTON");
+      expect(pin()?.getAttribute("aria-label")).toContain("Ask");
+      await send({ type: "comments.set", threads: [pinThread()] });
+      expect(pin()?.classList.contains("ask")).toBe(false);
+      expect(pin()?.getAttribute("aria-label")).toBeNull();
+    });
+
+    it("clicking an ask pin sends its box to a shell that knows it", async () => {
+      await start("select");
+      await send({ type: "shell.protocol", protocol: 7 });
+      await send({
+        type: "comments.set",
+        threads: [pinThread({ ask: true })],
+      });
+      pin()?.click();
+      await flush();
+      expect(last("comment.open")).toMatchObject({
+        id: "p1",
+        rect: { x: 20, y: 10 },
+      });
+    });
+
+    it("sends no `rect` to a shell that announced less than 7, or none (old shell)", async () => {
+      await start("select");
+      await send({ type: "shell.protocol", protocol: 6 });
+      await send({
+        type: "comments.set",
+        threads: [pinThread({ ask: true })],
+      });
+      pin()?.click();
+      await flush();
+      const m = last("comment.open");
+      expect(m).toMatchObject({ id: "p1" });
+      expect(m).not.toHaveProperty("rect");
+      expect(
+        Object.keys(m as object).every((k) =>
+          ["oa", "nonce", "type", "id"].includes(k),
+        ),
+      ).toBe(true);
+    });
+
+    it("a non-ask pin sends its box too (the shell decides what it opens)", async () => {
+      await start("select");
+      await send({ type: "shell.protocol", protocol: 7 });
+      await send({ type: "comments.set", threads: [pinThread()] });
+      pin()?.click();
+      await flush();
+      expect(last("comment.open")).toHaveProperty("rect");
+    });
+  });
+
   describe("badges (#2019)", () => {
     const base = (extra: object) => ({
       id: "p1",
@@ -1784,4 +1863,44 @@ describe("a selection spanning several elements (#1708)", () => {
       expect(r.toString().endsWith(c.last)).toBe(true);
     });
   }
+});
+
+describe("asks on quotes (#2426)", () => {
+  const ask = { id: "t1", anchor: anchorOf("quick"), ask: true };
+
+  it("an unanswered ask's quote is painted apart from a normal one, with an Ask button", async () => {
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [ask, { id: "t2", anchor: anchorOf("lazy") }],
+    });
+    expect(
+      highlights.get("oa-comment-ask")?.ranges.map((r) => r.toString()),
+    ).toEqual(["quick"]);
+    expect(
+      highlights.get("oa-comment")?.ranges.map((r) => r.toString()),
+    ).toEqual(["lazy"]);
+    const chips = roots.at(-1)?.querySelectorAll<HTMLButtonElement>(".askchip");
+    expect(chips).toHaveLength(1);
+    expect(chips?.[0].getAttribute("aria-label")).toContain("Ask");
+  });
+
+  it("the Ask button opens the thread with its box for a shell that knows it", async () => {
+    await start("select");
+    await send({ type: "shell.protocol", protocol: 7 });
+    await send({ type: "comments.set", threads: [ask] });
+    roots.at(-1)?.querySelector<HTMLButtonElement>(".askchip")?.click();
+    await flush();
+    expect(last("comment.open")).toMatchObject({ id: "t1" });
+    expect(last("comment.open")).toHaveProperty("rect");
+  });
+
+  it("a resolved ask is not marked", async () => {
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [{ ...ask, resolved: true }],
+    });
+    expect(roots.at(-1)?.querySelector(".askchip") ?? null).toBeNull();
+  });
 });

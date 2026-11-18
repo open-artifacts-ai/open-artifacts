@@ -10,9 +10,9 @@ const TIER = process.env.T19_EXPECT_TIER
   ? TierSchema.parse(process.env.T19_EXPECT_TIER)
   : null;
 
-test("Me reports rl-a's tier, and the features follow from it", async ({
-  browser,
-}) => {
+test("Me reports rl-a's tier, and the features follow from it", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
   const me = (await (await api(admin, R.me)).json()) as {
     instance: { features: string[]; tier?: string | null };

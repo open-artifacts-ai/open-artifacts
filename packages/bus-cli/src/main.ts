@@ -13,6 +13,7 @@ import { logs } from "./commands/logs.ts";
 import { mcp } from "./commands/mcp.ts";
 import { mcpProof } from "./commands/mcp-proof.ts";
 import { namespace } from "./commands/namespace.ts";
+import { skill } from "./commands/skill.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
 import { installViaDaemon, update } from "./commands/update.ts";
@@ -22,6 +23,7 @@ import { type Command, parse } from "./index.ts";
 /** Commands that print to a terminal and survive the shim: see `main`. */
 const TERMINAL = new Set([
   "login",
+  "skill",
   "status",
   "logs",
   "doctor",
@@ -108,6 +110,8 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       if (pid !== undefined) say(ctx, ctx.copy.daemonOldToken(pid));
       return 0;
     }
+    case "skill":
+      return skill(cmd, ctx);
     case "daemon":
       // The daemon reads both from the environment, as the service sets them.
       if (cmd.home) process.env.OA_BUS_HOME = ctx.home;

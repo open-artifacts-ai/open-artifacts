@@ -40,6 +40,14 @@ describe("parseArtifactMessage", () => {
     expect(
       parseArtifactMessage({ oa: 2, type: "resize", height: 1 }),
     ).toBeNull();
+    // #2426: comment.open may carry the clicked mark's box.
+    const open = { oa: 1, type: "comment.open", id: "t1" };
+    const rect = { x: 1, y: 2, width: 3, height: 4 };
+    expect(parseArtifactMessage({ ...open, rect })).toEqual({ ...open, rect });
+    expect(parseArtifactMessage(open)).toEqual(open);
+    expect(
+      parseArtifactMessage({ ...open, rect: { ...rect, width: -1 } }),
+    ).toBeNull();
     expect(parseArtifactMessage({ oa: 1, type: "nope" })).toBeNull();
     expect(
       parseArtifactMessage({
@@ -118,6 +126,18 @@ describe("parseShellMessage", () => {
         type: "comments.set",
         threads: [],
         draft: { ...quote, kind: "note" },
+      }),
+    ).toBeNull();
+    // #2426: an unanswered ask is flagged on its thread.
+    const thread = { id: "t1", anchor: { ...quote, version: 1 }, ask: true };
+    expect(
+      parseShellMessage({ oa: 1, type: "comments.set", threads: [thread] }),
+    ).not.toBeNull();
+    expect(
+      parseShellMessage({
+        oa: 1,
+        type: "comments.set",
+        threads: [{ ...thread, ask: "yes" }],
       }),
     ).toBeNull();
     expect(parseShellMessage({ oa: 1, type: "thumb.request" })).not.toBeNull();

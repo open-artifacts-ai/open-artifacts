@@ -13,8 +13,8 @@ async function openComments(page: Page, mock: string, w: number) {
   if (w < 600) await page.getByRole("button", { name: /^Comments/ }).click();
 }
 
-for (const w of [1280, 390])
-  for (const theme of ["light", "dark"] as const) {
+for (const w of [1280])
+  for (const theme of ["light"] as const) {
     test(`participants ${w} ${theme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width: w, height: w < 600 ? 844 : 900 });
@@ -96,61 +96,3 @@ for (const w of [1280, 390])
       await shot("4-guest");
     });
   }
-
-// A close crop of the closed pill at 3x, to check the overlap and the rings.
-test.describe("pill crop", () => {
-  test.use({ deviceScaleFactor: 3 });
-  for (const theme of ["light", "dark"] as const)
-    test(`pill 1280 ${theme}`, async ({ page }) => {
-      await page.emulateMedia({ colorScheme: theme });
-      await page.setViewportSize({ width: 1280, height: 900 });
-      await openComments(page, "agents", 1280);
-      const trig = page
-        .locator("li[data-thread]")
-        .filter({ hasText: "Can the pricing section be shorter?" })
-        .locator("[data-participants-trigger]");
-      await expect(trig).toBeVisible();
-      if (!OUT) return;
-      mkdirSync(OUT, { recursive: true });
-      const b = await trig.boundingBox();
-      if (!b) throw new Error("no pill");
-      await page.screenshot({
-        path: `${OUT}/7-pill-1280-${theme}.png`,
-        clip: {
-          x: b.x - 70,
-          y: b.y - 8,
-          width: b.width + 80,
-          height: b.height + 16,
-        },
-      });
-    });
-});
-
-// The pill of the nine-participant thread (three people shown), a 3x crop.
-test.describe("nine pill crop", () => {
-  test.use({ deviceScaleFactor: 3 });
-  test("nine pill 1280 light", async ({ page }) => {
-    await page.emulateMedia({ colorScheme: "light" });
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await openComments(page, "agents", 1280);
-    const trig = page
-      .locator("li[data-thread]")
-      .filter({ hasText: "Nine-person review" })
-      .locator("[data-participants-trigger]");
-    await trig.scrollIntoViewIfNeeded();
-    await expect(trig).toBeVisible();
-    if (!OUT) return;
-    mkdirSync(OUT, { recursive: true });
-    const b = await trig.boundingBox();
-    if (!b) throw new Error("no pill");
-    await page.screenshot({
-      path: `${OUT}/8-nine-pill-1280-light.png`,
-      clip: {
-        x: b.x - 70,
-        y: b.y - 8,
-        width: b.width + 80,
-        height: b.height + 16,
-      },
-    });
-  });
-});

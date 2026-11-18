@@ -7,7 +7,7 @@ import {
   type LucideIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type * as Y from "yjs";
 import { dismissToast } from "../../layout/toast";
 import { colorFor } from "./cursors";
@@ -64,6 +64,37 @@ export const STATUS_ICON: Partial<
   saved: { icon: CheckIcon },
   offline: { icon: CloudOffIcon },
 };
+
+/** #2752: how long after the last ack "Saved" waits, so typing does not flicker. */
+export const SAVED_SETTLE_MS = 1000;
+
+/**
+ * While typing the room flips saving, saved, saving on every keystroke. Once
+ * it has shown Saved and then Saving it holds Saving until the room has been
+ * saved for SAVED_SETTLE_MS (the first save of an open is not held). Any
+ * other state (Offline, Reconnecting, View only, ...) shows at once, ends the
+ * hold and makes the next Saving unheld.
+ */
+function useSettled(label: DocLabel | null): DocLabel | null {
+  const [shown, setShown] = useState(label);
+  // Whether Saved was the last settled state: only then is Saving typing.
+  const wasSaved = useRef(false);
+  const holding = label === "saved" && shown === "saving" && wasSaved.current;
+  useEffect(() => {
+    if (!holding) {
+      setShown(label);
+      if (label === "saved") wasSaved.current = true;
+      else if (label !== "saving") wasSaved.current = false;
+      return;
+    }
+    const t = setTimeout(() => {
+      setShown("saved");
+      wasSaved.current = true;
+    }, SAVED_SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [holding, label]);
+  return holding ? "saving" : label;
+}
 
 /** The doc's state in the title bar (where Saved sits). */
 export function DocState({
@@ -163,9 +194,10 @@ export function DocEditor(props: DocEditorProps) {
         : snap.reconnecting
           ? "reconnecting"
           : status;
+  const settled = useSettled(label);
   useEffect(() => {
-    onStatus?.(room ? label : null);
-  }, [onStatus, room, label]);
+    onStatus?.(room ? settled : null);
+  }, [onStatus, room, settled]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
   // Design: while this tab holds edits the room does not have, leaving or
   // closing it asks first. Off again once they are delivered.

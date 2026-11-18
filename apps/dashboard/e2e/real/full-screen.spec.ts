@@ -56,10 +56,9 @@ test("a live-data artifact reads and writes chromeless", async ({
   await expect(out).toHaveText("loaded:hello");
 });
 
-test("private: logged out goes to login back to /full; a share grants access", async ({
-  browser,
-  member,
-}) => {
+test("private: logged out goes to login back to /full; a share grants access", {
+  tag: "@smoke",
+}, async ({ browser, member }) => {
   const { id } = await publishViaApi(member.pat, {
     title: `Full closed ${uniq()}`,
     format: "markdown",

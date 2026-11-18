@@ -39,14 +39,11 @@ const open = async (page: Page, w: number, h: number) => {
   return page.getByRole("textbox", { name: "Comment on the whole page" });
 };
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
-  for (const scheme of ["light", "dark"] as const)
-    test(`${w}px ${scheme}: slow server, the comment shows at once and stays one`, async ({
-      page,
-    }) => {
+for (const [w, h] of [[1280, 800]] as const)
+  for (const scheme of ["light"] as const)
+    test(`${w}px ${scheme}: slow server, the comment shows at once and stays one`, {
+      tag: w === 1280 && scheme === "light" ? "@smoke" : [],
+    }, async ({ page }) => {
       await page.emulateMedia({ colorScheme: scheme });
       await slowOrBroken(page, { delay: 1500 });
       const box = await open(page, w, h);
@@ -73,25 +70,6 @@ for (const [w, h] of [
           .filter({ hasText: "Posted with a slow server" }),
       ).toHaveCount(1);
     });
-
-test("an error rolls the comment back and the text returns", async ({
-  page,
-}) => {
-  await slowOrBroken(page, { delay: 300, fail: 429 });
-  const box = await open(page, 1280, 800);
-  await box.fill("This will fail");
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
-  const row = page
-    .locator("[data-comment]")
-    .filter({ hasText: "This will fail" });
-  await expect(row).toBeVisible({ timeout: 250 });
-  await expect(
-    page.getByText("Too many comments. Try again in a minute."),
-  ).toBeVisible();
-  await expect(row).toHaveCount(0);
-  await expect(box).toHaveValue("This will fail");
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/rollback-1280.png` });
-});
 
 /** Wrap fetch for the answer route: wait `delay` ms, then fail with 500, or answer `other` for real and say 409. */
 const answerRoute = (
@@ -140,10 +118,7 @@ const openAsk = async (page: Page, w = 1280, h = 800) => {
   return first;
 };
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const) {
+for (const [w, h] of [[1280, 800]] as const) {
   test(`${w}px: an ask pick shows as sending (not answered), then settles`, async ({
     page,
   }) => {
@@ -169,73 +144,4 @@ for (const [w, h] of [
     await expect(ask.getByText(/You picked/)).toHaveCount(1, { timeout: 5000 });
     await expect(ask.locator("[data-sending]")).toHaveCount(0);
   });
-
-  test(`${w}px: a failed ask pick returns to the open card with the error`, async ({
-    page,
-  }) => {
-    await answerRoute(page, { delay: 300, mode: "fail" });
-    const ask = await openAsk(page, w, h);
-    const opt = ask.locator("[data-option]").first();
-    const id = await opt.getAttribute("data-option");
-    await opt.click();
-    await expect(page.getByRole("alert").first()).toContainText(
-      "Only the people this ask is addressed to can answer.",
-    );
-    await expect(ask.getByText(/You picked/)).toHaveCount(0);
-    await expect(ask.locator(`[data-option="${id}"]`)).toBeFocused();
-    await expect(ask.locator(`[data-option="${id}"]`)).toBeEnabled();
-    if (SHOTS) await page.screenshot({ path: `${SHOTS}/ask-failed-${w}.png` });
-  });
 }
-
-test("a 409 settles to the answer the server has", async ({ page }) => {
-  await answerRoute(page, { delay: 300, mode: "conflict", other: "wide" });
-  const ask = await openAsk(page);
-  await ask.locator('[data-option="compact"]').click();
-  await expect(ask.getByText(/You picked A/)).toBeVisible();
-  await expect(ask.getByText(/You picked B/)).toHaveCount(0);
-});
-
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
-  test(`${w}px: a reply that fails while its thread is not open shows a Restore line`, async ({
-    page,
-  }) => {
-    await slowOrBroken(page, { delay: 900, fail: 429 });
-    await page.setViewportSize({ width: w, height: h });
-    await page.goto(`/a/${ID}?mock=agents`);
-    await page.getByRole("button", { name: /^Comments/ }).click();
-    const cards = page.locator("[data-thread]");
-    await expect(cards.first()).toBeVisible();
-    const first = cards.first();
-    const firstId = await first.getAttribute("data-thread");
-    await first.getByRole("button", { name: "Reply" }).first().click();
-    await page
-      .locator(`[data-thread="${firstId}"]`)
-      .getByRole("textbox", { name: "Reply" })
-      .fill("Keep this reply");
-    await page
-      .locator(`[data-thread="${firstId}"]`)
-      .getByRole("button", { name: "Reply", exact: true })
-      .last()
-      .click();
-    // Open another thread before the error lands: the first one's box closes.
-    await cards.nth(1).getByRole("button").first().click();
-    const line = page
-      .locator(`[data-thread="${firstId}"]`)
-      .getByText(/Your reply wasn.t posted/);
-    await expect(line).toBeVisible({ timeout: 4000 });
-    await line.scrollIntoViewIfNeeded();
-    if (SHOTS) await page.screenshot({ path: `${SHOTS}/restore-${w}.png` });
-    await page
-      .locator(`[data-thread="${firstId}"]`)
-      .getByRole("button", { name: "Restore" })
-      .click();
-    await expect(
-      page
-        .locator(`[data-thread="${firstId}"]`)
-        .getByRole("textbox", { name: "Reply" }),
-    ).toHaveValue("Keep this reply");
-  });

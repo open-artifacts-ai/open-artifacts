@@ -294,3 +294,35 @@ export function proxyEntries(text: string): { name: string; entry: Doc }[] {
     )
     .map(({ name, entry }) => ({ name, entry }));
 }
+
+/**
+ * Read-only: the notes `installEntry` would give for the instance's entries it
+ * must leave as they are (an address it can't pass on, or OAuth or another
+ * kind of token). Nothing for an entry it would swap, or one that is ours.
+ */
+export function skippedNotes(
+  files: string[],
+  read: (file: string) => string,
+  origin: string,
+): string[] {
+  const notes: string[] = [];
+  for (const file of files)
+    for (const { name, entry } of candidates(read(file))) {
+      if (ourEntry(entry, origin)) return notes;
+      if (!isInstance(entry, origin) || entry.enabled === false) continue;
+      try {
+        mcpUrl(origin);
+      } catch {
+        notes.push(
+          `left the ${name} entry in ${file} as it is: oa-bus only passes on https addresses, or http to localhost.`,
+        );
+        continue;
+      }
+      if (tokenFileOf(entry) === undefined)
+        notes.push(
+          `left the ${name} entry in ${file} as it is: it signs in with \`opencode mcp auth\` or another kind of token that oa-bus can't pass on.`,
+        );
+      else return notes;
+    }
+  return notes;
+}

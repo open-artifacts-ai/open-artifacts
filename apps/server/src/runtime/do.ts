@@ -48,6 +48,7 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  addHeld,
   addParticipants,
   addPick,
   askAuthors,
@@ -58,8 +59,12 @@ import {
   claimEmail,
   clearDecider,
   deleteExtras,
+  finishHeld,
   getComment,
   getThread,
+  type HeldAgent,
+  heldCanon,
+  heldOf,
   heldTargets,
   insertComment,
   insertExtras,
@@ -77,6 +82,7 @@ import {
   refundEmail,
   refundThreadReply,
   refundThreadReplyCount,
+  releaseHeld,
   replyCount,
   rootId,
   type StoredActor,
@@ -2149,7 +2155,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
   }
 
-  private checkBody(body: string): void {
+  private checkBody(body: string, allowEmpty = false): void {
+    // #2508: a comment with pictures may have no text.
+    if (allowEmpty && typeof body === "string" && body.trim() === "") return;
     if (!bodyOk(body))
       fail(
         "invalid_body",
@@ -2189,12 +2197,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
     anchor: Anchor;
     version: number;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     /** #1535: the ask and mentions, already resolved by the service. */
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredThread {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!a.counted) this.countComment(a.rate);
@@ -2212,11 +2222,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     actor: StoredActor;
     rate: string;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredComment {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!threadExists(this.sql, a.threadId)) fail("not_found", "Not found");
@@ -2616,6 +2628,87 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.broadcastComments();
   }
 
+  /**
+   * #2577: holds the delivery of an existing comment to agents of other people
+   * (a thread reply's wake: the comment is already stored).
+   */
+  commentsHold(a: {
+    threadId: string;
+    commentId: string;
+    held: { agent: HeldAgent; way: string }[];
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() => {
+      for (const h of a.held)
+        addHeld(this.sql, a.threadId, a.commentId, h.agent, h.way);
+    });
+    this.broadcastComments();
+  }
+
+  /** #2577: the words a held request carries as one string (the service hashes it), and what is held for `owner`. */
+  commentsHeldCanon(a: {
+    threadId: string;
+    commentId: string;
+    owner: string;
+  }): {
+    canon: string;
+    held: ReturnType<typeof heldOf>;
+  } | null {
+    this.ensureSchema();
+    const canon = heldCanon(this.sql, a.threadId, a.commentId);
+    if (canon === null) return null;
+    return { canon, held: heldOf(this.sql, a.commentId, a.owner) };
+  }
+
+  /**
+   * #2577: an allow. The held targets of `owner` on the comment move to
+   * "releasing" only if the words are still exactly `expect` (one transaction:
+   * an edit in the gap is never delivered). Returns what to send, including
+   * targets a crashed earlier allow left "releasing" (resumable).
+   */
+  commentsRelease(a: {
+    threadId: string;
+    commentId: string;
+    owner: string;
+    expect: string;
+  }): {
+    ok: boolean;
+    keys: ReturnType<typeof heldOf>;
+    comment: StoredComment | null;
+  } {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      const ok = releaseHeld(
+        this.sql,
+        a.threadId,
+        a.commentId,
+        a.owner,
+        a.expect,
+      );
+      const keys = ok
+        ? heldOf(this.sql, a.commentId, a.owner).filter(
+            (h) => h.state === "releasing",
+          )
+        : [];
+      return {
+        ok,
+        keys,
+        comment: ok ? getComment(this.sql, a.threadId, a.commentId) : null,
+      };
+    });
+    if (out.ok) this.broadcastComments();
+    return out;
+  }
+
+  /** #2577: the notices went out; the held rows of these keys are gone. */
+  commentsFinishHeld(a: { commentId: string; keys: string[] }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      finishHeld(this.sql, a.commentId, a.keys),
+    );
+    this.broadcastComments();
+  }
+
   /** #2035: records who a person's reply also told, and how it went; returns the comment. */
   commentsReplyTargets(a: {
     threadId: string;
@@ -2737,6 +2830,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
           a.commentId,
         );
       }
+      // #2577: an edit after an allow is new words, not what was allowed: the
+      // request goes back to held (masked, and delivered only on a new allow).
+      const before = this.sql
+        .exec<{ body: string }>(
+          "select body from comments where id = ?",
+          a.commentId,
+        )
+        .toArray()[0]?.body;
+      if (before !== a.body.trim())
+        this.sql.exec(
+          "update comment_targets set state = 'held' where comment_id = ? and kind = 'held' and state = 'allowed'",
+          a.commentId,
+        );
       this.sql.exec(
         "update comments set body = ?, edited_at = ? where id = ?",
         a.body.trim(),
@@ -2864,6 +2970,10 @@ type RpcMethods =
   | "commentsAskAuthors"
   | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
+  | "commentsHold"
+  | "commentsHeldCanon"
+  | "commentsRelease"
+  | "commentsFinishHeld"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"

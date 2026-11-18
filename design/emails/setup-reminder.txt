@@ -1,0 +1,14 @@
+Your agent isn't connected to {{instanceName}} yet
+
+You joined {{instanceName}} three days ago. One step is left: paste this into your agent.
+
+{{setupLine}}
+
+--
+
+You got this because you joined {{instanceName}} as {{recipientEmail}} and no agent is connected yet. This is the only reminder.
+
+Don't remind me:
+{{offUrl}}
+
+Sent by Open Artifacts, self-hosted at {{appHost}}.
