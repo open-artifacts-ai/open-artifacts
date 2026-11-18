@@ -133,7 +133,7 @@ export const usePushKey = (enabled = true) =>
     enabled,
     queryKey: ["push-key"],
     retry: false,
-    staleTime: 5 * 60_000,
+    staleTime: Number.POSITIVE_INFINITY,
     queryFn: async ({ signal }) => {
       try {
         return (await api.get(R.mePushKey, PushKeySchema, signal)).publicKey;
@@ -279,7 +279,14 @@ const bounded = <T>(p: Promise<T>, ms: number) =>
 export async function forgetThisBrowser(
   stepMs = SIGN_OUT_STEP_MS,
 ): Promise<void> {
-  const id = storedSub()?.id ?? null;
+  // An id kept under the old unscoped key still gets its row removed here.
+  let legacy: string | null = null;
+  try {
+    legacy = localStorage.getItem(OLD_SUB_KEY);
+  } catch {
+    legacy = null;
+  }
+  const id = storedSub()?.id ?? legacy;
   clearStoredSub();
   if (id) {
     const stop = new AbortController();
@@ -463,19 +470,36 @@ export async function dropForeignSubscription(
   return true;
 }
 
-/** Mount once in the signed-in app: runs dropForeignSubscription when this member's list is read. */
+/**
+ * Mount once in the signed-in app. No network until the browser itself has a
+ * subscription (asked of the PushManager, locally): only then is this
+ * member's list read and dropForeignSubscription run. A browser with none,
+ * or a server with no push key, never costs a request on ordinary pages.
+ */
 export function useDropForeignSubscription() {
   const me = useMe();
-  const authed = me.status === "authed";
-  const userId = authed ? me.me.user.id : "";
-  const key = usePushKey(authed && pushSupported());
-  const subs = usePushSubscriptions(!!key.data && authed && pushSupported());
+  const userId = me.status === "authed" ? me.me.user.id : "";
   const qc = useQueryClient();
+  const [here, setHere] = useState(false);
+  useEffect(() => {
+    if (!userId || !pushSupported()) return;
+    let live = true;
+    void currentSubscription().then(
+      (s) => live && setHere(!!s),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [userId]);
+  const subs = usePushSubscriptions(here && !!userId);
   const items = subs.isSuccess && !subs.isFetching ? subs.data.items : null;
   useEffect(() => {
     if (!items || !userId) return;
     void dropForeignSubscription(userId, items).then((gone) => {
-      if (gone) void qc.invalidateQueries({ queryKey: pushSubsKey });
+      if (!gone) return;
+      setHere(false);
+      void qc.invalidateQueries({ queryKey: pushSubsKey });
     });
   }, [items, userId, qc]);
 }

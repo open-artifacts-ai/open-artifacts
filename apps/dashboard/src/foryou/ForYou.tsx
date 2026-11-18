@@ -582,7 +582,9 @@ function ForYouPanel({
  */
 function PushNudge({ needsYou }: { needsYou: InboxItem[] }) {
   const userId = useMeId();
-  const key = usePushKey(pushSupported());
+  const key = usePushKey(
+    pushSupported() && needsYou.length > 0 && !nudgeDismissed(),
+  );
   const prefs = usePrefs(!!key.data);
   const savePrefs = useSavePrefs();
   const [gone, setGone] = useState(nudgeDismissed);

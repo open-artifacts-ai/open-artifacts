@@ -223,7 +223,10 @@ describe("stale (fresh: false)", () => {
   });
 
   it("Log out deletes this browser's push subscription before the session ends (Axe M1)", async () => {
-    localStorage.setItem("oa.push.subscription", "sub_1");
+    localStorage.setItem(
+      "oa.push.subscription.v2",
+      JSON.stringify({ userId: "u1", id: "sub_1" }),
+    );
     const order: string[] = [];
     mountHosted("/", stale, undefined, [
       http.delete("*/api/v1/me/push/subscriptions/sub_1", () => {
