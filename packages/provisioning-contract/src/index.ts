@@ -12,6 +12,7 @@ export * from "./errors.js";
 export * from "./ids.js";
 export * from "./inventory.js";
 export * from "./lifecycle-doc.js";
+export * from "./login-domains.js";
 export * from "./mcp-tools.js";
 export * from "./mock-world.js";
 export * from "./oauth-store.js";

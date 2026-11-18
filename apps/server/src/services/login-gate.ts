@@ -17,6 +17,9 @@ const LOGIN_ORIGIN = "https://login.oa.internal";
 
 /** The platform could not answer: a fixed category, safe to log. */
 export class LoginGateError extends Error {
+  /** A refusal's HTTP status and its fixed `error` code, when the platform sent one (a login change reads them). */
+  status?: number;
+  code?: string;
   constructor(public why: string) {
     super(`login gate unavailable: ${why}`);
     this.name = "LoginGateError";
@@ -74,12 +77,23 @@ export async function loginGateCall(
     clearTimeout(timer);
   }
   if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
-    throw new LoginGateError(
+    // The fixed `error` code, when the body is one ({ error: "..." }); never more.
+    let code: string | undefined;
+    try {
+      const v = (await res.json()) as { error?: unknown };
+      if (typeof v.error === "string" && /^[a-z_]{1,40}$/.test(v.error))
+        code = v.error;
+    } catch {
+      await res.body?.cancel().catch(() => {});
+    }
+    const err = new LoginGateError(
       res.headers.get(GATE_HEADER) === "1"
         ? "gate_refused"
         : `http_${res.status}`,
     );
+    err.status = res.status;
+    if (code) err.code = code;
+    throw err;
   }
   try {
     return await res.json();

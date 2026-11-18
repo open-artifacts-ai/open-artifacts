@@ -239,7 +239,7 @@ export const R = {
   busReachProposals: "/api/v1/bus/reach/proposals",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
-  /** GET -> LoginSettings (owner or admin); PUT LoginSettingsPut -> LoginSettings (owner only, needs a fresh login; 403 domain_unproven, 409 apply_pending). #2520 */
+  /** GET -> LoginSettings (owner or admin); PUT LoginSettingsPut -> LoginSettings with applying: true (owner only, needs a fresh login; 403 domain_unproven, 409 apply_pending when nothing can apply it or an earlier change is still applying; hosted with the platform gate: the platform applies it and redeploys in about a minute; 403 forbidden { reason: plan_required | google_required | email_codes_on | install_not_serving }, 400 bad_request { reason }, 429 rate_limited, 503 login_unavailable, changing nothing). #2520 */
   loginSettings: "/api/v1/settings/login",
   /** POST -> 204: marks the first-invite question answered for the caller. #2520 */
   loginFirstInviteSeen: "/api/v1/settings/login/first-invite-seen",
