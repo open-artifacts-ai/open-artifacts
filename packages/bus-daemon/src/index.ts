@@ -663,6 +663,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * (#2861: also when the record already has some, or learned its procStart
    * after it was created). Returns whether it added any.
    */
+  // TODO(#2793 S3/S4): once a daemon serves several instances (lanes), the
+  // saved hashes must also match the record's instance, so one proof is never
+  // offered to two hubs (rule 9).
   const seedLinks = (rec: AgentRecord): boolean => {
     if (rec.pid === undefined || rec.procStart === undefined) return false;
     const hit = saved.find(
@@ -1270,13 +1273,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Only the default home adopts one it has not met; a second home keeps
       // to the sessions its own adapter said hello for, so it never announces
       // another bus's sessions to its hub or delivers into them.
-      // #2861: a pid whose helper just reached THIS home's socket is this
-      // home's session, whatever the scan skips would say.
+      // #2861: a pid whose helper just reached THIS home's socket skips only
+      // the discover gate; the OA_BUS_HOME check below still applies to it.
       const adopt = !prev && s.pid === adoptPid;
       if (!prev && !discoverClaude && !adopt) continue;
-      // The default home also leaves a session started for another home alone,
-      // where it can read the process's OA_BUS_HOME.
-      if (!prev && !adopt) {
+      // A session started for another home is left alone, where the process's
+      // OA_BUS_HOME can be read (an undefined home still adopts).
+      if (!prev) {
         const h = claudeHomeOf(s.pid);
         if (typeof h === "string" && h !== home()) continue;
       }
@@ -1377,6 +1380,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         unknownSince.set(a.ref, since);
         if (now - since <= UNKNOWN_GRACE_MS) continue;
       }
+      // TODO(#2793 S3/S4): the sibling must also be on the same instance (lane),
+      // so one proof is never offered to two hubs (rule 9).
       // #2861: another record of the same process (a resume's hello can
       // register the new ref before the file switches) takes the hashes the
       // proof in use was bound under, and binds them on its own ref first: the
@@ -1941,6 +1946,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Still no record: hold it for the one that may appear (same pid and
       // start time only). Bounded, and a proof nobody claims expires.
       // #2861: keep the first hash and the newest (Claude sends the first).
+      // TODO(#2793 S3/S4): the claiming record must also match this proof's
+      // instance (lane), so one proof is never offered to two hubs (rule 9).
       const held = pendingProofs.get(req.pid);
       const prior = held?.procStart === start ? held.hashes : [];
       pendingProofs.delete(req.pid);

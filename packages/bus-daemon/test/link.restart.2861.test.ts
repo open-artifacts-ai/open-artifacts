@@ -124,4 +124,25 @@ describe("the proof in use survives (#2861)", () => {
     expect(h.of("agent_up").map((f) => f.agent_ref)).toEqual(["s-4242"]);
     expect(h.daemon.agents.byRef("s-4343")).toBeUndefined();
   });
+
+  it("T3b: a helper pid whose process belongs to another home is not adopted (#2806)", async () => {
+    const d = mkdtempSync(join(tmpdir(), "ob-l2861-"));
+    session(d, 4242);
+    const h = await daemonHarness({
+      claude: {
+        sessionsDir: d,
+        socketsDir: join(d, "r"),
+        syncMs: 3_600_000,
+        procStart: () => "t0",
+        isRunning: () => true,
+        discover: false,
+        homeOf: () => join(tmpdir(), ".oa-bus-other"),
+      },
+    });
+    hello(h);
+    // The proof's own sync runs before it answers: nothing is adopted by then.
+    await daemonLinkProof({ path: h.socketPath, pid: 4242, hash: hx(1) });
+    expect(h.daemon.agents.byRef("s-4242")).toBeUndefined();
+    expect(h.of("agent_up")).toEqual([]);
+  });
 });
