@@ -28,7 +28,7 @@ import {
 } from "drizzle-orm";
 import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { isOrgAdmin } from "../auth/policy.js";
+import { isGuestRole, isOrgAdmin } from "../auth/policy.js";
 import {
   type EffectivePlan,
   effectivePlan,
@@ -481,7 +481,7 @@ async function invited(
           recipient: email,
           appHost: env.APP_HOST,
           signIn: signInMethods,
-          guest: row.role === "guest",
+          guest: isGuestRole(row.role),
         }),
       {
         kind: "invite",
