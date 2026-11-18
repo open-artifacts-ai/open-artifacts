@@ -119,9 +119,9 @@ async function rowsFor(admin: Person, address: string): Promise<Member[]> {
   return all.filter((m) => m.email === address);
 }
 
-test("an uninvited TEST_DOMAIN address gets no code and no account", async ({
-  browser,
-}) => {
+test("an uninvited TEST_DOMAIN address gets no code and no account", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
   const stranger = email("stranger");
   await askForCode(browser, stranger);

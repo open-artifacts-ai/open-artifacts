@@ -15,6 +15,11 @@ const gated = (file: string): number =>
       /\btag:\s*["']@gate["']/g,
     ),
   ].length;
+// A tag is exactly @gate: @gated or @gateway does not count.
+const tagged = (file: string, titlePart: string): boolean =>
+  new RegExp(
+    `test\\(\\s*"[^"\\n]*${titlePart}[^"\\n]*",\\s*\\{\\s*tag:\\s*"@gate",?\\s*\\}`,
+  ).test(readFileSync(join(root, dir, file), "utf8"));
 const FILES = [
   "guard.setup.ts",
   "purge.teardown.ts",
@@ -26,15 +31,27 @@ const FILES = [
 ];
 
 describe("the @gate set of the staging release gate", () => {
-  it("has between 6 and 12 tagged tests", () => {
+  it("has between 6 and 14 tagged tests", () => {
     const total = FILES.reduce((n, f) => n + gated(f), 0);
     expect(total).toBeGreaterThanOrEqual(6);
-    expect(total).toBeLessThanOrEqual(12);
+    expect(total).toBeLessThanOrEqual(14);
   });
 
   it("tags the guard setup and the purge teardown, which bracket the gate's cases", () => {
     expect(gated("guard.setup.ts")).toBeGreaterThanOrEqual(1);
     expect(gated("purge.teardown.ts")).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps the access checks in the gate: uninvited address, viewer refused, personal space", () => {
+    expect(tagged("joins.spec.ts", "an uninvited TEST_DOMAIN address")).toBe(
+      true,
+    );
+    expect(tagged("spaces.spec.ts", "the API refuses their publish")).toBe(
+      true,
+    );
+    expect(
+      tagged("spaces.spec.ts", "never sees another person's personal"),
+    ).toBe(true);
   });
 
   it("tags at least one test each in joins, spaces and comments", () => {
