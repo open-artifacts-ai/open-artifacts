@@ -1399,6 +1399,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
+  /**
+   * When the owner's quiet hours end (#2759): the last `hello_ok.owner_away_until`
+   * or `owner_away` frame. A hello_ok without the field replaces it with unknown.
+   * Kept across a drop; `awayUntil()` ignores a time already past.
+   */
+  let ownerAwayUntil: string | undefined;
+  /** The owner's quiet-hours end while it is still ahead by this clock; else undefined (not away). */
+  const awayUntil = (): string | undefined =>
+    ownerAwayUntil !== undefined && Date.parse(ownerAwayUntil) > Date.now()
+      ? ownerAwayUntil
+      : undefined;
   /** The hub's last hello_ok listed BUS_CAPS.runVersion: the update frames may go (#2552). */
   let hubRunCap = false;
   /** `switching` reports waiting for the hub's update_ack, by frame id. */
@@ -1577,6 +1588,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 .catch((e) => log(`update: ${errText(e)}`));
           }
           return;
+        case "owner_away":
+          ownerAwayUntil = frame.until ?? undefined;
+          return;
         case "install_now":
           if (hubRunCap)
             void updaterRef
@@ -1617,6 +1631,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
           hubRunCap = frame.caps?.includes(BUS_CAPS.runVersion) ?? false;
+          ownerAwayUntil = frame.owner_away_until ?? undefined;
           hubHelloed = true;
           if (hubRunCap) {
             if (frame.run_version === null) updaterRef?.clearNamed();
@@ -1952,6 +1967,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           }),
         unbound_proofs: unboundProofs.map((u) => ({ ...u })),
         ...(hubVersion === undefined ? {} : { hub_version: hubVersion }),
+        ...(awayUntil() === undefined ? {} : { owner_away_until: awayUntil() }),
         ...(only === undefined ? {} : { namespace: only }),
         namespaces,
         // Read-only: status never marks a late delivery shown.
@@ -2280,6 +2296,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           const rec = agents.byRef(ref);
           if (rec) renameFromAdapter(rec, name);
         },
+        ownerAwayUntil: awayUntil,
         // The self tool's status: the agent's own row on its roster.
         ownRow: (ref) => {
           const me = agents.byRef(ref);

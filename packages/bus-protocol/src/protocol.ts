@@ -354,6 +354,16 @@ export const RunVersionSchema = z
   .regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
 
 /**
+ * An ISO 8601 UTC time (#2759, BUS_CAPS.ownerAway): the end of a person's
+ * quiet hours. Bounded and date-checked.
+ */
+export const OwnerAwayUntilSchema = z
+  .string()
+  .max(40)
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?Z$/)
+  .refine((s) => !Number.isNaN(Date.parse(s)), "not a date");
+
+/**
  * Why an update report was sent: a closed set, so a report never carries
  * free text of its own (that is `detail`, capped).
  */
@@ -423,6 +433,14 @@ const RunVersionPush = z.strictObject({
   run_version: RunVersionSchema.nullable(),
 });
 
+/** The owner's quiet hours began, ended or changed (BUS_CAPS.ownerAway). */
+const OwnerAwayPush = z.strictObject({
+  ...base,
+  type: z.literal("owner_away"),
+  /** When quiet hours end; null: not in quiet hours. */
+  until: OwnerAwayUntilSchema.nullable(),
+});
+
 /**
  * "Install now" from Settings. No field: it names no version, source or URL.
  * The daemon honors it only for the version already staged and named.
@@ -452,6 +470,11 @@ const HelloOk = z.strictObject({
    * none (cleared, #2719); absent: the hub does not know yet, a push follows.
    */
   run_version: RunVersionSchema.nullable().optional(),
+  /**
+   * When the owner's quiet hours end (BUS_CAPS.ownerAway); `null`: not in
+   * quiet hours. Absent: the hub does not say.
+   */
+  owner_away_until: OwnerAwayUntilSchema.nullable().optional(),
 });
 
 const AgentOk = z.strictObject({
@@ -671,6 +694,7 @@ export const SERVER_FRAMES = [
   "run_version",
   "install_now",
   "update_ack",
+  "owner_away",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -712,6 +736,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   RunVersionPush,
   InstallNow,
   UpdateAck,
+  OwnerAwayPush,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -750,6 +775,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   RunVersionPush,
   InstallNow,
   UpdateAck,
+  OwnerAwayPush,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;

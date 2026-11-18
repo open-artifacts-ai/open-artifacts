@@ -111,6 +111,7 @@ Hub to client (`SERVER_FRAMES`):
 - `waiting_counts {counts}`: reply to `waiting_query`: `agent_ref` to pending count (1 to 100). A ref that is unknown, live, on another machine or has nothing waiting is omitted.
 - `acked {msg_id}`: reply to a mail `ack` from a socket whose hello listed `ack_confirm` (never to a notice ack). Sent after the receipt is settled, or for an id that can no longer settle (a repeat, unknown, or not this machine's) with the same frame, so it says nothing about the id. Only on the link the ack came in on.
 - `run_version {run_version}`, `install_now {}`, `update_ack {ok}` (`BUS_CAPS.runVersion`, see Updates).
+- `owner_away {until}` (`BUS_CAPS.ownerAway`, #2759): `until` is an ISO 8601 UTC time (`OwnerAwayUntilSchema`, at most 40 chars) when the owner's quiet hours end, or `null` when they are not in quiet hours. Sent at the start and end of quiet hours and when the setting changes. `hello_ok.owner_away_until` carries the same value at connect. The hub sends the field and the frame only to a socket whose hello listed `owner_away` and lists it in `hello_ok.caps`; a strict older decoder would refuse either. A `hello_ok` without the field means unknown: a client treats it as not away. A client treats a time already past by its own clock as not away.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
@@ -254,14 +255,15 @@ reservations are per member (one hub per member); there is no cross-member
 addressing.
 
 - Gate: a capability, not a version (the client reports 0.0.0 until #1308).
-  `hello.caps` is up to `MAX_CAPS` (16) distinct tokens matching
+  `hello.caps` is up to `MAX_CAPS` (32) distinct tokens matching
   `[a-z][a-z0-9_-]{0,31}`; consumers ignore unknown ones. `BUS_CAPS.rename`
   (`rename`): the hub sends roster `former_names` and a former-name receipt
   `to_name` only to a socket whose hello listed it (`hasCap`). A decoder
   older than these fields refuses them, failing the whole frame.
   `BUS_CAPS.noticeMeta` (`notice_meta`, #2768): the hub adds `deliver.meta` to
-  a server notice only for a socket whose hello listed it. With it the 16
-  tokens of `MAX_CAPS` are all in use.
+  a server notice only for a socket whose hello listed it. `BUS_CAPS` has 17
+  tokens, so `MAX_CAPS` is 32; a daemon's own hello list stays at 16 or fewer
+  for older hubs.
 - Client frames are strict, so a hub decoder older than this change refuses a
   `hello` with `caps`, an `agent_up` with `name_kind` and any `rename`. A
   client sends them only to hubs that accept them.
