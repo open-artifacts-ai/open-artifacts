@@ -31,7 +31,7 @@ afterEach(() => vi.restoreAllMocks());
 let seq = 0;
 const proofOf = () =>
   `${"p".repeat(11)}${crypto.randomUUID().replaceAll("-", "")}`;
-const NOTE = /isn't linked to your account/;
+const NOTE = /isn't linked to its bus session/;
 
 /** A member with a connected machine; with `proof`, one agent bound to it. */
 async function withMachine(proof?: string) {
@@ -79,7 +79,9 @@ describe("through /mcp", () => {
       expect(pub.isError).toBeFalsy();
       expect(textOf(pub)).toMatch(NOTE);
       expect(textOf(pub)).toContain("this connection sent no link proof");
-      expect(textOf(pub)).toContain("Tell your person: run /mcp Reconnect");
+      expect(textOf(pub)).toContain(
+        "Tell your person: reconnect the Open Artifacts connection",
+      );
       const id = (pub.structuredContent as { id: string }).id;
       const com = await tool(c, "add_comment", { id, body: "hi" });
       expect(com.isError).toBeFalsy();
@@ -181,63 +183,47 @@ describe("through /mcp", () => {
 });
 
 describe("the note's table", () => {
+  const lead = (reason: string) =>
+    `This agent isn't linked to its bus session (${reason}), so answers to its asks won't reach it.`;
   const FULL =
-    "You can run `oa-bus doctor` to check. Tell your person: run /mcp Reconnect; if it stays unlinked, run the bus's install again and restart the session.";
-  const RETRY = "Try again shortly. If it stays unlinked, run `oa-bus doctor`.";
+    "You can run `oa-bus doctor` to check. Tell your person: reconnect the Open Artifacts connection (in Claude Code: /mcp, then Reconnect). If it stays unlinked, run `oa-bus install` again and restart this session.";
+  const RETRY =
+    "It may clear on the next write. You can run `oa-bus doctor` to check.";
   const exact: [UnlinkedWhy, string][] = [
-    [
-      "no_proof",
-      `This agent isn't linked to your account (this connection sent no link proof). ${FULL}`,
-    ],
+    ["no_proof", `${lead("this connection sent no link proof")} ${FULL}`],
     [
       "unbound",
-      `This agent isn't linked to your account (no bus session holds this connection's proof). ${FULL}`,
+      `${lead("no bus session holds this connection's proof")} ${FULL}`,
     ],
-    [
-      "malformed",
-      `This agent isn't linked to your account (its link proof was malformed). ${FULL}`,
-    ],
-    [
-      "other",
-      `This agent isn't linked to your account (its session isn't ready). ${FULL}`,
-    ],
+    ["malformed", `${lead("its link proof was malformed")} ${FULL}`],
+    ["other", `${lead("its session isn't ready")} ${FULL}`],
     [
       "closed",
-      "This agent isn't linked to your account (its bus session is closed). Tell your person: restart the session.",
+      `${lead("its bus session is closed")} You can run \`oa-bus doctor\` to check. Tell your person: restart this session.`,
     ],
     [
       "unlinked",
-      "This agent isn't linked to your account (its bus session has no identity). You can run `oa-bus doctor` to check. Tell your person: run the bus's install again and restart the session.",
+      `${lead("its bus session has no identity")} You can run \`oa-bus doctor\` to check. Tell your person: run \`oa-bus install\` again and restart this session.`,
     ],
     [
       "revoked",
-      "This agent isn't linked to your account (its machine was revoked). Tell your person: approve this machine again in the bus, then restart the session.",
+      `${lead("this computer's approval was revoked")} Tell your person: run \`oa-bus install\` to approve this computer again, then restart this session.`,
     ],
-    [
-      "no_hub",
-      `This agent isn't linked to your account (the bus couldn't be reached). ${RETRY}`,
-    ],
-    [
-      "timeout",
-      `This agent isn't linked to your account (the link check timed out). ${RETRY}`,
-    ],
-    [
-      "error",
-      `This agent isn't linked to your account (the link check failed). ${RETRY}`,
-    ],
+    ["no_hub", `${lead("the bus couldn't be reached")} ${RETRY}`],
+    ["timeout", `${lead("the link check timed out")} ${RETRY}`],
+    ["error", `${lead("the link check failed")} ${RETRY}`],
   ];
   it.each(exact)("%s is exactly the agreed line", (why, line) => {
     expect(unlinkedNote(why)).toBe(line);
   });
-  it("never tells an agent to run install or restart on its own: only its person is told", () => {
+  it("an agent is only ever told to check; install and restart are for its person", () => {
     for (const [why] of exact) {
       const n = unlinkedNote(why) as string;
       expect(n).not.toMatch(/[0-9a-f]{16,}/);
       expect(n).not.toContain("\n");
-      // install and restart only ever appear after "Tell your person".
-      const [before, after] = n.split("Tell your person");
+      expect(n).not.toContain("—");
+      const [before] = n.split("Tell your person");
       expect(before).not.toMatch(/install|restart/i);
-      void after;
     }
   });
   it("no_machine and nothing say nothing", () => {
@@ -279,7 +265,7 @@ describe("the wrapper", () => {
     const run = await server({ name: "A", version: null, unlinked: "closed" });
     const pub = await run("publish_artifact", publishArgs("W"));
     expect(texts(pub)).toContain(
-      "its bus session is closed). Tell your person: restart the session.",
+      "its bus session is closed), so answers to its asks won't reach it.",
     );
     const id = JSON.parse(JSON.stringify(pub)).structuredContent.id as string;
     expect(texts(await run("add_comment", { id, body: "c" }))).toMatch(NOTE);
