@@ -322,6 +322,54 @@ describe("asks inside the page (#2426)", () => {
       await waitFor(() => expect(picks).toEqual([{ optionId: "a" }]));
     });
 
+    it('"I\'ll decide this" takes nothing for the first 700 ms, then works (#2736)', async () => {
+      const bodies: unknown[] = [];
+      server.use(
+        http.post(
+          `*${R.commentAskDecider(OWNED, "t1", "c-t1")}`,
+          async ({ request }) => {
+            bodies.push(await request.json());
+            return HttpResponse.json({});
+          },
+        ),
+      );
+      const sam = { kind: "user", id: "sam", name: "Sam", me: false };
+      serve([
+        thread(
+          "t1",
+          {},
+          {
+            to: [sam, { kind: "user", id: "me", name: "Me", me: true }],
+            decider: sam,
+            chosenBy: { kind: "user", id: "me", name: "Me", me: true },
+            role: "weigh",
+            canTakeBack: true,
+            picks: [],
+          },
+        ),
+      ]);
+      mount(viewerPath(OWNED));
+      await hello();
+      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
+      await click("t1");
+      const card = await waitFor(() => {
+        const el = beside();
+        if (!el) throw new Error("no card");
+        return el as HTMLElement;
+      });
+      const btn = within(card).getByRole("button", {
+        name: "I'll decide this",
+      });
+      expect(btn).toBeDisabled();
+      fireEvent.click(btn);
+      await wait(150);
+      expect(bodies).toEqual([]);
+      await wait(ASK_BESIDE_HOLD_MS);
+      expect(btn).not.toBeDisabled();
+      fireEvent.click(btn);
+      await waitFor(() => expect(bodies).toEqual([{ takeBack: true }]));
+    });
+
     it("a second open of the same thread starts the delay over", async () => {
       serve([thread("t1")]);
       mount(viewerPath(OWNED));
