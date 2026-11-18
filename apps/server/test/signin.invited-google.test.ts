@@ -369,6 +369,7 @@ describe("invite expiry", () => {
     expect(await codeEligibility(e, c, guest)).toEqual({
       kind: "none",
       reason: "invite_expired",
+      why: "invite_expired",
     });
     await age(uid, 90 * DAY, false);
     expect(await codeEligibility(e, c, guest)).toMatchObject({ kind: "guest" });
