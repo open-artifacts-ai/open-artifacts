@@ -5,6 +5,8 @@
 # leading "/", no "..". Blank lines and "#" comments are ignored.
 #
 # Readers:
+# - scripts/ci/public-only-guard.sh (the public-only CI job) fails when any of
+#   these paths exists in this repo.
 # - scripts/ci/public-only.sh removes these from a copy of the repo and proves
 #   the public code still installs, builds, typechecks and tests without them.
 # - The cloud repo's sync script will copy exactly these paths (#1056).

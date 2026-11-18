@@ -6,7 +6,10 @@ import {
   requestInstall,
   updateCommand,
 } from "@oa/bus-daemon";
+import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, say, sayErr } from "../context.ts";
+import { originOf, readMachine } from "../machine.ts";
+import { recordClaudeProof } from "../steps/adapters.ts";
 
 /** Installs the staged version; true once it is the running one. */
 export type InstallStaged = (version: string) => Promise<boolean>;
@@ -49,6 +52,16 @@ export async function update(
     return 1;
   }
   if (!(await installStaged(version))) return 1;
+  // #2688: an install from before the Claude config was recorded gets it now.
+  const m = readMachine(ctx.home);
+  if (m.state === "ok" && ctx.which("claude") && wiredTo(ctx))
+    recordClaudeProof({
+      home: ctx.userHome,
+      busHome: ctx.home,
+      env: ctx.env,
+      busBin: ctx.service.argv?.() ?? [],
+      hub: originOf(m.hub),
+    });
   say(ctx, c.updateDone(version));
   return 0;
 }

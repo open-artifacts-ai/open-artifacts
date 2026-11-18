@@ -770,6 +770,21 @@ export function copy(
           ? `${HARNESS_LABEL[h]} ${clip(version, 40)} wired`
           : `${HARNESS_LABEL[h]} wired`,
       ),
+    /** #2688: one doctor or status line with its glyph, then its notes indented 3. */
+    check: (
+      level: "pass" | "warn" | "fail" | "info",
+      head: string,
+      notes: string[] = [],
+    ) => [
+      level === "pass"
+        ? done(head)
+        : level === "warn"
+          ? warn(head)
+          : level === "fail"
+            ? fail(head)
+            : head,
+      ...notes.map(next),
+    ],
     notWired: (h: HarnessName) => [
       fail(`${HARNESS_LABEL[h]} is not wired`),
       next(`Run ${bus} to wire it.`),

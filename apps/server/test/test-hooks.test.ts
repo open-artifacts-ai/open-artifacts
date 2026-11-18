@@ -5,6 +5,7 @@ import {
   HealthzSchema,
   type HeldSweep,
   MeSchema,
+  newId,
   OAuthClientHookResultSchema,
   R,
   SyncStatusSchema,
@@ -1253,5 +1254,106 @@ describe("testHold's held-list confirm (#1078)", () => {
     await testHold(g.x, gid, `${gid}@t`, true, NOW);
     expect(await testHold(g.x, gid, `${gid}@t`, false, NOW)).toBe(false);
     expect(g.list()).toEqual([]);
+  });
+});
+
+describe("people-purge (#2680)", () => {
+  const run = () => `t19-${Math.random().toString(36).slice(2, 8)}-`;
+  const userState = (id: string) =>
+    env.DB.prepare(
+      "select status, erased_at as erasedAt from users where id = ?",
+    )
+      .bind(id)
+      .first<{ status: string; erasedAt: number | null }>();
+  const artCount = async (spaceId: string) =>
+    (
+      await env.DB.prepare(
+        "select count(*) as n from artifacts where space_id = ?",
+      )
+        .bind(spaceId)
+        .first<{ n: number }>()
+    )?.n ?? 0;
+  async function personalArt(userId: string, deleted: boolean) {
+    const now = Date.now();
+    await env.DB.prepare(
+      "insert into artifacts (id, owner_id, space_id, title, format, created_at, updated_at, deleted_at) values (?, ?, ?, 'p', 'html', ?, ?, ?)",
+    )
+      .bind(newId(), userId, userId, now, now, deleted ? now : null)
+      .run();
+  }
+
+  it("erases matching people (live and trashed artifacts, admins too) and leaves everyone else", async () => {
+    const p = run();
+    const admin = await seedUser(`${p}admin@${TD}`, "admin");
+    const member = await seedUser(`${p}gone@${TD}`, "member");
+    const removed = await seedUser(`${p}left@${TD}`, "member", {
+      status: "removed",
+    });
+    const guest = await seedUser(`${p}guest@${TD}`, "guest");
+    const suspended = await seedUser(`${p}held@${TD}`, "member", {
+      status: "suspended",
+    });
+    await personalArt(member, false);
+    await personalArt(member, true);
+    const otherDomain = await seedUser(`${p}x@other.test`, "member");
+    const otherPrefix = await seedUser(tu("t20-keep"), "member");
+    const before = await freshSince();
+    const newer = await seedUser(`${p}new@${TD}`, "member");
+
+    const r = await hook(on(), TEST_HOOKS.peoplePurge, {
+      prefix: p,
+      before,
+      limit: 25,
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ erased: 5, failed: 0, left: 0 });
+    for (const id of [admin, member, removed, guest, suspended])
+      expect((await userState(id))?.erasedAt).not.toBeNull();
+    expect(await artCount(member)).toBe(0);
+    for (const id of [otherDomain, otherPrefix, newer])
+      expect(await userState(id)).toEqual({ status: "active", erasedAt: null });
+  });
+
+  it("caps at limit, oldest first, and says how many are left", async () => {
+    const p = run();
+    const a = await seedUser(`${p}a@${TD}`, "member");
+    await freshSince();
+    const b = await seedUser(`${p}b@${TD}`, "member");
+    const before = await freshSince();
+    const r = await hook(on(), TEST_HOOKS.peoplePurge, {
+      prefix: p,
+      before,
+      limit: 1,
+    });
+    expect(await r.json()).toEqual({ erased: 1, failed: 0, left: 1 });
+    expect((await userState(a))?.erasedAt).not.toBeNull();
+    expect((await userState(b))?.erasedAt).toBeNull();
+  });
+
+  it("never the owner; a prefix outside t19- or a limit over the cap is bad_input", async () => {
+    const p = run();
+    const owner = `${p}owner@${TD}`;
+    const id = await seedUser(owner, "member");
+    const before = await freshSince();
+    const r = await hook(on({ OWNER_EMAIL: owner }), TEST_HOOKS.peoplePurge, {
+      prefix: p,
+      before,
+      limit: 5,
+    });
+    expect(await r.json()).toEqual({ erased: 0, failed: 0, left: 0 });
+    expect((await userState(id))?.erasedAt).toBeNull();
+    for (const body of [
+      { prefix: "t20-", before, limit: 5 },
+      { prefix: "", before, limit: 5 },
+      { prefix: "t19-%", before, limit: 5 },
+      { prefix: p, before, limit: 26 },
+      { prefix: p, before },
+    ]) {
+      const bad = await hook(on(), TEST_HOOKS.peoplePurge, body);
+      expect(bad.status).toBe(404);
+      expect(await bad.json()).toMatchObject({
+        error: { details: { reason: "bad_input" } },
+      });
+    }
   });
 });

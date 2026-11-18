@@ -85,7 +85,7 @@ import {
   refuseDocSettings,
   useEditDoc,
 } from "./doc-format.js";
-import { DOC_SWITCH } from "./doc-switch.js";
+import { docCreationOpen } from "./doc-switch.js";
 import { docsAvailable } from "./docs-available.js";
 import { deleteFollowsStmt, notifyChanged } from "./follows.js";
 import {
@@ -221,7 +221,7 @@ export async function publish(
   // doc (#1100) once it is known to be a create.
   const asDoc = input.format === "doc";
   if (asDoc && !docsAvailable(env))
-    throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+    throw docCreationOpen(env) ? docsNeedPaid() : docsUnavailable();
   let plan: Plan | null = input.edits || asDoc ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();

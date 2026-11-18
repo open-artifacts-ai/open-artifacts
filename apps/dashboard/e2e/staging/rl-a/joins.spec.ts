@@ -119,9 +119,9 @@ async function rowsFor(admin: Person, address: string): Promise<Member[]> {
   return all.filter((m) => m.email === address);
 }
 
-test("an uninvited TEST_DOMAIN address gets no code and no account", async ({
-  browser,
-}) => {
+test("an uninvited TEST_DOMAIN address gets no code and no account", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
   const stranger = email("stranger");
   await askForCode(browser, stranger);
@@ -130,9 +130,9 @@ test("an uninvited TEST_DOMAIN address gets no code and no account", async ({
   expect(await rowsFor(admin, stranger)).toEqual([]);
 });
 
-test("an invited member: Google is their way in, never a code; their session lands in the library", async ({
-  browser,
-}) => {
+test("an invited member: Google is their way in, never a code; their session lands in the library", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
   const invited = email("invited");
   const r = await json<MemberInviteResult>(
@@ -160,9 +160,9 @@ test("an invited member: Google is their way in, never a code; their session lan
   expect(me.user.role).toBe("member");
 });
 
-test("an outside guest logs in by code, sees only Shared with me, and is read-only", async ({
-  browser,
-}) => {
+test("an outside guest logs in by code, sees only Shared with me, and is read-only", {
+  tag: "@gate",
+}, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
   const guest = email("guest");
   const title = `T19 ${RUN} guest page`;
