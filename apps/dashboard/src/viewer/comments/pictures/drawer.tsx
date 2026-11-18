@@ -79,8 +79,18 @@ export function usePictureDrawer(artifactId: string) {
     [],
   );
 
+  /** Takes a picture back out and says why (too many MB, or too many pixels). */
+  const tooBig = useCallback((key: string, name: string, size: number) => {
+    setItems((xs) => {
+      const gone = xs.find((x) => x.key === key);
+      if (gone) URL.revokeObjectURL(gone.preview);
+      return xs.filter((x) => x.key !== key);
+    });
+    setNotes((n) => [...n, PICTURE_WORDS.tooBig(name, megabytes(size))]);
+  }, []);
+
   const upload = useCallback(
-    async (key: string, blob: Blob) => {
+    async (key: string, blob: Blob, name = "Picture") => {
       const ctl = new AbortController();
       live.current.set(key, ctl);
       patch(key, { status: "uploading", progress: 0 });
@@ -101,12 +111,17 @@ export function usePictureDrawer(artifactId: string) {
         patch(key, { status: "done", progress: 1, pictureId: up.pictureId });
       } catch (e) {
         if ((e as { name?: string }).name === "AbortError") return;
+        // too_large (10 MB, or "dimensions"): the same words as the size check.
+        if ((e as { code?: string }).code === "too_large") {
+          tooBig(key, name, blob.size);
+          return;
+        }
         patch(key, { status: "failed" });
       } finally {
         live.current.delete(key);
       }
     },
-    [artifactId, patch],
+    [artifactId, patch, tooBig],
   );
 
   const add = useCallback(
@@ -147,21 +162,16 @@ export function usePictureDrawer(artifactId: string) {
             return;
           }
           if (s.blob.size > PICTURE_BYTES_MAX) {
-            setItems((xs) => xs.filter((x) => x.key !== key));
-            URL.revokeObjectURL(preview);
-            setNotes((n) => [
-              ...n,
-              PICTURE_WORDS.tooBig(f.name || "Picture", megabytes(s.blob.size)),
-            ]);
+            tooBig(key, f.name || "Picture", s.blob.size);
             return;
           }
           patch(key, { blob: s.blob, w: s.w, h: s.h });
-          await upload(key, s.blob);
+          await upload(key, s.blob, f.name || "Picture");
         })();
       }
       setNotes(next);
     },
-    [upload, patch],
+    [upload, patch, tooBig],
   );
 
   const remove = (key: string) => {

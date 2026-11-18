@@ -1,5 +1,5 @@
-// #2508 slice A2: pictures in the comments drawer (PROVISIONAL
-// api/commentPictures.ts; mocks in src/mockPictures.ts). The empty box, 1
+// #2508 slice A2: pictures in the comments drawer (mocks in src/mockPictures.ts).
+// The empty box, 1
 // and 4 thumbnails, uploading, a failed upload, HEIC, a posted comment and
 // the full-size view, at 1280 and 390, light and dark, with axe and no
 // sideways scroll. PNGs to SHOTS_DIR when set.

@@ -861,7 +861,7 @@ async function startMocks() {
       () => mainHandlers,
     ),
   );
-  // #2508 (PROVISIONAL, api/commentPictures.ts): pictures in comments.
+  // #2508: pictures in comments.
   extra.push(
     ...(await import("./mockPictures")).pictureHandlers(mainHandlers, params),
   );

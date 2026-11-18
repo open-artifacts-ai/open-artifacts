@@ -1,5 +1,5 @@
-// #2508 slice A2: pictures in comments (PROVISIONAL api/commentPictures.ts).
-import { R, viewerPath } from "@oa/shared";
+// #2508 slice A2: pictures in comments.
+import { CommentListSchema, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
@@ -12,11 +12,7 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  PICTURE_ROUTES,
-  PicturedListSchema,
-  picturesOf,
-} from "../src/api/commentPictures";
+import { PICTURE_ROUTES, picturesOf } from "../src/api/commentPictures";
 import {
   PICTURE_WORDS,
   PictureNotes,
@@ -101,6 +97,7 @@ const uploads = () => [
       {
         pictureId: `pic-${b.type}-${Math.random().toString(36).slice(2, 6)}`,
         url: "http://localhost/__upload/x",
+        expiresAt: "2030-01-01T00:00:00.000Z",
       },
       { status: 201 },
     );
@@ -303,9 +300,9 @@ describe("in the viewer", () => {
       open: 1,
       truncated: false,
     };
-    // The adapter keeps `pictures` (the shared schema would drop them).
+    // The shared schema keeps `pictures`.
     expect(
-      picturesOf(PicturedListSchema.parse(list).threads[0]?.comments[0] ?? {}),
+      picturesOf(CommentListSchema.parse(list).threads[0]?.comments[0] ?? {}),
     ).toHaveLength(2);
     server.use(
       http.get(`*${R.comments(OWNED)}`, () => HttpResponse.json(list)),

@@ -1,6 +1,6 @@
-// Mock-only (#2508 slice A2): the PROVISIONAL picture routes
-// (api/commentPictures.ts) over the shared mocks. Loaded only with VITE_MOCK.
-// - POST comment-pictures answers a signed URL on this origin; PUT stores
+// Mock-only (#2508 slice A2): the picture routes (R.commentPictures,
+// R.commentPicture) over the shared mocks. Loaded only with VITE_MOCK.
+// - POST pictures answers a signed URL on this origin; PUT stores
 //   the bytes; GET serves them (or a drawn stand-in for fixture pictures).
 // - A new thread or reply keeps its `pictures`, and the list shows them.
 // - ?mock=pictures: the first thread's first comment has two pictures and
@@ -34,7 +34,7 @@ export function pictureHandlers(
   const fixturePics: Pic[] = [
     {
       id: "fx_before",
-      type: "image/svg+xml",
+      type: "image/png",
       w: 1280,
       h: 800,
       bytes: 1,
@@ -42,7 +42,7 @@ export function pictureHandlers(
     },
     {
       id: "fx_after",
-      type: "image/svg+xml",
+      type: "image/png",
       w: 1280,
       h: 800,
       bytes: 1,
@@ -50,7 +50,7 @@ export function pictureHandlers(
     },
   ];
   const fixtureReply: Pic[] = [
-    { id: "fx_error", type: "image/svg+xml", w: 1280, h: 800, bytes: 1 },
+    { id: "fx_error", type: "image/png", w: 1280, h: 800, bytes: 1 },
   ];
   const ZW = "​";
   // e2e: window.__oaPicHold = true holds every PUT at a gate;
@@ -112,28 +112,25 @@ export function pictureHandlers(
   };
 
   return [
-    http.post(
-      "*/api/v1/artifacts/:id/comment-pictures",
-      async ({ request }) => {
-        // The server reads w and h from the file; the mock stands in.
-        const b = (await request.json()) as { type: string; bytes: number };
-        if (/hei[cf]/i.test(b.type))
-          return HttpResponse.json(
-            { error: { code: "unsupported_format", message: "HEIC" } },
-            { status: 400 },
-          );
-        const id = `pic_${++n}`;
-        meta.set(id, { id, type: b.type, w: 1600, h: 1000, bytes: b.bytes });
+    http.post("*/api/v1/artifacts/:id/pictures", async ({ request }) => {
+      // The server reads w and h from the file; the mock stands in.
+      const b = (await request.json()) as { type: string; bytes: number };
+      if (/hei[cf]/i.test(b.type))
         return HttpResponse.json(
-          {
-            pictureId: id,
-            url: `${location.origin}/__mock-upload/${id}`,
-            expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-          },
-          { status: 201 },
+          { error: { code: "unsupported_format", message: "HEIC" } },
+          { status: 400 },
         );
-      },
-    ),
+      const id = `pic_${++n}`;
+      meta.set(id, { id, type: b.type, w: 1600, h: 1000, bytes: b.bytes });
+      return HttpResponse.json(
+        {
+          pictureId: id,
+          url: `${location.origin}/__mock-upload/${id}`,
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        },
+        { status: 201 },
+      );
+    }),
     http.put("*/__mock-upload/:pid", async ({ request, params: p }) => {
       await hold();
       if (failOnce) {
@@ -145,28 +142,25 @@ export function pictureHandlers(
       // The PUT answers the Picture.
       return HttpResponse.json(meta.get(pid) ?? null);
     }),
-    http.get(
-      "*/api/v1/artifacts/:id/comment-pictures/:pid",
-      ({ params: p }) => {
-        const pid = String(p.pid);
-        const b = bytes.get(pid);
-        if (b)
-          return new HttpResponse(b, { headers: { "Content-Type": b.type } });
-        if (pid.startsWith("fx_"))
-          return new HttpResponse(
-            STAND_IN(
-              pid === "fx_after" ? 140 : pid === "fx_error" ? 10 : 220,
-              pid === "fx_after"
-                ? "After"
-                : pid === "fx_error"
-                  ? "Error"
-                  : "Before",
-            ),
-            { headers: { "Content-Type": "image/svg+xml" } },
-          );
-        return new HttpResponse(null, { status: 404 });
-      },
-    ),
+    http.get("*/api/v1/artifacts/:id/pictures/:pid", ({ params: p }) => {
+      const pid = String(p.pid);
+      const b = bytes.get(pid);
+      if (b)
+        return new HttpResponse(b, { headers: { "Content-Type": b.type } });
+      if (pid.startsWith("fx_"))
+        return new HttpResponse(
+          STAND_IN(
+            pid === "fx_after" ? 140 : pid === "fx_error" ? 10 : 220,
+            pid === "fx_after"
+              ? "After"
+              : pid === "fx_error"
+                ? "Error"
+                : "Before",
+          ),
+          { headers: { "Content-Type": "image/svg+xml" } },
+        );
+      return new HttpResponse(null, { status: 404 });
+    }),
     http.post("*/api/v1/artifacts/:id/comments", ({ request }) =>
       withPictures(request),
     ),
