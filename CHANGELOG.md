@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.219.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.219.0...v0.219.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **agents:** a held reply stays masked when the hold write fails ([#2733](https://github.com/open-artifacts-ai/open-artifacts/issues/2733)) ([#2850](https://github.com/open-artifacts-ai/open-artifacts/issues/2850)) ([bbd27ec](https://github.com/open-artifacts-ai/open-artifacts/commit/bbd27ecb0dd104998ca437edaece3e5bf8d0770a))
+
 ## [0.219.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.218.0...v0.219.0) (2026-11-18)
 
 
