@@ -288,4 +288,25 @@ describe("pause (#2552)", () => {
     expect(rows.map((r) => JSON.parse(r.detail).paused)).toEqual([true, false]);
     expect(rows[0]?.actor_id).toBe(owner.userId);
   });
+
+  it("GET R.busMachines tells the owner the pause state, and no one else", async () => {
+    const owner = await member("owner");
+    const read = async (auth: string | null) =>
+      (await (await api(app, R.busMachines, auth)).json()) as {
+        updatesPaused?: boolean;
+      };
+    expect((await read(owner.cookie)).updatesPaused).toBe(false);
+    await api(app, R.busUpdatesPaused, owner.cookie, {
+      method: "PUT",
+      body: { paused: true },
+    });
+    expect((await read(owner.cookie)).updatesPaused).toBe(true);
+    await api(app, R.busUpdatesPaused, owner.cookie, {
+      method: "PUT",
+      body: { paused: false },
+    });
+    expect((await read(owner.cookie)).updatesPaused).toBe(false);
+    const other = await member("member");
+    expect("updatesPaused" in (await read(other.cookie))).toBe(false);
+  });
 });
