@@ -862,8 +862,17 @@ async function startMocks() {
     ),
   );
   // #2508: pictures in comments.
+  const pics = (await import("./mockPictures")).pictureHandlers(
+    mainHandlers,
+    params,
+  );
+  // PROVISIONAL (#2780): person @mentions, in front of the picture handlers.
   extra.push(
-    ...(await import("./mockPictures")).pictureHandlers(mainHandlers, params),
+    ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
+      ...pics,
+      ...mainHandlers,
+    ]),
+    ...pics,
   );
   await setupWorker(
     ...extra,
