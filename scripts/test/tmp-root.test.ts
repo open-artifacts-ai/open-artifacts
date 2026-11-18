@@ -87,9 +87,11 @@ describe("the per-run temp root", () => {
     const unwired = guarded.filter((f) => {
       const src = readFileSync(join(root, f), "utf8");
       const setups = (src.match(/\bsetupFiles:/g) ?? []).length;
+      // A plain relative path, or fileURLToPath(new URL("...", import.meta.url))
+      // where a test reruns vitest with another --root (packages/ui).
       const roots = (
         src.match(
-          /globalSetup:\s*\[\s*["'][./]*(?:scripts\/)?test\/tmp-root\.ts["']/g,
+          /globalSetup:\s*\[\s*(?:fileURLToPath\(\s*new URL\(\s*)?["'][./]*(?:scripts\/)?test\/tmp-root\.ts["']/g,
         ) ?? []
       ).length;
       return roots < setups;
