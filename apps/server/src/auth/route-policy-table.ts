@@ -130,6 +130,12 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/me/inbox/mutes": { user: "the caller" },
   "DELETE /api/v1/me/inbox/mutes/:kind/:id": { user: "the caller" },
   "PUT /api/v1/me/notification-prefs": { user: "the caller" },
+  // #2512 S5: the caller's own browsers; 404 push_unavailable with no VAPID key; changes need a browser session (handler).
+  "GET /api/v1/me/push/key": { user: "the caller" },
+  "GET /api/v1/me/push/subscriptions": { user: "the caller" },
+  "POST /api/v1/me/push/subscriptions": { user: "the caller" },
+  "PATCH /api/v1/me/push/subscriptions/:id": { user: "the caller" },
+  "DELETE /api/v1/me/push/subscriptions/:id": { user: "the caller" },
   // #1292: the caller's own share-notice picks; PUT browser sessions only (handler).
   "GET /api/v1/bus/share-notices": { org: "mcp.connect" },
   "PUT /api/v1/bus/share-notices": { org: "mcp.connect" },

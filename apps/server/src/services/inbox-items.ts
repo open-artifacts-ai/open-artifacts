@@ -21,6 +21,7 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
+import { queueUpdatePush } from "./push.js";
 import { getUsers } from "./users.js";
 
 /** The most characters of a comment an item keeps. */
@@ -124,6 +125,16 @@ export async function writeInboxItems(
           ),
         ),
       );
+    // #2512 S5: browser push for each Update, for those who turned it on.
+    for (const r of rows)
+      await queueUpdatePush(env, r.userId, {
+        key: r.key,
+        artifactId: r.artifactId,
+        threadId: r.threadId ?? "",
+        askerName: r.actor.agent?.name ?? r.actor.name ?? "Someone",
+        excerpt: r.excerpt,
+        agentKey: r.actor.agent?.identity?.identityId ?? null,
+      });
   } catch (e) {
     logWarn("inbox_items_write_failed", e);
   }
@@ -216,19 +227,29 @@ export async function forgetCommentItems(
 ): Promise<void> {
   try {
     if (j.root)
-      await stmt(
-        env.DB,
-        "delete from inbox_items where artifact_id = ? and thread_id = ?",
-      )
-        .bind(j.artifactId, j.threadId)
-        .run();
+      await env.DB.batch([
+        stmt(
+          env.DB,
+          "delete from inbox_items where artifact_id = ? and thread_id = ?",
+        ).bind(j.artifactId, j.threadId),
+        // #2512 S5: what was queued for push goes with it.
+        stmt(
+          env.DB,
+          "delete from push_pending where artifact_id = ? and thread_id = ?",
+        ).bind(j.artifactId, j.threadId),
+      ]);
     else
-      await stmt(
-        env.DB,
-        "delete from inbox_items where artifact_id = ? and comment_id = ?",
-      )
-        .bind(j.artifactId, j.commentId)
-        .run();
+      await env.DB.batch([
+        stmt(
+          env.DB,
+          "delete from inbox_items where artifact_id = ? and comment_id = ?",
+        ).bind(j.artifactId, j.commentId),
+        stmt(
+          env.DB,
+          `delete from push_pending where artifact_id = ?1 and key in
+             ('ask:' || ?2, 'reply:' || ?2, 'comment:' || ?2, 'mention:' || ?2)`,
+        ).bind(j.artifactId, j.commentId),
+      ]);
   } catch (e) {
     logWarn("inbox_items_forget_failed", e);
   }
@@ -253,19 +274,26 @@ export async function refreshCommentItems(
 ): Promise<void> {
   try {
     const held = [...heldOwners(j)];
-    await stmt(
-      env.DB,
-      `update inbox_items set excerpt = case when user_id in (select value from json_each(?4)) then ?5 else ?1 end
-        where artifact_id = ?2 and comment_id = ?3 and kind in ('mention', 'reply', 'comment')`,
-    )
-      .bind(
-        itemExcerpt(j.body),
-        j.artifactId,
-        j.commentId,
-        JSON.stringify(held),
-        HELD_EXCERPT,
-      )
-      .run();
+    const words = [
+      itemExcerpt(j.body),
+      j.artifactId,
+      j.commentId,
+      JSON.stringify(held),
+      HELD_EXCERPT,
+    ];
+    await env.DB.batch([
+      stmt(
+        env.DB,
+        `update inbox_items set excerpt = case when user_id in (select value from json_each(?4)) then ?5 else ?1 end
+          where artifact_id = ?2 and comment_id = ?3 and kind in ('mention', 'reply', 'comment')`,
+      ).bind(...words),
+      // #2512 S5: what is queued for push shows the new words too.
+      stmt(
+        env.DB,
+        `update push_pending set excerpt = case when user_id in (select value from json_each(?4)) then ?5 else ?1 end
+          where artifact_id = ?2 and key in ('reply:' || ?3, 'comment:' || ?3, 'mention:' || ?3)`,
+      ).bind(...words),
+    ]);
   } catch (e) {
     logWarn("inbox_items_refresh_failed", e);
   }
