@@ -2143,7 +2143,7 @@ describe("@ picker details", () => {
     });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
     expect(await within(c).findByRole("alert")).toHaveTextContent(
-      "Mention at most 10 agents in one comment.",
+      "Mention at most 10 agents or people in one comment.",
     );
     expect(posts).toHaveLength(0);
   });
@@ -2358,12 +2358,15 @@ describe("agent list loads on composer focus", () => {
     const c = await col();
     expect(await wholePage(c)).toHaveAttribute(
       "placeholder",
-      "Add a comment. Type @ to mention an agent.",
+      "Add a comment. Type @ to mention an agent or a person.",
     );
     fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
     expect(
       await within(c).findByRole("textbox", { name: "Reply" }),
-    ).toHaveAttribute("placeholder", "Reply. Type @ to mention an agent.");
+    ).toHaveAttribute(
+      "placeholder",
+      "Reply. Type @ to mention an agent or a person.",
+    );
   });
 
   it("keeps the plain placeholder for a viewer", async () => {

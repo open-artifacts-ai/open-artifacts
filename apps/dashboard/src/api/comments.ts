@@ -5,10 +5,7 @@ import {
   COMMENT_BODY_MAX,
   type Comment,
   type CommentList,
-  CommentListSchema,
-  CommentSchema,
   type CommentThread,
-  CommentThreadSchema,
   MENTIONS_MAX,
   type Me,
   type NewThreadBody,
@@ -29,6 +26,11 @@ import {
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
+import {
+  CommentListSchema,
+  CommentSchema,
+  CommentThreadSchema,
+} from "../viewer/comments/people"; // PROVISIONAL (#2780): the shared schemas, plus `people`
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -356,6 +358,8 @@ const knownIds = (list: CommentList | undefined) => {
 };
 
 type NewThreadVars = NewThreadBody & {
+  /** PROVISIONAL (#2780): the people @mentioned, by user id. */
+  people?: string[];
   /** The shown version's hash, for a pin's temp anchor. Not sent. */
   contentHash?: string | null;
 };
@@ -435,7 +439,7 @@ export const useCreateThread = (id: string, guest = false) =>
     },
   );
 export const useReply = (id: string, guest = false) =>
-  usePost<ReplyBody & { thread: string }>(
+  usePost<ReplyBody & { thread: string; people?: string[] }>(
     id,
     guest,
     (v) => v.mentions,
@@ -449,6 +453,8 @@ export const useReply = (id: string, guest = false) =>
           body: v.body,
           ...(v.guestName ? { guestName: v.guestName } : {}),
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+          // PROVISIONAL (#2780)
+          ...(v.people?.length ? { people: v.people } : {}),
           ...(v.toAsker ? { toAsker: true } : {}),
           ...(v.pictures?.length ? { pictures: v.pictures } : {}),
         },
@@ -739,7 +745,7 @@ export function commentError(
   ctx?: ErrorContext,
 ): string {
   if (e instanceof TooManyMentions)
-    return `Mention at most ${MENTIONS_MAX} agents in one comment.`;
+    return `Mention at most ${MENTIONS_MAX} agents or people in one comment.`;
   const code = e instanceof ApiClientError ? e.code : null;
   // A capped (guest or restricted) member's writes are refused as read-only:
   // the server answers 404, and says nothing about a missing comment.
