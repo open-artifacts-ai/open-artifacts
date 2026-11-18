@@ -1,5 +1,6 @@
 // The bus install step of llms.txt (#2543), apart from llms.ts so a Node test
 // can run it. OA Product edits this wording; no em dashes.
+import { SKILL_COMMAND_MIN_BUS } from "../version.gen.js";
 
 /** The release's pin of @open-artifacts/bus: its version and sha512 in npm's integrity form. */
 export type BusPin = { version: string; integrity: string };
@@ -49,19 +50,17 @@ export const busNoPin = (why: string): string =>
   `The bus can't be installed from this build of the instance: it has no verified release to check the download against (${cleanWhy(why) || "no reason recorded"}). Do not install it, and do not run \`npx @open-artifacts/bus\` or any other install command: nothing would check what it runs. Tell the person: "This instance can't give me a checked bus release, so I can't install the bus safely. Ask whoever runs the instance to deploy a release build." Then go on with the next step.`;
 
 /**
- * A bus release that has `oa-bus skill` (#2624). An older pin has no such
- * command, so the setup file gives only the save-by-hand text for it. Set a
- * few releases ahead on purpose: releases ship faster than the merge queue, and
- * until then the save-by-hand text works. test/node/skill-min-bus.test.ts fails
- * if a release at or past this version shipped before #2624 did. Once #2624 is
- * released, this can come down to that release.
+ * Does the pinned bus have `oa-bus skill` (#2624)? `min` is the first release
+ * that has it, read from the CHANGELOG at build time (null: not released yet,
+ * so no pin has it). Plain x.y.z compare; anything else says no.
  */
-export const SKILL_COMMAND_MIN_BUS = "0.210.0";
-
-/** Does the pinned bus have `oa-bus skill`? Plain x.y.z compare; anything else says no. */
-export const pinHasSkillCommand = (version: string): boolean => {
+export const pinHasSkillCommand = (
+  version: string,
+  min: string | null = SKILL_COMMAND_MIN_BUS,
+): boolean => {
+  if (min === null) return false;
   const a = version.split(".").map(Number);
-  const b = SKILL_COMMAND_MIN_BUS.split(".").map(Number);
+  const b = min.split(".").map(Number);
   if (a.length !== 3 || a.some((n) => !Number.isInteger(n))) return false;
   for (let i = 0; i < 3; i++) {
     if ((a[i] as number) !== (b[i] as number))

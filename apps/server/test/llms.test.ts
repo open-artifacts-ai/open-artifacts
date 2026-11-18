@@ -3,7 +3,6 @@ import { agentClients, hostSlug, newId, secretFile } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { CONTENT_POLICY, ROUTE_POLICY } from "../src/auth/route-policy.js";
 import { signContentPrefix } from "../src/content/signing.js";
-import { SKILL_COMMAND_MIN_BUS } from "../src/mcp/bus-install.js";
 import {
   CLAUDE_PLUGIN,
   CLAUDE_PLUGIN_ENABLED,
@@ -595,7 +594,11 @@ describe("the skill step (#2624)", () => {
   };
 
   it("pinned: its own step right after the bus step, run from the checked copy", () => {
-    const txt = renderLlms(HOST, { bus: true, pin: PIN });
+    const txt = renderLlms(HOST, {
+      bus: true,
+      pin: PIN,
+      skillMin: PIN.version,
+    });
     expect(txt.indexOf("2. **Install the bus.**")).toBeLessThan(
       txt.indexOf("3. **Install the skill.**"),
     );
@@ -622,6 +625,7 @@ describe("the skill step (#2624)", () => {
     const old = renderLlms(HOST, {
       bus: true,
       pin: { ...PIN, version: "0.199.7" },
+      skillMin: "0.203.0",
     });
     const step = stepOf(old);
     expect(step).toContain("has no `skill` command");
@@ -629,9 +633,17 @@ describe("the skill step (#2624)", () => {
     expect(step).toContain(`Save ${origin}/skill.md the way your harness`);
     const at = renderLlms(HOST, {
       bus: true,
-      pin: { ...PIN, version: SKILL_COMMAND_MIN_BUS },
+      pin: { ...PIN, version: "0.203.0" },
+      skillMin: "0.203.0",
     });
     expect(stepOf(at)).toContain("skill --check --instance");
+    // Not released yet (no CHANGELOG release cites #2624): no pin has it.
+    const none = renderLlms(HOST, {
+      bus: true,
+      pin: { ...PIN, version: "9.9.9" },
+      skillMin: null,
+    });
+    expect(stepOf(none)).not.toContain("skill --check");
   });
 
   it("no pin: no checked command, an oa-bus already here, or save it by hand", () => {

@@ -19,7 +19,12 @@ import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
 import { busOn } from "../services/bus.js";
-import { BUS_PKG, BUS_PKG_WHY, VERSION } from "../version.gen.js";
+import {
+  BUS_PKG,
+  BUS_PKG_WHY,
+  SKILL_COMMAND_MIN_BUS,
+  VERSION,
+} from "../version.gen.js";
 import {
   BUS_CHECK_STOP,
   type BusPin,
@@ -127,7 +132,12 @@ const NAMING_HARNESS =
  * The skill is a step of its own (#2624), so a session started after setup has
  * it even when the bus install was refused or failed. OA Product edits this; no em dashes.
  */
-const skillStep = (origin: string, pin: BusPin | null, plugin: boolean) => {
+const skillStep = (
+  origin: string,
+  pin: BusPin | null,
+  plugin: boolean,
+  skillMin: string | null,
+) => {
   const report =
     'When the check passes, or you have saved the file yourself, tell the person: "The Open Artifacts skill is installed for {harness}." ({harness} is the name of your agent tool.)';
   const follow = `Then read ${origin}${SKILL_PATH} now and follow it from now on.`;
@@ -136,7 +146,7 @@ const skillStep = (origin: string, pin: BusPin | null, plugin: boolean) => {
   const checkCmd = `skill --check --instance ${origin}`;
   const installCmd = `skill --instance ${origin}`;
   const bySkill =
-    pin && pinHasSkillCommand(pin.version)
+    pin && pinHasSkillCommand(pin.version, skillMin)
       ? `Run this. Like the bus step, it downloads a checked copy of the bus and runs from that. It prints one line per harness with where the skill is saved, and exits 0 only if it is saved for all of them:\n\n${busInstallBlock(origin, pin, checkCmd)}\n\nIf it exits non-zero, save the skill with this, which changes nothing about the bus, then run the check again:\n\n${busInstallBlock(origin, pin, installCmd)}\n\nIf a command fails or prints MISMATCH, don't try another way to run the bus: ${manual}`
       : pin
         ? `This instance's pinned bus (version ${pin.version}) has no \`skill\` command, so there is no command to run for this. ${saveByHand}`
@@ -156,6 +166,7 @@ const setupSteps = (
   pin: BusPin | null,
   pinWhy: string,
   plugin: boolean,
+  skillMin: string | null,
 ): string[] => [
   `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
   `**Install the bus.** ${
@@ -163,7 +174,7 @@ const setupSteps = (
       ? `Run these in a shell, in order. They download one copy of the bus (version ${pin.version}), check it against this instance's pin, and run the installer from that checked copy. Never run \`npx @open-artifacts/bus\` instead: it would download a second copy that nobody checked.\n\n${busInstallBlock(origin, pin)}\n\n${BUS_CHECK_STOP}`
       : busNoPin(pinWhy)
   } The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
-  ...(skill ? [skillStep(origin, pin, plugin)] : []),
+  ...(skill ? [skillStep(origin, pin, plugin, skillMin)] : []),
   "**Habit lines.** If the installer prints QUESTION FOR YOUR USER, show it to them and run the command for their answer. Never answer it yourself.",
   "**Check.** The bus tools load when your session restarts or reloads. If the installer says to restart, tell the person the next session finishes setup by itself, then restart. Check after the restart: the bus `self` tool answers with your name and the server's tool list shows `publish_artifact`. If it still doesn't, setup is not done: tell the person what failed and the exact fix.",
   `**Ask what to call you.** Ask your person what to call you. Suggest a short name from the project, such as "Acme Web". Tell them it's the name they'll type after @ in comments. Set it, then check that the bus \`self\` tool shows it. ${NAMING_HARNESS}`,
@@ -178,6 +189,7 @@ const setupBlock = (
   pin: BusPin | null,
   pinWhy: string,
   plugin: boolean,
+  skillMin: string | null,
 ) =>
   `${SETUP_STEPS_TITLE}\n\n${SETUP_STEPS_INTRO}\n\n${setupSteps(
     origin,
@@ -186,6 +198,7 @@ const setupBlock = (
     pin,
     pinWhy,
     plugin,
+    skillMin,
   )
     .map((t, i) => `${i + 1}. ${t}`)
     .join("\n")}\n\n${SETUP_FAILURE}\n\n`;
@@ -201,6 +214,8 @@ export function renderLlms(
     pin?: BusPin | null;
     /** Tests: why there is no pin; default this build's. */
     pinWhy?: string;
+    /** Tests: the first bus with `oa-bus skill`; default this build's. */
+    skillMin?: string | null;
   } = {},
 ): string {
   const plugin = opts.plugin ?? CLAUDE_PLUGIN_ENABLED;
@@ -208,6 +223,8 @@ export function renderLlms(
   const bus = opts.bus ?? false;
   const pin = opts.pin === undefined ? BUS_PKG : opts.pin;
   const pinWhy = opts.pinWhy ?? BUS_PKG_WHY;
+  const skillMin =
+    opts.skillMin === undefined ? SKILL_COMMAND_MIN_BUS : opts.skillMin;
   const { origin, mcpUrl, tokenFile, clients, tokens } = llmsInputs(host);
   const verifySteps = [
     "List the server's tools. You should see tools such as `publish_artifact` and `list_artifacts`. If the list is empty or you get 401, see Troubleshoot.",
@@ -224,7 +241,7 @@ You are setting up ${PRODUCT_NAME} for the person you're working with. Do every 
 
 Server address (MCP, streamable HTTP): ${mcpUrl}
 
-${bus ? setupBlock(origin, mcpUrl, skill, pin, pinWhy, plugin) : ""}## Connect
+${bus ? setupBlock(origin, mcpUrl, skill, pin, pinWhy, plugin, skillMin) : ""}## Connect
 
 Use the section for the client you are running in: you know which one that is. Only if the person asks you to set up a different client, find it with \`which claude codex cursor opencode\`; if none fits, use Generic.
 
