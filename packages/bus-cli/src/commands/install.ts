@@ -28,6 +28,7 @@ import {
   readAssets,
   unshownNotes,
 } from "../steps/adapters.ts";
+import { installClaudeHook } from "../steps/claude-hook.ts";
 import { installClaudePlugins } from "../steps/claude-plugins.ts";
 import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
@@ -261,6 +262,23 @@ async function harnessesStep(
       say(ctx, c.outputStyleKept(plugins.keptStyle));
   } catch (e) {
     say(ctx, c.pluginsSetupFailed(e instanceof Error ? e.message : String(e)));
+  }
+  // The hook that keeps an agent from running oa-bus add and oa-bus use (#2793).
+  // Only where Claude Code is: nothing is written for a machine without it.
+  try {
+    if (out.installed.includes("claude") || ctx.which("claude")) {
+      const hook = installClaudeHook({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        execPath: process.execPath,
+      });
+      for (const n of hook.notes) say(ctx, [n]);
+    }
+  } catch (e) {
+    say(ctx, [
+      `Could not add the oa-bus add/use hook: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
   }
   // Written quietly: the harnesses line above is the user-visible outcome, and
   // a run that writes nothing has nothing to say.

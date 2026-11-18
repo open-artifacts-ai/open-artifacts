@@ -15,6 +15,7 @@ import {
   uninstallAdapters,
   unshownNotes,
 } from "../steps/adapters.ts";
+import { uninstallClaudeHook } from "../steps/claude-hook.ts";
 import { uninstallClaudePlugins } from "../steps/claude-plugins.ts";
 import { removeHabits } from "../steps/habits.ts";
 import { hermesHome } from "../steps/hermes.ts";
@@ -83,6 +84,19 @@ async function unwire(ctx: Ctx): Promise<void> {
   } catch (e) {
     say(ctx, [
       `Could not remove the output style: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+  // The oa-bus add/use hook: only our entry and our script.
+  try {
+    const hook = uninstallClaudeHook({
+      home: ctx.userHome,
+      busHome: ctx.home,
+      env: ctx.env,
+    });
+    for (const n of hook.notes) say(ctx, [n]);
+  } catch (e) {
+    say(ctx, [
+      `Could not remove the oa-bus add/use hook: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
   // The always-on habits block goes too: only our marked block, nothing else.

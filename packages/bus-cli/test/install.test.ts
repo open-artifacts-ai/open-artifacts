@@ -1037,9 +1037,10 @@ describe("install: the Claude Code output style (#1970, #2095)", () => {
       "Turned on the Artifacts Teammate output style\n   Restart your Claude Code sessions to use it.",
     );
     const settings = join(ctx.userHome, ".claude/settings.json");
-    expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({
-      outputStyle: "open-artifacts:Artifacts Teammate",
-    });
+    const doc = JSON.parse(readFileSync(settings, "utf8"));
+    expect(doc.outputStyle).toBe("open-artifacts:Artifacts Teammate");
+    // The oa-bus add/use hook (#2793) rides in the same file.
+    expect(doc.hooks.PreToolUse).toHaveLength(1);
     expect(await uninstall({ purge: false }, ctx)).toBe(0);
     expect(existsSync(settings)).toBe(false);
   });
@@ -1056,6 +1057,10 @@ describe("install: the Claude Code output style (#1970, #2095)", () => {
     expect(ctx.out()).toContain(
       "[[success]]✓[[/success]]  Added the Artifacts Teammate output style. You're on Explanatory; switch with /output-style.",
     );
+    const doc = JSON.parse(readFileSync(settings, "utf8"));
+    expect(doc.outputStyle).toBe("Explanatory");
+    expect(doc.hooks.PreToolUse).toHaveLength(1);
+    expect(await uninstall({ purge: false }, ctx)).toBe(0);
     expect(readFileSync(settings, "utf8")).toBe(
       '{"outputStyle":"Explanatory"}\n',
     );
