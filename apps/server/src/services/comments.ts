@@ -1968,7 +1968,7 @@ async function addThreadInner(
  * cache). Anything less than that answer gives null. Never a follower or the
  * member's other agents.
  */
-async function askingAddress(
+export async function askingAddress(
   env: Env,
   artifactId: string,
   threadId: string,

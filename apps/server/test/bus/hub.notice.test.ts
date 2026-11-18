@@ -197,6 +197,36 @@ describe("hub notice delivery (#1317)", () => {
     expect(s.d.raw.join("\n")).not.toContain("IGNORE ALL");
   });
 
+  it("an ask_later notice goes through the hub: delivered with its text; its structured fields are not strict failures and are not on the wire (#2762)", async () => {
+    const s = await setup();
+    const stub = await hubOf(s.userId);
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    const n = note(
+      { namespace: s.namespace, name: s.name },
+      {
+        kind: "ask_later",
+        text: `Open Artifacts: this ask was put off. It will be looked at at 15:00 (${until}).`,
+        coalesceKey: "art:cm:later",
+        userId: "user-who-put-it-off",
+        until,
+        threadId: "th1",
+        commentId: "cm1",
+      },
+    );
+    // The extra keys never drop the notice.
+    expect(await stub.deliverNotice(n)).toBe("delivered");
+    const f = await waitFor(s.d, "deliver");
+    expect(f.from_name).toBe(NOTICE_SENDER);
+    expect(f.body).toBe(n.text);
+    // The frame carries the fixed text only: no field of the notice reaches the daemon.
+    expect(f.notice).toBeUndefined();
+    expect(s.d.raw.join("\n")).not.toContain("user-who-put-it-off");
+    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
+    await settled(s.d, s.ref);
+    expect(framesSeen(s.d).filter((x) => x.type === "error")).toEqual([]);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
   it("refuses a notice not from the reserved sender or with a bad shape", async () => {
     const s = await setup();
     const stub = await hubOf(s.userId);
