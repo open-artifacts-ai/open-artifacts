@@ -1706,8 +1706,8 @@ async function auditReachDecision(
 /**
  * #2552: the owner names the version the instance's machines run, or clears
  * it. Audited bus.run_version.set (the new value, or null). The owner's own
- * hub is told at once so its connected machines hear it; every other
- * member's hub learns it at its next hello or report.
+ * hub, and every other member's hub that has a machine, are told at once so
+ * connected machines hear it.
  */
 export async function setBusRunVersion(
   env: Env,
@@ -1745,13 +1745,29 @@ export async function setBusRunVersion(
       { detail: { version, stepBack: stepBack === true } },
     ),
   ]);
-  const hub = busHub(env, ownerId);
-  if (!hub) return;
+  // Every member's hub with a machine (the owner's first, even with none),
+  // so an idle connected machine hears a change or a clearing at once (#2719).
+  let users: string[] = [];
   try {
-    await within(hub.runVersionChanged(), BUS_HUB_TIMEOUT_MS);
+    const r = await stmt(
+      env.DB,
+      "select distinct user_id as id from bus_machines where revoked_at is null",
+    ).all<{ id: string }>();
+    users = r.results.map((x) => x.id);
   } catch (e) {
-    logError("bus_run_version_push_failed", e);
+    logError("bus_run_version_members_failed", e);
   }
+  await Promise.all(
+    [ownerId, ...users.filter((u) => u !== ownerId)].map(async (u) => {
+      const hub = busHub(env, u);
+      if (!hub) return;
+      try {
+        await within(hub.runVersionChanged(), BUS_HUB_TIMEOUT_MS);
+      } catch (e) {
+        logError("bus_run_version_push_failed", e);
+      }
+    }),
+  );
 }
 
 /**

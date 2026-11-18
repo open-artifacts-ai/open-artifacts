@@ -380,6 +380,7 @@ export const UPDATE_REASONS = [
   "needs_you",
   "staged_changed",
   "nothing_staged",
+  "requested",
   "other",
 ] as const;
 export type UpdateReason = (typeof UPDATE_REASONS)[number];
@@ -418,7 +419,8 @@ const UpdateReport = z.strictObject({
 const RunVersionPush = z.strictObject({
   ...base,
   type: z.literal("run_version"),
-  run_version: RunVersionSchema,
+  /** null: the owner cleared it, the instance names none (#2719). */
+  run_version: RunVersionSchema.nullable(),
 });
 
 /**
@@ -445,8 +447,11 @@ const HelloOk = z.strictObject({
    * listed caps, so a client that never sends caps never sees it.
    */
   caps: CapsSchema.optional(),
-  /** The version the instance names (BUS_CAPS.runVersion); absent: it names none. */
-  run_version: RunVersionSchema.optional(),
+  /**
+   * The version the instance names (BUS_CAPS.runVersion). `null`: it names
+   * none (cleared, #2719); absent: the hub does not know yet, a push follows.
+   */
+  run_version: RunVersionSchema.nullable().optional(),
 });
 
 const AgentOk = z.strictObject({

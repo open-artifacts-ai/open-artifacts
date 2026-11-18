@@ -34,6 +34,7 @@ import {
   type RefusalReason,
   type SendFrame,
   type ServerFrame,
+  semverGte,
   suffixName,
   utf8Bytes,
 } from "@oa/bus-protocol";
@@ -5498,10 +5499,9 @@ export class BusHub extends DurableObject<Env> {
             : {}),
           // #2552: only when the instance names one, and only to a socket
           // that listed the cap. Unknown yet (cold cache): the push below.
+          // null: it names none (cleared, #2719).
           ...(hasCap(f, BUS_CAPS.runVersion) && this.#runVersionFresh()
-            ? this.#runVersion === null
-              ? {}
-              : { run_version: this.#runVersion }
+            ? { run_version: this.#runVersion }
             : {}),
         });
         return hasCap(f, BUS_CAPS.runVersion)
@@ -5722,14 +5722,13 @@ export class BusHub extends DurableObject<Env> {
     this.indexInFlight++;
     try {
       const fresh = this.#runVersionFresh();
-      const sent = fresh ? this.#runVersion : null;
+      const sent = fresh ? this.#runVersion : undefined;
       await Promise.race([
         noteHello(this.env, machineId, this.#now()),
         new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
       ]).catch((e) => logError("bus_update_hello_failed", e));
       if (!fresh) await this.#refreshRunVersion();
-      if (this.#runVersion !== null && this.#runVersion !== sent)
-        this.#pushRunVersion(ws);
+      if (this.#runVersion !== sent) this.#pushRunVersion(ws);
     } finally {
       this.indexInFlight--;
     }
@@ -5746,7 +5745,7 @@ export class BusHub extends DurableObject<Env> {
   }
 
   #pushRunVersion(ws: WebSocket): void {
-    if (this.#runVersion === null || !runVersionGated(ws)) return;
+    if (!runVersionGated(ws)) return;
     sendFrame(ws, {
       v: 1,
       id: frameId(),
@@ -5765,6 +5764,29 @@ export class BusHub extends DurableObject<Env> {
     f: Extract<ClientFrame, { type: "update_report" }>,
     machineId: string,
   ): Promise<void> {
+    // #2719: a swap the instance does not name is vetoed before anything is
+    // stored (so no stop clock starts), whatever the daemon believes. Read
+    // fresh, not from the cache; a failed read is a no. A step back (`to`
+    // below `from`) and the person's own request pass.
+    if (f.event === "switching") {
+      let allowed =
+        f.reason === "requested" ||
+        (f.to !== "" &&
+          f.from !== "" &&
+          f.to !== f.from &&
+          semverGte(f.from, f.to));
+      if (!allowed) {
+        try {
+          allowed = (await readRunVersion(this.env)) === f.to;
+        } catch (e) {
+          logError("bus_run_version_read_failed", e);
+        }
+      }
+      if (!allowed) {
+        sendFrame(ws, { v: 1, id: f.id, type: "update_ack", ok: false });
+        return;
+      }
+    }
     const now = this.#now();
     let stored = false;
     this.indexInFlight++;
@@ -5815,8 +5837,8 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * The named version changed (the owner's route): forget the cache and tell
-   * this hub's connected sockets. Other members' hubs learn it at their next
-   * hello or report (RUN_VERSION_TTL_MS).
+   * this hub's connected sockets (null: none named now). The route calls this
+   * on every member's hub.
    */
   async runVersionChanged(): Promise<void> {
     this.#runVersionAt = -Infinity;

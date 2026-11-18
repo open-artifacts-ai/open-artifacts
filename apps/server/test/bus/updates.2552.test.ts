@@ -15,6 +15,7 @@ import {
   RUN_VERSION_KEY,
   STOPPED_AFTER_MS,
 } from "../../src/bus/updates.js";
+import { setBusRunVersion } from "../../src/services/bus.js";
 import { VERSION } from "../../src/version.gen.js";
 import { api } from "../helpers.js";
 import {
@@ -82,9 +83,9 @@ describe("run_version: the instance names it (#2552)", () => {
     await setNamed(null);
     const { d, ok } = await open();
     expect(ok.caps).toContain("run_version");
+    // Cold hub: unknown at hello_ok, then the push says none (#2719).
     expect(ok.run_version).toBeUndefined();
-    await barrier(d);
-    expect(seen(d, "run_version")).toHaveLength(0);
+    expect((await waitFor(d, "run_version")).run_version).toBeNull();
   });
 
   it("named and a cold hub: hello_ok first, then the push", async () => {
@@ -140,8 +141,7 @@ describe("run_version: the instance names it (#2552)", () => {
       try {
         const { d, ok } = await open();
         expect(ok.run_version, bad).toBeUndefined();
-        await barrier(d);
-        expect(seen(d, "run_version")).toHaveLength(0);
+        expect((await waitFor(d, "run_version")).run_version, bad).toBeNull();
       } finally {
         await setNamed(null);
       }
@@ -218,7 +218,7 @@ describe("update_report (#2552)", () => {
 
   it("a switching report is answered yes, once stored; others get no answer", async () => {
     const { m, d } = await open();
-    const sw = report({ event: "switching", reason: "ok" });
+    const sw = report({ event: "switching", reason: "requested" });
     d.send(sw);
     const ack = await waitFor(d, "update_ack");
     expect(ack).toMatchObject({ id: (sw as { id: string }).id, ok: true });
@@ -230,9 +230,73 @@ describe("update_report (#2552)", () => {
 
   it("an ack says yes or no and nothing else", async () => {
     const { d } = await open();
-    d.send(report({ event: "switching" }));
+    d.send(report({ event: "switching", reason: "requested" }));
     const ack = await waitFor(d, "update_ack");
     expect(Object.keys(ack).sort()).toEqual(["id", "ok", "type", "v"]);
+  });
+});
+
+const CORE = "0.1.0";
+describe("stopping a rollout (#2719)", () => {
+  it("a warm hub says none in hello_ok; clearing pushes null to capped sockets", async () => {
+    await setNamed("1.7.0");
+    const { who, d } = await open();
+    await waitFor(d, "run_version");
+    await setNamed(null);
+    await (await hubOf(who.userId)).runVersionChanged();
+    const cleared = await waitFor(d, "run_version");
+    expect(cleared.run_version).toBeNull();
+    d.send({ ...hello("h9"), caps: CAP } as ClientFrame);
+    const again = await waitFor(d, "hello_ok");
+    expect(again.run_version).toBeNull();
+  });
+
+  it("another member's connected machine hears the change through setBusRunVersion", async () => {
+    await setNamed(null);
+    const owner = await member();
+    const other = await open();
+    await waitFor(other.d, "run_version");
+    await setBusRunVersion(e, owner.userId, CORE);
+    try {
+      expect((await waitFor(other.d, "run_version")).run_version).toBe(CORE);
+    } finally {
+      await setNamed(null);
+    }
+  });
+
+  it("update_ack is no for a switch to a version that is not named, read fresh", async () => {
+    await setNamed("1.1.0");
+    const { m, d } = await open();
+    await waitFor(d, "run_version");
+    // Warm cache says 1.1.0; the setting is cleared behind its back.
+    await setNamed(null);
+    const sw = report({ event: "switching", reason: "ok" });
+    d.send(sw);
+    const ack = await waitFor(d, "update_ack");
+    expect(ack).toMatchObject({ id: (sw as { id: string }).id, ok: false });
+    // Nothing stored: no stop clock for a swap that never happens.
+    expect(await latestReport(e, m.id)).toBeNull();
+  });
+
+  it("yes when it names that version, for a step back, and for the person's request", async () => {
+    await setNamed("1.1.0");
+    try {
+      const { d } = await open();
+      for (const over of [
+        { to: "1.1.0" },
+        { from: "1.1.0", to: "1.0.0", reason: "ok" },
+        { to: "1.9.0", reason: "requested" },
+      ]) {
+        const sw = report({ event: "switching", reason: "ok", ...over });
+        d.send(sw);
+        let ack = await waitFor(d, "update_ack");
+        while (ack.id !== (sw as { id: string }).id)
+          ack = await waitFor(d, "update_ack");
+        expect(ack.ok, JSON.stringify(over)).toBe(true);
+      }
+    } finally {
+      await setNamed(null);
+    }
   });
 });
 
@@ -253,7 +317,7 @@ describe("the bus stopped (#2552)", () => {
 
   it("switching and no hello for 5 minutes: marked stopped", async () => {
     const { who, m, d } = await open();
-    d.send(report({ event: "switching" }));
+    d.send(report({ event: "switching", reason: "requested" }));
     await waitFor(d, "update_ack");
     await aged(m.id, STOPPED_AFTER_MS + 1000);
     await dueNow(who.userId);
@@ -264,7 +328,7 @@ describe("the bus stopped (#2552)", () => {
 
   it("not before the 5 minutes are up", async () => {
     const { who, m, d } = await open();
-    d.send(report({ event: "switching" }));
+    d.send(report({ event: "switching", reason: "requested" }));
     await waitFor(d, "update_ack");
     await aged(m.id, 60_000);
     await dueNow(who.userId);
@@ -274,7 +338,7 @@ describe("the bus stopped (#2552)", () => {
 
   it("a hello after the switching report clears the clock", async () => {
     const { who, m, d } = await open();
-    d.send(report({ event: "switching" }));
+    d.send(report({ event: "switching", reason: "requested" }));
     await waitFor(d, "update_ack");
     await aged(m.id, STOPPED_AFTER_MS + 1000);
     // The new daemon connects and says hello.
@@ -298,7 +362,7 @@ describe("the bus stopped (#2552)", () => {
 
   it("markStopped returns null for a hello-after-switching machine", async () => {
     const { who, m, d } = await open();
-    d.send(report({ event: "switching" }));
+    d.send(report({ event: "switching", reason: "requested" }));
     await waitFor(d, "update_ack");
     await aged(m.id, STOPPED_AFTER_MS + 1000);
     await e.DB.prepare(
@@ -311,7 +375,7 @@ describe("the bus stopped (#2552)", () => {
 
   it("a later non-switching report is not a stop either", async () => {
     const { who, m, d } = await open();
-    d.send(report({ event: "switching" }));
+    d.send(report({ event: "switching", reason: "requested" }));
     await waitFor(d, "update_ack");
     d.send(report({ event: "updated" }));
     await barrier(d);

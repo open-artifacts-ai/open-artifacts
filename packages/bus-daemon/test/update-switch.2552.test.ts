@@ -400,6 +400,11 @@ describe("the updater loop (enabled by a test only)", () => {
       login?: () => boolean;
       verify?: () => VerifiedRelease;
       fetchFails?: boolean;
+      announce?: (
+        from: string,
+        to: string,
+        reason?: string,
+      ) => Promise<boolean>;
     } = {},
   ) => {
     const w = world();
@@ -419,7 +424,7 @@ describe("the updater loop (enabled by a test only)", () => {
       }),
       loginActive: over.login ?? (() => false),
       hubReady: () => hubUp.v,
-      announceSwitch: async () => true,
+      announceSwitch: over.announce ?? (async () => true),
       serverVersion: () => "1.2.0",
       exit,
       log: () => {},
@@ -438,7 +443,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("stages at once, swaps only after 30 s of quiet, then exits non-zero", async () => {
     const w = make();
-    expect(await w.u.instruct({ version: "1.1.0" })).toEqual({
+    expect(await w.u.instructFromInstance("1.1.0")).toEqual({
       kind: "staged",
       version: "1.1.0",
     });
@@ -471,7 +476,7 @@ describe("the updater loop (enabled by a test only)", () => {
     let busy = false;
     let login = false;
     const w = make({ busy: () => busy, login: () => login });
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     await w.u.tick();
     w.advance(QUIET_MS - 1);
     busy = true;
@@ -492,7 +497,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("off stops everything, and an instruction cannot turn it on", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     const j = JSON.parse(readFileSync(join(w.home, "update.json"), "utf8"));
     writeFileSync(
       join(w.home, "update.json"),
@@ -511,7 +516,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("a staged file changed since the proof is refused, dropped and reported", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     writeFileSync(join(versionDir(w.home, "1.1.0"), "dist/index.js"), "evil");
     await w.u.tick();
     w.advance(QUIET_MS);
@@ -527,7 +532,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it(".live markers do not count as a change", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     mkdirSync(join(versionDir(w.home, "1.1.0"), ".live"));
     writeFileSync(join(versionDir(w.home, "1.1.0"), ".live/4242"), "");
     await w.u.tick();
@@ -609,7 +614,7 @@ describe("the updater loop (enabled by a test only)", () => {
 
   it("one attempt per 6 h: the swap counts, the next instruction waits", async () => {
     const w = make();
-    await w.u.instruct({ version: "1.1.0" });
+    await w.u.instructFromInstance("1.1.0");
     await w.u.tick();
     w.advance(QUIET_MS);
     await w.u.tick();
@@ -662,6 +667,79 @@ describe("the updater loop (enabled by a test only)", () => {
       expect(w.exit).not.toHaveBeenCalled();
       expect(readInstallRequest(w.home)).toBeUndefined();
     }
+  });
+
+  // #2719: stopping a rollout.
+  it("a staged version swaps only while the instance still names it", async () => {
+    const w = make();
+    await w.u.instructFromInstance("1.1.0");
+    w.u.clearNamed();
+    await w.u.tick();
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+    expect(currentVersion(w.home)).toBe("1.0.0");
+  });
+
+  it("naming the running version drops a newer staged one", async () => {
+    const w = make();
+    await w.u.instructFromInstance("1.1.0");
+    expect(readPolicy(w.home).staged?.version).toBe("1.1.0");
+    await w.u.instructFromInstance("1.0.0");
+    expect(readPolicy(w.home).staged).toBeUndefined();
+    expect(existsSync(versionDir(w.home, "1.1.0"))).toBe(false);
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("the person's own request still installs when nothing is named, and says so", async () => {
+    const reasons: (string | undefined)[] = [];
+    const w = make({
+      busy: () => true,
+      announce: async (_f, _t, r) => {
+        reasons.push(r);
+        return true;
+      },
+    });
+    await w.u.instruct({ version: "1.1.0" });
+    requestInstall(w.home, "1.1.0", w.clock());
+    await w.u.tick();
+    expect(w.exit).toHaveBeenCalledWith(1);
+    expect(reasons).toEqual(["requested"]);
+  });
+
+  it("a clearing during the ack wait stops the swap", async () => {
+    let w!: ReturnType<typeof make>;
+    w = make({
+      announce: async () => {
+        w.u.clearNamed();
+        return true;
+      },
+    });
+    await w.u.instructFromInstance("1.1.0");
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+    expect(currentVersion(w.home)).toBe("1.0.0");
+  });
+
+  it("a staged tree changed during the ack wait stops the swap", async () => {
+    let w!: ReturnType<typeof make>;
+    w = make({
+      announce: async () => {
+        writeFileSync(
+          join(versionDir(w.home, "1.1.0"), "dist/index.js"),
+          "evil",
+        );
+        return true;
+      },
+    });
+    await w.u.instructFromInstance("1.1.0");
+    w.advance(QUIET_MS);
+    await w.u.tick();
+    expect(w.exit).not.toHaveBeenCalled();
+    expect(currentVersion(w.home)).toBe("1.0.0");
   });
 
   it("a newer staged version replaces the older and removes its folder", async () => {

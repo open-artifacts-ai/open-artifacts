@@ -125,9 +125,11 @@ in one object.
 ## Updates (`BUS_CAPS.runVersion`, #2552)
 
 The instance names a version and nothing else. `hello_ok.run_version` (and
-the `run_version` push while connected) is strict `x.y.z`, at most 32 chars; a
-hub sends it only when the instance names one, and only to a socket whose
-hello listed `run_version`. The daemon never reads a URL, hash or flag from
+the `run_version` push while connected) is strict `x.y.z`, at most 32 chars,
+or `null` when the instance names none (the owner cleared it: the daemon then
+stops any rollout it has staged). A hub sends it only to a socket whose hello
+listed `run_version`; a `hello_ok` without the field means the hub does not
+know yet and a push follows. The daemon never reads a URL, hash or flag from
 the instance; it verifies the release itself. `install_now {}` has no field:
 the daemon installs only the version it already staged and the instance named.
 
@@ -136,7 +138,12 @@ A `switching` report is answered by `update_ack {ok}` (yes or no, nothing
 else) and the machine swaps only after `ok: true`; with no answer it holds and
 tries later. The hub lists `run_version` in `hello_ok.caps` only to a hello
 that listed it, and a daemon sends `update_report` only to a hub that listed
-it. A machine with `switching` as its latest report and no `hello` for 5
+it. The hub answers `ok: false` to a `switching` report whose `to` is not the
+version the instance names, read fresh from the setting (not the 30 s cache),
+unless the move is a step back (`to` lower than `from`) or the person asked for
+it on the machine (`reason: "requested"`, `oa-bus update`). A read that fails
+is a no. The daemon, for its part, swaps to a version it staged from the
+instance only while that version is the one last named. A machine with `switching` as its latest report and no `hello` for 5
 minutes is marked stopped.
 
 ## Follows (`BUS_CAPS.follow`, #1317)

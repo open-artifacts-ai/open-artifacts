@@ -76,7 +76,12 @@ export type UpdaterDeps = {
    * False (no, no answer, no cap, link down): the switch is held and tried
    * again later (#2552).
    */
-  announceSwitch: (from: string, to: string) => Promise<boolean>;
+  announceSwitch: (
+    from: string,
+    to: string,
+    /** "requested": the person asked on this machine; else "ok". */
+    reason?: "ok" | "requested",
+  ) => Promise<boolean>;
   /** The hub's version from its last hello_ok, when known. */
   serverVersion: () => string | undefined;
   /** Ends the daemon non-zero so the service starts the new version. */
@@ -169,12 +174,29 @@ export class Updater {
     if (parseVersion(version) === undefined) return this.instruct({ version });
     this.named = version;
     const { running } = this.d;
-    if (running === undefined || version === running)
-      return { kind: "disabled" };
+    if (running === undefined) return { kind: "disabled" };
     const s = readPolicy(this.d.home);
+    if (version === running) {
+      // Named is what runs: a newer staged version is a rollout to stop (#2719).
+      const old = s.staged?.version;
+      if (old !== undefined && old !== version) {
+        clearStaged(this.d.home);
+        this.dropStaged(old);
+      }
+      return { kind: "disabled" };
+    }
     const stepBack =
       s.previous === version && compareVersions(version, running) === -1;
     return this.instruct({ version, ...(stepBack ? { stepBack: true } : {}) });
+  }
+
+  /**
+   * The instance names no version (cleared, #2719): nothing it staged may be
+   * swapped in, whatever was named before. The person's own install request
+   * still works.
+   */
+  clearNamed(): void {
+    this.named = undefined;
   }
 
   /**
@@ -428,10 +450,15 @@ export class Updater {
           !login &&
           now - req.at < REQUEST_MAX_MS
         )
-          await this.switchTo(st.version, true);
+          await this.switchTo(st.version, true, true);
         return;
       }
-      if (this.quiet.quiet(now) && installNow(s, now, login).ok)
+      // #2719: only the version the instance names now (cleared: none).
+      if (
+        this.named === st.version &&
+        this.quiet.quiet(now) &&
+        installNow(s, now, login).ok
+      )
         await this.switchTo(st.version, true);
     } catch (e) {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
@@ -447,11 +474,12 @@ export class Updater {
   private async switchTo(
     version: string,
     staged: boolean,
+    person = false,
   ): Promise<UpdateOutcome> {
     if (this.switching) return { kind: "retry_later" };
     this.switching = true;
     try {
-      return await this.doSwitch(version, staged);
+      return await this.doSwitch(version, staged, person);
     } finally {
       this.switching = false;
     }
@@ -460,11 +488,16 @@ export class Updater {
   private async doSwitch(
     version: string,
     staged: boolean,
+    person: boolean,
   ): Promise<UpdateOutcome> {
     const { home, running } = this.d;
     const now = this.now();
     if (running === undefined || !isSafeVersion(version) || version === running)
       return { kind: "disabled" };
+    // #2719: a version the instance staged swaps in only while it is the one
+    // named now; the person's own request and a step back are not that.
+    if (staged && !person && this.named !== version)
+      return { kind: "refused", reason: "nothing_staged" };
     // A switch happens only while the hub answers: the new daemon's check
     // needs it, and an update must not start into an outage.
     if (!this.d.hubReady()) return { kind: "retry_later" };
@@ -502,11 +535,29 @@ export class Updater {
     }
     // The hub says yes before the swap (the instance times "the bus
     // stopped" from it). No answer holds the switch for a later try.
-    if (!(await this.d.announceSwitch(running, version)))
+    const proven = s.staged?.manifest;
+    if (
+      !(await this.d.announceSwitch(
+        running,
+        version,
+        person ? "requested" : "ok",
+      ))
+    )
       return { kind: "retry_later" };
-    // The wait above can be long: `off` or a newer run may have landed in it.
+    // The wait above can be long: `off`, a newer run, a cleared name or a
+    // different staged tree may have landed in it.
     const after = readPolicy(home);
     if (after.unreadable || after.off) return { kind: "retry_later" };
+    if (staged && !person && this.named !== version)
+      return { kind: "retry_later" };
+    if (
+      staged &&
+      (after.staged?.version !== version ||
+        JSON.stringify(after.staged.manifest) !== JSON.stringify(proven) ||
+        !after.staged.manifest ||
+        !treeMatches(versionDir(home, version), after.staged.manifest))
+    )
+      return { kind: "proof_refused", code: "staged_changed" };
     if (
       staged &&
       [after.newestRun, after.current, running].some(

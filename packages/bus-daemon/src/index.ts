@@ -1532,10 +1532,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         // #2552: only from a hub that listed the cap; anything else is ignored.
         case "run_version":
-          if (hubRunCap)
-            void updaterRef
-              ?.instructFromInstance(frame.run_version)
-              .catch((e) => log(`update: ${errText(e)}`));
+          if (hubRunCap) {
+            if (frame.run_version === null) updaterRef?.clearNamed();
+            else
+              void updaterRef
+                ?.instructFromInstance(frame.run_version)
+                .catch((e) => log(`update: ${errText(e)}`));
+          }
           return;
         case "install_now":
           if (hubRunCap)
@@ -1579,7 +1582,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubRunCap = frame.caps?.includes(BUS_CAPS.runVersion) ?? false;
           hubHelloed = true;
           if (hubRunCap) {
-            if (frame.run_version !== undefined)
+            if (frame.run_version === null) updaterRef?.clearNamed();
+            else if (frame.run_version !== undefined)
               void updaterRef
                 ?.instructFromInstance(frame.run_version)
                 .catch((e) => log(`update: ${errText(e)}`));
@@ -2804,7 +2808,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }),
         loginActive: () => loginActive(home()),
         hubReady: () => hub.open && hubHelloed,
-        announceSwitch: async (from, to) => {
+        announceSwitch: async (from, to, reason = "ok") => {
           if (!hubRunCap || !hub.open) return false;
           const id = frameId();
           const answer = new Promise<boolean>((res) => {
@@ -2826,7 +2830,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             event: "switching",
             from,
             to,
-            reason: "ok",
+            reason,
             rescue_version: readRescueVersion(home()),
             at: new Date().toISOString(),
           });
