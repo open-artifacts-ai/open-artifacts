@@ -2316,6 +2316,11 @@ async function purgeOne(
   await env.DB.batch([
     env.DB.prepare("delete from artifact_search where rowid = ?").bind(rid),
     env.DB.prepare("delete from uploads where artifact_id = ?").bind(id),
+    // #2508: the comment pictures' rows; their bytes sit under files/<id>/ and
+    // went with the listing above, so the purge costs no extra call per artifact.
+    env.DB.prepare("delete from comment_pictures where artifact_id = ?").bind(
+      id,
+    ),
     env.DB.prepare(
       "delete from artifacts where id = ? and deleted_at is not null and deleted_at < ?",
     ).bind(id, cutoff),

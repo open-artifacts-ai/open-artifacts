@@ -1000,6 +1000,7 @@ const ERASE_WIPES = [
   `delete from pick_assertions where user_id = ?1 and ${ERASABLE}`,
   `delete from passkey_settings where user_id = ?1 and ${ERASABLE}`,
   `delete from notification_prefs where user_id = ?1 and ${ERASABLE}`,
+  `delete from inbox_mutes where user_id = ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
   // #1291: their bus machines are revoked and emptied (labels are
   // client-chosen hostnames; the token hash goes too), not deleted: the row

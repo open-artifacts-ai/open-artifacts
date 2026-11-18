@@ -28,6 +28,7 @@ import {
   installDelivery,
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
+import { reservePicture } from "../src/services/comment-pictures.js";
 import {
   addReply,
   addThread,
@@ -50,7 +51,8 @@ import {
 } from "../src/services/mention-guards.js";
 import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
-import { api, login } from "./helpers.js";
+import { api, fetchAndWait, login } from "./helpers.js";
+import { png } from "./picture-fixtures.js";
 
 // #2577: asking someone else's agent. The comment posts; its delivery to the
 // receiver's agents is held until the receiver allows it or the sender is on
@@ -1306,5 +1308,98 @@ describe("the receiver's routes", () => {
     expect(
       (await api(app, R.agentAskHeld, null)).status,
     ).toBeGreaterThanOrEqual(401);
+  });
+});
+
+describe("pictures of a held request (#2508, #2577)", () => {
+  /** A picture the editor reserved and uploaded, ready to attach. */
+  async function picture(id: string) {
+    const bytes = png(6, 4, false);
+    const r = await reservePicture(E, editor.member, id, {
+      type: "image/png",
+      bytes: bytes.length,
+    });
+    const u = new URL(r.url);
+    const put = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${u.pathname}${u.search}`, {
+        method: "PUT",
+        headers: { "content-length": String(bytes.length) },
+        body: bytes as BodyInit,
+      }),
+    );
+    expect(put.status).toBe(200);
+    return r.pictureId;
+  }
+  const picsOf = async (id: string, v: CommentViewer, commentId: string) =>
+    (await listAs(id, v))
+      .flatMap((t) => t.comments)
+      .find((c) => c.id === commentId)?.pictures;
+  const get = (id: string, pic: string, bearer: string) =>
+    api(app, R.commentPicture(id, pic), bearer);
+
+  async function check(
+    s: { id: string },
+    commentId: string,
+    pic: string,
+    release: () => Promise<void>,
+  ) {
+    const ownerToken = (await createPat(E, owner.userId, "pic token")).token;
+    // Held: the receiver's agent reads neither the words nor the picture.
+    expect(await picsOf(s.id, asAgent(owner), commentId)).toBeUndefined();
+    expect((await get(s.id, pic, ownerToken)).status).toBe(404);
+    // The person (their session), and the sender, read it.
+    expect(await picsOf(s.id, view(owner), commentId)).toHaveLength(1);
+    expect((await get(s.id, pic, owner.cookie)).status).toBe(200);
+    expect((await get(s.id, pic, editor.cookie)).status).toBe(200);
+    await release();
+    // After Allow, the agent reads the picture again.
+    expect(await picsOf(s.id, asAgent(owner), commentId)).toHaveLength(1);
+    expect((await get(s.id, pic, ownerToken)).status).toBe(200);
+  }
+
+  const allowOnce = async (id: string) => {
+    const [r] = await held(id);
+    await allow(E, owner.userId, r?.id as string, {
+      level: "once",
+      items: (r?.items ?? []).map((i) => ({
+        commentId: i.commentId,
+        wordsHash: i.wordsHash,
+      })),
+    });
+  };
+
+  it("a held mention: hidden from the receiver's agent (list and GET), readable after Allow", async () => {
+    const s = await setup();
+    const pic = await picture(s.id);
+    const t = await post(s.id, typed(editor), editor, "see this", {
+      ...mention(s.claude),
+      pictures: [{ pictureId: pic }],
+    });
+    await check(s, t.comments[0]?.id as string, pic, () => allowOnce(s.id));
+  });
+
+  it("a held thread reply: hidden from the receiver's agent (list and GET), readable after Allow", async () => {
+    const s = await setup();
+    const t = await post(
+      s.id,
+      typed(owner),
+      owner,
+      "ask Claude",
+      mention(s.claude),
+    );
+    const pic = await picture(s.id);
+    const reply = await addReply(
+      E,
+      s.id,
+      t.id,
+      typed(editor),
+      view(editor),
+      "reply with a picture",
+      { pictures: [{ pictureId: pic }] },
+      { moderator: true },
+    );
+    expect((await held(s.id))[0]?.items[0]?.way).toBe("reply");
+    await check(s, reply.id, pic, () => allowOnce(s.id));
   });
 });

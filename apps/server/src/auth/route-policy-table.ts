@@ -123,6 +123,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "PATCH /api/v1/me": { user: "the caller" },
   // #2512 S4: the caller's own notification choices; PUT browser sessions only (handler).
   "GET /api/v1/me/notification-prefs": { user: "the caller" },
+  // #2512 S4: the caller's own mutes (push only); changes take a browser session (handler).
+  "GET /api/v1/me/inbox/mutes": { user: "the caller" },
+  "POST /api/v1/me/inbox/mutes": { user: "the caller" },
+  "DELETE /api/v1/me/inbox/mutes/:kind/:id": { user: "the caller" },
   "PUT /api/v1/me/notification-prefs": { user: "the caller" },
   // #1292: the caller's own share-notice picks; PUT browser sessions only (handler).
   "GET /api/v1/bus/share-notices": { org: "mcp.connect" },
@@ -259,6 +263,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/shares`]: art("share", signedIn),
   [`PUT ${ARTS}/shares`]: art("share", signedIn),
   [`DELETE ${ARTS}/shares/:email`]: art("unshare", signedIn),
+  // #2508 comment pictures: reserve like writing a comment (the handler adds
+  // signed-in and never a guest); the PUT is signed; the GET reads like the
+  // page's comments, on every request.
+  [`POST ${ARTS}/pictures`]: art("comments.write"),
+  [`PUT ${ARTS}/pictures/:pictureId`]: {
+    signed: "picture reservation signature",
+  },
+  [`GET ${ARTS}/pictures/:pictureId`]: art("comments.read"),
   "POST /api/v1/uploads": { user: "authorizes the target artifact itself" },
   "PUT /api/v1/uploads/:uploadId": { signed: "upload URL signature" },
   "GET /api/v1/search": { user: "search, filtered by listFilterSql" },

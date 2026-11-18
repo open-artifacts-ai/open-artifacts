@@ -751,6 +751,7 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
   needsYouBrowser: integer("needs_you_browser").notNull().default(0),
+  updatesBrowser: integer("updates_browser").notNull().default(0),
   browserAllAsks: integer("browser_all_asks").notNull().default(0),
   quietStart: text("quiet_start"),
   quietEnd: text("quiet_end"),
@@ -758,6 +759,27 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
   lockDetail: integer("lock_detail").notNull().default(0),
   updatedAt: integer("updated_at").notNull(),
 });
+
+// #2512 S4: what a member muted from browser notifications. A mute stops push
+// only; the items stay in the list. kind "agent": target_id is the agent's bus
+// identity id and name its name when muted; kind "page": target_id is the
+// artifact id (its name is read live).
+export const inboxMutes = sqliteTable(
+  "inbox_mutes",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    targetId: text("target_id").notNull(),
+    name: text("name"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.kind, t.targetId] }),
+    check("inbox_mutes_kind", inList("kind", ["agent", "page"])),
+  ],
+);
 
 // #2263 a member's "ask for a passkey to approve" switches. No row: the
 // defaults (every action on, every pick off). ask_command is always 1.
@@ -1107,3 +1129,37 @@ export const dataWritesTotal = sqliteTable("data_writes_total", {
   day: integer("day").notNull(),
   n: integer("n").notNull(),
 });
+
+/**
+ * Pictures on comments (#2508). A row is a reservation (received_at null), then
+ * an uploaded picture, then attached to a comment (comment_id set). The bytes
+ * are in R2 under r2_key, private: only the artifact-authorized route serves
+ * them. thread_id lets a deleted thread take its pictures with it.
+ */
+export const commentPictures = sqliteTable(
+  "comment_pictures",
+  {
+    id: text("id").primaryKey(),
+    artifactId: text("artifact_id").notNull(),
+    userId: text("user_id").notNull(),
+    /** The type the reservation asked for, then the checked one. */
+    type: text("type").notNull(),
+    r2Key: text("r2_key").notNull(),
+    /** Declared at reserve; the stored size after the PUT. */
+    bytes: integer("bytes").notNull(),
+    w: integer("w").notNull().default(0),
+    h: integer("h").notNull().default(0),
+    expectedSha256: text("expected_sha256"),
+    alt: text("alt"),
+    commentId: text("comment_id"),
+    threadId: text("thread_id"),
+    createdAt: integer("created_at").notNull(),
+    /** Null until the PUT stored the bytes; -1 while one is in flight. */
+    receivedAt: integer("received_at"),
+  },
+  (t) => [
+    index("comment_pictures_artifact_idx").on(t.artifactId, t.commentId),
+    index("comment_pictures_user_idx").on(t.userId, t.createdAt),
+    index("comment_pictures_thread_idx").on(t.threadId),
+  ],
+);

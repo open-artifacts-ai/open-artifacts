@@ -105,7 +105,7 @@ const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
  * Authorization shared by every comment route: access for `action` (404
  * otherwise), then no embeds (403), then comments on (403 comments_off).
  */
-async function open(
+export async function open(
   c: Context<AppEnv>,
   action: PolicyAction,
   /** A write even though the policy floor is read access (delete). */
@@ -294,7 +294,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, toAsker },
+      { mentions, toAsker, pictures: raw.data.pictures },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },

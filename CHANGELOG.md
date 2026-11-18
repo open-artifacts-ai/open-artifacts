@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.207.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.206.0...v0.207.0) (2026-11-18)
+
+
+### Features
+
+* **comments:** pictures in comments, server side ([#2508](https://github.com/open-artifacts-ai/open-artifacts/issues/2508) A1) ([#2660](https://github.com/open-artifacts-ai/open-artifacts/issues/2660)) ([ab67e48](https://github.com/open-artifacts-ai/open-artifacts/commit/ab67e4854483599e4eba575bcefa0e214f3cc814))
+
 ## [0.206.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.205.1...v0.206.0) (2026-11-18)
 
 
