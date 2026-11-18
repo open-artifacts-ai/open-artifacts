@@ -53,8 +53,8 @@ const personOf = (u: U): CommentWho => ({
   typed: true,
 });
 
-/** `u`'s hub holds a live agent with this identity that says it waits on them, since `at`. */
-async function waitingAgent(u: U, identityId: string, at: number) {
+/** `u`'s hub holds a live agent with this identity that says it waits on them, since `at` (a number, or a SQL literal like 9e999 = Infinity). */
+async function waitingAgent(u: U, identityId: string, at: number | string) {
   await E.DB.prepare(
     "insert or ignore into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, 0, 1)",
   )
@@ -63,13 +63,15 @@ async function waitingAgent(u: U, identityId: string, at: number) {
   await runInDurableObject(await hubOf(u.userId), (_i, st) => {
     st.storage.sql.exec(
       `insert into agents (id, org_id, namespace, name, kind, machine_id, native_ref, live, updated_at, status, status_at, identity_id)
-       values (?, 'owner', 'ns', 'Scout', 'claude-code', ?, ?, 1, ?, 'waiting_on_owner', ?, ?)`,
-      `ag-${identityId}`,
-      `m-${u.userId}`,
-      `ref-${identityId}`,
-      at,
-      at,
-      identityId,
+       values (?, 'owner', 'ns', 'Scout', 'claude-code', ?, ?, 1, ?, 'waiting_on_owner', ${typeof at === "string" ? at : "?"}, ?)`,
+      ...[
+        `ag-${identityId}`,
+        `m-${u.userId}`,
+        `ref-${identityId}`,
+        typeof at === "string" ? 0 : at,
+        ...(typeof at === "string" ? [] : [at]),
+        identityId,
+      ],
     );
   });
 }
@@ -123,6 +125,10 @@ describe("waitingSince (the rule)", () => {
     expect(waitingSince(t + 60_000, asked)).toBe(t + 60_000);
     expect(waitingSince(5, "not a date")).toBe(5);
     expect(waitingSince(undefined, asked)).toBeUndefined();
+    // A non-finite hub time is no wait, whatever the ask's time.
+    for (const bad of [Number.NaN, Infinity, -Infinity])
+      for (const at of [asked, "not a date"])
+        expect(waitingSince(bad, at)).toBeUndefined();
   });
 });
 
@@ -218,5 +224,42 @@ describe("the Library card", () => {
     const card = (await list(me)).find((i) => i.id === id);
     expect(card?.asksForYou).toBe(1);
     expect(card?.waiting).toBeUndefined();
+  });
+});
+
+describe("a non-finite hub time never throws and shows no mark (#2512)", () => {
+  it("the page's ask card, the Library card and the inbox", async () => {
+    const me = await mk("wm-inf");
+    const id = await page([me]);
+    // Infinity as the hub stores it (a bad status_at).
+    await waitingAgent(me, "idn-inf", "9e999");
+    await ask(id, agentOf(me, "idn-inf"), me);
+    // The page's ask card.
+    const c = await api(app, R.comments(id), me.cookie);
+    expect(c.status).toBe(200);
+    expect((await askOf(me, id))?.waitingSince).toBeUndefined();
+    // The Library card.
+    const l = await api(app, `${R.artifacts}?limit=100`, me.cookie);
+    expect(l.status).toBe(200);
+    const card = ((await l.json()) as { items: ArtifactSummary[] }).items.find(
+      (i) => i.id === id,
+    );
+    expect(card?.asksForYou).toBe(1);
+    expect(card?.waiting).toBeUndefined();
+    // The inbox: the ask is listed, plain, with no waitingSince.
+    const inb = await api(app, R.meInbox, me.cookie);
+    expect(inb.status).toBe(200);
+    const item = (
+      (await inb.json()) as {
+        needsYou: {
+          artifact: { id: string } | null;
+          urgency?: string;
+          waitingSince?: string;
+        }[];
+      }
+    ).needsYou.find((i) => i.artifact?.id === id);
+    expect(item).toBeDefined();
+    expect(item?.waitingSince).toBeUndefined();
+    expect(item?.urgency).not.toBe("waiting");
   });
 });

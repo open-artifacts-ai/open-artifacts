@@ -8,15 +8,18 @@ import { agentsWaitingOn } from "./bus.js";
 /**
  * When the wait on an ask began: the later of the agent's blocked time (the
  * hub's) and the ask's own time, since a wait on this ask cannot start before
- * it was asked. A bad `askedAt` leaves the hub's time. Undefined: not waiting.
+ * it was asked. A bad `askedAt` leaves the hub's time. Undefined: not waiting
+ * (also when the hub's time is not a finite number: callers print it as an
+ * ISO date, which throws on NaN or Infinity).
  */
 export function waitingSince(
   began: number | undefined,
   askedAt: string,
 ): number | undefined {
-  if (began === undefined) return undefined;
+  if (began === undefined || !Number.isFinite(began)) return undefined;
   const askedMs = Date.parse(askedAt);
-  return Number.isNaN(askedMs) ? began : Math.max(began, askedMs);
+  const since = Number.isNaN(askedMs) ? began : Math.max(began, askedMs);
+  return since;
 }
 
 /** The identity of `asker` when it is one of `userId`'s own agents, else undefined. */
