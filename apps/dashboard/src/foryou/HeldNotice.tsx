@@ -29,7 +29,12 @@ const PLAIN = `${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medi
 const NOTE = "m-0 text-[12.5px] text-[var(--oa-text-muted)]";
 
 /** The time as the rest of For you shows it. */
-const clockOf = (ms: number) => clock(new Date(ms).toISOString());
+const clockOf = (ms: number) => {
+  const d = new Date(ms);
+  return Number.isFinite(ms) && !Number.isNaN(d.getTime())
+    ? clock(d.toISOString())
+    : "";
+};
 
 const plural = (n: number) => `${n} ${n === 1 ? "request" : "requests"}`;
 
@@ -271,7 +276,9 @@ export function HeldCard({
               </div>
             )}
             <small className="block text-[12px] text-[var(--oa-text-muted)]">
-              {`${who} wrote · ${clockOf(i.createdAt)}`}
+              {[`${who} wrote`, clockOf(i.createdAt)]
+                .filter(Boolean)
+                .join(" \u00b7 ")}
             </small>
           </li>
         ))}

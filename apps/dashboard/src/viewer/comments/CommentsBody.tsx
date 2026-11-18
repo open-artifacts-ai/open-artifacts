@@ -632,6 +632,10 @@ function Composer({
   })();
   const matches = found ?? [];
   const menuOpen = matches.length > 0;
+  // #2577: the active row is never an agent whose person turned asking off (a reset to 0 lands on the first pickable row).
+  const firstOk = matches.findIndex((a) => a.askState !== "off");
+  const activeIdx =
+    matches[activeOpt]?.askState === "off" ? Math.max(firstOk, 0) : activeOpt;
   const pickedAt = useRef<number | null>(null);
   const pick = (a: ArtifactAgent) => {
     // #2577: its person turned asking off; a mention would be refused.
@@ -890,7 +894,7 @@ function Composer({
           aria-describedby={card && !coarse && !shut ? hintId : undefined}
           aria-controls={menuOpen ? menuId : undefined}
           aria-activedescendant={
-            menuOpen ? `${menuId}-${activeOpt}` : undefined
+            menuOpen ? `${menuId}-${activeIdx}` : undefined
           }
           onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
@@ -920,12 +924,12 @@ function Composer({
                 const n = matches.length;
                 // #2577: an agent whose person turned asking off can't be picked: skip it.
                 const step = e.key === "ArrowDown" ? 1 : n - 1;
-                setActiveOpt((i) => {
+                setActiveOpt(() => {
                   for (let k = 1; k <= n; k++) {
-                    const j = (i + step * k) % n;
+                    const j = (activeIdx + step * k) % n;
                     if (matches[j]?.askState !== "off") return j;
                   }
-                  return i;
+                  return activeIdx;
                 });
                 return;
               }
@@ -937,7 +941,7 @@ function Composer({
                 !e.ctrlKey
               ) {
                 e.preventDefault();
-                const a = matches[activeOpt];
+                const a = matches[activeIdx];
                 if (a) pick(a);
                 return;
               }
@@ -996,7 +1000,7 @@ function Composer({
           id={menuId}
           matches={matches}
           all={agents}
-          active={activeOpt}
+          active={activeIdx}
           onPick={pick}
         />
       )}
