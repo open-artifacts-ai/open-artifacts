@@ -282,3 +282,38 @@ describe("the email and the opt-out", () => {
     });
   });
 });
+
+describe("every non-send to an outside address that isn't a cap reads 'skipped' (#2716)", () => {
+  it("an opt-out and a failed send answer the same; a member stays plain", async () => {
+    const down = mailer();
+    const failing = {
+      ...down.env,
+      EMAIL: {
+        send: async () => {
+          throw Object.assign(new Error("boom"), { code: "E_DOWN" });
+        },
+      } as unknown as SendEmail,
+    };
+    const f = await world({ ...HOSTED, ...failing });
+    const failed = await f.share(uniq("fail", "gmail.com"));
+    const { share } = await world();
+    const to = uniq("oo", "gmail.com");
+    await share(to);
+    await hit(
+      "POST",
+      `${SHARE_OPTOUT_PATH}?t=${await signOptoutToken(env, to)}`,
+    );
+    const optedOut = await share(to);
+    expect(failed).toMatchObject({ emailed: false, notEmailed: "skipped" });
+    expect(optedOut).toMatchObject({ emailed: false, notEmailed: "skipped" });
+    // Same shape, no extra field that tells them apart.
+    const shape = (r: object) => Object.keys(r).sort().join(",");
+    expect(shape(optedOut)).toBe(shape(failed));
+    // A member is not an outside address: a plain non-send, no reason.
+    const memberEmail = uniq("mem", "a.com");
+    await login(memberEmail, "member");
+    const plain = await share(memberEmail);
+    expect(plain.emailed).toBe(false);
+    expect(plain.notEmailed).toBeUndefined();
+  });
+});

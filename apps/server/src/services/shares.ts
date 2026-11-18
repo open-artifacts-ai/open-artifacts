@@ -352,6 +352,10 @@ async function emailShare(
   pausedUntil?: string;
 }> {
   if (!emailEnabled(env)) return { emailed: false };
+  // Set once we know the address is outside: every non-send that isn't a cap
+  // then reads "skipped" (#2716), so a sharer can't tell an opt-out from a send
+  // failure or a platform outage. The log keeps the real reason.
+  let outsideAddr = false;
   try {
     const [member, settings] = await Promise.all([
       stmt(env.DB, IS_USER).bind(email).first(),
@@ -363,6 +367,7 @@ async function emailShare(
     // hosted's: a self-hosted install sends it, without limits. Anyone else (a login domain's address) gets the normal share
     // email, with its role line, as on main.
     const outside = outsideAddress(env, email);
+    outsideAddr = outside;
     // "Don't email me again": an address that opted out gets no outside share
     // email (#2590). Across hosted would be a call to the platform here.
     const optOutHash = outside ? await addressHash(email) : null;
@@ -371,7 +376,8 @@ async function emailShare(
       (await stmt(env.DB, OPTED_OUT).bind(optOutHash).first())
     ) {
       // The sharer is not told a recipient opted out (that choice is the
-      // recipient's): the result says "skipped"; the log has the reason.
+      // recipient's): the result says "skipped", as for any other non-send to
+      // an outside address that isn't a cap; the log has the reason.
       logInfo("share_email_skipped", {
         reason: "recipient_opted_out",
         artifactId: artifact.id,
@@ -514,7 +520,11 @@ async function emailShare(
       return { emailed: true };
     }
     if (outcome.skipped) return { emailed: false, notEmailed: "skipped" };
-    if (!outcome.limited) return { emailed: false };
+    // A failed or timed-out send to an outside address reads like an opt-out.
+    if (!outcome.limited)
+      return outside
+        ? { emailed: false, notEmailed: "skipped" }
+        : { emailed: false };
     // The number a member_limit or instance_limit refusal hit, for the page.
     if (outcome.reason === "member_limit")
       return {
@@ -532,7 +542,9 @@ async function emailShare(
       };
     return { emailed: false, notEmailed: "limit" };
   } catch {
-    return { emailed: false };
+    return outsideAddr
+      ? { emailed: false, notEmailed: "skipped" }
+      : { emailed: false };
   }
 }
 
