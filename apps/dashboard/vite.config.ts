@@ -58,6 +58,7 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["test/**/*.test.ts"],
+          globalSetup: ["../../scripts/test/tmp-root.ts"],
           setupFiles: ["../../scripts/test/agent-cli-guard.ts"],
         },
       },
@@ -71,6 +72,7 @@ export default defineConfig({
           // jsdom's window.localStorage is used on every Node version.
           execArgv: ["--no-experimental-webstorage"],
           include: ["test/**/*.test.tsx"],
+          globalSetup: ["../../scripts/test/tmp-root.ts"],
           setupFiles: [
             "test/setup.ts",
             "../../scripts/test/agent-cli-guard.ts",
