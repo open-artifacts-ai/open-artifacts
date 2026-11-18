@@ -1077,6 +1077,32 @@ export const SURFACES: readonly Surface[] = [
       (r) => r.status === 400,
     ),
   ),
+  // #2508 comment pictures: the reservation is a comment write (the handler
+  // adds signed-in and never a guest, after the body check, so an empty body is
+  // a 400 for every caller the policy admits); the GET reads like the
+  // comments. The signed PUT is listed with the other signed routes.
+  rest(
+    "comment picture reserve",
+    "comments.write",
+    [`POST ${ARTS}/pictures`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/pictures`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comment picture read",
+    "comments.read",
+    [`GET ${ARTS}/pictures/:pictureId`],
+    exact(
+      "GET",
+      (id) => `${A(id)}/pictures/${BAD}`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "comments thread status",
     "comments.write",
@@ -1731,6 +1757,20 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
   },
+  // #2512 S4: mutes. A body that names nothing is a 400 past the guard; an unmute of nothing is 204.
+  "POST /api/v1/me/inbox/mutes": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: {} }),
+      allow: code("bad_request"),
+    },
+  },
+  "DELETE /api/v1/me/inbox/mutes/:kind/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/inbox/mutes/page/none" }),
+      allow: ok(204),
+    },
+  },
   // #2512 S4: the caller's own choices; the defaults saved back change nothing.
   "PUT /api/v1/me/notification-prefs": {
     refuse: invalid(),
@@ -1756,6 +1796,15 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     },
     real: {
       req: () => ({ path: "", body: {} }),
+      allow: code("push_unavailable"),
+    },
+  },
+  "PATCH /api/v1/me/push/subscriptions/:id": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/push/subscriptions/x",
+        body: { needsYou: true },
+      }),
       allow: code("push_unavailable"),
     },
   },
@@ -2452,12 +2501,16 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/me/inbox/read", U],
   ["POST /api/v1/me/inbox/read-all", U, [200]],
   ["PATCH /api/v1/me", U],
+  ["GET /api/v1/me/inbox/mutes", U, [200]],
+  ["POST /api/v1/me/inbox/mutes", U],
+  ["DELETE /api/v1/me/inbox/mutes/:kind/:id", U],
   ["GET /api/v1/me/notification-prefs", U, [200]],
   ["PUT /api/v1/me/notification-prefs", U],
   // #2512 S5: no VAPID key pair in the matrix's env, so push is off: 404 push_unavailable for everyone signed in.
   ["GET /api/v1/me/push/key", U, [404]],
   ["GET /api/v1/me/push/subscriptions", U, [404]],
   ["POST /api/v1/me/push/subscriptions", U, [404]],
+  ["PATCH /api/v1/me/push/subscriptions/:id", U, [404]],
   ["DELETE /api/v1/me/push/subscriptions/:id", U, [404]],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
@@ -2660,6 +2713,7 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "ALL /__test/*",
   "POST /__oa/oauth-store/copy",
   "PUT /api/v1/uploads/:uploadId",
+  "PUT /api/v1/artifacts/:id/pictures/:pictureId",
   "GET /oauth/authorize",
   "POST /oauth/authorize",
   // #1291: the bus device flow and approval page (the handlers check the

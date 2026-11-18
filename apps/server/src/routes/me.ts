@@ -1,4 +1,5 @@
 import {
+  InboxMuteBodySchema,
   InboxReadBodySchema,
   MCP_PATH,
   type Me,
@@ -42,6 +43,7 @@ import {
   unreadUpdateCount,
 } from "../services/inbox.js";
 import { markAllRead, markRead } from "../services/inbox-items.js";
+import { addMute, listMutes, removeMute } from "../services/inbox-mutes.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
 import { getPrefs, putPrefs } from "../services/notification-prefs.js";
@@ -300,6 +302,27 @@ export function mountMe(app: AppType): void {
       throw new ApiError("bad_request", "Invalid JSON body");
     }
     return c.json(await putPrefs(c.env, user.id, body));
+  });
+  // #2512 S4: what the caller muted from browser notifications. A mute stops
+  // push only. Reading is the caller's own; changing takes a person in a
+  // browser (never a token, a grant or an agent).
+  app.get(R.meInboxMutes, async (c) => {
+    const user = requireUser(c);
+    return c.json(await listMutes(c.env, user));
+  });
+  app.post(R.meInboxMutes, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    await addMute(c.env, user, await jsonBody(c, InboxMuteBodySchema));
+    return c.body(null, 204);
+  });
+  app.delete("/api/v1/me/inbox/mutes/:kind/:id", async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    const kind = InboxMuteBodySchema.shape.kind.safeParse(c.req.param("kind"));
+    if (!kind.success) throw new ApiError("bad_request", "Unknown kind");
+    await removeMute(c.env, user.id, kind.data, c.req.param("id"));
+    return c.body(null, 204);
   });
   app.post(R.meInboxReadAll, async (c) => {
     const user = requireUser(c);

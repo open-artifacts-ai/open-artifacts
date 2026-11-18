@@ -16,6 +16,7 @@ import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
 import { mountBilling } from "./billing.js";
 import { mountCodes } from "./codes.js";
+import { mountCommentPictures } from "./comment-pictures.js";
 import { mountCommentUnsub } from "./comment-unsub.js";
 import { mountComments } from "./comments.js";
 import { mountDirectory } from "./directory.js";
@@ -60,6 +61,7 @@ export function mountRoutes(app: AppType): void {
   mountSearch(app);
   mountRuntime(app);
   mountComments(app);
+  mountCommentPictures(app);
   mountPasskeys(app);
   mountAgentRequests(app);
   mountTokens(app);

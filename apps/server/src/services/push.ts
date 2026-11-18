@@ -9,6 +9,7 @@ import {
   newId,
   type PushPayload,
   type PushSubscribeBody,
+  type PushSubscriptionPatchBody,
   type PushSubscriptions,
   stripNameControls,
   viewerPath,
@@ -21,6 +22,7 @@ import { logError, logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { agentsWaitingOn } from "./bus.js";
 import { itemExcerpt } from "./inbox-items.js";
+import { mutedSet } from "./inbox-mutes.js";
 import { getSettings } from "./members.js";
 import { getPrefs, quietState } from "./notification-prefs.js";
 import { pushEndpointOk, pushOn, sendPush } from "./web-push.js";
@@ -45,7 +47,7 @@ export async function listSubscriptions(
 ): Promise<PushSubscriptions> {
   const { results } = await stmt(
     env.DB,
-    "select id, label, created_at, last_sent_at from push_subscriptions where user_id = ?1 order by created_at, id",
+    "select id, label, created_at, last_sent_at, needs_you, updates from push_subscriptions where user_id = ?1 order by created_at, id",
   )
     .bind(userId)
     .all<{
@@ -53,6 +55,8 @@ export async function listSubscriptions(
       label: string | null;
       created_at: number;
       last_sent_at: number | null;
+      needs_you: number;
+      updates: number;
     }>();
   return {
     items: results.map((r) => ({
@@ -62,6 +66,8 @@ export async function listSubscriptions(
       lastSentAt: r.last_sent_at
         ? new Date(r.last_sent_at).toISOString()
         : null,
+      needsYou: r.needs_you === 1,
+      updates: r.updates === 1,
     })),
   };
 }
@@ -87,6 +93,8 @@ export async function addSubscription(
     : null;
   const id = newId();
   const now = Date.now();
+  // A new browser starts with Needs-you on and Updates as the member's default.
+  const updatesDefault = (await getPrefs(env, userId)).updates.browser ? 1 : 0;
   const [, , row] = await env.DB.batch([
     // Axe 1: gone from anyone else.
     stmt(
@@ -95,8 +103,8 @@ export async function addSubscription(
     ).bind(body.endpoint, userId),
     stmt(
       env.DB,
-      `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, label, created_at)
-       values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, label, needs_you, updates, created_at)
+       values (?1, ?2, ?3, ?4, ?5, ?6, 1, ?8, ?7)
        on conflict (endpoint) do update set
          p256dh = excluded.p256dh, auth = excluded.auth,
          label = coalesce(excluded.label, label)`,
@@ -108,6 +116,7 @@ export async function addSubscription(
       body.keys.auth,
       label,
       now,
+      updatesDefault,
     ),
     stmt(env.DB, "select id from push_subscriptions where endpoint = ?1").bind(
       body.endpoint,
@@ -122,6 +131,30 @@ export async function addSubscription(
     .bind(userId, MAX_SUBSCRIPTIONS)
     .run();
   return (row?.results[0] as { id: string } | undefined)?.id ?? id;
+}
+
+/** Sets this browser's switches; null when the subscription isn't the member's. */
+export async function patchSubscription(
+  env: Env,
+  userId: string,
+  id: string,
+  body: PushSubscriptionPatchBody,
+): Promise<{ needsYou: boolean; updates: boolean } | null> {
+  const r = await stmt(
+    env.DB,
+    `update push_subscriptions
+        set needs_you = coalesce(?3, needs_you), updates = coalesce(?4, updates)
+      where id = ?1 and user_id = ?2
+      returning needs_you, updates`,
+  )
+    .bind(
+      id,
+      userId,
+      body.needsYou === undefined ? null : body.needsYou ? 1 : 0,
+      body.updates === undefined ? null : body.updates ? 1 : 0,
+    )
+    .first<{ needs_you: number; updates: number }>();
+  return r ? { needsYou: r.needs_you === 1, updates: r.updates === 1 } : null;
 }
 
 /** Removes the member's own subscription; false when it isn't theirs or isn't there. */
@@ -144,7 +177,8 @@ export async function removeSubscription(
 export type PushItem = {
   /** One row per (member, key): "ask:<comment id>", "later:<item id>". */
   key: string;
-  kind: "ask" | "later";
+  /** "ask" and "later" (back from Later) are Needs-you; "update" is an Update. */
+  kind: "ask" | "later" | "update";
   artifactId: string;
   threadId: string;
   askerName: string;
@@ -169,6 +203,11 @@ export async function queuePush(
   now = Date.now(),
 ): Promise<void> {
   if (!pushOn(env) || userIds.length === 0) return;
+  // Needs-you and Updates have their own member-wide switch and their own
+  // switch on each browser (constants, never client text).
+  const prefCol =
+    item.kind === "update" ? "updates_browser" : "needs_you_browser";
+  const subCol = item.kind === "update" ? "updates" : "needs_you";
   try {
     for (let i = 0; i < userIds.length; i += IN_CHUNK) {
       const chunk = userIds.slice(i, i + IN_CHUNK);
@@ -178,8 +217,8 @@ export async function queuePush(
            (select max(send_after) from push_pending q where q.user_id = p.user_id) as waiting,
            (select max(last_sent_at) from push_subscriptions s where s.user_id = p.user_id) as last
          from notification_prefs p
-         where p.needs_you_browser = 1 and p.user_id in (${marks})
-           and exists (select 1 from push_subscriptions s where s.user_id = p.user_id)`,
+         where p.${prefCol} = 1 and p.user_id in (${marks})
+           and exists (select 1 from push_subscriptions s where s.user_id = p.user_id and s.${subCol} = 1)`,
       )
         .bind(...chunk)
         .all<{ id: string; waiting: number | null; last: number | null }>();
@@ -261,6 +300,7 @@ type Pending = {
   id: string;
   user_id: string;
   key: string;
+  kind: "ask" | "later" | "update";
   artifact_id: string;
   thread_id: string;
   asker_name: string;
@@ -270,34 +310,66 @@ type Pending = {
   created_at: number;
 };
 
-type Sub = { id: string; endpoint: string; p256dh: string; auth: string };
+type Sub = {
+  id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  needs_you: number;
+  updates: number;
+};
 
-/** The one notification for everything due: fixed text, a link to the latest ask. */
+export const DEFAULT_UPDATE_BODY = "You have a new update";
+
+/**
+ * The one notification for everything due to one browser: fixed text, a link
+ * to the latest Needs-you item (else the latest update). Needs-you text wins
+ * when both are in it; the count is everything in it.
+ */
 export function pushPayload(
   items: Pick<
     Pending,
-    "artifact_id" | "thread_id" | "asker_name" | "excerpt"
+    "kind" | "artifact_id" | "thread_id" | "asker_name" | "excerpt"
   >[],
   detail: boolean,
   title: string,
 ): PushPayload {
-  const last = items[items.length - 1] as (typeof items)[number];
+  const needs = items.filter((i) => i.kind !== "update");
   const n = items.length;
-  const asks = detail ? `${last.asker_name} asks: ${last.excerpt}` : "";
-  const body =
-    n === 1
-      ? detail
-        ? asks
-        : DEFAULT_BODY
-      : detail
-        ? `${n} asks are waiting for you. Latest: ${asks}`
-        : `${n} things are waiting for your answer`;
+  const lead = (needs.length > 0 ? needs : items)[
+    (needs.length > 0 ? needs : items).length - 1
+  ] as (typeof items)[number];
+  let body: string;
+  if (needs.length > 0) {
+    const m = needs.length;
+    const asks = detail ? `${lead.asker_name} asks: ${lead.excerpt}` : "";
+    body =
+      m === 1
+        ? detail
+          ? asks
+          : DEFAULT_BODY
+        : detail
+          ? `${m} asks are waiting for you. Latest: ${asks}`
+          : `${m} things are waiting for your answer`;
+  } else {
+    const what = detail ? `${lead.asker_name}: ${lead.excerpt}` : "";
+    body =
+      n === 1
+        ? detail
+          ? what
+          : DEFAULT_UPDATE_BODY
+        : detail
+          ? `${n} new updates. Latest: ${what}`
+          : `${n} new updates`;
+  }
   return {
     v: 1,
     title,
     body: [...body].slice(0, 200).join(""),
-    href: `${viewerPath(last.artifact_id)}?thread=${encodeURIComponent(last.thread_id)}`,
-    tag: "needs-you",
+    href: lead.thread_id
+      ? `${viewerPath(lead.artifact_id)}?thread=${encodeURIComponent(lead.thread_id)}`
+      : viewerPath(lead.artifact_id),
+    tag: needs.length > 0 ? "needs-you" : "updates",
     ...(n > 1 ? { count: n } : {}),
   };
 }
@@ -316,7 +388,7 @@ export async function drainPush(env: Env, now = Date.now()): Promise<number> {
   try {
     const { results } = await stmt(
       env.DB,
-      `select id, user_id, key, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, created_at
+      `select id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, created_at
          from push_pending where send_after <= ?1 order by user_id, created_at limit ?2`,
     )
       .bind(now, TICK_ROWS)
@@ -362,15 +434,18 @@ async function drainMember(
   now: number,
 ): Promise<number> {
   const prefs = await getPrefs(env, userId);
-  if (!prefs.needsYou.browser) {
-    await dropRows(env, rows);
-    return 0;
-  }
+  // Each level has its member-wide switch: off drops its rows.
+  const live = rows.filter((r) =>
+    r.kind === "update" ? prefs.updates.browser : prefs.needsYou.browser,
+  );
+  const off = rows.filter((r) => !live.includes(r));
+  if (off.length > 0) await dropRows(env, off);
+  if (live.length === 0) return 0;
   const q = quietState(prefs, now);
   if (q.quiet) {
     // Nothing breaks through: held to when quiet hours end.
     await env.DB.batch(
-      rows.map((r) =>
+      live.map((r) =>
         stmt(
           env.DB,
           "update push_pending set send_after = ?1 where id = ?2",
@@ -381,33 +456,53 @@ async function drainMember(
   }
   const { results: subs } = await stmt(
     env.DB,
-    "select id, endpoint, p256dh, auth from push_subscriptions where user_id = ?1",
+    "select id, endpoint, p256dh, auth, needs_you, updates from push_subscriptions where user_id = ?1",
   )
     .bind(userId)
     .all<Sub>();
   // Claimed: deleted before sending, so a second tick can't send them again.
-  await dropRows(env, rows);
+  await dropRows(env, live);
   if (subs.length === 0) return 0;
-  let due = rows;
+  // A mute stops push: its agent's and its page's items are not sent.
+  const muted = await mutedSet(env, userId);
+  let due = live.filter(
+    (r) =>
+      !muted.pages.has(r.artifact_id) &&
+      !(r.agent_key && muted.agents.has(r.agent_key)),
+  );
   if (!prefs.browserAllAsks) {
-    // Only asks an agent of theirs is waiting on them for.
+    // "Asks waiting for you": an ask counts only when an agent of theirs waits on them.
+    const asks = due.filter((r) => r.kind === "ask");
     const keys = [
       ...new Set(
-        rows
+        asks
           .filter((r) => r.asker_ref === userId && r.agent_key)
           .map((r) => r.agent_key as string),
       ),
     ];
-    const waiting = await agentsWaitingOn(env, userId, keys);
-    due = rows.filter(
-      (r) => r.asker_ref === userId && r.agent_key && waiting.has(r.agent_key),
+    const waiting = keys.length
+      ? await agentsWaitingOn(env, userId, keys)
+      : new Map<string, number>();
+    due = due.filter(
+      (r) =>
+        r.kind !== "ask" ||
+        (r.asker_ref === userId && !!r.agent_key && waiting.has(r.agent_key)),
     );
   }
   if (due.length === 0) return 0;
-  const payload = pushPayload(due, prefs.lockScreenDetail, title);
   let ok = 0;
   for (const s of subs) {
-    const r = await sendPush(env, s, payload, now);
+    // This browser's own switches.
+    const mine = due.filter((r) =>
+      r.kind === "update" ? s.updates === 1 : s.needs_you === 1,
+    );
+    if (mine.length === 0) continue;
+    const r = await sendPush(
+      env,
+      s,
+      pushPayload(mine, prefs.lockScreenDetail, title),
+      now,
+    );
     if (r === "sent") {
       ok++;
       await stmt(
@@ -424,3 +519,22 @@ async function drainMember(
   }
   return ok > 0 ? 1 : 0;
 }
+
+/**
+ * An item that was put off with Later is back (#2762): queue it for push like
+ * a new ask, so the person hears it came back. `key` is unique per return.
+ */
+export const queueBackFromLater = (
+  env: Env,
+  userId: string,
+  item: Omit<PushItem, "kind">,
+  now = Date.now(),
+): Promise<void> => queuePush(env, [userId], { ...item, kind: "later" }, now);
+
+/** The Updates written for a person: queued for push to those who turned it on. */
+export const queueUpdatePush = (
+  env: Env,
+  userId: string,
+  item: Omit<PushItem, "kind">,
+  now = Date.now(),
+): Promise<void> => queuePush(env, [userId], { ...item, kind: "update" }, now);

@@ -12,7 +12,7 @@ CREATE TABLE `push_pending` (
 	`send_after` integer NOT NULL,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade,
-	CONSTRAINT "push_pending_kind" CHECK("kind" in ('ask', 'later'))
+	CONSTRAINT "push_pending_kind" CHECK("kind" in ('ask', 'later', 'update'))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `push_pending_key_idx` ON `push_pending` (`user_id`,`key`);--> statement-breakpoint
@@ -24,6 +24,8 @@ CREATE TABLE `push_subscriptions` (
 	`p256dh` text NOT NULL,
 	`auth` text NOT NULL,
 	`label` text,
+	`needs_you` integer DEFAULT 1 NOT NULL,
+	`updates` integer DEFAULT 0 NOT NULL,
 	`created_at` integer NOT NULL,
 	`last_sent_at` integer,
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade

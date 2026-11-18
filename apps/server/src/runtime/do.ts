@@ -2155,7 +2155,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
   }
 
-  private checkBody(body: string): void {
+  private checkBody(body: string, allowEmpty = false): void {
+    // #2508: a comment with pictures may have no text.
+    if (allowEmpty && typeof body === "string" && body.trim() === "") return;
     if (!bodyOk(body))
       fail(
         "invalid_body",
@@ -2195,12 +2197,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
     anchor: Anchor;
     version: number;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     /** #1535: the ask and mentions, already resolved by the service. */
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredThread {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!a.counted) this.countComment(a.rate);
@@ -2218,11 +2222,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     actor: StoredActor;
     rate: string;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredComment {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!threadExists(this.sql, a.threadId)) fail("not_found", "Not found");

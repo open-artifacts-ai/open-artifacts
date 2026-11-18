@@ -40,6 +40,7 @@ describe("GET and PUT /me/notification-prefs", () => {
     expect(await g.json()).toEqual(DEFAULT_PREFS);
     const next = prefs({
       needsYou: { inApp: true, browser: true },
+      updates: { inApp: true, browser: true },
       browserAllAsks: true,
       quietHours: { start: "22:00", end: "07:30" },
       timeZone: "America/Los_Angeles",
@@ -61,6 +62,7 @@ describe("GET and PUT /me/notification-prefs", () => {
       "lockScreenDetail",
       "quietHours",
       "timeZone",
+      "updatesBrowser",
     ]);
     // Turning quiet hours off clears them.
     await put(a.cookie, { ...next, quietHours: null });
@@ -128,7 +130,7 @@ describe("GET and PUT /me/notification-prefs", () => {
       prefs({ quietHours: { start: "08:00", end: "08:00" } }),
       prefs({ quietHours: { start: "8:00", end: "09:00" } }),
       prefs({ quietHours: { start: "24:00", end: "09:00" } }),
-      { ...prefs(), updates: { inApp: true, browser: true } },
+      { ...prefs(), updates: { inApp: false, browser: true } },
       {},
     ])
       expect((await put(a.cookie, body)).status, JSON.stringify(body)).toBe(

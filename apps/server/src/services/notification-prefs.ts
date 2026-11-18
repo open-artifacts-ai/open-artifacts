@@ -23,6 +23,7 @@ export const DEFAULT_PREFS: NotificationPrefs = {
 
 type Row = {
   needs_you_browser: number;
+  updates_browser: number;
   browser_all_asks: number;
   quiet_start: string | null;
   quiet_end: string | null;
@@ -36,7 +37,7 @@ export async function getPrefs(
 ): Promise<NotificationPrefs> {
   const r = await stmt(
     env.DB,
-    `select needs_you_browser, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail
+    `select needs_you_browser, updates_browser, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail
        from notification_prefs where user_id = ?1`,
   )
     .bind(userId)
@@ -44,7 +45,7 @@ export async function getPrefs(
   if (!r) return DEFAULT_PREFS;
   return {
     needsYou: { inApp: true, browser: r.needs_you_browser === 1 },
-    updates: { inApp: true, browser: false },
+    updates: { inApp: true, browser: r.updates_browser === 1 },
     browserAllAsks: r.browser_all_asks === 1,
     quietHours:
       r.quiet_start && r.quiet_end
@@ -95,6 +96,7 @@ export async function putPrefs(
     if (JSON.stringify(from) !== JSON.stringify(to)) changes[k] = { from, to };
   };
   diff("browser", before.needsYou.browser, next.needsYou.browser);
+  diff("updatesBrowser", before.updates.browser, next.updates.browser);
   diff("browserAllAsks", before.browserAllAsks, next.browserAllAsks);
   diff("quietHours", before.quietHours, next.quietHours);
   diff("timeZone", before.timeZone, next.timeZone);
@@ -114,10 +116,11 @@ export async function putPrefs(
     stmt(
       env.DB,
       `insert into notification_prefs
-         (user_id, needs_you_browser, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail, updated_at)
-       values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         (user_id, needs_you_browser, updates_browser, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail, updated_at)
+       values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        on conflict (user_id) do update set
          needs_you_browser = excluded.needs_you_browser,
+         updates_browser = excluded.updates_browser,
          browser_all_asks = excluded.browser_all_asks,
          quiet_start = excluded.quiet_start, quiet_end = excluded.quiet_end,
          time_zone = excluded.time_zone, lock_detail = excluded.lock_detail,
@@ -125,6 +128,7 @@ export async function putPrefs(
     ).bind(
       userId,
       next.needsYou.browser ? 1 : 0,
+      next.updates.browser ? 1 : 0,
       next.browserAllAsks ? 1 : 0,
       next.quietHours?.start ?? null,
       next.quietHours?.end ?? null,

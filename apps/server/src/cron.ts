@@ -20,6 +20,7 @@ import {
   sweepLostIndexJobs,
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
+import { sweepPictures } from "./services/comment-pictures.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { pullEmailEvents, sweepEmailEvents } from "./services/email-events.js";
 import { drainPush } from "./services/push.js";
@@ -320,6 +321,7 @@ function daily(
     Promise.allSettled([
       purgeDeleted(env, now),
       sweepUploads(env, now),
+      sweepPictures(env, now),
       sweepEmailEvents(env, now),
       sweepUngrantedClients(env, now),
       // Expired OAuth store rows (reads already skip them) and old tombstones.

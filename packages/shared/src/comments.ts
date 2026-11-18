@@ -227,6 +227,72 @@ export const CommentNotifiedSchema = CommentMentionSchema.required({
 });
 export type CommentNotified = z.infer<typeof CommentNotifiedSchema>;
 
+/** The bytes of a comment picture (#2508): at most this many each, and this many to a comment. */
+export const COMMENT_PICTURE_MAX_BYTES = 10 * 1024 * 1024;
+export const COMMENT_PICTURES_MAX = 4;
+/** Alt text: plain text, one line, at most this long. */
+export const COMMENT_PICTURE_ALT_MAX = 200;
+/** Per person: reservations a day, and reserved but not yet attached at once. */
+export const COMMENT_PICTURE_RESERVATIONS_PER_DAY = 100;
+export const COMMENT_PICTURE_PENDING_MAX = 20;
+/** A picture no comment uses is deleted after this long. */
+export const COMMENT_PICTURE_PENDING_TTL_MS = 60 * 60 * 1000;
+/** unsupported_format message for a HEIC photo as a comment picture (OA Product). */
+export const COMMENT_PICTURE_HEIC_MESSAGE =
+  "This photo is in HEIC format. Save it as JPEG and try again.";
+
+export const CommentPictureTypeSchema = z.enum([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+export type CommentPictureType = z.infer<typeof CommentPictureTypeSchema>;
+
+/** A picture on a comment, as comments return it. */
+export const CommentPictureSchema = z.object({
+  id: z.string(),
+  type: CommentPictureTypeSchema,
+  w: z.number().int().positive(),
+  h: z.number().int().positive(),
+  bytes: z.number().int().positive(),
+  alt: z.string().optional(),
+});
+export type CommentPicture = z.infer<typeof CommentPictureSchema>;
+
+/** POST R.commentPictures body. The server reads w and h from the file; nothing a client says about them is used. */
+export const CommentPictureReserveSchema = z.strictObject({
+  type: z.string().min(1).max(100),
+  bytes: z.number().int().positive(),
+  sha256: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .toLowerCase()
+    .optional(),
+});
+export type CommentPictureReserve = z.infer<typeof CommentPictureReserveSchema>;
+
+export const CommentPictureReservedSchema = z.object({
+  pictureId: z.string(),
+  /** A signed PUT for the raw bytes; it answers the CommentPicture. */
+  url: z.string(),
+  expiresAt: z.string(),
+});
+export type CommentPictureReserved = z.infer<
+  typeof CommentPictureReservedSchema
+>;
+
+/** A picture a new comment attaches: your own, uploaded, unattached, on this artifact. */
+export const CommentPictureRefSchema = z.strictObject({
+  pictureId: z.string().min(1).max(64),
+  alt: z.string().max(COMMENT_PICTURE_ALT_MAX).optional(),
+});
+export type CommentPictureRef = z.infer<typeof CommentPictureRefSchema>;
+const pictureRefs = z
+  .array(CommentPictureRefSchema)
+  .max(COMMENT_PICTURES_MAX)
+  .optional();
+
 export const CommentSchema = z.object({
   id: z.string(),
   body: z.string(),
@@ -246,6 +312,8 @@ export const CommentSchema = z.object({
   notified: z.array(CommentNotifiedSchema).optional(),
   /** #2559: a non-fatal notice on the POST response only (a mention over the limit); never stored. */
   notice: z.string().optional(),
+  /** #2508: up to 4 pictures; absent when there are none. */
+  pictures: z.array(CommentPictureSchema).optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -304,7 +372,8 @@ export const anchorInputSchema = z.discriminatedUnion("kind", [
 ]);
 export type AnchorInput = z.infer<typeof anchorInputSchema>;
 
-const commentBody = z.string().trim().min(1).max(COMMENT_BODY_MAX);
+/** With pictures a comment may have no text (#2508): empty or up to the same length. */
+const commentBodyOrPictures = z.string().trim().max(COMMENT_BODY_MAX);
 const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
 
 /**
@@ -336,27 +405,41 @@ const extras = {
 };
 
 /** POST R.comments body. */
-export const NewThreadBodySchema = z.object({
-  anchor: anchorInputSchema,
-  body: commentBody,
-  guestName,
-  ...extras,
-});
+export const NewThreadBodySchema = z
+  .object({
+    anchor: anchorInputSchema,
+    body: commentBodyOrPictures,
+    guestName,
+    ...extras,
+    /** #2508: pictures reserved with R.commentPictures. A comment with none needs text. */
+    pictures: pictureRefs,
+  })
+  .refine((v) => v.body.length > 0 || (v.pictures?.length ?? 0) > 0, {
+    path: ["body"],
+    message: "A comment needs text or a picture",
+  });
 export type NewThreadBody = z.infer<typeof NewThreadBodySchema>;
 
 /** POST R.commentReplies body. */
-export const ReplyBodySchema = z.object({
-  body: commentBody,
-  guestName,
-  ...extras,
-  /**
-   * Address the reply to the thread root's ask author (#1614): anyone who may
-   * reply, viewers included. 400 not_an_ask when the root has no ask or its
-   * author is not an agent; 400 when combined with mentions or ask. Its agents get a
-   * fixed notice; `mentions` on the returned comment says who and how it went.
-   */
-  toAsker: z.boolean().optional(),
-});
+export const ReplyBodySchema = z
+  .object({
+    body: commentBodyOrPictures,
+    guestName,
+    ...extras,
+    /** #2508: pictures reserved with R.commentPictures. A comment with none needs text. */
+    pictures: pictureRefs,
+    /**
+     * Address the reply to the thread root's ask author (#1614): anyone who may
+     * reply, viewers included. 400 not_an_ask when the root has no ask or its
+     * author is not an agent; 400 when combined with mentions or ask. Its agents get a
+     * fixed notice; `mentions` on the returned comment says who and how it went.
+     */
+    toAsker: z.boolean().optional(),
+  })
+  .refine((v) => v.body.length > 0 || (v.pictures?.length ?? 0) > 0, {
+    path: ["body"],
+    message: "A comment needs text or a picture",
+  });
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
 /** POST R.commentAnswer body. */

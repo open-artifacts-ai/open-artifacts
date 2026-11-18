@@ -1,4 +1,8 @@
-import { PushSubscribeBodySchema, R } from "@oa/shared";
+import {
+  PushSubscribeBodySchema,
+  PushSubscriptionPatchBodySchema,
+  R,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { interactiveSession, requireUser } from "../auth/authz.js";
 import { jsonBody } from "../http/body.js";
@@ -7,6 +11,7 @@ import type { AppEnv } from "../http/middleware.js";
 import {
   addSubscription,
   listSubscriptions,
+  patchSubscription,
   removeSubscription,
 } from "../services/push.js";
 import { pushOn } from "../services/web-push.js";
@@ -42,6 +47,14 @@ export function mountPush(app: AppType): void {
     const user = pushUser(c, true);
     const body = await jsonBody(c, PushSubscribeBodySchema);
     return c.json({ id: await addSubscription(c.env, user.id, body) }, 201);
+  });
+
+  app.patch("/api/v1/me/push/subscriptions/:id", async (c) => {
+    const user = pushUser(c, true);
+    const body = await jsonBody(c, PushSubscriptionPatchBodySchema);
+    const r = await patchSubscription(c.env, user.id, c.req.param("id"), body);
+    if (!r) throw new ApiError("not_found", "Not found");
+    return c.json(r);
   });
 
   app.delete("/api/v1/me/push/subscriptions/:id", async (c) => {

@@ -6,15 +6,21 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { RECOVERY_CRON, scheduled } from "../src/cron.js";
 import type { Env } from "../src/env.js";
+import { publish } from "../src/services/artifacts.js";
+import { recordShareItem } from "../src/services/inbox-items.js";
 import { DEFAULT_PREFS, putPrefs } from "../src/services/notification-prefs.js";
 import {
   BUNDLE_MS,
   DEFAULT_BODY,
+  DEFAULT_UPDATE_BODY,
   drainPush,
   MAX_SUBSCRIPTIONS,
   queueAskPush,
+  queueBackFromLater,
   queuePush,
+  queueUpdatePush,
 } from "../src/services/push.js";
+import { getUser } from "../src/services/users.js";
 import {
   b64u,
   encryptPayload,
@@ -776,6 +782,261 @@ describe("sending", () => {
       asker_ref: typer.u.userId,
       agent_key: "idn1",
     });
+  });
+});
+
+describe("per-browser switches, Updates, mutes and Back from later (design v10)", () => {
+  const patch = (E: Env, cookie: string, id: string, body: unknown) =>
+    api(app, R.mePushSubscription(id), cookie, { method: "PATCH", body }, E);
+  const subOf = async (E: Env, cookie: string) =>
+    (
+      (await (await api(app, R.mePushSubscriptions, cookie, {}, E)).json()) as {
+        items: { id: string; needsYou: boolean; updates: boolean }[];
+      }
+    ).items[0] as { id: string; needsYou: boolean; updates: boolean };
+
+  it("a new browser starts with Needs-you on and Updates as the member's default; PATCH changes this browser only", async () => {
+    const { E } = await world();
+    const u = await mk("sw");
+    await putPrefs(
+      E,
+      u.userId,
+      prefs({ updates: { inApp: true, browser: true } }),
+    );
+    const a = await browser();
+    const b = await browser();
+    await subscribe(E, u.cookie, a.body);
+    await subscribe(E, u.cookie, b.body);
+    const list = (
+      (await (
+        await api(app, R.mePushSubscriptions, u.cookie, {}, E)
+      ).json()) as {
+        items: { id: string; needsYou: boolean; updates: boolean }[];
+      }
+    ).items;
+    expect(list.map((i) => [i.needsYou, i.updates])).toEqual([
+      [true, true],
+      [true, true],
+    ]);
+    const r = await patch(E, u.cookie, list[0]?.id as string, {
+      updates: false,
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ needsYou: true, updates: false });
+    const after = (
+      (await (
+        await api(app, R.mePushSubscriptions, u.cookie, {}, E)
+      ).json()) as {
+        items: { needsYou: boolean; updates: boolean }[];
+      }
+    ).items;
+    expect(after.map((i) => [i.needsYou, i.updates])).toEqual([
+      [true, false],
+      [true, true],
+    ]);
+  });
+
+  it("PATCH is the owner's, in a browser: another person or a token gets 404; an empty body is 400", async () => {
+    const { E } = await world();
+    const a = await mk("pa");
+    const b2 = await mk("pb");
+    await subscribe(E, a.cookie, (await browser()).body);
+    const id = (await subOf(E, a.cookie)).id;
+    expect((await patch(E, b2.cookie, id, { updates: true })).status).toBe(404);
+    const pat = (await createPat(E, a.userId, "p")).token;
+    expect((await patch(E, pat, id, { updates: true })).status).toBe(404);
+    expect((await patch(E, a.cookie, id, {})).status).toBe(400);
+    expect((await patch(E, a.cookie, "nope", { updates: true })).status).toBe(
+      404,
+    );
+    expect((await subOf(E, a.cookie)).updates).toBe(false);
+  });
+
+  it("an Update is pushed only with the member-wide Updates switch and the browser's, with the fixed text", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      updates: { inApp: true, browser: true },
+    });
+    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
+    const { sent } = fakePush();
+    await queueUpdatePush(E, u.userId, item("reply:1", { kind: "update" }), T0);
+    await drainPush(E, T0);
+    const mine = sent.filter((x) => x.url === b.body.endpoint);
+    expect(mine).toHaveLength(1);
+    const p = JSON.parse(await decrypt((mine[0] as Sent).body, b));
+    expect(p.body).toBe(DEFAULT_UPDATE_BODY);
+    expect(p.tag).toBe("updates");
+    expect(JSON.stringify(p)).not.toContain("Ship the draft");
+    // This browser's Updates off: queued only if some browser wants it, so nothing.
+    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: false });
+    await queueUpdatePush(E, u.userId, item("reply:2"), T0 + BUNDLE_MS * 2);
+    expect(await pendingCount(u.userId)).toBe(0);
+    // Member-wide off: nothing either.
+    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
+    await putPrefs(
+      E,
+      u.userId,
+      prefs({ updates: { inApp: true, browser: false } }),
+    );
+    await queueUpdatePush(E, u.userId, item("reply:3"), T0 + BUNDLE_MS * 3);
+    expect(await pendingCount(u.userId)).toBe(0);
+    expect(sent.filter((x) => x.url === b.body.endpoint)).toHaveLength(1);
+  });
+
+  it("Updates use the same bundle and quiet hours as Needs-you, and a bundle of both is one notification", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      updates: { inApp: true, browser: true },
+      quietHours: { start: "22:00", end: "07:30" },
+    });
+    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
+    const { sent } = fakePush();
+    const night = Date.UTC(2026, 10, 18, 23, 0);
+    await queueUpdatePush(E, u.userId, item("c:1"), night);
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:q", { kind: "ask" }),
+      night + 1000,
+    );
+    await drainPush(E, night + 3_600_000);
+    expect(sent).toHaveLength(0);
+    await drainPush(E, Date.UTC(2026, 10, 19, 7, 30));
+    expect(sent).toHaveLength(1);
+    const p = JSON.parse(await decrypt((sent[0] as Sent).body, b));
+    expect(p.count).toBe(2);
+    expect(p.tag).toBe("needs-you");
+    expect(p.body).toBe(DEFAULT_BODY);
+  });
+
+  it("a browser with only Updates off gets only the Needs-you part", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      updates: { inApp: true, browser: true },
+    });
+    const second = await browser();
+    await subscribe(E, u.cookie, second.body);
+    const subs = (
+      (await (
+        await api(app, R.mePushSubscriptions, u.cookie, {}, E)
+      ).json()) as {
+        items: { id: string }[];
+      }
+    ).items;
+    // First browser: Needs-you only. Second: Updates only.
+    await patch(E, u.cookie, subs[0]?.id as string, {
+      needsYou: true,
+      updates: false,
+    });
+    await patch(E, u.cookie, subs[1]?.id as string, {
+      needsYou: false,
+      updates: true,
+    });
+    const { sent } = fakePush();
+    await queuePush(E, [u.userId], item("ask:s", { kind: "ask" }), T0);
+    await queueUpdatePush(E, u.userId, item("u:s"), T0);
+    await drainPush(E, T0);
+    expect(sent).toHaveLength(2);
+    const first = sent.find((x) => x.url === b.body.endpoint) as Sent;
+    const secondSent = sent.find((x) => x.url === second.body.endpoint) as Sent;
+    expect(JSON.parse(await decrypt(first.body, b)).body).toBe(DEFAULT_BODY);
+    expect(JSON.parse(await decrypt(secondSent.body, second)).body).toBe(
+      DEFAULT_UPDATE_BODY,
+    );
+  });
+
+  it("a muted page and a muted agent are not pushed (asks and updates), the rest still are", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      updates: { inApp: true, browser: true },
+    });
+    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
+    await env.DB.prepare(
+      "insert into inbox_mutes (user_id, kind, target_id, name, created_at) values (?, 'page', 'art-muted', null, ?), (?, 'agent', 'idn-muted', 'Scout', ?)",
+    )
+      .bind(u.userId, T0, u.userId, T0)
+      .run();
+    const { sent } = fakePush();
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:m1", { artifactId: "art-muted" }),
+      T0,
+    );
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:m2", { agentKey: "idn-muted", askerRef: u.userId }),
+      T0,
+    );
+    await queueUpdatePush(
+      E,
+      u.userId,
+      item("u:m3", { artifactId: "art-muted" }),
+      T0,
+    );
+    await drainPush(E, T0);
+    expect(sent).toHaveLength(0);
+    expect(await pendingCount(u.userId)).toBe(0);
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:m4", { artifactId: "art-open" }),
+      T0 + BUNDLE_MS,
+    );
+    await drainPush(E, T0 + BUNDLE_MS);
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(await decrypt((sent[0] as Sent).body, b)).href).toContain(
+      "art-open",
+    );
+  });
+
+  it("writing an Update item queues its push for a member who turned Updates on", async () => {
+    const { E } = await world();
+    const { u } = await enroll(E, { updates: { inApp: true, browser: true } });
+    await env.DB.prepare(
+      "update push_subscriptions set updates = 1 where user_id = ?",
+    )
+      .bind(u.userId)
+      .run();
+    const owner = await mk("own-pub");
+    const member = await getUser(E, owner.userId);
+    const mine = await getUser(E, u.userId);
+    const { id } = await publish(
+      E,
+      member as never,
+      { title: "Roadmap", format: "markdown", content: "x" } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+    )
+      .bind(id, (mine as { email: string }).email, owner.userId, Date.now())
+      .run();
+    await recordShareItem(E, {
+      artifactId: id,
+      title: "Roadmap",
+      email: (mine as { email: string }).email,
+      sharer: owner.userId,
+      sharerName: "Ann",
+      createdAt: Date.now(),
+    });
+    expect(await pendingCount(u.userId)).toBe(1);
+  });
+
+  it("Back from later is queued like an ask and kept by the waiting-only filter, which is for asks", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, { browserAllAsks: false });
+    const { sent } = fakePush();
+    await queueBackFromLater(E, u.userId, item("later:x2"), T0);
+    await drainPush(E, T0);
+    const mine = sent.filter((x) => x.url === b.body.endpoint);
+    expect(mine).toHaveLength(1);
+    expect(JSON.parse(await decrypt((mine[0] as Sent).body, b)).tag).toBe(
+      "needs-you",
+    );
   });
 });
 

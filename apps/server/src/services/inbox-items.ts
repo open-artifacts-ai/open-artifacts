@@ -21,6 +21,7 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
+import { queueUpdatePush } from "./push.js";
 import { getUsers } from "./users.js";
 
 /** The most characters of a comment an item keeps. */
@@ -124,6 +125,16 @@ export async function writeInboxItems(
           ),
         ),
       );
+    // #2512 S5: browser push for each Update, for those who turned it on.
+    for (const r of rows)
+      await queueUpdatePush(env, r.userId, {
+        key: r.key,
+        artifactId: r.artifactId,
+        threadId: r.threadId ?? "",
+        askerName: r.actor.agent?.name ?? r.actor.name ?? "Someone",
+        excerpt: r.excerpt,
+        agentKey: r.actor.agent?.identity?.identityId ?? null,
+      });
   } catch (e) {
     logWarn("inbox_items_write_failed", e);
   }
