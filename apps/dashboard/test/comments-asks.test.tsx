@@ -969,69 +969,7 @@ describe("#2381 deciders on the card", () => {
   });
 });
 
-describe("#2381 a pick that needs the decider's own passkey", () => {
-  it("a plain pick answered passkey_required asks to pick again, and the next click runs the passkey flow", async () => {
-    const posts: { optionId?: string; assertion?: unknown }[] = [];
-    let challenged = 0;
-    serveThreads(() => [
-      askThread(
-        {},
-        {
-          to: [{ kind: "user", id: "me", name: "Me", me: true }],
-          decider: { kind: "user", id: "me", name: "Me", me: true },
-          role: "decide",
-          picks: [],
-        },
-      ),
-    ]);
-    server.use(
-      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
-        challenged++;
-        return HttpResponse.json({
-          options: { challenge: "x" },
-          expiresAt: "2099-01-01T00:00:00Z",
-        });
-      }),
-      http.post(
-        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
-        async ({ request }) => {
-          const b = (await request.json()) as {
-            optionId?: string;
-            assertion?: unknown;
-          };
-          posts.push(b);
-          if (!b.assertion)
-            return HttpResponse.json(
-              { error: { code: "passkey_required", message: "x" } },
-              { status: 403 },
-            );
-          return HttpResponse.json(askThread().comments[0]);
-        },
-      ),
-    );
-    mount(viewerPath(OWNED));
-    const c = await col();
-    fireEvent.click(
-      await within(c).findByRole("button", { name: /Side by side/ }),
-    );
-    // No prompt from the failed pick: it needs a click of its own.
-    expect(
-      await within(c).findByText("This now needs your passkey. Pick again."),
-    ).toBeInTheDocument();
-    expect(posts).toEqual([{ optionId: "b" }]);
-    expect(challenged).toBe(0);
-    fireEvent.click(within(c).getByRole("button", { name: /Side by side/ }));
-    await waitFor(() => expect(posts).toHaveLength(2));
-    expect(posts[1]).toMatchObject({
-      optionId: "b",
-      assertion: { id: "cred" },
-    });
-    expect(challenged).toBe(1);
-    expect(within(c).queryByRole("alert")?.textContent).toBeUndefined();
-  });
-});
-
-describe("#2263 a passkey ask card", () => {
+describe("#2864 no passkey on asks", () => {
   const meP = { kind: "user" as const, id: "me", name: "Me", me: true };
   const verifiedAnswer = {
     optionId: "a",
@@ -1053,56 +991,27 @@ describe("#2263 a passkey ask card", () => {
         ...(answer ? { answer } : {}),
       },
     );
-  const dismissed = () =>
-    Object.assign(new Error("dismissed"), { name: "NotAllowedError" });
   const opt = (c: HTMLElement, id: string) =>
     c.querySelector(`[data-option=${id}]`) as HTMLButtonElement;
 
-  it("idle shows the passkey hint; a pick shows the verified pill once the server answers", async () => {
-    let answer: object | undefined;
-    serveThreads(() => [passkeyAsk(answer)]);
-    server.use(
-      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () =>
-        HttpResponse.json({
-          options: { challenge: "x" },
-          expiresAt: "2099-01-01T00:00:00Z",
-        }),
-      ),
-      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () => {
-        answer = verifiedAnswer;
-        return HttpResponse.json(askThread().comments[0]);
-      }),
-    );
-    mount(viewerPath(OWNED));
-    const c = await col();
-    await within(c).findByRole("button", { name: /Side by side/ });
-    expect(c.querySelector("[data-passkey-hint]")).not.toBeNull();
-    fireEvent.click(opt(c, "b"));
-    await waitFor(() =>
-      expect(c.querySelector("[data-ask-verified]")?.textContent).toMatch(
-        /Verified with passkey/,
-      ),
-    );
-  });
-
-  it("a dismissed prompt says nothing was approved and focuses the option; the next pick goes through", async () => {
+  it("an ask an old server marks confirm: passkey is answered in one click, with no challenge and no WebAuthn call", async () => {
     const webauthn = await import("../src/auth/webauthn");
-    vi.mocked(webauthn.getAssertion).mockRejectedValueOnce(dismissed());
+    vi.mocked(webauthn.getAssertion).mockClear();
     const posts: unknown[] = [];
-    let answer: object | undefined;
-    serveThreads(() => [passkeyAsk(answer)]);
+    let challenged = 0;
+    serveThreads(() => [passkeyAsk()]);
     server.use(
-      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () =>
-        HttpResponse.json({
+      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
+        challenged++;
+        return HttpResponse.json({
           options: { challenge: "x" },
           expiresAt: "2099-01-01T00:00:00Z",
-        }),
-      ),
+        });
+      }),
       http.post(
         `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
         async ({ request }) => {
           posts.push(await request.json());
-          answer = verifiedAnswer;
           return HttpResponse.json(askThread().comments[0]);
         },
       ),
@@ -1110,109 +1019,61 @@ describe("#2263 a passkey ask card", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByRole("button", { name: /Side by side/ });
+    expect(c.querySelector("[data-passkey-hint]")).toBeNull();
+    expect(c.textContent).not.toMatch(/passkey/i);
     fireEvent.click(opt(c, "b"));
-    await waitFor(() =>
-      expect(
-        c.querySelector("[data-passkey-error=cancelled]")?.textContent,
-      ).toBe("Nothing was approved."),
-    );
-    expect(posts).toHaveLength(0);
-    expect(c.querySelector("[data-ask-answer]")).toBeNull();
-    expect(opt(c, "b")).toHaveFocus();
-    fireEvent.click(opt(c, "b"));
-    await waitFor(() =>
-      expect(c.querySelector("[data-ask-verified]")).not.toBeNull(),
-    );
-    expect(posts).toHaveLength(1);
+    await waitFor(() => expect(posts).toEqual([{ optionId: "b" }]));
+    expect(challenged).toBe(0);
+    expect(webauthn.getAssertion).not.toHaveBeenCalled();
   });
 
-  it.each([
-    [
-      "no_passkey",
-      403,
-      {},
-      "no_passkey",
-      /Add a passkey to approve this here/,
-      true,
-    ],
-    [
-      "passkey_cooling",
-      403,
-      { usableAt: "2099-01-01T00:00:00Z" },
-      "cooling",
-      /Your new passkey can approve from/,
-      true,
-    ],
-    [
-      "rate_limited",
-      429,
-      {},
-      "too_many",
-      /Too many tries\. Wait a moment\./,
-      false,
-    ],
-    ["challenge_expired", 410, {}, "expired", /timed out/, false],
-  ])(
-    "a %s answer from the challenge shows its card state",
-    async (code, status, details, kind, text, blocked) => {
-      serveThreads(() => [passkeyAsk()]);
-      server.use(
-        http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () =>
-          HttpResponse.json(
-            { error: { code, message: "x", details } },
-            { status },
-          ),
-        ),
-      );
-      mount(viewerPath(OWNED));
-      const c = await col();
-      await within(c).findByRole("button", { name: /Side by side/ });
-      fireEvent.click(opt(c, "b"));
-      await waitFor(() =>
-        expect(
-          c.querySelector(`[data-passkey-error=${kind}]`)?.textContent,
-        ).toMatch(text),
-      );
-      expect(opt(c, "b").disabled).toBe(blocked);
-      expect(c.querySelector("[data-ask-answer]")).toBeNull();
-    },
-  );
-
-  it("Change on a verified answer reopens the options; cancelling the prompt brings the old answer and pill back", async () => {
+  it("a passkey_required answer from an old server is a plain error: no passkey flow, no prompt", async () => {
     const webauthn = await import("../src/auth/webauthn");
-    vi.mocked(webauthn.getAssertion).mockRejectedValueOnce(dismissed());
-    serveThreads(() => [passkeyAsk(verifiedAnswer)]);
+    vi.mocked(webauthn.getAssertion).mockClear();
+    let challenged = 0;
+    serveThreads(() => [passkeyAsk()]);
     server.use(
-      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () =>
-        HttpResponse.json({
-          options: { challenge: "x" },
-          expiresAt: "2099-01-01T00:00:00Z",
-        }),
+      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
+        challenged++;
+        return HttpResponse.json({}, { status: 500 });
+      }),
+      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () =>
+        HttpResponse.json(
+          { error: { code: "passkey_required", message: "x" } },
+          { status: 403 },
+        ),
       ),
     );
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "Change" }));
-    expect(opt(c, "b")).toBeEnabled();
+    await within(c).findByRole("button", { name: /Side by side/ });
     fireEvent.click(opt(c, "b"));
-    await waitFor(() =>
-      expect(c.querySelector("[data-passkey-error=cancelled]")).not.toBeNull(),
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      /Couldn't send your answer/,
     );
-    await waitFor(() =>
-      expect(c.querySelector("[data-ask-verified]")).not.toBeNull(),
-    );
-    expect(c.querySelector("[data-ask-answer]")?.textContent).toMatch(
-      /You picked A/,
+    expect(c.textContent).not.toMatch(/Pick again|Add a passkey/);
+    expect(challenged).toBe(0);
+    expect(webauthn.getAssertion).not.toHaveBeenCalled();
+    expect(opt(c, "b")).toBeEnabled();
+  });
+
+  it("an answer the server marks passkey-verified keeps its historical pill", async () => {
+    serveThreads(() => [passkeyAsk(verifiedAnswer)]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText(/You (picked|decided)/);
+    expect(c.querySelector("[data-ask-verified]")?.textContent).toMatch(
+      /Verified with passkey/,
     );
   });
 
-  it("the verified pill shows only on an answer the server marks", async () => {
+  it("an unmarked answer shows no pill", async () => {
     serveThreads(() => [
       passkeyAsk({ ...verifiedAnswer, verified: undefined }),
     ]);
     mount(viewerPath(OWNED));
     const c = await col();
-    await within(c).findByText(/You picked/);
+    await within(c).findAllByText(/You (picked|decided)/);
     expect(c.querySelector("[data-ask-verified]")).toBeNull();
   });
 });
