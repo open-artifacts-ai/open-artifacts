@@ -1753,21 +1753,22 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
-  // #2762: an id that is not theirs is a 404 for everyone allowed in.
+  // #2762: an allowed caller gets 400 for a bad `until` before any lookup (a
+  // capped caller's 404 is the cap's, so a 404 could not tell them apart).
   "POST /api/v1/me/inbox/:id/later": {
     refuse: {
       req: async () => ({
         path: "/api/v1/me/inbox/ask%3Anone/later",
-        body: { until: "hour" },
+        body: { until: "never" },
       }),
-      allow: code("not_found"),
+      allow: code("bad_request"),
     },
     real: {
       req: () => ({
         path: "/api/v1/me/inbox/ask%3Anone/later",
-        body: { until: "hour" },
+        body: { until: "never" },
       }),
-      allow: code("not_found"),
+      allow: code("bad_request"),
     },
   },
   "POST /api/v1/me/inbox/read-all": {
