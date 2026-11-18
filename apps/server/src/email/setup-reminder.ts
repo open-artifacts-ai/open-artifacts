@@ -14,10 +14,11 @@ export const REMIND_COPY = {
   stop: "Don't remind me",
   confirmTitle: "Stop setup reminders from {{instance}}?",
   confirmButton: "Don't remind me",
-  offTitle: "No more reminders.",
+  offTitle: "Setup reminders are off",
   offBody: "You won't get setup reminders from {{instance}}.",
   badTitle: "This link is not valid",
-  badBody: "The link is invalid or damaged.",
+  badBody:
+    "Open it again from the reminder email. If it still fails, ask your admin.",
 } as const;
 
 /** The "Don't remind me" route (GET shows a button, POST turns reminders off). */
