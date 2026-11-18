@@ -55,7 +55,7 @@ type AskT = NonNullable<CommentT["ask"]>;
 const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
 
 /** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
-const needsMe = (ask: AskT): boolean => {
+export const needsMe = (ask: AskT): boolean => {
   // A withdrawn or replaced card waits for no one (#2511).
   if (ask.withdrawn || ask.replacedBy) return false;
   if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);

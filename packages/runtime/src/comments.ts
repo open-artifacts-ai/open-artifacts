@@ -104,9 +104,18 @@ button.pin{border:0;padding:0}
 .pin.changed{outline:2px dashed #8a5a00;outline-offset:4px}
 /* Open and changed: the dashed outline sits past the 4.5px amber ring, so both read. */
 .pin.changed.on{outline-offset:6.5px}
+/* #2426: an unanswered ask for the reader: amber, and the word Ask, never colour alone. */
+.askchip{position:absolute;margin-top:-16px;height:14px;padding:0 6px;border:0;border-radius:7px;background:#e0a000;color:#1b1300;font:700 10.5px/14px system-ui,sans-serif;pointer-events:auto;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.askchip:focus-visible{outline:2px solid #1b1300;outline-offset:2px}
+.mark.ask{width:auto;height:14px;padding:0 6px;font:700 10.5px/14px system-ui,sans-serif;color:#1b1300;background:#e0a000;border:0}
+.pin.ask{background:#e0a000;color:#1b1300;box-shadow:0 0 0 2px #fff,0 0 0 4px #1b1300,0 3px 8px rgba(0,0,0,.3)}
+.pin.ask.face{background:var(--face,#e0a000)}
+.pin.ask svg{stroke:#1b1300}
+.dark .askchip,.dark .mark.ask{background:#f2b51d;color:#1b1300}
+.dark .pin.ask{background:#f2b51d;box-shadow:0 0 0 2px #17181a,0 0 0 4px #f2b51d,0 3px 8px rgba(0,0,0,.5)}
 `;
 const PAGE_CSS =
-  "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
+  "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}::highlight(oa-comment-ask){background:rgba(245,158,11,.45);text-decoration:underline;text-decoration-color:#b45309;text-decoration-thickness:2px}";
 
 /** The runtime's current theme and a way to hear it change. */
 export interface ThemeSource {
@@ -226,6 +235,8 @@ function fillBadge(el: HTMLElement, badge: PinBadge): void {
 
 /** #2408: the first shell protocol that announces itself (shared PROTOCOL_SHELL_ANNOUNCES; not imported to keep this chunk small). */
 export const SHELL_ANNOUNCES = 6;
+/** #2426: the first shell protocol that reads `rect` on `comment.open` (shared PROTOCOL_ASK_MARK; not imported to keep this chunk small). */
+export const SHELL_ASK_RECT = 7;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send"> & Partial<Pick<Bridge, "shellProtocol">>,
@@ -420,6 +431,7 @@ export function createComments(
     const reg = highlights();
     reg?.delete("oa-comment");
     reg?.delete("oa-comment-active");
+    reg?.delete("oa-comment-ask");
     layer?.replaceChildren(...(btn?.isConnected ? [btn] : []));
   };
 
@@ -427,6 +439,7 @@ export function createComments(
   function paint() {
     const normal: Range[] = [];
     const active: Range[] = [];
+    const ask: Range[] = [];
     painted = [];
     for (const s of ensureSlots()) {
       if (
@@ -436,7 +449,7 @@ export function createComments(
       )
         continue;
       const isActive = !!s.thread.active || s.thread.id === flashId;
-      (isActive ? active : normal).push(s.range);
+      (isActive ? active : s.thread.ask ? ask : normal).push(s.range);
       painted.push({ id: s.thread.id, range: s.range });
     }
     const reg = highlights();
@@ -445,6 +458,7 @@ export function createComments(
       // so choosing Comment highlights it and posting changes nothing.
       const draft = draftRange();
       reg.set("oa-comment", new Highlight(...normal));
+      reg.set("oa-comment-ask", new Highlight(...ask));
       reg.set(
         "oa-comment-active",
         new Highlight(...active, ...(draft ? [draft] : [])),
@@ -469,15 +483,17 @@ export function createComments(
       label?: string,
       badgeIn?: PinBadge,
       id?: string,
+      ask = false,
     ) => {
       // #2388: a badge only belongs on image and pdf pins, here as well as in the shell.
       const badge = hasPins ? badgeIn : undefined;
       // A real pin with a badge is a button: keyboard reachable, named.
-      const live = badge !== undefined && !cls.includes("ghost");
+      const live = (badge !== undefined || ask) && !cls.includes("ghost");
       const d = document.createElement(live ? "button" : "div");
       if (d instanceof HTMLButtonElement) {
         d.type = "button";
-        if (badge?.label) d.setAttribute("aria-label", badge.label);
+        if (ask) d.setAttribute("aria-label", "Ask: answer here");
+        else if (badge?.label) d.setAttribute("aria-label", badge.label);
       }
       d.className = cls;
       if (id) d.dataset.id = id;
@@ -507,6 +523,7 @@ export function createComments(
             isActive ? "on" : "",
             th.resolved ? "resolved" : "",
             th.changed ? "changed" : "",
+            th.ask && !th.resolved ? "ask" : "",
             flips(x, clampTop(y)),
           ]
             .filter(Boolean)
@@ -518,9 +535,12 @@ export function createComments(
             String(th.n ?? ""),
             th.badge,
             th.id,
+            !!th.ask && !th.resolved,
           );
           if (th.changed) d.title = "Changed since this was placed.";
-          d.addEventListener("click", () => open(th.id));
+          d.addEventListener("click", () =>
+            open(th.id, d.getBoundingClientRect()),
+          );
         }
         continue;
       }
@@ -535,12 +555,41 @@ export function createComments(
         top: rect ? docTop(rect) : null,
       });
       if (s.state === "collapsed" && rect && !th.resolved) {
+        const ask = !!th.ask;
         const d = mark(
-          isActive ? "mark on" : "mark",
+          [ask ? "mark ask" : "mark", isActive ? "on" : ""]
+            .filter(Boolean)
+            .join(" "),
           rect.left + scrollX - 3,
           docTop(rect),
+          ask ? "Ask" : undefined,
+          undefined,
+          undefined,
+          ask,
         );
-        d.addEventListener("click", () => open(th.id));
+        d.addEventListener("click", () =>
+          open(th.id, d.getBoundingClientRect()),
+        );
+      } else if (
+        th.ask &&
+        !th.resolved &&
+        rect &&
+        (s.state === "exact" || s.state === "partial")
+      ) {
+        // The highlight itself is amber; the chip names it and takes the click
+        // and the keyboard, which a highlight cannot.
+        const d = mark(
+          "askchip",
+          rect.left + scrollX,
+          docTop(rect),
+          "Ask",
+          undefined,
+          undefined,
+          true,
+        );
+        d.addEventListener("click", () =>
+          open(th.id, d.getBoundingClientRect()),
+        );
       }
     }
     ghostAt = null;
@@ -636,8 +685,24 @@ export function createComments(
   const onResize = () => schedule(true, true);
   const onScroll = () => schedule(true, false);
 
-  function open(id: string) {
-    bridge.send({ oa: 1, type: "comment.open", id });
+  function open(
+    id: string,
+    at?: { left: number; top: number; width: number; height: number },
+  ) {
+    // #2426: where the mark is, so the shell can open an ask beside it; only
+    // for a shell that said it knows the field (an older one refuses the message).
+    const clamp = (n: number, lo: number, hi: number) =>
+      Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : 0));
+    const rect =
+      at && (bridge.shellProtocol?.() ?? 0) >= SHELL_ASK_RECT
+        ? {
+            x: clamp(at.left, -100_000, 100_000),
+            y: clamp(at.top, -100_000, 100_000),
+            width: clamp(at.width, 0, 100_000),
+            height: clamp(at.height, 0, 100_000),
+          }
+        : undefined;
+    bridge.send({ oa: 1, type: "comment.open", id, ...(rect ? { rect } : {}) });
   }
 
   // ---- selection button ----
@@ -878,7 +943,7 @@ export function createComments(
       )
     )
       return;
-    let best: { id: string; size: number } | undefined;
+    let best: { id: string; size: number; rect: DOMRect } | undefined;
     for (const p of painted) {
       for (const r of Array.from(p.range.getClientRects())) {
         if (
@@ -889,10 +954,10 @@ export function createComments(
         )
           continue;
         const size = p.range.toString().length;
-        if (!best || size < best.size) best = { id: p.id, size };
+        if (!best || size < best.size) best = { id: p.id, size, rect: r };
       }
     }
-    if (best) open(best.id);
+    if (best) open(best.id, best.rect);
   }
 
   /** Where Esc belongs to the page or to a dialog above the frame (#1698). */
