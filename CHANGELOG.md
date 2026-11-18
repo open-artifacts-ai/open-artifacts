@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.213.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.212.0...v0.213.0) (2026-11-18)
+
+
+### Features
+
+* **bus:** during quiet hours my own agents see "away until" (hub side, [#2759](https://github.com/open-artifacts-ai/open-artifacts/issues/2759)) ([#2790](https://github.com/open-artifacts-ai/open-artifacts/issues/2790)) ([76eafcf](https://github.com/open-artifacts-ai/open-artifacts/commit/76eafcfd4dc5c4bc76dc7b86f20e654cbe8ab83d))
+* **notifications:** browser notifications for what needs you ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) slice 3) ([#2677](https://github.com/open-artifacts-ai/open-artifacts/issues/2677)) ([a80bbbe](https://github.com/open-artifacts-ai/open-artifacts/commit/a80bbbe5947ee4ed24ceaf96ae9b88f4d57e491f))
+* **push:** a mention of me sends a browser notification ([#2781](https://github.com/open-artifacts-ai/open-artifacts/issues/2781)) ([#2798](https://github.com/open-artifacts-ai/open-artifacts/issues/2798)) ([75a4138](https://github.com/open-artifacts-ai/open-artifacts/commit/75a413899af5a694ab429d757c0fd80d74bf1586))
+* **settings:** notification settings, and the comment quote on mention rows ([#2512](https://github.com/open-artifacts-ai/open-artifacts/issues/2512) slice 2) ([#2674](https://github.com/open-artifacts-ai/open-artifacts/issues/2674)) ([5cd2276](https://github.com/open-artifacts-ai/open-artifacts/commit/5cd22760bce234c5dca3e28a5b18cefeb908368b))
+
+
+### Bug Fixes
+
+* **bus:** back-outs after the ack report held; held step backs; no stale run_version push ([#2719](https://github.com/open-artifacts-ai/open-artifacts/issues/2719)) ([#2797](https://github.com/open-artifacts-ai/open-artifacts/issues/2797)) ([8c7d062](https://github.com/open-artifacts-ai/open-artifacts/commit/8c7d0627a0882cccc8c2c0aad99220e661bd27b0))
+
 ## [0.212.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.211.0...v0.212.0) (2026-11-18)
 
 
