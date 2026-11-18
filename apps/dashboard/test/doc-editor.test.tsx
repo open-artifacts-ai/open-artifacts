@@ -1444,6 +1444,20 @@ describe("DocEditor", () => {
     expect(seen.at(-1)).toBe("saving");
   });
 
+  it("opens exactly one room, and keeps it across a re-render (#2711: was an e2e socket count)", async () => {
+    const p = fakeProviders();
+    let rooms = 0;
+    const make: typeof p.make = (...a) => {
+      rooms++;
+      return p.make(...a);
+    };
+    const view = render(<DocEditor {...base} canEdit makeProvider={make} />);
+    act(() => p.made.last?.connect(false));
+    await screen.findByRole("toolbar");
+    view.rerender(<DocEditor {...base} canEdit makeProvider={make} />);
+    expect(rooms).toBe(1);
+  });
+
   it("leaves the room on unmount", async () => {
     const p = fakeProviders();
     const view = render(<DocEditor {...base} canEdit makeProvider={p.make} />);
