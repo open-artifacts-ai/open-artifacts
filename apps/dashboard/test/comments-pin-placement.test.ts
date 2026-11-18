@@ -42,29 +42,34 @@ describe("the box beside a new flag (#2019)", () => {
 
 describe("the card beside an ask's mark (#2426)", () => {
   const r = { x: 100, y: 200, width: 60, height: 18 };
-  it("sits right of the mark and level with it when there is room", () => {
+  const onScreen = (
+    p: { left: number; top: number },
+    f: typeof frame,
+    b: typeof box,
+  ) =>
+    p.left >= 8 &&
+    p.top >= 8 &&
+    p.left + b.w <= f.w - 8 &&
+    p.top + b.h <= f.h - 8;
+  it("sits below the mark, so the quote stays readable", () => {
     const p = placeBesideRect(r, frame, box);
-    expect(p.left).toBeGreaterThanOrEqual(r.x + r.width);
-    expect(p.top).toBe(200);
+    expect(p.top).toBeGreaterThanOrEqual(r.y + r.height);
+    expect(onScreen(p, frame, box)).toBe(true);
   });
-  it("goes left of a mark near the right edge", () => {
-    const p = placeBesideRect({ ...r, x: 800 }, frame, box);
-    expect(p.left + box.w).toBeLessThanOrEqual(800);
+  it("goes above a mark near the bottom", () => {
+    const p = placeBesideRect({ ...r, y: 600 }, frame, box);
+    expect(p.top + box.h).toBeLessThanOrEqual(600);
   });
-  it("at 390px wide it goes below the mark, or above near the bottom, and stays on screen", () => {
+  it("at 390px wide it stays on screen, below or above the mark", () => {
     const narrow = { w: 390, h: 700 };
-    const w = besideWidth(narrow.w);
-    const b = { w, h: 180 };
+    const b = { w: besideWidth(narrow.w), h: 180 };
     for (const y of [100, 650]) {
       const p = placeBesideRect(
         { x: 150, y, width: 60, height: 18 },
         narrow,
         b,
       );
-      expect(p.left).toBeGreaterThanOrEqual(8);
-      expect(p.left + w).toBeLessThanOrEqual(narrow.w - 8);
-      expect(p.top).toBeGreaterThanOrEqual(8);
-      expect(p.top + b.h).toBeLessThanOrEqual(narrow.h - 8);
+      expect(onScreen(p, narrow, b)).toBe(true);
     }
     expect(
       placeBesideRect({ x: 150, y: 100, width: 60, height: 18 }, narrow, b).top,

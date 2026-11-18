@@ -28,9 +28,9 @@ export function placeBeside(
 
 /**
  * #2426: where an ask's card goes beside the mark it is about, in the frame's
- * pixels. Right of the mark, else left of it, else below it, else above; always
- * clamped so every edge is in view (on a 390px phone-width frame it sits below
- * or above).
+ * pixels. Below the mark (so it leaves the quote readable), else above, else
+ * right, else left; always clamped so every edge is in view, which also holds
+ * on a 390px phone-width frame.
  */
 export function placeBesideRect(
   r: { x: number; y: number; width: number; height: number },
@@ -41,13 +41,13 @@ export function placeBesideRect(
     Math.max(MARGIN, Math.min(x, frame.w - box.w - MARGIN));
   const clampY = (y: number) =>
     Math.max(MARGIN, Math.min(y, frame.h - box.h - MARGIN));
-  const right = r.x + r.width + GAP;
-  if (right + box.w <= frame.w - MARGIN)
-    return { left: right, top: clampY(r.y) };
-  const left = r.x - GAP - box.w;
-  if (left >= MARGIN) return { left, top: clampY(r.y) };
   const below = r.y + r.height + GAP;
   if (below + box.h <= frame.h - MARGIN)
     return { left: clampX(r.x), top: below };
-  return { left: clampX(r.x), top: clampY(r.y - GAP - box.h) };
+  const above = r.y - GAP - box.h;
+  if (above >= MARGIN) return { left: clampX(r.x), top: above };
+  const right = r.x + r.width + GAP;
+  if (right + box.w <= frame.w - MARGIN)
+    return { left: right, top: clampY(r.y) };
+  return { left: clampX(r.x - GAP - box.w), top: clampY(r.y) };
 }

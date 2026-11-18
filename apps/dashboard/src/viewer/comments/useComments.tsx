@@ -565,9 +565,9 @@ export function useCommentsController({
   const onOpen = useCallback((tid: string, rect?: Rect) => {
     if (!gates.current.open() || !ids.current.has(tid)) return;
     // #2426: an unanswered ask opens its card beside the mark, where there is
-    // room for it; the shell re-checks that it is one (the frame can forge).
+    // room for it (on a phone too: it sits below or above the mark); the shell re-checks that it is one (the frame can forge).
     const t = threadsRef.current.find((x) => x.id === tid);
-    if (rect && besideRef.current && t && isAskForMe(t)) {
+    if (rect && t && isAskForMe(t)) {
       setAskAt({ id: tid, rect });
       return;
     }
@@ -621,7 +621,7 @@ export function useCommentsController({
       revealDone,
       draft,
       pinBeside: besideOk && draft && "pin" in draft ? pinAt : null,
-      askBeside: besideOk ? askAt : null,
+      askBeside: askAt,
       closeAsk: () => setAskAt(null),
       cancelDraft: (posted = false) => {
         dirty.current = false;

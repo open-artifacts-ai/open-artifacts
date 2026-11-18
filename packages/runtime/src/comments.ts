@@ -587,9 +587,12 @@ export function createComments(
           undefined,
           true,
         );
-        d.addEventListener("click", () =>
-          open(th.id, d.getBoundingClientRect()),
-        );
+        // The card goes by the quote, not by the chip above it.
+        const quoteRange = s.range;
+        d.addEventListener("click", () => {
+          const r = quoteRange?.getClientRects()[0];
+          open(th.id, r ?? d.getBoundingClientRect());
+        });
       }
     }
     ghostAt = null;

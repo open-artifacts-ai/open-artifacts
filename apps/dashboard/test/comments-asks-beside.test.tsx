@@ -267,4 +267,15 @@ describe("asks inside the page (#2426)", () => {
     fireEvent.pointerDown(document.body);
     await waitFor(() => expect(beside()).toBeNull());
   });
+
+  it("opens beside the mark on a phone too, not in the sheet", async () => {
+    viewport(390);
+    serve([thread("t1")]);
+    mount(viewerPath(OWNED));
+    await hello();
+    await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
+    await click("t1");
+    await waitFor(() => expect(beside()).not.toBeNull());
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });
