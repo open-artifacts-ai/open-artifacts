@@ -84,12 +84,11 @@ export const OPTOUT_COPY = {
   confirmBody:
     "We won't email you again when someone at {{org}} shares a page with you. Other teams on Open Artifacts can still email you.",
   confirmButton: "Stop emails from {{org}}",
-  doneTitle: "You won't get emails from {{org}} again.",
+  doneTitle: "You won't get share emails from {{org}} anymore.",
   doneBody:
     "Pages shared with you still open when you log in. We just won't email you about them.",
   undoButton: "Undo",
-  undoneTitle: "You'll get these emails again.",
-  undoneBody: "We'll email you when someone at {{org}} shares a page with you.",
+  undoneTitle: "You'll get share emails from {{org}} again.",
   badTitle: "This link is not valid",
   badBody:
     "This link doesn't work. Open the most recent email from us and use the link there.",

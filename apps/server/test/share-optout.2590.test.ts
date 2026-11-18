@@ -132,7 +132,7 @@ describe("the opt-out page", () => {
     expect(p.status).toBe(200);
     const done = await p.text();
     expect(done).toContain(
-      "You won&#39;t get emails from Open Artifacts again.",
+      "You won&#39;t get share emails from Open Artifacts anymore.",
     );
     expect(done).toContain(
       "Pages shared with you still open when you log in. We just won&#39;t email you about them.",
@@ -310,7 +310,7 @@ describe("the recipient's undo (#2653)", () => {
     const ot = await signOptoutToken(env, other);
     const done = await (await optOut(t)).text();
     expect(done).toContain(
-      "You won&#39;t get emails from Open Artifacts again.",
+      "You won&#39;t get share emails from Open Artifacts anymore.",
     );
     expect(done).toContain('name="action" value="undo"');
     expect(done).toContain(">Undo</button>");
@@ -319,7 +319,9 @@ describe("the recipient's undo (#2653)", () => {
     const r = await undo(t);
     expect(r.status).toBe(200);
     const html = await r.text();
-    expect(html).toContain("You&#39;ll get these emails again.");
+    expect(html).toContain(
+      "You&#39;ll get share emails from Open Artifacts again.",
+    );
     expect(html).not.toContain("<button");
     expect(await suppressed(email)).toBe(false);
     // Another address is untouched.
@@ -365,7 +367,7 @@ describe("the recipient's undo (#2653)", () => {
     const g = await hit("GET", path);
     const html = await g.text();
     expect(html).toContain(
-      "You won&#39;t get emails from Open Artifacts again.",
+      "You won&#39;t get share emails from Open Artifacts anymore.",
     );
     expect(html).toContain('name="action" value="undo"');
     // A GET, even one that asks for the undo, never mutates.
@@ -400,6 +402,29 @@ describe("the recipient's undo (#2653)", () => {
     // The token in the URL with no action is still an opt-out, not an undo.
     await form({ t: "x" });
     expect(await suppressed(email)).toBe(true);
+  });
+
+  it("the team name is escaped on the done and undone pages", async () => {
+    const email = uniq("es", "gmail.com");
+    const t = await signOptoutToken(env, email);
+    try {
+      await env.DB.prepare(
+        "insert into settings (key, value) values ('name', ?) on conflict (key) do update set value = excluded.value",
+      )
+        .bind("Tom & <i>Jerry</i>")
+        .run();
+      const done = await (await optOut(t)).text();
+      expect(done).toContain(
+        "You won&#39;t get share emails from Tom &amp; &lt;i&gt;Jerry&lt;/i&gt; anymore.",
+      );
+      const undone = await (await undo(t)).text();
+      expect(undone).toContain(
+        "You&#39;ll get share emails from Tom &amp; &lt;i&gt;Jerry&lt;/i&gt; again.",
+      );
+      expect(done + undone).not.toContain("<i>");
+    } finally {
+      await env.DB.prepare("delete from settings where key = 'name'").run();
+    }
   });
 
   it("no other way in: there is no admin route for it", async () => {

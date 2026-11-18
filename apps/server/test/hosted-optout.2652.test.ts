@@ -324,7 +324,7 @@ describe("the install's own page", () => {
           ctx,
         )
       ).text();
-      expect(done).toContain("You won&#39;t get emails from");
+      expect(done).toContain("You won&#39;t get share emails from");
     }
   });
 });

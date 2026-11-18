@@ -118,10 +118,7 @@ export function mountShareOptout(app: AppType): void {
         ).bind(hash),
       ]);
       return c.html(
-        page(
-          OPTOUT_COPY.undoneTitle,
-          fill(OPTOUT_COPY.undoneBody, { org: await org(c) }),
-        ),
+        page(fill(OPTOUT_COPY.undoneTitle, { org: await org(c) }), ""),
         200,
         HEADERS,
       );
