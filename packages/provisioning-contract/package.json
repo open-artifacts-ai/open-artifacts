@@ -19,6 +19,11 @@
       "import": "./dist/slugs.js",
       "default": "./dist/slugs.js"
     },
+    "./optouts": {
+      "types": "./dist/optouts.d.ts",
+      "import": "./dist/optouts.js",
+      "default": "./dist/optouts.js"
+    },
     "./alerts": {
       "types": "./dist/alerts.d.ts",
       "import": "./dist/alerts.js",
