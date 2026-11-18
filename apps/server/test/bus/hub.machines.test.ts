@@ -98,6 +98,7 @@ const RPC_ALLOWLIST = [
   "ownerAwayChanged",
   "pendingProposalSources",
   "ping",
+  "proofMissReason",
   "proposeLink",
   "proposeReach",
   "proposeRole",
@@ -110,7 +111,6 @@ const RPC_ALLOWLIST = [
   "viewLinkProposal",
   "viewReachProposal",
   "viewRoleProposal",
-  // #2512: read-only; returns identity ids and times only.
   "waitingOf",
   "wipe",
   "withdrawHeld",
