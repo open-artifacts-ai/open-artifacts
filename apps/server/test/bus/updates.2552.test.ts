@@ -11,6 +11,7 @@ import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import {
   latestReport,
+  markStopped,
   RUN_VERSION_KEY,
   STOPPED_AFTER_MS,
 } from "../../src/bus/updates.js";
@@ -283,6 +284,29 @@ describe("the bus stopped (#2552)", () => {
     await dueNow(who.userId);
     await runDurableObjectAlarm(await hubOf(who.userId));
     expect((await latestReport(e, m.id))?.stoppedAt).toBeNull();
+    // No past due time is left behind to re-arm the alarm in a loop.
+    const due = await runInDurableObject(
+      await hubOf(who.userId),
+      (_i, s: DurableObjectState) =>
+        s.storage.sql
+          .exec("select value from meta where key = 'update_due'")
+          .toArray()
+          .map((r) => Number(r.value)),
+    );
+    expect(due.every((t) => t > Date.now())).toBe(true);
+  });
+
+  it("markStopped returns null for a hello-after-switching machine", async () => {
+    const { who, m, d } = await open();
+    d.send(report({ event: "switching" }));
+    await waitFor(d, "update_ack");
+    await aged(m.id, STOPPED_AFTER_MS + 1000);
+    await e.DB.prepare(
+      "update bus_machine_updates set last_hello_at = switching_at + 1 where machine_id = ?1",
+    )
+      .bind(m.id)
+      .run();
+    expect(await markStopped(e, who.userId, Date.now())).toBeNull();
   });
 
   it("a later non-switching report is not a stop either", async () => {

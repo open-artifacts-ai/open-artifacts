@@ -836,7 +836,10 @@ describe("review fixes (#2552)", () => {
 
 describe("the instance's install_now and announced switches (#2552)", () => {
   const build = (
-    over: { login?: () => boolean; announce?: () => boolean } = {},
+    over: {
+      login?: () => boolean;
+      announce?: () => boolean | Promise<boolean>;
+    } = {},
   ) => {
     const { home, fill } = world();
     const exit = vi.fn();
@@ -871,7 +874,7 @@ describe("the instance's install_now and announced switches (#2552)", () => {
       hubReady: () => true,
       announceSwitch: async (from, to) => {
         calls.push(`${from}>${to}@${currentVersion(home)}`);
-        return over.announce?.() ?? true;
+        return (await over.announce?.()) ?? true;
       },
       serverVersion: () => undefined,
       exit,
@@ -949,6 +952,46 @@ describe("the instance's install_now and announced switches (#2552)", () => {
     });
     expect(currentVersion(held.home)).toBe("1.0.0");
     expect(readPolicy(held.home).pending).toBeUndefined();
+  });
+
+  it("`off` set while the hub's answer is awaited stops the swap", async () => {
+    let home = "";
+    const w = build({
+      announce: () => {
+        const j = JSON.parse(readFileSync(join(home, "update.json"), "utf8"));
+        writeFileSync(
+          join(home, "update.json"),
+          JSON.stringify({ ...j, off: true }),
+        );
+        return true;
+      },
+    });
+    home = w.home;
+    await w.u.instructFromInstance("1.1.0");
+    expect(await w.u.installNowFromInstance()).toEqual({
+      kind: "retry_later",
+    });
+    expect(currentVersion(w.home)).toBe("1.0.0");
+    expect(readPolicy(w.home).pending).toBeUndefined();
+    expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("a second switch while one awaits the hub gets retry_later; one swap only", async () => {
+    let release: (v: boolean) => void = () => {};
+    const gate = new Promise<boolean>((r) => {
+      release = r;
+    });
+    let n = 0;
+    const w = build({ announce: () => (n++ === 0 ? gate : true) });
+    await w.u.instructFromInstance("1.1.0");
+    const first = w.u.installNowFromInstance();
+    expect(await w.u.installNowFromInstance()).toEqual({
+      kind: "retry_later",
+    });
+    release(true);
+    expect(await first).toMatchObject({ kind: "switching" });
+    expect(w.exit).toHaveBeenCalledTimes(1);
+    expect(n).toBe(1);
   });
 
   it("naming the running version is no instruction; naming the kept previous is a step back", async () => {

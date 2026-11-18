@@ -123,6 +123,8 @@ export class Updater {
   private readonly quiet = new QuietTracker();
   private stopTick: () => void = () => {};
   private working = false;
+  /** One swap at a time: every switchTo caller goes through this. */
+  private switching = false;
   private wanted: { i: Instruction; at: number } | undefined;
   private readonly d: UpdaterDeps;
   /** Decided once: the loop's flag, and a running version that is x.y.z. */
@@ -446,6 +448,19 @@ export class Updater {
     version: string,
     staged: boolean,
   ): Promise<UpdateOutcome> {
+    if (this.switching) return { kind: "retry_later" };
+    this.switching = true;
+    try {
+      return await this.doSwitch(version, staged);
+    } finally {
+      this.switching = false;
+    }
+  }
+
+  private async doSwitch(
+    version: string,
+    staged: boolean,
+  ): Promise<UpdateOutcome> {
     const { home, running } = this.d;
     const now = this.now();
     if (running === undefined || !isSafeVersion(version) || version === running)
@@ -489,6 +504,16 @@ export class Updater {
     // stopped" from it). No answer holds the switch for a later try.
     if (!(await this.d.announceSwitch(running, version)))
       return { kind: "retry_later" };
+    // The wait above can be long: `off` or a newer run may have landed in it.
+    const after = readPolicy(home);
+    if (after.unreadable || after.off) return { kind: "retry_later" };
+    if (
+      staged &&
+      [after.newestRun, after.current, running].some(
+        (v) => v !== undefined && compareVersions(version, v) !== 1,
+      )
+    )
+      return { kind: "refused", reason: "not_forward" };
     try {
       setPending(home, { from: running, to: version, startedAt: now });
       recordAttempt(home, now);

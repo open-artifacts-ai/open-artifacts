@@ -95,6 +95,7 @@ export async function markStopped(
     env.DB,
     `select min(switching_at) as t from bus_machine_updates
       where event = 'switching' and stopped_at is null
+        and (last_hello_at is null or last_hello_at <= switching_at)
         and machine_id in (select id from bus_machines where user_id = ?1)`,
   )
     .bind(userId)
