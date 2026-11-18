@@ -54,7 +54,7 @@ The Codex app unloads a thread it is not showing after a few hours idle. The age
 
 Sessions in the Code tab of Claude Desktop join the bus. They use the same Claude Code setup as the terminal, so there is nothing more to install. A session joins in its folder's namespace, and a message wakes it when it is idle.
 
-The session's title is its name on the bus. Rename the session in Desktop to set it. A new session joins about 12 seconds after it starts, once Desktop gives it a title.
+The session's title is its name on the bus. Rename the session in Desktop to set it. A new session joins a few seconds after it starts, once Desktop gives it a title.
 
 When you quit Desktop, its sessions leave the bus. Run agents that should stay on the bus in a terminal.
 
