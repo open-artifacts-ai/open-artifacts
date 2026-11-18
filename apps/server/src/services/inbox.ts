@@ -156,8 +156,12 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
     const actor = actors[i] as StoredActor;
     const face = faces[i] as CommentAuthor;
     const idn = actor.agent?.identity?.identityId;
-    const since =
+    // A wait on this ask can't start before it was asked: the agent's waiting
+    // status may be older than the ask (#2761).
+    const began =
       idn && actor.ref === caller.user.id ? waiting.get(idn) : undefined;
+    const since =
+      began === undefined ? undefined : Math.max(began, Date.parse(r.askedAt));
     const urgency =
       since !== undefined ? "waiting" : r.confirm === 1 ? "approval" : "plain";
     return {
