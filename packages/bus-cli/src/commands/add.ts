@@ -126,6 +126,10 @@ export async function add(
     throw e;
   }
   say(ctx, `Added ${name}.`);
+  say(
+    ctx,
+    `The running bus connects to ${name} the next time it restarts (after an update, or when you restart the service). Until then, folders you map to it stay off every hub.`,
+  );
   claudeEntries(name, parsed.hub, ctx);
   return 0;
 }

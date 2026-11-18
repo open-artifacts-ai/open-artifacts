@@ -703,6 +703,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const folderNotes = new Map<string, ConfigFile>();
   const noteFolder = (cwd: string) => {
     if (instHome === undefined || deps.homeLookup) return;
+    // One instance: no folder note, so no git call per request.
+    if (listInstances(instHome).length < 2) return;
     const key = folderKey(cwd);
     const unmapped = unmappedFolderNote(cwd, instHome);
     const changed = unmapped ? undefined : changedSuggestionNote(cwd, instHome);
@@ -720,6 +722,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * the folder is mapped; a changed suggestion is handed out once.
    */
   const notesFor = (cwd: string): ConfigFile[] => {
+    if (folderNotes.size === 0) return [];
     const key = folderKey(cwd);
     const n = folderNotes.get(key);
     if (!n) return [];
@@ -756,12 +759,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ...(g ? [g] : []),
     ];
   };
-  const resolveNs = (cwd: string, allowMissing: boolean) => {
-    // A namespace approval counts on the instance of the folder's home only.
-    const r = lookup(cwd);
+  const resolveNs = (
+    cwd: string,
+    allowMissing: boolean,
+    /** The instance the session is on, when already decided; else the folder's map says. */
+    on?: { instance: string | undefined },
+  ) => {
+    // A namespace approval counts on the instance the session is on only.
+    let name: string | undefined;
+    if (on !== undefined) name = on.instance;
+    else {
+      const r = lookup(cwd);
+      name = "instance" in r ? r.instance : undefined;
+    }
     const approvals =
-      instHome !== undefined && "instance" in r && r.instance !== MAIN_INSTANCE
-        ? namespacesFile(instHome, r.instance)
+      instHome !== undefined && name !== undefined && name !== MAIN_INSTANCE
+        ? namespacesFile(instHome, name)
         : undefined;
     return (
       deps.resolveNamespace ??
@@ -1496,18 +1509,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         reopenedAt.set(s.ref, Date.now());
       }
       if (!isAbsolute(s.cwd)) continue;
-      let ns: Namespace;
-      try {
-        ns = resolveNs(s.cwd, true);
-      } catch {
-        continue;
-      }
-      if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
-      // The same process reopening keeps the instance it had.
+      // The same process reopening keeps the instance it had; pick it before the namespace.
       const instance =
         prev && prev.pid === s.pid && prev.procStart === s.procStart
           ? (prev.instance ?? homeInstance(s.cwd))
           : homeInstance(s.cwd);
+      let ns: Namespace;
+      try {
+        ns = resolveNs(s.cwd, true, { instance });
+      } catch {
+        continue;
+      }
+      if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
       noteFolder(s.cwd);
       // /clear: the same process, a new session id. The new ref keeps the
       // old one's address (#1295); the old one is closed below.

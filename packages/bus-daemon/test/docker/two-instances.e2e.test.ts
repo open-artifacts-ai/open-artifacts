@@ -257,6 +257,8 @@ describe.skipIf(process.env.OA_BUS_DOCKER !== "1")(
       await settled(hubB, "sb");
       expect(h.raw.join("\n")).not.toContain('"su"');
       expect(hubB.raw.join("\n")).not.toContain('"su"');
+      expect(h.raw.join("\n")).not.toContain('"su2"');
+      expect(hubB.raw.join("\n")).not.toContain('"su2"');
       const me = await c.request({ type: "self", row: true });
       const files = me.type === "agent" ? (me.agent?.config_files ?? []) : [];
       expect(files).toEqual([

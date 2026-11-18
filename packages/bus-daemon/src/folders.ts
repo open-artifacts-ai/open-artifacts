@@ -154,6 +154,8 @@ export function folderHomeLookup(h: string = home()): HomeLookup {
   };
 }
 
+/** Bound on the once-only sets, so a long-lived daemon does not grow them without end. */
+const SEEN_MAX = 1000;
 const noted = new Set<string>();
 
 /**
@@ -169,6 +171,7 @@ export function unmappedFolderNote(
   if (!("unmapped" in folderHomeLookup(h)(cwd))) return undefined;
   const key = `${h}\0${folderKey(cwd)}`;
   if (noted.has(key)) return undefined;
+  if (noted.size >= SEEN_MAX) noted.clear();
   noted.add(key);
   return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use in this folder.`;
 }
@@ -244,6 +247,7 @@ export function changedSuggestionNote(
   if (shown !== found || shown.length > ADDRESS_SHOWN_MAX) return undefined;
   const once = `${h}\0${key}\0${found}`;
   if (suggested.has(once)) return undefined;
+  if (suggested.size >= SEEN_MAX) suggested.clear();
   suggested.add(once);
   return `This repo now suggests ${shown}. Nothing changed: this folder keeps its answer.`;
 }
