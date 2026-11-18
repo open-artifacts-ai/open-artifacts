@@ -610,11 +610,20 @@ export const ShareResultSchema = ShareSchema.extend({
    * the day), instance_limit (the instance's daily outside emails, lower in
    * a trial), limit (the existing per-recipient, per-share or sending cap),
    * skipped (no email, and the sharer is not told why: a recipient's choice
-   * is theirs, logged as recipient_opted_out).
+   * is theirs, logged as recipient_opted_out), sender_paused (this member's outside share emails are paused
+   * after bounces or a complaint: see pausedUntil; never which recipient).
    */
   notEmailed: z
-    .enum(["member_limit", "instance_limit", "limit", "skipped"])
+    .enum([
+      "member_limit",
+      "instance_limit",
+      "limit",
+      "skipped",
+      "sender_paused",
+    ])
     .optional(),
+  /** With notEmailed sender_paused: when the pause ends (ISO). */
+  pausedUntil: z.string().optional(),
   /** With notEmailed member_limit or instance_limit: the daily number that was hit (20, 100, or the trial figure). */
   limit: z.number().int().positive().optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */

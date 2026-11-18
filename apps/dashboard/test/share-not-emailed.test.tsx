@@ -45,6 +45,7 @@ describe("the lines (OA Product, #2620)", () => {
       "instance_limit",
       "limit",
       "skipped",
+      "sender_paused",
     ]);
     const base = {
       email: "a@b.co",

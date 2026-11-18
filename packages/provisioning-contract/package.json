@@ -19,6 +19,11 @@
       "import": "./dist/slugs.js",
       "default": "./dist/slugs.js"
     },
+    "./email-events": {
+      "types": "./dist/email-events.d.ts",
+      "import": "./dist/email-events.js",
+      "default": "./dist/email-events.js"
+    },
     "./optouts": {
       "types": "./dist/optouts.d.ts",
       "import": "./dist/optouts.js",

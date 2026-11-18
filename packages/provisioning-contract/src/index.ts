@@ -6,6 +6,7 @@ export * from "./alerts.js";
 export * from "./authz.js";
 export * from "./bodyhash.js";
 export * from "./constants.js";
+export * from "./email-events.js";
 export * from "./enums.js";
 export * from "./errors.js";
 export * from "./ids.js";

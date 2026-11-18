@@ -33,6 +33,19 @@ export interface Env {
    */
   USER_PRESENCE?: DurableObjectNamespace<UserPresence>;
   /**
+   * The name of the Queue Cloudflare Email Service publishes sending events
+   * to (message.bounced, message.failed, message.complained), when the
+   * platform has bound this Worker as its consumer (#2650). Unset: the queue
+   * handler ignores any batch and nothing changes (self-host).
+   */
+  EMAIL_EVENTS_QUEUE?: string;
+  /**
+   * "on": this hosted install pulls bounce and complaint events from the
+   * platform over the LoginGate on its frequent system tick (#2650), instead of
+   * a Queue consumer. Off by default; self-host never reads it.
+   */
+  EMAIL_EVENTS_PULL?: string;
+  /**
    * "on": this hosted install asks the platform's opt-out list before it
    * emails an outside address, and reports opt-outs to it (#2652). The
    * platform sets it once its routes are live; unset, hosted behaves as before.

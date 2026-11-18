@@ -281,11 +281,12 @@ export async function sendEmail(
      * no caller forgets it. `undefined` reads settings here (bounded).
      */
     instance: string | null | undefined;
-    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. `timedOut`: the send timed out, so the email may still arrive. `skipped`: the render declined (EmailSkipped). */
+    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out); `reason` names the extra cap that did. `timedOut`: the send timed out, so the email may still arrive. `skipped`: the render declined (EmailSkipped). `messageId`: the provider's id for the sent email. */
     outcome?: {
       limited?: boolean;
       reason?: string;
       timedOut?: boolean;
+      messageId?: string;
       skipped?: boolean;
     };
     /** Caps taken before the usual ones (outside shares, #2590), each with the reason it reports. */
@@ -367,6 +368,7 @@ export async function sendEmail(
         timer = setTimeout(() => reject(new EmailTimeout()), EMAIL_TIMEOUT_MS);
       }),
     ]);
+    if (opts.outcome) opts.outcome.messageId = messageId;
     console.log(
       JSON.stringify({ evt: "email_sent", kind: opts.kind, messageId }),
     );

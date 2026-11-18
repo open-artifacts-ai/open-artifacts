@@ -897,11 +897,42 @@ export const reservedArtifacts = sqliteTable("reserved_artifacts", {
 });
 
 /**
+ * Outside share emails by the sending message id (#2650), so a bounce or
+ * complaint event can be traced to the member who sent it. Never the address.
+ * Old rows are swept after 30 days.
+ */
+export const shareEmailMessages = sqliteTable("share_email_messages", {
+  messageId: text("message_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  createdAt: integer("created_at").notNull(),
+  /** When a terminal bounce on this message was reported (#2650): three in 7 days pause the sender. */
+  bouncedAt: integer("bounced_at"),
+});
+
+/**
+ * The platform's event ids this install has already processed (#2650), so an
+ * event served again (an ack that failed) is a no-op. Swept after 30 days; the
+ * platform keeps unacknowledged events 14.
+ */
+export const shareEmailEventsSeen = sqliteTable("share_email_events_seen", {
+  eventId: text("event_id").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
+/**
  * "Don't email me again" (#2590): an address that opted out of outside share
  * emails, by the SHA-256 of its normalized form (never the address itself).
  */
 export const emailOptouts = sqliteTable("email_optouts", {
   addressHash: text("address_hash").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
+/** A member whose outside share emails are paused until `untilAt` (ms): a bounce or complaint on one of them (#2650). */
+export const shareEmailPauses = sqliteTable("share_email_pauses", {
+  userId: text("user_id").primaryKey(),
+  untilAt: integer("until_at").notNull(),
+  reason: text("reason").notNull(),
   createdAt: integer("created_at").notNull(),
 });
 
