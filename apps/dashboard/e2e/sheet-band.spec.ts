@@ -140,7 +140,8 @@ test("390: × closes the sheet with a field focused and the keyboard up", async 
   await open(page);
   await field(page).focus();
   await keyboard(page, 320);
-  await page.waitForTimeout(300);
+  // The keyboard is up once the app sets --oa-kb (#2675: a wait on it, not on time).
+  await expect.poll(async () => (await gap(page)).kb).toBe("320px");
   await page.getByRole("button", { name: "Close comments" }).click();
   await expect(sheets(page)).toHaveCount(0);
 });
@@ -151,7 +152,8 @@ test("390: a backdrop tap closes the sheet with an empty field focused", async (
   await open(page);
   await field(page).focus();
   await keyboard(page, 320);
-  await page.waitForTimeout(300);
+  // The keyboard is up once the app sets --oa-kb (#2675: a wait on it, not on time).
+  await expect.poll(async () => (await gap(page)).kb).toBe("320px");
   await page.mouse.click(20, 6);
   await expect(sheets(page)).toHaveCount(0);
 });

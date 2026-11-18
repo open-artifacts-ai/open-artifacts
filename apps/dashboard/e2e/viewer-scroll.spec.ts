@@ -147,13 +147,20 @@ test("a tall full-page panel (not found) scrolls to its last action at 390x200",
 test("a short full-page panel stays vertically centered", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/a/Zz9yXwVuTsRqPoNm");
-  const box = await page
-    .locator(".oa-bare > .oa-edge > .oa-panel")
-    .boundingBox();
-  const edge = await page.locator(".oa-bare > .oa-edge").boundingBox();
-  expect(box && edge).toBeTruthy();
-  if (!box || !edge) return;
-  const above = box.y - edge.y;
-  const below = edge.y + edge.height - (box.y + box.height);
-  expect(Math.abs(above - below)).toBeLessThanOrEqual(2);
+  // boundingBox() doesn't wait: it is null until the panel is shown (#2675).
+  const panel = page.locator(".oa-bare > .oa-edge > .oa-panel");
+  const edge = page.locator(".oa-bare > .oa-edge");
+  await expect(panel).toBeVisible();
+  await expect(edge).toBeVisible();
+  // Centered once layout settles: poll the gap, never a fixed wait.
+  await expect
+    .poll(async () => {
+      const b = await panel.boundingBox();
+      const e = await edge.boundingBox();
+      if (!b || !e) return Number.POSITIVE_INFINITY;
+      const above = b.y - e.y;
+      const below = e.y + e.height - (b.y + b.height);
+      return Math.abs(above - below);
+    })
+    .toBeLessThanOrEqual(2);
 });

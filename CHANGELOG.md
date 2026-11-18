@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.200.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.7...v0.200.0) (2026-11-18)
+
+
+### Features
+
+* **docs:** DOCS_PREVIEW opens doc creation on staging only ([#2641](https://github.com/open-artifacts-ai/open-artifacts/issues/2641)) ([9f60435](https://github.com/open-artifacts-ai/open-artifacts/commit/9f60435b4b92315915e238102694be460e809bf1))
+
+## [0.199.7](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.6...v0.199.7) (2026-11-17)
+
+
+### Bug Fixes
+
+* **viewer:** a guest with a Can comment share can comment ([#2702](https://github.com/open-artifacts-ai/open-artifacts/issues/2702)) ([#2703](https://github.com/open-artifacts-ai/open-artifacts/issues/2703)) ([8555a53](https://github.com/open-artifacts-ai/open-artifacts/commit/8555a532796d784f89f65934b6b14bebb975a066))
+
+## [0.199.6](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.5...v0.199.6) (2026-11-17)
+
+
+### Bug Fixes
+
+* **bus:** say which Claude sessions are not linked, and why ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2698](https://github.com/open-artifacts-ai/open-artifacts/issues/2698)) ([3d26c48](https://github.com/open-artifacts-ai/open-artifacts/commit/3d26c48beaa0e1e941059d16e3a25041e65b862c))
+
+## [0.199.5](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.4...v0.199.5) (2026-11-17)
+
+
+### Bug Fixes
+
+* **bus:** link the instance's Claude entry at every scope, and say when it can't ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2694](https://github.com/open-artifacts-ai/open-artifacts/issues/2694)) ([2c6f7f5](https://github.com/open-artifacts-ai/open-artifacts/commit/2c6f7f54aff613a0be079c6c775dd0d3dc708776))
+
+## [0.199.4](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.3...v0.199.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* **viewer:** recover a frame whose signed URL expired ([#2686](https://github.com/open-artifacts-ai/open-artifacts/issues/2686)) ([#2690](https://github.com/open-artifacts-ai/open-artifacts/issues/2690)) ([de02318](https://github.com/open-artifacts-ai/open-artifacts/commit/de02318bb878ba9a6c3d99ec6a8dc4d99017cd1e))
+
+## [0.199.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.2...v0.199.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **t19:** erase each run's people on rl-a, and old runs' leftovers ([#2680](https://github.com/open-artifacts-ai/open-artifacts/issues/2680)) ([#2683](https://github.com/open-artifacts-ai/open-artifacts/issues/2683)) ([8f9d84c](https://github.com/open-artifacts-ai/open-artifacts/commit/8f9d84ce8a4d4c95a573bf441a97f600b94c0337))
+
 ## [0.199.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.199.1...v0.199.2) (2026-11-16)
 
 
