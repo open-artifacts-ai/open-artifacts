@@ -600,6 +600,7 @@ export class Updater {
       this.d.log(
         `update ${version}: could not switch: ${e instanceof Error ? e.message : String(e)}`,
       );
+      backOut("other");
       return { kind: "disabled" };
     }
     prune(home, [running, version, s.previous]);
