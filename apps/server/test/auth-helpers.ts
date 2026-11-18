@@ -96,6 +96,7 @@ export type SentMail = {
   subject: string;
   text: string;
   html: string;
+  headers?: Record<string, string>;
 };
 
 /** A fake `send_email` binding plus EMAIL_FROM; `codeFor` reads the last code sent to an address. */
