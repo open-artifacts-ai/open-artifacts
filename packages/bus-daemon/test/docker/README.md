@@ -25,8 +25,9 @@ call the script as is. Docker is the only requirement.
   the test.
 - Tests that need a hub use local fake hubs on 127.0.0.1.
 
-Tests in this folder run only when `OA_BUS_DOCKER=1`, which `run.sh` sets. The
-normal host vitest run skips them.
+`two-hubs.smoke.test.ts` runs only when `OA_BUS_DOCKER=1`, which `run.sh` sets:
+it checks the container's own clean home. `two-instances.e2e.test.ts` is
+in-process and runs in the normal suite (and CI) as well as in the container.
 
 ## Cleanup
 

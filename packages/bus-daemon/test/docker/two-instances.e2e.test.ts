@@ -1,5 +1,5 @@
-// #2793 S6: the whole "two instances, one bus" done list, end to end, in the
-// container. One daemon, two fake hubs, a scratch home with main and an added
+// #2793 S6: the whole "two instances, one bus" done list, end to end, in
+// process (it runs in the normal suite, and again in the container). One daemon, two fake hubs, a scratch home with main and an added
 // instance b (key files written directly: approval needs a browser), the real
 // folder map (folders.json) and the real default lookup. Waits are signals.
 import {
@@ -156,148 +156,142 @@ async function setup() {
   return { h, hubB, home, dirA, dirB, logs, mail, sessions };
 }
 
-describe.skipIf(process.env.OA_BUS_DOCKER !== "1")(
-  "two instances, one bus (#2793)",
-  () => {
-    it("a session registers on exactly one hub, chosen by its folder", async () => {
-      const { h, hubB } = await setup();
-      expect(h.of("agent_up").map((f) => f.agent_ref)).toEqual(["sa"]);
-      expect(hubB.of("agent_up").map((f) => f.agent_ref)).toEqual(["sb"]);
-      expect(h.daemon.agents.byRef("sa")?.instance).toBe("main");
-      expect(h.daemon.agents.byRef("sb")?.instance).toBe("b");
-    });
+describe("two instances, one bus (#2793)", () => {
+  it("a session registers on exactly one hub, chosen by its folder", async () => {
+    const { h, hubB } = await setup();
+    expect(h.of("agent_up").map((f) => f.agent_ref)).toEqual(["sa"]);
+    expect(hubB.of("agent_up").map((f) => f.agent_ref)).toEqual(["sb"]);
+    expect(h.daemon.agents.byRef("sa")?.instance).toBe("main");
+    expect(h.daemon.agents.byRef("sb")?.instance).toBe("b");
+  });
 
-    it("key A never appears toward B, and key B never toward A", async () => {
-      const { h, hubB } = await setup();
-      await settled(hubB, "sb");
-      expect(h.upgrades.map((u) => u.auth)).toEqual([`Bearer ${TOKEN_A}`]);
-      expect(hubB.upgrades).toEqual([`Bearer ${TOKEN_B}`]);
-      expect(h.raw.join("\n")).not.toContain(TOKEN_B);
-      expect(hubB.everything()).not.toContain(TOKEN_A);
-    });
+  it("key A never appears toward B, and key B never toward A", async () => {
+    const { h, hubB } = await setup();
+    await settled(hubB, "sb");
+    expect(h.upgrades.map((u) => u.auth)).toEqual([`Bearer ${TOKEN_A}`]);
+    expect(hubB.upgrades).toEqual([`Bearer ${TOKEN_B}`]);
+    expect(h.raw.join("\n")).not.toContain(TOKEN_B);
+    expect(hubB.everything()).not.toContain(TOKEN_A);
+  });
 
-    it("a B-folder session is absent from A's roster, and the other way round", async () => {
-      const { h, hubB } = await setup();
-      const open = (frames: { open?: unknown }[]) =>
-        frames.flatMap((f) => (f.open as string[]) ?? []);
-      expect(open(h.of("sessions") as { open?: unknown }[])).toEqual(["sa"]);
-      expect(open(hubB.of("sessions") as { open?: unknown }[])).toEqual(["sb"]);
-    });
+  it("a B-folder session is absent from A's roster, and the other way round", async () => {
+    const { h, hubB } = await setup();
+    const open = (frames: { open?: unknown }[]) =>
+      frames.flatMap((f) => (f.open as string[]) ?? []);
+    expect(open(h.of("sessions") as { open?: unknown }[])).toEqual(["sa"]);
+    expect(open(hubB.of("sessions") as { open?: unknown }[])).toEqual(["sb"]);
+  });
 
-    it("a frame from hub B naming an A agent is dropped", async () => {
-      const { h, hubB, mail } = await setup();
-      hubB.send(deliverFrame(M("x"), "sa"));
-      hubB.send(deliverFrame(M("k"), "sb"));
-      await vi.waitFor(() => expect(hubB.of("ack")).toHaveLength(1));
-      expect(hubB.of("ack").map((f) => f.msg_id)).toEqual([M("k")]);
-      expect(mail).toEqual(["sb"]);
-      expect(h.of("ack")).toEqual([]);
-    });
+  it("a frame from hub B naming an A agent is dropped", async () => {
+    const { h, hubB, mail } = await setup();
+    hubB.send(deliverFrame(M("x"), "sa"));
+    hubB.send(deliverFrame(M("k"), "sb"));
+    await vi.waitFor(() => expect(hubB.of("ack")).toHaveLength(1));
+    expect(hubB.of("ack").map((f) => f.msg_id)).toEqual([M("k")]);
+    expect(mail).toEqual(["sb"]);
+    expect(h.of("ack")).toEqual([]);
+  });
 
-    it("revoking on B leaves A connected and delivering", async () => {
-      const { h, hubB, home } = await setup();
-      hubB.close(4403);
-      await vi.waitFor(() =>
-        expect(existsSync(join(home, "instances", "b.revoked"))).toBe(true),
-      );
-      expect(h.daemon.hubs.get("b")?.open).toBe(false);
-      expect(h.daemon.hub.open).toBe(true);
-      h.toDaemon(deliverFrame(M("e"), "sa"));
-      await vi.waitFor(() => expect(h.of("ack")).toHaveLength(1));
-    });
+  it("revoking on B leaves A connected and delivering", async () => {
+    const { h, hubB, home } = await setup();
+    hubB.close(4403);
+    await vi.waitFor(() =>
+      expect(existsSync(join(home, "instances", "b.revoked"))).toBe(true),
+    );
+    expect(h.daemon.hubs.get("b")?.open).toBe(false);
+    expect(h.daemon.hub.open).toBe(true);
+    h.toDaemon(deliverFrame(M("e"), "sa"));
+    await vi.waitFor(() => expect(h.of("ack")).toHaveLength(1));
+  });
 
-    it("a daemon-wide command from B is ignored; from A it works", async () => {
-      const { h, hubB } = await setup();
-      const away = async () =>
-        (await daemonStatus({ path: h.socketPath, timeoutMs: 3000 }))
-          .owner_away_until;
-      hubB.send({ id: "o1", type: "owner_away", until: FUTURE });
-      await settled(hubB, "sb");
-      expect(await away()).toBeUndefined();
-      h.toDaemon({ id: "o2", type: "owner_away", until: FUTURE });
-      await vi.waitFor(async () => expect(await away()).toBe(FUTURE));
-    });
+  it("a daemon-wide command from B is ignored; from A it works", async () => {
+    const { h, hubB } = await setup();
+    const away = async () =>
+      (await daemonStatus({ path: h.socketPath, timeoutMs: 3000 }))
+        .owner_away_until;
+    hubB.send({ id: "o1", type: "owner_away", until: FUTURE });
+    await settled(hubB, "sb");
+    expect(await away()).toBeUndefined();
+    h.toDaemon({ id: "o2", type: "owner_away", until: FUTURE });
+    await vi.waitFor(async () => expect(await away()).toBe(FUTURE));
+  });
 
-    it("status lists both instances with their agent counts", async () => {
-      const { h } = await setup();
-      const st = await daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
-      expect(st.instances).toEqual([
-        { name: "main", link: "connected", revoked: false, agents: 1 },
-        { name: "b", link: "connected", revoked: false, agents: 1 },
-      ]);
-    });
+  it("status lists both instances with their agent counts", async () => {
+    const { h } = await setup();
+    const st = await daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
+    expect(st.instances).toEqual([
+      { name: "main", link: "connected", revoked: false, agents: 1 },
+      { name: "b", link: "connected", revoked: false, agents: 1 },
+    ]);
+  });
 
-    it("a proof for B never reaches A", async () => {
-      const { h, hubB } = await setup();
-      const proof = (pid: number, hash: string, instance?: string) =>
-        daemonLinkProof({
-          path: h.socketPath,
-          pid,
-          hash,
-          ...(instance === undefined ? {} : { instance }),
-        });
-      expect(await proof(4343, HASH_B, "b")).toBe(true);
-      expect(await proof(4242, HASH_B, "b")).toBe(false);
-      expect(await proof(4242, HASH_A)).toBe(true);
-      await vi.waitFor(() => expect(hubB.of("link_bind")).toHaveLength(1));
-      await h.next("link_bind");
-      await settled(hubB, "sb");
-      expect(h.raw.join("\n")).not.toContain(HASH_B);
-      expect(hubB.raw.join("\n")).not.toContain(HASH_A);
-    });
-
-    it("an unmapped folder registers on no hub and its session is told how to answer", async () => {
-      const { h, hubB, sessions } = await setup();
-      const dirU = scratch("oa-e2e-U-");
-      sessionFile(sessions, 4444, "su", dirU);
-      await vi.waitFor(() => expect(h.daemon.agents.byRef("su")).toBeDefined());
-      expect(h.daemon.agents.byRef("su")?.instance).toBeUndefined();
-      const c = await h.adapter("su2", { cwd: dirU });
-      expect(c.welcome.bus_name).toBeDefined();
-      await settled(hubB, "sb");
-      expect(h.raw.join("\n")).not.toContain('"su"');
-      expect(hubB.raw.join("\n")).not.toContain('"su"');
-      expect(h.raw.join("\n")).not.toContain('"su2"');
-      expect(hubB.raw.join("\n")).not.toContain('"su2"');
-      const me = await c.request({ type: "self", row: true });
-      const files = me.type === "agent" ? (me.agent?.config_files ?? []) : [];
-      expect(files).toEqual([
-        expect.objectContaining({
-          state: "noted",
-          reason: expect.stringContaining("use in this folder"),
-        }),
-      ]);
-    });
-  },
-);
-
-describe.skipIf(process.env.OA_BUS_DOCKER !== "1")(
-  "one instance, as today (#2793)",
-  () => {
-    it("every folder uses main, with no map and no extra links", async () => {
-      const home = scratch("oa-e2e-single-");
-      writeFileSync(
-        join(home, "machine.json"),
-        JSON.stringify({
-          hub: "https://a.example.test",
-          machine_id: "m1",
-          label: "laptop",
-          machine_token: TOKEN_A,
-        }),
-        { mode: 0o600 },
-      );
-      const h = await daemonHarness({
-        instancesHome: home,
-        transports: { "claude-code": async () => ({ ok: true }) },
+  it("a proof for B never reaches A", async () => {
+    const { h, hubB } = await setup();
+    const proof = (pid: number, hash: string, instance?: string) =>
+      daemonLinkProof({
+        path: h.socketPath,
+        pid,
+        hash,
+        ...(instance === undefined ? {} : { instance }),
       });
-      const c = await h.adapter("only", { cwd: scratch("oa-e2e-any-") });
-      expect(c.welcome.bus_name).toBeDefined();
-      expect(await h.next("agent_up")).toMatchObject({ agent_ref: "only" });
-      expect([...h.daemon.hubs.keys()]).toEqual(["main"]);
-      expect(h.daemon.agents.byRef("only")?.instance).toBe("main");
-      const st = await daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
-      expect(st.instances).toBeUndefined();
-      expect(existsSync(join(home, "folders.json"))).toBe(false);
+    expect(await proof(4343, HASH_B, "b")).toBe(true);
+    expect(await proof(4242, HASH_B, "b")).toBe(false);
+    expect(await proof(4242, HASH_A)).toBe(true);
+    await vi.waitFor(() => expect(hubB.of("link_bind")).toHaveLength(1));
+    await h.next("link_bind");
+    await settled(hubB, "sb");
+    expect(h.raw.join("\n")).not.toContain(HASH_B);
+    expect(hubB.raw.join("\n")).not.toContain(HASH_A);
+  });
+
+  it("an unmapped folder registers on no hub and its session is told how to answer", async () => {
+    const { h, hubB, sessions } = await setup();
+    const dirU = scratch("oa-e2e-U-");
+    sessionFile(sessions, 4444, "su", dirU);
+    await vi.waitFor(() => expect(h.daemon.agents.byRef("su")).toBeDefined());
+    expect(h.daemon.agents.byRef("su")?.instance).toBeUndefined();
+    const c = await h.adapter("su2", { cwd: dirU });
+    expect(c.welcome.bus_name).toBeDefined();
+    await settled(hubB, "sb");
+    expect(h.raw.join("\n")).not.toContain('"su"');
+    expect(hubB.raw.join("\n")).not.toContain('"su"');
+    expect(h.raw.join("\n")).not.toContain('"su2"');
+    expect(hubB.raw.join("\n")).not.toContain('"su2"');
+    const me = await c.request({ type: "self", row: true });
+    const files = me.type === "agent" ? (me.agent?.config_files ?? []) : [];
+    expect(files).toEqual([
+      expect.objectContaining({
+        state: "noted",
+        reason: expect.stringContaining("use in this folder"),
+      }),
+    ]);
+  });
+});
+
+describe("one instance, as today (#2793)", () => {
+  it("every folder uses main, with no map and no extra links", async () => {
+    const home = scratch("oa-e2e-single-");
+    writeFileSync(
+      join(home, "machine.json"),
+      JSON.stringify({
+        hub: "https://a.example.test",
+        machine_id: "m1",
+        label: "laptop",
+        machine_token: TOKEN_A,
+      }),
+      { mode: 0o600 },
+    );
+    const h = await daemonHarness({
+      instancesHome: home,
+      transports: { "claude-code": async () => ({ ok: true }) },
     });
-  },
-);
+    const c = await h.adapter("only", { cwd: scratch("oa-e2e-any-") });
+    expect(c.welcome.bus_name).toBeDefined();
+    expect(await h.next("agent_up")).toMatchObject({ agent_ref: "only" });
+    expect([...h.daemon.hubs.keys()]).toEqual(["main"]);
+    expect(h.daemon.agents.byRef("only")?.instance).toBe("main");
+    const st = await daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
+    expect(st.instances).toBeUndefined();
+    expect(existsSync(join(home, "folders.json"))).toBe(false);
+  });
+});

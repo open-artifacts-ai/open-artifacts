@@ -72,7 +72,7 @@ import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
 const HEALTHZ_TIMEOUT_MS = 10_000;
 /** The first oa-bus that reads the `instance` key of .oa-bus.json (#2840); older ones refuse the file. */
-const INSTANCE_KEY_MIN_VERSION = "0.217.0";
+const INSTANCE_KEY_MIN_VERSION = "0.218.0";
 
 const sameOrigin = (url: string, hub: string) => {
   try {

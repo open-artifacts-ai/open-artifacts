@@ -116,7 +116,7 @@ describe("doctor: a repo's instance key (#2840)", () => {
     ctx.cwd = dir;
     await doctor(ctx);
     expect(ctx.all().join("\n")).toContain(
-      "has an instance key. This version reads it; oa-bus before 0.217.0 refuses the whole file.",
+      "has an instance key. This version reads it; oa-bus before 0.218.0 refuses the whole file.",
     );
     const plain = ctxWith();
     plain.cwd = realpathSync(mkdtempSync(join(tmpdir(), "ob-doc2-")));

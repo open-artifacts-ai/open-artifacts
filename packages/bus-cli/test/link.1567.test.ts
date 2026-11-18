@@ -3,12 +3,14 @@
 // links nothing itself.
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { saveInstance, writeFolders } from "@oa/bus-daemon";
 import { BUS_ROUTES } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { parse } from "../src/index.ts";
 import { main } from "../src/main.ts";
 import { fakeCtx, HUB, TOKEN } from "./fake.ts";
 
+const WORK_TOKEN = `oa_machine_${"c".repeat(28)}9e1d`;
 const CONFIRM = `${HUB}/bus/links/confirm#${"A".repeat(43)}`;
 
 function setup(reply?: (req: { url: string; init: RequestInit }) => Response) {
@@ -92,6 +94,65 @@ describe("link", () => {
     expect(out).toContain("Open this in your browser to confirm.");
     // The token is never printed.
     expect(ctx.raw()).not.toContain(TOKEN);
+  });
+
+  /** Adds instance "work" and maps the given folders to it (the rest to main). */
+  const addWork = (
+    ctx: ReturnType<typeof setup>["ctx"],
+    onWork: string[],
+    onMain: string[] = [],
+  ) => {
+    saveInstance(
+      {
+        name: "work",
+        hub: "https://work.example.com",
+        machine_id: "",
+        label: "l",
+        machine_token: WORK_TOKEN,
+      },
+      ctx.home,
+    );
+    const map: Record<string, string> = {};
+    for (const d of onWork) map[d] = "work";
+    for (const d of onMain) map[d] = "main";
+    writeFolders({ map, no: {}, seen: {} }, ctx.home);
+  };
+
+  it("two folders on instance B go to B's hub with B's key, never main's", async () => {
+    const { ctx, run, calls, app, docs } = setup((req) =>
+      Response.json({
+        confirmUrl: `${new URL(req.url).origin}/bus/links/confirm#${"A".repeat(43)}`,
+        expiresAt: "2030-01-01T00:00:00Z",
+      }),
+    );
+    addWork(ctx, [app, docs]);
+    expect(await run("link", "app", "docs")).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(
+      `https://work.example.com${BUS_ROUTES.linkProposals}`,
+    );
+    expect(
+      (calls[0]?.init.headers as Record<string, string> | undefined)
+        ?.authorization,
+    ).toBe(`Bearer ${WORK_TOKEN}`);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+    expect(ctx.raw()).not.toContain(WORK_TOKEN);
+  });
+
+  it("a folder on A and a folder on B are refused, and nothing is sent", async () => {
+    const { ctx, run, calls, app, docs } = setup();
+    addWork(ctx, [app], [docs]);
+    expect(await run("link", "app", "docs")).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(ctx.err().join("\n")).toContain("different instances");
+  });
+
+  it("an unmapped folder with several instances is refused, and nothing is sent", async () => {
+    const { ctx, run, calls, app } = setup();
+    addWork(ctx, [app]);
+    expect(await run("link", "app", "docs")).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(ctx.err().join("\n")).toContain("isn't tied to an instance");
   });
 
   it("unlink posts the unlink action", async () => {

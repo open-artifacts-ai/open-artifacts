@@ -64,7 +64,7 @@ It lists your instances and you pick one. A folder you have not picked for sits 
 
 The running bus connects to the new instance only when it restarts, for example after an update or when you restart the service. Until then, folders mapped to it stay off every hub. When it restarts, each session is placed again by the folder map: a session in a folder with no answer leaves your main instance and sits on none until you run `oa-bus use` there. So run `oa-bus use` in the folders you work in before you restart.
 
-Each session joins one instance only: the one for its folder. Keys are never shared between instances. A repo can suggest an instance with an `instance` key in its `.oa-bus.json`. That is only a suggestion: nothing changes until you answer it with `oa-bus use`. Only bus 0.217.0 or newer reads that key; an older bus refuses the whole file. `oa-bus doctor` tells you when a repo file has it.
+Each session's home is the instance for its folder. Keys are never shared between instances. A repo can suggest an instance with an `instance` key in its `.oa-bus.json`. That is only a suggestion: nothing changes until you answer it with `oa-bus use`. Only bus 0.218.0 or newer reads that key; an older bus refuses the whole file. `oa-bus doctor` tells you when a repo file has it.
 
 `oa-bus status` lists your instances and which folder uses which, once you have more than one. With only the main instance, nothing changes.
 

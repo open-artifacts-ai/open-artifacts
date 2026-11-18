@@ -167,9 +167,11 @@ const noted = new Set<string>();
 export function unmappedFolderNote(
   cwd: string,
   h: string = home(),
+  /** The folder's key, when the caller already has it (it runs git). */
+  known?: string,
 ): string | undefined {
   if (!("unmapped" in folderHomeLookup(h)(cwd))) return undefined;
-  const key = `${h}\0${folderKey(cwd)}`;
+  const key = `${h}\0${known ?? folderKey(cwd)}`;
   if (noted.has(key)) return undefined;
   if (noted.size >= SEEN_MAX) noted.clear();
   noted.add(key);
@@ -233,10 +235,12 @@ const ADDRESS_SHOWN_MAX = 120;
 export function changedSuggestionNote(
   cwd: string,
   h: string = home(),
+  /** The folder's key, when the caller already has it (it runs git). */
+  known?: string,
 ): string | undefined {
   const { folders: f, unusable } = inspectFolders(h);
   if (unusable) return undefined;
-  const key = folderKey(cwd);
+  const key = known ?? folderKey(cwd);
   const covering = coveringEntry(f, key);
   if (covering === undefined && f.no[key] === undefined) return undefined;
   const found = readSuggestion(cwd, covering ? { below: covering.dir } : {});

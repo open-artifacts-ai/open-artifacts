@@ -484,6 +484,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Which link carried a request or a delivery, while more than one link runs. */
   const idLane = new BoundedMap<string, Lane>(20_000);
   const msgLane = new BoundedMap<string, Lane>(20_000);
+  /**
+   * A hub-chosen msg_id belongs to the first link that names it. Another link
+   * naming it is dropped, so it can never re-point an ack, refusal or receipt.
+   */
+  const claimMsg = (lane: Lane, msgId: string): boolean => {
+    const owner = msgLane.get(msgId);
+    if (owner === undefined || owner === lane) {
+      msgLane.set(msgId, lane);
+      return true;
+    }
+    ev("frame_dropped", { instance: lane.name, type: "msg_id_taken" });
+    log(`dropped a frame from ${lane.name}: its msg_id is another instance's`);
+    return false;
+  };
   const laneOfFrame = (f: ClientFrame): Lane | undefined => {
     const ref = refOf(f);
     if (ref !== undefined) return laneOfRef(ref);
@@ -705,13 +719,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const configIssues = new ConfigIssues();
   /** #2793: notes for a session's folder (unmapped, changed suggestion), by folder key. Bounded. */
   const folderNotes = new Map<string, ConfigFile>();
+  /**
+   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
+   * Bounded; a repo moved under a live daemon is picked up at its next start.
+   */
+  const keyCache = new BoundedMap<string, string>(1000);
+  const keyOf = (cwd: string): string => {
+    let k = keyCache.get(cwd);
+    if (k === undefined) {
+      k = folderKey(cwd);
+      keyCache.set(cwd, k);
+    }
+    return k;
+  };
   const noteFolder = (cwd: string) => {
     if (instHome === undefined || deps.homeLookup) return;
     // One instance: no folder note, so no git call per request.
     if (listInstances(instHome).length < 2) return;
-    const key = folderKey(cwd);
-    const unmapped = unmappedFolderNote(cwd, instHome);
-    const changed = unmapped ? undefined : changedSuggestionNote(cwd, instHome);
+    const key = keyOf(cwd);
+    const unmapped = unmappedFolderNote(cwd, instHome, key);
+    const changed = unmapped
+      ? undefined
+      : changedSuggestionNote(cwd, instHome, key);
     const text = unmapped ?? changed;
     if (text !== undefined && (folderNotes.size < 1000 || folderNotes.has(key)))
       folderNotes.set(key, {
@@ -727,7 +756,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const notesFor = (cwd: string): ConfigFile[] => {
     if (folderNotes.size === 0) return [];
-    const key = folderKey(cwd);
+    const key = keyOf(cwd);
     const n = folderNotes.get(key);
     if (!n) return [];
     if (n.fix === `${BUS_CMD} use`) {
@@ -822,12 +851,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let linksWritten: string | undefined = JSON.stringify(saved);
   const seedLinks = (rec: AgentRecord) => {
     if (rec.linkHashes !== undefined || rec.pid === undefined) return;
+    // A proof for another instance than the one the session is homed on is never replayed.
     const hit = saved.find(
-      (e) => e.pid === rec.pid && e.procStart === rec.procStart,
+      (e) =>
+        e.pid === rec.pid &&
+        e.procStart === rec.procStart &&
+        (e.instance ?? MAIN_INSTANCE) === homedOf(rec),
     );
     if (!hit) return;
-    // A proof for another instance than the one the session is homed on is never replayed.
-    if ((hit.instance ?? MAIN_INSTANCE) !== homedOf(rec)) return;
     rec.linkHashes = [...hit.hashes];
     saved = saved.filter((e) => e !== hit);
   };
@@ -1361,6 +1392,54 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const homedOf = (rec: AgentRecord): string | undefined =>
     rec.instance ?? (lanes.multi ? undefined : MAIN_INSTANCE);
+  /**
+   * A proof for a session that is homed nowhere yet (its folder is unmapped) is
+   * held, keyed by pid, start time and instance, and sent on that instance's
+   * link once the session is homed there. Claude never runs its helper again,
+   * so dropping it would lose it for good. No frame goes out now. Kept in
+   * claude-links.json with the instance, so a restart keeps it too.
+   */
+  const holdProof = (want: string, rec: AgentRecord, hash: string) => {
+    const { pid, procStart } = rec;
+    if (pid === undefined || procStart === undefined) return;
+    const same = (e: ClaudeLink) =>
+      e.pid === pid &&
+      e.procStart === procStart &&
+      (e.instance ?? MAIN_INSTANCE) === want;
+    const hit = saved.find(same);
+    saved = [
+      {
+        pid,
+        procStart,
+        hashes: withLinkHash(hit?.hashes, hash),
+        ...(want !== MAIN_INSTANCE ? { instance: want } : {}),
+      },
+      ...saved.filter((e) => !same(e)),
+    ].slice(0, CLAUDE_LINKS_MAX);
+    log(
+      `held a proof for the instance ${want}: session ${rec.ref} has no instance yet`,
+    );
+    noteUnbound("unmapped_folder", pid);
+    persistLinks();
+  };
+  /** Binds the proofs held for a session once it is homed on their instance. */
+  const claimHeld = (rec: AgentRecord) => {
+    const home = homedOf(rec);
+    if (home === undefined || rec.pid === undefined) return;
+    const hit = saved.find(
+      (e) =>
+        e.pid === rec.pid &&
+        e.procStart === rec.procStart &&
+        (e.instance ?? MAIN_INSTANCE) === home,
+    );
+    if (!hit) return;
+    saved = saved.filter((e) => e !== hit);
+    proofIssues.delete(rec.pid);
+    for (const h of hit.hashes)
+      rec.linkHashes = withLinkHash(rec.linkHashes, h);
+    persistLinks();
+    for (const h of hit.hashes) sendLink(rec, h);
+  };
   /** A proof for another instance than the session's is dropped here, never offered to any hub. */
   const dropProof = (want: string, rec: AgentRecord) => {
     log(
@@ -1380,14 +1459,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * `mcp-proof` calls that bound nothing. Causes and times only: never a proof,
    * a hash or a header.
    */
-  const proofIssues = new Map<number, "proof_timed_out" | "proof_refused">();
+  const proofIssues = new Map<
+    number,
+    "proof_timed_out" | "proof_refused" | "proof_unmapped"
+  >();
   const unboundProofs: {
     at: number;
     cause:
       | "no_live_record"
       | "process_mismatch"
       | "no_process_start"
-      | "wrong_instance";
+      | "wrong_instance"
+      | "unmapped_folder";
   }[] = [];
   const noteUnbound = (
     cause: (typeof unboundProofs)[number]["cause"],
@@ -1399,7 +1482,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proofIssues.delete(pid);
       proofIssues.set(
         pid,
-        cause === "no_live_record" ? "proof_timed_out" : "proof_refused",
+        cause === "no_live_record"
+          ? "proof_timed_out"
+          : cause === "unmapped_folder"
+            ? "proof_unmapped"
+            : "proof_refused",
       );
       while (proofIssues.size > PENDING_PROOF_MAX) {
         const oldest = proofIssues.keys().next().value;
@@ -1409,6 +1496,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
   };
   const claimProofs = () => {
+    for (const rec of agents.all())
+      if (rec.kind === "claude-code" && rec.live) claimHeld(rec);
     if (pendingProofs.size === 0) return;
     const now = Date.now();
     for (const [key, p] of pendingProofs)
@@ -1423,6 +1512,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       for (const [key, p] of [...pendingProofs]) {
         if (p.pid !== pid || p.procStart !== rec.procStart) continue;
         pendingProofs.delete(key);
+        if (homedOf(rec) === undefined) {
+          holdProof(p.instance, rec, p.hash);
+          continue;
+        }
         if (p.instance !== homedOf(rec)) {
           dropProof(p.instance, rec);
           continue;
@@ -1645,8 +1738,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     log,
   });
 
-  /** Which link's hello_ok started the current Codex ack replay (#2198). */
-  let codexReplayLink = 0;
+  /** Which link's hello_ok started each lane's current Codex ack replay (#2198). */
+  const codexReplayLink = new Map<string, number>();
   /**
    * When the owner's quiet hours end (#2759): the last `hello_ok.owner_away_until`
    * or `owner_away` frame. A hello_ok without the field replaces it with unknown.
@@ -1707,7 +1800,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!routable(lane, frame)) return;
         switch (frame.type) {
           case "deliver":
-            msgLane.set(frame.msg_id, lane);
+            if (!claimMsg(lane, frame.msg_id)) return;
             void delivery.deliver(frame);
             return;
           case "agent_ok": {
@@ -1733,7 +1826,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             return;
           }
           case "receipt": {
-            msgLane.set(frame.msg_id, lane);
+            if (!claimMsg(lane, frame.msg_id)) return;
             resends.untrack(frame.id);
             // A tool call's queued send waits a moment for delivered (or a refusal or expiry).
             // No call waits: a held send whose call was answered Queued.
@@ -1905,11 +1998,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             // confirmed again, paced into the queue's spare half (#2198).
             // Without the cap there is no replay: an ack queued is done.
             if (lane.ackConfirm) {
-              const link = ++codexReplayLink;
+              const link = (codexReplayLink.get(lane.name) ?? 0) + 1;
+              codexReplayLink.set(lane.name, link);
               replayAcks(
-                codexTaken.unconfirmedIds(),
+                // Only this link's own mail: another hub's ids replay on its link.
+                codexTaken
+                  .unconfirmedIds()
+                  .filter((id) => (msgLane.get(id) ?? main) === lane),
                 (id) => void sendCodexAck(id),
-                () => lane.helloed && link === codexReplayLink,
+                () => lane.helloed && link === codexReplayLink.get(lane.name),
                 () => lane.hub.headroom,
               );
             }
@@ -2058,7 +2155,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     } else {
       switch (frame.type) {
         case "deliver":
-          ok = ownsRef(frame.to_ref, lane);
+          // A ref nobody registered (forgotten) passes, as with one link: the
+          // answer is a refusal on this link, not silence.
+          ok =
+            agents.byRef(frame.to_ref) === undefined ||
+            ownsRef(frame.to_ref, lane);
           break;
         case "agent_ok":
         case "renamed":
@@ -2192,6 +2293,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
         // #2793 S4: a proof binds only on its own instance's hub, for a
         // session homed there. Anything else is dropped before any hub sees it.
+        if (homedOf(rec) === undefined) {
+          holdProof(want, rec, req.hash);
+          return { bound: true };
+        }
         if (want !== homedOf(rec)) {
           dropProof(want, rec);
           return { bound: false };
@@ -2527,10 +2632,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // Claude's session file names its cwd; other kinds state one.
         const cwd = check.cwd ?? hello.cwd;
         if (!cwd || !isAbsolute(cwd)) return { error: "cwd must be absolute" };
+        // The instance's approvals apply: pick it before the namespace.
+        const instance = homeInstance(cwd);
         let ns: Namespace;
         try {
           // A live Claude session may have outlived its start directory.
-          ns = resolveNs(cwd, check.cwd !== undefined);
+          ns = resolveNs(cwd, check.cwd !== undefined, { instance });
         } catch {
           return { error: `cwd does not resolve: ${cwd}` };
         }
@@ -2539,7 +2646,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             error: `namespace is not valid on the wire: ${ns.namespace}`,
           };
         attested(pid);
-        const instance = homeInstance(cwd);
         noteFolder(cwd);
         // A Codex thread the user named registers under that name (#1748).
         const codexName =
@@ -2874,9 +2980,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
         const proven = res;
         // Scope comes from the proven cwd and today's config, as at a hello.
+        const instance = homeInstance(proven.cwd);
         let ns: Namespace;
         try {
-          ns = resolveNs(proven.cwd, true);
+          ns = resolveNs(proven.cwd, true, { instance });
         } catch {
           drop("no_namespace");
           continue;
@@ -2885,7 +2992,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           drop("no_namespace");
           continue;
         }
-        const instance = homeInstance(proven.cwd);
         noteFolder(proven.cwd);
         agents.up({
           ref: r.ref,

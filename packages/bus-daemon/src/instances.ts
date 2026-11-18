@@ -21,6 +21,7 @@ import {
   checkHub,
   cleanLabel,
   home,
+  markerHolds,
   readConfig,
   StartError,
 } from "./config.ts";
@@ -247,6 +248,13 @@ export function credentialsFor(name: string, h: string = home()): Config {
       `instance ${name} has a malformed machine token: run \`${BUS_CMD} add\` again`,
     );
   checkHub(r.hub);
+  // The hub refused this key: the daemon wrote the marker. A restart must not
+  // dial it again; a newer key (the marker names another token) is fine.
+  if (markerHolds(join(instancesDir(h), `${name}.revoked`), r.machine_token))
+    throw new StartError(
+      "NOT_LOGGED_IN",
+      `instance ${name} was revoked by its hub: run \`${BUS_CMD} add\` again`,
+    );
   return {
     hub: r.hub,
     machine_id: typeof r.machine_id === "string" ? r.machine_id : "",
