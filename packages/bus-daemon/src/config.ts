@@ -25,6 +25,12 @@ export type Config = {
 };
 
 export const home = () => busHome();
+/**
+ * #2552: only the person's default bus home takes instance-driven updates
+ * (the named version or the default): a second home (OA_BUS_HOME set to
+ * something else) never does.
+ */
+export const isDefaultHome = (): boolean => home() === busHome({});
 export const socketPath = () => daemonSocketPath(home());
 
 /** Claude's return sockets (`<8 hex>.sock`): under the home, or the short folder when they would not fit. */

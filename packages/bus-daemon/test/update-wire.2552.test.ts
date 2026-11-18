@@ -49,7 +49,7 @@ describe("the update wire, daemon side (#2552)", () => {
   it("lists the cap in its hello", async () => {
     const w = home();
     const h = await daemonHarness({
-      update: { entryFile: w.entry, exit: vi.fn(), every },
+      update: { defaultHome: true, entryFile: w.entry, exit: vi.fn(), every },
     });
     await vi.waitFor(() => expect(h.of("hello")).toHaveLength(1));
     expect(h.of("hello")[0]?.caps).toContain("run_version");
@@ -58,7 +58,7 @@ describe("the update wire, daemon side (#2552)", () => {
   it("feeds hello_ok.run_version and the push to the updater, only with the cap", async () => {
     const w = home();
     const h = await daemonHarness({
-      update: { entryFile: w.entry, exit: vi.fn(), every },
+      update: { defaultHome: true, entryFile: w.entry, exit: vi.fn(), every },
     });
     const spy = vi
       .spyOn(
@@ -87,7 +87,7 @@ describe("the update wire, daemon side (#2552)", () => {
   it("install_now has no field and goes only to a daemon that listed the cap", async () => {
     const w = home();
     const h = await daemonHarness({
-      update: { entryFile: w.entry, exit: vi.fn(), every },
+      update: { defaultHome: true, entryFile: w.entry, exit: vi.fn(), every },
     });
     const spy = vi
       .spyOn(
@@ -138,7 +138,7 @@ describe("the update wire, daemon side (#2552)", () => {
       at: T + 2000,
     });
     const h = await daemonHarness({
-      update: { entryFile: w.entry, exit: vi.fn(), every },
+      update: { defaultHome: true, entryFile: w.entry, exit: vi.fn(), every },
     });
     // No cap (an older hub): nothing goes, nothing is lost.
     h.toDaemon(helloOk());
@@ -169,7 +169,7 @@ describe("the update wire, daemon side (#2552)", () => {
       at: T,
     });
     const h = await daemonHarness({
-      update: { entryFile: w.entry, exit: vi.fn(), every },
+      update: { defaultHome: true, entryFile: w.entry, exit: vi.fn(), every },
     });
     h.toDaemon(helloOk({ caps: ["run_version"] }));
     expect((await h.next("update_report")).reason).toBe("other");
@@ -196,7 +196,14 @@ describe("the update wire, daemon side (#2552)", () => {
       const w = home();
       const exit = vi.fn();
       const h = await daemonHarness({
-        update: { entryFile: w.entry, exit, every, enabled: true, ackMs },
+        update: {
+          defaultHome: true,
+          entryFile: w.entry,
+          exit,
+          every,
+          enabled: true,
+          ackMs,
+        },
       });
       h.toDaemon(helloOk({ caps: ["run_version"] }));
       await vi.waitFor(() => expect(h.daemon.updater).toBeDefined());
@@ -256,7 +263,13 @@ describe("the update wire, daemon side (#2552)", () => {
       const w = home();
       const exit = vi.fn();
       const h = await daemonHarness({
-        update: { entryFile: w.entry, exit, every, enabled: true },
+        update: {
+          defaultHome: true,
+          entryFile: w.entry,
+          exit,
+          every,
+          enabled: true,
+        },
       });
       h.toDaemon(helloOk());
       await new Promise((r) => setTimeout(r, 100));

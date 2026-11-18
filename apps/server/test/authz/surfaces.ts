@@ -2678,6 +2678,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   // #1567: project links; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/run-version", org("bus.run_version")],
+  ["PUT /api/v1/bus/updates-paused", org("bus.updates_paused")],
   ["POST /api/v1/bus/machines/:id/install-now", org("mcp.connect")],
   ["PUT /api/v1/bus/links", org("mcp.connect")],
   ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],

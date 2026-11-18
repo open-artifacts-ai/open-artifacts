@@ -127,8 +127,28 @@ in one object.
 
 The instance names a version and nothing else. `hello_ok.run_version` (and
 the `run_version` push while connected) is strict `x.y.z`, at most 32 chars,
-or `null` when the instance names none (the owner cleared it: the daemon then
-stops any rollout it has staged). A hub sends it only to a socket whose hello
+or `null`: the instance tells this machine nothing to run (the daemon then
+drops the version it last heard and stops any rollout it has staged; `null`
+never moves a machine). What a machine is told, per socket:
+
+1. Updates paused (owner-only setting `bus_updates_paused`, `PUT
+   /api/v1/bus/updates-paused {paused}`): `null` to every machine, and every
+   instance-driven `switching` is refused.
+2. A version the owner named (`bus_run_version`): that version, whatever the
+   machine runs (a named lower version is a deliberate step back).
+3. Else the default, the server's own built-in release, only when it is a
+   strict `x.y.z` (a `-dev` or pre-release build has none), only once this
+   instance has run it for 24 h (`bus_version_since`; a named version skips
+   the soak), and only when strictly newer than the machine's
+   `hello.client_version` (forward only: the default never moves a machine
+   back). Otherwise `null`. The hub re-tells connected machines when the soak
+   ends (its alarm) and at every hello.
+
+The default comes from nothing a client sends. A version that stepped back on
+a machine is on its failed or refused list and the daemon's own check refuses
+it again, default or named. A daemon whose bus home is not the person's
+default home ignores `run_version` and `install_now`; the person's own
+`auto-update off` always wins. A hub sends it only to a socket whose hello
 listed `run_version`; a `hello_ok` without the field means the hub does not
 know yet and a push follows. The daemon never reads a URL, hash or flag from
 the instance; it verifies the release itself. `install_now {}` has no field:
@@ -140,8 +160,9 @@ else) and the machine swaps only after `ok: true`; with no answer it holds and
 tries later. The hub lists `run_version` in `hello_ok.caps` only to a hello
 that listed it, and a daemon sends `update_report` only to a hub that listed
 it. The hub answers `ok: false` to a `switching` report whose `to` is not the
-version the instance names, read fresh from the setting (not the 30 s cache),
-unless the move is a step back (`to` lower than `from`) or the person asked for
+version the instance tells that machine now (the named version, or the soaked
+forward default, never while paused), read fresh from the settings (not the 30
+s cache), unless the move is a step back (`to` lower than `from`) or the person asked for
 it on the machine (`reason: "requested"`, `oa-bus update`). A read that fails
 is a no. `to`, `from` and `reason` are the daemon's own claims, so the veto
 guards against stale state on an honest daemon, not against a hostile one: the

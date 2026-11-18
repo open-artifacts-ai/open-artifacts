@@ -169,6 +169,14 @@ export const R = {
    */
   busRunVersion: "/api/v1/bus/run-version",
   /**
+   * PUT { paused: boolean } -> 204 (#2552): pause (or resume) every
+   * instance-driven machine update, the named version and the default alike.
+   * Owner only, in an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404); audited bus.updates_paused.set. A person's own
+   * `oa-bus update` is not affected.
+   */
+  busUpdatesPaused: "/api/v1/bus/updates-paused",
+  /**
    * POST -> 204 (#2552): "Install now" for one of the caller's own machines.
    * No body: it names no version. The machine installs only the version it
    * already staged and the instance names. An interactive cookie session of

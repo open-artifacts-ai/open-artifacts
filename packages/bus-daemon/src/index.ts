@@ -77,6 +77,7 @@ import {
   type Config,
   claudeReturnDir,
   home,
+  isDefaultHome,
   prepareReturnDir,
   prepareSocketDir,
   readConfig,
@@ -270,6 +271,8 @@ export type DaemonDeps = {
     exit: (code: number) => void;
     /** Tests only. */
     enabled?: boolean;
+    /** Tests only: whether this is the default bus home (else read from OA_BUS_HOME). */
+    defaultHome?: boolean;
     every?: (fn: () => void, ms: number) => () => void;
     deadlineMs?: number;
     /** Tests only: how long a `switching` report waits for the hub's answer. */
@@ -1416,6 +1419,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       : undefined;
   /** The hub's last hello_ok listed BUS_CAPS.runVersion: the update frames may go (#2552). */
   let hubRunCap = false;
+  /** A second bus home never takes an instance-driven update (the named version or the default). */
+  const takesInstance = (): boolean =>
+    deps.update?.defaultHome ?? isDefaultHome();
   /** `switching` reports waiting for the hub's update_ack, by frame id. */
   const switchAcks = new Map<string, (ok: boolean) => void>();
   /** Set below, once the updater exists (a hello_ok cannot come before it). */
@@ -1584,7 +1590,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         // #2552: only from a hub that listed the cap; anything else is ignored.
         case "run_version":
-          if (hubRunCap) {
+          if (hubRunCap && takesInstance()) {
             if (frame.run_version === null) updaterRef?.clearNamed();
             else
               void updaterRef
@@ -1596,7 +1602,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ownerAwayUntil = frame.until ?? undefined;
           return;
         case "install_now":
-          if (hubRunCap)
+          if (hubRunCap && takesInstance())
             void updaterRef
               ?.installNowFromInstance()
               .catch((e) => log(`update: ${errText(e)}`));
@@ -1638,11 +1644,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ownerAwayUntil = frame.owner_away_until ?? undefined;
           hubHelloed = true;
           if (hubRunCap) {
-            if (frame.run_version === null) updaterRef?.clearNamed();
-            else if (frame.run_version !== undefined)
-              void updaterRef
-                ?.instructFromInstance(frame.run_version)
-                .catch((e) => log(`update: ${errText(e)}`));
+            if (takesInstance()) {
+              if (frame.run_version === null) updaterRef?.clearNamed();
+              else if (frame.run_version !== undefined)
+                void updaterRef
+                  ?.instructFromInstance(frame.run_version)
+                  .catch((e) => log(`update: ${errText(e)}`));
+            }
             flushUpdateReports();
           }
           // Handovers that waited for this: announce them now (#1582).
