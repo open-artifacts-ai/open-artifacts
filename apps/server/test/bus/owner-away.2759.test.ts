@@ -4,7 +4,12 @@
 // each window edge (the hub alarm) and when the member saves their prefs; only
 // that member's own hub is ever touched. Time is BusHub.setTestClock.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
+import {
+  BUS_CAPS,
+  type ClientFrame,
+  decodeServerFrame,
+  type ServerFrame,
+} from "@oa/bus-protocol";
 import { R } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -137,9 +142,16 @@ describe("hello: caps (#2759)", () => {
   });
 
   it("a daemon that lists owner_away gets it in caps (17, past the old 16); no cap at all: no caps field", async () => {
-    const { ok } = await open(CAP);
+    const { d, ok } = await open(CAP);
     expect(ok.caps).toContain("owner_away");
     expect(ok.caps?.length).toBeGreaterThan(16);
+    // A new daemon's decoder (bus-protocol's, MAX_CAPS 32) accepts all 17.
+    const rawOk = d.raw.find((t) => t.includes('"hello_ok"')) ?? "";
+    const dec = decodeServerFrame(rawOk);
+    expect(dec.ok).toBe(true);
+    expect(
+      dec.ok && dec.frame.type === "hello_ok" ? dec.frame.caps?.length : 0,
+    ).toBe(17);
     const none = await open([]);
     expect(none.ok.caps).toBeUndefined();
     expect(none.ok.owner_away_until).toBeUndefined();
