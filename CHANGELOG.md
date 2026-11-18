@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.206.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.205.1...v0.206.0) (2026-11-18)
+
+
+### Features
+
+* **sharing:** pause a member's outside share emails on bounce or complaint ([#2650](https://github.com/open-artifacts-ai/open-artifacts/issues/2650)) ([#2662](https://github.com/open-artifacts-ai/open-artifacts/issues/2662)) ([e47bedd](https://github.com/open-artifacts-ai/open-artifacts/commit/e47bedd1af2cbc5936ba000f5113aa73b9188c24))
+
 ## [0.205.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.205.0...v0.205.1) (2026-11-18)
 
 
