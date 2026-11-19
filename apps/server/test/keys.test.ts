@@ -49,6 +49,7 @@ describe("deriveKey", () => {
       "oa:setup-remind-off",
       "oa:share-optout",
       "oa:directory-state",
+      "oa:analytics-member",
       "oa:content-url",
       "oa:upload",
       "oa:directory-token",

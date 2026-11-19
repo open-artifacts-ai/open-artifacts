@@ -65,7 +65,7 @@ export const setUpNoticeKey = (recipientId: string, memberId: string) =>
  */
 export const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
 /** A seeded Welcome (anyone's, the owner's legacy row included) is not the person's work either. */
-const NOT_A_WELCOME = `id not in (select coalesce(json_extract(value, '$.artifactId'), '') from settings
+export const NOT_A_WELCOME = `id not in (select coalesce(json_extract(value, '$.artifactId'), '') from settings
     where key = '${WELCOME_KEY}' or substr(key, 1, ${WELCOME_KEY.length + 1}) = '${WELCOME_KEY}:')`;
 
 /** One row per user who has posted a comment (any thread or reply). */
