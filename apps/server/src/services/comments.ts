@@ -66,6 +66,7 @@ import {
   heldAfterEdit,
   onlyAnswers,
   recordHolds,
+  recordListed,
 } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { activation } from "./analytics.js";
@@ -1742,6 +1743,17 @@ async function followMentioned(
   }
 }
 
+/** #2577: a person's typed comment going to another person's agent from their list is remembered for "Who asked what". Best effort. */
+const listedFrom = (
+  env: Env,
+  artifactId: string,
+  c: StoredComment,
+  agent: { key: string; userId: string },
+): Promise<void> =>
+  isTyped(c.author) && c.author.kind === "user"
+    ? recordListed(env, artifactId, c.id, agent.key, agent.userId, c.author.ref)
+    : Promise.resolve();
+
 /**
  * Sends the notices of a written comment and records how each mention went. Returns the comment as then stored.
  */
@@ -1771,20 +1783,23 @@ async function deliver(
     const [outs] = await Promise.all([
       Promise.all(
         r.agents.map(({ agent, kind }) =>
-          Promise.race([
-            notifyAgent(
-              env,
-              a.id,
-              version,
-              threadId,
-              c.id,
-              kind,
-              agent,
-              // Only a comment a person typed, to an agent of that same person.
-              isTyped(c.author) && c.author.ref === agent.userId,
-            ),
-            late,
-          ]),
+          Promise.all([
+            Promise.race([
+              notifyAgent(
+                env,
+                a.id,
+                version,
+                threadId,
+                c.id,
+                kind,
+                agent,
+                // Only a comment a person typed, to an agent of that same person.
+                isTyped(c.author) && c.author.ref === agent.userId,
+              ),
+              late,
+            ]),
+            listedFrom(env, a.id, c, agent),
+          ]).then(([o]) => o),
         ),
       ),
       Promise.all(follows),
@@ -2310,19 +2325,22 @@ async function threadReply(
     try {
       outs = await Promise.all(
         reached.map((agent) =>
-          Promise.race([
-            notifyAgent(
-              env,
-              a.id,
-              version,
-              threadId,
-              c.id,
-              "thread_reply",
-              agent,
-              isTyped(c.author) && c.author.ref === agent.userId,
-            ),
-            late,
-          ]),
+          Promise.all([
+            Promise.race([
+              notifyAgent(
+                env,
+                a.id,
+                version,
+                threadId,
+                c.id,
+                "thread_reply",
+                agent,
+                isTyped(c.author) && c.author.ref === agent.userId,
+              ),
+              late,
+            ]),
+            listedFrom(env, a.id, c, agent),
+          ]).then(([o]) => o),
         ),
       );
     } finally {

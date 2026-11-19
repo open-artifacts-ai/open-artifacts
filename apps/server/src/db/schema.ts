@@ -617,6 +617,33 @@ export const heldRequestItems = sqliteTable(
   ],
 );
 
+// #2577: a request that went straight to the receiver's agent because the
+// sender is on their list. Ids and a time only, never words; it feeds "Who
+// asked what" and nothing else (not the held list, the inbox or an allow).
+// Swept after 30 days by the lapse cron.
+export const listedDeliveries = sqliteTable(
+  "listed_deliveries",
+  {
+    id: text("id").primaryKey(),
+    receiverId: text("receiver_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    senderId: text("sender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    commentId: text("comment_id").notNull(),
+    agentKey: text("agent_key").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("listed_deliveries_comment_idx").on(t.commentId, t.agentKey),
+    index("listed_deliveries_receiver_idx").on(t.receiverId, t.createdAt),
+  ],
+);
+
 // #2577: whose requests a person's agents take without asking (the "listens
 // to" list). Never trusted from the row alone: every use re-checks that the
 // member is still on the team, can still edit the page, and that the page is

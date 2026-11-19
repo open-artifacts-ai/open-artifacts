@@ -604,7 +604,16 @@ async function recordHoldsOnce(
         ).run();
         // Browser push only for a member who turned it on; otherwise the inbox alone. Never the words.
         if (await phonePushOn(env, owner)) {
-          const u = await getUser(env, senderId);
+          const u = await stmt(
+            env.DB,
+            "select name, display_name as displayName, email from users where id = ?1",
+          )
+            .bind(senderId)
+            .first<{
+              name: string | null;
+              displayName: string | null;
+              email: string;
+            }>();
           await queuePush(
             env,
             [owner],
@@ -1176,6 +1185,9 @@ export async function lapseHeld(env: Env, now = Date.now()): Promise<void> {
       env.DB,
       "delete from held_requests where not exists (select 1 from held_request_items i where i.request_id = held_requests.id) and last_at < ?1",
     ).bind(now - 30 * 24 * 60 * 60 * 1000),
+    stmt(env.DB, "delete from listed_deliveries where created_at < ?1").bind(
+      now - 30 * 24 * 60 * 60 * 1000,
+    ),
   ]);
 }
 
@@ -1329,8 +1341,8 @@ export const ASK_HISTORY_MS = 30 * DAY_MS;
 /**
  * "Who asked what" for the receiver: the last 30 days of requests that were
  * held for them, newest first, as ids, names, titles and times (never words).
- * Only what is recorded: held_request_items. A request an on-list sender sent
- * is delivered at once and writes no row, so "on_list" is not returned yet.
+ * Held ones come from held_request_items, listed ones (sent straight to the
+ * agent) from listed_deliveries.
  */
 export async function askHistory(
   env: Env,
@@ -1366,11 +1378,46 @@ export async function askHistory(
     }>();
   // Dynamic: comments.ts imports this file.
   const { artifactAgents } = await import("./comments.js");
+  const { results: listed } = await stmt(
+    env.DB,
+    `select d.agent_key, d.created_at, d.artifact_id, d.sender_id,
+            u.name as sender_name, u.display_name as sender_display, u.email as sender_email,
+            a.title as title, a.deleted_at as deleted_at
+       from listed_deliveries d
+       join users u on u.id = d.sender_id
+       left join artifacts a on a.id = d.artifact_id
+      where d.receiver_id = ?1 and d.created_at >= ?2
+      order by d.created_at desc, d.id limit 500`,
+  )
+    .bind(receiverId, now - ASK_HISTORY_MS)
+    .all<{
+      agent_key: string;
+      created_at: number;
+      artifact_id: string;
+      sender_id: string;
+      sender_name: string | null;
+      sender_display: string | null;
+      sender_email: string;
+      title: string | null;
+      deleted_at: number | null;
+    }>();
+  const all = [
+    ...results.map((r) => ({ ...r, listed: false })),
+    ...listed.map((r) => ({
+      ...r,
+      state: "listed",
+      expires_at: 0,
+      quiet_until: null as number | null,
+      listed: true,
+    })),
+  ]
+    .sort((x, y) => y.created_at - x.created_at)
+    .slice(0, 500);
   const me = await getUser(env, receiverId);
   const open = new Map<string, boolean>();
   const names = new Map<string, Map<string, string>>();
   const rows: AskHistoryRow[] = [];
-  for (const r of results) {
+  for (const r of all) {
     if (!open.has(r.artifact_id))
       open.set(
         r.artifact_id,
@@ -1389,7 +1436,8 @@ export async function askHistory(
         ),
       );
     let outcome: AskOutcome;
-    if (r.state === "allowed") outcome = "allowed_once";
+    if (r.listed) outcome = "on_list";
+    else if (r.state === "allowed") outcome = "allowed_once";
     else if (r.state === "lapsed" || r.expires_at <= now) outcome = "lapsed";
     else if (
       r.quiet_until !== null &&
@@ -1418,4 +1466,36 @@ export async function askHistory(
     });
   }
   return { rows };
+}
+
+/**
+ * #2577: a request from a person on the receiver's list is going straight to
+ * the receiver's agent: remember that it happened (ids and a time, never
+ * words) so "Who asked what" can show it. Only when the sender is on the list
+ * for this page right now (a reply from the person an ask was put to, or the
+ * receiver's own comment, is not a listed delivery). Best effort: never
+ * throws and never waits on anything but its own two statements.
+ */
+export async function recordListed(
+  env: Env,
+  artifactId: string,
+  commentId: string,
+  agentKey: string,
+  receiverId: string,
+  senderId: string,
+  now = Date.now(),
+): Promise<void> {
+  try {
+    if (receiverId === senderId) return;
+    if (!(await listensTo(env, receiverId, senderId, artifactId, now))) return;
+    await stmt(
+      env.DB,
+      `insert or ignore into listed_deliveries (id, receiver_id, sender_id, artifact_id, comment_id, agent_key, created_at)
+       values (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    )
+      .bind(newId(), receiverId, senderId, artifactId, commentId, agentKey, now)
+      .run();
+  } catch (e) {
+    logWarn("listed_delivery_write_failed", e);
+  }
 }
