@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { newId, R } from "@oa/shared";
+import { AgentRequestsSwitchSchema, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
@@ -131,6 +131,23 @@ describe("the phone switch", () => {
     expect((await put({ phonePush: "yes" })).status).toBe(400);
     expect((await put({ other: 1 })).status).toBe(400);
     expect((await get()).phonePush).toBe(false);
+  });
+});
+
+describe("the dashboard's parse path against the real server", () => {
+  // apps/dashboard/src/api/agentAsks.ts: api.get / api.send(PUT { on }) parse the
+  // response with AgentRequestsSwitchSchema (strict): the real answers must satisfy it.
+  it("GET and a PUT of only { on } answer exactly what the dashboard's schema accepts", async () => {
+    const g = await api(app, R.agentRequests, owner.cookie);
+    expect(AgentRequestsSwitchSchema.safeParse(await g.json()).success).toBe(
+      true,
+    );
+    const p = await put({ on: false });
+    expect(p.status).toBe(200);
+    const body = (await p.json()) as Record<string, unknown>;
+    expect(AgentRequestsSwitchSchema.safeParse(body).success).toBe(true);
+    expect(Object.keys(body).sort()).toEqual(["on", "phonePush"]);
+    await put({ on: true });
   });
 });
 
