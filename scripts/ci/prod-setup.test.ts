@@ -152,6 +152,38 @@ describe("prod-setup.sh", () => {
   });
 });
 
+describe("prod-setup.sh push keys", () => {
+  const probe = (mode: string, extra: Record<string, string> = {}) => {
+    const sb = sandbox({ pnpm: 'echo "PUSH=[${OA_SETUP_PUSH_KEYS-unset}]"' });
+    return sb.run(["bash", script("prod-setup.sh"), mode], {
+      env: {
+        PROD_NAME: "open-artifacts-prod",
+        PROD_APP_HOST: "app.example.com",
+        PROD_CONTENT_HOST: "content.example.com",
+        PROD_OWNER_EMAIL: "o@example.com",
+        DEMO_NAME: "open-artifacts-demo",
+        DEMO_APP_HOST: "demo.example.com",
+        DEMO_CONTENT_HOST: "demo-content.example.com",
+        DEMO_OWNER_EMAIL: "demo@example.com",
+        ...extra,
+      },
+    }).out;
+  };
+  it.each(["install", "preflight", "upgrade"])(
+    "%s leaves VAPID off unless PROD_PUSH_KEYS is on",
+    (m) => {
+      expect(probe(m)).toContain("PUSH=[off]");
+      expect(probe(m, { PROD_PUSH_KEYS: "" })).toContain("PUSH=[off]");
+      expect(probe(m, { PROD_PUSH_KEYS: "yes" })).toContain("PUSH=[off]");
+      expect(probe(m, { PROD_PUSH_KEYS: "on" })).toContain("PUSH=[unset]");
+    },
+  );
+  it("the demo never gets keys, even with PROD_PUSH_KEYS on", () => {
+    for (const m of ["demo-install", "demo-upgrade"])
+      expect(probe(m, { PROD_PUSH_KEYS: "on" })).toContain("PUSH=[off]");
+  });
+});
+
 describe("prod-setup.sh demo modes", () => {
   // Record<string, string>: the demo run may add DEMO_PUBLIC_HOME (and a bad value for it).
   const demoEnv: Record<string, string> = {

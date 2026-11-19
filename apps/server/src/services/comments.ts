@@ -13,6 +13,9 @@ import {
   type CommentList,
   type CommentPicture,
   type CommentPictureRef,
+  type CompactAnswer,
+  type CompactCommentList,
+  type CompactMention,
   isId,
   type KeyRef,
   MENTIONS_MAX,
@@ -69,7 +72,7 @@ import {
   recordListed,
 } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
-import { activation } from "./analytics.js";
+import { noteMemberFirst } from "./analytics.js";
 import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
 import {
   addresseeOf,
@@ -142,7 +145,6 @@ import {
   noteMentionReplied,
   pendingFirst,
 } from "./onboarding-firsts.js";
-import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -769,7 +771,7 @@ const roleOf = (
 ): "decide" | "weigh" | undefined => {
   if (viewer.userId === null || viewer.agent !== undefined) return undefined;
   if ((ask.decider ?? c.author.ref) === viewer.userId) return "decide";
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const risky = ask.options.some((o) => o.action);
   const asked = ask.to.some(
     (p) => (p.kind === "user" ? p.key : p.owner) === viewer.userId,
   );
@@ -1058,8 +1060,6 @@ const commentOfRaw = (
                       !c.ask.replacedBy &&
                       !c.ask.withdrawn &&
                       viewer.userId !== null &&
-                      (c.ask.confirm !== "passkey" ||
-                        c.ask.answer.verified === "passkey") &&
                       isTyped(c.ask.answer.by) &&
                       c.ask.answer.by.ref === viewer.userId &&
                       c.author.kind === "user" &&
@@ -1156,22 +1156,142 @@ async function commentView(
 
 // -------------------------------------------------------------------- reads
 
+/** #2688: the catch-up read's filters. Times are ISO strings, compared as instants. */
+export type CommentsSince = {
+  answeredSince?: string;
+  mentionedSince?: string;
+  compact?: boolean;
+};
+
+const EXCERPT_MAX = 200;
+const after = (at: string, since: string): boolean =>
+  Date.parse(at) > Date.parse(since);
+
+/** #2688: the viewer wrote this ask (as themselves, or as this agent). A person reads every ask of their own. */
+const askedByCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
+  if (c.author.kind !== "user") return false;
+  if (viewer.userId === null || c.author.ref !== viewer.userId) return false;
+  const mine = c.author.agent;
+  const a = viewer.agent;
+  // An ask posted while the agent was unlinked has no identity: the same name
+  // on the same connection, whether the caller is linked now or not. Its
+  // `answer.yes` is then not true for the linked caller (the safe side: yes
+  // needs the identity match, so a pick on it is data, never the person's yes).
+  if (a && mine && !mine.identity)
+    return mine.name === a.name && mine.via === (a.via ? viaKey(a.via) : null);
+  return askedByViewer(c, viewer);
+};
+
+/** #2688: this comment @mentions the viewer: their agent (same identity; the same name when either has none), or them. */
+const mentionsCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
+  if (viewer.userId === null) return false;
+  const a = viewer.agent;
+  if (!a) return c.people?.includes(viewer.userId) === true;
+  return (c.mentions ?? []).some((m) => {
+    if (m.owner !== viewer.userId) return false;
+    if (m.identity && a.identity)
+      return m.identity.identityId === a.identity.identityId;
+    // A mention stored before its agent was linked has no identity: same owner and name.
+    return m.name === a.name;
+  });
+};
+
+const answeredHit = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  since: string,
+): boolean =>
+  c.ask?.answer !== undefined &&
+  after(c.ask.answer.at, since) &&
+  askedByCaller(c, viewer);
+
+const mentionHit = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  since: string,
+): boolean => after(c.createdAt, since) && mentionsCaller(c, viewer);
+
 /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
 export async function listComments(
   env: Env,
   artifactId: string,
   status: CommentStatus | "all",
   viewer: CommentViewer,
-): Promise<CommentList> {
+): Promise<CommentList>;
+/** #2688: with `compact`, a small list of the answers and mentions since. Without it, the threads that hold one. */
+export async function listComments(
+  env: Env,
+  artifactId: string,
+  status: CommentStatus | "all",
+  viewer: CommentViewer,
+  since: CommentsSince,
+): Promise<CommentList | CompactCommentList>;
+export async function listComments(
+  env: Env,
+  artifactId: string,
+  status: CommentStatus | "all",
+  viewer: CommentViewer,
+  since?: CommentsSince,
+): Promise<CommentList | CompactCommentList> {
   // A full read repairs the asks index (#1623); never fails the read. The rows
   // are read first, so the threads are never older than the rows they are
   // compared with.
   const rows = status === "all" ? await askRows(env, artifactId) : null;
   const r = await call(() => stub(env, artifactId).commentsList(status));
   if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
+  const a = since?.answeredSince;
+  const m = since?.mentionedSince;
+  if (a === undefined && m === undefined)
+    return {
+      threads: await threadViews(env, artifactId, r.threads, viewer),
+      open: r.open,
+      truncated: r.truncated,
+    };
+  const hit = (c: StoredComment): boolean =>
+    (a !== undefined && answeredHit(c, viewer, a)) ||
+    (m !== undefined && mentionHit(c, viewer, m));
+  const threads = r.threads.filter((t) => t.comments.some(hit));
+  const views = await threadViews(env, artifactId, threads, viewer);
+  if (!since?.compact)
+    return { threads: views, open: r.open, truncated: r.truncated };
+  const answers: CompactAnswer[] = [];
+  const mentions: CompactMention[] = [];
+  // Every field comes from the view `v`, which is already masked for this
+  // viewer (maskBody, #1822; maskHeld, #2577). A comment held for the viewer's
+  // person is left out whole: it carries nothing the viewer may read yet.
+  threads.forEach((t, ti) => {
+    t.comments.forEach((c, ci) => {
+      const v = views[ti]?.comments[ci];
+      if (!v || maskedFor(c, viewer)) return;
+      const ans = v.ask?.answer;
+      if (a !== undefined && v.ask && ans && answeredHit(c, viewer, a))
+        answers.push({
+          threadId: t.id,
+          commentId: c.id,
+          question: v.ask.question,
+          optionId: ans.optionId,
+          label:
+            v.ask.options.find((o) => o.id === ans.optionId)?.label ??
+            ans.optionId,
+          at: ans.at,
+          by: ans.by.name,
+          yes: ans.yes === true,
+        });
+      if (m !== undefined && mentionHit(c, viewer, m))
+        mentions.push({
+          threadId: t.id,
+          commentId: c.id,
+          at: c.createdAt,
+          by: v.author.name,
+          excerpt: v.body.slice(0, EXCERPT_MAX),
+        });
+    });
+  });
+  const byAt = (x: { at: string }, y: { at: string }) =>
+    Date.parse(x.at) - Date.parse(y.at);
   return {
-    threads: await threadViews(env, artifactId, r.threads, viewer),
-    open: r.open,
+    ...(a !== undefined ? { answers: answers.sort(byAt) } : {}),
+    ...(m !== undefined ? { mentions: mentions.sort(byAt) } : {}),
     truncated: r.truncated,
   };
 }
@@ -1600,22 +1720,12 @@ async function resolveExtras(
         "bad_request",
         "An ask that names an action goes to you only: drop the other people",
       );
-    // #2263: the server decides, from the actions the options name and the
-    // switches of the people it reaches and of its decider (#2381: the decider
-    // picks, so their settings count even when they are not in `to`). Whatever
-    // a client sent as `confirm` was stripped by the schema; an edit never
-    // touches the stored mark.
-    const confirm = await confirmFor(
-      env,
-      [...new Set([...addressees(to), decider ?? askerId])].filter(Boolean),
-      askIn.options,
-    );
+    // #2864: no ask needs a passkey for now, so the server sets no `confirm`.
     ask = {
       question: askIn.question,
       options: askIn.options,
       ...(askIn.recommended ? { recommended: askIn.recommended } : {}),
       to,
-      ...(confirm ? { confirm } : {}),
       ...(decider ? { decider } : {}),
       ...(typeof askIn.replaces === "string"
         ? { replaces: askIn.replaces }
@@ -2558,78 +2668,24 @@ const isAsked = (
   (ask.to.some((p) => addresseeOf(p) === who.id) ||
     (ask.decider ?? author) === who.id);
 
-/**
- * #2381: the pick needs this person's passkey though the ask carries no
- * `confirm`: they are its decider and their switches cover it now (an ask from
- * before deciders, or a switch turned on after the ask was posted).
- */
-const needsOwnPasskey = async (
-  env: Env,
-  ask: { decider?: string; options: { action?: AskOption["action"] }[] },
-  who: CommentWho,
-  author: string,
-): Promise<boolean> =>
-  who.kind === "user" &&
-  deciderOf(ask, author) === who.id &&
-  (await confirmFor(env, [who.id], ask.options)) === "passkey";
-
 /** #2381: the ask's decider: the person the asker named, else the asker's own user. */
 const deciderOf = (ask: { decider?: string }, author: string): string =>
   ask.decider ?? author;
 
 /**
- * #2263: a WebAuthn challenge for picking `optionId` on a confirm ask:
- * 403 passkey_required for anything but a browser session (a token or MCP
- * grant can never carry a passkey), 403 forbidden unless asked, 404 without an
- * ask, 400 for an ask that needs no passkey or an unknown option, 409
- * conflict once closed, 409 already_answered (that option is the answer already; another option is a change and needs a fresh assertion), then the passkey rules
- * (no_passkey, passkey_cooling) and the challenge budget (429).
+ * #2864: no ask needs a passkey, so there is no pick challenge to issue. The
+ * route stays so an old client gets a plain 400 instead of a missing route.
  */
 export async function answerChallenge(
-  env: Env,
-  artifactId: string,
-  threadId: string,
-  commentId: string,
-  who: CommentWho,
-  optionId: string,
-  interactive: boolean,
-) {
-  if (await guestWho(env, who))
-    throw new ApiError("forbidden", "Only the people asked can answer");
-  const { ask, status, author } = await storedAsk(
-    env,
-    artifactId,
-    threadId,
-    commentId,
-  );
-  if (!interactive || who.kind !== "user")
-    throw new ApiError(
-      "passkey_required",
-      "Only the web app can use a passkey",
-    );
-  if (!isAsked(ask, who, author))
-    throw new ApiError("forbidden", "Only the people asked can answer");
-  if (
-    ask.confirm !== "passkey" &&
-    !(await needsOwnPasskey(env, ask, who, author))
-  )
-    throw new ApiError("bad_request", "This ask does not need a passkey");
-  if (status === "resolved")
-    throw new ApiError("conflict", "This ask is closed");
-  if (ask.replacedBy)
-    throw new ApiError(
-      "replaced",
-      "A newer ask replaced this one: pick on that",
-    );
-  if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
-  if (!ask.options.some((o) => o.id === optionId))
-    throw new ApiError("bad_request", "Unknown option");
-  if (ask.answer?.optionId === optionId)
-    throw new ApiError(
-      "already_answered",
-      "This ask is answered with that option",
-    );
-  return pickChallenge(env, who.id, artifactId, commentId, optionId);
+  _env: Env,
+  _artifactId: string,
+  _threadId: string,
+  _commentId: string,
+  _who: CommentWho,
+  _optionId: string,
+  _interactive: boolean,
+): Promise<never> {
+  throw new ApiError("bad_request", "This ask does not need a passkey");
 }
 
 /**
@@ -2638,11 +2694,7 @@ export async function answerChallenge(
  * answer may change until then. `who` is the caller as an author (a guest is
  * never asked).
  *
- * #2263: on an ask marked `confirm: "passkey"` the pick is one answer and
- * needs a verified passkey assertion for a challenge issued for this exact
- * (artifact, comment, option, member): 403 passkey_required without one, and
- * always for a token or MCP grant; 409 already_answered; then the challenge
- * rules of verifyPick (410 challenge_expired, 400 passkey_failed).
+ * #2864: no passkey is ever asked for; a typed pick is the answer.
  */
 const guestWho = async (env: Env, who: CommentWho): Promise<boolean> =>
   who.kind === "guest" || (await isGuestMember(env, who.id));
@@ -2657,7 +2709,7 @@ export async function answerAsk(
   optionId: string,
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
   after: Announce | undefined,
-  pick: PickAuth,
+  _pick: PickAuth,
   /** #2381: the caller may edit the page (the decider must), and is a guest-role member. */
   caps: { canDecide: boolean; guest: boolean },
 ): Promise<Comment> {
@@ -2687,41 +2739,6 @@ export async function answerAsk(
       "A newer ask replaced this one: pick on that",
     );
   if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
-  let verified: "passkey" | undefined;
-  const needsPasskey =
-    ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));
-  // Strangers, closed asks and unknown options fall through to the DO's own
-  // refusals (forbidden, conflict, bad_request) without touching a challenge.
-  if (
-    needsPasskey &&
-    isAsked(ask, who, author) &&
-    who.kind === "user" &&
-    deciderOf(ask, author) === who.id &&
-    status !== "resolved" &&
-    ask.options.some((o) => o.id === optionId)
-  ) {
-    if (!pick.interactive || who.kind !== "user")
-      throw new ApiError(
-        "passkey_required",
-        "This pick needs your passkey, in the web app",
-      );
-    if (ask.answer?.optionId === optionId)
-      throw new ApiError(
-        "already_answered",
-        "This ask is answered with that option",
-      );
-    if (pick.assertion === undefined || pick.assertion === null)
-      throw new ApiError("passkey_required", "This pick needs your passkey");
-    await verifyPick(
-      env,
-      who.id,
-      artifactId,
-      commentId,
-      optionId,
-      pick.assertion,
-    );
-    verified = "passkey";
-  }
   const {
     comment: c,
     unchanged,
@@ -2733,10 +2750,8 @@ export async function answerAsk(
       by: actorOf(who),
       optionId,
       rate: rateKeyOf(who),
-      ...(verified ? { verified } : {}),
       canDecide: caps.canDecide,
       guest: caps.guest,
-      ...(needsPasskey ? { needsPasskey: true } : {}),
     }),
   );
   // #2458: a risky decision (a passkey ask, or any option names an action, so
@@ -2750,7 +2765,7 @@ export async function answerAsk(
     decided &&
     stored?.optionId === optionId &&
     who.kind === "user" &&
-    (needsPasskey || ask.options.some((o) => o.action))
+    ask.options.some((o) => o.action)
   )
     try {
       const askerAgent = c.author.kind === "user" ? c.author.agent : undefined;
@@ -2797,7 +2812,7 @@ export async function answerAsk(
     c.ask.answer.by.ref === who.id
   )
     if (await noteAskAnswered(env, who.id))
-      await activation(env, "first_ask_answered", after?.ctx);
+      await noteMemberFirst(env, who.id, "first_ask_answered", after?.ctx);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -3454,7 +3469,12 @@ async function noteMentionActivity(
             c.mentions?.some((m) => own(m) && m.identity?.identityId === me),
         );
       if (asked && (await noteMentionReplied(env, who.id)))
-        await activation(env, "agent_replied_to_mention", after?.ctx);
+        await noteMemberFirst(
+          env,
+          who.id,
+          "agent_replied_to_mention",
+          after?.ctx,
+        );
     })(),
   );
 }

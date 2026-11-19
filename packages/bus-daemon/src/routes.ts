@@ -212,7 +212,7 @@ export type RouteCtx = {
    * hello_ok did not list `follow`) or `down` (no link, or no hello_ok yet).
    * Without it, refused as `down`.
    */
-  followSupport?: () => "ok" | "old_hub" | "down";
+  followSupport?: (ref: string) => "ok" | "old_hub" | "down";
   /**
    * Asks the hub, over HTTP with the machine's token, that `ref`'s role reach
    * `namespaces` (#1346). `ref` is always the attested connection's, never
@@ -402,7 +402,7 @@ export function routeLocal(
       const cap = ctx.limited?.(ref);
       if (cap)
         return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
-      const support = ctx.followSupport?.() ?? "down";
+      const support = ctx.followSupport?.(ref) ?? "down";
       if (support !== "ok")
         return {
           type: "error",

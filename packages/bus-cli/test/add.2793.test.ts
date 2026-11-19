@@ -186,6 +186,23 @@ describe("oa-bus add (#2793 S1)", () => {
     ]);
   });
 
+  it("warns that unmapped folders leave main after the next restart, and suggests use main", async () => {
+    const ctx = term(approvalServer("https://a.example.com"));
+    writeMain(ctx.home);
+    await add(
+      { address: "https://a.example.com/", name: "work", noOpen: true },
+      ctx,
+    );
+    const out = ctx.all().join("\n");
+    expect(out).toContain(
+      "every folder that is not mapped stops going to your main instance",
+    );
+    expect(out).toContain("automatic update");
+    expect(out).toContain(
+      `${ctx.busCmd} use main in a parent folder such as ~`,
+    );
+  });
+
   it("credentialsFor never returns another file's address or key", async () => {
     const ctx = term(approvalServer("https://a.example.com"));
     writeMain(ctx.home);
