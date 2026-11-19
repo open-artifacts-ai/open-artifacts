@@ -277,7 +277,9 @@ describe("For you", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Mute OA Design" }),
     );
-    await findVisibleToast("Muted OA Design. Asks for you still come through.");
+    await findVisibleToast(
+      "Muted OA Design. Its asks to you still show in For you.",
+    );
     await waitFor(() =>
       expect(posts.find((c) => c.path === R.meInboxMutes)?.body).toEqual({
         kind: "agent",
@@ -760,7 +762,9 @@ describe("failures and announcements", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Mute OA Design" }),
     );
-    await findVisibleToast("Muted OA Design. Asks for you still come through.");
+    await findVisibleToast(
+      "Muted OA Design. Its asks to you still show in For you.",
+    );
     fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
     await waitFor(() =>
       expect(dels.map((c) => c.path)).toContain(

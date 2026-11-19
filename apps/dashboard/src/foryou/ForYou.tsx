@@ -918,7 +918,7 @@ function Row({
                 onSelect={() =>
                   muteWith(
                     { kind: "agent", id: agent.id },
-                    `Muted ${agent.name}. Asks for you still come through.`,
+                    `Muted ${agent.name}. Its asks to you still show in For you.`,
                   )
                 }
               >

@@ -44,7 +44,7 @@ export function useMuteToggle(target: MuteTarget | null, name: string) {
           title:
             target.kind === "page"
               ? `Muted "${name}". Its asks still show in For you.`
-              : `Muted ${name}. Asks for you still come through.`,
+              : `Muted ${name}. Its asks to you still show in For you.`,
           tone: "neutral",
           action: {
             label: "Undo",
