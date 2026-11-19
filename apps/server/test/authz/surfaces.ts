@@ -2414,6 +2414,15 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #2552: the owner's pause switch. Refusal mode sends an invalid body (400
+  // after the owner check); real mode sets it off (204), the default.
+  "PUT /api/v1/bus/updates-paused": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { paused: false } }),
+      allow: ok(204),
+    },
+  },
   // #2552 "Install now": only the caller's own machine answers past the
   // rules: real only. 409 machine_offline is the answer while it is not connected.
   "POST /api/v1/bus/machines/:id/install-now": {
