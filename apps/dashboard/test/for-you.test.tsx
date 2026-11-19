@@ -627,14 +627,6 @@ describe("an ask opened in the panel", () => {
     ).toBeNull();
   });
 
-  it("a pick that turns out to need a passkey asks to pick again", async () => {
-    const { card } = await openAsk("Ship the changelog?");
-    fireEvent.click(within(card).getByRole("button", { name: /Ship it/ }));
-    expect(
-      await within(card).findByText("This now needs your passkey. Pick again."),
-    ).toBeInTheDocument();
-  });
-
   it("a risky ask says it needs a passkey", async () => {
     const { card } = await openAsk("Merge the release PR?");
     expect(card).toHaveTextContent("Approving this needs your passkey.");

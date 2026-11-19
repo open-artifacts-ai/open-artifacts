@@ -453,7 +453,7 @@ describe("allow", () => {
     expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
   });
 
-  it("all pages needs a passkey, an end date within a year, and a page not open", async () => {
+  it("all pages needs no passkey, but an end date within a year (#2864)", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
     const [r] = await held(s.id);
@@ -463,19 +463,30 @@ describe("allow", () => {
     }));
     const until = Date.now() + 30 * 86_400_000;
     await expect(
-      allow(E, owner.userId, r?.id as string, { level: "all", items, until }),
-    ).rejects.toMatchObject({ code: "no_passkey" });
-    await expect(
       allow(E, owner.userId, r?.id as string, {
         level: "all",
         items,
         until: Date.now() + 400 * 86_400_000,
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
-    // The prompt is for a member with a passkey: this one has none.
-    await expect(
-      allowChallenge(E, owner.userId, r?.id as string, until),
-    ).rejects.toMatchObject({ code: "no_passkey" });
+    const out = await allow(E, owner.userId, r?.id as string, {
+      level: "all",
+      items,
+      until,
+    });
+    expect(out.sent).toBe(1);
+    expect(
+      (
+        await E.DB.prepare(
+          "select count(*) as n from agent_listens where owner_id = ? and member_id = ? and scope = 'all'",
+        )
+          .bind(owner.userId, editor.userId)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(1);
+    await E.DB.prepare("delete from agent_listens where owner_id = ?")
+      .bind(owner.userId)
+      .run();
   });
 
   it("not now quiets the sender for a day and changes nothing the asker sees", async () => {
@@ -658,7 +669,7 @@ describe("all pages in a space", () => {
     expect(r?.space?.pagesCovered).toBe(2);
   });
 
-  it("the allow needs a page in a shared space, an end date and a passkey", async () => {
+  it("the allow needs a page in a shared space and an end date, and no passkey", async () => {
     const s = await setup({}, OWNER_AGENT);
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
     const [r] = await held(s.id);
@@ -680,15 +691,22 @@ describe("all pages in a space", () => {
       pagesCovered: 1,
     });
     await expect(
-      allow(E, owner.userId, r?.id as string, { level: "space", items, until }),
-    ).rejects.toMatchObject({ code: "no_passkey" });
-    await expect(
       allow(E, owner.userId, r?.id as string, {
         level: "space",
         items,
         until: Date.now() + 400 * 86_400_000,
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
+    // #2864: no passkey, no assertion.
+    const out = await allow(E, owner.userId, r?.id as string, {
+      level: "space",
+      items,
+      until,
+    });
+    expect(out.sent).toBe(1);
+    await E.DB.prepare("delete from agent_listens where owner_id = ?")
+      .bind(owner.userId)
+      .run();
   });
 });
 
@@ -1295,7 +1313,7 @@ describe("review fixes (#2577, OA Axe W)", () => {
     expect(left.results.every((x) => x.state === "withdrawn")).toBe(true);
   });
 
-  it("allow once and this page need no passkey, even for a member who has one; all pages and a space do", async () => {
+  it("no scope needs a passkey, even for a member who has one (#2864)", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
     const [r] = await held(s.id);
@@ -1321,20 +1339,22 @@ describe("review fixes (#2577, OA Axe W)", () => {
             .first<{ n: number }>()
         )?.n,
       ).toBe(1);
-      // All pages still ask for the assertion.
+      // All pages need none either.
       await post(s.id, typed(editor), editor, "y", mention(s.claude)); // listed now: delivers
       await E.DB.prepare("delete from agent_listens where owner_id = ?")
         .bind(owner.userId)
         .run();
       await post(s.id, typed(editor), editor, "z", mention(s.claude));
       const [r2] = await held(s.id);
-      await expect(
-        allow(E, owner.userId, r2?.id as string, {
-          level: "all",
-          items: itemsOf(r2),
-          until: Date.now() + 30 * 86_400_000,
-        }),
-      ).rejects.toMatchObject({ code: "passkey_required" });
+      const all = await allow(E, owner.userId, r2?.id as string, {
+        level: "all",
+        items: itemsOf(r2),
+        until: Date.now() + 30 * 86_400_000,
+      });
+      expect(all.sent).toBe(1);
+      await E.DB.prepare("delete from agent_listens where owner_id = ?")
+        .bind(owner.userId)
+        .run();
     } finally {
       await E.DB.prepare("delete from passkeys where user_id = ?")
         .bind(owner.userId)
