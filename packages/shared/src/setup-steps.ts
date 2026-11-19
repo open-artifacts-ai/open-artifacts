@@ -23,7 +23,7 @@ export type SetupStep = (typeof SETUP_STEPS)[number];
  * Steps that only the bus can tick: "named" (the bus hub records the name) and
  * "mention" (needs a verified bus identity's reply). A person who only uses
  * Open Artifacts from ChatGPT or a regular Claude chat never connects the bus,
- * so for them these two are hidden and the count is of 3 (#2880).
+ * so for them these two are hidden and the count is of 3 (#2890).
  */
 export const BUS_STEPS = [
   "named",

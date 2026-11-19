@@ -170,7 +170,7 @@ export async function getOnboarding(
   const mentionReplied = at.has(mentionRepliedKey(userId));
   const mentionedAt = at.get(mentionedKey(userId));
   const inviter = val(invitedByKey(userId));
-  // #2880: someone who only uses OA from a chat (OAuth MCP) never ticks the bus-only
+  // #2890: someone who only uses OA from a chat (OAuth MCP) never ticks the bus-only
   // steps. A recorded name or reply proves the bus too (a machine may be gone since).
   const busConnected =
     agentNamed || mentionReplied || (await hasConnectedMachine(env, userId));
@@ -567,7 +567,7 @@ export async function memberSetups(
       `select distinct owner_id as id from artifacts where deleted_at is null and not ${SELF_TEST}
        and ${NOT_A_WELCOME}`,
     ),
-    // #2880: who ever connected the bus (the same fact as hasConnectedMachine).
+    // #2890: who ever connected the bus (the same fact as hasConnectedMachine).
     stmt(
       env.DB,
       "select distinct user_id as id from bus_machines where last_used_at is not null",

@@ -179,7 +179,7 @@ export type MockOptions = {
         /** #2632: the optional sixth step, and who added the caller. */
         teamStep?: boolean;
         invitedBy?: string;
-        /** #2880: false is a chat-only person who never connected the bus: three steps. Default true. */
+        /** #2890: false is a chat-only person who never connected the bus: three steps. Default true. */
         bus?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */

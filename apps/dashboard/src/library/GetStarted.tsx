@@ -1,3 +1,4 @@
+import { applicableSteps, SETUP_STEPS } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -62,29 +63,33 @@ export function GetStarted({
   );
   const ready =
     loaded && tokens.isSuccess && clients.isSuccess && members.isSuccess;
-  // #2478: the five steps, then the optional invite. #2880: someone who never
+  // #2478: the five steps, then the optional invite. #2890: someone who never
   // connected the bus (chat-only) sees three: the bus-only two are hidden.
-  const bus = o?.busConnected !== false;
+  const steps = applicableSteps(o?.busConnected);
+  const bus = steps.includes("named");
   const named = o?.agentNamed === true;
   const replied = o?.mentionReplied === true;
   const answered = o?.askAnswered === true;
   const nm = o?.agentName || "your agent";
   const five = [connected, named, hasArtifacts, replied, answered];
-  const shown = bus ? [0, 1, 2, 3, 4] : [0, 2, 4];
+  const shown = steps.map((s) => SETUP_STEPS.indexOf(s));
   const all = ready && shown.every((i) => five[i]) && invited;
 
   // Every step done: the server keeps that, so removing a member or a token
-  // later never brings the list back.
+  // later never brings the list back. Not while the bus was never connected
+  // (#2890): a Claude Code user can reach 3 of 3 before oa-bus first connects,
+  // and a saved `completed` would hide Name and Mention for good.
   const { mutate: save } = setOnboarding;
   useEffect(() => {
-    if (live && all) save({ completed: true });
-  }, [live, all, save]);
+    if (live && all && bus) save({ completed: true });
+  }, [live, all, bus, save]);
 
   // Events happen elsewhere (an agent, another tab): re-read what is still
   // open, quietly, until it is done. Focus refetch covers returning to the tab.
   const qc = useQueryClient();
   useEffect(() => {
-    if (!live || all) return;
+    // Without the bus, 3 of 3 keeps listening: connecting it brings two steps back.
+    if (!live || (all && bus)) return;
     const t = setInterval(() => {
       if (document.visibilityState === "hidden") return;
       // Only what is still open; the Library's pages refetch only while no
@@ -95,7 +100,8 @@ export function GetStarted({
       }
       if (!invited) void qc.invalidateQueries({ queryKey: qk.members });
       if (!hasArtifacts) void qc.invalidateQueries({ queryKey: ["artifacts"] });
-      if (!(hasArtifacts && answered && (!bus || (named && replied))))
+      // Without the bus, keep reading: connecting it brings two steps back.
+      if (!bus || !(hasArtifacts && answered && named && replied))
         void qc.invalidateQueries({ queryKey: qk.onboarding });
     }, BUS_POLL_MS);
     return () => clearInterval(t);

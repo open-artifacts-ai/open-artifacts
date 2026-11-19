@@ -670,7 +670,7 @@ export const MemberSetupSchema = z.object({
   state: z.enum(["set", "partial", "invited"]),
   /** Of `total`. */
   done: z.number().int().min(0).max(5),
-  /** #2880: 5, or 3 when they never connected the bus. Absent on older servers: 5. */
+  /** #2890: 5, or 3 when they never connected the bus. Absent on older servers: 5. */
   total: z.number().int().min(3).max(5).optional(),
   /** The first step not done. */
   stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
@@ -1207,7 +1207,7 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
-  /** #2880: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
+  /** #2890: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
   busConnected: z.boolean().optional(),
   /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
   teamStep: z.boolean().optional(),

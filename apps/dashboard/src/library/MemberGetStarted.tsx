@@ -122,7 +122,7 @@ export function MemberGetStarted() {
   const s = mySteps(merged);
   const five = fiveOf(s);
   // The one count (packages/shared setupSteps): card, Welcome and Members agree.
-  // #2880: chat-only (never connected the bus), three steps: no name, no mention.
+  // #2890: chat-only (never connected the bus), three steps: no name, no mention.
   const sum = setupSteps(merged);
   const all = sum.stalled === undefined;
   // Nothing shows until the server has said the card is still open.
@@ -135,22 +135,24 @@ export function MemberGetStarted() {
     if (answered && userId) rememberNoCard(userId, gone);
   }, [answered, userId, gone]);
 
-  // Five of five: the server keeps that, so the card stays gone.
+  // Five of five: the server keeps that, so the card stays gone. Never saved
+  // while the bus was never connected (#2890): 3 of 3 can come before oa-bus
+  // first connects, and a saved `completed` would hide Name and Mention for good.
   const { mutate: save } = setOnboarding;
   useEffect(() => {
-    if (live && all) save({ completed: true });
-  }, [live, all, save]);
+    if (live && all && s.bus) save({ completed: true });
+  }, [live, all, s.bus, save]);
 
   // Steps happen elsewhere (an agent, another tab): re-read until done.
   const qc = useQueryClient();
   useEffect(() => {
-    if (!live || all) return;
+    if (!live || (all && s.bus)) return;
     const t = setInterval(() => {
       if (document.visibilityState === "hidden") return;
       void qc.invalidateQueries({ queryKey: qk.onboarding });
     }, BUS_POLL_MS);
     return () => clearInterval(t);
-  }, [live, all, qc]);
+  }, [live, all, s.bus, qc]);
 
   // While R.onboarding loads, the card's slot is held (the results render at
   // once, below it), so the card never pushes them down when it arrives. A

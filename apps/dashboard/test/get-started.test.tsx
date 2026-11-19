@@ -223,7 +223,7 @@ describe("Get started checklist", () => {
         ),
       );
 
-    it("an owner who never connected the bus sees three steps, the invite, '0 of 3' and the bus line (#2880)", async () => {
+    it("an owner who never connected the bus sees three steps, the invite, '0 of 3' and the bus line (#2890)", async () => {
       withOnboarding({ busConnected: false });
       mount("/");
       await heading();

@@ -185,7 +185,7 @@ describe("R.onboarding", () => {
     expect((await get(o.cookie)).body?.hasArtifacts).toBe(false);
   });
 
-  it("says whether the caller ever connected the bus (#2880)", async () => {
+  it("says whether the caller ever connected the bus (#2890)", async () => {
     const o = await login(`own-${tag()}@example.com`, "owner");
     const m = await login(`mem-${tag()}@example.com`, "member");
     expect((await get(o.cookie)).body?.busConnected).toBe(false);

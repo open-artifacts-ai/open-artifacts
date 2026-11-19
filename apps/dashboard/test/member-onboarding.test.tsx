@@ -243,7 +243,7 @@ describe("a member's Library card", () => {
   const titles = (c: HTMLElement) =>
     [...c.querySelectorAll("ol > li")].map((li) => li.textContent ?? "");
 
-  it("a member who never connected the bus sees three steps, '1 of 3', and Product's bus line (#2880)", async () => {
+  it("a member who never connected the bus sees three steps, '1 of 3', and Product's bus line (#2890)", async () => {
     mountHosted("/", true, as("member"), [
       onboarding({ busConnected: false }),
       empty(),
@@ -278,7 +278,7 @@ describe("a member's Library card", () => {
     }
   });
 
-  it("three of three done (no bus) completes it: the card goes", async () => {
+  it("3 of 3 with no bus is not saved as completed (#2890): the card goes, nothing persists", async () => {
     const puts = calls("PUT");
     mountHosted("/", true, as("member"), [
       onboarding({
@@ -289,12 +289,31 @@ describe("a member's Library card", () => {
       put(),
       empty(),
     ]);
+    await waitFor(() => expect(card()).toBeNull());
+    await new Promise((r) => setTimeout(r, 300));
+    expect(puts.some((c) => JSON.stringify(c.body).includes("completed"))).toBe(
+      false,
+    );
+  });
+
+  it("5 of 5 with the bus connected is saved as completed", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [
+      onboarding({
+        busConnected: true,
+        firstArtifact: { id: "a", title: "A" },
+        agentNamed: true,
+        mentionReplied: true,
+        askAnswered: true,
+      }),
+      put(),
+      empty(),
+    ]);
     await waitFor(() =>
       expect(
         puts.some((c) => JSON.stringify(c.body).includes("completed")),
       ).toBe(true),
     );
-    expect(card()).toBeNull();
   });
 
   it("Hide hides it (dismissed), and nothing marks it done", async () => {

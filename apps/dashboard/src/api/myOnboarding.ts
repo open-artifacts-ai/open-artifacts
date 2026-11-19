@@ -23,7 +23,7 @@ export type MySteps = {
   published: boolean;
   replied: boolean;
   answered: boolean;
-  /** #2880: false (never connected the bus) hides named and mention. */
+  /** #2890: false (never connected the bus) hides named and mention. */
   bus: boolean;
   /** The optional sixth: never counts toward "Set up". */
   team: boolean;
@@ -54,7 +54,7 @@ export const fiveOf = (s: MySteps) => [
 ];
 
 /**
- * #2880: under the list when the bus-only steps (name, mention) are hidden.
+ * #2890: under the list when the bus-only steps (name, mention) are hidden.
  * OA Product's words.
  */
 export const BUS_LINE =

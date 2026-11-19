@@ -291,7 +291,7 @@ describe("a member's Welcome", () => {
     expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
   });
 
-  it("a person who never connected the bus sees three steps and the done line at three (#2880)", async () => {
+  it("a person who never connected the bus sees three steps and the done line at three (#2890)", async () => {
     progress = {
       agentConnected: true,
       firstArtifact: { id: "Cd5fGhJkLm6nPqRs", title: "Q" },

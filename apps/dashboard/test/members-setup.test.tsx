@@ -55,7 +55,7 @@ const ROWS = [
     name: "Chet Chat",
     role: "member",
     lastSeenAt: null,
-    // #2880: never connected the bus: of 3, never held up on named or mention.
+    // #2890: never connected the bus: of 3, never held up on named or mention.
     setup: { state: "partial", done: 2, total: 3, stalled: "ask" },
   },
   {
@@ -97,7 +97,7 @@ describe("the Setup column", () => {
     expect(priya?.textContent).toBe(
       "Setup: 0 of 5no agent connected yetReminded 15 Nov",
     );
-    // #2880: the count of three, with the step that really holds it up.
+    // #2890: the count of three, with the step that really holds it up.
     expect(cell(await row("Chet Chat"))?.textContent).toBe(
       "Setup: 2 of 3ask not answered yet",
     );

@@ -108,7 +108,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 
 <footer>You can delete this page any time. Nothing else depends on it.</footer>
 </main>
-<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","nameHint":"Your agent will suggest a name. It's what you'll type after @ in comments.","mentionHint":"Open your first page, type @ in a comment and pick {name}. It replies in the thread.","askHint":"Your first page has a question from {name}. Pick an option.","fallback":"your agent","member":{"welcome":"Welcome, {first}","lead":"{inviter} added you to {org}. Five steps and your agent is working here with you.","leadNoInviter":"Five steps and your agent is working here with you.","connectHint":"Paste the line below into your agent.","publishHint":"Your agent publishes one during setup. It's private until you share it.","mentionHint":"Open your first page, type @ in a comment and pick your agent. It replies in the thread.","askHint":"Your first page has a question from your agent. Pick an option.","alsoHint":"See what {org} is working on and leave a comment.","count":"{n} of {t} done","done":"Your agent hears your comments and answers them. Next: see what {org} is working on."}}</script>
+<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","nameHint":"Your agent will suggest a name. It's what you'll type after @ in comments.","mentionHint":"Open your first page, type @ in a comment and pick {name}. It replies in the thread.","askHint":"Your first page has a question from {name}. Pick an option.","fallback":"your agent","member":{"welcome":"Welcome, {first}","lead":"{inviter} added you to {org}. {steps} steps and your agent is working here with you.","leadNoInviter":"{steps} steps and your agent is working here with you.","connectHint":"Paste the line below into your agent.","publishHint":"Your agent publishes one during setup. It's private until you share it.","mentionHint":"Open your first page, type @ in a comment and pick your agent. It replies in the thread.","askHint":"Your first page has a question from your agent. Pick an option.","alsoHint":"See what {org} is working on and leave a comment.","count":"{n} of {t} done","done":"Your agent hears your comments and answers them. Next: see what {org} is working on."}}</script>
 <script>
 (function(){
   var D = JSON.parse(document.getElementById("oa-welcome-data").textContent);
@@ -213,15 +213,16 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     }
     var org = w.org || "";
     document.getElementById("title").textContent = w.firstName ? M.welcome.replace("{first}", function(){ return w.firstName; }) : "Welcome";
+    var steps = bus ? "Five" : "Three";
     var leadText = w.inviter ? M.lead.replace("{inviter}", function(){ return w.inviter; }).replace("{org}", function(){ return org; }) : M.leadNoInviter;
-    document.getElementById("lead").textContent = bus ? leadText : leadText.replace("Five steps", "Three steps");
+    document.getElementById("lead").textContent = leadText.replace("{steps}", steps);
     document.getElementById("also-hint").textContent = M.alsoHint.replace("{org}", function(){ return org; });
     document.getElementById("member-done-text").textContent = M.done.replace("{org}", function(){ return org; });
     tick(document.querySelector('[data-step="teammate"]'), !!w.teammateCommented);
   }
   function render(p){
     var w = p.who && p.who.member ? p.who : null;
-    // #2880: a person who never connected the bus sees three steps; an older shell sends no flag: five.
+    // #2890: a person who never connected the bus sees three steps; an older shell sends no flag: five.
     var bus = p.busConnected !== false;
     if (w) greet(w, bus);
     var nm = p.agentName || D.fallback;

@@ -733,7 +733,7 @@ async function startMocks() {
             // #2632: &teammate=1 ticks the optional sixth step.
             teamStep: params.get("teammate") === "1",
             invitedBy: "Bob Builder",
-            // #2880: &bus=0 is a chat-only person (never connected the bus): three steps.
+            // #2890: &bus=0 is a chat-only person (never connected the bus): three steps.
             bus: params.get("bus") !== "0",
           }
         : false,
