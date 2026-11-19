@@ -22,12 +22,12 @@ describe("guest frames (#2793 S3b)", () => {
     };
     expect(ClientFrameSchema.safeParse(ok).success).toBe(true);
     for (const extra of ["namespace", "global", "cwd", "roles", "repo"])
-      expect(
-        ClientFrameSchema.safeParse({ ...ok, [extra]: "x" }).success,
-      ).toBe(false);
-    expect(
-      ClientFrameSchema.safeParse({ ...ok, kind: "codex" }).success,
-    ).toBe(false);
+      expect(ClientFrameSchema.safeParse({ ...ok, [extra]: "x" }).success).toBe(
+        false,
+      );
+    expect(ClientFrameSchema.safeParse({ ...ok, kind: "codex" }).success).toBe(
+      false,
+    );
   });
 
   it("proof_seen is a server frame carrying only a hash", () => {
