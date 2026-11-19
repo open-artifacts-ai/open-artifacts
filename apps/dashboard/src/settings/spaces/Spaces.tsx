@@ -188,10 +188,10 @@ function NewSpace({
         </div>
         <div className="flex items-center justify-between gap-[var(--oa-space-3)]">
           <span className="text-[length:var(--oa-text-sm)] font-medium">
-            Public links
+            Sharing by link
           </span>
           <Switch
-            label="Public links"
+            label="Sharing by link"
             checked={publicLinks}
             onChange={setPublic}
           />
@@ -488,7 +488,7 @@ function SpaceList({
                     >
                       <path d="M6.5 9.5l3-3M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1A2.5 2.5 0 0 1 4.5 9l1-1M2.5 2.5l11 11" />
                     </svg>
-                    Public links off
+                    Link sharing off
                   </span>
                 )}
                 <Badge variant="outline">
@@ -569,7 +569,7 @@ function General({ space }: { space: Space }) {
       <div className="flex items-start justify-between gap-[var(--oa-space-3)]">
         <div>
           <b className="block text-[length:var(--oa-text-sm)] font-medium">
-            Public links
+            Sharing by link
           </b>
           <small id="oa-space-public-hint" className={muted}>
             Anyone with the link can view, no login.
@@ -577,7 +577,7 @@ function General({ space }: { space: Space }) {
         </div>
         <WriteLock>
           <Switch
-            label="Public links"
+            label="Sharing by link"
             describedBy="oa-space-public-hint"
             checked={space.publicLinks}
             disabled={patch.isPending}
@@ -590,19 +590,19 @@ function General({ space }: { space: Space }) {
       <ConfirmDialog
         open={asking}
         onClose={() => setAsking(false)}
-        title={`Turn off public links in ${space.name}?`}
+        title={`Turn off sharing by link in ${space.name}?`}
         body={
           <>
             <p>
-              No one can make new public links in {space.name}. Public links
-              already here keep working.
+              No one can share by link from {space.name} any more. Links already
+              shared keep working.
             </p>
             <p>
               To stop an existing link, open the artifact and make it private.
             </p>
           </>
         }
-        confirm="Turn off public links"
+        confirm="Turn off sharing by link"
         onConfirm={() => patch.mutate({ publicLinks: false })}
       />
     </SettingsCard>
