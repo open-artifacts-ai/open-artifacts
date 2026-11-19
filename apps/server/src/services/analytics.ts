@@ -248,7 +248,9 @@ async function backfillCandidates(env: Env): Promise<Candidate[]> {
            or key like 'onboarding:ask-answered:%'`,
     ),
   ]);
-  const ok = new Set((people?.results as { id: string }[]).map((r) => r.id));
+  const ok = new Set(
+    ((people?.results ?? []) as { id: string }[]).map((r) => r.id),
+  );
   const out: Candidate[] = [];
   const rows = (r: typeof signed, event: ActivationEvent): void => {
     for (const x of (r?.results ?? []) as { id: string; at: number }[])
