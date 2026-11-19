@@ -17,6 +17,8 @@ export const SHOWN_KINDS = [
   "share",
   "decision",
   "away",
+  // #2577: someone asked one of your agents; held for you.
+  "request",
 ] as const;
 type ShownKind = (typeof SHOWN_KINDS)[number];
 

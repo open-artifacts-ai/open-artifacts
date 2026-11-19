@@ -37,6 +37,22 @@ export function effectiveName(u: NameFields): string {
 }
 
 /**
+ * A person's name for another member's agent-request screens (#2868): the
+ * display name, else a real IdP name, never the email or its local part.
+ * "Someone" when there is none.
+ */
+export function personName(u: {
+  email: string;
+  name: string | null;
+  displayName: string | null;
+}): string {
+  return (
+    publicName({ name: u.displayName || idpName(u.name ?? "", u.email) }) ??
+    "Someone"
+  );
+}
+
+/**
  * effectiveName for anyone but the user themselves: a name that reads as an
  * agent ("X's agent", set or from SSO, #1894) falls back to a real SSO name,
  * then the email.

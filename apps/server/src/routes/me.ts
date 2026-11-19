@@ -50,9 +50,14 @@ import { addMute, listMutes, removeMute } from "../services/inbox-mutes.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
 import { getPrefs, putPrefs } from "../services/notification-prefs.js";
-import { instanceOwnerName } from "../services/onboarding.js";
+import {
+  getOnboarding,
+  instanceOwnerName,
+  markListensAsked,
+} from "../services/onboarding.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
+import { listTeammates } from "../services/teammates.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
 import type { AppType } from "./index.js";
 
@@ -287,6 +292,31 @@ export function mountMe(app: AppType): void {
     if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
     const { ids } = await jsonBody(c, InboxReadBodySchema);
     return c.json({ read: await markRead(c.env, user.id, ids) });
+  });
+  // #2577: the other team members (id, name, initials; never an email), for
+  // the person picker. Members only: a guest, or a capped caller, gets 403.
+  app.get(R.meTeammates, async (c) => {
+    const user = requireUser(c);
+    if (!orgCan(user, "teammates.read", { cap: capOfCaller(caller(c)) }))
+      throw new ApiError("members_only", "The team list is for members");
+    // A person in a browser only: never a token, a grant or an agent.
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    return c.json(await listTeammates(c.env, user.id));
+  });
+  // #2577: the caller was asked about "listens to". Once; a repeat changes
+  // nothing. A person in a browser only; the checklist's own rules for who.
+  app.post(R.meOnboardingListensAsked, async (c) => {
+    const user = requireUser(c);
+    if (
+      !orgCan(user, "onboarding.own", {
+        cap: capOfCaller(caller(c)),
+        read: false,
+      })
+    )
+      throw new ApiError("members_only", "The checklist is for members");
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    await markListensAsked(c.env, user.id);
+    return c.json(await getOnboarding(c.env, user));
   });
   // #2512 S4: the caller's own notification choices. Reading is any signed-in
   // person's; saving takes a person in a browser (never a token, a grant or an

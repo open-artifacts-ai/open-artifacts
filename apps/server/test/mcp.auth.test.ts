@@ -585,7 +585,7 @@ describe("MCP auth: OAuth", () => {
     expect(page.r.status).toBe(200);
     expect(page.body).toContain("<b>Delete and share as you</b>");
     expect(page.body).toContain(
-      "<small>Delete artifacts, make them public, and share them with others.</small>",
+      "<small>Delete artifacts and share them, including with anyone with the link.</small>",
     );
     expect(page.body).not.toContain("\u2014");
   });

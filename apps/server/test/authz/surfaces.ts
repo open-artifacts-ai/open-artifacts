@@ -1785,6 +1785,11 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("bad_request"),
     },
   },
+  // #2577: the "listens to" asked flag: once, idempotent; a probe of a live install only sets the caller's own flag.
+  "POST /api/v1/me/onboarding/listens-asked": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(200) },
+    real: { req: () => ({ path: "" }), allow: ok(200) },
+  },
   "POST /api/v1/me/inbox/read-all": {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
@@ -2289,6 +2294,21 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // A matrix caller names nobody who is a teammate: the add is refused (400) before anything is written; a denied caller is refused before that.
+  "POST /api/v1/me/agent-listens": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-listens",
+        body: {
+          memberId: "probe",
+          scope: "all",
+          until: 30,
+          via: "settings",
+        },
+      }),
+      allow: code("bad_request"),
+    },
+  },
   "PATCH /api/v1/me/agent-listens/:id": {
     real: {
       req: () => ({
@@ -2599,6 +2619,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["PATCH /api/v1/settings", org("settings.manage")],
   ["GET /api/v1/onboarding", org("onboarding.own"), [200]],
   ["PUT /api/v1/onboarding", org("onboarding.own")],
+  ["GET /api/v1/me/teammates", org("teammates.read"), [200]],
+  ["POST /api/v1/me/onboarding/listens-asked", org("onboarding.own"), [200]],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],
@@ -2662,6 +2684,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me/agent-requests", U, [200]],
   ["PUT /api/v1/me/agent-requests", U],
   ["GET /api/v1/me/agent-listens", U, [200]],
+  ["POST /api/v1/me/agent-listens", U],
+  ["GET /api/v1/me/agent-asks/history", U, [200]],
   ["PATCH /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/passkeys/:id", U],

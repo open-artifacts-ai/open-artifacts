@@ -98,6 +98,8 @@ export type OrgAction =
   | "notices.own"
   /** Read and change one's own first-run checklist state (R.onboarding, #2632): any non-guest member. */
   | "onboarding.own"
+  /** Read the team list for the person picker (R.meTeammates, #2577): owners, admins and members, uncapped. */
+  | "teammates.read"
   /** Change the login domains and joining rule (R.loginSettings PUT, #2520): the uncapped org owner. */
   | "login.manage"
   /** Turn outside sharing on or off (Settings.outsideSharing, #2590): the uncapped org owner. */
@@ -553,6 +555,8 @@ export function orgCan(
     // session), but write it only uncapped. A guest never has one.
     case "onboarding.own":
       return TEAM_ROLES.includes(m.role) && (opts.read === true || !capped);
+    case "teammates.read":
+      return TEAM_ROLES.includes(m.role) && !capped;
     case "directory.manage":
     // Disconnect: owner only too (the route also needs a cookie session).
     case "directory.disconnect":

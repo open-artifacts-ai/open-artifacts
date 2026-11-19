@@ -126,6 +126,7 @@ describe("reply ids in the daemon", () => {
       "run_version",
       "notice_meta",
       "owner_away",
+      "guest",
     ]);
   });
 

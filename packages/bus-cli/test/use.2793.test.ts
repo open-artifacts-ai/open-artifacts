@@ -177,6 +177,19 @@ describe("oa-bus use (#2793 S2)", () => {
     expect(notes()).toBe(1);
   });
 
+  it("a suggestion that changed after the folder was settled is marked in the list", async () => {
+    const s = setup({ answers: [""] });
+    writeFolders({ map: { [s.dir]: "main" }, no: {}, seen: {} }, s.ctx.home);
+    s.writeSuggest({ instance: "https://work.example.com" });
+    await use({ none: false }, s.ctx);
+    const out = s.ctx.out().join("\n");
+    expect(out).toMatch(/now suggests/);
+    expect(out).toMatch(
+      /2\. work {2}https:\/\/work\.example\.com {2}\(suggested by this repo\)/,
+    );
+    expect(readFolders(s.ctx.home).map).toEqual({ [s.dir]: "main" });
+  });
+
   it("a nested file under a mapped folder is ignored", async () => {
     const s = setup({ answers: [""] });
     writeFolders({ map: { [s.dir]: "work" }, no: {}, seen: {} }, s.ctx.home);

@@ -331,6 +331,12 @@ export const DEFAULT_UPDATE_BODY = "You have a new update";
 /** #2781: a person's @-mention of the member (Needs you), without lock-screen detail. */
 export const DEFAULT_MENTION_BODY = "Someone mentioned you";
 
+/** #2577: a request held for the member to allow: its key is "held:<request id>". Fixed text, never the words. */
+export const HELD_PUSH_PREFIX = "held:";
+export const DEFAULT_HELD_BODY = "A request is waiting for you to allow it";
+const isHeldPush = (r: { key: string }): boolean =>
+  r.key.startsWith(HELD_PUSH_PREFIX);
+
 /** A Needs-you item of a person @mentioned (#2770, #2781): its key is "person:<comment id>". */
 const isPersonMention = (r: { key: string }): boolean =>
   r.key.startsWith("person:");
@@ -369,13 +375,20 @@ export function pushPayload(
     body = parts.join(", ");
   } else if (needs.length > 0) {
     const mention = isPersonMention(lead as { key: string });
+    const held = isHeldPush(lead as { key: string });
     const asks = detail
       ? mention
         ? `${lead.asker_name} mentioned you: ${lead.excerpt}`
         : `${lead.asker_name} asks: ${lead.excerpt}`
       : "";
     // One item (several are the counts above).
-    body = detail ? asks : mention ? DEFAULT_MENTION_BODY : DEFAULT_BODY;
+    body = held
+      ? DEFAULT_HELD_BODY
+      : detail
+        ? asks
+        : mention
+          ? DEFAULT_MENTION_BODY
+          : DEFAULT_BODY;
   } else {
     const what = detail ? `${lead.asker_name}: ${lead.excerpt}` : "";
     body =
@@ -476,8 +489,31 @@ async function stillWanted(
   const cid = (r: Pending): string =>
     r.kind === "later" ? (r.key.split(":")[2] ?? "") : r.key.slice(4);
   const asks = kept.filter(
-    (r) => (r.kind === "ask" || r.kind === "later") && !isPersonMention(r),
+    (r) =>
+      (r.kind === "ask" || r.kind === "later") &&
+      !isPersonMention(r) &&
+      !isHeldPush(r),
   );
+  // A held request waits on its own items: at least one still held and in time.
+  const stillHeld = new Set<string>();
+  const heldRows = kept.filter(isHeldPush);
+  if (heldRows.length > 0) {
+    const { results } = await stmt(
+      env.DB,
+      `select distinct r.id as id from held_requests r join held_request_items i on i.request_id = r.id
+        where r.receiver_id = ?1 and i.state = 'held' and i.expires_at > ?3
+          and r.id in (select value from json_each(?2))`,
+    )
+      .bind(
+        userId,
+        JSON.stringify(
+          heldRows.map((r) => r.key.slice(HELD_PUSH_PREFIX.length)),
+        ),
+        Date.now(),
+      )
+      .all<{ id: string }>();
+    for (const r of results) stillHeld.add(r.id);
+  }
   // A mention (#2781) waits on its own item, like an update: it must still exist.
   const updates = kept.filter((r) => r.kind === "update" || isPersonMention(r));
   const open = new Map<string, string>();
@@ -504,7 +540,9 @@ async function stillWanted(
   }
   const out: Pending[] = [];
   for (const r of kept) {
-    if (isPersonMention(r)) {
+    if (isHeldPush(r)) {
+      if (stillHeld.has(r.key.slice(HELD_PUSH_PREFIX.length))) out.push(r);
+    } else if (isPersonMention(r)) {
       const e = items.get(r.key);
       if (e === undefined) continue;
       out.push({ ...r, excerpt: e });

@@ -319,9 +319,12 @@ const robots = (e: unknown) => callWorker(new Request(`${APP}/robots.txt`), e);
  * counted per statement). The comment-picture sweep (sweepPictures, #2508)
  * adds 1: its select of unattached pictures past the TTL (nothing to delete
  * here, so no second statement). The Later sweep (sweepInboxLater, #2762)
- * adds 1: one delete.
+ * adds 1: one delete. The held-request lapse (lapseHeld, #2577) adds 4: its
+ * update of held items past their expiry, its two deletes and the delete of
+ * listed deliveries older than 30 days (one D1 batch, counted per statement),
+ * on an empty DB too.
  */
-const NIGHTLY_QUERIES = 24;
+const NIGHTLY_QUERIES = 28;
 
 /** Another isolate: its own marker check (keyed by the DB binding). */
 const isolate = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>

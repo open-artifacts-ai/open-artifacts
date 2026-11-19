@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { makeQueryClient } from "./api/queryClient";
 import { isEmbed, lockToPath } from "./embed";
 import { parseHostedParam } from "./hostedParam";
+import { agentAsksOn, forYouVariant } from "./mockForYou";
 import { router } from "./router";
 import "./styles.css";
 import "./shadcn.css";
@@ -718,7 +719,7 @@ async function startMocks() {
     hosted: parseHostedParam(params.get("hosted")),
     events,
     // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
-    // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect.
+    // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect; &bus=0 hides name and mention (never connected the bus).
     welcome:
       params.get("mock") === "welcome"
         ? {
@@ -733,6 +734,8 @@ async function startMocks() {
             // #2632: &teammate=1 ticks the optional sixth step.
             teamStep: params.get("teammate") === "1",
             invitedBy: "Bob Builder",
+            // #2890: &bus=0 is a chat-only person (never connected the bus): three steps.
+            bus: params.get("bus") !== "0",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
@@ -781,12 +784,9 @@ async function startMocks() {
     bus: params.get("mock") === "bus",
     // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
     // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
-    forYou:
-      params.get("mock") === "foryou"
-        ? ((["calm", "empty", "back", "error"] as const).find(
-            (v) => v === params.get("foryou"),
-          ) ?? "mixed")
-        : undefined,
+    forYou: forYouVariant(params),
+    // ?mock=foryou&foryou=held or ?mock=agent-asks (#2577): a held request, the switch and the "listens to" list.
+    agentAsks: agentAsksOn(params),
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room
@@ -835,7 +835,7 @@ async function startMocks() {
       ),
     );
   }
-  // &share=workspace-only (#2590, PROVISIONAL): every share answers that the
+  // &share=workspace-only (#2590): every share answers that the
   // address can open it only if it's a Google account.
   if (params.get("share") === "workspace-only")
     extra.push(
@@ -849,7 +849,7 @@ async function startMocks() {
         });
       }),
     );
-  // &notEmailed=member_limit|instance_limit|limit (#2620): every share is
+  // &notEmailed=member_limit|instance_limit|limit|skipped (#2620, #2649): every share is
   // saved without an email, for that reason.
   const notEmailed = params.get("notEmailed");
   if (notEmailed)
@@ -876,9 +876,25 @@ async function startMocks() {
     extra.push(...pushSwitchHandlers(() => mainHandlers));
   }
   // #2508: pictures in comments.
-  extra.push(
-    ...(await import("./mockPictures")).pictureHandlers(mainHandlers, params),
+  const pics = (await import("./mockPictures")).pictureHandlers(
+    mainHandlers,
+    params,
   );
+  // Person @mentions (mock only), in front of the picture handlers.
+  extra.push(
+    ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
+      ...pics,
+      ...mainHandlers,
+    ]),
+    ...pics,
+  );
+  // #2577 s2 (mock): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
+  if (agentAsksOn(params))
+    extra.unshift(
+      ...(await import("./mockTeammates")).teammatesHandlers(mainHandlers, {
+        asked: params.get("asked") === "1",
+      }),
+    );
   // #1910: &waiting=1 carries the waiting fields.
   extra.unshift(
     ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),

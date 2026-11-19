@@ -1,3 +1,4 @@
+import { canonicalAddress, listInstances, readFolders } from "@oa/bus-daemon";
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { semverGte } from "@oa/bus-protocol";
 import {
@@ -7,6 +8,7 @@ import {
   say,
   sayErr,
   socketFolderLines,
+  tilde,
 } from "../context.ts";
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
@@ -49,6 +51,8 @@ const core = (v: string): string | undefined => {
 };
 
 const UPDATE_PROBE_MS = 1500;
+// Control, format and line-separator characters: never shown.
+const HIDDEN = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 /** What `/healthz` says: the hub's version and, when it has one, a problem. */
 export type Healthz = { version?: string; problem?: string };
@@ -137,6 +141,66 @@ const proofLines = (ctx: Ctx, hub: string, daemonKnows: boolean): string[] =>
         : c.lines,
     );
 
+const FOLDERS_SHOWN = 50;
+
+/**
+ * #2793: with two or more instances, which hub each is and which folders use
+ * which. With one, nothing: the output stays as it was.
+ */
+export function instanceBlocks(
+  ctx: Ctx,
+  rows: readonly {
+    name: string;
+    link: "connected" | "not_connected";
+    revoked: boolean;
+    agents: number;
+    guests?: readonly { name: string }[];
+  }[],
+): string[][] {
+  const list = listInstances(ctx.home);
+  if (list.length < 2) return [];
+  const clean = (t: string) => stripTerminalControls(t).replace(HIDDEN, "");
+  const inst = [
+    "Instances",
+    ...list.flatMap((i) => {
+      const r = rows.find((x) => x.name === i.name);
+      const state = r?.revoked
+        ? "revoked"
+        : r?.link === "connected"
+          ? "connected"
+          : "not connected";
+      const addr = clean(canonicalAddress(i.hub) ?? "(address unreadable)");
+      const n = r?.agents ?? 0;
+      return [
+        `  ${clean(i.name)}${i.main ? " (main)" : ""}  ${addr}  ${state}  ${n} ${n === 1 ? "agent" : "agents"}`,
+        // #2793 S3b: sessions homed elsewhere that used this instance's tools.
+        ...(r?.guests ?? []).map((g) => `    guest session: ${clean(g.name)}`),
+      ];
+    }),
+  ];
+  const map = Object.entries(readFolders(ctx.home).map).sort(([a], [b]) =>
+    a < b ? -1 : 1,
+  );
+  const folders =
+    map.length === 0
+      ? []
+      : [
+          [
+            "Folders",
+            ...map
+              .slice(0, FOLDERS_SHOWN)
+              .map(
+                ([dir, name]) =>
+                  `  ${clean(tilde(ctx, dir))} -> ${clean(name)}`,
+              ),
+            ...(map.length > FOLDERS_SHOWN
+              ? [`  and ${map.length - FOLDERS_SHOWN} more`]
+              : []),
+          ],
+        ];
+  return [inst, ...folders];
+}
+
 /**
  * Transcript state 7. Read-only; never prints the token. Exit 0 only when
  * the daemon reports an open hub link.
@@ -197,6 +261,8 @@ export async function status(ctx: Ctx): Promise<number> {
     say(ctx, c.openclawDmNote());
   // Before the hub check: a refused file explains a missing config either way.
   if (st.config_files?.length) say(ctx, configFileLines(ctx, st.config_files));
+  for (const block of instanceBlocks(ctx, st.instances ?? []))
+    say(ctx, "", block);
   if (st.hub !== "connected") {
     // Without the hub, no row's state can be known.
     sayErr(ctx, c.hubNotReachable(host, st.hub_error, "status"));

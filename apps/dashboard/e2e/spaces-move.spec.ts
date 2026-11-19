@@ -63,7 +63,7 @@ test.describe("1280 light", () => {
   test("public into a public-off space: the confirm", async ({ page }) => {
     await page.goto("/?hosted=1");
     await page.getByRole("link", { name: "Q4 report" }).first().waitFor();
-    // Public links off in Engineering, before the artifact loads (a reload resets the mock).
+    // Sharing by link off in Engineering, before the artifact loads (a reload resets the mock).
     const status = await page.evaluate(async () => {
       const r = await fetch("/api/v1/spaces/SpEngNpQrSt2uVwX", {
         method: "PATCH",
@@ -85,7 +85,7 @@ test.describe("1280 light", () => {
     await d.getByRole("button", { name: "Move" }).click();
     const c = page.getByRole("alertdialog");
     await expect(c).toContainText(
-      "Public links are off in Engineering, so this link stops working",
+      "Sharing by link is off in Engineering, so this link stops working",
     );
     await settle(page);
     const v = await axeRun(page);

@@ -53,6 +53,7 @@ export const MOCK_AGENTS: ArtifactAgent[] = [
     lastActiveAt: null,
     machine: null,
     owner: "Sam",
+    askState: "held",
   },
   {
     key: "agent:manager",
@@ -1172,26 +1173,8 @@ export function createCommentMock({
     http.post(challenge, async ({ params }) => {
       const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
       if (bad) return bad;
-      if (passkeyMode === "many") return err("rate_limited", "Too many tries");
-      if (passkeyMode === "none")
-        return err("no_passkey", "Add a passkey to approve this");
-      if (passkeyMode === "cooling")
-        return HttpResponse.json(
-          {
-            error: {
-              code: "passkey_cooling",
-              message: "This passkey is new",
-              details: {
-                usableAt: new Date(Date.now() + 20 * 3600_000).toISOString(),
-              },
-            },
-          },
-          { status: 409 },
-        );
-      return HttpResponse.json({
-        options: { challenge: "bW9jay1jaGFsbGVuZ2U", rpId: "localhost" },
-        expiresAt: new Date(Date.now() + 120_000).toISOString(),
-      });
+      // #2864: no ask needs a passkey, so there is no pick challenge.
+      return err("bad_request", "This ask does not need a passkey");
     }),
     http.get("*/api/v1/artifacts/:id/agents", ({ params }) => {
       if (!art(params.id)) return err("not_found", "Not found");
@@ -1212,16 +1195,8 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      const needsPasskey =
-        c.ask.confirm === "passkey" || pickTimePasskey.has(c.id);
-      if (needsPasskey) {
-        if (!j.data.assertion)
-          return err("passkey_required", "This pick needs a passkey");
-        if (passkeyMode === "expired")
-          return err("challenge_expired", "That approval timed out");
-      }
+      // #2864: no ask needs a passkey; a typed pick is the answer.
       const pick = {
-        ...(needsPasskey ? { verified: "passkey" as const } : {}),
         by: mine(),
         optionId: j.data.optionId,
         at: iso(),

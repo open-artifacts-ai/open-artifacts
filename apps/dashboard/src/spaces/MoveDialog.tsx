@@ -169,8 +169,8 @@ export function MoveDialog({
           title={`Move "${a.title}" to ${target.name}?`}
           body={
             <p>
-              Public links are off in {target.name}, so this link stops working
-              and the artifact becomes visible to everyone at {install}.
+              Sharing by link is off in {target.name}, so this link stops
+              working and the artifact becomes visible to anyone at {install}.
             </p>
           }
           confirm="Move and turn off link"

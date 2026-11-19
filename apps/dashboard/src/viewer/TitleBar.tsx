@@ -35,6 +35,7 @@ import {
 } from "../api/queries";
 import { accessLabel, useCan } from "../auth/permissions";
 import { ForYouBell } from "../foryou/ForYou";
+import { useMuteToggle } from "../foryou/muteToggle";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { useNarrow } from "./comments/surfaces";
@@ -353,6 +354,11 @@ export function TitleBar({
         ? versionDate(info.createdAt)
         : "";
   const label = `v${version}${suffix ? ` · ${suffix}` : ""}`;
+  // #2860: mute where the noise is. A signed-in person's page menu, on a server with For you.
+  const pageMute = useMuteToggle(
+    authed && !outsider ? { kind: "page", id: artifact.id } : null,
+    artifact.title,
+  );
   const items: (
     | "separator"
     | { label: string; danger?: boolean; onSelect: () => void }
@@ -385,6 +391,14 @@ export function TitleBar({
               a.download = entry.split("/").pop() ?? entry;
               a.click();
             },
+          },
+        ]
+      : []),
+    ...(pageMute.available && pageMute.loaded
+      ? [
+          {
+            label: pageMute.muted ? "Muted \u00b7 Unmute" : "Mute",
+            onSelect: pageMute.toggle,
           },
         ]
       : []),

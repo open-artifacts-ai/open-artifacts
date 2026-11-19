@@ -170,6 +170,8 @@ describe("frames", () => {
       "link_bind",
       "waiting_query",
       "update_report",
+      "guest_up",
+      "guest_down",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -192,6 +194,7 @@ describe("frames", () => {
       "install_now",
       "update_ack",
       "owner_away",
+      "proof_seen",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {

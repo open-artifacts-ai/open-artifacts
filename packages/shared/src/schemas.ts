@@ -559,6 +559,8 @@ export const ShareSchema = z.object({
   guest: z.boolean().optional(),
   /** GET R.shares: the recipient can only view, whatever role says (a guest, or a member who can only view). Never why. Absent with no user row, or when they can do what role says. */
   viewOnly: z.boolean().optional(),
+  /** #2577: the user id when the address belongs to an existing team member (never an outsider or guest); null otherwise. Absent from older servers. */
+  memberId: z.string().nullable().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -668,8 +670,10 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 export const MemberSetupSchema = z.object({
   /** `set` is sticky (their `completed`); `invited` was added and never signed in. */
   state: z.enum(["set", "partial", "invited"]),
-  /** Of 5. */
+  /** Of `total`. */
   done: z.number().int().min(0).max(5),
+  /** #2890: 5, or 3 when they never connected the bus. Absent on older servers: 5. */
+  total: z.number().int().min(3).max(5).optional(),
   /** The first step not done. */
   stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
   /** When the one reminder went out (ISO). */
@@ -1211,8 +1215,12 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
+  /** #2890: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
+  busConnected: z.boolean().optional(),
   /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
   teamStep: z.boolean().optional(),
+  /** #2577: the caller was asked about "listens to" (POST R.meOnboardingListensAsked). Absent on older servers: read as false. */
+  listensAsked: z.boolean().optional(),
   /** #2632: who added the caller (their name; null when none or unreadable); null when nobody did. */
   invitedBy: z
     .strictObject({ name: z.string().nullable() })
@@ -1220,6 +1228,18 @@ export const OnboardingSchema = z.strictObject({
     .optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** GET R.meTeammates (#2577): the other team members. Never an email. */
+export const TeammatesSchema = z.strictObject({
+  members: z.array(
+    z.strictObject({
+      id: z.string(),
+      name: z.string(),
+      initials: z.string(),
+    }),
+  ),
+});
+export type Teammates = z.infer<typeof TeammatesSchema>;
 
 /** PUT R.onboarding: a flag only turns on (true), never off. */
 export const OnboardingPatchSchema = z.strictObject({
