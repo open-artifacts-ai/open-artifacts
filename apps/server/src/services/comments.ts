@@ -1176,7 +1176,9 @@ const askedByCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
   const mine = c.author.agent;
   const a = viewer.agent;
   // An ask posted while the agent was unlinked has no identity: the same name
-  // on the same connection, whether the caller is linked now or not.
+  // on the same connection, whether the caller is linked now or not. Its
+  // `answer.yes` is then not true for the linked caller (the safe side: yes
+  // needs the identity match, so a pick on it is data, never the person's yes).
   if (a && mine && !mine.identity)
     return mine.name === a.name && mine.via === (a.via ? viaKey(a.via) : null);
   return askedByViewer(c, viewer);
@@ -1256,23 +1258,26 @@ export async function listComments(
     return { threads: views, open: r.open, truncated: r.truncated };
   const answers: CompactAnswer[] = [];
   const mentions: CompactMention[] = [];
+  // Every field comes from the view `v`, which is already masked for this
+  // viewer (maskBody, #1822; maskHeld, #2577). A comment held for the viewer's
+  // person is left out whole: it carries nothing the viewer may read yet.
   threads.forEach((t, ti) => {
     t.comments.forEach((c, ci) => {
       const v = views[ti]?.comments[ci];
-      if (!v) return;
-      const ans = c.ask?.answer;
-      if (a !== undefined && ans && c.ask && answeredHit(c, viewer, a))
+      if (!v || maskedFor(c, viewer)) return;
+      const ans = v.ask?.answer;
+      if (a !== undefined && v.ask && ans && answeredHit(c, viewer, a))
         answers.push({
           threadId: t.id,
           commentId: c.id,
-          question: c.ask.question,
+          question: v.ask.question,
           optionId: ans.optionId,
           label:
-            c.ask.options.find((o) => o.id === ans.optionId)?.label ??
+            v.ask.options.find((o) => o.id === ans.optionId)?.label ??
             ans.optionId,
           at: ans.at,
-          by: v.ask?.answer?.by.name ?? "",
-          yes: v.ask?.answer?.yes === true,
+          by: ans.by.name,
+          yes: ans.yes === true,
         });
       if (m !== undefined && mentionHit(c, viewer, m))
         mentions.push({
@@ -1280,7 +1285,7 @@ export async function listComments(
           commentId: c.id,
           at: c.createdAt,
           by: v.author.name,
-          excerpt: c.body.slice(0, EXCERPT_MAX),
+          excerpt: v.body.slice(0, EXCERPT_MAX),
         });
     });
   });

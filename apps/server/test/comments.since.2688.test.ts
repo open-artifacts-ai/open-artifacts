@@ -276,6 +276,13 @@ describe("answeredSince (#2688)", () => {
         (x) => x.commentId,
       );
     expect(await ids(unlinked)).toEqual([a.commentId]);
+    // The safe side: found, but never the person's yes for the linked caller.
+    const found = await compact(
+      id,
+      viewerOf(owner, { ...agentOf(owner, "Claude"), via: unlinked.via }),
+      since,
+    );
+    expect(found.answers?.map((x) => x.yes)).toEqual([false]);
     const linked = agentOf(owner, "Claude");
     expect(await ids({ ...linked, via: unlinked.via })).toEqual([a.commentId]);
     expect(
