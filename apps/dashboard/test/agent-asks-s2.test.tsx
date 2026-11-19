@@ -348,6 +348,31 @@ describe("Share: the tick box", () => {
     ).toBeNull();
   });
 
+  it("is not offered while a guest has the page", async () => {
+    asks(
+      http.get("*/api/v1/artifacts/:id/shares", () =>
+        HttpResponse.json([
+          {
+            email: "gus@elsewhere.test",
+            role: "viewer",
+            createdAt: new Date().toISOString(),
+            guest: true,
+          },
+        ]),
+      ),
+    );
+    mount(panel(LANDING));
+    await screen.findByRole("combobox", { name: "Invite role" });
+    await screen.findByTitle("gus@elsewhere.test");
+    await typeBob("Editor");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Email")).toHaveValue("bob@example.com"),
+    );
+    expect(
+      screen.queryByRole("checkbox", { name: /can ask my agents/ }),
+    ).toBeNull();
+  });
+
   it("is not offered to a viewer", async () => {
     asks();
     mount(panel(LANDING));
@@ -551,6 +576,86 @@ describe("First setup: one question", () => {
     expect(within(c).getAllByRole("checkbox")).toHaveLength(8);
     expect(
       within(c).getByRole("button", { name: "Add 8 people" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a later batch failing says how many were added, keeps the card, and a retry sends only the rest", async () => {
+    const many = Array.from({ length: 120 }, (_, i) => ({
+      id: `u${i}`,
+      name: `Person ${i}`,
+      initials: "P",
+    }));
+    const posts = calls("POST");
+    let n = 0;
+    const lists: string[][] = [];
+    mountHosted("/", true, member, [
+      http.post(`*${R.agentListens}`, async ({ request }) => {
+        n++;
+        const ids = ((await request.json()) as { memberIds: string[] })
+          .memberIds;
+        lists.push(ids);
+        if (n === 2)
+          return HttpResponse.json(
+            { error: { code: "bad_request", message: "x" } },
+            { status: 400 },
+          );
+        return HttpResponse.json({ entries: [] });
+      }),
+      ...base({}, many),
+    ]);
+    const c = await waitFor(() => {
+      expect(card()).not.toBeNull();
+      return card() as HTMLElement;
+    });
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Add 120 people" }),
+    );
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      "Added 50 of 120. Try again to add the rest.",
+    );
+    // Not marked asked: the card stays.
+    expect(posts.some((p) => p.path.endsWith("/listens-asked"))).toBe(false);
+    expect(card()).not.toBeNull();
+    fireEvent.click(within(c).getByRole("button", { name: "Add 120 people" }));
+    await waitFor(() =>
+      expect(posts.some((p) => p.path.endsWith("/listens-asked"))).toBe(true),
+    );
+    // The retry skipped the 50 already added: 70 left, in 50 + 20.
+    expect(lists.slice(2).map((l) => l.length)).toEqual([50, 20]);
+    expect(lists[2]?.includes("u0")).toBe(false);
+  });
+
+  it("one teammate reads 'The one other member of <instance>'", async () => {
+    mountIt({}, [PEOPLE[0] as (typeof PEOPLE)[number]]);
+    const c = await waitFor(() => {
+      expect(card()).not.toBeNull();
+      return card() as HTMLElement;
+    });
+    expect(c).toHaveTextContent(
+      /The one other member of .+ today, for 90 days\. Not people who join later/,
+    );
+    expect(c).not.toHaveTextContent("The 1 member");
+  });
+
+  it("the heading counts the ticked people, as the button does", async () => {
+    mountIt();
+    const c = await waitFor(() => {
+      expect(card()).not.toBeNull();
+      return card() as HTMLElement;
+    });
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    await within(c).findByText("Add these 3 people?");
+    fireEvent.click(within(c).getByRole("checkbox", { name: /Dev Patel/ }));
+    expect(within(c).getByText("Add these 2 people?")).toBeInTheDocument();
+    expect(
+      within(c).getByRole("button", { name: "Add 2 people" }),
     ).toBeInTheDocument();
   });
 

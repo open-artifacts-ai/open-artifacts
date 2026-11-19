@@ -6,10 +6,15 @@
  */
 import { LISTEN_ADD_BATCH_MAX } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { useState } from "react";
-import { useAddListens, useSetAgentRequests } from "../api/agentAsks";
+import { useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import {
+  listensKey,
+  useAddListens,
+  useSetAgentRequests,
+} from "../api/agentAsks";
 import { errorCopy } from "../api/errorCopy";
-import { useOnboarding } from "../api/queries";
+import { qk, useOnboarding } from "../api/queries";
 import {
   listensAskedOf,
   useMarkListensAsked,
@@ -48,6 +53,8 @@ export function FirstSetupAsk() {
   const team = useMyTeammates(member);
   const asked = useMarkListensAsked();
   const add = useAddListens();
+  const qc = useQueryClient();
+  const added = useRef(new Set<string>());
   const off = useSetAgentRequests();
   const [pick, setPick] = useState<Pick>("choose");
   const [step, setStep] = useState<"ask" | "confirm">("ask");
@@ -101,24 +108,42 @@ export function FirstSetupAsk() {
   const addAll = async () => {
     setBusy(true);
     setError(null);
-    try {
-      const ids = chosen.map((p) => p.id);
-      for (let i = 0; i < ids.length; i += LISTEN_ADD_BATCH_MAX)
+    const ids = chosen.map((p) => p.id);
+    // A retry sends only who is not on the list yet (the add is idempotent anyway).
+    const todo = ids.filter((id) => !added.current.has(id));
+    let failure: unknown = null;
+    for (let i = 0; i < todo.length; i += LISTEN_ADD_BATCH_MAX) {
+      const batch = todo.slice(i, i + LISTEN_ADD_BATCH_MAX);
+      try {
         await add.mutateAsync({
-          memberIds: ids.slice(i, i + LISTEN_ADD_BATCH_MAX),
+          memberIds: batch,
           scope: "all",
           until: DAYS,
           via: "first_setup",
         });
+        for (const id of batch) added.current.add(id);
+      } catch (e) {
+        failure = e;
+        break;
+      }
+    }
+    // What was written shows in Settings either way.
+    void qc.invalidateQueries({ queryKey: listensKey });
+    void qc.invalidateQueries({ queryKey: qk.onboarding });
+    if (failure === null) {
       await markAsked();
       done(
         `Added ${ids.length} ${ids.length === 1 ? "person" : "people"}. Their requests reach your agents without asking you.`,
       );
-    } catch (e) {
-      setError(errorCopy(e, "Couldn't add them. Nothing was changed."));
-    } finally {
-      setBusy(false);
+    } else {
+      const n = ids.filter((id) => added.current.has(id)).length;
+      setError(
+        n > 0
+          ? `Added ${n} of ${ids.length}. Try again to add the rest.`
+          : errorCopy(failure, "Couldn't add them. Nothing was changed."),
+      );
     }
+    setBusy(false);
   };
 
   const CARD =
@@ -134,9 +159,9 @@ export function FirstSetupAsk() {
           id="oa-first-setup-h"
           className="m-0 text-[length:var(--oa-text-md)] font-semibold"
         >
-          {people.length === 1
+          {chosen.length === 1
             ? "Add this person?"
-            : `Add these ${people.length} people?`}
+            : `Add these ${chosen.length} people?`}
         </h2>
         <p className="mt-1 mb-2 text-[length:var(--oa-text-sm)] text-muted-foreground">
           All pages your agents work on, until {endDate(until)}.
@@ -217,7 +242,11 @@ export function FirstSetupAsk() {
     {
       id: "yes",
       label: FIRST_ASK.yes,
-      hint: `The ${people.length} ${people.length === 1 ? "member" : "members"} of ${team_name} today, for ${DAYS} days. Not people who join later, and never people outside your team.`,
+      hint: `${
+        people.length === 1
+          ? "The one other member"
+          : `The ${people.length} members`
+      } of ${team_name} today, for ${DAYS} days. Not people who join later, and never people outside your team.`,
     },
     { id: "choose", label: FIRST_ASK.choose, hint: FIRST_ASK.chooseHint },
     { id: "no", label: FIRST_ASK.no, hint: FIRST_ASK.noHint },

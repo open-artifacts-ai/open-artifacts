@@ -312,7 +312,9 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     pick === "editor" &&
     !typedOutside &&
     !!typed &&
-    artifact.visibility !== "public";
+    artifact.visibility !== "public" &&
+    // The server refuses a list entry on a page with a guest on it too.
+    !shares.data?.some((x) => x.guest === true);
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
