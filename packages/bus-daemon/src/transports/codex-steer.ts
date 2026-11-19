@@ -5,6 +5,19 @@ import WebSocket from "ws";
 
 export type SteerResult = "fallback" | "accepted" | "uncertain";
 
+/** A private leaf is renameable if another user controls a parent. Sticky /tmp is safe
+ * because every child on this canonical path must belong to root or this user. */
+async function trustedParents(path: string, uid: number): Promise<boolean> {
+  const parent = dirname(path);
+  if (parent !== path && !(await trustedParents(parent, uid))) return false;
+  const s = await lstat(path);
+  return (
+    s.isDirectory() &&
+    (s.uid === uid || s.uid === 0) &&
+    ((s.mode & 0o022) === 0 || (s.mode & 0o1000) !== 0)
+  );
+}
+
 /** Use the local Codex daemon's WebSocket API. A stdio-only host has no control socket. */
 export async function steerCodex(
   home: string,
@@ -31,7 +44,8 @@ export async function steerCodex(
       targetDir.uid !== uid ||
       (targetDir.mode & 0o022) !== 0 ||
       !socket.isSocket() ||
-      socket.uid !== uid
+      socket.uid !== uid ||
+      !(await trustedParents(dirname(path), uid))
     )
       return "fallback";
   } catch {
@@ -81,7 +95,10 @@ export async function steerCodex(
       if (msg.error) {
         // Invalid request/params (including a finished or replaced turn), or
         // an unsupported method: the request was rejected before delivery.
-        if (step < 3 || [-32600, -32601, -32602].includes(msg.error.code))
+        if (
+          step < 3 ||
+          [-32600, -32601, -32602, -32001].includes(msg.error.code)
+        )
           return finish("fallback");
         return disconnected();
       }
