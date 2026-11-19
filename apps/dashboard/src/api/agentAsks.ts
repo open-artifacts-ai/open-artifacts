@@ -82,6 +82,21 @@ export const useSetAgentRequests = () => {
   });
 };
 
+/** "Send held requests to my phone". Saved at once; a refusal puts the switch back. */
+export const useSetPhonePush = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (phonePush: boolean) =>
+      api.send(
+        "PUT",
+        R.agentRequests,
+        { phonePush },
+        AgentRequestsSwitchSchema,
+      ),
+    onSuccess: (d) => qc.setQueryData(requestsKey, d),
+  });
+};
+
 /** The caller's live "listens to" entries. Browser session only. */
 export const useListens = (enabled = true) =>
   useQuery({
