@@ -155,6 +155,36 @@ describe("@ lists people with the agents (#2770)", () => {
     expect(await within(c).findByText("OA Design")).toBeTruthy();
   });
 
+  it("Enter never lands on an agent whose person turned asking off (#2577)", async () => {
+    serve([
+      {
+        key: "a:pay",
+        name: "Payroll (Ana)",
+        online: true,
+        state: "online",
+        owner: "Ana",
+        askState: "off",
+      },
+      {
+        key: "a:web",
+        name: "Web (Sam)",
+        online: true,
+        state: "online",
+        owner: "Sam",
+        askState: "held",
+      },
+    ]);
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [] })));
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@");
+    await within(c).findByRole("listbox");
+    // The first row is the unpickable one: the active row is the next.
+    expect(b.getAttribute("aria-activedescendant")).toMatch(/-1$/);
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect((b as HTMLTextAreaElement).value).toBe("@Web (Sam) ");
+  });
+
   it("picks with the keyboard, shows a pill, and sends the id in people", async () => {
     serve();
     server.use(

@@ -32,6 +32,7 @@ import { TabStrip } from "../layout/TabStrip";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
+import { AgentRequests } from "./AgentRequests";
 import { AgentRow } from "./AgentRow";
 import {
   AgentSetupCard,
@@ -492,6 +493,7 @@ export function Connections() {
         {CONNECTIONS_INTRO}
       </p>
       <AgentSetupCard />
+      <AgentRequests />
       {canConnect && mcpUrl && (
         <SettingsCard id="oa-mcp-h" title="MCP server">
           <div className="flex min-w-0 items-center gap-[var(--oa-space-2)]">

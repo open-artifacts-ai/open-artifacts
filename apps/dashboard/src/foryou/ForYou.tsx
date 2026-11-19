@@ -29,6 +29,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { useHeld } from "../api/agentAsks";
 import { useThreads } from "../api/comments";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
@@ -50,6 +51,8 @@ import {
   useUnmute,
 } from "./api";
 import type { List as Inbox, Item as InboxItem } from "./contract";
+import { HeldCard } from "./HeldNotice";
+import { heldRequestId } from "./held";
 import {
   askComment,
   backText,
@@ -404,7 +407,7 @@ function ForYouPanel({
   const [showLater, setShowLater] = useState(false);
   const readAll = useReadAll();
   const opened = [...data.needsYou, ...data.updates, ...data.later].find(
-    (x) => x.id === openId && askComment(x),
+    (x) => x.id === openId && (askComment(x) || heldRequestId(x)),
   );
   // The opened ask went away (answered elsewhere): back to the list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: closeCard is stable in effect
@@ -457,7 +460,9 @@ function ForYouPanel({
     setOpenId(null);
   };
   if (opened)
-    return (
+    return heldRequestId(opened) ? (
+      <HeldView item={opened} phone={phone} close={close} back={closeCard} />
+    ) : (
       <AskView item={opened} phone={phone} close={close} back={closeCard} />
     );
   const { needsYou, later } = data;
@@ -742,7 +747,7 @@ function Row({
     });
   const needs = x.level === "needs_you";
   const isUnread = unread(x);
-  const isAsk = askComment(x) !== null;
+  const isAsk = askComment(x) !== null || heldRequestId(x) !== null;
   const away = x.kind === "away";
   const agent =
     x.actor?.kind === "agent" && x.agentKey
@@ -1014,6 +1019,87 @@ function AskView({
             <button
               type="button"
               onClick={() => void threads.refetch()}
+              className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <div
+            aria-hidden="true"
+            className="h-40 animate-pulse rounded-md bg-[var(--oa-sunken)] motion-reduce:animate-none"
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** A held request opened (#2577): the notice, read from R.agentAskHeld so it shows the current words. */
+function HeldView({
+  item,
+  phone,
+  close,
+  back,
+}: {
+  item: InboxItem;
+  phone: boolean;
+  close: () => void;
+  back: (gone: boolean) => void;
+}) {
+  const id = heldRequestId(item);
+  const held = useHeld();
+  const drop = useDropItem();
+  const go = useGo(close);
+  const backRef = useRef<HTMLButtonElement>(null);
+  const req = held.data?.requests.find((r) => r.id === id);
+  // Allowed elsewhere, lapsed or quieted: it is no longer held, so the row goes.
+  const gone = held.isSuccess && !req;
+  useEffect(() => {
+    if (gone) {
+      drop(item.id);
+      back(true);
+    }
+  }, [gone, drop, item.id, back]);
+  useEffect(() => backRef.current?.focus(), []);
+  const href = safePath(item.href);
+  return (
+    <section data-for-you-held="" aria-labelledby="oa-for-you-title">
+      <Header phone={phone} close={close}>
+        {phone && <DialogTitle className="sr-only">For you</DialogTitle>}
+        <button
+          ref={backRef}
+          id="oa-for-you-title"
+          type="button"
+          onClick={() => back(false)}
+          className="flex-1 cursor-pointer border-0 bg-transparent p-0 text-left text-[length:var(--oa-text-md)] font-semibold text-[var(--oa-text)] outline-none focus-visible:underline"
+        >
+          <span aria-hidden="true">{"\u2190 "}</span>For you
+        </button>
+        {href && (
+          <a href={href} className={LINK} onClick={(e) => go(e, href)}>
+            Open the page
+          </a>
+        )}
+      </Header>
+      <div className="flex flex-col gap-2 px-3 pt-2 pb-3">
+        {req ? (
+          <HeldCard
+            request={req}
+            onGone={() => {
+              drop(item.id);
+              back(true);
+            }}
+          />
+        ) : held.isError ? (
+          <div
+            role="alert"
+            className="py-4 text-center text-[var(--oa-text-2)]"
+          >
+            <p className="m-0 mb-2">Couldn't open this request.</p>
+            <button
+              type="button"
+              onClick={() => void held.refetch()}
               className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
             >
               Try again
