@@ -1075,6 +1075,11 @@ describe("plan cards and comparison (#2007)", () => {
     });
     expect(head.className).toContain("bg-[var(--oa-accent-soft)]");
     expect(within(table).getAllByText("Included").length).toBeGreaterThan(0);
+    // #2853: no plan advertises outside-sharing controls; Business's audit
+    // log and custom domain are marked coming, as on the landing page.
+    expect(screen.queryByText(/Outside-sharing/)).toBeNull();
+    expect(within(table).getByText("Audit log (coming)")).toBeVisible();
+    expect(within(table).getByText("Custom domain (coming)")).toBeVisible();
   });
 
   it("an operator-set plan shows the cards with no buttons", async () => {
