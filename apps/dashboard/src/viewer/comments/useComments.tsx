@@ -207,9 +207,9 @@ const isAskForMe = (t: CommentThread) =>
   t.anchor.kind !== "note" && asksForMe([t]).length > 0;
 
 /**
- * #2426 review: only a plain ask opens beside its mark. A risky one (a passkey
- * confirm or an option with an action) is answered in the pane, where the page
- * cannot choose where the options sit.
+ * #2426 review: only a plain ask opens beside its mark. A risky one (an option
+ * with an action) is answered in the pane, where the page cannot choose where
+ * the options sit.
  */
 const opensBeside = (t: CommentThread) =>
   isAskForMe(t) && !t.comments.some((c) => c.ask && isRiskyAsk(c.ask));
