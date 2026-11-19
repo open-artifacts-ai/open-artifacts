@@ -29,6 +29,7 @@ import {
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
+import { ownWordsRefusal } from "../viewer/comments/ownWords";
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -199,7 +200,7 @@ type Patch<V> = {
  * result at once, an error puts the snapshot back, and the settle refetch makes
  * the server's record the truth. Used only for actions whose outcome is
  * predictable. Never for answering an ask (it must show the server's record:
- * who answered, a 409 for a closed ask), a confirm or passkey step (#2263), or
+ * who answered, a 409 for a closed ask), a confirm step (#2263), or
  * an edit the server may refuse for rights the client cannot see.
  */
 const useRefetching = <V, T>(
@@ -524,11 +525,19 @@ export const useAnswerAsk = (id: string) =>
     id,
     false,
     false,
-    (v: { thread: string; comment: string; optionId: string }, x) =>
+    (
+      v: {
+        thread: string;
+        comment: string;
+        optionId?: string;
+        ownWords?: { text: string };
+      },
+      x,
+    ) =>
       api.send(
         "POST",
         R.commentAnswer(id, v.thread, v.comment),
-        { optionId: v.optionId },
+        v.ownWords ? { ownWords: v.ownWords } : { optionId: v.optionId },
         CommentSchema,
         undefined,
         x,
@@ -553,6 +562,7 @@ export const useAnswerAsk = (id: string) =>
                       by: me,
                       at: new Date().toISOString(),
                       typed: true,
+                      ...(v.ownWords ? { ownWords: v.ownWords } : {}),
                       yes: false,
                       // Not answered until the server confirms: the card keeps its
                       // "needs you" border and the header keeps counting it.
@@ -793,6 +803,9 @@ export function answerError(e: unknown, ctx?: ErrorContext): string {
     return planOutsider(ctx)
       ? cappedCopy("answer")
       : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
+  // the typed words were refused.
+  const words = ownWordsRefusal(e);
+  if (words) return words;
   // #2864: no ask needs a passkey. An old server's passkey_required is a plain error.
   if (e instanceof ApiClientError && e.code === "passkey_required")
     return "Couldn't send your answer. Reload the page and try again.";

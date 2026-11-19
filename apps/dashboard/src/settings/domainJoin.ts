@@ -1,5 +1,5 @@
-// #2520: turning the domain join on needs a fresh login, the same way adding
-// a passkey does (Security): the server answers 401 reauth_required with a
+// #2520: turning the domain join on needs a fresh login: the server answers
+// 401 reauth_required with a
 // same-origin reauthUrl and we leave for it. On the way back nothing is sent
 // by itself (OA Axe L1): the page asks again, and the owner confirms. An
 // accepted change may still be applying (a hosted redeploy, about a minute:

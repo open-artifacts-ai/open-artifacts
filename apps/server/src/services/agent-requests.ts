@@ -543,6 +543,187 @@ export async function recordHolds(
     )
       return;
   logError("hold_write_failed", undefined, { artifactId });
+  // #2851: leave a note for the nightly sweep (best effort: a settings row, no content)...
+  try {
+    await stmt(
+      env.DB,
+      "insert into settings (key, value) values (?1, ?2) on conflict (key) do nothing",
+    )
+      .bind(`${RECONCILE_PREFIX}${artifactId}`, String(now))
+      .run();
+  } catch {
+    // D1 is down too: the page's DO retries from its own alarm (below).
+  }
+  // ...and, however D1 is doing, ask the page's DO to retry from its own alarm in a few minutes.
+  await call(() => stub(env, artifactId).commentsHeldRetryArm()).catch(
+    () => undefined,
+  );
+}
+
+/** What a note carries: when it was made, and where the last pass left off (a page is read per run). A new note is just the time. */
+type ReconcileNote = {
+  since: number;
+  cursor: { at: string; commentId: string; key: string } | null;
+  failed: boolean;
+};
+function parseNote(value: string): ReconcileNote {
+  try {
+    const v = JSON.parse(value) as Partial<ReconcileNote> | number;
+    if (typeof v === "number") return { since: v, cursor: null, failed: false };
+    return {
+      since: Number(v.since ?? 0),
+      cursor: v.cursor ?? null,
+      failed: v.failed === true,
+    };
+  } catch {
+    return { since: Number(value) || 0, cursor: null, failed: false };
+  }
+}
+
+/** #2851: one settings row per page whose hold could not be written to D1: "held:reconcile:<artifactId>". */
+export const RECONCILE_PREFIX = "held:reconcile:";
+/** Pages one nightly run reconciles, and held targets it reads from each. */
+export const RECONCILE_PAGES = 10;
+export const RECONCILE_TARGETS = 200;
+
+/** #2851: one held target, as the DO's scan reads it. */
+type HeldScanned = {
+  commentId: string;
+  threadId: string;
+  key: string;
+  way: string;
+  owner: string;
+  namespace: string;
+  name: string;
+  at: string;
+  author: string;
+};
+
+/**
+ * Writes the missing request and item rows for held targets read from a page's
+ * DO (the nightly sweep and the DO's own retry alarm both call it). Skips
+ * targets that have a row, are past their 7 days, or are not a person's.
+ * `complete` is false when any read or write failed. Never throws.
+ */
+export async function reconcileTargets(
+  env: Env,
+  artifactId: string,
+  targets: HeldScanned[],
+  now = Date.now(),
+): Promise<{ complete: boolean; written: number }> {
+  let complete = true;
+  let written = 0;
+  try {
+    for (const t of targets) {
+      const at = Date.parse(t.at);
+      const author = JSON.parse(t.author) as { kind?: string; ref?: string };
+      // Only a person's request is ever held; one past its 7 days lapses by age.
+      if (author.kind !== "user" || !author.ref || !(at + HELD_LAPSE_MS > now))
+        continue;
+      const known = await stmt(
+        env.DB,
+        "select 1 as x from held_request_items where comment_id = ?1 and agent_key = ?2",
+      )
+        .bind(t.commentId, t.key)
+        .first();
+      if (known) continue;
+      const ok = await recordHoldsOnce(
+        env,
+        author.ref,
+        artifactId,
+        t.threadId,
+        t.commentId,
+        [
+          {
+            agent: {
+              key: t.key,
+              owner: t.owner,
+              namespace: t.namespace,
+              name: t.name,
+            } as HeldAgent,
+            way: t.way,
+          },
+        ],
+        at,
+      );
+      if (ok) written++;
+      else complete = false;
+    }
+  } catch (e) {
+    logWarn("held_reconcile_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+    complete = false;
+  }
+  return { complete, written };
+}
+
+/**
+ * #2851: a hold whose D1 request row failed to write (hold_write_failed)
+ * leaves the target held in the page's DO with nothing for its person to
+ * allow. For each noted page (bounded), reads the DO's held targets and writes
+ * the missing request and item rows, dated from the comment so the 7 days
+ * still count from it (an older one lapses by age alone and gets no row). The
+ * note goes once every target has its row, or a week after it was made; a
+ * failed write keeps it for the next night. Best effort: never throws.
+ */
+export async function reconcileHeld(
+  env: Env,
+  now = Date.now(),
+): Promise<number> {
+  let written = 0;
+  try {
+    const { results } = await stmt(
+      env.DB,
+      `select key, value from settings where key like ?1 order by key limit ?2`,
+    )
+      .bind(`${RECONCILE_PREFIX}%`, RECONCILE_PAGES)
+      .all<{ key: string; value: string }>();
+    for (const m of results) {
+      const artifactId = m.key.slice(RECONCILE_PREFIX.length);
+      const note = parseNote(m.value);
+      const done = () =>
+        stmt(env.DB, "delete from settings where key = ?1").bind(m.key).run();
+      try {
+        if (note.since + HELD_LAPSE_MS <= now) {
+          await done();
+          continue;
+        }
+        // One page of the page's held targets per run, oldest first, after the note's cursor.
+        const targets = await call(() =>
+          stub(env, artifactId).commentsHeldScan({
+            limit: RECONCILE_TARGETS,
+            after: note.cursor,
+          }),
+        );
+        const r = await reconcileTargets(env, artifactId, targets, now);
+        written += r.written;
+        const failed = note.failed || !r.complete;
+        const last = targets[targets.length - 1];
+        const save = (n: ReconcileNote) =>
+          stmt(env.DB, "update settings set value = ?2 where key = ?1")
+            .bind(m.key, JSON.stringify(n))
+            .run();
+        if (targets.length >= RECONCILE_TARGETS && last && r.complete)
+          await save({
+            since: note.since,
+            cursor: { at: last.at, commentId: last.commentId, key: last.key },
+            failed,
+          });
+        else if (!failed) await done();
+        else await save({ since: note.since, cursor: null, failed: false });
+      } catch (e) {
+        logWarn("held_reconcile_failed", {
+          code: e instanceof Error ? e.name : "error",
+        });
+      }
+    }
+  } catch (e) {
+    logWarn("held_reconcile_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
+  return written;
 }
 
 /** One try at recordHolds' D1 writes; false when it threw. */
@@ -902,7 +1083,8 @@ export async function allow(
     throw new ApiError("not_found", NO_HELD);
   }
   const open = await pageIsOpen(env, req.artifact_id);
-  if (grant === "page" && open)
+  // Only "allow once" shows on an open page: a list entry (this page or all pages) is refused.
+  if ((grant === "page" || grant === "all") && open)
     throw new ApiError(
       "bad_request",
       "The list does not apply on a page open to guests or to anyone with the link: allow once",
@@ -1158,6 +1340,11 @@ export async function lapseHeld(env: Env, now = Date.now()): Promise<void> {
       env.DB,
       "delete from held_request_items where state in ('lapsed', 'withdrawn') and expires_at < ?1",
     ).bind(now - 30 * 24 * 60 * 60 * 1000),
+    // #2899: an allowed item is finished too; "Who asked what" reads 30 days.
+    stmt(
+      env.DB,
+      "delete from held_request_items where state = 'allowed' and created_at < ?1",
+    ).bind(now - 30 * 24 * 60 * 60 * 1000),
     stmt(
       env.DB,
       "delete from held_requests where not exists (select 1 from held_request_items i where i.request_id = held_requests.id) and last_at < ?1",
@@ -1327,7 +1514,7 @@ export async function addListens(
             level: body.scope,
             until,
             via: body.via,
-            ...(live ? { extended: true } : {}),
+            ...(live && until > live.until ? { extended: true } : {}),
             ...(artifactId ? { artifactId } : {}),
             ...(spaceId ? { spaceId } : {}),
           },
@@ -1469,14 +1656,20 @@ export async function askHistory(
           r.deleted_at === null &&
           (await receiverCanOpen(env, callerOf(me), r.artifact_id)),
       );
+    // Names only on a page the receiver can open (#2905): no roster lookup
+    // for the rest; their agents read "An agent" there.
     if (!names.has(r.artifact_id))
       names.set(
         r.artifact_id,
-        new Map(
-          (
-            await artifactAgents(env, r.artifact_id, receiverId).catch(() => [])
-          ).map((a) => [a.key, a.name]),
-        ),
+        open.get(r.artifact_id)
+          ? new Map(
+              (
+                await artifactAgents(env, r.artifact_id, receiverId).catch(
+                  () => [],
+                )
+              ).map((a) => [a.key, a.name]),
+            )
+          : new Map(),
       );
     let outcome: AskOutcome;
     if (r.listed) outcome = "on_list";

@@ -740,33 +740,16 @@ async function startMocks() {
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
     // &asks=1: the same asks with another mock (e.g. ?mock=doc, #1100).
-    commentAsks: params.get("mock") === "asks" || params.get("asks") === "1",
+    commentAsks:
+      params.get("mock") === "asks" ||
+      params.get("mock") === "own-words" ||
+      params.get("asks") === "1",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
     // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
     commentDecisions: params.get("mock") === "decisions",
     // ?mock=withdrawn (#2511): asks in each withdrawn state.
     commentWithdrawn: params.get("mock") === "withdrawn",
-    // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
-    commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
-      params.get("passkey") ?? "",
-    )
-      ? (params.get("passkey") as
-          | "ok"
-          | "none"
-          | "cooling"
-          | "expired"
-          | "many")
-      : undefined,
-    // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
-    passkeys:
-      params.get("mock") === "passkey-cooling"
-        ? "cooling"
-        : params.get("mock") === "passkey-usable"
-          ? "usable"
-          : params.get("mock") === "passkey-pending"
-            ? "pending"
-            : "none",
     // ?mock=agents (#1822): agent-authored comments, linked and not.
     commentAgents: params.get("mock") === "agents",
     // ?mock=pins and ?mock=pins-pdf (#2019): the "Landing page" is an image (or a pdf) with pins on it.
@@ -888,6 +871,14 @@ async function startMocks() {
     ]),
     ...pics,
   );
+  // ?mock=own-words, "Something else" with a typed answer.
+  if (params.get("mock") === "own-words" || params.get("ownwords") === "1")
+    extra.unshift(
+      ...(await import("./mockOwnWords")).ownWordsHandlers([
+        ...pics,
+        ...mainHandlers,
+      ]),
+    );
   // #2577 s2 (mock): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
   if (agentAsksOn(params))
     extra.unshift(

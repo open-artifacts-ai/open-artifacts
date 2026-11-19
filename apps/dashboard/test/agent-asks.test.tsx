@@ -214,6 +214,56 @@ describe("the held-request notice", () => {
     expect(posts.some((c) => c.path.endsWith("/allow"))).toBe(false);
   });
 
+  it("words that change on the notice itself say so, mark only the changed one, and Allow once sends the new hash", async () => {
+    const posts = calls("POST");
+    let hash = "a".repeat(64);
+    const panel = await openNotice(
+      heldWith((r) => ({
+        ...r,
+        items: (r.items as Record<string, unknown>[]).map((i, n) =>
+          n === 1 ? { ...i, wordsHash: hash } : i,
+        ),
+      })),
+    );
+    expect(within(panel).queryByText(/The words changed/)).toBeNull();
+    hash = "f".repeat(64);
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    expect(
+      await within(panel).findByText(
+        "The words changed. Read them again before you allow.",
+      ),
+    ).toBeInTheDocument();
+    const marked = [...panel.querySelectorAll("[data-changed]")];
+    expect(marked).toHaveLength(1);
+    expect(marked[0]).toHaveTextContent("and is it this week or last week?");
+    fireEvent.click(within(panel).getByRole("button", { name: "Allow once" }));
+    await waitFor(() =>
+      expect(posts.some((c) => c.path.endsWith("/allow"))).toBe(true),
+    );
+    const body = posts.find((c) => c.path.endsWith("/allow"))?.body as {
+      items: { wordsHash: string }[];
+    };
+    expect(body.items.map((i) => i.wordsHash)).toContain("f".repeat(64));
+    // Acting clears the line.
+    await waitFor(() =>
+      expect(within(panel).queryByText(/The words changed/)).toBeNull(),
+    );
+  });
+
+  it("an unchanged refetch says nothing", async () => {
+    const panel = await openNotice();
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(within(panel).queryByText(/The words changed/)).toBeNull();
+    expect(panel.querySelector("[data-changed]")).toBeNull();
+  });
+
   it("the end date is a minute inside the longest", async () => {
     const posts = calls("POST");
     const panel = await openNotice();

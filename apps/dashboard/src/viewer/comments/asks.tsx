@@ -27,6 +27,15 @@ import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
+import {
+  OWN_ID,
+  OWN_PLACEHOLDER,
+  OWN_WORDS_COUNT_FROM,
+  OWN_WORDS_MAX,
+  optionIdOf,
+  optionsWithOwn,
+  textOf,
+} from "./ownWords";
 import { isPersonKey } from "./people";
 
 const MUTED = "text-muted-foreground";
@@ -621,10 +630,36 @@ function OptionViews({
             />
             {p.by.me ? "You" : p.by.name}
             {p.guest ? " (guest)" : ""} weighed in
+            {textOf(p) && (
+              <q data-own-words-text="" className="whitespace-pre-wrap">
+                {textOf(p)}
+              </q>
+            )}
           </span>
         ))
       )}
     </div>
+  );
+}
+
+/** The options of a decided own-words card, folded behind "N options not picked". */
+function Fold({
+  on,
+  n,
+  children,
+}: {
+  on: boolean;
+  n: number;
+  children: React.ReactNode;
+}) {
+  if (!on) return <>{children}</>;
+  return (
+    <details data-unpicked="" className={`${TXT} ${MUTED}`}>
+      <summary className="cursor-pointer">
+        {n} {n === 1 ? "option" : "options"} not picked
+      </summary>
+      <div className="mt-1">{children}</div>
+    </details>
   );
 }
 
@@ -682,11 +717,14 @@ export function AskBlock({
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
+  // the own-words box under "Something else".
+  const [ownOpen, setOwnOpen] = useState(false);
+  const [ownText, setOwnText] = useState("");
   const qid = useId();
   // #2381: what the viewer's own controls show: their weigh-in, or the decision.
   const myPick = ask ? myPickOf(ask) : undefined;
   const picked =
-    ask?.role === "weigh" ? myPick?.optionId : ask?.answer?.optionId;
+    ask?.role === "weigh" ? optionIdOf(myPick) : optionIdOf(ask?.answer);
   const opts = useRef<HTMLUListElement>(null);
   const [refocus, setRefocus] = useState<string | null>(null);
   // Once the failed pick is rolled back and its option is enabled again.
@@ -778,16 +816,18 @@ export function AskBlock({
     (a) => a.kind === "agent" && a.linked !== undefined,
   );
   const canAnswer = mine && !ask.closed;
-  const pickedIdx = ask.options.findIndex((o) => o.id === picked);
-  const pickedOpt = ask.options[pickedIdx];
+  // "Something else", always drawn last; an agent's own "Other" stays a normal option.
+  const ownId = OWN_ID;
+  const options = optionsWithOwn(ask);
+  const pickedIdx = options.findIndex((o) => o.id === picked);
+  const pickedOpt = options[pickedIdx];
   // The decision itself (the decider's pick), for the closed line and the tick.
-  const decisionIdx = ask.options.findIndex(
-    (o) => o.id === ask.answer?.optionId,
-  );
-  const decisionOpt = ask.options[decisionIdx];
+  const decisionIdx = options.findIndex((o) => o.id === optionIdOf(ask.answer));
+  const decisionOpt = options[decisionIdx];
+  const answerWords = textOf(ask.answer);
   const weighing = ask.role === "weigh";
   const decider = ask.decider;
-  // A risky ask (an action option or a passkey) shows no one else: no who-line,
+  // A risky ask (an action option) shows no one else: no who-line,
   // weigh-ins or take back. It is the asker's own user's call.
   const risky = isRiskyAsk(ask);
   const deciderLine =
@@ -818,10 +858,30 @@ export function AskBlock({
     views.length,
   );
   const bars = people >= 4;
-  const recIdx = ask.options.findIndex(
-    (o) => o.id === ask.recommended?.optionId,
-  );
+  const recIdx = options.findIndex((o) => o.id === ask.recommended?.optionId);
   const letters = showLetters(ask.options);
+  // the decider's own words are the decision: one green card, the options folded.
+  const ownDecided =
+    !weighing &&
+    !!ask.answer &&
+    optionIdOf(ask.answer) === ownId &&
+    !!answerWords &&
+    !isSendingAnswer(ask.answer) &&
+    !answer.isPending &&
+    !changing;
+  const sendOwn = () => {
+    if (holdPicks) return;
+    const words = ownText.trim();
+    if (!words) return;
+    setErr(null);
+    answer.mutate(
+      { thread: thread.id, comment: c.id, ownWords: { text: words } },
+      {
+        onError: (e) => setErr(e),
+        onSuccess: () => setOwnOpen(false),
+      },
+    );
+  };
   const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   // Amber while it waits for this reader, as asksForMe counts it: a weigh-in
@@ -841,8 +901,10 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {letters ? `${letter(decisionIdx)}, ` : ""}
-          {decisionOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
+          {answerWords
+            ? `"${answerWords}"`
+            : `${letters && decisionIdx < ask.options.length ? `${letter(decisionIdx)}, ` : ""}${decisionOpt.label}`}{" "}
+          · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -951,98 +1013,185 @@ export function AskBlock({
               {views.length} of {people} weighed in. The tally decides nothing.
             </p>
           )}
-          <ul
-            ref={opts}
-            aria-labelledby={qid}
-            aria-busy={answer.isPending || undefined}
-            data-sending={answer.isPending ? "" : undefined}
-            className="m-0 flex list-none flex-col gap-1 p-0"
-          >
-            {ask.options.map((o, i) => {
-              const rec = ask.recommended?.optionId === o.id;
-              const sel = picked === o.id;
-              // The decision keeps full strength in green; only unpicked options fade.
-              const isDecision =
-                ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
-              return (
-                <li key={o.id}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
-                      isDecision
-                        ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
-                        : sel
-                          ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
-                          : ""
-                    }`}
-                    disabled={
-                      !canAnswer ||
-                      holdPicks ||
-                      answer.isPending ||
-                      sel ||
-                      (locked && !sel)
-                    }
-                    aria-pressed={sel}
-                    data-option={o.id}
-                    onClick={() => {
-                      if (holdPicks) return;
-                      setErr(null);
-                      const v = {
-                        thread: thread.id,
-                        comment: c.id,
-                        optionId: o.id,
-                      };
-                      const failed = (e: unknown) => {
-                        setErr(e);
-                        // Back to unanswered: focus returns to the option.
-                        setRefocus(o.id);
-                      };
-                      answer.mutate(v, { onError: failed });
-                    }}
-                  >
-                    {letters && (
-                      <span
-                        data-option-key=""
-                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                      >
-                        {letter(i)}
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1 break-words">
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                        <b>{o.label}</b>
-                        {rec && (
-                          <span
-                            className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                          >
-                            Recommended
+          {ownDecided && ask.answer && (
+            <div
+              data-own-decided=""
+              className={`flex flex-col gap-0.5 rounded-md bg-[var(--oa-success-soft)] p-2 ring-2 ring-[var(--oa-success-fg)] ${TXT}`}
+            >
+              <span
+                data-own-words-text=""
+                className="font-semibold break-words whitespace-pre-wrap"
+              >
+                {answerWords}
+              </span>
+              <span className="font-medium text-[var(--oa-success-fg)]">
+                ✓ {actor(ask.answer.by, "You")} decided
+              </span>
+              <span className={MUTED}>
+                {ask.answer.by.me
+                  ? "Your own words, not one of the options."
+                  : `${ask.answer.by.name}'s own words, not one of the options.`}
+              </span>
+            </div>
+          )}
+          <Fold on={ownDecided} n={ask.options.length}>
+            <ul
+              ref={opts}
+              aria-labelledby={qid}
+              aria-busy={answer.isPending || undefined}
+              data-sending={answer.isPending ? "" : undefined}
+              className="m-0 flex list-none flex-col gap-1 p-0"
+            >
+              {options.map((o, i) => {
+                const isOwn = o.id === ownId;
+                const rec = ask.recommended?.optionId === o.id;
+                const sel = picked === o.id;
+                // The decision keeps full strength in green; only unpicked options fade.
+                const isDecision =
+                  optionIdOf(ask.answer) === o.id &&
+                  !isSendingAnswer(ask.answer);
+                return (
+                  <li key={o.id}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
+                        isDecision
+                          ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
+                          : sel
+                            ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
+                            : ""
+                      }`}
+                      disabled={
+                        !canAnswer ||
+                        holdPicks ||
+                        answer.isPending ||
+                        // Own words can be sent again once Change reopens the options.
+                        (isOwn ? locked : sel || (locked && !sel))
+                      }
+                      aria-pressed={sel}
+                      aria-expanded={isOwn ? ownOpen : undefined}
+                      data-option={o.id}
+                      data-own-words={isOwn ? "" : undefined}
+                      onClick={() => {
+                        if (holdPicks) return;
+                        // "Something else" opens its box; Send records it.
+                        if (isOwn) {
+                          if (!ownOpen && ownText === "" && sel && answerWords)
+                            setOwnText(answerWords);
+                          setOwnOpen((v) => !v);
+                          return;
+                        }
+                        setErr(null);
+                        const v = {
+                          thread: thread.id,
+                          comment: c.id,
+                          optionId: o.id,
+                        };
+                        const failed = (e: unknown) => {
+                          setErr(e);
+                          // Back to unanswered: focus returns to the option.
+                          setRefocus(o.id);
+                        };
+                        answer.mutate(v, { onError: failed });
+                      }}
+                    >
+                      {letters && !isOwn && i < ask.options.length && (
+                        <span
+                          data-option-key=""
+                          className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                        >
+                          {letter(i)}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1 break-words">
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <b>{o.label}</b>
+                          {rec && (
+                            <span
+                              className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                            >
+                              Recommended
+                            </span>
+                          )}
+                        </span>
+                        {o.detail && (
+                          <span className={`block font-normal ${MUTED}`}>
+                            <MarkdownInline body={o.detail} links={false} />
                           </span>
                         )}
                       </span>
-                      {o.detail && (
-                        <span className={`block font-normal ${MUTED}`}>
-                          <MarkdownInline body={o.detail} links={false} />
+                    </Button>
+                    {isOwn && ownOpen && canAnswer && (
+                      <form
+                        data-own-words-box=""
+                        className="mt-1 flex flex-col gap-1 px-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          sendOwn();
+                        }}
+                      >
+                        <textarea
+                          // biome-ignore lint/a11y/noAutofocus: the box opens on the person's own click
+                          autoFocus
+                          aria-label={OWN_PLACEHOLDER}
+                          placeholder={OWN_PLACEHOLDER}
+                          maxLength={OWN_WORDS_MAX}
+                          rows={3}
+                          value={ownText}
+                          disabled={answer.isPending}
+                          onChange={(e) => setOwnText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setOwnOpen(false);
+                              setRefocus(o.id);
+                            }
+                          }}
+                          className={`w-full resize-y rounded-md border border-border bg-background px-2 py-1 ${TXT}`}
+                        />
+                        <span className="flex items-center gap-2">
+                          <Button
+                            type="submit"
+                            size="xs"
+                            disabled={!ownText.trim() || answer.isPending}
+                          >
+                            Send
+                          </Button>
+                          {ownText.length >= OWN_WORDS_COUNT_FROM && (
+                            <span
+                              data-own-words-count=""
+                              className={`${TXT} ${MUTED}`}
+                            >
+                              {ownText.length} / {OWN_WORDS_MAX}
+                            </span>
+                          )}
                         </span>
-                      )}
-                    </span>
-                  </Button>
-                  <OptionViews
-                    views={views.filter((p) => p.optionId === o.id)}
-                    total={views.length}
-                    bars={bars}
-                    decided={
-                      !risky &&
-                      ask.answer?.optionId === o.id &&
-                      !isSendingAnswer(ask.answer)
-                        ? actor(ask.answer.by, "You")
-                        : null
-                    }
-                  />
-                </li>
-              );
-            })}
-          </ul>
+                      </form>
+                    )}
+                    {(!isOwn ||
+                      views.some((p) => optionIdOf(p) === o.id) ||
+                      optionIdOf(ask.answer) === o.id) && (
+                      <OptionViews
+                        views={views.filter((p) => optionIdOf(p) === o.id)}
+                        total={views.length}
+                        bars={bars}
+                        decided={
+                          !risky &&
+                          ask.answer &&
+                          optionIdOf(ask.answer) === o.id &&
+                          !isSendingAnswer(ask.answer)
+                            ? actor(ask.answer.by, "You")
+                            : null
+                        }
+                      />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </Fold>
           {ask.recommended?.why && (
             <p className={`${TXT} ${MUTED} break-words`}>
               Why{recIdx >= 0 && letters ? ` ${letter(recIdx)}` : ""}:{" "}
@@ -1075,10 +1224,12 @@ export function AskBlock({
             !answer.isPending && (
               <>
                 <p className={`${TXT} font-medium`} data-ask-answer="">
-                  {actor(ask.answer.by, "You")}{" "}
-                  {ask.decider && !risky ? "decided" : "picked"}{" "}
-                  {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-                  {versionDate(ask.answer.at)}
+                  {answerWords && optionIdOf(ask.answer) === ownId
+                    ? ask.answer.by.me
+                      ? "You answered in your own words"
+                      : `${actor(ask.answer.by, "You")} answered in their own words`
+                    : `${actor(ask.answer.by, "You")} ${ask.decider && !risky ? "decided" : "picked"} ${letters && pickedIdx < ask.options.length ? letter(pickedIdx) : pickedOpt.label}`}{" "}
+                  · {versionDate(ask.answer.at)}
                   {ask.closed ? " · closed" : ""}
                   {canAnswer && locked && (
                     <>
