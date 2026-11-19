@@ -1,6 +1,7 @@
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { BUS_LINE } from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
   qk,
@@ -61,13 +62,16 @@ export function GetStarted({
   );
   const ready =
     loaded && tokens.isSuccess && clients.isSuccess && members.isSuccess;
-  // #2478: the five steps, then the optional invite.
+  // #2478: the five steps, then the optional invite. #2880: someone who never
+  // connected the bus (chat-only) sees three: the bus-only two are hidden.
+  const bus = o?.busConnected !== false;
   const named = o?.agentNamed === true;
   const replied = o?.mentionReplied === true;
   const answered = o?.askAnswered === true;
   const nm = o?.agentName || "your agent";
-  const done = [connected, named, hasArtifacts, replied, answered, invited];
-  const all = ready && done.every(Boolean);
+  const five = [connected, named, hasArtifacts, replied, answered];
+  const shown = bus ? [0, 1, 2, 3, 4] : [0, 2, 4];
+  const all = ready && shown.every((i) => five[i]) && invited;
 
   // Every step done: the server keeps that, so removing a member or a token
   // later never brings the list back.
@@ -91,7 +95,7 @@ export function GetStarted({
       }
       if (!invited) void qc.invalidateQueries({ queryKey: qk.members });
       if (!hasArtifacts) void qc.invalidateQueries({ queryKey: ["artifacts"] });
-      if (!(hasArtifacts && named && replied && answered))
+      if (!(hasArtifacts && answered && (!bus || (named && replied))))
         void qc.invalidateQueries({ queryKey: qk.onboarding });
     }, BUS_POLL_MS);
     return () => clearInterval(t);
@@ -102,6 +106,7 @@ export function GetStarted({
     connected,
     invited,
     hasArtifacts,
+    bus,
     named,
     replied,
     answered,
@@ -110,9 +115,12 @@ export function GetStarted({
   if (!live || !ready || all || !me?.instance.mcpUrl) return null;
 
   const hide = () => save({ dismissed: true });
-  const count = done.slice(0, 5).filter(Boolean).length;
-  const cur = done.indexOf(false);
-  const st = (i: number) => (done[i] ? "done" : cur === i ? "cur" : "todo");
+  const count = shown.filter((i) => five[i]).length;
+  // Index 5 is the optional invite step.
+  const cur = shown.find((i) => !five[i]) ?? (invited ? -1 : 5);
+  const st = (i: number) =>
+    (i === 5 ? invited : five[i]) ? "done" : cur === i ? "cur" : "todo";
+  const no = (i: number) => shown.indexOf(i) + 1;
   // The trial line is true only when the server would start the Business
   // trial on an invite (plan.trialEligible): Solo or free, no trial used yet,
   // not read-only. Self-hosted installs have no billing.
@@ -137,7 +145,7 @@ export function GetStarted({
           Get started
         </h2>
         <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
-          {count} of 5
+          {count} of {shown.length}
         </span>
         <Button
           variant="ghost"
@@ -149,7 +157,7 @@ export function GetStarted({
         </Button>
       </div>
       <ol className="m-0 list-none p-0">
-        <Step n={1} state={st(0)} title="Connect your agent">
+        <Step n={no(0)} state={st(0)} title="Connect your agent">
           {connected ? (
             <p className="m-0">Agent connected</p>
           ) : (
@@ -159,17 +167,19 @@ export function GetStarted({
             </>
           )}
         </Step>
-        <Step n={2} state={st(1)} title="Name your agent">
-          {named ? (
-            <p className="m-0">Named: {nm}</p>
-          ) : (
-            <p className="m-0">
-              Your agent will suggest a name. It's what you'll type after @ in
-              comments.
-            </p>
-          )}
-        </Step>
-        <Step n={3} state={st(2)} title="Publish your first artifact">
+        {bus && (
+          <Step n={no(1)} state={st(1)} title="Name your agent">
+            {named ? (
+              <p className="m-0">Named: {nm}</p>
+            ) : (
+              <p className="m-0">
+                Your agent will suggest a name. It's what you'll type after @ in
+                comments.
+              </p>
+            )}
+          </Step>
+        )}
+        <Step n={no(2)} state={st(2)} title="Publish your first artifact">
           {hasArtifacts ? (
             <p className="m-0">
               Published: {o?.firstArtifact?.title ?? "your first artifact"}
@@ -183,25 +193,27 @@ export function GetStarted({
             </>
           )}
         </Step>
-        <Step n={4} state={st(3)} title="Mention your agent">
-          {replied ? (
-            <p className="m-0">{o?.agentName || "Your agent"} replied</p>
-          ) : (
-            <>
-              <p className="m-0">
-                Open your first page, type @ in a comment and pick {nm}. It
-                replies in the thread.
-              </p>
-              {o?.mentionStalled && (
-                <Waiting>
-                  No reply yet. Your agent may not be listening. Ask it: "Check
-                  the bus."
-                </Waiting>
-              )}
-            </>
-          )}
-        </Step>
-        <Step n={5} state={st(4)} title="Answer your agent's ask">
+        {bus && (
+          <Step n={no(3)} state={st(3)} title="Mention your agent">
+            {replied ? (
+              <p className="m-0">{o?.agentName || "Your agent"} replied</p>
+            ) : (
+              <>
+                <p className="m-0">
+                  Open your first page, type @ in a comment and pick {nm}. It
+                  replies in the thread.
+                </p>
+                {o?.mentionStalled && (
+                  <Waiting>
+                    No reply yet. Your agent may not be listening. Ask it:
+                    "Check the bus."
+                  </Waiting>
+                )}
+              </>
+            )}
+          </Step>
+        )}
+        <Step n={no(4)} state={st(4)} title="Answer your agent's ask">
           {answered ? (
             <p className="m-0">Answered</p>
           ) : (
@@ -250,6 +262,14 @@ export function GetStarted({
           )}
         </Step>
       </ol>
+      {!bus && (
+        <p
+          data-bus-line=""
+          className="m-0 mt-[var(--oa-space-2)] text-[length:var(--oa-text-xs)] text-muted-foreground"
+        >
+          {BUS_LINE}
+        </p>
+      )}
     </section>
   );
 }

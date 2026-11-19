@@ -23,6 +23,8 @@ export type MySteps = {
   published: boolean;
   replied: boolean;
   answered: boolean;
+  /** #2880: false (never connected the bus) hides named and mention. */
+  bus: boolean;
   /** The optional sixth: never counts toward "Set up". */
   team: boolean;
   hidden: boolean;
@@ -36,6 +38,7 @@ export const mySteps = (o: Onboarding | undefined): MySteps => ({
   published: !!o?.firstArtifact,
   replied: o?.mentionReplied === true,
   answered: o?.askAnswered === true,
+  bus: o?.busConnected !== false,
   team: o?.teamStep === true,
   hidden: o?.dismissed === true,
   completed: o?.completed === true,
@@ -49,6 +52,13 @@ export const fiveOf = (s: MySteps) => [
   s.replied,
   s.answered,
 ];
+
+/**
+ * #2880: under the list when the bus-only steps (name, mention) are hidden.
+ * OA Product's words.
+ */
+export const BUS_LINE =
+  "Want your agent to hear @mentions on its own? Connect the bus from Claude Code or Claude Desktop's Code tab.";
 
 /** First word of a display name, for "Welcome, {first name}". */
 export const firstName = (name: string | null | undefined) =>

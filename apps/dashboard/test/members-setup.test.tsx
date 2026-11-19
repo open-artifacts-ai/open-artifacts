@@ -50,6 +50,15 @@ const ROWS = [
     setup: { state: "set", done: 5 },
   },
   {
+    id: "m_chat",
+    email: "chat@example.com",
+    name: "Chet Chat",
+    role: "member",
+    lastSeenAt: null,
+    // #2880: never connected the bus: of 3, never held up on named or mention.
+    setup: { state: "partial", done: 2, total: 3, stalled: "ask" },
+  },
+  {
     id: "m_dana",
     email: "dana@example.com",
     name: null,
@@ -87,6 +96,10 @@ describe("the Setup column", () => {
     const priya = cell(await row("Priya Shah"));
     expect(priya?.textContent).toBe(
       "Setup: 0 of 5no agent connected yetReminded 15 Nov",
+    );
+    // #2880: the count of three, with the step that really holds it up.
+    expect(cell(await row("Chet Chat"))?.textContent).toBe(
+      "Setup: 2 of 3ask not answered yet",
     );
     expect(cell(await row("Jon Lee"))?.textContent).toBe("Setup: Set up");
     expect(cell(await row("dana@example.com"))?.textContent).toBe(
@@ -153,7 +166,12 @@ describe("Copy the setup line", () => {
 describe("memberSetup (#2639's MemberSchema)", () => {
   it("parses a row with and without setup", () => {
     expect(MemberSchema.parse(ROWS[1]).setup?.stalled).toBe("mention");
-    expect(MemberSchema.parse(ROWS[5]).setup).toBeUndefined();
+    expect(
+      MemberSchema.parse(ROWS.find((r) => r.role === "guest")).setup,
+    ).toBeUndefined();
+    expect(
+      MemberSchema.parse(ROWS.find((r) => r.id === "m_chat")).setup?.total,
+    ).toBe(3);
   });
   it("dates read as the screens do", () => {
     expect(shortDate("2026-11-15T10:00:00.000Z")).toBe("15 Nov");

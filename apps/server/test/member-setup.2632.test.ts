@@ -29,7 +29,7 @@ const set = (key: string) =>
     .run();
 type Row = {
   id: string;
-  setup?: { state: string; done: number; stalled?: string };
+  setup?: { state: string; done: number; total?: number; stalled?: string };
 };
 const list = async (cookie: string, status?: string) =>
   (await (
@@ -57,6 +57,7 @@ describe("GET R.members setup", () => {
     expect(by(m.userId)?.setup).toEqual({
       state: "partial",
       done: 1,
+      total: 5,
       stalled: "agent",
     });
     expect((await api(app, R.members, m.cookie)).status).toBe(404);
@@ -554,5 +555,28 @@ describe("a capped caller's read publishes nothing (#2632)", () => {
       ((await r.json()) as { welcomeId: string | null }).welcomeId,
     ).toBeNull();
     expect(await seededRows(m.userId)).toBe(0);
+  });
+});
+
+describe("GET R.members setup, chat-only members (#2880)", () => {
+  const addMachine = (userId: string) =>
+    env.DB.prepare(
+      "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+    )
+      .bind(newId(), userId, newId(), Date.now(), Date.now())
+      .run();
+
+  it("a member who never connected the bus counts of 3 and is never stalled on named or mention; the bus brings five back", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await seen(m.userId);
+    await set(askAnsweredKey(m.userId));
+    let s = (await list(o.cookie)).find((r) => r.id === m.userId)?.setup;
+    expect(s?.total).toBe(3);
+    expect(s?.stalled).not.toBe("named");
+    expect(s?.stalled).not.toBe("mention");
+    await addMachine(m.userId);
+    s = (await list(o.cookie)).find((r) => r.id === m.userId)?.setup;
+    expect(s?.total).toBe(5);
   });
 });
