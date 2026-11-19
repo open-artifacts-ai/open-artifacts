@@ -134,6 +134,34 @@ describe("POST agent-listens", () => {
     expect(await audits("agent_listens.add")).toBe(before + 1);
   });
 
+  it("the audit row says extended only when the end date moved later (#2905)", async () => {
+    const m = await mk("la-ext2905");
+    const flags = async () =>
+      (
+        await E.DB.prepare(
+          "select detail from audit_events where action = 'agent_listens.add' and actor_id = ?1 and target_id = ?2",
+        )
+          .bind(owner.userId, m.userId)
+          .all<{ detail: string }>()
+      ).results.map((r) => JSON.parse(r.detail).extended === true);
+    expect((await add({ ...base, memberId: m.userId, until: 90 })).status).toBe(
+      200,
+    );
+    expect(await flags()).toEqual([false]);
+    // A shorter end date: the live entry keeps its later one; nothing extended.
+    expect((await add({ ...base, memberId: m.userId, until: 30 })).status).toBe(
+      200,
+    );
+    expect((await flags()).filter(Boolean)).toHaveLength(0);
+    // A later end date: extended.
+    expect(
+      (await add({ ...base, memberId: m.userId, until: 365 })).status,
+    ).toBe(200);
+    const all = await flags();
+    expect(all).toHaveLength(3);
+    expect(all.filter(Boolean)).toHaveLength(1);
+  });
+
   it("an end time in ms is clamped to a year", async () => {
     const m = await mk("la-clamp");
     const r = await add({

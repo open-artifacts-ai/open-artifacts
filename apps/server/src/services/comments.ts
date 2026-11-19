@@ -1908,7 +1908,8 @@ async function deliver(
               ),
               late,
             ]),
-            listedFrom(env, a.id, c, agent),
+            // Never delays delivery: the record is raced against `late` (best effort).
+            Promise.race([listedFrom(env, a.id, c, agent), late]),
           ]).then(([o]) => o),
         ),
       ),
@@ -2449,7 +2450,8 @@ async function threadReply(
               ),
               late,
             ]),
-            listedFrom(env, a.id, c, agent),
+            // Never delays delivery: the record is raced against `late` (best effort).
+            Promise.race([listedFrom(env, a.id, c, agent), late]),
           ]).then(([o]) => o),
         ),
       );
