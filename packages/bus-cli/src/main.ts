@@ -18,6 +18,7 @@ import { skill } from "./commands/skill.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
 import { installViaDaemon, update } from "./commands/update.ts";
+import { upgrade } from "./commands/upgrade.ts";
 import { use } from "./commands/use.ts";
 import { askDaemon, type Ctx, realCtx, say, sayErr } from "./context.ts";
 import { type Command, parse } from "./index.ts";
@@ -37,6 +38,7 @@ const TERMINAL = new Set([
   "leads",
   "auto-update",
   "update",
+  "upgrade",
   "version",
   "help",
 ]);
@@ -177,6 +179,11 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return autoUpdate(cmd, ctx);
     case "update":
       return update(ctx, (v) => installViaDaemon(ctx, v));
+    case "upgrade":
+      return upgrade(ctx, {
+        allowFailed: cmd.allowFailed,
+        ...(cmd.version ? { version: cmd.version } : {}),
+      });
     case "link":
       return link(cmd, ctx);
     case "version":
