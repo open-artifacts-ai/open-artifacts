@@ -32,6 +32,7 @@ import {
   OWN_PLACEHOLDER,
   OWN_WORDS_COUNT_FROM,
   OWN_WORDS_MAX,
+  optionIdOf,
   optionsWithOwn,
   textOf,
 } from "./ownWords";
@@ -716,14 +717,14 @@ export function AskBlock({
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
-  // PROVISIONAL (#2895): the own-words box under "Something else".
+  // the own-words box under "Something else".
   const [ownOpen, setOwnOpen] = useState(false);
   const [ownText, setOwnText] = useState("");
   const qid = useId();
   // #2381: what the viewer's own controls show: their weigh-in, or the decision.
   const myPick = ask ? myPickOf(ask) : undefined;
   const picked =
-    ask?.role === "weigh" ? myPick?.optionId : ask?.answer?.optionId;
+    ask?.role === "weigh" ? optionIdOf(myPick) : optionIdOf(ask?.answer);
   const opts = useRef<HTMLUListElement>(null);
   const [refocus, setRefocus] = useState<string | null>(null);
   // Once the failed pick is rolled back and its option is enabled again.
@@ -815,13 +816,13 @@ export function AskBlock({
     (a) => a.kind === "agent" && a.linked !== undefined,
   );
   const canAnswer = mine && !ask.closed;
-  // PROVISIONAL (#2895): "Something else", always drawn last; an agent's own "Other" stays a normal option.
+  // "Something else", always drawn last; an agent's own "Other" stays a normal option.
   const ownId = OWN_ID;
   const options = optionsWithOwn(ask);
   const pickedIdx = options.findIndex((o) => o.id === picked);
   const pickedOpt = options[pickedIdx];
   // The decision itself (the decider's pick), for the closed line and the tick.
-  const decisionIdx = options.findIndex((o) => o.id === ask.answer?.optionId);
+  const decisionIdx = options.findIndex((o) => o.id === optionIdOf(ask.answer));
   const decisionOpt = options[decisionIdx];
   const answerWords = textOf(ask.answer);
   const weighing = ask.role === "weigh";
@@ -859,11 +860,11 @@ export function AskBlock({
   const bars = people >= 4;
   const recIdx = options.findIndex((o) => o.id === ask.recommended?.optionId);
   const letters = showLetters(ask.options);
-  // PROVISIONAL (#2895): the decider's own words are the decision: one green card, the options folded.
+  // the decider's own words are the decision: one green card, the options folded.
   const ownDecided =
     !weighing &&
     !!ask.answer &&
-    ask.answer.optionId === ownId &&
+    optionIdOf(ask.answer) === ownId &&
     !!answerWords &&
     !isSendingAnswer(ask.answer) &&
     !answer.isPending &&
@@ -1047,7 +1048,8 @@ export function AskBlock({
                 const sel = picked === o.id;
                 // The decision keeps full strength in green; only unpicked options fade.
                 const isDecision =
-                  ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
+                  optionIdOf(ask.answer) === o.id &&
+                  !isSendingAnswer(ask.answer);
                 return (
                   <li key={o.id}>
                     <Button
@@ -1169,15 +1171,16 @@ export function AskBlock({
                       </form>
                     )}
                     {(!isOwn ||
-                      views.some((p) => p.optionId === o.id) ||
-                      ask.answer?.optionId === o.id) && (
+                      views.some((p) => optionIdOf(p) === o.id) ||
+                      optionIdOf(ask.answer) === o.id) && (
                       <OptionViews
-                        views={views.filter((p) => p.optionId === o.id)}
+                        views={views.filter((p) => optionIdOf(p) === o.id)}
                         total={views.length}
                         bars={bars}
                         decided={
                           !risky &&
-                          ask.answer?.optionId === o.id &&
+                          ask.answer &&
+                          optionIdOf(ask.answer) === o.id &&
                           !isSendingAnswer(ask.answer)
                             ? actor(ask.answer.by, "You")
                             : null
@@ -1221,7 +1224,7 @@ export function AskBlock({
             !answer.isPending && (
               <>
                 <p className={`${TXT} font-medium`} data-ask-answer="">
-                  {answerWords && ask.answer.optionId === ownId
+                  {answerWords && optionIdOf(ask.answer) === ownId
                     ? ask.answer.by.me
                       ? "You answered in your own words"
                       : `${actor(ask.answer.by, "You")} answered in their own words`

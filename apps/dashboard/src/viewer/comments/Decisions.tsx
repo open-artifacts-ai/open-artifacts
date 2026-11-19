@@ -14,7 +14,7 @@ import { AuthorFace } from "./AuthorFace";
 import { type Decision, weighIns } from "./decisionsModel";
 import { FaceStack } from "./FaceStack";
 import { scrollWithin } from "./keepScroll";
-import { OWN_ID, textOf } from "./ownWords";
+import { optionIdOf, textOf } from "./ownWords";
 import type { CommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
@@ -151,13 +151,13 @@ function Row({
   onOpen: () => void;
 }) {
   const { ask, answer, comment, thread } = d;
-  const opt = ask.options.find((o) => o.id === answer.optionId);
+  const opt = ask.options.find((o) => o.id === optionIdOf(answer));
   const was = answer.was
     ? ask.options.find((o) => o.id === answer.was?.optionId)
     : undefined;
   const w = weighIns(d);
-  // PROVISIONAL (#2895): an answer in the person's own words leads with the words.
-  const words = answer.optionId === OWN_ID ? textOf(answer) : undefined;
+  // an answer in the person's own words leads with the words.
+  const words = textOf(answer);
   const replacedBy = ask.replacedBy
     ? all.find((x) => x.id === ask.replacedBy)
     : undefined;
@@ -282,7 +282,7 @@ function Row({
         <span
           className={`min-w-0 whitespace-pre-wrap break-words ${replaced ? "line-through" : ""}`}
         >
-          {words ?? opt?.label ?? answer.optionId}
+          {words ?? opt?.label ?? optionIdOf(answer)}
         </span>
       </button>
       <p

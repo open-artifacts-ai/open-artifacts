@@ -1,6 +1,5 @@
-// PROVISIONAL (#2895): mock-only "Something else" with a typed answer, over the
-// shared mocks (which do not know `ownWords` yet). Delete with
-// src/viewer/comments/ownWords.ts once the shared mocks serve it.
+// Mock-only "Something else" with a typed answer, over the shared mocks (which
+// do not serve `ownWords`).
 // ?mock=own-words (or &ownwords=1 beside another mock): a pick with { ownWords: { text } } (trimmed, 1 to 1000, no
 // optionId) is recorded, and the list then shows the answer with its words.
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";

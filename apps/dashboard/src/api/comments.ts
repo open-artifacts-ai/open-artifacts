@@ -29,7 +29,7 @@ import {
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
-import { OWN_ID, ownWordsRefusal } from "../viewer/comments/ownWords";
+import { ownWordsRefusal } from "../viewer/comments/ownWords";
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -558,7 +558,7 @@ export const useAnswerAsk = (id: string) =>
                   ask: {
                     ...c.ask,
                     answer: {
-                      optionId: v.optionId ?? OWN_ID,
+                      optionId: v.optionId,
                       by: me,
                       at: new Date().toISOString(),
                       typed: true,
@@ -803,7 +803,7 @@ export function answerError(e: unknown, ctx?: ErrorContext): string {
     return planOutsider(ctx)
       ? cappedCopy("answer")
       : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
-  // PROVISIONAL (#2895): the typed words were refused.
+  // the typed words were refused.
   const words = ownWordsRefusal(e);
   if (words) return words;
   // #2864: no ask needs a passkey. An old server's passkey_required is a plain error.

@@ -1,18 +1,8 @@
-// PROVISIONAL (#2895): "Something else" with a typed answer on every ask. The
-// shapes of OA Backend-3's server contract, mirrored here until
-// packages/shared carries them. When it does, delete this file and import the
-// same names from @oa/shared.
-//   - POST the pick with { ownWords: { text } } and no optionId, on the same
-//     route; the text is trimmed, 1 to 1000 characters. Both optionId and
-//     ownWords is a 400.
-//   - `answer.ownWords: { text }` (no optionId) on the answer and on `picks[]`
-//     entries; `answer.yes` is false for it.
-//   - A refusal is 400 bad_request with details.path "ownWords.text" and reason
-//     "empty" | "too_long".
-//   - The card always adds "Something else" last. An agent's own "Something
-//     else" or "Other" stays a normal option with no box.
-import { z } from "zod";
-
+// "Something else": a typed answer on every ask (#2895). The shapes are in
+// @oa/shared: a pick body `{ ownWords: { text } }` (no optionId), and
+// `answer.ownWords` / `picks[].ownWords` with no optionId. The card always adds
+// "Something else" last; an agent's own "Something else" or "Other" stays a
+// normal option with no box.
 export const OWN_WORDS_MAX = 1000;
 /** The counter shows from here to the limit. */
 export const OWN_WORDS_COUNT_FROM = 900;
@@ -21,34 +11,6 @@ export const OWN_PLACEHOLDER = "Say what you'd like instead";
 
 /** The card's own option: never an id the agent could post, never sent to the server. */
 export const OWN_ID = "__own";
-
-const OwnText = z.object({ text: z.string() });
-
-/** What a server with own words adds to an answer and to picks. */
-export const OwnWordsExtra = z.object({
-  answer: z.object({ ownWords: OwnText.optional() }).optional(),
-  picks: z.array(z.object({ ownWords: OwnText.optional() })).optional(),
-});
-
-/** An own-words answer or pick has no optionId: give it ours, so the shared schema reads it. */
-const withOwnId = (x: unknown) =>
-  x && typeof x === "object" && "ownWords" in x && !("optionId" in x)
-    ? { ...x, optionId: OWN_ID }
-    : x;
-
-const normalize = (raw: unknown) => {
-  if (!raw || typeof raw !== "object") return raw;
-  const a = raw as { answer?: unknown; picks?: unknown };
-  return {
-    ...a,
-    ...(a.answer ? { answer: withOwnId(a.answer) } : {}),
-    ...(Array.isArray(a.picks) ? { picks: a.picks.map(withOwnId) } : {}),
-  };
-};
-
-/** The ask schema with the own-words fields read (the rest is the shared one). */
-export const withOwnWords = <T extends z.ZodType>(ask: T) =>
-  z.preprocess(normalize, ask.and(OwnWordsExtra));
 
 type Opt = { id: string; label: string; detail?: string };
 
@@ -64,6 +26,15 @@ export const textOf = (x: object | undefined): string | undefined => {
     ?.text;
   return typeof t === "string" && t.trim() !== "" ? t : undefined;
 };
+
+/**
+ * The option an answer or a pick landed on: its own, or the card's "Something
+ * else" for an own-words one (which has no optionId).
+ */
+export const optionIdOf = (
+  x: { optionId?: string | undefined } | undefined,
+): string | undefined =>
+  x?.optionId ?? (textOf(x) !== undefined ? OWN_ID : undefined);
 
 /** Why the server refused the words, in plain words; null when it was not about them. */
 export function ownWordsRefusal(e: unknown): string | null {
