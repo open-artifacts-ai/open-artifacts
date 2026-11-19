@@ -25,7 +25,7 @@ export function whenText(at: number, now = Date.now()): string {
 export const OUTCOME_TEXT: Record<AskHistoryRow["outcome"], string> = {
   on_list: "on your list",
   allowed_once: "you allowed once",
-  lapsed: "lapsed",
+  lapsed: "expired",
   not_now: "you said not now",
   held: "waiting for you",
 };
