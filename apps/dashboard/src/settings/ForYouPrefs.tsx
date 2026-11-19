@@ -354,7 +354,9 @@ function UpdatesBrowser({
           ? NOTIF_WORDS.noKeyCell
           : mine
             ? ""
-            : PUSH_WORDS.turnOnFirst}
+            : !pushSupported() && iosNeedsHomeScreen()
+              ? NOTIF_WORDS.iosCell
+              : PUSH_WORDS.turnOnFirst}
       </small>
     </>
   );
@@ -390,7 +392,7 @@ function Interrupts({
             Quiet hours
           </b>
           <p id="oa-quiet-hint" className={`m-0 ${muted}`}>
-            Nothing interrupts between these times. It waits in the inbox.
+            Nothing interrupts between these times. It waits in For you.
             {quiet && (
               <>
                 {" "}
@@ -437,8 +439,8 @@ function Interrupts({
         <div className="min-w-0">
           <b className="font-semibold">Interrupt me for</b>
           <p className={`m-0 ${muted}`}>
-            What may send a browser notification. Everything else waits in the
-            inbox.
+            What may send a browser notification. Everything else waits in For
+            you.
           </p>
         </div>
         <span className="w-[240px] flex-none max-[600px]:w-full">

@@ -598,11 +598,13 @@ describe("iPhone and iPad (#2943)", () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     mount("/settings/notifications");
     expect(
-      await screen.findByText(
-        "Add to Home Screen first",
-        {},
-        { timeout: FIRST_LOAD_MS },
-      ),
+      (
+        await screen.findAllByText(
+          "Add to Home Screen first",
+          {},
+          { timeout: FIRST_LOAD_MS },
+        )
+      )[0],
     ).toBeInTheDocument();
     expect(document.querySelector("[data-push-note]")?.textContent).toMatch(
       /^On iPhone and iPad, notifications work only once this site is on your Home Screen\. Tap Share, then Add to Home Screen, and open it from there\.$/,
@@ -610,6 +612,9 @@ describe("iPhone and iPad (#2943)", () => {
     expect(
       screen.queryByText("This browser can't show notifications."),
     ).toBeNull();
+    // OA Product-2: the Updates cell says the same, not "Turn on Needs you here first".
+    expect(screen.getAllByText("Add to Home Screen first")).toHaveLength(2);
+    expect(screen.queryByText("Turn on Needs you here first")).toBeNull();
     expect(
       screen.getByRole("combobox", { name: "On lock screens" }),
     ).toBeEnabled();
@@ -631,11 +636,13 @@ describe("iPhone and iPad (#2943)", () => {
     server.use(...createHandlers({ events, forYou: "mixed" }));
     mount("/settings/notifications");
     expect(
-      await screen.findByText(
-        "Add to Home Screen first",
-        {},
-        { timeout: FIRST_LOAD_MS },
-      ),
+      (
+        await screen.findAllByText(
+          "Add to Home Screen first",
+          {},
+          { timeout: FIRST_LOAD_MS },
+        )
+      )[0],
     ).toBeInTheDocument();
     Object.defineProperty(navigator, "maxTouchPoints", {
       configurable: true,
