@@ -17,6 +17,7 @@ import {
 } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { capOf, isCommenterRole } from "../auth/policy.js";
+import { isTeammateRow } from "../auth/teammates.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
@@ -58,7 +59,7 @@ import { recordShareItem } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
-import { isTeammateRow, memberIdOfEmail } from "./teammates.js";
+import { memberIdOfEmail } from "./teammates.js";
 
 export const MAX_SHARES = 200;
 

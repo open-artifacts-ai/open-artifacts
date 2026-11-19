@@ -1,7 +1,5 @@
-import { inDomains } from "@oa/auth-core";
 import type { Teammates } from "@oa/shared";
-import { authConfig } from "../auth/config.js";
-import { isInstanceOwner, TEAM_ROLES } from "../auth/policy.js";
+import { isTeammateRow } from "../auth/teammates.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { personName } from "./users.js";
@@ -17,21 +15,6 @@ type Row = {
   name: string | null;
   display_name: string | null;
 };
-
-const isTeamRole = (role: string): boolean =>
-  (TEAM_ROLES as readonly string[]).includes(role);
-
-/** A team member: active, a team role, and (with login domains set) an address inside them, as isOutsideMember reads it. */
-export function isTeammateRow(
-  env: Env,
-  u: { role: string; status: string; email: string },
-): boolean {
-  if (u.status !== "active" || !isTeamRole(u.role)) return false;
-  const domains = authConfig(env).domains;
-  if (domains.length === 0 || isInstanceOwner({ role: u.role as never }))
-    return true;
-  return inDomains(domains, u.email.slice(u.email.lastIndexOf("@") + 1));
-}
 
 /** "Ada Lovelace" -> "AL", "Ada" -> "A": from the shown name, never the email. */
 export function initialsOf(name: string): string {
