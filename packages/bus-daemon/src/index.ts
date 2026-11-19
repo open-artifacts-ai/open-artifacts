@@ -33,6 +33,8 @@ import {
   frameId,
   MAX_WAITING_QUERY,
   type SendFrame,
+  UPDATE_REASONS,
+  type UpdateReason,
   WireNamespaceSchema,
 } from "@oa/bus-protocol";
 import { type AgentRecord, AgentTable, withLinkHash } from "./agents.ts";
@@ -75,8 +77,10 @@ import {
   type Config,
   claudeReturnDir,
   home,
+  isDefaultHome,
   prepareReturnDir,
   prepareSocketDir,
+  procBusHome,
   readConfig,
   revokedMarker,
   StartError,
@@ -152,8 +156,14 @@ import { PiTransport } from "./transports/pi.ts";
 import { runningVersion } from "./update/layout.ts";
 import { loginActive } from "./update/login-flag.ts";
 import { parseVersion } from "./update/policy.ts";
+import {
+  type Report,
+  readReports,
+  readRescueVersion,
+  removeReports,
+} from "./update/reports.ts";
 import { startSelfCheck } from "./update/selfcheck.ts";
-import { Updater } from "./update/updater.ts";
+import { Updater, type UpdaterDeps } from "./update/updater.ts";
 
 export * from "./agents.ts";
 export * from "./attest.ts";
@@ -165,8 +175,10 @@ export * from "./config-issues.ts";
 export * from "./dedupe.ts";
 export * from "./deliver.ts";
 export * from "./event-log.ts";
+export * from "./folders.ts";
 export * from "./global.ts";
 export * from "./hub.ts";
+export * from "./instances.ts";
 export * from "./leads/templates.ts";
 export * from "./liveness/claude.ts";
 export * from "./namespace.ts";
@@ -196,6 +208,11 @@ export * from "./update/updater.ts";
 export { type VerifiedRelease, verifyRelease } from "./update/verify.ts";
 
 const NOTICE_RETRY_MS = 30_000;
+/** How long a `switching` report waits for the hub's answer before the switch is held. */
+const SWITCH_ACK_MS = 5000;
+/** How often queued update reports are sent. */
+const REPORT_FLUSH_MS = 5000;
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** #1956: a ref binding whose link has been closed this long lapses, even if its pid lives. */
 export const BINDING_IDLE_MS = 24 * 60 * 60_000;
 /** #1956: how often the bindings map is swept; the sync tick runs more often than needed. */
@@ -207,9 +224,17 @@ const RENAME_WINDOW_MS = 60_000;
 const RENAME_WINDOW_MAX = 3;
 /** A registration the hub rate-limited is retried this late, or on the next reconnect. */
 const LIMITED_RETRY_MS = 5 * 60_000;
-/** #1822: how long and how many proofs wait for a record that does not exist yet. */
-const PENDING_PROOF_MS = 60_000;
+/**
+ * #1822: how long and how many proofs wait for a record that does not exist
+ * yet. Ten minutes: Claude Desktop runs the helper at connect, before its
+ * session joins the bus (a name chosen later, a slow first sync).
+ */
+const PENDING_PROOF_MS = 10 * 60_000;
 const PENDING_PROOF_MAX = 64;
+/** #2688: a Claude session seen this recently may not have run its helper yet. */
+const LINK_GRACE_MS = 2 * 60_000;
+/** #2688: how many recent unbound proof calls the daemon keeps (causes only). */
+const UNBOUND_PROOFS_MAX = 10;
 /** How far back `oa-bus status` lists late deliveries. */
 const LATE_WINDOW_MS = 60 * 60_000;
 /**
@@ -259,6 +284,12 @@ export type DaemonDeps = {
     enabled?: boolean;
     every?: (fn: () => void, ms: number) => () => void;
     deadlineMs?: number;
+    /** Tests only: how long a `switching` report waits for the hub's answer. */
+    ackMs?: number;
+    /** Tests only: the updater's clock, release fetch and proof check. */
+    now?: () => number;
+    fetch?: UpdaterDeps["fetch"];
+    verify?: UpdaterDeps["verify"];
   };
   /** How often the bound socket is checked; default 60 s. */
   socketCheckMs?: number;
@@ -311,6 +342,10 @@ export type DaemonDeps = {
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
     linksFile?: string;
+    /** #2806: adopt sessions found only in the sessions dir; default: this is the default home. */
+    discover?: boolean;
+    /** #2806: the bus home a session's process was started for (procBusHome). */
+    homeOf?: (pid: number) => string | null | undefined;
   };
   opencode?: {
     /** TUI presence files; default ~/.oa-bus/opencode-tui. */
@@ -602,6 +637,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   prepareSocketDir(listenPath, returnDir);
   const startOfPid = cl.procStart ?? claudeProcStartOf;
   const running = cl.isRunning ?? isRunning;
+  /** #2806: adopt unseen sessions from the scan (the default home only). */
+  const discoverClaude = cl.discover ?? isDefaultHome();
+  const claudeHomeOf = cl.homeOf ?? procBusHome;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
     procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
@@ -1123,17 +1161,50 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     number,
     { procStart: string; hash: string; at: number }
   >();
+  /**
+   * #2688: why a pid's proof did not link its session, and the last few
+   * `mcp-proof` calls that bound nothing. Causes and times only: never a proof,
+   * a hash or a header.
+   */
+  const proofIssues = new Map<number, "proof_timed_out" | "proof_refused">();
+  const unboundProofs: {
+    at: number;
+    cause: "no_live_record" | "process_mismatch" | "no_process_start";
+  }[] = [];
+  const noteUnbound = (
+    cause: (typeof unboundProofs)[number]["cause"],
+    pid?: number,
+  ) => {
+    unboundProofs.push({ at: Date.now(), cause });
+    while (unboundProofs.length > UNBOUND_PROOFS_MAX) unboundProofs.shift();
+    if (pid !== undefined && cause !== "no_process_start") {
+      proofIssues.delete(pid);
+      proofIssues.set(
+        pid,
+        cause === "no_live_record" ? "proof_timed_out" : "proof_refused",
+      );
+      while (proofIssues.size > PENDING_PROOF_MAX) {
+        const oldest = proofIssues.keys().next().value;
+        if (oldest === undefined) break;
+        proofIssues.delete(oldest);
+      }
+    }
+  };
   const claimProofs = () => {
     if (pendingProofs.size === 0) return;
     const now = Date.now();
     for (const [pid, p] of pendingProofs)
-      if (now - p.at > PENDING_PROOF_MS) pendingProofs.delete(pid);
+      if (now - p.at > PENDING_PROOF_MS) {
+        pendingProofs.delete(pid);
+        noteUnbound("no_live_record", pid);
+      }
     for (const rec of agents.all()) {
       if (rec.kind !== "claude-code" || !rec.live || rec.pid === undefined)
         continue;
       const p = pendingProofs.get(rec.pid);
       if (!p || p.procStart !== rec.procStart) continue;
       pendingProofs.delete(rec.pid);
+      proofIssues.delete(rec.pid);
       rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
       persistLinks();
       sendLink(rec, p.hash);
@@ -1177,6 +1248,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const s of live) {
       const prev = agents.byRef(s.ref);
       if (prev && prev.kind !== "claude-code") continue;
+      // #2806: ~/.claude/sessions lists every Claude session on the machine.
+      // Only the default home adopts one it has not met; a second home keeps
+      // to the sessions its own adapter said hello for, so it never announces
+      // another bus's sessions to its hub or delivers into them.
+      if (!prev && !discoverClaude) continue;
+      // The default home also leaves a session started for another home alone,
+      // where it can read the process's OA_BUS_HOME.
+      if (!prev) {
+        const h = claudeHomeOf(s.pid);
+        if (typeof h === "string" && h !== home()) continue;
+      }
       // Admitted before its session file existed: learn the process start
       // now (live or already closed by a tick that could not see the file),
       // so a later /clear in this process is recognised (#1295).
@@ -1351,6 +1433,49 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let codexReplayLink = 0;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
+  /**
+   * When the owner's quiet hours end (#2759): the last `hello_ok.owner_away_until`
+   * or `owner_away` frame. A hello_ok without the field replaces it with unknown.
+   * Kept across a drop; `awayUntil()` ignores a time already past.
+   */
+  let ownerAwayUntil: string | undefined;
+  /** The owner's quiet-hours end while it is still ahead by this clock; else undefined (not away). */
+  const awayUntil = (): string | undefined =>
+    ownerAwayUntil !== undefined && Date.parse(ownerAwayUntil) > Date.now()
+      ? ownerAwayUntil
+      : undefined;
+  /** The hub's last hello_ok listed BUS_CAPS.runVersion: the update frames may go (#2552). */
+  let hubRunCap = false;
+  /** `switching` reports waiting for the hub's update_ack, by frame id. */
+  const switchAcks = new Map<string, (ok: boolean) => void>();
+  /** Set below, once the updater exists (a hello_ok cannot come before it). */
+  let updaterRef: Updater | undefined;
+  /** Sends the queued update reports (BUS_CAPS.runVersion hubs only); removes the ones that went. */
+  function flushUpdateReports(): void {
+    if (!hubRunCap || !hubHelloed || !hub.open || !deps.update) return;
+    const queued = readReports(home());
+    const went: Report[] = [];
+    const rescue = readRescueVersion(home());
+    for (const r of queued) {
+      const ok = hub.send({
+        v: 1,
+        id: frameId(),
+        type: "update_report",
+        // The 24 h notice is "held" on the wire.
+        event: r.event === "ready_24h" ? "held" : r.event,
+        from: r.from,
+        to: r.to,
+        reason: (UPDATE_REASONS as readonly string[]).includes(r.reason)
+          ? (r.reason as UpdateReason)
+          : "other",
+        rescue_version: rescue,
+        at: new Date(r.at).toISOString(),
+      });
+      if (!ok) break;
+      went.push(r);
+    }
+    removeReports(home(), went);
+  }
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
   let hubWaiting = false;
   /** The hub's last hello_ok listed BUS_CAPS.waitingQuery: it counts waiting mail by this machine's own away refs (#2079). */
@@ -1487,6 +1612,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        // #2552: only from a hub that listed the cap; anything else is ignored.
+        case "run_version":
+          if (hubRunCap) {
+            if (frame.run_version === null) updaterRef?.clearNamed();
+            else
+              void updaterRef
+                ?.instructFromInstance(frame.run_version)
+                .catch((e) => log(`update: ${errText(e)}`));
+          }
+          return;
+        case "owner_away":
+          ownerAwayUntil = frame.until ?? undefined;
+          return;
+        case "install_now":
+          if (hubRunCap)
+            void updaterRef
+              ?.installNowFromInstance()
+              .catch((e) => log(`update: ${errText(e)}`));
+          return;
+        case "update_ack":
+          switchAcks.get(frame.id)?.(frame.ok);
+          return;
         case "acked": {
           // Only the answer to an ack sent on this link, from a hub that
           // negotiated the cap; anything else is ignored.
@@ -1517,7 +1664,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
+          hubRunCap = frame.caps?.includes(BUS_CAPS.runVersion) ?? false;
+          ownerAwayUntil = frame.owner_away_until ?? undefined;
           hubHelloed = true;
+          if (hubRunCap) {
+            if (frame.run_version === null) updaterRef?.clearNamed();
+            else if (frame.run_version !== undefined)
+              void updaterRef
+                ?.instructFromInstance(frame.run_version)
+                .catch((e) => log(`update: ${errText(e)}`));
+            flushUpdateReports();
+          }
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
@@ -1604,6 +1761,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       codexAckIds.clear();
       hubWaitingQuery = false;
       hubHelloed = false;
+      hubRunCap = false;
+      for (const [id, done] of [...switchAcks]) {
+        switchAcks.delete(id);
+        done(false);
+      }
       statusRelay.dropped();
       receipts.release();
       // A send not yet answered waits for the next link; anything else fails now.
@@ -1695,7 +1857,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
-      if (start === null || start === undefined) return { bound: false };
+      if (start === null || start === undefined) {
+        noteUnbound("no_process_start");
+        return { bound: false };
+      }
       const find = () =>
         agents
           .all()
@@ -1707,7 +1872,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         rec = find();
       }
       if (rec && rec.procStart !== undefined) {
-        if (rec.procStart !== start) return { bound: false };
+        if (rec.procStart !== start) {
+          noteUnbound("process_mismatch", req.pid);
+          return { bound: false };
+        }
+        proofIssues.delete(req.pid);
         rec.linkHashes = withLinkHash(rec.linkHashes, req.hash);
         persistLinks();
         sendLink(rec, req.hash);
@@ -1731,6 +1900,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // `oa-bus status` and install's "Daemon running": one roster per namespace
     // this machine's open sessions are in (or only the cwd's).
     onStatus: async (req) => {
+      // Expired proofs are counted now, not only at the next sync tick.
+      claimProofs();
       let only: string | undefined;
       if (req.cwd && isAbsolute(req.cwd)) {
         try {
@@ -1805,7 +1976,32 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ? {}
           : { hub_since: hubDroppedAt }),
         link: true,
+        claude_sessions: live
+          .filter((a) => a.kind === "claude-code")
+          .map((a) => {
+            const linked = (a.linkHashes?.length ?? 0) > 0;
+            const young =
+              Date.now() - (agents.firstSeen(a.ref) ?? 0) < LINK_GRACE_MS;
+            const state = linked
+              ? ("linked" as const)
+              : young
+                ? ("starting" as const)
+                : ("unlinked" as const);
+            return {
+              name: stripTerminalControls(a.busName),
+              cwd: stripTerminalControls(a.cwd),
+              state,
+              ...(state === "unlinked"
+                ? {
+                    cause:
+                      proofIssues.get(a.pid) ?? ("no_helper_call" as const),
+                  }
+                : {}),
+            };
+          }),
+        unbound_proofs: unboundProofs.map((u) => ({ ...u })),
         ...(hubVersion === undefined ? {} : { hub_version: hubVersion }),
+        ...(awayUntil() === undefined ? {} : { owner_away_until: awayUntil() }),
         ...(only === undefined ? {} : { namespace: only }),
         namespaces,
         // Read-only: status never marks a late delivery shown.
@@ -2134,6 +2330,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           const rec = agents.byRef(ref);
           if (rec) renameFromAdapter(rec, name);
         },
+        ownerAwayUntil: awayUntil,
         // The self tool's status: the agent's own row on its roster.
         ownRow: (ref) => {
           const me = agents.byRef(ref);
@@ -2703,7 +2900,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     );
   hub.start();
   ev("daemon_start", { version: deps.version, pid: process.pid });
-  // #2552: the self-check after a switch, and the loop (off until PR 6).
+  // #2552: the self-check after a switch, and the loop (on for a version the instance names).
   const upd = deps.update;
   // Decided once: a folder that is not x.y.z (unknown-<ts>, a workspace) never updates.
   const found = upd ? runningVersion(upd.entryFile, home()) : undefined;
@@ -2732,14 +2929,55 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }),
         loginActive: () => loginActive(home()),
         hubReady: () => hub.open && hubHelloed,
+        announceSwitch: async (from, to, reason = "ok") => {
+          if (!hubRunCap || !hub.open) return false;
+          const id = frameId();
+          const answer = new Promise<boolean>((res) => {
+            const t = setTimeout(() => {
+              switchAcks.delete(id);
+              res(false);
+            }, upd.ackMs ?? SWITCH_ACK_MS);
+            t.unref?.();
+            switchAcks.set(id, (ok) => {
+              clearTimeout(t);
+              switchAcks.delete(id);
+              res(ok);
+            });
+          });
+          const sentOk = hub.send({
+            v: 1,
+            id,
+            type: "update_report",
+            event: "switching",
+            from,
+            to,
+            reason,
+            rescue_version: readRescueVersion(home()),
+            at: new Date().toISOString(),
+          });
+          if (!sentOk) {
+            switchAcks.get(id)?.(false);
+          }
+          return answer;
+        },
         serverVersion: () => hubVersion,
         exit: upd.exit,
         log,
         ...(upd.enabled !== undefined ? { enabled: upd.enabled } : {}),
         ...(upd.every ? { every: upd.every } : {}),
+        ...(upd.now ? { now: upd.now } : {}),
+        ...(upd.fetch ? { fetch: upd.fetch } : {}),
+        ...(upd.verify ? { verify: upd.verify } : {}),
       })
     : undefined;
+  updaterRef = updater;
   updater?.start();
+  // Queued update reports go out on each hello and every few seconds after,
+  // so a report queued by the self-check or the updater is not stranded.
+  const reportTimer = upd
+    ? setInterval(flushUpdateReports, REPORT_FLUSH_MS)
+    : undefined;
+  reportTimer?.unref?.();
   return {
     hub,
     agents,
@@ -2749,6 +2987,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ev("daemon_stop", { pid: process.pid });
       selfCheck?.stop();
       updater?.stop();
+      if (reportTimer) clearInterval(reportTimer);
       clearInterval(socketWatch);
       clearInterval(watcher);
       clearInterval(retry);

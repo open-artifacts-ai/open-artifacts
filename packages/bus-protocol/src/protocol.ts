@@ -347,6 +347,113 @@ const Follows = z.strictObject({
   follows: z.array(FollowEntry).max(MAX_FOLLOWS),
 });
 
+/** Strict x.y.z, at most 32 chars (#2552): the only thing an instance may name. */
+export const RunVersionSchema = z
+  .string()
+  .max(32)
+  .regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+
+/**
+ * An ISO 8601 UTC time (#2759, BUS_CAPS.ownerAway): the end of a person's
+ * quiet hours. Bounded and date-checked.
+ */
+export const OwnerAwayUntilSchema = z
+  .string()
+  .max(40)
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?Z$/)
+  .refine((s) => !Number.isNaN(Date.parse(s)), "not a date");
+
+/**
+ * Why an update report was sent: a closed set, so a report never carries
+ * free text of its own (that is `detail`, capped).
+ */
+export const UPDATE_REASONS = [
+  "ok",
+  "unhealthy",
+  "hub_unreachable",
+  "proof_failed",
+  "no_attestation",
+  "bad_tar",
+  "bad_version",
+  "bad_instruction",
+  "fetch_failed",
+  "too_large",
+  "bad_redirect",
+  "wrong_package",
+  "stale_trust_root",
+  "node_too_old",
+  "not_forward",
+  "ahead_of_server",
+  "rate_limited",
+  "refused_backoff",
+  "not_quiet_24h",
+  "needs_you",
+  "staged_changed",
+  "nothing_staged",
+  "requested",
+  "other",
+] as const;
+export type UpdateReason = (typeof UPDATE_REASONS)[number];
+
+export const UPDATE_EVENTS = [
+  "updated",
+  "refused",
+  "stepped_back",
+  "needs_you",
+  "held",
+  "switching",
+] as const;
+
+/** A version, or "" when the report has none to name (a malformed instruction). */
+const ReportVersion = RunVersionSchema.or(z.literal(""));
+
+/**
+ * A machine's update report (#2552, BUS_CAPS.runVersion). The hub keeps the
+ * latest per machine. `switching` is answered by `update_ack` before the
+ * machine swaps; the others get no answer.
+ */
+const UpdateReport = z.strictObject({
+  ...base,
+  type: z.literal("update_report"),
+  event: z.enum(UPDATE_EVENTS),
+  from: ReportVersion,
+  to: ReportVersion,
+  reason: z.enum(UPDATE_REASONS),
+  detail: WellFormedText.pipe(z.string().max(200)).optional(),
+  /** The rescue shim's own version on this machine (0: none). */
+  rescue_version: z.number().int().min(0).max(100000),
+  at: IsoTimeSchema,
+});
+
+/** The version the instance names, pushed while connected. */
+const RunVersionPush = z.strictObject({
+  ...base,
+  type: z.literal("run_version"),
+  /** null: the owner cleared it, the instance names none (#2719). */
+  run_version: RunVersionSchema.nullable(),
+});
+
+/** The owner's quiet hours began, ended or changed (BUS_CAPS.ownerAway). */
+const OwnerAwayPush = z.strictObject({
+  ...base,
+  type: z.literal("owner_away"),
+  /** When quiet hours end; null: not in quiet hours. */
+  until: OwnerAwayUntilSchema.nullable(),
+});
+
+/**
+ * "Install now" from Settings. No field: it names no version, source or URL.
+ * The daemon honors it only for the version already staged and named.
+ */
+const InstallNow = z.strictObject({ ...base, type: z.literal("install_now") });
+
+/** The hub's yes or no to a `switching` report, and nothing else. */
+const UpdateAck = z.strictObject({
+  ...base,
+  type: z.literal("update_ack"),
+  ok: z.boolean(),
+});
+
 const HelloOk = z.strictObject({
   ...base,
   type: z.literal("hello_ok"),
@@ -358,6 +465,16 @@ const HelloOk = z.strictObject({
    * listed caps, so a client that never sends caps never sees it.
    */
   caps: CapsSchema.optional(),
+  /**
+   * The version the instance names (BUS_CAPS.runVersion). `null`: it names
+   * none (cleared, #2719); absent: the hub does not know yet, a push follows.
+   */
+  run_version: RunVersionSchema.nullable().optional(),
+  /**
+   * When the owner's quiet hours end (BUS_CAPS.ownerAway); `null`: not in
+   * quiet hours. Absent: the hub does not say.
+   */
+  owner_away_until: OwnerAwayUntilSchema.nullable().optional(),
 });
 
 const AgentOk = z.strictObject({
@@ -465,10 +582,34 @@ const ErrorFrame = z.strictObject({
   message: WellFormedText.pipe(z.string().max(1024)),
 });
 
+/** An id inside a notice's `meta`: ASCII, no spaces or controls, bounded. */
+const NOTICE_META_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 const Notice = z.strictObject({
   size: z.number().int().gt(LIMITS.inlineBodyBytes).max(LIMITS.maxMessageBytes),
   msg_id: MsgIdSchema,
 });
+
+/**
+ * #2768 (BUS_CAPS.noticeMeta): the structured fields of a server notice, as
+ * data. Every string is bounded and id- or token-shaped, so a daemon can hand
+ * it to a harness without it being text anyone wrote.
+ */
+export const NoticeMetaSchema = z.strictObject({
+  kind: z.string().regex(/^[a-z_]{1,32}$/),
+  artifact_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  comment_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  thread_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  user_id: z.string().regex(NOTICE_META_ID_RE).optional(),
+  /** ISO 8601 date-time, UTC (`2026-11-18T09:00:00.000Z`). */
+  until: z
+    .string()
+    .max(40)
+    .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?Z$/)
+    .refine((v) => !Number.isNaN(Date.parse(v)), "invalid date")
+    .optional(),
+});
+export type NoticeMeta = z.infer<typeof NoticeMetaSchema>;
 
 const Deliver = z
   .strictObject({
@@ -488,7 +629,13 @@ const Deliver = z
     namespace: WireNamespaceSchema,
     body: InlineBodySchema.optional(),
     notice: Notice.optional(),
+    /** Only from the reserved sender, only with BUS_CAPS.noticeMeta (#2768). */
+    meta: NoticeMetaSchema.optional(),
   })
+  .refine(
+    (f) => f.meta === undefined || f.from_name === INSTANCE_SENDER_NAME,
+    "meta only from the instance",
+  )
   .refine(
     (f) => (f.body === undefined) !== (f.notice === undefined),
     "body xor notice",
@@ -525,6 +672,7 @@ export const CLIENT_FRAMES = [
   "following",
   "link_bind",
   "waiting_query",
+  "update_report",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -543,6 +691,10 @@ export const SERVER_FRAMES = [
   "link_bound",
   "waiting_counts",
   "acked",
+  "run_version",
+  "install_now",
+  "update_ack",
+  "owner_away",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -562,6 +714,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   Following,
   LinkBind,
   WaitingQuery,
+  UpdateReport,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -580,6 +733,10 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   LinkBound,
   WaitingCounts,
   Acked,
+  RunVersionPush,
+  InstallNow,
+  UpdateAck,
+  OwnerAwayPush,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -598,6 +755,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Following,
   LinkBind,
   WaitingQuery,
+  UpdateReport,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -614,6 +772,10 @@ export const FrameSchema = z.discriminatedUnion("type", [
   LinkBound,
   WaitingCounts,
   Acked,
+  RunVersionPush,
+  InstallNow,
+  UpdateAck,
+  OwnerAwayPush,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -626,6 +788,7 @@ export type RefuseFrame = z.infer<typeof Refuse>;
 export type HelloFrame = z.infer<typeof Hello>;
 export type RenameFrame = z.infer<typeof Rename>;
 export type RenamedFrame = z.infer<typeof Renamed>;
+export type UpdateReportFrame = z.infer<typeof UpdateReport>;
 export type FollowEntryWire = z.infer<typeof FollowEntry>;
 
 /**

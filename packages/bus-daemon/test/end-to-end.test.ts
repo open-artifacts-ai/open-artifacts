@@ -197,7 +197,13 @@ async function boot() {
     hub: { backoffMs: () => 20 },
     deliveredWaitMs: 300,
     transports: { "claude-code": claudeT, opencode: opencodeT },
-    claude: { sessionsDir: claudeSessions, syncMs: 50 },
+    // The default home: it adopts the sessions it scans (#2806).
+    claude: {
+      sessionsDir: claudeSessions,
+      syncMs: 50,
+      discover: true,
+      homeOf: () => undefined,
+    },
     opencode: {
       // An OpenCode service above the adapter, with its session open in a TUI.
       ancestors: (pid) => [pid],

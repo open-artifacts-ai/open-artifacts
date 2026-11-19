@@ -558,6 +558,55 @@ describe("comments (#682)", () => {
     );
   });
 
+  it("leaves `ask` out for a runtime older than protocol 7, sends it from 7 (#2426)", () => {
+    const b = mk();
+    const t = [
+      {
+        id: "t1",
+        ask: true,
+        anchor: {
+          kind: "text" as const,
+          version: 1,
+          exact: "a",
+          prefix: "",
+          suffix: "",
+        },
+      },
+    ];
+    b.setComments(t);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.not.objectContaining({ ask: true })],
+      }),
+      "*",
+    );
+    send({ oa: 1, type: "hello", protocol: 6, kind: "html" });
+    b.setComments(t);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.not.objectContaining({ ask: true })],
+      }),
+      "*",
+    );
+    send({ oa: 1, type: "hello", protocol: 7, kind: "html" });
+    b.setComments(t);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.objectContaining({ ask: true })],
+      }),
+      "*",
+    );
+  });
+
+  it("hands comment.open's rect to the shell when there is one (#2426)", () => {
+    const o = withCb();
+    const rect = { x: 1, y: 2, width: 30, height: 10 };
+    send({ oa: 1, type: "comment.open", id: "t1", rect });
+    expect(o.onCommentOpen).toHaveBeenLastCalledWith("t1", rect);
+    send({ oa: 1, type: "comment.open", id: "t2" });
+    expect(o.onCommentOpen).toHaveBeenLastCalledWith("t2");
+  });
+
   it("holds `changed` back until the frame's own runtime says hello (#1698)", () => {
     // A frame loaded from here says nothing until its runtime is up: until
     // then the shell cannot know its protocol, so it sends core fields only.

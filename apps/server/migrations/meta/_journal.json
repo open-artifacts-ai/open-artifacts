@@ -288,6 +288,76 @@
       "when": 1794768254809,
       "tag": "0040_share_can_comment",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1794835282589,
+      "tag": "0041_email_optouts",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1794970229276,
+      "tag": "0042_bus_machine_updates",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1794743627481,
+      "tag": "0043_inbox_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1794743628481,
+      "tag": "0044_agent_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1794983078893,
+      "tag": "0045_email_bounce_pause",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1794990000000,
+      "tag": "0046_comment_pictures",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1794994101034,
+      "tag": "0047_inbox_later",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1794999370682,
+      "tag": "0048_notification_prefs",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1794999806634,
+      "tag": "0049_push",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1795027659996,
+      "tag": "0050_agent_requests_switch",
+      "breakpoints": true
     }
   ]
 }

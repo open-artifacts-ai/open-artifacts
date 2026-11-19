@@ -408,11 +408,18 @@ export function copy(
     ],
     // Status and doctor, when the hub runs a newer release (C26h). Each
     // version is cut to 19, so the line stays within 80 columns.
-    updateAvailable: (hub: string, mine: string) => [
+    // The update goes through the instance's checked install step, never an
+    // unchecked npx download.
+    updateAvailable: (hub: string, mine: string, origin: string) => [
       warn(
         `Update available: ${cutMiddle(hub, 19, more)} (this machine runs ${cutMiddle(mine, 19, more)})`,
       ),
-      next(`Run ${bus} upgrade.`),
+      next(`Ask your agent to follow "Install the bus" in`),
+      next(
+        origin
+          ? `${origin.replace(/\/+$/, "")}/llms.txt.`
+          : "your instance's llms.txt.",
+      ),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
     hubProblem: (problem: string) => [
@@ -563,6 +570,9 @@ export function copy(
       "Commands",
       "  install      Approve this machine, wire your harnesses, start the daemon (the default)",
       "  login        Approve this machine again",
+      "  add          <address> [--name <name>]: connect a second instance from a terminal",
+      "  use          [name] or --none: tie this folder to one of your instances",
+      "  skill        Save this instance's skill for your harnesses (--check only reports)",
       "  uninstall    Remove what install added",
       "  status       Who is on the bus, from this folder",
       "  logs         The daemon log",
@@ -591,6 +601,9 @@ export function copy(
       "               --json             the result as one JSON line on stdout",
       "               --yes, -y          answer yes where install asks",
       "  login        --instance <url>, --no-open",
+      "  add          --name <name>      the local name for the instance (default: from its address)",
+      "               --no-open          do not open a browser for approval",
+      "  use          --none             turn down the instance this repo suggests",
       "  daemon       --instance <url>",
       "  uninstall    --purge            also delete the bus home and what install made",
       "  namespace    --yes, -y          approve without asking (namespace approve)",
@@ -771,6 +784,21 @@ export function copy(
           ? `${HARNESS_LABEL[h]} ${clip(version, 40)} wired`
           : `${HARNESS_LABEL[h]} wired`,
       ),
+    /** #2688: one doctor or status line with its glyph, then its notes indented 3. */
+    check: (
+      level: "pass" | "warn" | "fail" | "info",
+      head: string,
+      notes: string[] = [],
+    ) => [
+      level === "pass"
+        ? done(head)
+        : level === "warn"
+          ? warn(head)
+          : level === "fail"
+            ? fail(head)
+            : head,
+      ...notes.map(next),
+    ],
     notWired: (h: HarnessName) => [
       fail(`${HARNESS_LABEL[h]} is not wired`),
       next(`Run ${bus} to wire it.`),

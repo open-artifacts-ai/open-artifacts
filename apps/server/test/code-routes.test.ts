@@ -545,11 +545,17 @@ describe("POST AUTH.codeVerify", () => {
     const fresh = () => start(open(), guest, "/a/x", `198.51.100.${10 + n++}`);
     let s = await fresh();
     let last: Response | undefined;
-    for (let i = 0; i < 31; i++) {
-      if (i % 5 === 0) s = await fresh();
-      last = await verify(s.e, "00000000", s.cookie, { ip });
-      // Every guess under the cap is a plain wrong code.
-      if (i < 30) expect(last.status).toBe(401);
+    // A frozen clock: a window boundary mid-loop would reset the count.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      for (let i = 0; i < 31; i++) {
+        if (i % 5 === 0) s = await fresh();
+        last = await verify(s.e, "00000000", s.cookie, { ip });
+        // Every guess under the cap is a plain wrong code.
+        if (i < 30) expect(last.status).toBe(401);
+      }
+    } finally {
+      vi.useRealTimers();
     }
     expect(last?.status).toBe(429);
     expect((await errOf(last as Response)).details).toMatchObject({

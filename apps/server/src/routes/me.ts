@@ -1,4 +1,8 @@
 import {
+  InboxLaterBodySchema,
+  InboxMuteBodySchema,
+  InboxReadBodySchema,
+  LIMITS,
   MCP_PATH,
   type Me,
   type Member,
@@ -14,6 +18,7 @@ import { canConnect } from "../auth/agents.js";
 import {
   caller,
   capOfCaller,
+  interactiveSession,
   planOfMember,
   requireUser,
 } from "../auth/authz.js";
@@ -27,16 +32,24 @@ import {
   readHealthBound,
   readThawNotice,
 } from "../directory/health.js";
-import { emailEnabled } from "../email/send.js";
+import { emailEnabled, takeAll } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
-import { busOn } from "../services/bus.js";
+import { busHub, busOn } from "../services/bus.js";
 import { docsState } from "../services/docs-available.js";
-import { inboxOf, needsYouCount } from "../services/inbox.js";
+import {
+  deferItem,
+  inboxOf,
+  needsYouCount,
+  unreadUpdateCount,
+} from "../services/inbox.js";
+import { markAllRead, markRead } from "../services/inbox-items.js";
+import { addMute, listMutes, removeMute } from "../services/inbox-mutes.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
+import { getPrefs, putPrefs } from "../services/notification-prefs.js";
 import { instanceOwnerName } from "../services/onboarding.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
@@ -98,7 +111,7 @@ async function toMe(
     try {
       me.inbox = {
         needsYou: await needsYouCount(c.env, who0),
-        unreadUpdates: 0,
+        unreadUpdates: await unreadUpdateCount(c.env, who0),
       };
     } catch (e) {
       logWarn("me_inbox_count_failed", e);
@@ -262,7 +275,92 @@ export function mountMe(app: AppType): void {
     const who = caller(c);
     if (who.kind !== "user")
       throw new ApiError("unauthorized", "Login required");
-    return c.json(await inboxOf(c.env, who));
+    return c.json(await inboxOf(c.env, who, c.req.query("cursor")));
+  });
+
+  // Mark items read by id (an update, or a mention): another person's ids and
+  // asks match nothing. Read-all clears updates only; a mention clears by id.
+  app.post(R.meInboxRead, async (c) => {
+    const user = requireUser(c);
+    // A person in a browser only, as the share-notice PUT: never a personal
+    // token or an agent grant.
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    const { ids } = await jsonBody(c, InboxReadBodySchema);
+    return c.json({ read: await markRead(c.env, user.id, ids) });
+  });
+  // #2512 S4: the caller's own notification choices. Reading is any signed-in
+  // person's; saving takes a person in a browser (never a token, a grant or an
+  // agent), so no agent can open the lock screen or turn off quiet hours.
+  app.get(R.meNotificationPrefs, async (c) => {
+    const user = requireUser(c);
+    return c.json(await getPrefs(c.env, user.id));
+  });
+  app.put(R.meNotificationPrefs, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new ApiError("bad_request", "Invalid JSON body");
+    }
+    const saved = await putPrefs(c.env, user.id, body);
+    // #2759: their own agents on the bus hear of a changed quiet-hours window.
+    // Their own hub only; a failure never fails the save.
+    try {
+      await busHub(c.env, user.id)?.ownerAwayChanged();
+    } catch (e) {
+      logWarn("bus_owner_away_changed_failed", e);
+    }
+    return c.json(saved);
+  });
+  // #2512 S4: what the caller muted from browser notifications. A mute stops
+  // push only. Reading is the caller's own; changing takes a person in a
+  // browser (never a token, a grant or an agent).
+  app.get(R.meInboxMutes, async (c) => {
+    const user = requireUser(c);
+    return c.json(await listMutes(c.env, user));
+  });
+  app.post(R.meInboxMutes, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    await addMute(c.env, user, await jsonBody(c, InboxMuteBodySchema));
+    return c.body(null, 204);
+  });
+  app.delete("/api/v1/me/inbox/mutes/:kind/:id", async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    const kind = InboxMuteBodySchema.shape.kind.safeParse(c.req.param("kind"));
+    if (!kind.success) throw new ApiError("bad_request", "Unknown kind");
+    await removeMute(c.env, user.id, kind.data, c.req.param("id"));
+    return c.body(null, 204);
+  });
+  // #2762 "Later": put one Needs-you item off, once. A person in a browser only.
+  app.post("/api/v1/me/inbox/:id/later", async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    const who = caller(c);
+    if (who.kind !== "user")
+      throw new ApiError("unauthorized", "Login required");
+    const { until, timeZone } = await jsonBody(c, InboxLaterBodySchema);
+    const minute = new Date().toISOString().slice(0, 16);
+    if (
+      (await takeAll(c.env, [
+        [`later:${user.id}`, LIMITS.viewerWritesPerMin, minute],
+      ])) !== -1
+    )
+      throw new ApiError(
+        "rate_limited",
+        "Too many changes. Try again shortly.",
+      );
+    return c.json(
+      await deferItem(c.env, who, c.req.param("id"), until, timeZone),
+    );
+  });
+  app.post(R.meInboxReadAll, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    return c.json({ read: await markAllRead(c.env, user.id) });
   });
 
   // Session (CSRF-guarded by csrf() in createApp) or PAT; guests included.

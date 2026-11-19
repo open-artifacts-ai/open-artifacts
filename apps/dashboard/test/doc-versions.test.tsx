@@ -240,6 +240,24 @@ describe("a doc's Versions panel", () => {
   });
 });
 
+describe("a reader of a doc", () => {
+  it("has no Save version and no Restore", async () => {
+    setMockDoc(DOC.id, true);
+    try {
+      mount(panel(DOC.id, 3));
+      await screen.findByRole("list", { name: "Versions" });
+      expect(screen.queryByRole("button", { name: "Save version" })).toBeNull();
+      await row(3);
+      expect(
+        screen.queryByRole("button", { name: "Restore this version" }),
+      ).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Restore$/ })).toBeNull();
+    } finally {
+      setMockDoc(DOC.id);
+    }
+  });
+});
+
 describe("other artifacts", () => {
   it("have no Save version, and Restore still asks first", async () => {
     mount(panel(OTHER.id, 24));

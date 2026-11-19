@@ -104,10 +104,21 @@ async function startMocks() {
         }),
       ),
     );
+  // &push=off (#2512 slice 3): the server has no push key (404 push_unavailable).
+  if (params.get("push") === "off")
+    extra.push(
+      http.get("*/api/v1/me/push/key", () =>
+        HttpResponse.json(
+          { error: { code: "push_unavailable", message: "No push key" } },
+          { status: 404 },
+        ),
+      ),
+    );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);
-  // &sharedBy=none answers null.
+  // &sharedBy=none answers null. #2702: as the server does, the guest's own
+  // share decides can.comment (&share=viewer: View only; else Can comment).
   if (role === "guest")
     extra.push(
       http.get("*/api/v1/artifacts/:id", async ({ request }) => {
@@ -116,6 +127,16 @@ async function startMocks() {
         const body = (await res.json()) as object;
         return HttpResponse.json({
           ...body,
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+            comment: params.get("share") !== "viewer",
+          },
           sharedBy:
             params.get("sharedBy") === "none" ? null : { name: "Ada Lovelace" },
         });
@@ -127,6 +148,17 @@ async function startMocks() {
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
+          // #2702: a guest is capped, so read-only, as the server says.
+          ...(role === "guest"
+            ? {
+                auth: {
+                  method: "access",
+                  readOnly: true,
+                  cap: "guest",
+                  expiresAt: null,
+                },
+              }
+            : {}),
           // #2632: the owner's name (MeSchema instanceOwner).
           instanceOwner: { name: "Bob Builder" },
         }),
@@ -838,6 +870,27 @@ async function startMocks() {
       params.get("glink") === "1" ? "sam@partner.org" : null,
       () => mainHandlers,
     ),
+  );
+  if (params.get("mock") === "foryou") {
+    const { pushSwitchHandlers } = await import("./mockPushSwitches");
+    extra.push(...pushSwitchHandlers(() => mainHandlers));
+  }
+  // #2508: pictures in comments.
+  const pics = (await import("./mockPictures")).pictureHandlers(
+    mainHandlers,
+    params,
+  );
+  // PROVISIONAL (#2780): person @mentions, in front of the picture handlers.
+  extra.push(
+    ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
+      ...pics,
+      ...mainHandlers,
+    ]),
+    ...pics,
+  );
+  // #1910: &waiting=1 carries the waiting fields.
+  extra.unshift(
+    ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),
   );
   await setupWorker(
     ...extra,

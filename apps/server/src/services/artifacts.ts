@@ -74,6 +74,7 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { noteInstanceFirst } from "./analytics.js";
+import { libraryWaiting } from "./ask-waiting.js";
 import { audit, userActor } from "./audit.js";
 import { restoreDocVersion } from "./doc-edit.js";
 import {
@@ -85,7 +86,7 @@ import {
   refuseDocSettings,
   useEditDoc,
 } from "./doc-format.js";
-import { DOC_SWITCH } from "./doc-switch.js";
+import { docCreationOpen } from "./doc-switch.js";
 import { docsAvailable } from "./docs-available.js";
 import { deleteFollowsStmt, notifyChanged } from "./follows.js";
 import {
@@ -221,7 +222,7 @@ export async function publish(
   // doc (#1100) once it is known to be a create.
   const asDoc = input.format === "doc";
   if (asDoc && !docsAvailable(env))
-    throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+    throw docCreationOpen(env) ? docsNeedPaid() : docsUnavailable();
   let plan: Plan | null = input.edits || asDoc ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();
@@ -1378,6 +1379,24 @@ export async function list(
       ),
     );
   }
+  // #2512: the "waiting" mark: one read of my open asks on this page and one
+  // hub call, only when a card has an ask for me. Fails soft to no mark.
+  const withAsks = items.filter((i) => (i.asksForYou ?? 0) > 0);
+  if (withAsks.length > 0) {
+    const w = await libraryWaiting(
+      env,
+      caller.user.id,
+      withAsks.map((i) => i.id),
+    );
+    for (const i of withAsks) {
+      const m = w.get(i.id);
+      if (m)
+        i.waiting = {
+          count: m.count,
+          oldestSince: new Date(m.oldestSince).toISOString(),
+        };
+    }
+  }
   return {
     items,
     nextCursor:
@@ -2316,6 +2335,11 @@ async function purgeOne(
   await env.DB.batch([
     env.DB.prepare("delete from artifact_search where rowid = ?").bind(rid),
     env.DB.prepare("delete from uploads where artifact_id = ?").bind(id),
+    // #2508: the comment pictures' rows; their bytes sit under files/<id>/ and
+    // went with the listing above, so the purge costs no extra call per artifact.
+    env.DB.prepare("delete from comment_pictures where artifact_id = ?").bind(
+      id,
+    ),
     env.DB.prepare(
       "delete from artifacts where id = ? and deleted_at is not null and deleted_at < ?",
     ).bind(id, cutoff),

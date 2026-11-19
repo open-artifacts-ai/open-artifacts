@@ -2,6 +2,7 @@ import {
   LINK_PROOF_ARG,
   LINK_PROOF_HEADER,
   LinkProofSchema,
+  semverGte,
 } from "@oa/bus-protocol";
 import {
   BUS_ROLE_PROPOSAL_TTL_MS,
@@ -37,15 +38,18 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
+import { RUN_VERSION_KEY, readRunVersion } from "../bus/updates.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
 import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
+import { VERSION } from "../version.gen.js";
 import {
   type AgentIdentity,
   NAMES_OF_MAX,
+  type UnlinkedWhy,
   type Via,
   viaKey,
 } from "./agent-usage.js";
@@ -100,6 +104,12 @@ export const busCloseKind = (reason: string): BusCloseKind =>
 
 /** What the Worker calls on a member's BusHub (bus/hub.ts), typed here so callers need not load the DO. */
 export type BusHubRpc = {
+  /** #2552: sockets of one machine that took an `install_now` frame. */
+  installNow(machineId: string): Promise<number>;
+  /** #2552: the instance's named version changed; push it to this hub's sockets. */
+  runVersionChanged(): Promise<void>;
+  /** #2759: the member saved their prefs; tell their cap'd sockets when quiet hours end. */
+  ownerAwayChanged(): Promise<void>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
@@ -117,6 +127,10 @@ export type BusHubRpc = {
   }>;
   /** #1822: the live session whose proof hashes to `hash`, in this member's own hub; else null. */
   agentByProof(hash: string): Promise<AgentIdentity | null>;
+  /** Why a proof resolved to no session, for the log only (hub.ts). */
+  proofMissReason(
+    hash: string,
+  ): Promise<"unbound" | "closed" | "unlinked" | "revoked" | "other">;
   /** #1890: the identity id and kind of this member's agent at the address (live or away), else null. */
   identityOf(
     namespace: string,
@@ -624,38 +638,76 @@ async function lookupProof(
   env: Env,
   userId: string,
   proof: unknown,
-): Promise<AgentIdentity | null> {
+): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const t0 = Date.now();
   // #2110: one line per lookup that gives no identity, so a flapping link is
   // visible. Reason and elapsed ms only: never the proof, its hash or a token.
-  const none = (reason: "timeout" | "miss" | "no_machine" | "error") => {
+  const none = (
+    reason: "timeout" | "miss" | "no_machine" | "error" | "malformed",
+    why?: string,
+  ): { why: UnlinkedWhy } => {
     logInfo("bus_link_lookup_none", {
       reason,
+      ...(why ? { why } : {}),
       ms: Date.now() - t0,
     });
-    return null;
+    // The tool result's note (#2688): a miss's own reason, else the failure's.
+    const known = [
+      "unbound",
+      "closed",
+      "unlinked",
+      "revoked",
+      "other",
+      "no_hub",
+    ];
+    return {
+      why:
+        reason === "miss"
+          ? ((known.includes(why ?? "") ? why : "other") as UnlinkedWhy)
+          : (reason as UnlinkedWhy),
+    };
   };
   try {
     const p = LinkProofSchema.safeParse(proof);
-    if (!busOn(env) || !p.success) return null;
+    if (!busOn(env)) return {};
+    // A proof that is not one (a helper's output changed, a header mangled on
+    // the way): logged with its shape only, never its value.
+    if (!p.success)
+      return none(
+        "malformed",
+        typeof proof === "string"
+          ? `string_len_${Math.min(proof.length, 512)}`
+          : typeof proof,
+      );
     // One bound for the whole lookup, the machine read included, so a slow
     // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
     const r = await within(
-      (async (): Promise<{ id: AgentIdentity | null } | "no_machine"> => {
+      (async (): Promise<
+        { id: AgentIdentity | null; why?: string } | "no_machine"
+      > => {
         if (!(await hasConnectedMachine(env, userId))) return "no_machine";
         const hub = busHub(env, userId);
-        return {
-          id: hub ? await hub.agentByProof(await sha256Hex(p.data)) : null,
-        };
+        if (!hub) return { id: null, why: "no_hub" };
+        const hash = await sha256Hex(p.data);
+        const id = await hub.agentByProof(hash);
+        // A miss is rare: one more read says why, for the log only.
+        if (id) return { id };
+        let why: string;
+        try {
+          why = await hub.proofMissReason(hash);
+        } catch {
+          why = "error";
+        }
+        return { id: null, why };
       })(),
       PROOF_LOOKUP_MS,
     );
     if (r === null) return none("timeout");
     if (r === "no_machine") return none("no_machine");
-    if (r.id === null) return none("miss");
+    if (r.id === null) return none("miss", r.why);
     const ms = Date.now() - t0;
     if (ms >= LINK_LOOKUP_SLOW_MS) logInfo("bus_link_lookup_ok", { ms });
-    return r.id;
+    return { identity: r.id };
   } catch (e) {
     logError("bus_link_lookup_failed", e);
     return none("error");
@@ -730,7 +782,7 @@ export async function linkRequest(
   env: Env,
   userId: string,
   req: Request,
-): Promise<{ req: Request; identity?: AgentIdentity }> {
+): Promise<{ req: Request; identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const header = req.headers.get(LINK_PROOF_HEADER);
   let out = req;
   let argProof: unknown;
@@ -768,11 +820,14 @@ export async function linkRequest(
       out = new Request(out.url, { method: out.method, body: UNPARSEABLE });
     }
   }
-  if (poisoned) return { req: out };
+  if (poisoned)
+    return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
-  if (proof === undefined) return { req: out };
-  const identity = await lookupProof(env, userId, proof);
-  return identity ? { req: out, identity } : { req: out };
+  // No proof at all: nothing was looked up, so nothing is logged; the note says so.
+  if (proof === undefined)
+    return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+  const r = await lookupProof(env, userId, proof);
+  return { req: out, ...r };
 }
 
 /**
@@ -1694,4 +1749,224 @@ async function auditReachDecision(
         r.reason,
       ),
     }).run();
+}
+
+/**
+ * #2552: the owner names the version the instance's machines run, or clears
+ * it. Audited bus.run_version.set (the new value, or null). The owner's own
+ * hub, and every other member's hub that has a machine, are told at once so
+ * connected machines hear it.
+ */
+export async function setBusRunVersion(
+  env: Env,
+  ownerId: string,
+  version: string | null,
+  stepBack = false,
+  page = RUN_VERSION_FANOUT_PAGE,
+): Promise<void> {
+  if (version !== null) {
+    // Never ahead of this server: it could not vouch for a release it has not met.
+    if (!semverGte(VERSION, version))
+      throw new ApiError("conflict", "That version is newer than this server", {
+        reason: "ahead_of_server",
+      });
+    // Lower than the one named: only as a deliberate step back.
+    const named = await readRunVersion(env);
+    if (named !== null && !stepBack && !semverGte(version, named))
+      throw new ApiError(
+        "conflict",
+        "That version is older than the one named",
+        { reason: "older_version" },
+      );
+  }
+  await env.DB.batch([
+    version === null
+      ? stmt(env.DB, "delete from settings where key = ?").bind(RUN_VERSION_KEY)
+      : stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        ).bind(RUN_VERSION_KEY, version),
+    audit(
+      env,
+      "bus.run_version.set",
+      { type: "settings", id: RUN_VERSION_KEY },
+      userActor(ownerId),
+      { detail: { version, stepBack: stepBack === true } },
+    ),
+  ]);
+  // The owner's hub first (even with no machine), then the first page of
+  // members; a cursor carries the rest to the recovery cron (#2719).
+  await pushRunVersion(env, [ownerId]);
+  await fanOutRunVersion(env, null, ownerId, page);
+}
+
+/**
+ * The members one request or cron tick tells. Each push is a Worker
+ * subrequest (about 1000 allowed per invocation, shared with D1 calls and
+ * the route's own), so a page stays well under that: 200 leaves room for
+ * the owner's push, the settings and audit writes and the member read.
+ */
+export const RUN_VERSION_FANOUT_PAGE = 200;
+/** settings row: { after, gen } while members past the first page await a push. */
+export const RUN_VERSION_FANOUT_KEY = "bus_run_version_fanout";
+
+async function pushRunVersion(env: Env, users: string[]): Promise<void> {
+  await Promise.all(
+    users.map(async (u) => {
+      const hub = busHub(env, u);
+      if (!hub) return;
+      try {
+        await within(hub.runVersionChanged(), BUS_HUB_TIMEOUT_MS);
+      } catch (e) {
+        logError("bus_run_version_push_failed", e);
+      }
+    }),
+  );
+}
+
+/**
+ * Pushes one page of members (by user_id, after `after`) and moves the
+ * cursor on. `cursor` null: a new change, which overwrites any older
+ * cursor; else the raw stored cursor, and a write that finds it replaced by
+ * a newer change leaves the newer one alone. A repeat push is harmless: a
+ * hub's runVersionChanged only re-reads the setting and re-sends it.
+ */
+async function fanOutRunVersion(
+  env: Env,
+  cursor: { raw: string; after: string; gen: string } | null,
+  skip: string | null,
+  page: number,
+): Promise<void> {
+  let ids: string[] = [];
+  try {
+    const r = await stmt(
+      env.DB,
+      `select distinct user_id as id from bus_machines
+       where revoked_at is null and user_id > ?1 and user_id != ?2
+       order by user_id limit ?3`,
+    )
+      .bind(cursor?.after ?? "", skip ?? "", page + 1)
+      .all<{ id: string }>();
+    ids = r.results.map((x) => x.id);
+  } catch (e) {
+    logError("bus_run_version_members_failed", e);
+    // A new change whose first read failed: the cron starts it from the
+    // beginning, replacing any older change's cursor.
+    if (cursor === null)
+      try {
+        await stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        )
+          .bind(
+            RUN_VERSION_FANOUT_KEY,
+            JSON.stringify({ after: "", gen: crypto.randomUUID() }),
+          )
+          .run();
+      } catch (e2) {
+        logError("bus_run_version_cursor_failed", e2);
+      }
+    return;
+  }
+  const more = ids.length > page;
+  const now = ids.slice(0, page);
+  await pushRunVersion(env, now);
+  try {
+    const gen = cursor?.gen ?? crypto.randomUUID();
+    const last = now[now.length - 1];
+    if (more && last !== undefined) {
+      const value = JSON.stringify({ after: last, gen });
+      if (cursor === null)
+        await stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        )
+          .bind(RUN_VERSION_FANOUT_KEY, value)
+          .run();
+      else
+        await stmt(
+          env.DB,
+          "update settings set value = ? where key = ? and value = ?",
+        )
+          .bind(value, RUN_VERSION_FANOUT_KEY, cursor.raw)
+          .run();
+    } else if (cursor === null)
+      await stmt(env.DB, "delete from settings where key = ?")
+        .bind(RUN_VERSION_FANOUT_KEY)
+        .run();
+    else
+      await stmt(env.DB, "delete from settings where key = ? and value = ?")
+        .bind(RUN_VERSION_FANOUT_KEY, cursor.raw)
+        .run();
+  } catch (e) {
+    logError("bus_run_version_cursor_failed", e);
+  }
+}
+
+/**
+ * The recovery cron's tick (#2719): pushes the next page of members a
+ * setBusRunVersion left behind. One read when there is none.
+ */
+export async function drainRunVersionFanout(
+  env: Env,
+  page = RUN_VERSION_FANOUT_PAGE,
+): Promise<void> {
+  const row = await stmt(env.DB, "select value from settings where key = ?")
+    .bind(RUN_VERSION_FANOUT_KEY)
+    .first<{ value: string }>();
+  if (!row) return;
+  let c: { after?: unknown; gen?: unknown } | null;
+  try {
+    c = JSON.parse(row.value) as { after?: unknown; gen?: unknown } | null;
+  } catch {
+    c = null;
+  }
+  if (typeof c?.after !== "string" || typeof c.gen !== "string") {
+    await stmt(env.DB, "delete from settings where key = ? and value = ?")
+      .bind(RUN_VERSION_FANOUT_KEY, row.value)
+      .run();
+    return;
+  }
+  await fanOutRunVersion(
+    env,
+    { raw: row.value, after: c.after, gen: c.gen },
+    null,
+    page,
+  );
+}
+
+/**
+ * #2552 "Install now": a fieldless frame to the member's own machine. The
+ * caller is a signed-in member in a browser session (the route checks); the
+ * machine must be theirs and not revoked. Audited bus.install_now. Returns
+ * "machine_unknown" (the route's 404), "offline" (no socket took it) or "sent".
+ */
+export async function installNowOnMachine(
+  env: Env,
+  userId: string,
+  machineId: string,
+): Promise<"sent" | "offline" | "machine_unknown"> {
+  const row = await stmt(
+    env.DB,
+    "select label from bus_machines where id = ?1 and user_id = ?2 and revoked_at is null",
+  )
+    .bind(machineId, userId)
+    .first<{ label: string }>();
+  if (!row) return "machine_unknown";
+  await audit(
+    env,
+    "bus.install_now",
+    { type: "bus_machine", id: machineId },
+    userActor(userId),
+    { detail: { label: auditText(row.label) } },
+  ).run();
+  const hub = busHub(env, userId);
+  if (!hub) return "offline";
+  try {
+    const n = await within(hub.installNow(machineId), BUS_HUB_TIMEOUT_MS);
+    return n !== null && n > 0 ? "sent" : "offline";
+  } catch (e) {
+    logError("bus_install_now_failed", e);
+    return "offline";
+  }
 }

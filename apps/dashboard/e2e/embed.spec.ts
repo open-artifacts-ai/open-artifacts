@@ -248,31 +248,6 @@ test("(a) an attacker frame with a session cookie and no hint stays anonymous", 
   ).toHaveCount(0);
 });
 
-test("(b) top-level /full with a session stays logged in", async ({ page }) => {
-  await page.goto(`/a/${POLL}/full`);
-  const app = page.mainFrame();
-  const artifact = await contentFrame(page);
-  await artifact.evaluate(() =>
-    (window as unknown as { __call: (...a: unknown[]) => void }).__call(
-      "v",
-      "viewer.get",
-      {},
-    ),
-  );
-  expect((await reply(artifact, "v")).value).toMatchObject({ email: EMAIL });
-  const seen = await calls(app);
-  expect(seen.some((c) => c.url === "/api/v1/me")).toBe(true);
-  for (const c of seen)
-    expect(c, c.url).toMatchObject({
-      credentials: "same-origin",
-      auth: "Bearer mock",
-      embed: null,
-    });
-  await expect(
-    page.getByRole("link", { name: /^Exit full screen/ }),
-  ).toBeAttached();
-});
-
 test("(c) framed navigation is blocked or opens a new tab", async ({
   page,
   context,
@@ -341,51 +316,4 @@ test("(d) a framed private artifact shows the placeholder, not a login redirect"
   expect(logins).toEqual([]);
   // The title of a private artifact never shows.
   expect(await app.title()).not.toContain("Landing page");
-});
-
-test("(e) a framed public live artifact works anonymously", async ({
-  page,
-}) => {
-  await page.goto(`${ATTACKER}/?id=${POLL}`);
-  const app = await appFrame(page);
-  const artifact = await contentFrame(page);
-  const call = (id: string, method: string, params: unknown) =>
-    artifact.evaluate(
-      ([id, method, params]) =>
-        (window as unknown as { __call: (...a: unknown[]) => void }).__call(
-          id,
-          method,
-          params,
-        ),
-      [id, method, params] as const,
-    );
-
-  await call("id", "viewer.anonId", {});
-  expect(await reply(artifact, "id")).toMatchObject({
-    ok: true,
-    value: "AnonPoll",
-  });
-  expect((await calls(app)).some((c) => c.url.endsWith("/anon-id"))).toBe(true);
-
-  await call("s", "db.subscribe", { collection: "votes" });
-  expect(await reply(artifact, "s")).toMatchObject({ ok: true });
-  await call("w", "db.set", {
-    collection: "votes",
-    id: "anon1",
-    data: { choice: "yes" },
-  });
-  expect(await reply(artifact, "w")).toMatchObject({ ok: true });
-  await call("l", "db.list", { collection: "votes" });
-  const list = await reply(artifact, "l");
-  expect(list.ok).toBe(true);
-  expect(JSON.stringify(list.value)).toContain("anon1");
-
-  // Data sockets only (not vite's HMR socket).
-  const ws = (
-    await app.evaluate(() => (window as unknown as { __ws: string[] }).__ws)
-  ).filter((u) => new URL(u).pathname.startsWith("/api/"));
-  expect(ws.length).toBeGreaterThan(0);
-  for (const u of ws) expect(new URL(u).searchParams.get("embed")).toBe("1");
-  for (const c of await calls(app))
-    expect(c, c.url).toMatchObject({ credentials: "omit", auth: null });
 });

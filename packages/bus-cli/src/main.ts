@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { markLive } from "@oa/bus-daemon";
 import { copyFor, useBusCmd } from "./bus-cmd.ts";
+import { add } from "./commands/add.ts";
 import { autoUpdate } from "./commands/auto-update.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
@@ -13,16 +14,21 @@ import { logs } from "./commands/logs.ts";
 import { mcp } from "./commands/mcp.ts";
 import { mcpProof } from "./commands/mcp-proof.ts";
 import { namespace } from "./commands/namespace.ts";
+import { skill } from "./commands/skill.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
 import { installViaDaemon, update } from "./commands/update.ts";
 import { upgrade } from "./commands/upgrade.ts";
+import { use } from "./commands/use.ts";
 import { askDaemon, type Ctx, realCtx, say, sayErr } from "./context.ts";
 import { type Command, parse } from "./index.ts";
 
 /** Commands that print to a terminal and survive the shim: see `main`. */
 const TERMINAL = new Set([
   "login",
+  "add",
+  "use",
+  "skill",
   "status",
   "logs",
   "doctor",
@@ -110,6 +116,12 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       if (pid !== undefined) say(ctx, ctx.copy.daemonOldToken(pid));
       return 0;
     }
+    case "add":
+      return add(cmd, ctx);
+    case "use":
+      return use(cmd, ctx);
+    case "skill":
+      return skill(cmd, ctx);
     case "daemon":
       // The daemon reads both from the environment, as the service sets them.
       if (cmd.home) process.env.OA_BUS_HOME = ctx.home;

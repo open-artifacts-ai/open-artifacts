@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    globalSetup: ["./scripts/test/tmp-root.ts"],
     setupFiles: ["./scripts/test/agent-cli-guard.ts"],
     include: ["scripts/**/*.test.ts"],
     // @oa/setup runs its own suite via `pnpm -r test`.

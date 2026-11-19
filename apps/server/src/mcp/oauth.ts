@@ -173,6 +173,7 @@ async function apiFetch(
       version: null,
       ...(grantId ? { via: { kind: "grant" as const, id: grantId } } : {}),
       ...(link.identity ? { identity: link.identity } : {}),
+      ...(!link.identity && link.why ? { unlinked: link.why } : {}),
     };
     let server: ReturnType<typeof createServer> | undefined;
     // Audit rows from these tools name the grant (by id, never the token).

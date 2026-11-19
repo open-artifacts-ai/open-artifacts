@@ -396,6 +396,13 @@ export const ArtifactSummarySchema = z.object({
   commenters: CommentersSchema.optional(),
   /** #1535: open asks addressed to the caller. Absent reads as 0. */
   asksForYou: z.number().int().min(0).optional(),
+  /** #2512: open asks on this page waiting on the caller (their own agent, blocked now): how many and the oldest wait (ISO). Absent when none. */
+  waiting: z
+    .object({
+      count: z.number().int().min(1),
+      oldestSince: z.string(),
+    })
+    .optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 
@@ -608,9 +615,24 @@ export const ShareResultSchema = ShareSchema.extend({
    * Why no email went out when a limit refused it (the share is saved
    * either way, #2590): member_limit (this member's outside addresses for
    * the day), instance_limit (the instance's daily outside emails, lower in
-   * a trial), limit (the existing per-recipient, per-share or sending cap).
+   * a trial), limit (the existing per-recipient, per-share or sending cap),
+   * skipped (no email to an outside address, for any reason that isn't a cap:
+   * the recipient opted out, a failed or timed-out send, or an outage; the
+   * sharer is not told which, so an opt-out can't be told from the rest, and
+   * the page says to copy the link; the real reason is logged), sender_paused (this member's outside share emails are paused
+   * after bounces or a complaint: see pausedUntil; never which recipient).
    */
-  notEmailed: z.enum(["member_limit", "instance_limit", "limit"]).optional(),
+  notEmailed: z
+    .enum([
+      "member_limit",
+      "instance_limit",
+      "limit",
+      "skipped",
+      "sender_paused",
+    ])
+    .optional(),
+  /** With notEmailed sender_paused: when the pause ends (ISO). */
+  pausedUntil: z.string().optional(),
   /** With notEmailed member_limit or instance_limit: the daily number that was hit (20, 100, or the trial figure). */
   limit: z.number().int().positive().optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */

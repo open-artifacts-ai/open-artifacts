@@ -1,5 +1,6 @@
 // The bus install step of llms.txt (#2543), apart from llms.ts so a Node test
 // can run it. OA Product edits this wording; no em dashes.
+import { SKILL_COMMAND_MIN_BUS } from "../version.gen.js";
 
 /** The release's pin of @open-artifacts/bus: its version and sha512 in npm's integrity form. */
 export type BusPin = { version: string; integrity: string };
@@ -13,7 +14,12 @@ export type BusPin = { version: string; integrity: string };
 export const BUS_CHECK_STOP =
   'If the check prints MISMATCH, stop. Run nothing from that folder, and tell the person: "The bus download did not match what this instance expects, so I stopped before running it." If another command fails, stop too, and tell the person which command failed and what it printed. Don\'t try another way to install.';
 
-export const busInstallBlock = (origin: string, pin: BusPin): string => {
+export const busInstallBlock = (
+  origin: string,
+  pin: BusPin,
+  /** What the checked copy runs; the installer by default. */
+  command = `install --instance ${origin}`,
+): string => {
   const check = `node -e 'const l=require("./package-lock.json").packages||{};const k=Object.keys(l).filter(x=>x!=="");const p=l["node_modules/@open-artifacts/bus"];const ok=k.length===1&&p&&p.version==="${pin.version}"&&p.integrity==="${pin.integrity}";process.stdout.write((ok?"OK":"MISMATCH")+"\\n");process.exit(ok?0:1)'`;
   // One command: every step is chained with &&, so a failed install, check or
   // audit can never reach the installer line.
@@ -23,7 +29,7 @@ export const busInstallBlock = (origin: string, pin: BusPin): string => {
     `npm install --ignore-scripts --registry https://registry.npmjs.org @open-artifacts/bus@${pin.version} &&`,
     `${check} &&`,
     "npm audit signatures &&",
-    `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" install --instance ${origin}`,
+    `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" ${command}`,
     "```",
   ].join("\n");
 };
@@ -42,3 +48,23 @@ export const cleanWhy = (s: string): string =>
  */
 export const busNoPin = (why: string): string =>
   `The bus can't be installed from this build of the instance: it has no verified release to check the download against (${cleanWhy(why) || "no reason recorded"}). Do not install it, and do not run \`npx @open-artifacts/bus\` or any other install command: nothing would check what it runs. Tell the person: "This instance can't give me a checked bus release, so I can't install the bus safely. Ask whoever runs the instance to deploy a release build." Then go on with the next step.`;
+
+/**
+ * Does the pinned bus have `oa-bus skill` (#2624)? `min` is the first release
+ * that has it, read from the CHANGELOG at build time (null: not released yet,
+ * so no pin has it). Plain x.y.z compare; anything else says no.
+ */
+export const pinHasSkillCommand = (
+  version: string,
+  min: string | null = SKILL_COMMAND_MIN_BUS,
+): boolean => {
+  if (min === null) return false;
+  const a = version.split(".").map(Number);
+  const b = min.split(".").map(Number);
+  if (a.length !== 3 || a.some((n) => !Number.isInteger(n))) return false;
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] as number) !== (b[i] as number))
+      return (a[i] as number) > (b[i] as number);
+  }
+  return true;
+};

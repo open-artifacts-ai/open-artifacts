@@ -30,11 +30,11 @@ export const PINS = {
 
 export type Pins = { readonly [K in keyof typeof PINS]: string };
 
-// A release carries `oaBus.commit` in its package.json from the first release
-// that includes PR 0 (#2552); a tag field is never read. Until then it is optional; once
-// present it must match. PR 6 sets this to that first release; "999.0.0" means
-// "not required for any release that exists today".
-export const MIN_COMMIT_VERSION = "999.0.0";
+// A release carries `oaBus.commit` in its package.json; a tag field is never
+// read. From MIN_COMMIT_VERSION on it is required and must match; below it,
+// it is optional but must match when present. 0.213.0 is the first release
+// npm serves with it, and every update target is forward of the running bus.
+export const MIN_COMMIT_VERSION = "0.213.0";
 
 // Strict x.y.z: no prefix, suffix, leading zeros, whitespace or non-ASCII digits.
 export const VERSION_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;

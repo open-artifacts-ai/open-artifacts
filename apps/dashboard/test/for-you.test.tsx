@@ -4,6 +4,7 @@ import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { focusManager } from "@tanstack/react-query";
 import {
   act,
+  cleanup,
   fireEvent,
   screen,
   waitFor,
@@ -234,6 +235,35 @@ describe("For you", () => {
     expect(ids).toEqual(["ask:short", "ask:long"]);
   });
 
+  it("an update's menu offers Mark as read, Stop following, Mute; Mark as read clears the dot and Mark all read", async () => {
+    forYou("mixed");
+    mount("/");
+    const panel = await openPanel();
+    const row = panel.querySelector(
+      '[data-for-you-item="itm:reply1"]',
+    ) as HTMLElement;
+    expect(row.querySelector("[data-unread-dot]")).not.toBeNull();
+    fireEvent.pointerDown(
+      within(row).getByRole("button", { name: "More actions" }),
+      { button: 0, pointerType: "mouse" },
+    );
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((m) => m.textContent),
+    ).toEqual(["Mark as read", "Stop following this page", "Mute OA Design"]);
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: "Mark as read" }),
+    );
+    await waitFor(() =>
+      expect(row.querySelector("[data-unread-dot]")).toBeNull(),
+    );
+    expect(
+      within(panel).queryByRole("button", { name: "Mark all read" }),
+    ).toBeNull();
+  });
+
   it("a mute keeps the row and says so quietly", async () => {
     forYou("mixed");
     mount("/");
@@ -274,6 +304,62 @@ describe("For you", () => {
     expect(panel).toHaveTextContent(
       "When an agent asks you something or someone replies to you, it shows here.",
     );
+  });
+
+  it("nothing needs you: the away summary, and Show them marks it read so it goes", async () => {
+    forYou("calm");
+    mount("/");
+    const panel = await openPanel();
+    expect(
+      within(panel).getByText("Nothing is waiting on you."),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByText(/^6 updates on 3 pages since 22:00/),
+    ).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "Show them" }));
+    await waitFor(() =>
+      expect(within(panel).queryByText("While you were away")).toBeNull(),
+    );
+  });
+
+  it("Updates empty while something needs you: No updates yet., Needs you stays", async () => {
+    forYou("back");
+    mount("/");
+    const panel = await openPanel();
+    const updates = within(panel).getByRole("region", { name: "Updates" });
+    expect(within(updates).getByText("No updates yet.")).toBeInTheDocument();
+    expect(within(panel).queryByText("Nothing is waiting on you.")).toBeNull();
+  });
+
+  it("nothing at all: one caught-up state, no group messages", async () => {
+    forYou("mixed");
+    server.use(
+      http.get(`*${R.meInbox}`, () =>
+        HttpResponse.json({
+          needsYou: [],
+          later: [],
+          updates: [],
+          cursor: null,
+          counts: { needsYou: 0, unreadUpdates: 0 },
+        }),
+      ),
+    );
+    mount("/");
+    fireEvent.click(await bell());
+    const panel = await screen.findByRole("dialog", { name: "For you" });
+    // Nothing at all is the single "all caught up" state, not two group messages.
+    expect(
+      await within(panel).findByText("You're all caught up."),
+    ).toBeInTheDocument();
+    expect(within(panel).queryByText("No updates yet.")).toBeNull();
+  });
+
+  it("Updates has rows: no empty message", async () => {
+    forYou("calm");
+    mount("/");
+    const panel = await openPanel();
+    const updates = within(panel).getByRole("region", { name: "Updates" });
+    expect(within(updates).queryByText("No updates yet.")).toBeNull();
   });
 
   it("a returned item is marked, with no Later", async () => {
@@ -729,6 +815,50 @@ describe("failures and announcements", () => {
     await findVisibleToast("Not found");
     await waitFor(() => expect(row()).not.toBeNull());
     expect(await bell()).toHaveAccessibleName("For you, 2 need you");
+  });
+
+  it("Later sends the browser's time zone, and omits it when unknown", async () => {
+    const bodies: unknown[] = [];
+    const run = async () => {
+      forYou("mixed");
+      server.use(
+        http.post("*/api/v1/me/inbox/:id/later", async ({ request }) => {
+          bodies.push(await request.json());
+          return HttpResponse.json(
+            { error: { code: "not_found", message: "Not found" } },
+            { status: 404 },
+          );
+        }),
+      );
+      mount("/");
+      const panel = await openPanel();
+      const row = panel.querySelector(
+        '[data-for-you-item="itm:mention1"]',
+      ) as HTMLElement;
+      fireEvent.pointerDown(
+        within(row).getByRole("button", { name: /Later/ }),
+        { button: 0, pointerType: "mouse" },
+      );
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Tomorrow morning" }),
+      );
+      await waitFor(() => expect(bodies.length).toBeGreaterThan(0));
+    };
+    const spy = vi
+      .spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions")
+      .mockReturnValue({
+        timeZone: "Asia/Tokyo",
+      } as Intl.ResolvedDateTimeFormatOptions);
+    await run();
+    expect(bodies[0]).toEqual({ until: "morning", timeZone: "Asia/Tokyo" });
+    spy.mockReturnValue({
+      timeZone: undefined,
+    } as unknown as Intl.ResolvedDateTimeFormatOptions);
+    bodies.length = 0;
+    cleanup();
+    await run();
+    spy.mockRestore();
+    expect(bodies[0]).toEqual({ until: "morning" });
   });
 
   it("announces a change in the count, politely", async () => {

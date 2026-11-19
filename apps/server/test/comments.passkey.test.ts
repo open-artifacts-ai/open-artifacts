@@ -5,7 +5,7 @@ import {
   R,
   type CommentThread as Thread,
 } from "@oa/shared";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { publish } from "../src/services/artifacts.js";
 import { addThread } from "../src/services/comments.js";
@@ -289,8 +289,14 @@ describe("POST answer/challenge", () => {
     await addPasskey(app, u);
     const k = await ask(u);
     let last = 0;
-    for (let i = 0; i < 12 && last !== 429; i++)
-      last = (await challenge(k, u.cookie)).status;
+    // A frozen clock: a window boundary mid-loop would reset the count.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      for (let i = 0; i < 12 && last !== 429; i++)
+        last = (await challenge(k, u.cookie)).status;
+    } finally {
+      vi.useRealTimers();
+    }
     expect(last).toBe(429);
   });
 

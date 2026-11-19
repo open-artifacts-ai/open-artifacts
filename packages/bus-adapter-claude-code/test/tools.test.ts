@@ -631,3 +631,56 @@ describe("linked projects (#1567)", () => {
     expect(r.content[0].text).not.toContain("to_namespace");
   });
 });
+
+describe("#2759: self says when the person is away", () => {
+  const selfWith = async (owner_away_until?: string) => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-away-")), "d.sock");
+    const server = await serveDaemon({
+      path,
+      onHello: () => ({ bus_name: "me", namespace: "ns", global: false }),
+      onFrame: (f) =>
+        f.type === "self"
+          ? {
+              type: "agent",
+              agent: {
+                name: "me",
+                namespace: "ns",
+                kind: "claude-code",
+                live: true,
+                global: false,
+                ...(owner_away_until ? { owner_away_until } : {}),
+              },
+            }
+          : undefined,
+    });
+    const c = await connectDaemon({
+      path,
+      hello: Hello.parse({
+        v: 1,
+        id: "h",
+        type: "hello",
+        kind: "claude-code",
+        agent_ref: "s1",
+        pid: process.pid,
+        cwd: process.cwd(),
+        attest: {},
+      }),
+    });
+    const out = (await callTool("self", {}, c)).content[0]?.text ?? "";
+    c.close();
+    await server.close?.();
+    return out;
+  };
+  it("adds one line with the ISO time", async () => {
+    const out = await selfWith("2026-11-18T07:00:00Z");
+    expect(out.split("\n\n").at(-1)).toBe(
+      "Your person is away until 2026-11-18T07:00:00Z (quiet hours). Nothing breaks through until then.",
+    );
+    expect(out).not.toContain("owner_away_until");
+  });
+  it("adds nothing when not away", async () => {
+    const out = await selfWith();
+    expect(JSON.parse(out).name).toBe("me");
+    expect(out).not.toContain("away");
+  });
+});

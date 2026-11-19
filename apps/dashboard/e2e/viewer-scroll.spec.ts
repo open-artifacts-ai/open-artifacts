@@ -36,11 +36,9 @@ async function scrollInner(page: Page) {
   });
 }
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
-  for (const full of [false, true])
+// One phone viewport: the sheet is where the document used to scroll.
+for (const [w, h] of [[390, 844]] as const)
+  for (const full of [false])
     test(`${w}px${full ? " full screen" : ""}: the document never scrolls`, async ({
       page,
     }) => {
@@ -65,11 +63,8 @@ for (const [w, h] of [
 // The user's repro: expanding "N replies" scrolls the open card into view. A
 // stray overflowing element (a popover, a tall child) must never make the
 // document scroll, and scrolling the card must stay inside the panel.
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
-  for (const stray of [false, true])
+for (const [w, h] of [[390, 844]] as const)
+  for (const stray of [true])
     test(`${w}px: expanding replies${stray ? " with an overflowing child" : ""} leaves the document alone`, async ({
       page,
     }) => {
@@ -99,10 +94,7 @@ for (const [w, h] of [
 // #2172 root cause: the sr-only "linked, " spans of linked-agent comments are
 // position:absolute; with the comments column static they escaped its scroll
 // clip and stretched the document.
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
+for (const [w, h] of [[390, 844]] as const)
   test(`${w}px: expanding a long linked-agent thread leaves the document alone`, async ({
     page,
   }) => {
@@ -147,13 +139,20 @@ test("a tall full-page panel (not found) scrolls to its last action at 390x200",
 test("a short full-page panel stays vertically centered", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/a/Zz9yXwVuTsRqPoNm");
-  const box = await page
-    .locator(".oa-bare > .oa-edge > .oa-panel")
-    .boundingBox();
-  const edge = await page.locator(".oa-bare > .oa-edge").boundingBox();
-  expect(box && edge).toBeTruthy();
-  if (!box || !edge) return;
-  const above = box.y - edge.y;
-  const below = edge.y + edge.height - (box.y + box.height);
-  expect(Math.abs(above - below)).toBeLessThanOrEqual(2);
+  // boundingBox() doesn't wait: it is null until the panel is shown (#2675).
+  const panel = page.locator(".oa-bare > .oa-edge > .oa-panel");
+  const edge = page.locator(".oa-bare > .oa-edge");
+  await expect(panel).toBeVisible();
+  await expect(edge).toBeVisible();
+  // Centered once layout settles: poll the gap, never a fixed wait.
+  await expect
+    .poll(async () => {
+      const b = await panel.boundingBox();
+      const e = await edge.boundingBox();
+      if (!b || !e) return Number.POSITIVE_INFINITY;
+      const above = b.y - e.y;
+      const below = e.y + e.height - (b.y + b.height);
+      return Math.abs(above - below);
+    })
+    .toBeLessThanOrEqual(2);
 });

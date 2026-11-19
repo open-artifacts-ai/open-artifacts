@@ -1,11 +1,13 @@
 import type {
   ArtifactAgent,
+  CommentAuthor,
   CommentMention,
   CommentNotified,
   Comment as CommentT,
   CommentThread,
   KeyRef,
   MentionDelivery,
+  CommentPictureRef as PictureRef,
 } from "@oa/shared";
 import { viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
@@ -26,6 +28,7 @@ import {
   usePasskeyAnswer,
   useTakeBackAsk,
 } from "../../api/comments";
+import { AskWaiting, askWaitingSince } from "../../foryou/waiting";
 import { AppLink } from "../../library/AppLink";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
@@ -35,14 +38,23 @@ import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
 import { PasskeyBlocked } from "./PasskeyParts";
 import { passkeyFailure, passkeyLine } from "./passkey";
+import { isPersonKey } from "./people";
 
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
-export type Extras = { mentions: KeyRef[] };
+export type Extras = {
+  mentions: KeyRef[];
+  /** PROVISIONAL (#2780): the people @mentioned, by user id. */
+  people?: string[];
+  /** #2508: the pictures attached in the box. */
+  pictures?: PictureRef[];
+};
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
+  ...(x.people?.length ? { people: x.people } : {}),
+  ...(x.pictures?.length ? { pictures: x.pictures } : {}),
 });
 
 /** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
@@ -55,7 +67,7 @@ type AskT = NonNullable<CommentT["ask"]>;
 const myPickOf = (ask: AskT) => ask.picks?.find((p) => p.by.me);
 
 /** An ask that still waits for the viewer: their decision, or (weighing in) their view. */
-const needsMe = (ask: AskT): boolean => {
+export const needsMe = (ask: AskT): boolean => {
   // A withdrawn or replaced card waits for no one (#2511).
   if (ask.withdrawn || ask.replacedBy) return false;
   if (ask.role === "decide") return !ask.answer || isSendingAnswer(ask.answer);
@@ -64,6 +76,10 @@ const needsMe = (ask: AskT): boolean => {
     (!ask.answer || isSendingAnswer(ask.answer)) && ask.to.some((a) => a.me)
   );
 };
+
+/** A risky ask: a passkey-confirm ask, or any option with an `action`. It is only answered in the pane. */
+export const isRiskyAsk = (ask: AskT): boolean =>
+  ask.confirm === "passkey" || ask.options.some((o) => !!o.action);
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
@@ -530,6 +546,12 @@ export function AskFrom({
         </>
       )}{" "}
       asks{askedWho(ask.to, mine)}
+      {askWaitingSince(c) && (
+        <>
+          {" "}
+          <AskWaiting c={c} />
+        </>
+      )}
       {when && (
         <span title={exactDate(c.createdAt)}>
           {" · "}
@@ -631,7 +653,14 @@ export function AskBlock({
   from = true,
   boxed = true,
   openCard,
+  holdPicks = false,
 }: {
+  /**
+   * #2426 review, #2736: the card beside a mark takes no pick and no other
+   * one-click change yet (take back, change); they show disabled. Only that
+   * card sets it; the pane never does.
+   */
+  holdPicks?: boolean;
   /** The "X asks you" line; off where the card's header already says it (#2486). */
   from?: boolean;
   /** The ask's own ring; off where the thread's card is the box (#2486). */
@@ -783,7 +812,7 @@ export function AskBlock({
   const decider = ask.decider;
   // A risky ask (an action option or a passkey) shows no one else: no who-line,
   // weigh-ins or take back. It is the asker's own user's call.
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const risky = isRiskyAsk(ask);
   const deciderLine =
     !decider || risky
       ? null
@@ -939,8 +968,9 @@ export function AskBlock({
                 size="xs"
                 variant="link"
                 className="h-auto p-0 font-normal text-primary underline"
-                disabled={takeBack.isPending}
+                disabled={takeBack.isPending || holdPicks}
                 onClick={() => {
+                  if (holdPicks) return;
                   setErr(null);
                   takeBack.mutate(
                     { thread: thread.id, comment: c.id },
@@ -998,6 +1028,7 @@ export function AskBlock({
                     } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
                       !canAnswer ||
+                      holdPicks ||
                       answer.isPending ||
                       sel ||
                       (locked && !sel) ||
@@ -1006,6 +1037,7 @@ export function AskBlock({
                     aria-pressed={sel}
                     data-option={o.id}
                     onClick={() => {
+                      if (holdPicks) return;
                       setErr(null);
                       setLastPick(o.id);
                       const v = {
@@ -1115,6 +1147,7 @@ export function AskBlock({
                     size="xs"
                     variant="link"
                     className="h-auto p-0"
+                    disabled={holdPicks}
                     onClick={() => setChanging(true)}
                   >
                     Change
@@ -1142,6 +1175,7 @@ export function AskBlock({
                         size="xs"
                         variant="link"
                         className="h-auto p-0"
+                        disabled={holdPicks}
                         onClick={() => setChanging(true)}
                       >
                         Change
@@ -1353,6 +1387,8 @@ type MentionedProps = {
     key: string;
     name: string;
     delivery?: DState;
+    /** PROVISIONAL (#2780): a mentioned person, shown with their initials. */
+    person?: CommentAuthor;
   })[];
   guest?: boolean;
   /** #2229: show each mention's delivery in its chip. */
@@ -1403,7 +1439,11 @@ function mentioned(
         data-mention-chip=""
         className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 align-middle text-[var(--oa-accent-fg)]"
       >
-        {face && <PartyFace p={face} guest={guest} />}
+        {face?.person ? (
+          <AuthorFace a={face.person} small />
+        ) : (
+          face && <PartyFace p={face} guest={guest} />
+        )}
         {body.slice(at, end)}
       </span>,
     );
@@ -1541,7 +1581,11 @@ export function MentionMenu({
     <div
       id={id}
       role="listbox"
-      aria-label="Agents on this page"
+      aria-label={
+        matches.some((a) => isPersonKey(a.key))
+          ? "Agents and people"
+          : "Agents on this page"
+      }
       className="rounded-md border border-border bg-background"
     >
       {matches.length === 0 ? (
@@ -1563,18 +1607,24 @@ export function MentionMenu({
               onPick(a);
             }}
           >
-            {!isUnknown(a) && (
-              <span
-                aria-hidden="true"
-                className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
-              />
+            {isPersonKey(a.key) ? (
+              <AuthorFace a={{ kind: "user", name: a.name, me: false }} small />
+            ) : (
+              !isUnknown(a) && (
+                <span
+                  aria-hidden="true"
+                  className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
+                />
+              )
             )}
             <b
               className={`min-w-0 flex-1 truncate ${a.state === "away" ? MUTED : ""}`}
             >
               {rowName(a)}
             </b>
-            <span className={MUTED}>{stateText(a, all)}</span>
+            <span className={MUTED}>
+              {isPersonKey(a.key) ? "Person" : stateText(a, all)}
+            </span>
           </div>
         ))
       )}

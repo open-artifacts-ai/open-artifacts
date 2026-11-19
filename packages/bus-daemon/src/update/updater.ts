@@ -34,6 +34,7 @@ import { queueReport } from "./reports.ts";
 import {
   clearPending,
   clearStaged,
+  editPolicy,
   markNotified,
   markRefused,
   readPolicy,
@@ -47,10 +48,11 @@ import { unpackTo } from "./tar.ts";
 import { type VerifiedRelease, verifyRelease } from "./verify.ts";
 
 /**
- * The updater loop switch (#2552). PR 4 builds the loop but ships it off:
- * PR 6 flips this, and only an armed, not-off install ever runs it.
+ * The updater loop switch (#2552). On: the loop acts only for a version the
+ * instance names (or the person's own `oa-bus update`), and only an armed,
+ * not-off install ever runs it.
  */
-export const UPDATER_LOOP_ENABLED: boolean = false;
+export const UPDATER_LOOP_ENABLED: boolean = true;
 
 export const TICK_MS = 5000;
 /** A fetch that failed for the network: tried again after this long. */
@@ -70,6 +72,17 @@ export type UpdaterDeps = {
   loginActive: () => boolean;
   /** The hub link is open and hello_ok has come: a switch waits for it. */
   hubReady: () => boolean;
+  /**
+   * Tells the hub a switch is about to happen and waits for its yes (5 s).
+   * False (no, no answer, no cap, link down): the switch is held and tried
+   * again later (#2552).
+   */
+  announceSwitch: (
+    from: string,
+    to: string,
+    /** "requested": the person asked on this machine; else "ok". */
+    reason?: "ok" | "requested",
+  ) => Promise<boolean>;
   /** The hub's version from its last hello_ok, when known. */
   serverVersion: () => string | undefined;
   /** Ends the daemon non-zero so the service starts the new version. */
@@ -116,11 +129,15 @@ export class Updater {
   private readonly quiet = new QuietTracker();
   private stopTick: () => void = () => {};
   private working = false;
+  /** One swap at a time: every switchTo caller goes through this. */
+  private switching = false;
   private wanted: { i: Instruction; at: number } | undefined;
   private readonly d: UpdaterDeps;
   /** Decided once: the loop's flag, and a running version that is x.y.z. */
   private readonly active: boolean;
   /** An instance-asked step back held back by a login in progress. */
+  /** Malformed instructions already reported (by their text), at most 20. */
+  private readonly reportedBad = new Set<string>();
   private stepBackHeld: Instruction | undefined;
   constructor(d: UpdaterDeps) {
     this.d = d;
@@ -147,6 +164,58 @@ export class Updater {
     this.stopTick();
   }
 
+  /** The version the instance last named (hello_ok or a push); "Install now" must match it. */
+  private named: string | undefined;
+
+  /**
+   * The instance names `version` (BUS_CAPS.runVersion). The one kept previous
+   * is a step back; the running version is no instruction at all.
+   */
+  async instructFromInstance(version: string): Promise<UpdateOutcome> {
+    if (parseVersion(version) === undefined) return this.instruct({ version });
+    this.named = version;
+    const { running } = this.d;
+    if (running === undefined) return { kind: "disabled" };
+    const s = readPolicy(this.d.home);
+    if (version === running) {
+      // Named is what runs: a newer staged version is a rollout to stop (#2719).
+      const old = s.staged?.version;
+      if (old !== undefined && old !== version) {
+        clearStaged(this.d.home);
+        this.dropStaged(old);
+      }
+      return { kind: "disabled" };
+    }
+    const stepBack =
+      s.previous === version && compareVersions(version, running) === -1;
+    return this.instruct({ version, ...(stepBack ? { stepBack: true } : {}) });
+  }
+
+  /**
+   * The instance names no version (cleared, #2719): nothing it staged may be
+   * swapped in, whatever was named before. The person's own install request
+   * still works.
+   */
+  clearNamed(): void {
+    this.named = undefined;
+  }
+
+  /**
+   * "Install now" from Settings: a frame with no field. Honored only for the
+   * staged version the instance names, never during a login, never past
+   * `off`, the failed list or the 6 h limit. It skips only the quiet wait.
+   */
+  async installNowFromInstance(): Promise<UpdateOutcome> {
+    if (!this.enabled) return { kind: "disabled" };
+    const s = readPolicy(this.d.home);
+    const st = s.staged;
+    if (!st || this.named !== st.version)
+      return { kind: "refused", reason: "nothing_staged" };
+    const d = installNow(s, this.now(), this.d.loginActive());
+    if (!d.ok) return { kind: "refused", reason: d.reason };
+    return this.switchTo(st.version, true);
+  }
+
   /** The version the instance names. Stages it; the swap waits for a quiet moment. */
   async instruct(i: Instruction): Promise<UpdateOutcome> {
     if (!this.enabled) return { kind: "disabled" };
@@ -168,7 +237,10 @@ export class Updater {
         this.stepBackHeld = i;
         return { kind: "retry_later" };
       }
-      return this.switchTo(i.version, false);
+      const r = await this.switchTo(i.version, false);
+      // #2719: the one-swap lock (or a hub that did not answer) holds it too.
+      if (r.kind === "retry_later") this.stepBackHeld = i;
+      return r;
     }
     if (s.staged?.version === i.version && s.staged.manifest) {
       if (treeMatches(versionDir(home, i.version), s.staged.manifest))
@@ -182,15 +254,40 @@ export class Updater {
     to: string,
     d: Extract<Decision, { ok: false }>,
   ): void {
-    // Only a forbidden instruction is worth a report; waiting is not.
-    if (d.reason === "bad_version" || d.reason === "ahead_of_server")
-      queueReport(this.d.home, {
-        event: "refused",
-        from,
-        to: parseVersion(to) ? to : "",
-        reason: d.reason === "bad_version" ? "bad_instruction" : d.reason,
-        at: this.now(),
-      });
+    // Only a forbidden instruction is worth a report; waiting is not. Each is
+    // reported once: the hub repeats its instruction on every hello.
+    if (
+      d.reason !== "bad_version" &&
+      d.reason !== "ahead_of_server" &&
+      d.reason !== "not_forward"
+    )
+      return;
+    const named = parseVersion(to) ? to : "";
+    const reason = d.reason === "bad_version" ? "bad_instruction" : d.reason;
+    if (named === "") {
+      if (this.reportedBad.has(to)) return;
+      if (this.reportedBad.size < 20) this.reportedBad.add(to);
+    } else {
+      try {
+        const key = `refused:${reason}`;
+        const list = readPolicy(this.d.home).notified[named] ?? [];
+        if (list.includes(key)) return;
+        editPolicy(this.d.home, (s) => {
+          s.notified[named] = [...(s.notified[named] ?? []), key];
+        });
+      } catch {
+        // unreadable: report this once, in memory
+        if (this.reportedBad.has(`${named}:${reason}`)) return;
+        this.reportedBad.add(`${named}:${reason}`);
+      }
+    }
+    queueReport(this.d.home, {
+      event: "refused",
+      from,
+      to: named,
+      reason,
+      at: this.now(),
+    });
   }
 
   private async stage(i: Instruction, now: number): Promise<UpdateOutcome> {
@@ -357,11 +454,16 @@ export class Updater {
           !login &&
           now - req.at < REQUEST_MAX_MS
         )
-          this.switchTo(st.version, true);
+          await this.switchTo(st.version, true, true);
         return;
       }
-      if (this.quiet.quiet(now) && installNow(s, now, login).ok)
-        this.switchTo(st.version, true);
+      // #2719: only the version the instance names now (cleared: none).
+      if (
+        this.named === st.version &&
+        this.quiet.quiet(now) &&
+        installNow(s, now, login).ok
+      )
+        await this.switchTo(st.version, true);
     } catch (e) {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -373,11 +475,33 @@ export class Updater {
    * The swap: re-hash what was staged, write `pending`, point `bin` at it and
    * exit non-zero so the service restarts the daemon from the new folder.
    */
-  private switchTo(version: string, staged: boolean): UpdateOutcome {
+  private async switchTo(
+    version: string,
+    staged: boolean,
+    person = false,
+  ): Promise<UpdateOutcome> {
+    if (this.switching) return { kind: "retry_later" };
+    this.switching = true;
+    try {
+      return await this.doSwitch(version, staged, person);
+    } finally {
+      this.switching = false;
+    }
+  }
+
+  private async doSwitch(
+    version: string,
+    staged: boolean,
+    person: boolean,
+  ): Promise<UpdateOutcome> {
     const { home, running } = this.d;
     const now = this.now();
     if (running === undefined || !isSafeVersion(version) || version === running)
       return { kind: "disabled" };
+    // #2719: a version the instance staged swaps in only while it is the one
+    // named now; the person's own request and a step back are not that.
+    if (staged && !person && this.named !== version)
+      return { kind: "refused", reason: "nothing_staged" };
     // A switch happens only while the hub answers: the new daemon's check
     // needs it, and an update must not start into an outage.
     if (!this.d.hubReady()) return { kind: "retry_later" };
@@ -413,6 +537,57 @@ export class Updater {
     } else if (!existsSync(versionDir(home, version))) {
       return { kind: "refused", reason: "nothing_staged" };
     }
+    // The hub says yes before the swap (the instance times "the bus
+    // stopped" from it). No answer holds the switch for a later try.
+    const proven = s.staged?.manifest;
+    if (
+      !(await this.d.announceSwitch(
+        running,
+        version,
+        person ? "requested" : "ok",
+      ))
+    )
+      return { kind: "retry_later" };
+    // The wait above can be long: `off`, a newer run, a cleared name or a
+    // different staged tree may have landed in it.
+    // #2719: the hub's "stopped" clock runs from the `switching` it acked; a
+    // backing out says `held` so that clock is replaced, not left to expire.
+    const backOut = (reason: string): void =>
+      queueReport(home, {
+        event: "ready_24h", // "held" on the wire
+        from: running,
+        to: version,
+        reason,
+        at: this.now(),
+      });
+    const after = readPolicy(home);
+    if (after.unreadable || after.off) {
+      backOut("other");
+      return { kind: "retry_later" };
+    }
+    if (staged && !person && this.named !== version) {
+      backOut("nothing_staged");
+      return { kind: "retry_later" };
+    }
+    if (
+      staged &&
+      (after.staged?.version !== version ||
+        JSON.stringify(after.staged.manifest) !== JSON.stringify(proven) ||
+        !after.staged.manifest ||
+        !treeMatches(versionDir(home, version), after.staged.manifest))
+    ) {
+      backOut("staged_changed");
+      return { kind: "proof_refused", code: "staged_changed" };
+    }
+    if (
+      staged &&
+      [after.newestRun, after.current, running].some(
+        (v) => v !== undefined && compareVersions(version, v) !== 1,
+      )
+    ) {
+      backOut("not_forward");
+      return { kind: "refused", reason: "not_forward" };
+    }
     try {
       setPending(home, { from: running, to: version, startedAt: now });
       recordAttempt(home, now);
@@ -426,6 +601,7 @@ export class Updater {
       this.d.log(
         `update ${version}: could not switch: ${e instanceof Error ? e.message : String(e)}`,
       );
+      backOut("other");
       return { kind: "disabled" };
     }
     prune(home, [running, version, s.previous]);

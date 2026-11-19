@@ -32,6 +32,7 @@ import {
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
+import { listenEachOther } from "./held-listens.js";
 import { api, errOf, login } from "./helpers.js";
 
 // #1900: an agent in a thread hears later replies from people.
@@ -98,6 +99,7 @@ beforeAll(async () => {
   owner = await mk("tr-owner");
   editor = await mk("tr-editor");
   viewer = await mk("tr-viewer");
+  await listenEachOther(E, [owner.userId, editor.userId, viewer.userId]);
 });
 
 /** Owner follows with Claude and Pi; the editor with Codex. */
@@ -122,7 +124,7 @@ async function setup(
   const id = a.id;
   for (const [u, role] of [
     [editor, "editor"],
-    [viewer, "viewer"],
+    [viewer, "editor"],
   ] as const)
     await api(app, R.shares(id), owner.cookie, {
       method: "PUT",
@@ -419,9 +421,9 @@ describe("thread_reply notices (#1900)", () => {
     );
     expect(threadReplies()).toHaveLength(0);
     expect(await counts(s.id)).toBe(0);
-    // A member's reply still does.
+    // A member's reply on a public page is held (#2577: the list never applies there).
     await reply(s.id, t.id, viewer);
-    expect(names()).toEqual(["Claude"]);
+    expect(names()).toEqual([]);
   });
 
   describe("copy and tiers", () => {
