@@ -8,7 +8,7 @@ import { useState } from "react";
 import { firstOf, NOTIFY, optOut, type PageAgent } from "../../api/pageAgent";
 import { useArtifact } from "../../api/queries";
 import { TXT } from "../ui";
-import { PartyFace } from "./AuthorFace";
+import { AuthorFace } from "./AuthorFace";
 import { CHIP, Tip } from "./threadAgents";
 import type { CommentsApi } from "./useComments";
 
@@ -38,10 +38,9 @@ export function NotifyChip({
   onRemove: () => void;
 }) {
   // A teammate's agent says whose it is; the caller's own is just its name.
-  const label =
-    !agent.me && agent.for
-      ? NOTIFY.teammate(agent.name, firstOf(agent.for))
-      : agent.name;
+  const label = !agent.me
+    ? NOTIFY.teammate(agent.name, firstOf(agent.for))
+    : agent.name;
   const stop = NOTIFY.stop(agent.name);
   return (
     <span
@@ -50,7 +49,10 @@ export function NotifyChip({
     >
       <span className="shrink-0">{NOTIFY.lead}</span>
       <span className={`${CHIP} min-w-0 pr-0.5`}>
-        <PartyFace p={agent} />
+        <AuthorFace
+          small
+          a={{ kind: "agent", name: agent.name, linked: false, me: false }}
+        />
         <span className="truncate">{label}</span>
         <Tip text={stop}>
           <button

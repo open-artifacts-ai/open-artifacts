@@ -50,8 +50,6 @@ const OWNED = (
 const AGENT = {
   key: "agent:0123456789abcdef0123456789abcdef",
   name: "OA Design",
-  linked: true,
-  animal: { id: "duck", color: 6 },
 };
 /** GET R.artifact with (or without) the page's agent. */
 const withPageAgent = (pageAgent: object | null) =>
@@ -112,6 +110,16 @@ describe("the chip on a new thread (#2610)", () => {
       expect(p.list[0]?.body).toMatchObject({ body: "Hello" }),
     );
     expect(p.list[0]?.body).not.toHaveProperty("notifyPageAgent");
+  });
+
+  it("draws a plain agent tile: no face comes from the server", async () => {
+    server.use(withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }));
+    mount(viewerPath(OWNED));
+    await col();
+    await waitFor(() => expect(chip()).not.toBeNull());
+    const tile = (chip() as HTMLElement).querySelector('[data-avatar="agent"]');
+    expect(tile).not.toBeNull();
+    expect(tile).toHaveAttribute("data-linked", "false");
   });
 
   it("✕ removes it and the thread opts out", async () => {

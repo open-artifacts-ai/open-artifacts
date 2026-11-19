@@ -160,8 +160,6 @@ async function startMocks() {
             name: "OA Design",
             for: pageAgent === "own" ? "Ada Lovelace" : "Leo Urbina",
             me: pageAgent === "own",
-            linked: true,
-            animal: { id: "duck", color: 6 },
           },
         });
       }),
